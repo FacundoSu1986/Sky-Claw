@@ -45,6 +45,7 @@ Un ``INDETERMINATE`` NUNCA cuenta como listo.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import hashlib
 import json
@@ -417,6 +418,137 @@ def _matriz_p7() -> list[dict[str, str]]:
     ]
 
 
+class SalidaNoPermitidaError(Exception):
+    """El destino del informe no es un lugar donde este script pueda escribir."""
+
+
+def _canonico(ruta: str | os.PathLike[str]) -> str:
+    """Ruta absoluta normalizada en caja, sin resolver enlaces."""
+    return os.path.normcase(os.path.abspath(os.fspath(ruta)))
+
+
+def _es_igual_o_hijo(candidato: str, contenedor: str) -> bool:
+    """¿``candidato`` está dentro de ``contenedor`` (o es él mismo)?"""
+    if candidato == contenedor:
+        return True
+    return candidato.startswith(contenedor + os.sep)
+
+
+def _arboles_protegidos(
+    *,
+    storage_root: pathlib.Path,
+    mo2_instance_dir: pathlib.Path,
+    clone_roots: list[pathlib.Path],
+    managed_source_root: pathlib.Path | None,
+) -> list[tuple[pathlib.Path, str]]:
+    """Árboles sobre los que el informe NO puede escribirse, con su etiqueta."""
+    arboles: list[tuple[pathlib.Path, str]] = [
+        (mo2_instance_dir, "la instancia MO2 (contiene modorganizer.ini)"),
+        (storage_root, "el Frozen Runtime storage (active.json, journal, recovery)"),
+    ]
+    for indice, raiz in enumerate(clone_roots):
+        arboles.append((raiz, f"el Runtime Clone #{indice}"))
+    if managed_source_root is not None:
+        arboles.append((managed_source_root, "la Managed Source de Steam"))
+    return arboles
+
+
+def validar_destino_informe(
+    destino: str | os.PathLike[str],
+    *,
+    arboles_protegidos: list[tuple[pathlib.Path, str]],
+) -> pathlib.Path:
+    """Valida el destino del informe y devuelve la ruta canónica donde escribir.
+
+    El script es READ-ONLY sobre el runtime: su única escritura es el informe. Que
+    esa escritura no pueda caer dentro de una superficie que el propio script
+    audita es parte del contrato, no una cortesía. ``--json-salida
+    <instancia>/modorganizer.ini`` destruiría exactamente lo que P7 viene a
+    inspeccionar.
+
+    Reglas, todas fail-closed:
+
+    1. El archivo no puede existir. Un informe no sobrescribe nada, ni siquiera
+       un informe anterior.
+    2. El directorio padre tiene que existir y ser un directorio.
+    3. Ni el padre ni ningún ancestro puede ser un reparse point. Un junction
+       dentro de un directorio permitido que apunte al storage sortearía la
+       comparación de prefijos si se comparara la ruta sin resolver.
+    4. La ruta real no puede estar dentro de ningún árbol protegido, ni ser uno
+       de sus archivos.
+
+    Returns:
+        La ruta real (con enlaces resueltos) donde hay que crear el archivo.
+
+    Raises:
+        SalidaNoPermitidaError: con el motivo exacto. Nunca devuelve una ruta
+            "probablemente segura".
+    """
+    crudo = os.path.abspath(os.fspath(destino))
+
+    # Primero la pertenencia a un árbol protegido, sobre la ruta DECLARADA. El
+    # orden importa para el diagnóstico: apuntar `--json-salida` al
+    # `modorganizer.ini` tiene que decir «eso es la instancia MO2», no «el
+    # archivo ya existe» —que además sería cierto y escondería la razón real—.
+    for arbol, etiqueta in arboles_protegidos:
+        if _es_igual_o_hijo(_canonico(crudo), _canonico(arbol)):
+            raise SalidaNoPermitidaError(
+                f"{crudo}: el informe caería dentro de {etiqueta}. Elegí una ruta fuera de los árboles "
+                "que el inspector audita"
+            )
+
+    if os.path.lexists(crudo):
+        raise SalidaNoPermitidaError(
+            f"{crudo}: el archivo ya existe. El informe no sobrescribe nada; elegí una ruta nueva"
+        )
+
+    padre = os.path.dirname(crudo)
+    if not os.path.isdir(padre):
+        raise SalidaNoPermitidaError(f"{padre}: el directorio del informe no existe")
+
+    # Un enlace en cualquier punto del padre cambia el destino real. Se compara
+    # la ruta resuelta contra la declarada: si difieren, hay un reparse point en
+    # el camino y no se puede afirmar dónde va a caer el archivo.
+    padre_real = os.path.realpath(padre)
+    if _canonico(padre) != _canonico(padre_real):
+        raise SalidaNoPermitidaError(
+            f"{padre}: el directorio del informe pasa por un enlace simbólico o junction "
+            f"(se resuelve a {padre_real}). No se escribe a través de un reparse point"
+        )
+
+    real = os.path.join(padre_real, os.path.basename(crudo))
+    for arbol, etiqueta in arboles_protegidos:
+        if _es_igual_o_hijo(_canonico(real), _canonico(arbol)):
+            raise SalidaNoPermitidaError(
+                f"{real}: el informe caería dentro de {etiqueta}. Elegí una ruta fuera de los árboles "
+                "que el inspector audita"
+            )
+    return pathlib.Path(real)
+
+
+def escribir_informe_exclusivo(destino: pathlib.Path, texto: str) -> None:
+    """Crea el informe con ``O_EXCL``: no puede pisar un archivo existente.
+
+    ``Path.write_text`` trunca lo que encuentre. La comprobación de existencia de
+    :func:`validar_destino_informe` y esta escritura están separadas por una
+    ventana; ``O_CREAT | O_EXCL`` la cierra en el único lugar donde importa.
+    """
+    banderas = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        descriptor = os.open(destino, banderas, 0o600)
+    except FileExistsError as exc:
+        raise SalidaNoPermitidaError(
+            f"{destino}: el archivo apareció entre la validación y la escritura; no se sobrescribe"
+        ) from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as manejador:
+            manejador.write(texto)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(destino)
+        raise
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Inspección READ-ONLY de preparación para P7 (Frozen Runtime).")
     parser.add_argument("--storage-root", required=True, type=pathlib.Path)
@@ -438,10 +570,47 @@ def main(argv: list[str] | None = None) -> int:
     )
     texto = json.dumps(informe, indent=2, ensure_ascii=False)
     print(texto)
+
     if args.json_salida is not None:
-        # Única escritura del script, y es del INFORME, nunca del runtime.
-        args.json_salida.write_text(texto + "\n", encoding="utf-8")
+        # La validación corre DESPUÉS de leer: si el destino es inválido, el
+        # informe ya se emitió por stdout y el fallo es explícito, no silencioso.
+        clone_roots = _clones_del_informe(args.storage_root, informe)
+        try:
+            destino = validar_destino_informe(
+                args.json_salida,
+                arboles_protegidos=_arboles_protegidos(
+                    storage_root=args.storage_root,
+                    mo2_instance_dir=args.mo2_instance,
+                    clone_roots=clone_roots,
+                    managed_source_root=args.managed_source,
+                ),
+            )
+            escribir_informe_exclusivo(destino, texto + "\n")
+        except SalidaNoPermitidaError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
     return 0 if informe["listo_para_p7"] else 1
+
+
+def _clones_del_informe(storage_root: pathlib.Path, informe: dict[str, Any]) -> list[pathlib.Path]:
+    """Raíces de Clone que el informe conoce, para protegerlas.
+
+    Se toma del registro durable y no del texto del informe: el informe redacta
+    las rutas para stdout, y una ruta redactada no sirve para decidir si el
+    destino cae dentro. La protección tiene que usar la ruta real.
+    """
+    raiz = _raiz_de_clone(storage_root, informe.get("clone_objetivo"))
+    return [raiz] if raiz is not None else []
+
+
+def _raiz_de_clone(storage_root: pathlib.Path, clone_id: str | None) -> pathlib.Path | None:
+    if not clone_id:
+        return None
+    try:
+        registro = cargar_runtime_clone_record(storage_root, clone_id)
+    except Exception:  # noqa: BLE001 - el informe no debe caerse por un registro raro
+        return None
+    return pathlib.Path(registro.root_path) if registro is not None else None
 
 
 if __name__ == "__main__":

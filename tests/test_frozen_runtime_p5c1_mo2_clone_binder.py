@@ -40,7 +40,7 @@ from unittest.mock import patch
 import pytest
 
 from sky_claw.local.frozen_runtime import approval as approval_module
-from sky_claw.local.frozen_runtime import mo2_ini_exclusion
+from sky_claw.local.frozen_runtime import mo2_ini_escritura, mo2_ini_exclusion
 from sky_claw.local.frozen_runtime.approval import (
     ApprovalOperation,
     ConsentimientoAprobacion,
@@ -781,13 +781,30 @@ def test_11_fallo_durante_reemplazo_recuperacion(tmp_path: pathlib.Path) -> None
     real_escribir = mo2_ini_exclusion._escribir_handle
     parciales = {"escritas": 0}
 
+    # Estado intermedio REAL: el que deja morir el escritor durante WriteFile,
+    # sin SetEndOfFile. Se construye con los bytes del snapshot y la previsión, y
+    # tiene el MISMO tamaño que el snapshot (el truncado no ocurrió).
+    #
+    # La versión anterior escribía ``datos[:mitad]``, que trunca el archivo: ese
+    # estado NO es alcanzable por el escritor real —SetEndOfFile corre sólo tras
+    # una escritura completa— y por eso el predicado endurecido, con razón, no lo
+    # atribuye a la transición.
+    previos = ini_bytes_antes
+    nuevo = mo2_ini_escritura.prever_bytes(previos, str(clone_root))
+    divergencia = 0
+    while divergencia < min(len(previos), len(nuevo)) and previos[divergencia] == nuevo[divergencia]:
+        divergencia += 1
+    corte = min(divergencia + 5, len(previos))
+    intermedio = nuevo[:corte] + previos[corte:]
+    assert intermedio != previos, "el corte no produjo un estado intermedio real"
+
     def _escribir_a_medias(handle: int, datos: bytes) -> None:
         # Sólo la PRIMERA escritura (la del contenido nuevo) se corta; las que
         # hace el rollback después tienen que poder completarse, si no el test
         # pasaría porque el rollback también falla.
-        if parciales["escritas"] == 0 and len(datos) > 4:
+        if parciales["escritas"] == 0:
             parciales["escritas"] += 1
-            real_escribir(handle, datos[: len(datos) // 2])
+            real_escribir(handle, intermedio)
             raise Mo2IniExclusionError("EIO simulado tras escritura parcial del INI")
         real_escribir(handle, datos)
 

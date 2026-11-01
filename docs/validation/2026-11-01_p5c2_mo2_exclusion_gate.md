@@ -1,240 +1,246 @@
 # P5-C2 — Gate de exclusión de MO2 y preparación de P7
 
 **Tracker:** #672
+**PR:** [#851](https://github.com/FacundoSu1986/Sky-Claw/pull/851) (Draft)
 **ADR:** [0017 — Exclusión de mutación de `modorganizer.ini`](../adr/0017-mo2-exclusion-gate.md)
-**Fecha:** 2026-11-01
+**Fecha:** 2026-11-01 (revisión 2, tras la auditoría adversarial)
 **Alcance:** `SYNTHETIC_ONLY`. Ninguna operación sobre Skyrim, Steam, MO2 ni SKSE productivos.
 
 ---
+
+## 0. Qué cambió esta revisión
+
+La auditoría del PR encontró un defecto real en la afirmación central del gate.
+La versión anterior concedía `FILE_SHARE_READ` y documentaba que, con eso, la
+lectura rasgada era «imposible por construcción». **Era falso**, y se corrigió
+midiendo, no razonando:
+
+1. La validación de compartición de Windows es **bidireccional**. Un lector que
+   pida `GENERIC_READ` y conceda `READ|WRITE|DELETE` abre aunque el tenedor sólo
+   conceda `READ`. Medido: **11.038 lecturas rasgadas**.
+2. Se adoptó `FILE_SHARE_NONE`, se midió su costo (casi nulo) y se agregaron
+   tests que fallan con la configuración anterior.
+3. `--json-salida` del inspector P7 **truncaba** `modorganizer.ini` si se le
+   pasaba esa ruta. Ahora valida el destino y crea con `O_EXCL`.
+4. El predicado de escritura interrumpida se calibró **matando procesos reales**
+   en cada punto, y se endureció: ya no atribuye a la transición estados que el
+   escritor no puede producir.
 
 ## 1. Rama, worktree y SHAs
 
 | Elemento | Valor |
 |---|---|
-| PR | [#851](https://github.com/FacundoSu1986/Sky-Claw/pull/851) (Draft) |
 | Rama | `feat/frozen-runtime-mo2-exclusion-gate` |
-| Commit | `e6c58cd06c756234a17da25ff9f79cedcd51385a` |
 | Worktree | `E:\Skyclaw_Main_Sync\.worktrees\frozen-runtime-mo2-exclusion-gate` |
 | Base | `origin/main` `9fbf0b2fef177e143ff0be68e058ae875d501c6f` |
-| P5-C1 integrado | `ac19cb28f74e6495808d7606fdbc29ceab9f578d` (ancestro de `origin/main`, verificado con `merge-base --is-ancestor`) |
-| CI post-merge de P5-C1 | run `41249009598`, `success`, 12/12 |
-| CI de `origin/main` al iniciar | run `41296992561`, `success` |
-| Worktree de baseline para comparar | `E:\Skyclaw_Main_Sync\.worktrees\p5c2-baseline` (`--detach 9fbf0b2f`) |
-| Rig de experimentos | `E:\Skyclaw_Rig_MO2_Exclusion` (fuera del repo, no se commitea) |
-
-`main` no se tocó. El worktree principal estaba 10 commits atrás y **no** contiene
-el código de P5-C1; por eso el trabajo se hizo en un worktree propio desde
-`origin/main`.
+| HEAD auditado (revisión 1) | `eff1ea6369311d55335d3e42aea62f1382167e10` |
+| P5-C1 integrado | `ac19cb28f74e6495808d7606fdbc29ceab9f578d` |
+| Rig de experimentos | `E:\Skyclaw_Rig_MO2_Exclusion` (fuera del repo) |
 
 ## 2. Mecanismos Windows investigados
 
-Se probaron empíricamente, con procesos externos reales, no por documentación:
-
 | Mecanismo | Veredicto medido |
 |---|---|
-| `CreateFileW` + matriz de `dwShareMode` (5 combinaciones × 3 accesos) | Una sola combinación excluye mutación sin romper lectores útiles |
-| `MoveFileExW(REPLACE_EXISTING)` / `os.replace` bajo exclusión | `ERROR_ACCESS_DENIED` (5): incompatible |
+| Matriz de `dwShareMode` (5 combinaciones × 3 accesos) | Sólo `share = 0` cierra mutación **y** observación |
+| Lector compatible (`GR` + `share RWD`) | **Abre con `share READ`**; bloqueado con `share 0` |
+| Lector CRT (`GR` + `share RW`) | Bloqueado en ambas |
+| Apertura sólo de atributos | Abre siempre; `ReadFile` da `ACCESS_DENIED` (5), 0 bytes |
+| `os.stat` por ruta con `share 0` | Funciona (`GetFileAttributesExW`, no abre handle) |
+| `MoveFileEx` / `os.replace` bajo exclusión | `ERROR_ACCESS_DENIED` (5): incompatible |
 | `ReplaceFileW` | `ERROR_SHARING_VIOLATION` (32) bajo exclusión |
-| `SetFileInformationByHandle(FileRenameInfoEx)` | Funciona **sobre el propio handle**; falla (32) sobre un destino retenido ajeno |
-| `FILE_RENAME_FLAG_POSIX_SEMANTICS` | **No** salta el chequeo de compartición del destino |
-| Escritura in-place por handle (`WriteFile` + `SetEndOfFile`) | Única mutación posible bajo exclusión |
-| `LockFileEx` por rangos | Bloquea escritura in-place pero **no** borrado ni reemplazo: no cierra la ventana |
-| Identidad de archivo por handle (`GetFileInformationByHandle`) | Estable ante rename; **igual para todos los hardlinks** → el alias también queda excluido |
-| Reparse points | Detección por atributos; el gate los rechaza |
+| `SetFileInformationByHandle(FileRenameInfoEx)` | Funciona sobre el propio handle; falla (32) sobre destino retenido |
+| `FILE_RENAME_FLAG_POSIX_SEMANTICS` | **No** salta el chequeo del destino |
+| Escritura in-place por handle | Única mutación posible bajo exclusión |
+| `LockFileEx` por rangos | No bloquea borrado ni reemplazo: no cierra la ventana |
+| Identidad por handle | Estable ante rename; igual para todos los hardlinks → alias excluido |
 
-Dos defectos de interoperabilidad con ctypes se encontraron y corrigieron por
-medición, no por lectura:
+Dos defectos de interoperabilidad con ctypes, encontrados midiendo:
 
 1. **`FILE_RENAME_INFO_EX` necesita holgura de `sizeof` (24), no `offsetof` (20).**
-   Con un buffer de exactamente `20 + len(nombre)` el rename **devuelve éxito y
-   corrompe el nombre** (lee 4 bytes de más). Reproducido de forma determinista
-   con nombres de 64 caracteres; desaparece con 4 bytes de holgura.
-2. **`FILETIME` debe declararse como dos `DWORD`.** Un `c_uint64` alinea a 8 y
-   desplaza todos los campos siguientes de `BY_HANDLE_FILE_INFORMATION` cuatro
-   bytes: la identidad se compara contra basura y el gate rechaza archivos sanos.
+   Con el buffer exacto el rename devuelve éxito y **corrompe el nombre**.
+2. **`FILETIME` debe ser dos `DWORD`.** Un `c_uint64` desplaza 4 bytes todo
+   `BY_HANDLE_FILE_INFORMATION` y la identidad se compara contra basura.
 
 ## 3. Evidencia experimental
 
-Ver ADR 0017 §3 para las tablas completas. Resumen de lo que discrimina:
+### 3.1 Exclusión frente a escritores (garantía independiente)
 
-- **La exclusión se establece y es total contra mutación**: escritura, `DeleteFile`,
-  `ReplaceFileW` y `MoveFileEx` externos fallan; también por alias hardlink.
-- **`os.replace` es incompatible con la exclusión**: obliga a cambiar el protocolo
-  de escritura, no es una preferencia.
-- **El rename-away es peor que la ventana que cierra**: bajo un creador externo,
-  40/40 victorias del agresor y 27/40 transiciones rotas.
-- **La escritura in-place sin `DELETE` se observa rasgada**: 72 lecturas truncadas
-  sobre 109.270. Con `DELETE` en el acceso propio, 0 sobre 74.689 — imposible por
-  construcción, no improbable.
-- **La adquisición puede fallar y el reintento lo resuelve**: 291/300 fallos sin
-  reintento, 0/300 con 40 reintentos de 5 ms.
+Con `GENERIC_READ|GENERIC_WRITE|DELETE` + `FILE_SHARE_NONE`: escritura, `DeleteFile`,
+`ReplaceFileW` y `MoveFileEx` externos fallan con 32 o 5; también por alias
+hardlink. Segunda exclusión: `EXCLUSION_NOT_ESTABLISHED`. Liberación tras muerte
+abrupta: correcta.
+
+### 3.2 No observabilidad (la garantía que estaba mal enunciada)
+
+| Configuración | Lector compatible | Lector CRT | Lecturas rasgadas |
+|---|---|---|---|
+| `GR\|GW\|DEL` + `share READ` (anterior) | **abre** | bloqueado | **11.038** |
+| `GR\|GW\|DEL` + `share 0` (actual) | bloqueado | bloqueado | **0** (no puede abrir) |
+
+La primera medición de esta ventana daba cero porque el corte caía **dentro del
+prefijo común** (89 de 110 bytes son idénticos antes y después del cambio de
+`gamePath`). Corregido el corte para que caiga después de la divergencia, la
+lectura rasgada apareció. Un experimento mal parametrizado casi confirma una
+afirmación falsa.
+
+### 3.3 Costo de `FILE_SHARE_NONE`
+
+| Costo | Medición |
+|---|---|
+| adquisición frente a lector compatible | 195/200 con 1 intento; **200/200 con 40 reintentos de 5 ms** |
+| `os.stat` por ruta | funciona |
+| escritura propia por el handle | funciona |
+| liberación al cerrar | correcta |
+
+### 3.4 Protocolo de escritura
+
+- `os.replace` es incompatible con la exclusión → la escritura es in-place.
+- Rename-away bajo creador externo: **40/40 victorias del agresor, 27/40
+  transiciones rotas**. In-place: **0/123.910**.
+
+### 3.5 Estados alcanzables al morir el escritor
+
+Matando un proceso real en cada punto (rig `exp9_death_points`):
+
+| Muerte | Estado en disco |
+|---|---|
+| antes de `WriteFile` | idéntico al snapshot |
+| durante `WriteFile` | `nuevo[:k] + previos[k:]`, mismo tamaño |
+| tras `SetEndOfFile` | completo |
+
+`FlushFileBuffers` no cambia lo observable: sólo la durabilidad.
 
 ## 4. Decisión de arquitectura
 
 `dwDesiredAccess = GENERIC_READ | GENERIC_WRITE | DELETE`,
-`dwShareMode = FILE_SHARE_READ`, escritura **in-place por el handle retenido**, con
-la huella del **snapshot durable** verificada contra el mismo handle antes de
-mutar. Detalle y alternativas descartadas en ADR 0017 §4–§6.
-
-La consecuencia que hubo que pagar: la escritura deja de ser atómica, y eso
-**rompió el discriminador de escritura ajena** de `binder_recovery`, que estaba
-calibrado para un reemplazo atómico. Un archivo a medio escribir no es ni el
-snapshot ni la previsión, así que se clasificaba como ajeno y el rollback **se
-negaba a restaurarlo**. Se corrigió reconociendo las dos formas de una escritura
-propia a medias. Lo detectó el test de escritura parcial.
+`dwShareMode = 0`, escritura **in-place por el handle retenido**, huella del
+**snapshot durable** verificada contra el mismo handle antes de mutar. Detalle y
+alternativas descartadas en ADR 0017 §4–§6.
 
 ## 5. Archivos y tests
 
-**Nuevos**
+**Nuevos en esta revisión**
 
 | Archivo | Qué aporta |
 |---|---|
-| `sky_claw/local/frozen_runtime/mo2_ini_exclusion.py` | El gate: tres veredictos, identidad de grado handle, rechazo de reparse points, reintento acotado |
-| `tests/test_frozen_runtime_p5c2_mo2_exclusion.py` | 24 casos: concurrencia interproceso real, liberación, integridad, equivalencia de hermanos, ancla AST de read-only |
-| `scripts/p7_readonly_inspection.py` | Inspección READ-ONLY de P7 con redacción de rutas y matriz P7-A..G |
-| `docs/adr/0017-mo2-exclusion-gate.md` | La decisión y su evidencia |
+| `tests/test_p7_inspector_output.py` | 9 casos de salida del inspector: INI, `active.json`, Clone, Managed Source, existente, junction, destino válido, carrera, CLI |
 
-**Modificados**
+**Modificados en esta revisión**
 
 | Archivo | Cambio |
 |---|---|
-| `mo2_ini_escritura.py` | `actualizar_game_path_por_handle` (hermano del escritor por ruta) + `Protocol IniRetenido` |
-| `runtime_clone_binder.py` | Adquiere el gate tras el snapshot, verifica la huella del snapshot por el handle, escribe por el handle; `BinderExclusionError`; `exclusion` en `BinderResult` |
-| `binder_recovery.py` | `_es_prefijo_rasgado`: reconoce una escritura propia a medias |
-| `surface_census.py` | `ANCLAS_DE_SUPERFICIE["mo2_ini"]` incluye el escritor por handle (lo exigió el ancla AST) |
-| `tests/…p5c1_mo2_clone_binder.py` | Casos 10, 11 y 15 re-anclados al escritor por handle; el 11 pasa a probar escritura **parcial** real |
-| `tests/…p5c1_binder_integrity.py` | Tres casos re-anclados; el de escritura ajena mueve la inyección a la ventana que ahora existe (post-liberación) |
+| `mo2_ini_exclusion.py` | `COMPARTICION_EXCLUSIVA = 0`; docstring corregido con la medición |
+| `binder_recovery.py` | `_es_prefijo_rasgado` → `_es_escritura_propia_interrumpida` (endurecido); `_preservar_evidencia` |
+| `p7_readonly_inspection.py` | `validar_destino_informe` + `escribir_informe_exclusivo` (`O_EXCL`) |
+| `tests/…p5c2_mo2_exclusion.py` | 4 tests de lector, ancla de compartición, ancla AST reescrita, 6 tests de recuperación |
+| `tests/…p5c1_mo2_clone_binder.py` | Caso 11 pasa a inyectar el estado intermedio REAL (sin truncar) |
 
-**Anclas que se agregaron** (para que la clase de defecto no vuelva):
+**Anclas que se agregaron**
 
-- `test_los_dos_escritores_producen_los_mismos_bytes`: los dos caminos de escritura
-  se comparan contra `prever_bytes` en cinco casos. Un tercer escritor que no la
-  use rompe el test.
-- `test_los_escritores_del_ini_estan_enumerados`: igualdad literal del conjunto de
-  escritores.
-- `test_el_binder_no_escribe_el_ini_por_ruta`: el binder no puede volver al camino
-  sin exclusión.
-- `test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes`: ancla AST.
-- `ANCLAS_DE_SUPERFICIE` con el escritor nuevo: el censo por AST vuelve a ver al
-  binder.
+- `test_ningun_lector_externo_abre_mientras_se_retiene` (4 parametrizaciones):
+  falla con `share READ`.
+- `test_la_comparticion_propia_es_ninguna`: la compartición no puede volver a
+  conceder nada.
+- `test_una_escritura_a_medias_no_es_observable`.
+- `test_no_atribuye_un_archivo_truncado` y `…_un_corte_dentro_del_prefijo_comun`.
+- `test_la_evidencia_se_conserva_cuando_la_autoria_no_se_establece`.
+- El ancla AST del inspector ya **no** exime `json_salida.write_text`; exige que
+  la única apertura de escritura sea `os.open` con `O_EXCL` dentro del escritor
+  validado.
 
 ## 6. Regresiones y resultados
 
-Comparación **contra el baseline `9fbf0b2f`**, cada archivo con un directorio
-temporal propio y recién creado:
+Cada archivo con un directorio temporal propio y recién creado.
 
-| Archivo | Baseline | Esta rama |
+| Archivo | Baseline `9fbf0b2f` | Esta rama |
 |---|---|---|
 | `p1` … `p5a` (31 archivos) | verde | verde |
-| `p4_root_lock` | **2 failed**, 52 passed | **2 failed**, 52 passed (idéntico) |
+| `p4_root_lock` | 2 failed, 52 passed | 2 failed, 52 passed (idéntico, preexistente) |
 | `p5b_durable_authority` | 35 passed | 35 passed |
 | `p5c_binder_preflight` | 57 passed | 57 passed |
 | `p5c1_binder_integrity` | 38 passed | 38 passed |
 | `p5c1_ini_escritura` | 34 passed | 34 passed |
 | `p5c1_mo2_clone_binder` | 20 passed | 20 passed |
 | `p5c1_superficies` | 18 passed | 18 passed |
-| `p5c2_mo2_exclusion` (nuevo) | — | 23 passed, 1 skipped |
+| `p5c2_mo2_exclusion` | — | 33 passed, 1 skipped |
+| `p7_inspector_output` (nuevo) | — | 9 passed |
 
-Los 2 fallos de `p4_root_lock` (`test_rl05_lockfile_no_vive_en_temp`,
-`test_rl17_canonical_root_representaciones_equivalentes`) **fallan igual en
-`origin/main` sin ningún cambio aplicado**: son preexistentes y ajenos a este
-trabajo. No se tocan acá; quedan registrados para no confundirlos con una
-regresión de P5-C2.
+Los 2 fallos de `p4_root_lock` (`test_rl05`, `test_rl17`) **fallan igual en
+`origin/main`**: preexistentes, ajenos a este trabajo.
 
-Ruff y Mypy limpios sobre los archivos tocados. `mypy` **sí** cubre el módulo
-nuevo: `sky_claw.local.frozen_runtime.*` está en la lista de opt-in estricto, no
-en la de `ignore_errors`.
+**Nota metodológica.** En esta máquina hay un hook de borrado que impide eliminar
+el `--basetemp`; dos corridas que lo comparten producen cientos de fallos de
+infraestructura (se observaron 129 en el baseline sin cambios aplicados). Todas
+las cifras usan un directorio nuevo por archivo.
 
-**CI del PR #851 sobre el commit de código `e6c58cd0`** (run `41306633742`):
-15 jobs `pass`, 0 `fail`. Incluye Lint Ruff py3.11/3.12, Mypy py3.11/3.12,
-Security Scan, CodeQL, **POSIX Core py3.11** (el módulo importa y sus tests no
-dependientes de Win32 corren fuera de Windows) y **Tests / windows-latest
-py3.11 y py3.12**, que son los que ejercitan la exclusión real.
+**Disciplina RED.** Cada ancla nueva se probó **revirtiendo la corrección**:
 
-**Nota metodológica, porque afectó la lectura de los resultados.** En esta máquina
-hay un hook de borrado que impide eliminar el directorio de `--basetemp`. Cuando
-dos corridas comparten `--basetemp`, la segunda no puede recrearlo y **cientos de
-tests fallan por infraestructura**, no por código: se observaron 129 fallos en el
-baseline sin ningún cambio aplicado. Todas las cifras de la tabla usan un
-directorio nuevo por archivo. Cualquier comparación futura tiene que hacer lo
-mismo o va a medir el hook.
+| Mutante | Tests que mata |
+|---|---|
+| `COMPARTICION_EXCLUSIVA = FILE_SHARE_READ` | 3 (lector compatible, ancla de compartición, escritura a medias) |
+| quitar `O_EXCL` de las banderas | 1 (ancla AST del inspector) |
 
-**Un caso queda `skip`**: la creación de symlinks requiere privilegio que esta
-sesión no tiene (`ERROR_PRIVILEGE_NOT_HELD`, 1314). El gate **rechaza** reparse
-points por atributos y el test lo verifica cuando puede crearlos; el
-comportamiento de un INI enlazado queda `INDETERMINATE`, que nunca autoriza.
+El segundo mutante **sobrevivió** en el primer intento: el assert tenía un
+fallback `or "O_EXCL" in fuente` que se satisfacía con la mención en el
+docstring. Se corrigió para mirar la asignación de banderas real.
 
 ## 7. Cobertura de lanzadores
-
-Censo de las entradas de Sky-Claw capaces de iniciar MO2 (y por lo tanto SKSE):
 
 | Entrada | Ruta | Alcanza |
 |---|---|---|
 | `Mo2VfsClient.launch_game` | `sky_claw/local/mo2/vfs.py:477` | `ModOrganizer.exe -p <profile> moshortcut://SKSE` |
 | Tool de agente `launch_game` | `sky_claw/app/agent/tools/system_tools.py:528` | delega en la anterior |
 | Dispatcher de la GUI | `SupervisorAgent` → `tool_dispatcher` | delega en la tool anterior |
-| Bridge de MO2 (`launch_worker`) | `sky_claw/local/mo2/plugin_bundle/…/runtime.py` | lanza *workers dentro* de MO2, no MO2 |
+| Bridge de MO2 (`launch_worker`) | `…/skyclaw_bridge/runtime.py` | lanza *workers dentro* de MO2 |
 
-**Hay un punto de coordinación común** para los lanzamientos iniciados por
-Sky-Claw: `Mo2VfsClient.launch_game`, alcanzado desde dos superficies (GUI y
-agente LLM). Un gate ahí cubriría el 100 % de los lanzamientos propios.
+Hay un punto de coordinación común para los lanzamientos **propios**
+(`Mo2VfsClient.launch_game`), alcanzado desde dos superficies. No cubre doble clic
+en el Explorador, autostart de MO2 ni Steam — por eso la garantía **no** se apoya
+en controlar lanzadores: se apoya en que el archivo no se puede leer ni escribir
+mientras la transición lo retiene, venga el intento de donde venga.
 
-**Y ese punto no alcanza**, que es la distinción que el brief pedía no confundir:
-un doble clic en el Explorador, el autostart de MO2 o Steam no pasan por ahí. Por
-eso la garantía **no** se apoya en controlar lanzadores: se apoya en que el
-archivo no se puede mutar mientras la transición lo retiene, venga el intento de
-donde venga. La cobertura de lanzadores queda como defensa en profundidad y como
-material de P7, no como el mecanismo.
+## 8. Riesgos residuales
 
-## 8. Riesgos abiertos
-
-1. **El modo de compartición real de MO2 no está medido.** Lo medido es el patrón
-   `share = READ|WRITE` (el del CRT de Python y el documentado para
-   `QFSFileEngine`). Si MO2 abriera su INI con `FILE_SHARE_DELETE`, un lector
-   podría observar el archivo durante la transición. Requisito de P7.
+1. **El modo de compartición real de MO2 no está medido.** Con `share = 0` da
+   igual: cualquier lector queda bloqueado. Lo que falta medir es si MO2 **falla
+   de forma visible** al no poder leer su INI en la ventana, en vez de persistir
+   una configuración por defecto. Requisito de P7.
 2. **Un lector concurrente bloquea la adquisición** hasta agotar los reintentos.
-   Fail-closed, pero es una negativa, no un éxito.
-3. **La escritura no es atómica.** La recuperación depende de `binder_recovery`;
-   si el registro durable se corrompe, un INI a medio escribir no tiene vuelta.
-   Además, el predicado de escritura rasgada cubre las dos ventanas de crash
-   realistas pero no una escritura parcial que hubiera extendido el archivo
-   dejando cola sin inicializar (ADR 0017 §5.1, «límite conocido»).
-4. **Reparse points**: `INDETERMINATE` por falta de privilegio para crear el caso.
-5. **`POWER_LOSS_GUARANTEE` sigue en `NOT_CLAIMED`.** `FlushFileBuffers` vuelca el
+   Fail-closed, con diagnóstico. Medido: 0 fallos con 40 reintentos.
+3. **La escritura no es atómica.** La recuperación depende de `binder_recovery`.
+   El predicado cubre el único estado intermedio alcanzable; cualquier otro se
+   trata como ajeno, se conserva como evidencia y **requiere intervención del
+   propietario**.
+4. **Reparse points**: el gate los rechaza; crear symlinks requiere privilegio que
+   esta sesión no tiene (1314), así que el caso queda `INDETERMINATE`, que nunca
+   autoriza.
+5. **`POWER_LOSS_GUARANTEE = NOT_CLAIMED`.** `FlushFileBuffers` vuelca el
    archivo; no hay `fsync` de directorio ni WAL.
-6. **El hook de borrado del entorno** hace que `--basetemp` compartido produzca
-   falsos rojos masivos. No es del repo, pero envenena cualquier medición.
+6. **El hook de borrado del entorno** envenena cualquier medición que comparta
+   `--basetemp`.
 
 ## 9. Requisitos para la sesión P7
 
 1. Correr `scripts/p7_readonly_inspection.py` sobre el rig real y archivar el JSON
-   **con rutas redactadas** (por defecto). Sin `--mostrar-rutas` en artefactos
-   remotos.
-2. Medir el `dwShareMode` con el que MO2 abre `modorganizer.ini` (sonda de sólo
-   lectura mientras MO2 está abierto) y confirmar que la transición no le impide
-   arrancar cuando la ventana está cerrada.
-3. Confirmar que un lector bloqueado durante la ventana produce un error visible
-   de MO2 y **no** una configuración por defecto persistida.
-4. Ejecutar la matriz P7-A..P7-G. Ninguna se ejecutó en esta sesión.
-5. No habilitar `EMISION_PRODUCTIVA_HABILITADA`. No hay wiring productivo.
+   **con rutas redactadas** (por defecto).
+2. Confirmar que MO2, al no poder leer su INI en la ventana, produce un error
+   visible y **no** persiste una configuración por defecto.
+3. Ejecutar la matriz P7-A..P7-G. Ninguna se ejecutó en esta sesión.
+4. No habilitar `EMISION_PRODUCTIVA_HABILITADA`. No hay wiring productivo.
 
 ## 10. Dictamen
 
 ```text
-MO2_EXCLUSION_SYNTHETIC_READY
-P7_READONLY_PREPARED
+P5C2_SYNTHETIC_READY_FOR_MERGE_REVIEW
 ```
 
-`MO2_EXCLUSION_SYNTHETIC_READY`: la exclusión de mutación se establece, se
-verifica y se libera correctamente en rig Windows con procesos externos reales;
-cierra la ventana TOCTOU entre comprobar y mutar porque ambas operaciones usan el
-mismo handle; y está integrada al binder respetando su journal y sus locks, con la
-activación productiva deshabilitada.
+La exclusión de mutación y la no observabilidad del contenido se establecen,
+verifican y liberan en rig Windows con procesos externos reales; el gate está
+integrado al binder respetando su journal y sus locks, con la activación
+productiva deshabilitada. El inspector P7 no puede escribir sobre las superficies
+que audita.
 
-`P7_READONLY_PREPARED`: existe una herramienta de inspección read-only, anclada
-por AST, con redacción de rutas y con la matriz P7-A..P7-G emitida como contrato
-de la sesión siguiente.
-
-Lo que **no** se declara: exclusión demostrada contra MO2 real (sólo contra el
-patrón de compartición que MO2 usa por tecnología), `POWER_LOSS_GUARANTEE`,
-`QT_QSETTINGS_EQUIVALENCE`, ni que Steam permita arrancar una versión downgrade.
+Lo que **no** se declara: comportamiento de MO2 real ante la ventana (requisito de
+P7), `POWER_LOSS_GUARANTEE`, `QT_QSETTINGS_EQUIVALENCE`, ni que Steam permita
+arrancar una versión downgrade. Ningún workflow `skipped` se cuenta como revisión
+aprobada.

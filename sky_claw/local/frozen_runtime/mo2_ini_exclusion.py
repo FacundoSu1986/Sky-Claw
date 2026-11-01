@@ -73,16 +73,34 @@ muerte del proceso a mitad deja el INI truncado. Eso NO queda descubierto —
 restaura superficie por superficie— y por eso este módulo no agrega un mecanismo
 de recuperación propio.
 
-Lectores: por qué se bloquean a propósito
------------------------------------------
-Con ``DELETE`` en el acceso propio, un lector que no declare
-``FILE_SHARE_DELETE`` no puede abrir el archivo. Eso incluye al ``open`` del CRT
-(medido: ``PermissionError``), es decir a Python y al patrón de Qt. Es
-deliberado: con la configuración sin ``DELETE`` los lectores sí abren, y se
-midieron **72 lecturas rasgadas sobre 109.270** durante escrituras in-place. Un
-MO2 que arrancara en esa ventana leería un INI truncado. Con ``DELETE`` la
-lectura rasgada no es improbable: es imposible por construcción, porque no hay
-ningún lector que pueda abrir el archivo mientras se escribe.
+Lectores: por qué la compartición es NINGUNA
+-------------------------------------------
+La primera versión de este módulo concedía ``FILE_SHARE_READ``, con el argumento
+de que así el INI seguía siendo legible y de que, con ``DELETE`` en el acceso
+propio, la lectura rasgada era «imposible por construcción». **Esa afirmación era
+falsa**, y se corrigió midiendo.
+
+La validación de compartición es **bidireccional**: el acceso pedido tiene que
+estar contenido en el share existente, y el acceso existente tiene que estar
+contenido en el share pedido. Con ``share = READ`` del lado del tenedor, un
+lector que pida ``GENERIC_READ`` y conceda ``READ|WRITE|DELETE`` satisface las dos
+direcciones y abre. Medido: ese lector coexistió y capturó **11.038 lecturas
+rasgadas** mientras el tenedor escribía in-place con la ventana real ensanchada
+(``WriteFile`` sin ``SetEndOfFile``). Un MO2 que concediera ``DELETE`` habría
+leído un INI a medias.
+
+Con ``COMPARTICION_EXCLUSIVA = 0`` ningún proceso externo abre el archivo, ni
+para leer. El mismo lector recibe ``ERROR_SHARING_VIOLATION`` (32) y la escritura
+a medias deja de ser observable. Ésa es la razón por la que el share es 0, y no
+una preferencia estética.
+
+Las dos garantías quedan separadas a propósito, y se prueban por separado:
+
+- **exclusión frente a escritores**: nadie escribe, trunca, borra ni renombra;
+- **no observabilidad**: nadie lee un estado intermedio.
+
+La primera no implica la segunda —era exactamente el error de la versión
+anterior— y por eso tienen tests distintos.
 
 Consecuencia operativa: mientras el handle está retenido, el código que lee el
 INI por ruta falla. Por eso el binder lee y escribe por el handle y libera antes
@@ -136,7 +154,6 @@ __all__ = [
 _GENERIC_READ: Final = 0x80000000
 _GENERIC_WRITE: Final = 0x40000000
 _DELETE: Final = 0x00010000
-_FILE_SHARE_READ: Final = 0x00000001
 _OPEN_EXISTING: Final = 3
 _FILE_ATTRIBUTE_NORMAL: Final = 0x00000080
 _FILE_ATTRIBUTE_REPARSE_POINT: Final = 0x00000400
@@ -158,9 +175,28 @@ _ERROR_PATH_NOT_FOUND: Final = 3
 #: renombrar y borrar. Ver el docstring del módulo.
 ACCESO_EXCLUSIVO: Final = _GENERIC_READ | _GENERIC_WRITE | _DELETE
 
-#: Compartición propia. Ni ``FILE_SHARE_WRITE`` ni ``FILE_SHARE_DELETE``:
-#: conceder cualquiera de los dos reabre la ventana.
-COMPARTICION_EXCLUSIVA: Final = _FILE_SHARE_READ
+#: Compartición propia: **ninguna**. Ni ``FILE_SHARE_READ``, ni ``WRITE``, ni
+#: ``DELETE``.
+#:
+#: ``FILE_SHARE_READ`` se usó primero, con el argumento de que así el INI seguía
+#: siendo legible. Ese argumento era falso en el punto que importa: la validación
+#: de compartición es BIDIRECCIONAL, así que un lector que pida ``GENERIC_READ``
+#: con ``share = READ|WRITE|DELETE`` satisface las dos direcciones y **sí abre**
+#: aunque el tenedor sólo conceda ``READ``. Medido: ese lector coexistió y observó
+#: **11.038 lecturas rasgadas** durante una escritura in-place ensanchada en su
+#: ventana real (``WriteFile`` sin ``SetEndOfFile``).
+#:
+#: Con ``0`` ningún proceso externo puede abrir el archivo —ni para leer—, así
+#: que la escritura a medias deja de ser observable. Medido: el mismo lector
+#: recibe ``ERROR_SHARING_VIOLATION`` (32).
+#:
+#: Costo medido, y es acotado: la adquisición falla cerrado mientras un lector de
+#: esos tenga el archivo abierto (195/200 adquisiciones con un lector en bucle).
+#: El reintento acotado ya existente lo resuelve: 200/200 con 40 reintentos de
+#: 5 ms. ``os.stat`` por ruta sigue funcionando porque en Windows usa
+#: ``GetFileAttributesExW`` y no abre handle, así que la comprobación de
+#: identidad del gate no se rompe.
+COMPARTICION_EXCLUSIVA: Final = 0
 
 #: Códigos que significan «no pude tomar la exclusión», no «no sé».
 _ERRORES_DE_CONTENCION: Final = frozenset(

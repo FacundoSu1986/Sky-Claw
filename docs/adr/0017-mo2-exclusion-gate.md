@@ -118,8 +118,13 @@ construcción.
 
 ```text
 dwDesiredAccess = GENERIC_READ | GENERIC_WRITE | DELETE
-dwShareMode     = FILE_SHARE_READ
+dwShareMode     = 0            (FILE_SHARE_NONE)
 ```
+
+> **Corrección (auditoría del PR #851).** La primera versión usaba
+> `FILE_SHARE_READ` y afirmaba que, con eso, la lectura rasgada era «imposible
+> por construcción». **Era falso.** Ver §3.7: un lector compatible abre igual y
+> observa la escritura a medias. La compartición es `0` desde esta corrección.
 
 Medido con el handle retenido:
 
@@ -132,6 +137,9 @@ Medido con el handle retenido:
 | `ReplaceFileW` externo | `ERROR_SHARING_VIOLATION` (32) |
 | escritura por un alias **hardlink** del mismo archivo | `ERROR_SHARING_VIOLATION` (32) |
 | lectura estilo CRT (`open()` de Python) | bloqueada |
+| lectura **compatible** (`GR` + `share RWD`) | **bloqueada** (con `FILE_SHARE_READ` abría) |
+| apertura sólo de atributos (`FILE_READ_ATTRIBUTES`) | abre, pero `ReadFile` da `ACCESS_DENIED` (5) y 0 bytes |
+| `os.stat` por ruta | funciona (`GetFileAttributesExW`, no abre handle) |
 | segunda exclusión del mismo archivo | `EXCLUSION_NOT_ESTABLISHED` |
 | liberación tras muerte abrupta del tenedor | liberada (el kernel cierra el handle) |
 
@@ -139,8 +147,39 @@ La exclusión es sobre el **objeto de archivo**, no sobre el nombre: un hardlink
 del mismo archivo también queda bloqueado, porque el chequeo de compartición es
 por objeto.
 
-Bajo agresores concurrentes, 300 transiciones con un lector martillando:
-**74.689 lecturas completas, 551 bloqueadas, 0 rasgadas, 300/300 transiciones**.
+### 3.7 La lectura rasgada SÍ era observable con `FILE_SHARE_READ`
+
+La validación de compartición es **bidireccional**: el acceso pedido tiene que
+estar contenido en el share existente *y* el acceso existente en el share pedido.
+Con `share = READ` del lado del tenedor, un lector que pida `GENERIC_READ` y
+conceda `READ|WRITE|DELETE` satisface las dos direcciones y **abre**.
+
+Medido con la ventana real de la escritura ensanchada (`WriteFile` sin
+`SetEndOfFile`, con el corte **después** del primer byte divergente):
+
+| Configuración del tenedor | Lector compatible | Lector CRT | Lecturas rasgadas |
+|---|---|---|---|
+| `GR\|GW\|DEL` + `share READ` | **abre** | bloqueado | **11.038** |
+| `GR\|GW\|DEL` + `share 0` | bloqueado | bloqueado | **0** (no puede abrir) |
+| `GR\|GW` + `share READ` | abre | abre | 11.739 |
+
+Un corte **antes** de la divergencia no cambia ningún byte: el prefijo común de
+un INI antes y después del cambio de `gamePath` mide 89 de 110 bytes. La primera
+medición cortaba en `len//3 = 38` —dentro del prefijo— y por eso daba cero
+rasgadas. Era un artefacto del corte, no una propiedad del protocolo.
+
+### 3.8 Costo de `FILE_SHARE_NONE`, medido
+
+| Costo | Medición |
+|---|---|
+| adquisición frente a un lector compatible | 195/200 con 1 intento; **200/200 con 40 reintentos de 5 ms** |
+| `os.stat` por ruta mientras se retiene | funciona |
+| lectura por ruta (Python) | falla (ya fallaba con `READ`) |
+| escritura propia por el handle | funciona |
+| liberación al cerrar | correcta |
+
+El único costo real es una negativa transitoria de adquisición, que el reintento
+acotado ya existente absorbe. Por eso se adopta.
 
 ### 3.6 La adquisición puede fallar, y el reintento lo resuelve
 
@@ -183,31 +222,58 @@ ninguno de los dos, así que se clasificaba como «lo escribió un tercero» y e
 rollback **se negaba a restaurarlo**, dejando el INI truncado. Lo detectó el test
 de escritura parcial, no una revisión.
 
-Se corrige reconociendo las dos formas que puede tomar una escritura propia a
-medias (`nuevo[:n]`, y `nuevo[:n] + previos[n:]` cuando el truncado no ocurrió).
-No debilita la protección: para caer ahí, un tercero tendría que escribir
-exactamente un prefijo del contenido que esta transición iba a escribir, y en ese
-caso restaurar también es correcto.
+Se corrige reconociendo el estado intermedio de la escritura por handle.
 
-**Límite conocido del predicado.** Cubre las dos ventanas de crash realistas de
-una escritura de ~150 B: entre `WriteFile` y `SetEndOfFile`, y una escritura
-parcial que no truncó. No cubre una escritura parcial que además hubiera
-extendido el archivo dejando cola sin inicializar: ese estado se clasificaría
-como ajeno y no se restauraría. Se deja declarado en lugar de ampliar el
-predicado con una heurística de «cola en ceros», porque una heurística así
-clasificaría como propia una escritura ajena de ceros. Es un riesgo aceptado y
-medible, no una garantía.
+**El predicado se calibró matando procesos reales**, no construyendo bytes a mano
+(rig `exp9_death_points`). Matando el escritor en cada punto, los desenlaces
+observados son exactamente tres:
 
-### 5.2 Mientras dura la transición, el INI no es legible por el código que lo lee por ruta
+| Muerte | Estado en disco |
+|---|---|
+| antes de `WriteFile` | idéntico al snapshot |
+| durante `WriteFile` | `nuevo[:k] + previos[k:]`, mismo tamaño que el snapshot |
+| tras `SetEndOfFile` | completo (`nuevo`) |
 
-`open()` del CRT pide `FILE_SHARE_READ|FILE_SHARE_WRITE` y no concede `DELETE`,
-así que falla contra un handle que retiene `DELETE`. Consecuencia operativa: el
-binder lee y escribe por el handle y libera **antes** de los readbacks por ruta.
-El código existente sigue funcionando fuera de la sección crítica.
+`FlushFileBuffers` no cambia lo observable: sólo la durabilidad, que sigue en
+`POWER_LOSS_GUARANTEE = NOT_CLAIMED`.
+
+Por eso se acepta **un solo** estado intermedio, con dos condiciones que lo hacen
+atribuible: mismo tamaño que el snapshot (el truncado no ocurrió) y corte
+**estrictamente posterior** al primer byte divergente. Un corte anterior a la
+divergencia no modifica ningún byte —el archivo seguiría siendo el snapshot— y un
+estado que sólo coincide en el prefijo común es indistinguible de un truncado
+ajeno.
+
+La versión anterior aceptaba además `nuevo[:n]` (archivo truncado). Se quitó:
+`SetEndOfFile` corre sólo después de una escritura completa, así que ese estado
+**no es alcanzable** por este escritor y atribuírselo sería apropiarse del
+truncado de un tercero.
+
+**Cuando la autoría no se establece, no se elige: se conserva evidencia y se pide
+intervención del propietario.** El rollback copia los bytes actuales a
+`<storage>/recovery_evidence/<transition_id>/<superficie>-<sha256>.bin` antes de
+abstenerse, así que ni lo viejo (el snapshot) ni lo nuevo (la escritura ajena) se
+pierden.
+
+### 5.2 Mientras dura la transición, el INI no es legible por NADIE
+
+Con `dwShareMode = 0` ningún proceso externo abre el archivo para leer contenido:
+ni `open()` del CRT, ni un lector que conceda `READ|WRITE|DELETE`. La única
+apertura que Windows sigue permitiendo es la de **atributos**
+(`FILE_READ_ATTRIBUTES`), y medido: sobre ese handle `ReadFile` falla con
+`ACCESS_DENIED` (5) y devuelve 0 bytes.
+
+La garantía se enuncia sobre el **contenido**, no sobre la apertura. Decir «ningún
+proceso puede abrir el archivo» sería falso por ese caso, y una afirmación que el
+propio sistema refuta no sirve como garantía.
+
+Consecuencia operativa: el binder lee y escribe por el handle y libera **antes**
+de los readbacks por ruta. El código existente sigue funcionando fuera de la
+sección crítica.
 
 Costo asumido: si MO2 arranca justo en la ventana, no puede leer su INI y falla
-de forma ruidosa. Es preferible a leer un INI truncado en silencio, que es lo que
-pasaría con la variante sin `DELETE`.
+de forma ruidosa. Es preferible a leer un INI a medias en silencio —que es lo que
+pasaba con `FILE_SHARE_READ` y motivó la corrección de §3.7—.
 
 ### 5.3 Un lector concurrente puede impedir la adquisición
 

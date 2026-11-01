@@ -28,7 +28,7 @@ import pytest
 
 from sky_claw.local.frozen_runtime import mo2_ini_escritura as escritura
 from sky_claw.local.frozen_runtime import mo2_ini_exclusion as exclusion
-from sky_claw.local.frozen_runtime.binder_recovery import _es_prefijo_rasgado
+from sky_claw.local.frozen_runtime.binder_recovery import _es_escritura_propia_interrumpida
 
 SOLO_WINDOWS = pytest.mark.skipif(os.name != "nt", reason="la exclusión de archivos compartidos es de Windows")
 
@@ -300,8 +300,7 @@ def test_un_lector_externo_no_puede_observar_el_archivo_mientras_se_escribe(
 
     Es la razón por la que el acceso propio incluye ``DELETE``: con la variante
     sin ``DELETE`` los lectores SÍ abren y se midieron 72 lecturas rasgadas sobre
-    109.270. Bloquear al lector convierte la lectura rasgada de improbable en
-    imposible por construcción.
+    109.270.
     """
     ini = _ini_sintetico(tmp_path)
     gate = exclusion.adquirir_exclusion_ini(ini)
@@ -319,6 +318,189 @@ def test_un_lector_externo_no_puede_observar_el_archivo_mientras_se_escribe(
         assert "BLOQUEADO" in lector.stdout, f"un lector externo pudo abrir el archivo: {lector.stdout}"
     finally:
         gate.cerrar()
+
+
+#: Sonda autocontenida: usa ``ctypes`` directamente y NO importa nada del repo
+#: ni del rig. Un test que depende de un módulo del rig externo mide el rig.
+_ABRE_LECTOR = r"""
+import ctypes, ctypes.wintypes as wt, sys
+
+k = ctypes.WinDLL("kernel32", use_last_error=True)
+k.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p, wt.DWORD, wt.DWORD, wt.HANDLE]
+k.CreateFileW.restype = wt.HANDLE
+k.CloseHandle.argtypes = [wt.HANDLE]
+k.CloseHandle.restype = wt.BOOL
+
+acceso = int(sys.argv[2], 0)
+compartir = int(sys.argv[3], 0)
+h = k.CreateFileW(sys.argv[1], acceso, compartir, None, 3, 0x00000080, None)
+invalido = (1 << (8 * ctypes.sizeof(ctypes.c_void_p))) - 1
+if not h or int(h) == invalido:
+    print(f"BLOQUEADO:{ctypes.get_last_error()}")
+else:
+    k.CloseHandle(h)
+    print("ABRE")
+"""
+
+
+def _lector_intenta_abrir(ini: pathlib.Path, acceso: int, compartir: int) -> str:
+    """Corre la sonda en OTRO proceso y devuelve su veredicto."""
+    proc = _en_subproceso(
+        _ABRE_LECTOR.replace("sys.argv[1]", repr(str(ini)))
+        .replace("sys.argv[2]", repr(hex(acceso)))
+        .replace("sys.argv[3]", repr(hex(compartir)))
+    )
+    salida = proc.stdout.strip()
+    if not salida:
+        raise AssertionError(f"la sonda de lectura no produjo salida: {proc.stderr[-500:]}")
+    return salida
+
+
+#: Abre SÓLO para atributos y después intenta leer contenido. Sirve para separar
+#: «puede abrir» de «puede leer», que no son lo mismo en Windows.
+_LEE_CON_ATRIBUTOS = r"""
+import ctypes, ctypes.wintypes as wt, sys
+
+k = ctypes.WinDLL("kernel32", use_last_error=True)
+k.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p, wt.DWORD, wt.DWORD, wt.HANDLE]
+k.CreateFileW.restype = wt.HANDLE
+k.ReadFile.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.DWORD, ctypes.POINTER(wt.DWORD), ctypes.c_void_p]
+k.CloseHandle.argtypes = [wt.HANDLE]
+
+invalido = (1 << (8 * ctypes.sizeof(ctypes.c_void_p))) - 1
+h = k.CreateFileW(sys.argv[1], 0x0080, 0x00000007, None, 3, 0x00000080, None)
+if not h or int(h) == invalido:
+    print("SIN_HANDLE")
+else:
+    buf = ctypes.create_string_buffer(64)
+    leidos = wt.DWORD(0)
+    ok = k.ReadFile(h, buf, 64, ctypes.byref(leidos), None)
+    if ok:
+        print("LEE:" + str(leidos.value))
+    else:
+        print("NO_LEE:" + str(ctypes.get_last_error()))
+    k.CloseHandle(h)
+"""
+
+
+@SOLO_WINDOWS
+@pytest.mark.parametrize(
+    "nombre, acceso, compartir",
+    [
+        ("CRT_GR_share_RW", 0x80000000, 0x1 | 0x2),
+        ("compatible_GR_share_RWD", 0x80000000, 0x1 | 0x2 | 0x4),
+        ("GR_share_READ", 0x80000000, 0x1),
+        ("GR_share_NONE", 0x80000000, 0x0),
+    ],
+)
+def test_ningun_lector_externo_abre_mientras_se_retiene(
+    tmp_path: pathlib.Path, nombre: str, acceso: int, compartir: int
+) -> None:
+    """NINGUNA combinación de lector abre el archivo mientras el gate lo retiene.
+
+    Este test existe por un defecto real. La primera versión concedía
+    ``FILE_SHARE_READ`` y el ADR afirmaba que la lectura rasgada era «imposible
+    por construcción». Era falso: la validación de compartición es
+    **bidireccional**, así que un lector que pida ``GENERIC_READ`` y conceda
+    ``READ|WRITE|DELETE`` abre igual aunque el tenedor sólo conceda ``READ``. Se
+    midió: ese lector coexistió y capturó **11.038 lecturas rasgadas**.
+
+    El caso ``compatible_GR_share_RWD`` es exactamente el que fallaba. Con
+    ``COMPARTICION_EXCLUSIVA = 0`` los cuatro quedan bloqueados, y la escritura a
+    medias deja de ser observable por construcción — ahora sí.
+    """
+    ini = _ini_sintetico(tmp_path)
+    gate = exclusion.adquirir_exclusion_ini(ini)
+    try:
+        veredicto = _lector_intenta_abrir(ini, acceso, compartir)
+        assert "BLOQUEADO" in veredicto, (
+            f"el lector {nombre} pudo abrir el INI mientras el gate lo retenía: {veredicto}"
+        )
+    finally:
+        gate.cerrar()
+
+
+@SOLO_WINDOWS
+def test_una_apertura_solo_de_atributos_no_puede_leer_el_contenido(tmp_path: pathlib.Path) -> None:
+    """``FILE_READ_ATTRIBUTES`` sí abre con share 0, pero no puede leer bytes.
+
+    Windows permite abrir un archivo para consultar atributos aunque el tenedor
+    no conceda ninguna compartición. Eso NO es una fuga: medido, ``ReadFile``
+    sobre ese handle falla con ``ERROR_ACCESS_DENIED`` (5) y devuelve 0 bytes.
+
+    La garantía se enuncia sobre el CONTENIDO, no sobre la apertura. Decir «ningún
+    proceso puede abrir el archivo» sería falso por este caso, y una afirmación
+    que el propio sistema refuta no sirve como garantía.
+    """
+    ini = _ini_sintetico(tmp_path)
+    gate = exclusion.adquirir_exclusion_ini(ini)
+    try:
+        veredicto = _lector_intenta_abrir(ini, 0x0080, 0x1 | 0x2 | 0x4)
+        # Puede abrir (atributos), pero lo que importa es lo que puede HACER.
+        assert veredicto.startswith(("ABRE", "BLOQUEADO")), veredicto
+        lectura = _en_subproceso(_LEE_CON_ATRIBUTOS.replace("sys.argv[1]", repr(str(ini))))
+        assert "NO_LEE" in lectura.stdout, (
+            f"una apertura sólo de atributos pudo leer el contenido: {lectura.stdout} {lectura.stderr}"
+        )
+    finally:
+        gate.cerrar()
+
+
+def test_la_comparticion_propia_es_ninguna() -> None:
+    """Ancla: la compartición no puede volver a conceder nada.
+
+    Conceder ``FILE_SHARE_READ`` reabre la ventana de lectura rasgada para los
+    lectores que concedan ``DELETE``, y el modo de compartición de MO2 real **no
+    está medido**. Mientras no lo esté, conceder cualquier share es una apuesta.
+    """
+    assert exclusion.COMPARTICION_EXCLUSIVA == 0
+    assert exclusion.ACCESO_EXCLUSIVO & 0x00010000, "el acceso propio tiene que incluir DELETE"
+
+
+@SOLO_WINDOWS
+def test_una_escritura_a_medias_no_es_observable(tmp_path: pathlib.Path) -> None:
+    """El estado intermedio existe, pero ningún lector puede verlo.
+
+    Se escribe de verdad una parte del contenido nuevo SIN ``SetEndOfFile`` —el
+    estado exacto entre ``WriteFile`` y el truncado— y se comprueba que ningún
+    proceso externo puede abrir el archivo para leerlo. La garantía no es «el
+    estado intermedio no existe» (existe) sino «no es observable».
+    """
+    ini = _ini_sintetico(tmp_path)
+    gate = exclusion.adquirir_exclusion_ini(ini)
+    try:
+        original = gate.leer_bytes()
+        nuevo = INI.replace("1.6.1170", "1.5.97").encode("utf-8")
+        corte = _primer_corte_util(original, nuevo)
+        # Estado intermedio real: prefijo nuevo + cola vieja, sin truncar.
+        parcial = nuevo[:corte] + original[corte:]
+        assert parcial != original and parcial != nuevo, "el corte no produjo un estado intermedio real"
+        gate.escribir_bytes(parcial)
+
+        for nombre, acceso, compartir in [
+            ("CRT", 0x80000000, 0x1 | 0x2),
+            ("compatible", 0x80000000, 0x1 | 0x2 | 0x4),
+        ]:
+            veredicto = _lector_intenta_abrir(ini, acceso, compartir)
+            assert "BLOQUEADO" in veredicto, f"el lector {nombre} observó el estado intermedio del INI: {veredicto}"
+    finally:
+        gate.cerrar()
+
+
+def _primer_corte_util(viejo: bytes, nuevo: bytes) -> int:
+    """Primer índice POSTERIOR a la divergencia: un corte antes no cambia nada.
+
+    Es la trampa que hizo que el primer experimento de lectura rasgada midiera
+    cero: el prefijo común de un INI antes y después del cambio de ``gamePath``
+    mide 91 de 116 bytes, así que cortar en ``len//3`` no modificaba ningún byte.
+    """
+    limite = min(len(viejo), len(nuevo))
+    divergencia = 0
+    while divergencia < limite and viejo[divergencia] == nuevo[divergencia]:
+        divergencia += 1
+    if divergencia >= limite:
+        raise AssertionError("los contenidos no divergen: no hay estado intermedio que probar")
+    return min(divergencia + 5, limite)
 
 
 # ---------------------------------------------------------------------------
@@ -448,39 +630,126 @@ def test_verificar_huella_detecta_cambio_previo_a_la_mutacion(tmp_path: pathlib.
 
 
 # ---------------------------------------------------------------------------
-# D — Recuperación de escritura rasgada
+# D — Recuperación de una escritura interrumpida
 # ---------------------------------------------------------------------------
 
-
-def test_deteccion_de_prefijo_rasgado_truncado() -> None:
-    """``nuevo[:n]`` es un estado intermedio de la escritura por handle."""
-    previos = b"AAAAAAAAAA"
-    nuevo = b"BBBBBBBBBBBBBB"
-    assert _es_prefijo_rasgado(previos, nuevo, nuevo[:5]) is True
-    assert _es_prefijo_rasgado(previos, nuevo, nuevo[:1]) is True
-
-
-def test_deteccion_de_prefijo_rasgado_con_cola_vieja() -> None:
-    """Si ``SetEndOfFile`` no llegó a correr, sobrevive la cola del contenido viejo."""
-    previos = b"AAAAAAAAAA"
-    nuevo = b"BBBBBBBBBBBBBB"
-    intermedio = nuevo[:4] + previos[4:]
-    assert len(intermedio) == len(previos)
-    assert _es_prefijo_rasgado(previos, nuevo, intermedio) is True
+#: Prefijo común de un INI antes y después de cambiar `gamePath`: 89 de 110 bytes
+#: en este par. Es el dato que hace que un corte «temprano» no cambie nada.
+_PREVIOS = (
+    b"[General]\r\ngameName=Skyrim Special Edition\r\ngame_edition=Steam\r\n"
+    b"gamePath=@ByteArray(G:////////Modding////////Skyrim_Runtime_1.6.1170_muy_largo)//r//n"
+    b"version=2.5.2\r\n"
+)
+_NUEVO = (
+    b"[General]\r\ngameName=Skyrim Special Edition\r\ngame_edition=Steam\r\n"
+    b"gamePath=@ByteArray(G:////////M////////R)//r//n"
+    b"version=2.5.2\r\n"
+)
 
 
-def test_no_confunde_escritura_ajena_con_prefijo_rasgado() -> None:
-    """Una escritura de un tercero NO se clasifica como propia.
+def _divergencia(previos: bytes, nuevo: bytes) -> int:
+    limite = min(len(previos), len(nuevo))
+    i = 0
+    while i < limite and previos[i] == nuevo[i]:
+        i += 1
+    return i
 
-    Es la mitad que impide que el rollback pise lo que escribió otro. Si esta
-    función devolviera ``True`` para contenido arbitrario, el discriminador de
-    ``binder_recovery`` perdería su razón de ser.
+
+def test_atribuye_el_unico_estado_intermedio_que_el_escritor_deja() -> None:
+    """El estado medido matando un proceso real: prefijo nuevo + cola vieja.
+
+    Rig ``exp9_death_points``: muriendo durante ``WriteFile`` y antes de
+    ``SetEndOfFile`` el archivo queda con el prefijo nuevo y la cola vieja, del
+    mismo tamaño que el snapshot. Es el único estado intermedio alcanzable.
     """
-    previos = b"AAAAAAAAAA"
-    nuevo = b"BBBBBBBBBBBBBB"
-    assert _es_prefijo_rasgado(previos, nuevo, b"ZZZZZZZZZZ") is False
-    assert _es_prefijo_rasgado(previos, nuevo, b"") is False
-    assert _es_prefijo_rasgado(previos, nuevo, nuevo) is False  # escritura completa, no rasgada
+    divergencia = _divergencia(_PREVIOS, _NUEVO)
+    corte = divergencia + 5
+    intermedio = _NUEVO[:corte] + _PREVIOS[corte:]
+    assert len(intermedio) == len(_PREVIOS)
+    assert intermedio != _PREVIOS and intermedio != _NUEVO
+    assert _es_escritura_propia_interrumpida(_PREVIOS, _NUEVO, intermedio) is True
+
+
+def test_no_atribuye_un_corte_dentro_del_prefijo_comun() -> None:
+    """Un corte antes de la divergencia NO cambia ningún byte.
+
+    El archivo sigue siendo el snapshot, así que «interrumpida» no aplica. Si se
+    atribuyera, el rollback reescribiría un archivo que nunca cambió.
+    """
+    divergencia = _divergencia(_PREVIOS, _NUEVO)
+    assert divergencia > 0
+    for corte in (0, 1, divergencia):
+        estado = _NUEVO[:corte] + _PREVIOS[corte:]
+        assert estado == _PREVIOS, f"el corte {corte} no debería cambiar el archivo"
+        assert _es_escritura_propia_interrumpida(_PREVIOS, _NUEVO, estado) is False
+
+
+def test_no_atribuye_un_archivo_truncado() -> None:
+    """``nuevo[:n]`` NO es alcanzable por este escritor, y no se atribuye.
+
+    ``SetEndOfFile`` corre sólo después de una escritura completa, así que un
+    archivo truncado no puede ser el resultado de una muerte a mitad. Atribuirlo
+    sería apropiarse del truncado de un tercero. La versión anterior del
+    predicado lo aceptaba; el rig demostró que ese estado no es alcanzable.
+    """
+    divergencia = _divergencia(_PREVIOS, _NUEVO)
+    for corte in (divergencia + 5, len(_NUEVO) - 1):
+        truncado = _NUEVO[:corte]
+        assert len(truncado) < len(_PREVIOS)
+        assert _es_escritura_propia_interrumpida(_PREVIOS, _NUEVO, truncado) is False
+
+
+def test_no_atribuye_una_escritura_ajena() -> None:
+    """Si un tercero escribió, el rollback no restaura y conserva evidencia."""
+    assert _es_escritura_propia_interrumpida(_PREVIOS, _NUEVO, b"Z" * len(_PREVIOS)) is False
+    assert _es_escritura_propia_interrumpida(_PREVIOS, _NUEVO, b"") is False
+    # Una escritura ajena que casualmente empieza como la nuestra, pero difiere
+    # antes de la divergencia: no es nuestra.
+    ajeno = _PREVIOS[:10] + b"X" + _PREVIOS[11:]
+    assert _es_escritura_propia_interrumpida(_PREVIOS, _NUEVO, ajeno) is False
+
+
+def test_no_atribuye_estados_completos() -> None:
+    """El snapshot y la escritura completa no son «interrumpidas»."""
+    assert _es_escritura_propia_interrumpida(_PREVIOS, _NUEVO, _PREVIOS) is False
+    assert _es_escritura_propia_interrumpida(_PREVIOS, _NUEVO, _NUEVO) is False
+
+
+def test_la_evidencia_se_conserva_cuando_la_autoria_no_se_establece(tmp_path: pathlib.Path) -> None:
+    """Ante autoría indeterminada: ni restaurar ni descartar; dejar rastro.
+
+    El snapshot ya preserva lo viejo. Esto preserva lo NUEVO —lo que escribió el
+    tercero— que de otro modo se perdería en la primera restauración manual.
+    """
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo = tmp_path / "modorganizer.ini"
+    ajeno = b"contenido de un tercero"
+    objetivo.write_bytes(ajeno)
+    superficie = recovery.SuperficieCapturada(
+        kind=recovery.SUPERFICIE_MO2_INI,
+        path=str(objetivo),
+        existed=True,
+        sha256="0" * 64,
+        contenido_b64=__import__("base64").b64encode(_PREVIOS).decode("ascii"),
+    )
+    registro = recovery.RegistroRecuperacion(
+        schema_version=1,
+        transition_id="t-evidence",
+        journal_revision=1,
+        operation="PROMOTION",
+        target_clone_id="clone-1",
+        target_generation_id="gen-1",
+        expected_effective_path="G:////M////R",
+        superficies=(superficie,),
+        fase=recovery.FaseRecuperacion.INI_ESCRITO,
+        created_at_ns=0,
+        updated_at_ns=0,
+    )
+    evidencia = recovery._preservar_evidencia(tmp_path, registro, superficie.kind, objetivo)
+    assert evidencia is not None, "no se conservó evidencia de la escritura ajena"
+    assert evidencia.read_bytes() == ajeno
+    assert evidencia.parent.name == "t-evidence"
 
 
 # ---------------------------------------------------------------------------
@@ -543,36 +812,102 @@ _ESCRITURAS_PROHIBIDAS = frozenset(
 )
 
 
+def _unlink_vive_en_el_escritor_validado(arbol: object) -> bool:
+    """¿El único ``unlink`` del inspector está dentro de ``escribir_informe_exclusivo``?"""
+    import ast
+
+    assert isinstance(arbol, ast.Module)
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.FunctionDef):
+            continue
+        tiene_unlink = any(
+            isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Attribute) and hijo.func.attr == "unlink"
+            for hijo in ast.walk(nodo)
+        )
+        if tiene_unlink and nodo.name != "escribir_informe_exclusivo":
+            return False
+    return True
+
+
 def test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes() -> None:
     """Ancla por AST: la herramienta de P7 no puede escribir sobre el runtime.
 
     Mismo patrón que el ancla del paquete ``effective_runtime``: se escanea la
     FUENTE, no se confía en que nadie agregue un ``write_text`` «sólo para el
-    informe». La única escritura permitida es la del informe JSON, que el
-    llamador pide explícitamente con ``--json-salida`` y que se verifica aparte.
+    informe».
+
+    La versión anterior de este ancla tenía una exención para
+    ``json_salida.write_text`` —«es el informe, no el runtime»—. Esa exención era
+    el agujero: cualquier destino pasado por ``--json-salida`` quedaba autorizado
+    por el hecho de llamarse así, incluido ``modorganizer.ini``. Se elimina.
+
+    El informe se escribe con ``os.open(O_CREAT|O_EXCL)`` dentro de
+    ``escribir_informe_exclusivo``, y eso es lo único que el ancla permite.
     """
     import ast
 
     ruta = RAIZ_REPO / "scripts" / "p7_readonly_inspection.py"
-    arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+    fuente = ruta.read_text(encoding="utf-8")
+    arbol = ast.parse(fuente)
 
     ofensas: list[str] = []
+    aperturas_exclusivas: list[ast.Call] = []
     for nodo in ast.walk(arbol):
         if not isinstance(nodo, ast.Call):
             continue
         funcional = nodo.func
         if isinstance(funcional, ast.Attribute):
-            nombre = funcional.attr
-            if nombre in _ESCRITURAS_PROHIBIDAS:
-                # ``json_salida.write_text`` es el informe, no el runtime: se
-                # permite sólo si el receptor es exactamente ese parámetro.
-                receptor = funcional.value
-                if nombre == "write_text" and isinstance(receptor, ast.Attribute) and receptor.attr == "json_salida":
-                    continue
-                ofensas.append(f"{nombre} (línea {nodo.lineno})")
-        elif isinstance(funcional, ast.Name) and funcional.id in {"open"}:
+            if funcional.attr in _ESCRITURAS_PROHIBIDAS:
+                ofensas.append(f"{funcional.attr} (línea {nodo.lineno})")
+            if funcional.attr == "open" and isinstance(funcional.value, ast.Name) and funcional.value.id == "os":
+                aperturas_exclusivas.append(nodo)
+        elif isinstance(funcional, ast.Name) and funcional.id == "open":
             modos = [a for a in nodo.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
             if any(("w" in m or "a" in m or "+" in m) for m in modos):
                 ofensas.append(f"open con modo de escritura (línea {nodo.lineno})")
 
+    # ``unlink`` de limpieza: se permite SÓLO dentro del escritor validado, donde
+    # borra el informe parcial que él mismo acaba de crear con ``O_EXCL``. En
+    # cualquier otra función sería una capacidad de borrado sin justificar.
+    limpiezas = [o for o in ofensas if o.startswith("unlink")]
+    ofensas = [o for o in ofensas if not o.startswith("unlink")]
     assert not ofensas, f"la inspección de P7 contiene operaciones mutantes: {ofensas}"
+    if limpiezas:
+        assert len(limpiezas) == 1, f"hay más de un unlink en el inspector: {limpiezas}"
+        assert _unlink_vive_en_el_escritor_validado(arbol), (
+            "el unlink del inspector vive fuera de escribir_informe_exclusivo"
+        )
+
+    # La ÚNICA apertura de escritura permitida: os.open con O_EXCL, y sólo dentro
+    # del escritor validado. Una segunda apertura sin O_EXCL podría truncar.
+    assert len(aperturas_exclusivas) == 1, (
+        f"se esperaba exactamente una os.open de escritura, hay {len(aperturas_exclusivas)}"
+    )
+    llamada = aperturas_exclusivas[0]
+    # Se miran las BANDERAS REALES, no el archivo. La versión anterior de este
+    # assert tenía un fallback ``or "O_EXCL" in fuente`` que se satisfacía con la
+    # mención en el docstring: quitando ``O_EXCL`` de las banderas, el ancla
+    # seguía en verde. Lo detectó el mutante, no la revisión.
+    escritor = next(
+        (n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef) and n.name == "escribir_informe_exclusivo"),
+        None,
+    )
+    assert escritor is not None, "no existe escribir_informe_exclusivo"
+    asignaciones = [
+        n
+        for n in ast.walk(escritor)
+        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "banderas" for t in n.targets)
+    ]
+    assert len(asignaciones) == 1, f"se esperaba una asignación de banderas, hay {len(asignaciones)}"
+    banderas = ast.get_source_segment(fuente, asignaciones[0]) or ""
+    assert "O_EXCL" in banderas, (
+        f"las banderas de apertura del informe no incluyen O_EXCL: podría truncar un archivo existente ({banderas})"
+    )
+    funciones_con_apertura = [
+        nodo.name
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.FunctionDef) and any(hijo is llamada for hijo in ast.walk(nodo))
+    ]
+    assert funciones_con_apertura == ["escribir_informe_exclusivo"], (
+        f"la apertura de escritura vive fuera del escritor validado: {funciones_con_apertura}"
+    )
