@@ -476,14 +476,16 @@ async def test_la_tool_del_agente_falla_cerrado_sin_resolver(tmp_path: pathlib.P
     assert salida["reason"] == "SinRutasResolubles"
 
 
-def test_el_schema_de_la_tool_solo_expone_fase() -> None:
+def test_el_schema_de_la_tool_solo_expone_fase(tmp_path: pathlib.Path) -> None:
     """El LLM elige la fase —las dos son de sólo lectura— y nada más.
 
     ``profile`` lo fija el registry por sesión (spec de #454) y ``testigo_previo`` no se
     expone: un hash que el modelo podría inventar convertiría la prueba de frescura en
     una afirmación sin evidencia.
     """
-    descriptor = _registry(pathlib.Path("/tmp/no-toca-disco"), perfil="Requiem").tools["generate_bashed_patch"]
+    # `tmp_path` y no una ruta fija: `_registry` crea `profiles/<perfil>/` bajo esa raíz,
+    # y en Windows una ruta con raíz absoluta sin unidad (`/tmp/...`) no es escribible.
+    descriptor = _registry(tmp_path, perfil="Requiem").tools["generate_bashed_patch"]
 
     assert descriptor.params_model is GenerateBashedPatchParams
     assert sorted(descriptor.params_model.model_fields) == ["fase"]
