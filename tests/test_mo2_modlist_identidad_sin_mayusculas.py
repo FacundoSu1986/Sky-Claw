@@ -76,7 +76,7 @@ def _lineas(modlist: pathlib.Path) -> list[str]:
 # ── La clave de comparación: decisión, no detalle ───────────────────────────────
 
 
-def test_la_clave_ignora_mayusculas_pero_no_colapsa_lo_que_ntfs_distingue() -> None:
+def test_clave_de_nombre_de_mod_ignora_mayusculas_y_no_colapsa_lo_que_ntfs_distingue() -> None:
     """``lower()`` sí, ``casefold()`` no: el límite es el de NTFS, no el de Unicode."""
     assert _clave_de_nombre_de_mod("X") == _clave_de_nombre_de_mod("x")
     assert _clave_de_nombre_de_mod("Community Shaders") == _clave_de_nombre_de_mod("community shaders")
@@ -194,7 +194,7 @@ async def test_add_mod_to_modlist_no_confunde_strasse_con_strasse(tmp_path: path
         (["+Otra"], ["+X", "+Otra"]),
     ],
 )
-async def test_highest_priority_deduplica_entre_grafias(
+async def test_add_mod_to_modlist_highest_priority_deduplica_entre_grafias(
     tmp_path: pathlib.Path, antes: list[str], despues: list[str], via: str
 ) -> None:
     """Las tres formas de pedir máxima prioridad pasan por la misma rama."""
