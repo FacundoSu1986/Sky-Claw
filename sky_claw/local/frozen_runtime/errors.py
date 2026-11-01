@@ -58,6 +58,15 @@ class StateSchemaError(FrozenRuntimeStorageError):
     """Estado con schema desconocido o campos inválidos (fail-closed)."""
 
 
+class StateCasError(FrozenRuntimeStorageError):
+    """CAS sobre ``state/active.json`` fallido: el estado cambió bajo los pies.
+
+    No es un error de programación ni un fallo de I/O: es la barrera contra un
+    lost update. Se levanta ANTES de escribir, así que el estado concurrente
+    queda intacto y el mutador falla cerrado en vez de pisarlo.
+    """
+
+
 class InvalidGenerationIdError(FrozenRuntimeStorageError):
     """generation-id con caracteres, formato, traversal o forma reservada inválida."""
 

@@ -1708,6 +1708,16 @@ def test_s3_toda_escritura_del_journal_corre_bajo_el_lock() -> None:
     primitiva ``_locked`` cuyos call sites viven dentro de funciones que
     adquieren. journal.py NO figura en el inventario de mutadores (escribe por
     delegación declarada), así que este ancla es su cobertura de lock.
+
+    **P5-C1 — la invariante, generalizada.** Hasta P5-C1 la regla era «sólo
+    journal.py llama a sus ``_locked``», y el binder la violaba desde que se
+    escribió (el ancla estaba ROJA en ``b4f6d1bd``). Prohibir el llamador
+    externo no protege nada: lo que hay que exigir es lo que la primitiva
+    ASUME —que el llamador sostenga el lock—. La regla ahora es esa, y se
+    verifica resolviendo los adquirentes del módulo llamador con el mismo
+    instrumento. Un llamador externo nuevo sin lock rompe el test igual que
+    antes; el binder, que sí lo sostiene y pasa el handle, deja de ser una
+    excepción no declarada.
     """
     from tests.test_frozen_runtime_p4_s2_participant_wiring import (
         _arbol_de,
@@ -1735,14 +1745,41 @@ def test_s3_toda_escritura_del_journal_corre_bajo_el_lock() -> None:
     for nombre in sorted(escritores):
         assert nombre in adquirentes or nombre.endswith("_locked"), f"{nombre} escribe sin convención _locked"
         for modulo, contenedor in _call_sites_de(nombre):
-            assert modulo == "journal.py", f"{nombre} se invoca desde {modulo}"
+            if modulo != "journal.py":
+                _exigir_llamador_externo_con_lock(modulo, contenedor, nombre)
+                continue
             assert contenedor in adquirentes or contenedor.endswith("_locked"), (
                 f"{contenedor} llama a {nombre} fuera del lock"
             )
 
 
+def _exigir_llamador_externo_con_lock(modulo: str, contenedor: str, primitiva: str) -> None:
+    """Un llamador EXTERNO de una primitiva ``_locked`` tiene que sostener el lock.
+
+    ``_locked`` significa «la sección crítica ya está tomada». El único modo de
+    verificarlo desde el AST es que la función contenedora sea un adquirente
+    resoluble al root lock — el mismo resolutor que usa el censo de P4-S2, para
+    que un ``mi_objeto.participant_lock(...)`` homónimo no cuente.
+    """
+    from tests.test_frozen_runtime_p4_s2_participant_wiring import (
+        _arbol_de,
+        _funciones_que_adquieren_lock,
+        _paquete,
+    )
+
+    adquirentes = _funciones_que_adquieren_lock(_arbol_de(_paquete() / modulo))
+    assert contenedor in adquirentes, (
+        f"{modulo}::{contenedor} invoca la primitiva {primitiva}, que asume el root lock tomado, y no adquiere el lock"
+    )
+
+
 def test_s3_los_flanos_bajo_lock_solo_se_llaman_entre_ellos() -> None:
-    """Las primitivas ``_locked`` del journal no se llaman desde el exterior."""
+    """Las primitivas ``_locked`` del journal se llaman bajo lock, y sólo así.
+
+    Misma generalización que el test anterior: dentro de journal.py, entre
+    adquirentes y primitivas; fuera de journal.py, sólo desde funciones que
+    sostienen el root lock.
+    """
     from tests.test_frozen_runtime_p4_s2_participant_wiring import _arbol_de, _call_sites_de, _funciones_top_level
 
     ruta = pathlib.Path(journal_module.__file__)
@@ -1751,9 +1788,11 @@ def test_s3_los_flanos_bajo_lock_solo_se_llaman_entre_ellos() -> None:
     assert primitivas, "el journal no declara primitivas _locked"
     for nombre in sorted(primitivas):
         sitios = _call_sites_de(nombre)
-        # Sólo dentro de journal.py, y sólo desde adquirentes u otras primitivas.
+        # Dentro de journal.py: adquirentes u otras primitivas. Fuera: con lock.
         for modulo, contenedor in sitios:
-            assert modulo == "journal.py", f"{nombre} se invoca desde {modulo}"
+            if modulo != "journal.py":
+                _exigir_llamador_externo_con_lock(modulo, contenedor, nombre)
+                continue
             assert contenedor in primitivas or contenedor.endswith("_bajo_lock"), (
                 f"{contenedor} llama a la primitiva {nombre} sin ser adquirente"
             )

@@ -129,6 +129,21 @@ def approvals_state_dir(root: pathlib.Path) -> pathlib.Path:
     return state_dir(root) / "approvals"
 
 
+def recovery_state_dir(root: pathlib.Path) -> pathlib.Path:
+    """Registro durable de recuperación del binder (``state/recovery/``; P5-C1).
+
+    Un archivo por transición en vuelo, con los bytes previos de cada superficie
+    mutada. Es lo que hace recuperable una transición interrumpida: sin él, el
+    snapshot vivía sólo en RAM y un crash entre ``PERSIST PENDING`` y
+    ``FINALIZE`` dejaba las superficies mutadas sin estado anterior conocido.
+
+    No es un segundo FSM: es un subordinado del journal (ver
+    ``binder_recovery``). Se crea en el layout para que el binder falle cerrado
+    si falta, igual que los stores del journal y de la aprobación.
+    """
+    return state_dir(root) / "recovery"
+
+
 def generation_dir(root: pathlib.Path, generation_id: str) -> pathlib.Path:
     return versions_dir(root) / generation_id
 
@@ -343,6 +358,7 @@ def _initialize_frozen_runtime_storage_locked(
         finalization_seqs_state_dir(ruta),
         issuances_state_dir(ruta),
         approvals_state_dir(ruta),
+        recovery_state_dir(ruta),
     )
     creados: list[pathlib.Path] = []
     try:
