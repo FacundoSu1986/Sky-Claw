@@ -31,6 +31,11 @@ midiendo, no razonando:
    pasaba porque la consola era UTF-8. Se emite ASCII puro a stdout y UTF-8 al
    archivo, con dos tests que fuerzan `PYTHONIOENCODING=cp1252` — y que fallan si
    se revierte la corrección.
+   Medido al respecto: `sys.stdout` usa `strict` y **sí** revienta;
+   `sys.stderr` usa `backslashreplace` por defecto en Python y **no**. Se había
+   agregado una protección de flujos y un test de ruta CJK que no discriminaban
+   —stderr nunca falla— así que se quitaron: un assert que no puede fallar no es
+   un ancla.
 
 ## 1. Rama, worktree y SHAs
 
