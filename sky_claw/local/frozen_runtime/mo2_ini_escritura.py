@@ -46,6 +46,8 @@ import hashlib
 import os
 import pathlib
 import tempfile
+from collections.abc import Callable
+from typing import Protocol
 
 from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import leer_game_path_de_mo2
 from sky_claw.local.frozen_runtime.effective_runtime.models import ObservationState
@@ -56,7 +58,9 @@ __all__ = [
     "FormatoIni",
     "FormatoIniNoAdmitidoError",
     "Mo2IniEscrituraError",
+    "IniRetenido",
     "actualizar_game_path_en_ini",
+    "actualizar_game_path_por_handle",
     "admitir_formato_ini",
     "prever_bytes",
     "codificar_qt_byte_array",
@@ -464,3 +468,100 @@ def _escribir_atomico(ruta: pathlib.Path, contenido: bytes) -> None:
         if isinstance(exc, Exception):
             raise Mo2IniEscrituraError(f"no se pudo escribir modorganizer.ini: {exc}") from exc
         raise
+
+
+class IniRetenido(Protocol):
+    """Lo mínimo que el escritor por handle necesita de un INI retenido.
+
+    Es un ``Protocol`` y no la clase concreta de ``mo2_ini_exclusion`` para que
+    este módulo no dependa del gate: el escritor sólo necesita leer y escribir
+    por un handle que alguien más sostiene y garantiza.
+    """
+
+    def leer_bytes(self) -> bytes:
+        """Bytes actuales del archivo, por el handle retenido."""
+        ...
+
+    def escribir_bytes(self, datos: bytes, *, al_escribir: Callable[[], None] | None = None) -> None:
+        """Reemplaza el contenido del archivo por ``datos``, por el handle retenido.
+
+        ``al_escribir`` se invoca inmediatamente antes de la primera operación
+        que muta. Un doble de test que lo ignore deja el flag de intento sin
+        marcar y el rollback trata la escritura propia como ajena.
+        """
+        ...
+
+
+def actualizar_game_path_por_handle(
+    retenido: IniRetenido,
+    nuevo_game_path: str | pathlib.Path,
+    *,
+    al_escribir: Callable[[], None] | None = None,
+) -> bytes:
+    """Hermano de :func:`actualizar_game_path_en_ini` para un INI ya retenido.
+
+    Existe porque la exclusión de ``modorganizer.ini`` (``mo2_ini_exclusion``)
+    se toma con ``DELETE`` en el acceso propio, y con esa configuración el
+    reemplazo por ruta es imposible: el handle se bloquea a sí mismo. Medido:
+    ``os.replace`` → ``ERROR_ACCESS_DENIED`` (5). La única mutación posible
+    mientras se sostiene la exclusión es escribir por el propio handle.
+
+    Lo que COMPARTE con el hermano, y es lo que importa:
+
+    - la misma edición quirúrgica (``prever_bytes``), así que los dos escriben
+      exactamente los mismos bytes para el mismo par (contenido, ruta);
+    - la misma verificación de preservación estructural;
+    - el mismo readback obligatorio antes de declarar éxito;
+    - el mismo no-op cuando el valor ya era el pedido.
+
+    Lo que NO comparte, y no puede: la atomicidad. ``os.replace`` publica el
+    archivo nuevo de una vez; escribir por handle lo deja a medio escribir si el
+    proceso muere. Esa mitad la cubre ``binder_recovery``, que captura los bytes
+    previos antes de mutar.
+
+    Args:
+        retenido: handle con exclusión de mutación ya establecida.
+        nuevo_game_path: ruta que debe quedar en ``gamePath``.
+        al_escribir: se invoca INMEDIATAMENTE antes de mutar el archivo, y sólo
+            si se va a mutar. El binder lo usa para marcar «esta transición
+            intentó escribir» sin tener que adivinar: entre el inicio de esta
+            función y la escritura están la admisión de formato y el no-op, que
+            pueden terminar sin tocar el archivo. Marcar antes de llamarla haría
+            que un estado intermedio de un TERCERO se atribuyera a la transición
+            (auditoría del PR #851).
+
+    Returns:
+        Los bytes que quedaron en el archivo.
+
+    Raises:
+        FormatoIniNoAdmitidoError: el contenido retenido no tiene un formato admitido.
+        EscrituraIniNoVerificadaError: la preservación o el readback fallaron.
+    """
+    contenido = retenido.leer_bytes()
+    bytes_finales = prever_bytes(contenido, nuevo_game_path)
+
+    if bytes_finales == contenido:
+        # El valor ya era el pedido. No se escribe: escribir cambiaría el mtime
+        # y dispararía la detección de estabilidad del preflight sin motivo.
+        return contenido
+
+    try:
+        # El hook viaja HASTA el punto de mutación real: dentro de
+        # ``escribir_bytes`` hay una revalidación de identidad y de hardlinks que
+        # puede abortar sin escribir. Invocarlo acá marcaría «intenté escribir»
+        # en un camino donde el archivo nunca se tocó, y el rollback atribuiría
+        # a la transición un estado intermedio de un tercero (CodeRabbit sobre
+        # #851).
+        retenido.escribir_bytes(bytes_finales, al_escribir=al_escribir)
+    except Mo2IniEscrituraError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - el gate lanza sus propios tipos
+        raise Mo2IniEscrituraError(f"no se pudo escribir modorganizer.ini por el handle: {exc}") from exc
+
+    leidos = retenido.leer_bytes()
+    if leidos != bytes_finales:
+        raise EscrituraIniNoVerificadaError(
+            "verificación post-escritura por handle: el archivo no devuelve los bytes escritos "
+            f"({len(leidos)} B leídos, {len(bytes_finales)} B escritos)"
+        )
+    return leidos

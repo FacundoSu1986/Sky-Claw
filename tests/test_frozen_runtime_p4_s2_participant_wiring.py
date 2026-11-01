@@ -430,6 +430,12 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         ("binder_recovery.py", "restaurar_registro_locked"),
         ("binder_recovery.py", "_restaurar_persistida"),
         ("binder_recovery.py", "_escribir_bytes_atomico"),
+        # P5-C2: preserva los bytes NO atribuibles antes de abstenerse de
+        # restaurar. Corre dentro de `_restaurar_persistida`, es decir bajo el
+        # handle que el llamador ya adquirió, y escribe en
+        # `recovery_evidence/`, dentro del root. Declararla la somete al ancla de
+        # call site: si alguien la invocara fuera de la sección crítica, falla.
+        ("binder_recovery.py", "_preservar_evidencia"),
         # P5-C1 (`mo2_ini_escritura.py`): la escritura del INI es la mutación más
         # sensible del slice. Corre SIEMPRE bajo el participant lock del binder.
         ("mo2_ini_escritura.py", "actualizar_game_path_en_ini"),

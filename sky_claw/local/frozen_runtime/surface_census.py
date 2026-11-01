@@ -148,8 +148,15 @@ CLASES_DE_SUPERFICIE: dict[str, ClaseSuperficie] = {a.clave: a.clase for a in CA
 
 #: Ancla sintáctica de cada superficie: el nombre que aparece en el código
 #: cuando alguien la escribe. Es lo que el AST busca.
+#:
+#: ``mo2_ini`` tiene DOS escritores desde P5-C2, y los dos tienen que estar acá:
+#: ``actualizar_game_path_en_ini`` (por ruta, con ``os.replace``) y
+#: ``actualizar_game_path_por_handle`` (por el handle con exclusión). Si se
+#: anclara sólo el primero, el binder —que desde P5-C2 usa el segundo— dejaría de
+#: aparecer en el censo y un tercer escritor podría colarse sin que el ancla lo
+#: vea. Lo detectó este mismo test al agregar el escritor por handle.
 ANCLAS_DE_SUPERFICIE: dict[str, tuple[str, ...]] = {
-    "mo2_ini": ("actualizar_game_path_en_ini",),
+    "mo2_ini": ("actualizar_game_path_en_ini", "actualizar_game_path_por_handle"),
     "config": ("persistir_campo", "guardar_config"),
     "active_json": (
         "write_json_atomic",

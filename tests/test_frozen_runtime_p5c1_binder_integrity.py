@@ -25,6 +25,7 @@ comparte nada con el que falló.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import json
@@ -846,13 +847,18 @@ def _correr_hasta_crashear(rig_dir: pathlib.Path, frontera: str) -> None:
         (rig_dir / "antes.json").write_text(json.dumps(manifiesto), encoding="utf-8")
 
         if frontera == "ini":
-            real_ini = binder.actualizar_game_path_en_ini
+            real_ini = binder.actualizar_game_path_por_handle
 
-            def _ini_y_morir(path, valor):  # type: ignore[no-untyped-def]
-                real_ini(path, valor)
+            def _ini_y_morir(retenido, valor, *, al_escribir=None):  # type: ignore[no-untyped-def]
+                # El escritor real avisa justo ANTES de mutar; el doble tiene que
+                # hacer lo mismo o el binder no registra el intento y el rollback
+                # trataría su propia escritura como ajena.
+                if al_escribir is not None:
+                    al_escribir()
+                real_ini(retenido, valor)
                 os._exit(9)
 
-            parche = _patch.object(binder, "actualizar_game_path_en_ini", side_effect=_ini_y_morir)
+            parche = _patch.object(binder, "actualizar_game_path_por_handle", side_effect=_ini_y_morir)
         elif frontera == "config":
             real_cfg = binder.persistir_campo
 
@@ -891,16 +897,18 @@ def _correr_hasta_crashear(rig_dir: pathlib.Path, frontera: str) -> None:
 
 @pytest.mark.parametrize("frontera", ["ini", "config", "entorno", "active"])
 def test_reinicio_tras_cada_frontera_mutante_recupera_las_superficies(tmp_path: pathlib.Path, frontera: str) -> None:
-    """Un proceso NUEVO recupera las superficies desde el registro durable.
+    """Un proceso NUEVO evalúa las superficies desde el registro durable.
 
     Para cada frontera mutante (INI, config, entorno, active.json) se hace morir
     un subproceso justo después de esa mutación y antes de la siguiente. El
     proceso de test —que no comparte memoria con el muerto— recupera con
-    ``recuperar_transicion_interrumpida`` y verifica BYTES contra el manifiesto
-    que el muerto dejó ANTES de mutar.
+    ``recuperar_transicion_interrumpida``.
 
-    Esto es lo que el PR no podía afirmar: el snapshot vivía en RAM y moría con
-    el proceso.
+    NOTA DE SEGURIDAD (tercera ronda #851): la recuperación en proceso nuevo no
+    atribuye escrituras completas porque no puede probar autoría (la fase se
+    marca ANTES de escribir). Por eso el estado es
+    ``RESTAURACION_INCOMPLETA_REQUIERE_DUENO``: las superficies mutadas se
+    conservan como evidencia y la decisión es del propietario.
     """
     rig_dir = tmp_path / "rig"
     rig_dir.mkdir()
@@ -947,23 +955,22 @@ def test_reinicio_tras_cada_frontera_mutante_recupera_las_superficies(tmp_path: 
         environ=entorno_nuevo,
     )
 
-    assert resultado.estado is recovery.EstadoRecuperacion.RESTAURADO_REQUIERE_DUENO
+    assert resultado.estado is recovery.EstadoRecuperacion.RESTAURACION_INCOMPLETA_REQUIERE_DUENO
     assert resultado.requiere_dueno is True
-    assert set(resultado.superficies_verificadas) == {
-        recovery.SUPERFICIE_MO2_INI,
-        recovery.SUPERFICIE_CONFIG,
-        recovery.SUPERFICIE_ACTIVE,
-        recovery.SUPERFICIE_ENVIRON,
-    }
-    assert _sha(ini) == manifiesto["sha_ini"], "el INI no volvió a sus bytes previos"
-    assert _sha(config) == manifiesto["sha_config"], "el config no volvió a sus bytes previos"
-    assert _sha(active) == manifiesto["sha_active"], "active.json no volvió a sus bytes previos"
-    # La superficie DERIVADA sólo se restaura si la fase alcanzó su mutación:
-    # en las fronteras "ini" y "config" el proceso murió antes de escribir el
-    # entorno, así que un dict nuevo no tiene nada que recuperar (y inventarlo
-    # sería peor: afirmaría una restauración que no ocurrió).
+    # La recuperación en proceso nuevo no atribuye escrituras completas del INI
+    # (tri-estado #851). Las demás superficies (config, active) usan su
+    # discriminador propio sin tri-estado. Lo que importa es que el estado sea
+    # INCOMPLETA y que al menos UNA superficie quede sin restaurar.
+    ajenas = [v.kind for v in resultado.verificaciones if v.escritura_ajena]
+    assert ajenas, f"se esperaba al menos una superficie no atribuida, hay {ajenas}"
+    # Verificar que el INI —que SIEMPRE se muta— NO se restauró, porque es la
+    # superficie que tiene tri-estado y la recuperación en proceso nuevo no
+    # puede probar autoría.
+    assert _sha(ini) != manifiesto["sha_ini"], "el INI se restauró sin evidencia de autoría"
+    # El entorno se restaura según la fase alcanzada (no usa tri-estado).
+    # En ini/config murió antes de escribir el entorno; en entorno/active sí.
     if frontera in ("entorno", "active"):
-        assert entorno_nuevo["SKYRIM_PATH"] == manifiesto["managed_src"]
+        assert entorno_nuevo.get("SKYRIM_PATH") == manifiesto["managed_src"]
     else:
         assert "SKYRIM_PATH" not in entorno_nuevo
     # El journal NO se reescribe: la clasificación es de su dueño.
@@ -1045,17 +1052,23 @@ def test_rollback_no_pisa_una_escritura_ajena_en_config(tmp_path: pathlib.Path) 
 
 
 def test_rollback_no_pisa_una_escritura_ajena_en_ini(tmp_path: pathlib.Path) -> None:
-    """Si un tercero agrega una línea al INI, el rollback no la borra."""
-    rig = _montar_rig(tmp_path)
-    real_ini = binder.actualizar_game_path_en_ini
+    """Si un tercero agrega una línea al INI, el rollback no la borra.
 
-    def _ini_y_que_otro_escriba(path, valor):  # type: ignore[no-untyped-def]
-        real_ini(path, valor)
-        path.write_bytes(path.read_bytes() + b"; agregado por un tercero\r\n")
+    La escritura del tercero se inyecta en ``assess_effective_runtime`` y ya no
+    en el escritor del INI. El cambio no es cosmético: desde P5-C2 el INI está
+    EXCLUIDO mientras el binder lo escribe, así que un tercero **no puede**
+    escribir en ese instante —ésa es justamente la garantía que se agregó—. La
+    ventana real de una escritura ajena es DESPUÉS de liberar el handle y ANTES
+    de que el rollback corra, y es donde este test la pone ahora.
+    """
+    rig = _montar_rig(tmp_path)
+
+    def _tercero_escribe_y_falla(**_: object) -> None:
+        rig.ini.write_bytes(rig.ini.read_bytes() + b"; agregado por un tercero\r\n")
+        raise RuntimeError("boom")
 
     with (
-        patch.object(binder, "actualizar_game_path_en_ini", side_effect=_ini_y_que_otro_escriba),
-        patch.object(binder, "assess_effective_runtime", side_effect=RuntimeError("boom")),
+        patch.object(binder, "assess_effective_runtime", side_effect=_tercero_escribe_y_falla),
         pytest.raises(RuntimeError),
     ):
         _ejecutar(rig)
@@ -1347,8 +1360,10 @@ def test_la_recuperacion_preserva_una_escritura_ajena_en_config_y_no_declara_res
     verificacion_config = next(v for v in recuperacion.verificaciones if v.kind == recovery.SUPERFICIE_CONFIG)
     assert verificacion_config.escritura_ajena is True
     assert recuperacion.requiere_dueno is True
-    # 3. Control positivo: el INI, cuya escritura es nuestra, SÍ se restauró.
-    assert rig.ini_bytes() == ini_antes
+    # 3. El INI tampoco se restaura automáticamente: la recuperación en proceso
+    #    nuevo no atribuye escrituras completas (tri-estado #851). El propietario
+    #    decide sobre ambas superficies.
+    assert rig.ini_bytes() != ini_antes, "el INI se restauró sin evidencia de autoría"
     # 4. El journal sigue PENDING: la clasificación es del dueño.
     assert cargar_journal_transicion(rig.storage).disposition is JournalDisposition.PENDING_PROMOTION
 
@@ -1366,7 +1381,7 @@ def test_rollback_con_superficie_ya_en_estado_previo_no_reporta_critico(tmp_path
     ini_antes = rig.ini_bytes()
 
     with (
-        patch.object(binder, "actualizar_game_path_en_ini", side_effect=OSError("compartición simulada")),
+        patch.object(binder, "actualizar_game_path_por_handle", side_effect=OSError("compartición simulada")),
         patch.object(recovery, "_escribir_bytes_atomico", side_effect=PermissionError("bloqueado")),
         pytest.raises(OSError, match="compartición") as excinfo,
     ):
@@ -1491,3 +1506,105 @@ def test_store_faltante_falla_tambien_en_el_camino_de_aprobacion_ya_consumida(tm
 
     # El journal no llegó a escribirse: el fallo es ANTES del PENDING.
     assert cargar_journal_transicion(rig.storage).disposition is not JournalDisposition.PENDING_PROMOTION
+
+
+# ---------------------------------------------------------------------------
+# FIX C — FlushFileBuffers falla DESPUÉS de WriteFile + SetEndOfFile
+# ---------------------------------------------------------------------------
+
+
+class _Kernel32ConVolcadoFallido:
+    """Delegador de ``kernel32`` que falla en ``FlushFileBuffers``.
+
+    No se parchea ``_escribir_handle``: eso probaría el doble, no el código. El
+    fallo se inyecta en la ÚLTIMA llamada de la secuencia
+    ``WriteFile → SetEndOfFile → FlushFileBuffers``, que es la única forma de
+    dejar el archivo con el contenido NUEVO y la transición sin finalizar.
+    """
+
+    def __init__(self, real: object) -> None:
+        self._real = real
+
+    def __getattr__(self, nombre: str) -> object:
+        return getattr(self._real, nombre)
+
+    def FlushFileBuffers(self, *_args: object) -> int:  # noqa: N802 - nombre de la API
+        return 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="kernel32 y hardlinks NTFS son de Windows")
+def test_un_fallo_de_volcado_tras_escribir_no_finaliza_y_restaura_el_snapshot(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Escribir + truncar con éxito NO es una transición FINALIZED.
+
+    ``FlushFileBuffers`` es el último paso del escritor. Si falla, el archivo ya
+    tiene el contenido objetivo —``WriteFile`` y ``SetEndOfFile`` corrieron— pero
+    la transición no llegó al POST VERIFY y por lo tanto NO se publica. El
+    rollback tiene que restaurar el snapshot, no dejar el INI a medio camino
+    creyendo que el trabajo terminó.
+
+    Es la regla del PR: ``FINALIZED`` sólo después de POST VERIFY y publicación
+    durable. Tener los bytes correctos en disco no es ninguna de las dos cosas.
+    """
+    from sky_claw.local.frozen_runtime import mo2_ini_exclusion as exclusion_mod
+
+    rig = _montar_rig(tmp_path)
+    ini_antes = rig.ini_bytes()
+    real = exclusion_mod._KERNEL32
+    assert real is not None, "el test necesita kernel32 real"
+
+    with (
+        patch.object(exclusion_mod, "_KERNEL32", _Kernel32ConVolcadoFallido(real)),
+        pytest.raises(binder.BinderEscrituraIniError),
+    ):
+        _ejecutar(rig)
+
+    # 1. El rollback restauró el snapshot: no quedó el contenido nuevo.
+    assert rig.ini_bytes() == ini_antes, "el INI quedó con el contenido nuevo pese al fallo"
+
+    # 2. La transición NO está finalizada: el journal sigue PENDING.
+    disposicion = cargar_journal_transicion(rig.storage).disposition
+    assert disposicion is JournalDisposition.PENDING_PROMOTION, (
+        f"la transición se publicó como finalizada pese al fallo de volcado: {disposicion}"
+    )
+    assert recovery.listar_registros(rig.storage) != (), "el registro de recuperación desapareció"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="kernel32 y hardlinks NTFS son de Windows")
+def test_un_fallo_de_volcado_no_pisa_una_escritura_ajena_posterior(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El rollback tras un fallo de volcado sigue respetando la autoría.
+
+    La escritura del tercero va en el ÚNICO hueco real: justo después de que el
+    binder libere la exclusión y antes de que corra el rollback. Se inyecta
+    parcheando ``cerrar``, que es exactamente ese instante —dentro de la ventana
+    la exclusión impide escribir, así que escribir antes sería imposible y el
+    test no probaría nada—.
+
+    El rollback debe dejar el contenido ajeno intacto: la transición sólo puede
+    atribuirse los bytes EXACTAMENTE previstos, y éstos no lo son.
+    """
+    from sky_claw.local.frozen_runtime import mo2_ini_exclusion as exclusion_mod
+
+    rig = _montar_rig(tmp_path)
+    real = exclusion_mod._KERNEL32
+    assert real is not None
+
+    ajeno = b"; escrito por un tercero\r\n[General]\r\ngamePath=Z:////////Otro//r//n"
+    cerrar_real = exclusion_mod.ExclusionIni.cerrar
+
+    def _cerrar_y_tercero_escribe(self: object) -> None:
+        cerrar_real(self)
+        with contextlib.suppress(OSError):
+            rig.ini.write_bytes(ajeno)
+
+    with (
+        patch.object(exclusion_mod, "_KERNEL32", _Kernel32ConVolcadoFallido(real)),
+        patch.object(exclusion_mod.ExclusionIni, "cerrar", _cerrar_y_tercero_escribe),
+        pytest.raises(binder.BinderEscrituraIniError),
+    ):
+        _ejecutar(rig)
+
+    assert rig.ini.read_bytes() == ajeno, "el rollback pisó la escritura del tercero"
