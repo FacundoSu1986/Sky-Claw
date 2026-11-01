@@ -317,7 +317,7 @@ criterio de siempre: cada afirmación verificada contra el código o contra una 
 
 **Censo de tests que el cableado mueve, para el PR C.** Medido con `--collect-only` en esta
 rama: `test_wrye_bash_asistida.py` **129**, `test_wrye_bash_service.py` **36**,
-`test_wrye_bash_cableado_asistido.py` **15** (nuevos), `test_wrye_bash_lock.py` **9**
+`test_wrye_bash_cableado_asistido.py` **16** (nuevos), `test_wrye_bash_lock.py` **9**
 (reescritos, mismos 9 que antes). `execute_pipeline` conserva sus 36 tests de servicio y **ya
 no tiene callers de producción**; los 9 del lock dejaron de ser suyos y ahora anclan la
 superficie del agente. Con eso, «retirar `execute_pipeline` y sus 45 tests (36 + 9)» ya no es
