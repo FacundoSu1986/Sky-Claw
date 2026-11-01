@@ -56,6 +56,7 @@ jobs:
           pytest -v -rA -p no:cacheprovider
           tests/test_vfs_job_containment_windows.py
           tests/test_vfs_fence_de_supervision.py
+          tests/test_vfs_fence_e2e_proceso_real.py
           2>&1 | Tee-Object -FilePath sandbox_min\pytest.txt
 
       - name: Ejecutable mínimo onefile (réplica de las opciones del spec) - construir

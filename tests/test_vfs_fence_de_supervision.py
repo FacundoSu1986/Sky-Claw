@@ -466,7 +466,8 @@ async def test_si_falla_la_asignacion_al_job_object_no_se_autoriza_la_ejecucion(
     observado: list[str] = []
     async with _Arnes(tmp_path) as arnes:
         await arnes.lanzar_job()
-        worker = arnes.worker_real(observado, supervision_timeout=1.5)
+        # Plazo largo a propósito: solo la DENEGACIÓN explícita del broker puede terminar al worker a tiempo.
+        worker = arnes.worker_real(observado, supervision_timeout=30.0)
         await arnes.esperar_worker_conectado(worker)
 
         # Act: el bridge informa el fallo del assign y, inconsistentemente, un ack posterior.
@@ -572,6 +573,30 @@ async def test_una_confirmacion_tardia_durante_la_cancelacion_no_autoriza_al_wor
         assert cancelacion["type"] == "cancel"
         assert resultado_del_worker is None, "el worker salió por cancelación"
         assert observado == [], "una confirmación tardía no revive a un worker cancelado"
+
+
+async def test_un_worker_que_conecta_tarde_tras_la_cancelacion_no_es_autorizado(tmp_path: pathlib.Path) -> None:
+    """El ack ya estaba registrado cuando se canceló: el hello tardío del worker no puede revivirlo."""
+    # Arrange: el bridge confirmó, y recién DESPUÉS se cancela el job (todavía sin worker conectado).
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        await arnes.launch_ack()
+        await _hasta(lambda: arnes.job_id in arnes.broker._launch_acked)
+        arnes.tarea.cancel()  # type: ignore[union-attr]
+        cancelacion = await arnes.siguiente_del_bridge()
+        assert cancelacion["type"] == "cancel"
+
+        # Act: el worker llega tarde (su arranque fue más lento que la cancelación).
+        tardio = await arnes.worker_crudo()
+        hello_ack = await tardio.leer(timeout=5)
+        recibido = await tardio.leer()
+        await arnes.worker_exit()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(arnes.tarea, timeout=6)  # type: ignore[arg-type]
+
+        # Assert
+        assert hello_ack is not None and hello_ack["type"] == "hello_ack"
+        assert recibido is None, f"un job en cancelación autorizó a un worker tardío: {recibido}"
 
 
 # ---------------------------------------------------------------------------

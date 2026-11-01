@@ -96,12 +96,20 @@ def _esperar_muerte(pid: int, *, timeout: float = 10.0) -> bool:
 
 @pytest.fixture
 def limpieza():
-    """Mata, pase lo que pase, todo proceso que el test haya registrado."""
-    pids: list[int] = []
-    yield pids
+    """Mata y REAPEA todo proceso que el test registre: ``Popen`` (kill + wait) o un PID suelto.
+
+    Sin ``wait()`` el ``Popen`` queda con ``returncode=None`` y su ``__del__`` emite un
+    ``ResourceWarning`` ("subprocess still running") que este repo eleva a error.
+    """
+    registrados: list[subprocess.Popen[bytes] | int] = []
+    yield registrados
     sondas = _sondas()
-    for pid in pids:
+    for item in registrados:
+        pid = item.pid if isinstance(item, subprocess.Popen) else item
         sondas.matar_arbol(pid)
+        if isinstance(item, subprocess.Popen):
+            with contextlib.suppress(Exception):
+                item.wait(timeout=10)
 
 
 def _asignar_pid(sondas, job: int, pid: int) -> None:
@@ -131,7 +139,7 @@ def test_un_descendiente_creado_antes_de_la_asignacion_queda_fuera_del_job(tmp_p
     salida = tmp_path / "hijo.pid"
     with sondas.job_temporal() as job:
         padre = sondas.lanzar_como_mo2([sys.executable, "-c", _PADRE_QUE_YA_TIENE_HIJO, str(salida)])
-        limpieza.append(padre.pid)
+        limpieza.append(padre)
         hijo_pid = _esperar_pid(salida)
         limpieza.append(hijo_pid)
 
@@ -153,7 +161,7 @@ def test_un_descendiente_creado_despues_de_la_asignacion_queda_contenido_y_muere
     bandera, salida = tmp_path / "go", tmp_path / "hijo.pid"
     with sondas.job_temporal() as job:
         padre = sondas.lanzar_como_mo2([sys.executable, "-c", _PADRE_QUE_ESPERA_LA_BANDERA, str(bandera), str(salida)])
-        limpieza.append(padre.pid)
+        limpieza.append(padre)
         _asignar_pid(sondas, job, padre.pid)
 
         # Act
@@ -175,7 +183,7 @@ def test_is_process_in_job_sin_job_responde_true_para_un_job_ajeno(tmp_path, lim
     sondas = _sondas()
     with sondas.job_temporal() as nuestro, sondas.job_temporal() as impostor:
         proceso = sondas.lanzar_como_mo2([sys.executable, "-c", "import time; time.sleep(120)"])
-        limpieza.append(proceso.pid)
+        limpieza.append(proceso)
         _asignar_pid(sondas, impostor, proceso.pid)
 
         # Act
@@ -195,7 +203,7 @@ def test_un_proceso_en_un_job_ajeno_admite_ademas_el_job_propio(tmp_path, limpie
     sondas = _sondas()
     with sondas.job_temporal(kill_on_close=False) as ajeno, sondas.job_temporal() as nuestro:
         proceso = sondas.lanzar_como_mo2([sys.executable, "-c", "import time; time.sleep(120)"])
-        limpieza.append(proceso.pid)
+        limpieza.append(proceso)
         _asignar_pid(sondas, ajeno, proceso.pid)
 
         # Act
@@ -222,7 +230,7 @@ def test_un_proceso_puede_consultar_su_propio_job_y_ver_a_su_lanzador(tmp_path, 
         proceso = sondas.lanzar_como_mo2(
             [sys.executable, "-c", f"import time; time.sleep(0.5); {codigo}", str(informe)]
         )
-        limpieza.append(proceso.pid)
+        limpieza.append(proceso)
         _asignar_pid(sondas, job, proceso.pid)
 
         # Act

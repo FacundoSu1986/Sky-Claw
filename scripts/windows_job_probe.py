@@ -34,7 +34,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import psutil
@@ -268,10 +268,17 @@ def job_temporal(*, nombre: str | None = None, kill_on_close: bool = True) -> It
         cerrar_handle(job)
 
 
-def lanzar_como_mo2(argv: Sequence[str]) -> subprocess.Popen[bytes]:
+def lanzar_como_mo2(
+    argv: Sequence[str],
+    *,
+    cwd: pathlib.Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.Popen[bytes]:
     """Lanza ``argv`` como ``organizer.startApplication``: el proceso nace CORRIENDO (sin suspender)."""
     return subprocess.Popen(  # noqa: S603 - argv fijo del laboratorio, procesos inocuos
         list(argv),
+        cwd=cwd,
+        env=None if env is None else dict(env),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
