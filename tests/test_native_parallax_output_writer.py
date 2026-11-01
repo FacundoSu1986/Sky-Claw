@@ -3358,6 +3358,7 @@ async def test_si_no_se_puede_escribir_el_registro_el_lote_sigue_y_se_dice(
 # --- El tope de restos que nombra el aviso (ítem 6 de #834): hasta 20, y los demás se resumen en una línea ---------------
 
 
+@pytest.mark.parametrize("camino", ["sin_pendiente", "con_pendiente"])
 @pytest.mark.parametrize("con_registro", [True, False], ids=["con_registro", "sin_registro"])
 @pytest.mark.parametrize(
     ("cantidad", "nombrados", "sin_nombrar"),
@@ -3371,17 +3372,23 @@ async def test_el_aviso_nombra_hasta_veinte_restos_y_resume_el_resto(
     nombrados: int,
     sin_nombrar: int,
     con_registro: bool,
+    camino: str,
 ) -> None:
     """El aviso de cada apertura nombra hasta 20 restos y resume los demás en UNA línea («y N más sin nombrar»).
 
     Los números son los del contrato que documenta el ADR 0014 (20), escritos como literales: derivarlos de
-    ``_MAXIMO_DE_RESTOS_NOMBRADOS`` dejaría pasar un cambio del tope. Se recorre el borde (19, 20, 21) y un caso holgado, y
-    las dos formas de nombrar un resto (con entrada en el registro y «sin registro»), que comparten el mismo tope.
+    ``_MAXIMO_DE_RESTOS_NOMBRADOS`` dejaría pasar un cambio del tope. Se recorre el borde (19, 20, 21) y un caso holgado, las
+    dos formas de nombrar un resto (con entrada en el registro y «sin registro») y los DOS caminos que llaman al aviso desde
+    ``_recuperar`` (sin pendiente y después de recuperar un corte): son hermanos, y justificar por qué uno no hace falta no
+    cuenta como verificarlo.
     """
     caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
     await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
-    rutas = [f"textures/otros/resto{i:02d}_p.dds" for i in range(cantidad)]
+    rutas = [RUTA_A, *(f"textures/otros/resto{i:02d}_p.dds" for i in range(cantidad - 1))]
     casillas = sorted(output_writer._id_de_ruta(r) for r in rutas)  # el aviso los lista ordenados por casilla
+    if camino == "con_pendiente":  # la recuperación corre y avisa AL FINAL: el otro camino que llama al aviso
+        (escenario.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+        escenario.disco(RUTA_A).write_bytes(b"LO-QUE-HAY-AHORA")  # la ruta se ocupó: lo apartado no puede volver
     for ruta in rutas:
         _apartar_a_mano(escenario, ruta, b"RESTO-DE-UNA-SESION-ANTERIOR")
     if con_registro:
@@ -3396,6 +3403,10 @@ async def test_el_aviso_nombra_hasta_veinte_restos_y_resume_el_resto(
         pass
 
     mensajes = [r.getMessage() for r in caplog.records]
+    if camino == "con_pendiente":
+        # que de verdad corrió la recuperación completa y no el camino corto (si no, la rama sería vacua): solo ella
+        # borra el pendiente, y lo hace DESPUÉS del aviso que se mide
+        assert not (escenario.control() / "pending.json").exists()
     assert any(f"tiene {cantidad} archivo(s) que no se borran solos" in m for m in mensajes)
     resumen = [m for m in mensajes if m.startswith("En la papelera: y ")]
     nombrados_en_el_log = [m for m in mensajes if m.startswith("En la papelera:") and m not in resumen]
