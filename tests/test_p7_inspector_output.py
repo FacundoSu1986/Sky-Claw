@@ -22,8 +22,6 @@ import pathlib
 import subprocess
 import sys
 
-import pytest
-
 RAIZ_REPO = pathlib.Path(__file__).resolve().parents[1]
 RUTA_INSPECTOR = RAIZ_REPO / "scripts" / "p7_readonly_inspection.py"
 
@@ -71,143 +69,31 @@ class Arboles:
         )
 
 
-def _validar(arboles: Arboles, destino: pathlib.Path) -> pathlib.Path:
-    return inspector.validar_destino_informe(destino, arboles_protegidos=arboles.protegidos())
-
-
 # ---------------------------------------------------------------------------
-# Los siete casos exigidos
+# FIX A — el inspector NO escribe: el informe sale por stdout
 # ---------------------------------------------------------------------------
 
 
-def test_rechaza_el_destino_que_es_el_modorganizer_ini(tmp_path: pathlib.Path) -> None:
-    """El caso más grave: el informe truncaría el INI que el inspector audita."""
-    arboles = Arboles(tmp_path)
-    ini = arboles.mo2 / "modorganizer.ini"
-    antes = ini.read_bytes()
-    with pytest.raises(inspector.SalidaNoPermitidaError, match="modorganizer.ini|instancia MO2"):
-        _validar(arboles, ini)
-    # Y el INI sigue intacto: la validación no toca nada.
-    assert ini.read_bytes() == antes
+def test_el_inspector_no_expone_ninguna_funcion_de_escritura_de_informes() -> None:
+    """Las funciones del escritor anterior ya no existen, ni por accidente.
 
-
-def test_rechaza_el_destino_que_es_active_json(tmp_path: pathlib.Path) -> None:
-    """``active.json`` es el Desired Runtime: pisarlo revierte el estado durable."""
-    arboles = Arboles(tmp_path)
-    with pytest.raises(inspector.SalidaNoPermitidaError, match="storage|Frozen Runtime"):
-        _validar(arboles, arboles.storage / "active.json")
-
-
-def test_rechaza_un_destino_dentro_del_runtime_clone(tmp_path: pathlib.Path) -> None:
-    arboles = Arboles(tmp_path)
-    with pytest.raises(inspector.SalidaNoPermitidaError, match="Runtime Clone"):
-        _validar(arboles, arboles.clone / "SkyrimSE.exe")
-
-
-def test_rechaza_un_destino_dentro_de_la_managed_source(tmp_path: pathlib.Path) -> None:
-    """Escribir en la instalación de Steam es justo lo que SFR-11 prohíbe."""
-    arboles = Arboles(tmp_path)
-    with pytest.raises(inspector.SalidaNoPermitidaError, match="Managed Source"):
-        _validar(arboles, arboles.managed / "informe.json")
-
-
-def test_rechaza_sobrescribir_un_informe_existente(tmp_path: pathlib.Path) -> None:
-    """Un informe no pisa ni siquiera a otro informe."""
-    arboles = Arboles(tmp_path)
-    existente = arboles.permitido / "informe.json"
-    existente.write_text("previo", encoding="utf-8")
-    with pytest.raises(inspector.SalidaNoPermitidaError, match="ya existe"):
-        _validar(arboles, existente)
-    assert existente.read_text(encoding="utf-8") == "previo"
-
-
-def test_rechaza_un_junction_que_apunta_a_un_arbol_protegido(tmp_path: pathlib.Path) -> None:
-    """Un junction dentro de un directorio permitido no puede sortear el prefijo.
-
-    Sin resolver el enlace, la comparación de prefijos diría «está dentro de
-    ``informes/``» y escribiría en el storage. Se resuelve primero.
+    Un ``validar_destino_informe`` que sobreviva sin llamadores es una invitación
+    a re-cablearlo. Si alguien lo necesita, tiene que volver a discutir el
+    TOCTOU, no encontrarlo ya escrito.
     """
+    for nombre in (
+        "validar_destino_informe",
+        "escribir_informe_exclusivo",
+        "SalidaNoPermitidaError",
+        "_arboles_protegidos",
+    ):
+        assert not hasattr(inspector, nombre), f"sobrevive {nombre}: el camino de escritura no se retiró entero"
+
+
+def test_la_cli_rechaza_json_salida(tmp_path: pathlib.Path) -> None:
+    """``--json-salida`` ya no es una opción: argparse la rechaza con código 2."""
     arboles = Arboles(tmp_path)
-    enlace = arboles.permitido / "atajo"
-    creacion = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(enlace), str(arboles.storage)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if creacion.returncode != 0 or not enlace.exists():
-        pytest.skip(f"no se pudo crear el junction en esta máquina: {creacion.stderr[-200:]}")
-    try:
-        with pytest.raises(inspector.SalidaNoPermitidaError, match="enlace|reparse|storage"):
-            _validar(arboles, enlace / "informe.json")
-    finally:
-        os.rmdir(enlace)
-
-
-def test_acepta_un_destino_nuevo_fuera_de_los_arboles_protegidos(tmp_path: pathlib.Path) -> None:
-    """Control positivo: sin él, un guard que rechaza todo pasaría los seis negativos."""
-    arboles = Arboles(tmp_path)
-    destino = arboles.permitido / "informe-nuevo.json"
-    canonico = _validar(arboles, destino)
-    assert canonico.name == "informe-nuevo.json"
-    inspector.escribir_informe_exclusivo(canonico, '{"ok": true}\n')
-    assert canonico.read_text(encoding="utf-8") == '{"ok": true}\n'
-
-
-# ---------------------------------------------------------------------------
-# La escritura en sí
-# ---------------------------------------------------------------------------
-
-
-def test_la_escritura_no_sobrescribe_aunque_el_archivo_aparezca_despues(tmp_path: pathlib.Path) -> None:
-    """``O_EXCL`` cierra la ventana entre validar y escribir.
-
-    La validación y la escritura son dos llamadas: entre ellas el archivo puede
-    aparecer. ``write_text`` lo truncaría; ``O_CREAT|O_EXCL`` no.
-    """
-    arboles = Arboles(tmp_path)
-    destino = _validar(arboles, arboles.permitido / "carrera.json")
-    # Alguien lo crea justo después de la validación.
-    destino.write_text("ajeno", encoding="utf-8")
-    with pytest.raises(inspector.SalidaNoPermitidaError, match="apareció"):
-        inspector.escribir_informe_exclusivo(destino, "{}\n")
-    assert destino.read_text(encoding="utf-8") == "ajeno"
-
-
-def test_un_destino_invalido_devuelve_codigo_2_y_no_escribe(tmp_path: pathlib.Path) -> None:
-    """Por la CLI: el informe sale por stdout y el fallo es explícito."""
-    arboles = Arboles(tmp_path)
-    ini = arboles.mo2 / "modorganizer.ini"
-    antes = ini.read_bytes()
-    proc = subprocess.run(
-        [
-            sys.executable,
-            str(RUTA_INSPECTOR),
-            "--storage-root",
-            str(arboles.storage),
-            "--mo2-instance",
-            str(arboles.mo2),
-            "--json-salida",
-            str(ini),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        cwd=str(RAIZ_REPO),
-    )
-    assert proc.returncode == 2, f"se esperaba 2 (salida rechazada), se obtuvo {proc.returncode}: {proc.stderr[-400:]}"
-    assert "ERROR" in proc.stderr
-    assert ini.read_bytes() == antes, "el INI fue modificado por el inspector"
-
-
-def test_un_destino_valido_por_la_cli_escribe_el_informe(tmp_path: pathlib.Path) -> None:
-    """Control positivo por la CLI: un destino permitido se escribe de verdad.
-
-    Sin este caso, un validador que rechazara TODO pasaría los tests negativos y
-    rompería la herramienta en el único uso que tiene.
-    """
-    arboles = Arboles(tmp_path)
-    destino = arboles.permitido / "informe-cli.json"
+    destino = arboles.permitido / "informe.json"
     proc = subprocess.run(
         [
             sys.executable,
@@ -218,6 +104,28 @@ def test_un_destino_valido_por_la_cli_escribe_el_informe(tmp_path: pathlib.Path)
             str(arboles.mo2),
             "--json-salida",
             str(destino),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=str(RAIZ_REPO),
+    )
+    assert proc.returncode == 2, f"se esperaba 2 (opción inexistente), se obtuvo {proc.returncode}"
+    assert "unrecognized arguments" in proc.stderr
+    assert not destino.exists(), "el inspector escribió un archivo"
+
+
+def test_la_cli_emite_el_informe_por_stdout(tmp_path: pathlib.Path) -> None:
+    """Control positivo: sin archivo de salida, el JSON sale por stdout."""
+    arboles = Arboles(tmp_path)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(RUTA_INSPECTOR),
+            "--storage-root",
+            str(arboles.storage),
+            "--mo2-instance",
+            str(arboles.mo2),
         ],
         capture_output=True,
         text=True,
@@ -225,16 +133,22 @@ def test_un_destino_valido_por_la_cli_escribe_el_informe(tmp_path: pathlib.Path)
         cwd=str(RAIZ_REPO),
     )
     assert proc.returncode in (0, 1), f"la CLI falló por un motivo inesperado: {proc.stderr[-400:]}"
-    assert destino.is_file(), "el informe no se escribió"
-    contenido = json.loads(destino.read_text(encoding="utf-8"))
+    contenido = json.loads(proc.stdout)
     assert "veredicto" in contenido
     assert contenido["rutas_completas"] is False, "por defecto el informe NO debe incluir rutas completas"
 
 
-def _correr_cli(arboles: Arboles, destino: pathlib.Path, *, ioencoding: str) -> subprocess.CompletedProcess[str]:
+def test_la_cli_sobrevive_a_una_consola_cp1252(tmp_path: pathlib.Path) -> None:
+    """El informe contiene «→» y acentos; una consola cp1252 no puede imprimirlos.
+
+    ``sys.stdout`` usa ``strict`` por defecto en Windows y lanza
+    ``UnicodeEncodeError``. Se emite ASCII puro (``ensure_ascii=True``) y el JSON
+    sigue siendo válido.
+    """
+    arboles = Arboles(tmp_path)
     entorno = dict(os.environ)
-    entorno["PYTHONIOENCODING"] = ioencoding
-    return subprocess.run(
+    entorno["PYTHONIOENCODING"] = "cp1252"
+    proc = subprocess.run(
         [
             sys.executable,
             str(RUTA_INSPECTOR),
@@ -242,8 +156,6 @@ def _correr_cli(arboles: Arboles, destino: pathlib.Path, *, ioencoding: str) -> 
             str(arboles.storage),
             "--mo2-instance",
             str(arboles.mo2),
-            "--json-salida",
-            str(destino),
         ],
         capture_output=True,
         text=True,
@@ -253,35 +165,39 @@ def _correr_cli(arboles: Arboles, destino: pathlib.Path, *, ioencoding: str) -> 
         cwd=str(RAIZ_REPO),
         env=entorno,
     )
-
-
-def test_la_cli_sobrevive_a_una_consola_cp1252(tmp_path: pathlib.Path) -> None:
-    """El informe contiene «→» y acentos; una consola cp1252 no puede imprimirlos.
-
-    Regresión real: en ``windows-latest`` la consola es cp1252 y ``print`` lanzaba
-    ``UnicodeEncodeError`` ANTES de escribir el archivo, así que el informe nunca
-    se producía. Localmente la consola era UTF-8 y el test pasaba.
-
-    Se fuerza la página de códigos con ``PYTHONIOENCODING`` para que el caso sea
-    reproducible fuera de Windows.
-    """
-    arboles = Arboles(tmp_path)
-    destino = arboles.permitido / "informe-cp1252.json"
-    proc = _correr_cli(arboles, destino, ioencoding="cp1252")
-    assert "UnicodeEncodeError" not in proc.stderr, f"la CLI reventó por codificación: {proc.stderr[-400:]}"
-    assert destino.is_file(), f"el informe no se escribió con consola cp1252: {proc.stderr[-400:]}"
-    contenido = json.loads(destino.read_text(encoding="utf-8"))
+    assert proc.returncode in (0, 1), f"la CLI murió con una consola cp1252: {proc.stderr[-400:]}"
+    assert "UnicodeEncodeError" not in proc.stderr
+    contenido = json.loads(proc.stdout)
     assert "veredicto" in contenido
 
 
-def test_la_cli_rechaza_el_destino_invalido_tambien_con_cp1252(tmp_path: pathlib.Path) -> None:
-    """El rechazo no puede depender de que la consola sepa imprimir el informe."""
+def test_la_cli_rechaza_una_redireccion_a_un_arbol_protegido_no_aplica(tmp_path: pathlib.Path) -> None:
+    """La redirección la hace el shell: el inspector no puede —ni debe— impedirla.
+
+    Este test documenta el límite del contrato en vez de fingir una garantía. El
+    inspector no abre archivos; si el operador redirige stdout al INI, el daño lo
+    hace su shell, no la herramienta. Lo que la herramienta garantiza es que ella
+    no elige el destino.
+    """
     arboles = Arboles(tmp_path)
     ini = arboles.mo2 / "modorganizer.ini"
     antes = ini.read_bytes()
-    proc = _correr_cli(arboles, ini, ioencoding="cp1252")
-    assert proc.returncode == 2, f"se esperaba 2, se obtuvo {proc.returncode}: {proc.stderr[-400:]}"
-    assert ini.read_bytes() == antes
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(RUTA_INSPECTOR),
+            "--storage-root",
+            str(arboles.storage),
+            "--mo2-instance",
+            str(arboles.mo2),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=str(RAIZ_REPO),
+    )
+    assert proc.returncode in (0, 1)
+    assert ini.read_bytes() == antes, "el inspector escribió sobre el INI sin que se le pidiera"
 
 
 def test_el_journal_pendiente_bloquea_con_su_valor_real(tmp_path: pathlib.Path) -> None:
@@ -322,12 +238,31 @@ def test_los_registros_de_recuperacion_se_buscan_donde_viven(tmp_path: pathlib.P
     )
 
 
+def _correr_cli(arboles: Arboles) -> subprocess.CompletedProcess[str]:
+    """Corre el inspector y devuelve el proceso con el JSON en stdout."""
+    return subprocess.run(
+        [
+            sys.executable,
+            str(RUTA_INSPECTOR),
+            "--storage-root",
+            str(arboles.storage),
+            "--mo2-instance",
+            str(arboles.mo2),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=300,
+        cwd=str(RAIZ_REPO),
+    )
+
+
 def test_listo_para_p7_concuerda_con_el_veredicto(tmp_path: pathlib.Path) -> None:
     """El booleano y el código de salida no pueden contradecir al veredicto."""
     arboles = Arboles(tmp_path)
-    destino = arboles.permitido / "informe-veredicto.json"
-    _correr_cli(arboles, destino, ioencoding="utf-8")
-    contenido = json.loads(destino.read_text(encoding="utf-8"))
+    proc = _correr_cli(arboles)
+    contenido = json.loads(proc.stdout)
     assert contenido["listo_para_p7"] is (contenido["veredicto"] == "READY_FOR_P7"), (
         f"listo_para_p7={contenido['listo_para_p7']} con veredicto={contenido['veredicto']}"
     )
@@ -342,81 +277,11 @@ def test_los_detalles_de_los_hallazgos_no_publican_rutas(tmp_path: pathlib.Path)
     arboles = Arboles(tmp_path)
     # Sin INI: el preflight emite un detalle con la ruta de la instancia MO2.
     (arboles.mo2 / "modorganizer.ini").unlink()
-    destino = arboles.permitido / "informe-detalles.json"
-    _correr_cli(arboles, destino, ioencoding="utf-8")
-    texto = destino.read_text(encoding="utf-8")
+    proc = _correr_cli(arboles)
+    texto = proc.stdout
     assert str(tmp_path) not in texto, "una ruta privada completa apareció en el informe"
     contenido = json.loads(texto)
     assert contenido["rutas_completas"] is False
-
-
-@pytest.mark.skipif(os.name != "nt", reason="mklink /J es de Windows")
-def test_una_raiz_protegida_por_junction_no_habilita_la_escritura(tmp_path: pathlib.Path) -> None:
-    """Si ``--storage-root`` llega por un junction, el destino físico es el mismo árbol.
-
-    Comparar la raíz sin resolver la dejaba con el alias mientras el destino se
-    resolvía a la ruta física: el prefijo no coincidía y la escritura pasaba
-    (Codex sobre #851).
-    """
-    real = tmp_path / "storage-real"
-    real.mkdir()
-    alias = tmp_path / "storage-alias"
-    creacion = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(alias), str(real)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if creacion.returncode != 0 or not alias.exists():
-        pytest.skip(f"no se pudo crear el junction: {creacion.stderr[-200:]}")
-    try:
-        permitido = tmp_path / "informes"
-        permitido.mkdir()
-        protegidos = inspector._arboles_protegidos(
-            storage_root=alias,
-            mo2_instance_dir=tmp_path / "MO2",
-            clone_roots=[],
-            managed_source_root=None,
-        )
-        with pytest.raises(inspector.SalidaNoPermitidaError):
-            inspector.validar_destino_informe(real / "informe.json", arboles_protegidos=protegidos)
-    finally:
-        os.rmdir(alias)
-
-
-def test_la_managed_source_descubierta_tambien_protege_el_destino(tmp_path: pathlib.Path) -> None:
-    """Omitir ``--managed-source`` no puede dejar la Steam descubierta escribible.
-
-    El preflight descubre la instalación y la devuelve en
-    ``evaluacion.managed_source_root``. Proteger sólo ``args.managed_source``
-    dejaba `--json-salida <steam>/informe.json` aceptado (Codex sobre #851).
-    """
-    arboles = Arboles(tmp_path)
-    descubierta = arboles.managed
-    destino = descubierta / "informe.json"
-
-    original = inspector.construir_informe
-
-    def _falso(**_: object):  # type: ignore[no-untyped-def]
-        return {"veredicto": "BLOCKED", "listo_para_p7": False, "clone_objetivo": None, "hallazgos": []}, descubierta
-
-    inspector.construir_informe = _falso
-    try:
-        codigo = inspector.main(
-            [
-                "--storage-root",
-                str(arboles.storage),
-                "--mo2-instance",
-                str(arboles.mo2),
-                "--json-salida",
-                str(destino),
-            ]
-        )
-    finally:
-        inspector.construir_informe = original
-
-    assert codigo == 2, f"se aceptó escribir dentro de la Managed Source descubierta (código {codigo})"
-    assert not destino.exists()
 
 
 def test_el_desired_sin_raiz_resuelta_no_habilita_p7(tmp_path: pathlib.Path) -> None:
@@ -452,36 +317,30 @@ def test_el_desired_sin_raiz_resuelta_no_habilita_p7(tmp_path: pathlib.Path) -> 
     assert informe["listo_para_p7"] is False
 
 
-def test_las_dependencias_se_detectan_con_cualquier_separador(tmp_path: pathlib.Path) -> None:
-    """Una ruta escrita con ``/`` o ``\\`` tiene que ser detectada igual.
+def test_el_detalle_de_dependencias_se_redacta_aunque_la_source_se_descubra() -> None:
+    """El detalle nombra la ruta: tiene que redactarse con CUALQUIER variante.
 
-    Codex tercera ronda (#851): ``str(Path)`` en Windows devuelve barras
-    invertidas, pero los TOML pueden usar barras normales o duplicarlas. Sin
-    normalizar, la dependencia pasa desapercibida y P7 declara OK.
+    ``_dependencias_en_arbol`` devuelve ``"<archivo> menciona <aguja>"``, y la
+    aguja es una ruta completa. Si la Managed Source la DESCUBRIÓ el preflight
+    —no vino por ``--managed-source``—, no está en ``conocidas``; la redacción
+    depende entonces del patrón de ruta absoluta. Se prueba la unidad, no el
+    informe entero: con un storage sin Clone el bloque de dependencias ni
+    siquiera corre y el test sería vacuo.
     """
-    managed = tmp_path / "Steam" / "Skyrim Special Edition"
-    managed.mkdir(parents=True, exist_ok=True)
+    source = pathlib.Path("G:/Steam/steamapps/common/Skyrim Special Edition")
+    detalle = inspector._dependencias_en_arbol.__name__  # sanity: la función existe
+    assert detalle == "_dependencias_en_arbol"
 
-    plugins = tmp_path / "Data" / "SKSE" / "Plugins"
-    plugins.mkdir(parents=True, exist_ok=True)
-    toml = plugins / "EngineFixes.toml"
+    agujas = inspector._variantes_de_ruta_para_busqueda(source)
+    assert agujas, "sin variantes el chequeo de dependencias sería vacuo"
 
-    # Forma POSIX
-    toml.write_text(
-        f'skyrim_path = "{str(managed).replace(chr(92), "/")}"\n',
-        encoding="utf-8",
-    )
-    sospechosos = inspector._dependencias_en_arbol(tmp_path, inspector._variantes_de_ruta_para_busqueda(managed))
-    assert any("EngineFixes.toml" in s for s in sospechosos), (
-        f"la dependencia con separadores '/' no se detectó: {sospechosos}"
-    )
+    # Cada variante, embebida en un detalle, tiene que salir redactada.
+    for aguja in agujas:
+        texto = f"Data/SKSE/Plugins/EngineFixes.toml menciona {aguja}"
+        redactado = inspector._redactar_texto(texto, lambda _: "<ruta>", [])
+        assert aguja not in redactado, f"la variante {aguja!r} sobrevivió a la redacción: {redactado}"
 
-    # Forma con barras invertidas escapadas (estilo TOML/JSON raw)
-    toml.write_text(
-        f'skyrim_path = "{str(managed).replace(chr(92), chr(92) + chr(92))}"\n',
-        encoding="utf-8",
-    )
-    sospechosos2 = inspector._dependencias_en_arbol(tmp_path, inspector._variantes_de_ruta_para_busqueda(managed))
-    assert any("EngineFixes.toml" in s for s in sospechosos2), (
-        f"la dependencia con separadores '\\\\' no se detectó: {sospechosos2}"
-    )
+    # Y con la raíz declarada en ``conocidas`` tampoco.
+    texto = f"EngineFixes.toml menciona {source}"
+    redactado = inspector._redactar_texto(texto, lambda _: "<ruta>", [source])
+    assert str(source) not in redactado

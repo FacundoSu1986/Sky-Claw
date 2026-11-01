@@ -721,7 +721,11 @@ def test_10_fallo_durante_escritura_temporal_recuperacion(tmp_path: pathlib.Path
         storage_root, target_generation_id=gen_id, target_clone_id="clone-1"
     )
 
-    def _escribir_que_falla(handle: int, datos: bytes) -> None:
+    def _escribir_que_falla(handle: int, datos: bytes, al_escribir=None) -> None:
+        # Acepta y propaga el hook: el escritor real lo recibe y lo invoca antes
+        # de mutar. Un doble con otra firma rompe el cableado, no el escenario.
+        if al_escribir is not None:
+            al_escribir()
         raise Mo2IniExclusionError(f"ENOSPC simulado en la escritura por handle ({len(datos)} B)")
 
     with (
@@ -798,10 +802,12 @@ def test_11_fallo_durante_reemplazo_recuperacion(tmp_path: pathlib.Path) -> None
     intermedio = nuevo[:corte] + previos[corte:]
     assert intermedio != previos, "el corte no produjo un estado intermedio real"
 
-    def _escribir_a_medias(handle: int, datos: bytes) -> None:
+    def _escribir_a_medias(handle: int, datos: bytes, al_escribir=None) -> None:
         # Sólo la PRIMERA escritura (la del contenido nuevo) se corta; las que
         # hace el rollback después tienen que poder completarse, si no el test
         # pasaría porque el rollback también falla.
+        if al_escribir is not None:
+            al_escribir()
         if parciales["escritas"] == 0:
             parciales["escritas"] += 1
             real_escribir(handle, intermedio)

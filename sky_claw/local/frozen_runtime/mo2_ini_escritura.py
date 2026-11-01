@@ -482,8 +482,13 @@ class IniRetenido(Protocol):
         """Bytes actuales del archivo, por el handle retenido."""
         ...
 
-    def escribir_bytes(self, datos: bytes) -> None:
-        """Reemplaza el contenido del archivo por ``datos``, por el handle retenido."""
+    def escribir_bytes(self, datos: bytes, *, al_escribir: Callable[[], None] | None = None) -> None:
+        """Reemplaza el contenido del archivo por ``datos``, por el handle retenido.
+
+        ``al_escribir`` se invoca inmediatamente antes de la primera operación
+        que muta. Un doble de test que lo ignore deja el flag de intento sin
+        marcar y el rollback trata la escritura propia como ajena.
+        """
         ...
 
 
@@ -540,11 +545,14 @@ def actualizar_game_path_por_handle(
         # y dispararía la detección de estabilidad del preflight sin motivo.
         return contenido
 
-    if al_escribir is not None:
-        al_escribir()
-
     try:
-        retenido.escribir_bytes(bytes_finales)
+        # El hook viaja HASTA el punto de mutación real: dentro de
+        # ``escribir_bytes`` hay una revalidación de identidad y de hardlinks que
+        # puede abortar sin escribir. Invocarlo acá marcaría «intenté escribir»
+        # en un camino donde el archivo nunca se tocó, y el rollback atribuiría
+        # a la transición un estado intermedio de un tercero (CodeRabbit sobre
+        # #851).
+        retenido.escribir_bytes(bytes_finales, al_escribir=al_escribir)
     except Mo2IniEscrituraError:
         raise
     except Exception as exc:  # noqa: BLE001 - el gate lanza sus propios tipos

@@ -168,6 +168,29 @@ un INI antes y después del cambio de `gamePath` mide 89 de 110 bytes. La primer
 medición cortaba en `len//3 = 38` —dentro del prefijo— y por eso daba cero
 rasgadas. Era un artefacto del corte, no una propiedad del protocolo.
 
+### 3.7bis Un hardlink del INI hace que la escritura mute DOS nombres
+
+La exclusión bloquea a un tercero que llegue por un alias hardlink —el chequeo
+de compartición es por objeto—, pero **no** protege contra que el propio gate
+escriba a través de uno. Medido en esta rama:
+
+```python
+os.link(ini, alias)          # nNumberOfLinks = 2, mismo FileIndex
+gate.escribir_bytes(nuevo)   # escribe por el handle del "ini"
+alias.read_bytes() == nuevo  # True: el alias también cambió
+```
+
+El alias cambia sin que nadie lo haya pedido, y `binder_recovery` trabaja **por
+ruta**: sólo conoce una de las dos, así que el rollback no puede revertir la
+otra. Es un cambio silencioso de un archivo que la transición no declaró.
+
+Decisión: **fail-closed**. `nNumberOfLinks` se lee de
+`BY_HANDLE_FILE_INFORMATION` al adquirir y se exige `== 1`; si no, la exclusión
+queda `NOT_ESTABLISHED` y el binder no muta. Además se **revalida** la identidad
+—volumen, índice y `nlinks`— sobre el mismo handle inmediatamente antes del
+`WriteFile`, porque un hardlink creado entre adquirir y escribir reabre el
+problema. Los dos chequeos tienen test con mutante propio.
+
 ### 3.8 Costo de `FILE_SHARE_NONE`, medido
 
 | Costo | Medición |

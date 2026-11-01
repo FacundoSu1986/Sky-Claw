@@ -135,6 +135,7 @@ import hashlib
 import os
 import pathlib
 import time
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Any, Final
 
@@ -243,10 +244,17 @@ class IdentidadIni:
     ``volumen`` + ``indice`` identifican el OBJETO, no el nombre. Sobrevive a un
     rename y es la misma para todos los hardlinks, así que sirve para detectar
     que el path apunta a otro archivo que el que se abrió.
+
+    ``nlinks`` es ``nNumberOfLinks`` de ``BY_HANDLE_FILE_INFORMATION``. Un INI con
+    más de un nombre es un riesgo de integridad MEDIDO, no teórico: escribir por
+    el handle muta el OBJETO, y el objeto tiene dos nombres. El alias cambia sin
+    que nadie lo haya pedido y sin que la recuperación —que trabaja por ruta— lo
+    sepa. Se rechaza antes de mutar.
     """
 
     volumen: int
     indice: int
+    nlinks: int = 1
 
     def __str__(self) -> str:
         return f"{self.volumen:08x}:{self.indice:016x}"
@@ -448,6 +456,7 @@ def _abrir_exclusivo(ruta: pathlib.Path) -> _Apertura:
         identidad=IdentidadIni(
             volumen=int(info.dwVolumeSerialNumber),
             indice=(int(info.nFileIndexHigh) << 32) | int(info.nFileIndexLow),
+            nlinks=int(info.nNumberOfLinks),
         ),
     )
 
@@ -483,13 +492,43 @@ def _leer_handle(handle: int) -> bytes:
         trozos.append(buffer.raw[: leidos.value])
 
 
-def _escribir_handle(handle: int, datos: bytes) -> None:
-    """Escribe ``datos`` desde el byte 0 y trunca al final, por el handle."""
+def _identidad_de_handle(handle: int) -> IdentidadIni:
+    """Identidad del OBJETO retenido, leída AHORA.
+
+    Se vuelve a consultar en vez de reusar la de la apertura: entre adquirir la
+    exclusión y escribir pueden pasar minutos, y un hardlink creado en esa
+    ventana convierte una escritura de un nombre en una escritura de dos.
+    """
+    if _KERNEL32 is None:
+        raise Mo2IniExclusionError("kernel32 no disponible: no se puede leer la identidad del handle")
+    info = _ByHandleFileInformation()
+    if not _KERNEL32.GetFileInformationByHandle(ctypes.c_void_p(handle), ctypes.byref(info)):
+        codigo = _ultimo_error()
+        raise Mo2IniExclusionError(f"GetFileInformationByHandle falló con WinError {codigo}")
+    return IdentidadIni(
+        volumen=int(info.dwVolumeSerialNumber),
+        indice=(int(info.nFileIndexHigh) << 32) | int(info.nFileIndexLow),
+        nlinks=int(info.nNumberOfLinks),
+    )
+
+
+def _escribir_handle(handle: int, datos: bytes, al_escribir: Callable[[], None] | None = None) -> None:
+    """Escribe ``datos`` desde el byte 0 y trunca al final, por el handle.
+
+    ``al_escribir`` se invoca INMEDIATAMENTE antes del ``WriteFile``, después de
+    posicionar el puntero y antes de la primera llamada que muta. Es el único
+    punto en el que «voy a escribir» es verdad: antes de aquí están la
+    revalidación de identidad y la comprobación de hardlinks, que pueden abortar
+    sin tocar el archivo (CodeRabbit sobre #851).
+    """
     if _KERNEL32 is None:
         raise Mo2IniExclusionError("kernel32 no disponible: no se puede escribir por handle")
     if _KERNEL32.SetFilePointer(ctypes.c_void_p(handle), 0, None, _FILE_BEGIN) == 0xFFFFFFFF:
         codigo = _ultimo_error()
         raise Mo2IniExclusionError(f"SetFilePointer falló con WinError {codigo}")
+
+    if al_escribir is not None:
+        al_escribir()
 
     escritos = ctypes.c_uint32(0)
     if datos:
@@ -583,7 +622,7 @@ class ExclusionIni:
                 f"({actual} != {esperada}): no se muta una superficie cuya identidad no liga"
             )
 
-    def escribir_bytes(self, datos: bytes) -> None:
+    def escribir_bytes(self, datos: bytes, *, al_escribir: Callable[[], None] | None = None) -> None:
         """Reemplaza el contenido del INI por ``datos``, por el handle retenido.
 
         La escritura NO es atómica: no hay reemplazo atómico posible mientras se
@@ -593,9 +632,33 @@ class ExclusionIni:
 
         Raises:
             ExclusionNoAutorizadaError: si la exclusión no está establecida.
-            Mo2IniExclusionError: si la escritura o el volcado fallan.
+            Mo2IniExclusionError: si la identidad cambió, o si la escritura o el
+                volcado fallan.
         """
-        _escribir_handle(self._exigir_autorizacion(), datos)
+        handle = self._exigir_autorizacion()
+
+        # Revalidación INMEDIATAMENTE antes de mutar. La adquisición comprobó
+        # ``nlinks == 1`` y que el path apuntara a este objeto; eso fue antes. Un
+        # hardlink creado en el intervalo hace que esta escritura mute también el
+        # alias, y el rollback por ruta no puede deshacerlo. Se vuelve a preguntar
+        # al handle —que es el único que no miente— y se falla cerrado.
+        esperada = self._diagnostico.identidad
+        if esperada is None:
+            raise Mo2IniExclusionError("la exclusión no registró identidad: no se puede revalidar antes de mutar")
+        actual = _identidad_de_handle(handle)
+        if actual.indice != esperada.indice or actual.volumen != esperada.volumen:
+            raise Mo2IniExclusionError(
+                f"{self._diagnostico.ruta}: el objeto retenido cambió de identidad antes de escribir "
+                f"({actual} != {esperada}): no se muta"
+            )
+        if actual.nlinks != 1:
+            raise Mo2IniExclusionError(
+                f"{self._diagnostico.ruta}: el INI tiene {actual.nlinks} nombres (hardlinks) sobre el mismo "
+                f"objeto {actual}: escribir mutaría TODOS los alias y la recuperación por ruta no puede "
+                "revertirlos. No se muta"
+            )
+
+        _escribir_handle(handle, datos, al_escribir)
 
     def cerrar(self) -> None:
         """Libera el handle. Idempotente."""
@@ -765,6 +828,28 @@ def adquirir_exclusion_ini(
                         f"({en_disco.st_ino} != {apertura.identidad.indice}): el path apunta a otro archivo"
                     ),
                     intentos=intento,
+                ),
+            )
+
+        # Un archivo con más de un nombre NO se muta: escribir por el handle
+        # cambia el objeto, y el objeto tiene dos nombres. MEDIDO en este repo:
+        # tras `os.link(ini, alias)`, `escribir_bytes` deja el mismo contenido
+        # nuevo en AMBOS. El alias cambia sin pedido y la recuperación por ruta
+        # no lo ve. Fail-closed antes de tocar nada.
+        if apertura.identidad.nlinks != 1:
+            _cerrar_handle(apertura.handle)
+            return ExclusionIni(
+                None,
+                DiagnosticoExclusion(
+                    estado=EstadoExclusion.NOT_ESTABLISHED,
+                    ruta=destino,
+                    motivo=(
+                        f"el INI tiene {apertura.identidad.nlinks} nombres (hardlinks) sobre el mismo objeto "
+                        f"{apertura.identidad}: escribir por el handle mutaría TODOS los alias, y la "
+                        "recuperación por ruta no puede revertirlos. Se rechaza antes de mutar"
+                    ),
+                    intentos=intento,
+                    identidad=apertura.identidad,
                 ),
             )
 

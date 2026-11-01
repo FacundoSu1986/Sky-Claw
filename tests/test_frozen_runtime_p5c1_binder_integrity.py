@@ -25,6 +25,7 @@ comparte nada con el que falló.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import json
@@ -1505,3 +1506,105 @@ def test_store_faltante_falla_tambien_en_el_camino_de_aprobacion_ya_consumida(tm
 
     # El journal no llegó a escribirse: el fallo es ANTES del PENDING.
     assert cargar_journal_transicion(rig.storage).disposition is not JournalDisposition.PENDING_PROMOTION
+
+
+# ---------------------------------------------------------------------------
+# FIX C — FlushFileBuffers falla DESPUÉS de WriteFile + SetEndOfFile
+# ---------------------------------------------------------------------------
+
+
+class _Kernel32ConVolcadoFallido:
+    """Delegador de ``kernel32`` que falla en ``FlushFileBuffers``.
+
+    No se parchea ``_escribir_handle``: eso probaría el doble, no el código. El
+    fallo se inyecta en la ÚLTIMA llamada de la secuencia
+    ``WriteFile → SetEndOfFile → FlushFileBuffers``, que es la única forma de
+    dejar el archivo con el contenido NUEVO y la transición sin finalizar.
+    """
+
+    def __init__(self, real: object) -> None:
+        self._real = real
+
+    def __getattr__(self, nombre: str) -> object:
+        return getattr(self._real, nombre)
+
+    def FlushFileBuffers(self, *_args: object) -> int:  # noqa: N802 - nombre de la API
+        return 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="kernel32 y hardlinks NTFS son de Windows")
+def test_un_fallo_de_volcado_tras_escribir_no_finaliza_y_restaura_el_snapshot(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Escribir + truncar con éxito NO es una transición FINALIZED.
+
+    ``FlushFileBuffers`` es el último paso del escritor. Si falla, el archivo ya
+    tiene el contenido objetivo —``WriteFile`` y ``SetEndOfFile`` corrieron— pero
+    la transición no llegó al POST VERIFY y por lo tanto NO se publica. El
+    rollback tiene que restaurar el snapshot, no dejar el INI a medio camino
+    creyendo que el trabajo terminó.
+
+    Es la regla del PR: ``FINALIZED`` sólo después de POST VERIFY y publicación
+    durable. Tener los bytes correctos en disco no es ninguna de las dos cosas.
+    """
+    from sky_claw.local.frozen_runtime import mo2_ini_exclusion as exclusion_mod
+
+    rig = _montar_rig(tmp_path)
+    ini_antes = rig.ini_bytes()
+    real = exclusion_mod._KERNEL32
+    assert real is not None, "el test necesita kernel32 real"
+
+    with (
+        patch.object(exclusion_mod, "_KERNEL32", _Kernel32ConVolcadoFallido(real)),
+        pytest.raises(binder.BinderEscrituraIniError),
+    ):
+        _ejecutar(rig)
+
+    # 1. El rollback restauró el snapshot: no quedó el contenido nuevo.
+    assert rig.ini_bytes() == ini_antes, "el INI quedó con el contenido nuevo pese al fallo"
+
+    # 2. La transición NO está finalizada: el journal sigue PENDING.
+    disposicion = cargar_journal_transicion(rig.storage).disposition
+    assert disposicion is JournalDisposition.PENDING_PROMOTION, (
+        f"la transición se publicó como finalizada pese al fallo de volcado: {disposicion}"
+    )
+    assert recovery.listar_registros(rig.storage) != (), "el registro de recuperación desapareció"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="kernel32 y hardlinks NTFS son de Windows")
+def test_un_fallo_de_volcado_no_pisa_una_escritura_ajena_posterior(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El rollback tras un fallo de volcado sigue respetando la autoría.
+
+    La escritura del tercero va en el ÚNICO hueco real: justo después de que el
+    binder libere la exclusión y antes de que corra el rollback. Se inyecta
+    parcheando ``cerrar``, que es exactamente ese instante —dentro de la ventana
+    la exclusión impide escribir, así que escribir antes sería imposible y el
+    test no probaría nada—.
+
+    El rollback debe dejar el contenido ajeno intacto: la transición sólo puede
+    atribuirse los bytes EXACTAMENTE previstos, y éstos no lo son.
+    """
+    from sky_claw.local.frozen_runtime import mo2_ini_exclusion as exclusion_mod
+
+    rig = _montar_rig(tmp_path)
+    real = exclusion_mod._KERNEL32
+    assert real is not None
+
+    ajeno = b"; escrito por un tercero\r\n[General]\r\ngamePath=Z:////////Otro//r//n"
+    cerrar_real = exclusion_mod.ExclusionIni.cerrar
+
+    def _cerrar_y_tercero_escribe(self: object) -> None:
+        cerrar_real(self)
+        with contextlib.suppress(OSError):
+            rig.ini.write_bytes(ajeno)
+
+    with (
+        patch.object(exclusion_mod, "_KERNEL32", _Kernel32ConVolcadoFallido(real)),
+        patch.object(exclusion_mod.ExclusionIni, "cerrar", _cerrar_y_tercero_escribe),
+        pytest.raises(binder.BinderEscrituraIniError),
+    ):
+        _ejecutar(rig)
+
+    assert rig.ini.read_bytes() == ajeno, "el rollback pisó la escritura del tercero"

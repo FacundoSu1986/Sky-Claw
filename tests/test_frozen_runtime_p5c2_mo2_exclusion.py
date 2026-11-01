@@ -176,6 +176,83 @@ def test_estados_autorizantes_es_un_conjunto_explicito() -> None:
 
 
 # ---------------------------------------------------------------------------
+# B0 — Hardlinks del INI: un objeto, dos nombres
+# ---------------------------------------------------------------------------
+
+
+@SOLO_WINDOWS
+def test_el_ini_con_dos_nombres_se_rechaza_antes_de_mutar(tmp_path: pathlib.Path) -> None:
+    """``nNumberOfLinks != 1`` no autoriza: escribir mutaría los dos nombres.
+
+    MEDIDO en este repo: con ``os.link(ini, alias)``, ``escribir_bytes`` por el
+    handle deja el MISMO contenido nuevo en ambos. La recuperación trabaja por
+    ruta y sólo conoce una, así que el alias cambiaría sin testigo. Se rechaza
+    antes de abrir la puerta, no después de cruzar.
+    """
+    original = _ini_sintetico(tmp_path)
+    alias = tmp_path / "alias.ini"
+    os.link(original, alias)
+    assert os.stat(original).st_nlink == 2
+
+    antes = original.read_bytes()
+    gate = exclusion.adquirir_exclusion_ini(original)
+    try:
+        assert gate.autoriza is False, "un INI con dos nombres autorizó la mutación"
+        assert gate.diagnostico.estado is exclusion.EstadoExclusion.NOT_ESTABLISHED
+        assert "nombres" in gate.diagnostico.motivo and "hardlink" in gate.diagnostico.motivo
+        with pytest.raises(exclusion.ExclusionNoAutorizadaError):
+            gate.escribir_bytes(b"[General]\r\ngamePath=C://r//n")
+    finally:
+        gate.cerrar()
+
+    assert original.read_bytes() == antes, "el original cambió"
+    assert alias.read_bytes() == antes, "el alias cambió: la escritura mutó los dos nombres"
+
+
+@SOLO_WINDOWS
+def test_un_hardlink_creado_despues_de_adquirir_tampoco_permite_escribir(tmp_path: pathlib.Path) -> None:
+    """La identidad se REVALIDA justo antes de mutar, no sólo al adquirir.
+
+    La adquisición comprobó ``nlinks == 1``, pero entre adquirir y escribir puede
+    pasar cualquier cosa. Si en esa ventana alguien crea un hardlink, la escritura
+    mutaría los dos nombres y el rollback por ruta no podría deshacer el alias.
+    """
+    original = _ini_sintetico(tmp_path)
+    antes = original.read_bytes()
+
+    gate = exclusion.adquirir_exclusion_ini(original)
+    try:
+        assert gate.autoriza is True, f"la exclusión no se estableció: {gate.diagnostico.motivo}"
+        # La ventana: el hardlink aparece DESPUÉS de la adquisición.
+        os.link(original, tmp_path / "alias-tardio.ini")
+        with pytest.raises(exclusion.Mo2IniExclusionError, match="nombres"):
+            gate.escribir_bytes(b"[General]\r\ngamePath=D://r//n")
+    finally:
+        gate.cerrar()
+
+    assert original.read_bytes() == antes, "se escribió pese al hardlink tardío"
+
+
+@SOLO_WINDOWS
+def test_un_solo_nombre_sigue_autorizando(tmp_path: pathlib.Path) -> None:
+    """Control positivo: el chequeo no puede bloquear el caso normal.
+
+    Sin este caso, un predicado que rechazara todo pasaría los dos negativos y
+    rompería el gate en el único escenario que tiene que funcionar.
+    """
+    original = _ini_sintetico(tmp_path)
+    gate = exclusion.adquirir_exclusion_ini(original)
+    try:
+        assert gate.autoriza is True, f"un INI normal fue rechazado: {gate.diagnostico.motivo}"
+        assert gate.identidad is not None
+        assert gate.identidad.nlinks == 1
+        gate.escribir_bytes(b"[General]\r\ngamePath=E://r//n")
+    finally:
+        gate.cerrar()
+    assert b"E:" in original.read_bytes()
+
+
+# ---------------------------------------------------------------------------
 # B — Exclusión real contra procesos externos
 # ---------------------------------------------------------------------------
 
@@ -602,9 +679,12 @@ def test_escritor_por_handle_verifica_su_propio_readback(tmp_path: pathlib.Path)
         def leer_bytes(self) -> bytes:
             return self._contenido
 
-        def escribir_bytes(self, datos: bytes) -> None:
+        def escribir_bytes(self, datos: bytes, *, al_escribir=None) -> None:
             # Acepta la escritura y no la aplica: exactamente lo que un handle
-            # roto o un FS que miente producirían.
+            # roto o un FS que miente producirían. Acepta y PROPAGA el hook para
+            # imitar al escritor real: un doble con otra firma prueba otra cosa.
+            if al_escribir is not None:
+                al_escribir()
             return None
 
     retenido = RetenidoQueMiente(INI.encode("utf-8"))
@@ -904,54 +984,41 @@ def ofensas_de_escritura(fuente: str) -> list[str]:
     return ofensas
 
 
-def _solo_en_el_escritor_validado(arbol: ast.Module, nombre: str) -> bool:
-    """¿Toda llamada a ``nombre`` vive dentro de ``escribir_informe_exclusivo``?
-
-    Se generalizó al agregar ``fdopen``: la pregunta «¿esta capacidad está
-    confinada al único escritor validado?» se repite para cada operación que el
-    inspector necesita y no puede prohibir del todo.
-    """
-    for nodo in ast.walk(arbol):
-        if not isinstance(nodo, ast.FunctionDef):
-            continue
-        lo_usa = any(
-            isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Attribute) and hijo.func.attr == nombre
-            for hijo in ast.walk(nodo)
-        )
-        if lo_usa and nodo.name != "escribir_informe_exclusivo":
-            return False
-    return True
-
-
-def _unlink_vive_en_el_escritor_validado(arbol: object) -> bool:
-    """¿El único ``unlink`` del inspector está dentro de ``escribir_informe_exclusivo``?"""
-    assert isinstance(arbol, ast.Module)
-    return _solo_en_el_escritor_validado(arbol, "unlink")
-
-
 def test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes() -> None:
-    """Ancla por AST: la herramienta de P7 no puede escribir sobre el runtime.
+    """Ancla por AST: la herramienta de P7 no puede escribir NADA.
 
     Escanea la FUENTE con :func:`ofensas_de_escritura`, que es una función aparte
     justamente para poder probar el DETECTOR con fragmentos sintéticos.
 
-    Historia de este ancla, porque las tres versiones fallaron distinto:
+    Historia de este ancla, porque las cuatro versiones fallaron distinto:
 
     1. eximía ``json_salida.write_text`` —«es el informe»—, y con eso autorizaba
        cualquier destino, incluido ``modorganizer.ini``;
     2. miraba el ``O_EXCL`` en el archivo entero, y se satisfacía con la mención
        en el docstring;
-    3. ignoraba ``Path.open``, así que ``config_path.open("wb")`` pasaba.
+    3. ignoraba ``Path.open``, así que ``config_path.open("wb")`` pasaba;
+    4. permitía un ``os.open(O_CREAT|O_EXCL)`` «validado», pero la validación era
+       por RUTA: entre ``validar_destino_informe`` y el ``os.open`` el directorio
+       padre podía sustituirse por una junction y el informe caía dentro del
+       árbol auditado. ``O_EXCL`` protege la identidad del ARCHIVO, no la del
+       DIRECTORIO. Se demostró con test RED y se corrigió quitando la escritura.
 
-    El informe se escribe con ``os.open(O_CREAT|O_EXCL)`` dentro de
-    ``escribir_informe_exclusivo``, y eso es lo único que el ancla permite.
+    Ahora la invariante es la fuerte: CERO operaciones de escritura, sin
+    excepciones. La persistencia del informe es del operador (redirección de
+    stdout), que es el único que puede elegir el destino sin que la herramienta
+    tenga que defenderlo de una carrera consigo misma.
     """
     ruta = RAIZ_REPO / "scripts" / "p7_readonly_inspection.py"
     fuente = ruta.read_text(encoding="utf-8")
-    arbol = ast.parse(fuente)
 
     ofensas = ofensas_de_escritura(fuente)
-    aperturas_exclusivas = [
+    assert ofensas == [], f"la inspección de P7 contiene operaciones de escritura: {ofensas}"
+
+    # Ni siquiera ``os.open``: sin banderas de escritura no hay descriptor que
+    # abrir, y cualquier ``os.open`` en un inspector read-only es sospechoso por
+    # sí mismo. Se exige que no haya NINGUNA.
+    arbol = ast.parse(fuente)
+    aperturas = [
         nodo
         for nodo in ast.walk(arbol)
         if isinstance(nodo, ast.Call)
@@ -960,51 +1027,13 @@ def test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes() -> None:
         and isinstance(nodo.func.value, ast.Name)
         and nodo.func.value.id == "os"
     ]
+    assert aperturas == [], f"el inspector abre descriptores con os.open: {[n.lineno for n in aperturas]}"
 
-    # ``unlink`` de limpieza: se permite SÓLO dentro del escritor validado, donde
-    # borra el informe parcial que él mismo acaba de crear con ``O_EXCL``.
-    limpiezas = [o for o in ofensas if o.startswith("unlink")]
-    ofensas = [o for o in ofensas if not o.startswith("unlink")]
-    # ``fdopen`` sobre el descriptor que abrió el escritor validado es parte de la
-    # misma operación; en cualquier otra función sería una escritura suelta.
-    fdopens = [o for o in ofensas if o.startswith("fdopen")]
-    ofensas = [o for o in ofensas if not o.startswith("fdopen")]
-    assert not ofensas, f"la inspección de P7 contiene operaciones mutantes: {ofensas}"
-    if fdopens:
-        assert _solo_en_el_escritor_validado(arbol, "fdopen"), "un fdopen vive fuera de escribir_informe_exclusivo"
-    if limpiezas:
-        assert len(limpiezas) == 1, f"hay más de un unlink en el inspector: {limpiezas}"
-        assert _unlink_vive_en_el_escritor_validado(arbol), (
-            "el unlink del inspector vive fuera de escribir_informe_exclusivo"
+    # El camino de escritura anterior no puede sobrevivir ni como código muerto.
+    for nombre in ("validar_destino_informe", "escribir_informe_exclusivo", "SalidaNoPermitidaError"):
+        assert f"def {nombre}(" not in fuente and f"class {nombre}(" not in fuente, (
+            f"sobrevive {nombre}: el camino de escritura no se retiró entero"
         )
-
-    assert len(aperturas_exclusivas) == 1, (
-        f"se esperaba exactamente una os.open de escritura, hay {len(aperturas_exclusivas)}"
-    )
-    llamada = aperturas_exclusivas[0]
-    escritor = next(
-        (n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef) and n.name == "escribir_informe_exclusivo"),
-        None,
-    )
-    assert escritor is not None, "no existe escribir_informe_exclusivo"
-    asignaciones = [
-        n
-        for n in ast.walk(escritor)
-        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "banderas" for t in n.targets)
-    ]
-    assert len(asignaciones) == 1, f"se esperaba una asignación de banderas, hay {len(asignaciones)}"
-    banderas = ast.get_source_segment(fuente, asignaciones[0]) or ""
-    assert "O_EXCL" in banderas, (
-        f"las banderas de apertura del informe no incluyen O_EXCL: podría truncar un archivo existente ({banderas})"
-    )
-    funciones_con_apertura = [
-        nodo.name
-        for nodo in ast.walk(arbol)
-        if isinstance(nodo, ast.FunctionDef) and any(hijo is llamada for hijo in ast.walk(nodo))
-    ]
-    assert funciones_con_apertura == ["escribir_informe_exclusivo"], (
-        f"la apertura de escritura vive fuera del escritor validado: {funciones_con_apertura}"
-    )
 
 
 @pytest.mark.parametrize(
@@ -1270,3 +1299,28 @@ def test_atribuye_la_extension_parcial_mas_alla_del_eof() -> None:
     k2 = 20  # < len(previos)=30
     actuales2 = nuevo[:k2] + previos[k2:]
     assert _es_escritura_propia_interrumpida(previos, nuevo, actuales2) is True
+
+
+@SOLO_WINDOWS
+def test_el_intento_no_se_marca_si_la_revalidacion_aborta(tmp_path: pathlib.Path) -> None:
+    """El hook dispara justo antes de ``WriteFile``, no antes de revalidar.
+
+    ``escribir_bytes`` revalida identidad y hardlinks antes de mutar. Si esa
+    revalidación aborta, el archivo NO se tocó: marcar «intenté escribir» haría
+    que el rollback atribuyera a la transición un estado intermedio de un
+    tercero. El hook tiene que vivir después de la última comprobación y antes
+    del primer ``WriteFile`` (CodeRabbit sobre #851).
+    """
+    original = _ini_sintetico(tmp_path)
+    gate = exclusion.adquirir_exclusion_ini(original)
+    disparos: list[int] = []
+    try:
+        # El hardlink aparece después de adquirir: la revalidación va a abortar.
+        os.link(original, tmp_path / "alias-tardio.ini")
+        # El escritor envuelve el fallo del gate en su propio tipo.
+        with pytest.raises(escritura.Mo2IniEscrituraError):
+            escritura.actualizar_game_path_por_handle(gate, "G://Modding//Otro", al_escribir=lambda: disparos.append(1))
+    finally:
+        gate.cerrar()
+
+    assert disparos == [], f"el hook marcó un intento que nunca llegó a escribir ({len(disparos)} disparos)"

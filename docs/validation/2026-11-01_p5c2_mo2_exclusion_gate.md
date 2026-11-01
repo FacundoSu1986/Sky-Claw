@@ -155,6 +155,111 @@ Suite local: 38 passed en p5c1_binder_integrity, 63 en p5c2, 20 en p7. Sólo los
 `BLOCKED_BY_QUOTA` no es una revisión aprobada ni un fallo del código: es una
 límite del plan. Queda registrado como tal.
 
+## 0.5 Gate de seguridad final (FIX A–D)
+
+Revisión sobre `a87b57a4`. Cuatro frentes, cada uno con test RED antes del fix
+—salvo B, que se demostró con una sonda de medición antes de tocar código—.
+
+### FIX A — TOCTOU del inspector P7
+
+**Reproducido.** `validar_destino_informe()` comprobaba que el padre existiera,
+no fuera reparse point y que el destino no cayera en un árbol protegido.
+`escribir_informe_exclusivo()` creaba con `O_CREAT|O_EXCL`. Entre las dos, el
+padre se puede sustituir por una junction:
+
+```python
+destino = validar_destino_informe(seguro / "informe.json", ...)  # pasa
+seguro.rename(retirado)
+_winapi.CreateJunction(protegido, seguro)                        # el padre cambia de identidad
+escribir_informe_exclusivo(destino, "{}\n")                      # cae DENTRO de protegido
+```
+
+El test RED lo confirma: `informe.json` aparece dentro del árbol protegido.
+`O_EXCL` protege la identidad del **archivo**, no la del **directorio**; y
+`os.path.islink` devuelve `False` para una junction, así que una segunda
+comprobación por ruta tampoco lo cierra.
+
+**Solución: se elimina la escritura.** `--json-salida`, `validar_destino_informe`,
+`escribir_informe_exclusivo`, `SalidaNoPermitidaError`, `_arboles_protegidos` y
+`_clones_del_informe` se retiran enteros. El inspector emite JSON por stdout y la
+persistencia queda en el operador (`> informe.json`). Un proceso que no puede
+escribir no puede destruir lo que audita, y no hay carrera que defender.
+
+El ancla AST pasa a la invariante fuerte: **cero** operaciones de escritura, sin
+excepciones, y **ningún** `os.open`. `test_el_inspector_no_expone_ninguna_funcion_de_escritura_de_informes`
+impide que el camino retirado sobreviva como código muerto re-cableable.
+
+### FIX B — Hardlinks del INI
+
+**Medido, no razonado.** `nNumberOfLinks` ya estaba en
+`_ByHandleFileInformation` pero nunca se leía:
+
+```
+nlinks original: 2  alias: 2   mismo inodo: True
+tras escribir por el handle del original:
+  original: b'[General]\r\ngamePath=B\r\n'
+  alias   : b'[General]\r\ngamePath=B\r\n'   ← AMBOS mutados
+```
+
+El alias cambia sin pedido y `binder_recovery` trabaja por ruta: sólo conoce una
+de las dos. **Confirmado.**
+
+**Corrección fail-closed en dos puntos:**
+
+1. `IdentidadIni.nlinks` se puebla al adquirir; `nlinks != 1` deja la exclusión
+   en `NOT_ESTABLISHED` con el motivo explícito, sin mutar.
+2. `escribir_bytes` **revalida** volumen, índice y `nlinks` sobre el mismo handle
+   inmediatamente antes del `WriteFile`: un hardlink creado entre adquirir y
+   escribir reabre el problema.
+
+Dos tests con mutante propio (quitar el rechazo de adquisición; quitar la
+revalidación) y un control positivo que verifica que un INI normal sigue
+autorizando.
+
+### FIX C — Recuperación y `FlushFileBuffers`
+
+Se inyecta el fallo en la última llamada de la secuencia
+`WriteFile → SetEndOfFile → FlushFileBuffers`, con un delegador de `kernel32`:
+no se parchea el escritor, se parchea la API.
+
+**Resultado medido:** con el archivo ya conteniendo el objetivo, el binder lanza
+`BinderEscrituraIniError`, el rollback **restaura el snapshot** y el journal
+queda `PENDING_PROMOTION`. Es decir: tener los bytes correctos en disco no
+finaliza nada. `FINALIZED` sigue ocurriendo sólo después de POST VERIFY y
+publicación durable (`_finalizar_locked` está después, y no se alcanza).
+
+Segundo caso: la escritura de un tercero en la única ventana real —justo al
+liberar la exclusión— **no se pisa**. El predicado exige que los bytes sean
+exactamente los previstos; los del tercero no lo son.
+
+Mutantes verificados: ignorar el fallo de volcado (los dos tests mueren) y hacer
+que el rollback no atribuya la escritura propia (muere el de restauración).
+
+### FIX D — Reconciliación de hilos
+
+Ver §0.6.
+
+## 0.6 Reconciliación de hilos contra `a87b57a4` + FIX A–D
+
+| Hilo | Archivo | Clasificación | Evidencia |
+|---|---|---|---|
+| Codex P1 · no atribuir escrituras ambiguas | `binder_recovery.py:953` | **FIX_VERIFIED** | Tri-estado + test de tres valores |
+| Codex P2 · Managed Source descubierta | `p7:640` | **NOT_APPLICABLE** | El camino de escritura se retiró entero (FIX A) |
+| Codex P2 · aperturas de pathlib | `test_p5c2:874` | **FIX_VERIFIED** | Detector parametrizado, 17 positivas |
+| Codex P1 · Desired resuelto | `p7:303` | **FIX_VERIFIED** | Exige `clone_root`; test con `None` |
+| Codex P1 · intento antes de leer | `binder:963` | **FIX_VERIFIED** | Hook movido a `_escribir_handle`, antes del `WriteFile` |
+| Codex P2 · otras familias mutantes | `test_p5c2:882` | **FIX_VERIFIED** | `shutil`, `tempfile`, `rename`, `remove` |
+| Codex P2 · normalizar rutas | `p7:232` | **FIX_VERIFIED** | `_variantes_de_ruta_para_busqueda` + test con `/` y `\\` |
+| Codex P1 · autoría si el escritor… | `mo2_ini_escritura.py:547` | **FIX_VERIFIED** | Tri-estado + hook al punto de mutación |
+| Codex P2 · INIs con varios hardlinks | `mo2_ini_exclusion.py:444` | **FIX_VERIFIED** | FIX B: `nlinks != 1` fail-closed + revalidación |
+| Codex P1 · escrituras parciales que extienden | `binder_recovery.py:687` | **FIX_VERIFIED** | Cuarto desenlace en `_es_escritura_propia_interrumpida` |
+| Codex P2 · junction fuera de Windows | `test_p7:133` | **NOT_APPLICABLE** | El test se retiró con el camino de escritura (FIX A) |
+| CodeRabbit Minor · redactar `origen`/`agujas` | `p7:437` | **FIX_VERIFIED** | `origen` y `agujas` entran en `conocidas`; test sobre las variantes |
+| CodeRabbit Major · no atribuir prefijo por intento | `binder_recovery.py:781` | **FIX_VERIFIED** | Hook al punto de mutación: la revalidación aborta sin marcar |
+| CodeRabbit Minor · detectar `os.remove` | `test_p5c2:868` | **FIX_VERIFIED** | En el set prohibido |
+
+**Ningún hilo queda `STILL_REPRODUCIBLE`.**
+
 ## 1. Rama, worktree y SHAs
 
 | Elemento | Valor |
@@ -288,12 +393,12 @@ Cada archivo con un directorio temporal propio y recién creado.
 | `p4_root_lock` | 2 failed, 52 passed | 2 failed, 52 passed (idéntico, preexistente) |
 | `p5b_durable_authority` | 35 passed | 35 passed |
 | `p5c_binder_preflight` | 57 passed | 57 passed |
-| `p5c1_binder_integrity` | 38 passed | 38 passed |
+| `p5c1_binder_integrity` | 38 passed | 40 passed |
 | `p5c1_ini_escritura` | 34 passed | 34 passed |
 | `p5c1_mo2_clone_binder` | 20 passed | 20 passed |
 | `p5c1_superficies` | 18 passed | 18 passed |
-| `p5c2_mo2_exclusion` | — | 64 passed, 1 skipped |
-| `p7_inspector_output` (nuevo) | — | 20 passed |
+| `p5c2_mo2_exclusion` | — | 68 passed, 1 skipped |
+| `p7_inspector_output` (nuevo) | — | 11 passed |
 
 Los 2 fallos de `p4_root_lock` (`test_rl05`, `test_rl17`) **fallan igual en
 `origin/main`**: preexistentes, ajenos a este trabajo.
@@ -355,7 +460,16 @@ mientras la transición lo retiene, venga el intento de donde venga.
    política de retención todavía: es deliberado —borrar evidencia automáticamente
    derrotaría el propósito— pero conviene definirla antes de que el directorio
    crezca sin control en un rig de larga vida.
-7. **El hook de borrado del entorno** envenena cualquier medición que comparta
+7. **El inspector ya no escribe: la redirección es del shell.** Si el operador
+   hace `... > <instancia>/modorganizer.ini`, el daño lo hace su shell. La
+   herramienta garantiza que ELLA no elige el destino; no puede —ni debe—
+   defender al operador de sí mismo. Es el precio de haber quitado el TOCTOU en
+   vez de parchearlo.
+8. **Un INI con hardlinks no puede transicionar.** Es fail-closed deliberado:
+   se rechaza antes de mutar. Un rig con el INI hardlinkeado a un backup queda
+   bloqueado hasta que el propietario rompa el enlace. Pérdida de disponibilidad
+   a cambio de no mutar un archivo que la transición no declaró.
+9. **El hook de borrado del entorno** envenena cualquier medición que comparta
    `--basetemp`.
 
 ## 9. Requisitos para la sesión P7
@@ -370,14 +484,21 @@ mientras la transición lo retiene, venga el intento de donde venga.
 ## 10. Dictamen
 
 ```text
-P5C2_READY_FOR_FINAL_AUDIT
+P5C2_SAFE_TO_MERGE_SYNTHETIC_ONLY
 ```
 
 La exclusión de mutación y la no observabilidad del contenido se establecen,
 verifican y liberan en rig Windows con procesos externos reales; el gate está
 integrado al binder respetando su journal y sus locks, con la activación
-productiva deshabilitada. El inspector P7 no puede escribir sobre las superficies
-que audita.
+productiva deshabilitada. El inspector P7 **no tiene ninguna capacidad de
+escritura**: el TOCTOU del destino se cerró quitando la escritura, no
+parcheando la comprobación.
+
+Los cuatro frentes del gate final están cerrados con evidencia:
+TOCTOU (test RED + eliminación del camino), hardlinks (medición real + rechazo
+fail-closed + revalidación), `FlushFileBuffers` (inyección + verificación de que
+`FINALIZED` no se publica) y reconciliación de hilos (12 `FIX_VERIFIED`, 2
+`NOT_APPLICABLE`, 0 `STILL_REPRODUCIBLE`).
 
 Lo que **no** se declara: comportamiento de MO2 real ante la ventana (requisito de
 P7), `POWER_LOSS_GUARANTEE`, `QT_QSETTINGS_EQUIVALENCE`, ni que Steam permita
