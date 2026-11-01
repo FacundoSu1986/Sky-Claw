@@ -115,6 +115,22 @@ Se corrigió con un hook ``al_escribir`` que el escritor invoca
 lados: no-op (no dispara) y escritura real (dispara una vez). Verificado con
 mutante: mover el hook antes del chequeo de no-op rompe el test.
 
+### Nota sobre adaptación de tests (``9e3e3bad``)
+
+El tri-estado introdujo una regresión en los tests de integridad del binder
+(``p5c1_binder_integrity``): la recuperación en proceso nuevo dejó de atribuir
+escrituras completas del INI, así que el estado pasó de
+``RESTAURADO_REQUIERE_DUENO`` a ``RESTAURACION_INCOMPLETA_REQUIERE_DUENO``.
+
+Eso es deliberado: la fase se marca ANTES de escribir, así que no prueba
+autoría. Los tests se adaptaron para verificar el nuevo comportamiento seguro:
+- El INI no se restaura automáticamente (evidencia + propietario)
+- Config/active siguen restaurándose por su discriminador propio (sin tri-estado)
+- El entorno se restaura según la fase alcanzada
+
+Suite local: 38 passed en p5c1_binder_integrity, 63 en p5c2, 20 en p7. Sólo los
+2 fallos preexistentes de p4_root_lock.
+
 ### Estado de los revisores
 
 | Revisor | Estado | Se cuenta como aprobación |

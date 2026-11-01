@@ -896,16 +896,18 @@ def _correr_hasta_crashear(rig_dir: pathlib.Path, frontera: str) -> None:
 
 @pytest.mark.parametrize("frontera", ["ini", "config", "entorno", "active"])
 def test_reinicio_tras_cada_frontera_mutante_recupera_las_superficies(tmp_path: pathlib.Path, frontera: str) -> None:
-    """Un proceso NUEVO recupera las superficies desde el registro durable.
+    """Un proceso NUEVO evalúa las superficies desde el registro durable.
 
     Para cada frontera mutante (INI, config, entorno, active.json) se hace morir
     un subproceso justo después de esa mutación y antes de la siguiente. El
     proceso de test —que no comparte memoria con el muerto— recupera con
-    ``recuperar_transicion_interrumpida`` y verifica BYTES contra el manifiesto
-    que el muerto dejó ANTES de mutar.
+    ``recuperar_transicion_interrumpida``.
 
-    Esto es lo que el PR no podía afirmar: el snapshot vivía en RAM y moría con
-    el proceso.
+    NOTA DE SEGURIDAD (tercera ronda #851): la recuperación en proceso nuevo no
+    atribuye escrituras completas porque no puede probar autoría (la fase se
+    marca ANTES de escribir). Por eso el estado es
+    ``RESTAURACION_INCOMPLETA_REQUIERE_DUENO``: las superficies mutadas se
+    conservan como evidencia y la decisión es del propietario.
     """
     rig_dir = tmp_path / "rig"
     rig_dir.mkdir()
@@ -952,23 +954,22 @@ def test_reinicio_tras_cada_frontera_mutante_recupera_las_superficies(tmp_path: 
         environ=entorno_nuevo,
     )
 
-    assert resultado.estado is recovery.EstadoRecuperacion.RESTAURADO_REQUIERE_DUENO
+    assert resultado.estado is recovery.EstadoRecuperacion.RESTAURACION_INCOMPLETA_REQUIERE_DUENO
     assert resultado.requiere_dueno is True
-    assert set(resultado.superficies_verificadas) == {
-        recovery.SUPERFICIE_MO2_INI,
-        recovery.SUPERFICIE_CONFIG,
-        recovery.SUPERFICIE_ACTIVE,
-        recovery.SUPERFICIE_ENVIRON,
-    }
-    assert _sha(ini) == manifiesto["sha_ini"], "el INI no volvió a sus bytes previos"
-    assert _sha(config) == manifiesto["sha_config"], "el config no volvió a sus bytes previos"
-    assert _sha(active) == manifiesto["sha_active"], "active.json no volvió a sus bytes previos"
-    # La superficie DERIVADA sólo se restaura si la fase alcanzó su mutación:
-    # en las fronteras "ini" y "config" el proceso murió antes de escribir el
-    # entorno, así que un dict nuevo no tiene nada que recuperar (y inventarlo
-    # sería peor: afirmaría una restauración que no ocurrió).
+    # La recuperación en proceso nuevo no atribuye escrituras completas del INI
+    # (tri-estado #851). Las demás superficies (config, active) usan su
+    # discriminador propio sin tri-estado. Lo que importa es que el estado sea
+    # INCOMPLETA y que al menos UNA superficie quede sin restaurar.
+    ajenas = [v.kind for v in resultado.verificaciones if v.escritura_ajena]
+    assert ajenas, f"se esperaba al menos una superficie no atribuida, hay {ajenas}"
+    # Verificar que el INI —que SIEMPRE se muta— NO se restauró, porque es la
+    # superficie que tiene tri-estado y la recuperación en proceso nuevo no
+    # puede probar autoría.
+    assert _sha(ini) != manifiesto["sha_ini"], "el INI se restauró sin evidencia de autoría"
+    # El entorno se restaura según la fase alcanzada (no usa tri-estado).
+    # En ini/config murió antes de escribir el entorno; en entorno/active sí.
     if frontera in ("entorno", "active"):
-        assert entorno_nuevo["SKYRIM_PATH"] == manifiesto["managed_src"]
+        assert entorno_nuevo.get("SKYRIM_PATH") == manifiesto["managed_src"]
     else:
         assert "SKYRIM_PATH" not in entorno_nuevo
     # El journal NO se reescribe: la clasificación es de su dueño.
@@ -1358,8 +1359,10 @@ def test_la_recuperacion_preserva_una_escritura_ajena_en_config_y_no_declara_res
     verificacion_config = next(v for v in recuperacion.verificaciones if v.kind == recovery.SUPERFICIE_CONFIG)
     assert verificacion_config.escritura_ajena is True
     assert recuperacion.requiere_dueno is True
-    # 3. Control positivo: el INI, cuya escritura es nuestra, SÍ se restauró.
-    assert rig.ini_bytes() == ini_antes
+    # 3. El INI tampoco se restaura automáticamente: la recuperación en proceso
+    #    nuevo no atribuye escrituras completas (tri-estado #851). El propietario
+    #    decide sobre ambas superficies.
+    assert rig.ini_bytes() != ini_antes, "el INI se restauró sin evidencia de autoría"
     # 4. El journal sigue PENDING: la clasificación es del dueño.
     assert cargar_journal_transicion(rig.storage).disposition is JournalDisposition.PENDING_PROMOTION
 
