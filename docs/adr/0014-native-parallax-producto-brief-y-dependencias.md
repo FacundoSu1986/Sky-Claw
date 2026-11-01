@@ -943,6 +943,31 @@ siempre **antes** de tocar el disco.
   recuperar. El aviso es un diagnóstico y no puede impedir abrir: si `trash/` no se puede listar (permisos, un antivirus, un error de E/S) se
   avisa de eso por log y la sesión abre igual. Y si una ruta falla porque su casilla sigue ocupada por un resto de otra sesión, el detalle de la ruta dice que es la casilla
   de la papelera, cuál es y que se revise antes de borrarla a mano (la ruta conserva su archivo y su entrada).
+- **Cada resto tiene un registro de propiedad (ítem 6 de #834, solo diagnóstico).** La casilla es un SHA-256 y `pending.json` se
+  borra último, así que el aviso solo podía contar los restos, no decir de qué ruta eran. `_registrar_resto` —la ÚNICA puerta—
+  anota en `.skyclaw-output/trash-registry.json` (fuera de `trash/`, para que `_limpiar_control` siga pudiendo quitar la papelera
+  vacía) de qué ruta es el resto y por qué quedó, en el instante en que nace. Lo llaman los nueve sitios donde el escritor deja
+  uno, por los DOS caminos: `_reemplazar` (4), `_retirar` (2) y `_recuperar` (3). El motivo es un vocabulario cerrado
+  (`_MotivoDeResto`) que contesta la pregunta de propiedad: original nuestro verificado (con la ruta ocupada, o que el sistema no
+  dejó borrar), algo que cambió después de verificarlo, algo que modificó un tercero, o —solo en la recuperación, que no verifica
+  lo que no puede devolver— «no se verificó de quién es». El aviso de cada apertura nombra cada resto con su ruta y su motivo
+  (hasta 20; el resto se resume); uno sin entrada válida se avisa con su casilla y «sin registro». **No devuelve ni borra nada
+  solo: la regla de arriba no cambia.** Es un diagnóstico, así que nunca decide: un registro ilegible, de otro esquema, o con una
+  entrada cuya ruta no da su casilla (`sha256(clave_de_ruta(ruta))`) se avisa y se ignora; no poder anotarlo no cambia el resultado
+  de la ruta ni aborta el lote; solo anota lo que está en la papelera; y se va con ella: `_limpiar_control` quita el registro entero
+  cuando quita la papelera. La poda de entradas cuyo resto ya no está ocurre SOLO al anotar (`_registrar_resto`); la apertura
+  (`_avisar_de_sobrantes`) únicamente lee y no reescribe el registro, así que una entrada vieja puede quedar hasta la próxima
+  anotación, y el aviso la ignora porque lista lo que hay en `trash/`. Anclas (`tests/test_native_parallax_output_writer.py`):
+  `test_cada_resto_que_deja_el_escritor_se_nombra_en_la_apertura_siguiente` (un escenario por cada uno de los nueve sitios), y por
+  AST `test_los_sitios_que_llaman_a_registrar_resto_estan_enumerados_y_cada_motivo_se_usa` (congela las llamadas a
+  `_registrar_resto`, con multiplicidad),
+  `test_todo_retorno_que_dice_donde_quedo_lo_apartado_registra_el_resto_justo_antes` y
+  `test_la_recuperacion_registra_cada_resto_que_deja_junto_a_su_aviso`. **Límite del ancla:** atrapan una llamada a
+  `_registrar_resto` no declarada, un retorno que le diga al operador dónde quedó lo apartado sin anotarlo, y un aviso de la
+  recuperación sin su anotación; NO enumeran todo lo que podría dejar un archivo en `trash/`: un camino nuevo que lo haga por fuera
+  de esas formas pasaría la suite, y ahí manda la revisión. **No verificado:** un corte del proceso justo entre dejar el resto y anotarlo (en ese caso el resto
+  queda «sin registro»; la recuperación siguiente puede anotarlo si tampoco logra devolverlo, pero no se probó), y el comportamiento sobre NTFS real (antivirus, junctions): solo se ejecutó en
+  Linux.
 - **Un lote a medias inutiliza la sesión.** Un plan se aplica una sola vez. Si el lote se interrumpe después de escribir su intención (una
   excepción o una cancelación), `planificar` y `aplicar` rechazan todo hasta reabrir la sesión, porque solo la recuperación sabe dejar ese disco
   consistente; reintentar el plan viejo compararía contra huellas que ya no valen. Un rechazo que no tocó el disco (la cota) no la inutiliza.

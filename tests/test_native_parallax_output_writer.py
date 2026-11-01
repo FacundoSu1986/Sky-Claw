@@ -15,6 +15,7 @@ import asyncio
 import dataclasses
 import hashlib
 import inspect
+import json
 import logging
 import os
 import pathlib
@@ -23,7 +24,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, TypeGuard
 
 import pytest
 
@@ -1460,7 +1461,17 @@ def test_cada_mutador_solo_se_alcanza_desde_donde_el_lock_esta_tomado() -> None:
         quien_nombra.setdefault(nombre, set()).add(funcion)
 
     assert quien_nombra["_recuperar"] == {"abrir_sesion_de_salida"}
-    assert quien_nombra["_escribir_atomico"] == {"_ejecutar", "_comprometer_sin_disco", "_recuperar"}
+    # ``_registrar_resto`` (ítem 6 de #834) participa del lock POR CONSTRUCCIÓN: solo lo nombran las dos unidades que corren
+    # dentro de ``_actuar_en_disco`` (que ``_ejecutar`` llama tras comprobar el lock) y ``_recuperar`` (dentro del bloque del lock).
+    assert quien_nombra["_escribir_atomico"] == {
+        "_ejecutar",
+        "_comprometer_sin_disco",
+        "_recuperar",
+        "_registrar_resto",
+    }
+    assert quien_nombra["_registrar_resto"] == {"_reemplazar", "_retirar", "_recuperar"}
+    assert quien_nombra["_reemplazar"] == {"_actuar_en_disco"}
+    assert quien_nombra["_retirar"] == {"_actuar_en_disco"}
     assert quien_nombra["_actuar_en_disco"] == {"_ejecutar"}
     assert quien_nombra["_limpiar_control"] == {"_ejecutar", "_recuperar"}
     assert quien_nombra["_borrar_pendiente"] == {"_ejecutar", "_recuperar"}
@@ -3013,3 +3024,465 @@ def test_el_tope_de_tamano_de_archivo_tiene_una_sola_fuente() -> None:
         if isinstance(destino, ast.Name) and "TAMANO_MAXIMO" in destino.id
     ]
     assert definiciones == []  # el escritor importa los topes de tamaño; no define ninguno
+
+
+# ---------------------------------------------------------------------------
+# Ítem 6 de #834: registro de propiedad de la papelera (SOLO diagnóstico)
+# ---------------------------------------------------------------------------
+#
+# La casilla de cada ruta se llama ``sha256(clave_de_ruta(ruta))``: un nombre opaco. Sin registro, el aviso de cada
+# apertura solo podía contar los restos. El registro anota, en el instante en que NACE un resto, de qué ruta es y por qué
+# quedó ahí; el aviso lo usa para nombrarlo. No devuelve ni borra nada solo (esa regla de NP-O0b2 no cambia).
+
+REGISTRO_DE_RESTOS = "trash-registry.json"  # el nombre en disco es parte del contrato: lo ve el operador
+
+
+async def _tercero_edita_y_ocupa_la_ruta(e: Escenario, interponer: Any, *, reconstruir: bool) -> None:
+    """Un tercero edita lo apartado Y ocupa la ruta antes de que se le devuelva: no se pisa nada, queda en la papelera."""
+    await e.lote({RUTA_A: e.fuente(b"DDS-viejo", 1.5)})
+    apartado = e.control() / "trash" / output_writer._id_de_ruta(RUTA_A)
+
+    def tercero() -> None:
+        apartado.write_bytes(b"EDITADO-A-MANO")
+        e.disco(RUTA_A).write_bytes(b"LLEGO-OTRO")
+
+    interponer("tras_apartar", tercero)
+    await e.lote({RUTA_A: e.fuente(b"DDS-nuevo", 9.5)} if reconstruir else {})
+
+
+async def _resto_de_reemplazo_con_tercero(e: Escenario, interponer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    await _tercero_edita_y_ocupa_la_ruta(e, interponer, reconstruir=True)
+
+
+async def _resto_de_retiro_con_tercero(e: Escenario, interponer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    await _tercero_edita_y_ocupa_la_ruta(e, interponer, reconstruir=False)
+
+
+async def _resto_por_ruta_ocupada_al_publicar(e: Escenario, interponer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    await e.lote({RUTA_A: e.fuente(b"DDS-viejo", 1.5)})
+    interponer("tras_verificar", lambda: e.disco(RUTA_A).write_bytes(b"LLEGO-OTRO"))
+    await e.lote({RUTA_A: e.fuente(b"DDS-nuevo", 9.5)})
+
+
+async def _resto_de_reemplazo_que_no_se_deja_borrar(
+    e: Escenario, interponer: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await e.lote({RUTA_A: e.fuente(b"DDS-A")})
+    _que_el_primer_borrado_en_la_papelera_falle(monkeypatch, e.control())
+    await e.lote({RUTA_A: e.fuente(b"DDS-A2", escala=2.0)})
+
+
+async def _resto_que_cambio_despues_de_verificarlo(
+    e: Escenario, interponer: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await e.lote({RUTA_A: e.fuente(b"DDS-viejo", 1.5)})
+    apartado = e.control() / "trash" / output_writer._id_de_ruta(RUTA_A)
+    interponer("tras_publicar", lambda: apartado.write_bytes(b"LLEGO-OTRO-A-LA-PAPELERA"))
+    await e.lote({RUTA_A: e.fuente(b"DDS-nuevo", 9.5)})
+
+
+async def _resto_de_retiro_que_no_se_deja_borrar_con_la_ruta_ocupada(
+    e: Escenario, interponer: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await e.lote({RUTA_A: e.fuente(b"DDS-A"), RUTA_C: e.fuente(b"DDS-C")})
+    _que_el_primer_borrado_en_la_papelera_falle(monkeypatch, e.control())
+    interponer("tras_apartar", lambda: e.disco(RUTA_A).write_bytes(b"LLEGO-OTRO"))
+    await e.lote({RUTA_C: e.fuente(b"DDS-C")})  # A se retira
+
+
+async def _recuperacion_que_no_puede_devolver(e: Escenario, interponer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    await e.lote({RUTA_A: e.fuente(b"DDS-A")})
+    (e.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+    e.disco(RUTA_A).unlink()
+    _apartar_a_mano(e, RUTA_A, b"DE-OTRO")
+    original = output_writer.reconciliar_tras_corte
+
+    def reconciliar(*args: Any) -> Any:
+        recuperacion = original(*args)
+        e.disco(RUTA_A).write_bytes(b"LLEGO-OTRO")  # después de observar la ruta vacía, antes de devolver
+        return recuperacion
+
+    monkeypatch.setattr(output_writer, "reconciliar_tras_corte", reconciliar)
+    async with abrir_sesion_de_salida(e.raiz, coordinacion=e.coordinacion):
+        pass
+
+
+async def _recuperacion_que_no_puede_descartar(e: Escenario, interponer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    await e.lote({RUTA_A: e.fuente(b"DDS-A")})
+    (e.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+    e.disco(RUTA_A).unlink()
+    _apartar_a_mano(e, RUTA_A, b"DDS-A")  # un retiro cortado entre apartar y borrar
+    _que_el_primer_borrado_en_la_papelera_falle(monkeypatch, e.control())
+    async with abrir_sesion_de_salida(e.raiz, coordinacion=e.coordinacion):
+        pass
+
+
+async def _recuperacion_cuyo_descarte_cambio(e: Escenario, interponer: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    await e.lote({RUTA_A: e.fuente(b"DDS-A")})
+    (e.control() / "pending.json").write_bytes(serializar_manifiesto(Manifiesto(entradas=())))
+    e.disco(RUTA_A).unlink()
+    apartado = _apartar_a_mano(e, RUTA_A, b"DDS-A")  # retiro cortado: lo apartado es nuestro
+    original = output_writer.reconciliar_tras_corte
+
+    def reconciliar(*args: Any) -> Any:
+        recuperacion = original(*args)
+        apartado.write_bytes(b"LLEGO-OTRO-A-LA-PAPELERA")  # después de observar, antes de descartar
+        return recuperacion
+
+    monkeypatch.setattr(output_writer, "reconciliar_tras_corte", reconciliar)
+    async with abrir_sesion_de_salida(e.raiz, coordinacion=e.coordinacion):
+        pass
+
+
+#: Los nueve sitios donde el escritor deja un resto en la papelera, por los DOS caminos: el que no sufrió un corte
+#: (``_reemplazar`` y ``_retirar``) y la recuperación tras un corte (``_recuperar``). La frase es lo que el operador lee.
+_RESTOS_QUE_DEJA_EL_ESCRITOR: tuple[tuple[str, Any, str], ...] = (
+    ("reemplazo_con_tercero", _resto_de_reemplazo_con_tercero, "lo modificó un tercero"),
+    ("retiro_con_tercero", _resto_de_retiro_con_tercero, "lo modificó un tercero"),
+    (
+        "ruta_ocupada_al_publicar",
+        _resto_por_ruta_ocupada_al_publicar,
+        "original nuestro verificado y su ruta se ocupó",
+    ),
+    (
+        "reemplazo_que_no_se_deja_borrar",
+        _resto_de_reemplazo_que_no_se_deja_borrar,
+        "original nuestro verificado y el sistema no dejó borrarlo",
+    ),
+    ("cambio_despues_de_verificar", _resto_que_cambio_despues_de_verificarlo, "cambió después de verificarlo"),
+    (
+        "retiro_que_no_se_deja_borrar_con_la_ruta_ocupada",
+        _resto_de_retiro_que_no_se_deja_borrar_con_la_ruta_ocupada,
+        "original nuestro verificado y su ruta se ocupó",
+    ),
+    ("recuperacion_no_puede_devolver", _recuperacion_que_no_puede_devolver, "no se verificó de quién es"),
+    (
+        "recuperacion_no_puede_descartar",
+        _recuperacion_que_no_puede_descartar,
+        "original nuestro verificado y el sistema no dejó borrarlo",
+    ),
+    ("recuperacion_con_descarte_cambiado", _recuperacion_cuyo_descarte_cambio, "cambió después de verificarlo"),
+)
+
+
+@pytest.mark.parametrize(
+    ("construir", "frase"),
+    [(construir, frase) for _, construir, frase in _RESTOS_QUE_DEJA_EL_ESCRITOR],
+    ids=[nombre for nombre, _, _ in _RESTOS_QUE_DEJA_EL_ESCRITOR],
+)
+async def test_cada_resto_que_deja_el_escritor_se_nombra_en_la_apertura_siguiente(
+    escenario: Escenario,
+    interponer: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    construir: Any,
+    frase: str,
+) -> None:
+    """Un resto no se borra solo, así que el aviso de cada apertura tiene que decir DE QUÉ RUTA es y POR QUÉ quedó ahí.
+
+    Se enumeran los nueve sitios por los dos caminos (sin corte y recuperación), no uno de cada uno: arreglar un camino y
+    dejar al gemelo es el defecto que AGENTS.md nombra como el más repetido del repo.
+    """
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await construir(escenario, interponer, monkeypatch)
+    monkeypatch.undo()
+    restos = list((escenario.control() / "trash").iterdir())
+    assert len(restos) == 1  # el escenario dejó exactamente UN resto: si no, el test sería vacuo
+    contenido = restos[0].read_bytes()
+    caplog.clear()  # lo que sigue es solo lo que dice la apertura siguiente, no lo que dijo el lote que lo dejó
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert restos[0].read_bytes() == contenido  # nombrar no es devolver ni borrar
+    assert "tiene 1 archivo(s) que no se borran solos" in caplog.text  # el aviso de siempre sigue
+    assert RUTA_A in caplog.text
+    assert frase in caplog.text
+
+
+async def test_un_resto_sin_registro_se_avisa_con_su_casilla_y_se_dice_que_no_tiene_registro(
+    escenario: Escenario, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Un resto de antes del registro (o que un corte dejó antes de anotarlo) sigue avisándose: con su casilla."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    resto = _apartar_a_mano(escenario, RUTA_A, b"RESTO-DE-UNA-SESION-ANTERIOR")
+    caplog.clear()
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert resto.read_bytes() == b"RESTO-DE-UNA-SESION-ANTERIOR"
+    assert resto.name in caplog.text
+    assert "sin registro" in caplog.text
+
+
+# Contenidos que ``json.loads`` no puede devolver como un documento: no es JSON (``ValueError``) y JSON tan anidado que agota la
+# recursión (``RecursionError``, que NO es un ``ValueError``: lo encontró la revisión de Codex en #850). Un archivo de ~4 KB basta.
+_REGISTROS_QUE_NO_SE_PUEDEN_INTERPRETAR = (
+    pytest.param(b"{esto no es json", id="no_es_json"),
+    pytest.param(b"[" * 2000 + b"]" * 2000, id="anidado_hasta_agotar_la_recursion"),
+)
+
+
+@pytest.mark.parametrize("contenido", _REGISTROS_QUE_NO_SE_PUEDEN_INTERPRETAR)
+async def test_un_registro_ilegible_se_avisa_y_no_impide_abrir_ni_se_pisa(
+    escenario: Escenario, caplog: pytest.LogCaptureFixture, contenido: bytes
+) -> None:
+    """El registro es un diagnóstico: si no se puede interpretar, la sesión abre igual, lo dice y no lo reescribe."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    resto = _apartar_a_mano(escenario, RUTA_A, b"RESTO-DE-UNA-SESION-ANTERIOR")
+    registro = escenario.control() / REGISTRO_DE_RESTOS
+    registro.write_bytes(contenido)
+    caplog.clear()
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert resto.read_bytes() == b"RESTO-DE-UNA-SESION-ANTERIOR"
+    assert registro.read_bytes() == contenido  # abrir no reescribe lo que no pudo leer
+    assert "registro de la papelera" in caplog.text
+    assert "tiene 1 archivo(s) que no se borran solos" in caplog.text
+
+
+@pytest.mark.parametrize("contenido", _REGISTROS_QUE_NO_SE_PUEDEN_INTERPRETAR)
+async def test_un_registro_ilegible_no_impide_anotar_un_resto_nuevo_en_medio_de_un_lote(
+    escenario: Escenario,
+    interponer: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    contenido: bytes,
+) -> None:
+    """El otro lector del registro: ``_registrar_resto`` lo lee para conservar las entradas vigentes. Si lo que encuentra no
+    se puede interpretar, el lote sigue, el resultado de la ruta no cambia y el resto queda anotado igual (el registro roto
+    se reemplaza). Es el hermano del test de arriba, que cubre la apertura: los dos lectores comparten el mismo decodificador."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    interponer("tras_apartar", lambda: (escenario.control() / REGISTRO_DE_RESTOS).write_bytes(contenido))
+    _que_el_primer_borrado_en_la_papelera_falle(monkeypatch, escenario.control())
+
+    resultado = await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A2", escala=2.0)})
+
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.REEMPLAZADA}  # el lote no se cayó
+    assert escenario.leer(RUTA_A) == b"DDS-A2"
+    monkeypatch.undo()
+    caplog.clear()
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert RUTA_A in caplog.text  # el resto quedó anotado pese al registro roto
+    assert "sin registro" not in caplog.text
+
+
+async def test_una_entrada_del_registro_que_no_corresponde_a_su_casilla_se_ignora(
+    escenario: Escenario, caplog: pytest.LogCaptureFixture
+) -> None:
+    """La casilla ES ``sha256(clave_de_ruta(ruta))``: una entrada cuya ruta no da esa casilla está mal o la tocaron, y no
+    se le cree (se avisa como si no tuviera registro). Así el aviso nunca nombra una ruta que no es la del resto."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    resto = _apartar_a_mano(escenario, RUTA_A, b"RESTO-DE-UNA-SESION-ANTERIOR")
+    registro = {
+        "esquema": 1,
+        "restos": {resto.name: {"ruta": RUTA_C, "motivo": "NUESTRO_NO_SE_DEJO_BORRAR"}},
+    }  # casilla de A, ruta de C
+    (escenario.control() / REGISTRO_DE_RESTOS).write_text(json.dumps(registro), encoding="utf-8")
+    caplog.clear()
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert RUTA_C not in caplog.text
+    assert "sin registro" in caplog.text
+
+
+async def test_el_registro_de_un_resto_no_sobrevive_a_la_papelera(
+    escenario: Escenario, interponer: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mientras hay un resto, hay registro; cuando el operador lo borra a mano y la papelera se va, el registro se va con
+    ella (no queda un archivo de control huérfano que describa algo que ya no existe)."""
+    await _resto_de_reemplazo_que_no_se_deja_borrar(escenario, interponer, monkeypatch)
+    monkeypatch.undo()
+    assert (escenario.control() / REGISTRO_DE_RESTOS).is_file()  # el resto nació registrado
+    for resto in (escenario.control() / "trash").iterdir():
+        resto.unlink()  # lo borra el operador a mano
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert sorted(p.name for p in escenario.control().iterdir()) == ["manifest.json"]
+
+
+async def test_no_se_anota_un_resto_que_no_esta_en_la_papelera(escenario: Escenario) -> None:
+    """En la recuperación, «cambió o desapareció» comparte rama: si lo apartado ya no está no hay nada que describir, y un
+    registro de algo que no existe sería un archivo de control huérfano."""
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    papelera = escenario.control() / "trash"
+    papelera.mkdir()
+    ocupante = papelera / "otro-resto"  # la papelera existe y tiene OTRO resto, pero no el de RUTA_A
+    ocupante.write_bytes(b"DE-OTRO")
+
+    output_writer._registrar_resto(
+        escenario.control(), RUTA_A, output_writer._MotivoDeResto.CAMBIO_DESPUES_DE_VERIFICAR
+    )
+
+    assert not (escenario.control() / REGISTRO_DE_RESTOS).exists()
+
+
+async def test_si_no_se_puede_escribir_el_registro_el_lote_sigue_y_se_dice(
+    escenario: Escenario, interponer: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """El registro es un diagnóstico: que no se pueda anotar un resto no cambia el resultado de la ruta ni aborta el lote."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    escribir_real = output_writer._escribir_atomico
+
+    def escribir_que_falla_en_el_registro(destino: pathlib.Path, datos: bytes) -> None:
+        if destino.name == REGISTRO_DE_RESTOS:
+            raise PermissionError(13, "lo tiene abierto otro proceso (simulado)", str(destino))
+        escribir_real(destino, datos)
+
+    monkeypatch.setattr(output_writer, "_escribir_atomico", escribir_que_falla_en_el_registro)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    _que_el_primer_borrado_en_la_papelera_falle(monkeypatch, escenario.control())
+
+    resultado = await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A2", escala=2.0)})
+
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.REEMPLAZADA}  # el resultado de la ruta no cambia
+    assert escenario.leer(RUTA_A) == b"DDS-A2"
+    assert [p.read_bytes() for p in (escenario.control() / "trash").iterdir()] == [b"DDS-A"]  # el original sigue ahí
+    assert "registro de la papelera" in caplog.text
+
+
+# --- Anclas que ENUMERAN (no muestrean): los sitios que dejan un resto, por los dos caminos -----------------------------
+
+
+def _es_llamada_a(nodo: ast.AST, nombre: str) -> TypeGuard[ast.Call]:
+    return isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == nombre
+
+
+def _registra_un_resto(sentencia: ast.stmt) -> bool:
+    return isinstance(sentencia, ast.Expr) and _es_llamada_a(sentencia.value, "_registrar_resto")
+
+
+def _funcion_del_modulo(nombre: str) -> ast.FunctionDef:
+    return next(n for n in ast.walk(_arbol()) if isinstance(n, ast.FunctionDef) and n.name == nombre)
+
+
+def _listas_de_sentencias(funcion: ast.FunctionDef) -> list[list[ast.stmt]]:
+    """Todas las listas de sentencias de la función (cuerpos, ``else``, ``finally``, manejadores), a cualquier profundidad."""
+    listas: list[list[ast.stmt]] = []
+    for nodo in ast.walk(funcion):
+        for campo in ("body", "orelse", "finalbody"):
+            sentencias = getattr(nodo, campo, None)
+            if isinstance(sentencias, list) and sentencias and isinstance(sentencias[0], ast.stmt):
+                listas.append(sentencias)
+    return listas
+
+
+def test_el_vocabulario_de_motivos_y_el_nombre_del_registro_estan_congelados() -> None:
+    """Un motivo nuevo (o uno que cambia de nombre) obliga a decidir qué le dice el aviso al operador y a escribir su escenario."""
+    assert [m.name for m in output_writer._MotivoDeResto] == [
+        "MODIFICADO_Y_RUTA_OCUPADA",
+        "NUESTRO_Y_RUTA_OCUPADA",
+        "NUESTRO_NO_SE_DEJO_BORRAR",
+        "CAMBIO_DESPUES_DE_VERIFICAR",
+        "NO_SE_PUDO_DEVOLVER",
+    ]
+    valores = [m.value for m in output_writer._MotivoDeResto]
+    assert len(set(valores)) == len(valores)  # dos motivos con la misma frase serían indistinguibles para el operador
+    assert (
+        output_writer._REGISTRO_DE_RESTOS == REGISTRO_DE_RESTOS
+    )  # y vive en la carpeta de control, no dentro de trash/
+    assert output_writer._ESQUEMA_DEL_REGISTRO_DE_RESTOS == 1
+
+
+def test_los_sitios_que_llaman_a_registrar_resto_estan_enumerados_y_cada_motivo_se_usa() -> None:
+    """Nueve sitios: los DOS caminos (sin corte y recuperación), con multiplicidad. Un décimo sitio, o uno de menos, rompe
+    el ancla hasta que se decida. Y todo motivo del vocabulario lo usa algún sitio: ninguno es letra muerta."""
+    llamadas: dict[str, int] = {}
+    motivos: set[str] = set()
+    for funcion in (n for n in ast.walk(_arbol()) if isinstance(n, ast.FunctionDef)):
+        for nodo in ast.walk(funcion):
+            if _es_llamada_a(nodo, "_registrar_resto"):
+                llamadas[funcion.name] = llamadas.get(funcion.name, 0) + 1
+                motivo = nodo.args[2]  # el ancla exige que el tercer argumento sea ``_MotivoDeResto.X``
+                assert isinstance(motivo, ast.Attribute)
+                assert isinstance(motivo.value, ast.Name)
+                assert motivo.value.id == "_MotivoDeResto"
+                motivos.add(motivo.attr)
+
+    assert llamadas == {"_reemplazar": 4, "_retirar": 2, "_recuperar": 3}
+    assert motivos == {m.name for m in output_writer._MotivoDeResto}
+
+
+@pytest.mark.parametrize(("funcion", "esperados"), [("_reemplazar", 4), ("_retirar", 2)])
+def test_todo_retorno_que_dice_donde_quedo_lo_apartado_registra_el_resto_justo_antes(
+    funcion: str, esperados: int
+) -> None:
+    """Un resultado que le dice al operador «quedó en {apartado}» es un resto que nace ahí: la sentencia anterior, en el
+    mismo bloque, lo registra. Los dos que apartan (``_reemplazar`` y ``_retirar``), no uno: son hermanos."""
+    encontrados = 0
+    for sentencias in _listas_de_sentencias(_funcion_del_modulo(funcion)):
+        for indice, sentencia in enumerate(sentencias):
+            if not isinstance(sentencia, ast.Return) or sentencia.value is None:
+                continue
+            if not any(isinstance(n, ast.Name) and n.id == "apartado" for n in ast.walk(sentencia.value)):
+                continue
+            encontrados += 1
+            assert indice > 0
+            assert _registra_un_resto(sentencias[indice - 1]), (
+                f"línea {sentencia.lineno}: devuelve «apartado» sin registrarlo"
+            )
+
+    assert encontrados == esperados  # el detector ve los sitios: si no viera ninguno, el ancla pasaría vacía
+
+
+def test_la_recuperacion_registra_cada_resto_que_deja_junto_a_su_aviso() -> None:
+    """Los tres avisos de la recuperación que dejan algo en la papelera (no se pudo devolver, no se pudo descartar, no se
+    descartó) van seguidos de su registro en el mismo bloque: el camino gemelo de ``_reemplazar`` y ``_retirar``."""
+    avisos = ("No se pudo devolver", "No se pudo descartar", "No se descartó")
+    encontrados = 0
+    for sentencias in _listas_de_sentencias(_funcion_del_modulo("_recuperar")):
+        for indice, sentencia in enumerate(sentencias):
+            if not (isinstance(sentencia, ast.Expr) and isinstance(sentencia.value, ast.Call)):
+                continue
+            llamada = sentencia.value
+            if not (isinstance(llamada.func, ast.Attribute) and llamada.func.attr == "warning" and llamada.args):
+                continue
+            mensaje = llamada.args[0]
+            if not (
+                isinstance(mensaje, ast.Constant)
+                and isinstance(mensaje.value, str)
+                and mensaje.value.startswith(avisos)
+            ):
+                continue
+            encontrados += 1
+            assert indice + 1 < len(sentencias)
+            assert _registra_un_resto(sentencias[indice + 1]), f"línea {sentencia.lineno}: avisa sin registrar"
+
+    assert encontrados == len(avisos)
+
+
+def test_el_registro_se_decodifica_en_un_solo_lugar_y_solo_dos_funciones_lo_leen() -> None:
+    """La garantía «un registro que no se puede interpretar nunca bloquea» vive en UN decodificador. Si otra función llamara a
+    ``json.loads`` (o a ``_leer_registro_de_restos`` desde un tercer sitio) con su propio manejo de errores, reabriría el
+    hueco de #850 (``RecursionError`` no es un ``ValueError``). Los lectores son exactamente dos: la apertura y el que anota."""
+    decodifican = {
+        funcion.name
+        for funcion in ast.walk(_arbol())
+        if isinstance(funcion, ast.FunctionDef)
+        for nodo in ast.walk(funcion)
+        if isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and isinstance(nodo.func.value, ast.Name)
+        and nodo.func.value.id == "json"
+        and nodo.func.attr == "loads"
+    }
+    quien_nombra: dict[str, set[str]] = {}
+    for nombre, funcion in _recorrer().nombres:
+        quien_nombra.setdefault(nombre, set()).add(funcion)
+
+    assert decodifican == {"_leer_registro_de_restos"}
+    assert quien_nombra["_leer_registro_de_restos"] == {"_registrar_resto", "_avisar_de_sobrantes"}
