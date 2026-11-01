@@ -285,6 +285,51 @@ def lanzar_como_mo2(
     )
 
 
+def adoptar_descendientes(job: int, raiz_pid: int, *, pasadas_maximas: int = 8) -> tuple[int, ...]:
+    """PROTOTIPO de la mitad bridge-side del fence (no se usa en producción).
+
+    Tras asignar ``raiz_pid`` al Job, recorre sus descendientes y asigna al Job los que
+    NO pertenecen a ÉL (``IsProcessInJob`` contra el handle propio), repitiendo hasta un
+    punto fijo: un descendiente no adoptado puede crear nietos mientras se enumera.
+    Devuelve los PIDs adoptados. Lanza ``JobObjectError`` si, agotadas las pasadas, queda
+    alguno fuera: el bridge debería tratarlo como asignación fallida y NO emitir
+    ``launch_ack``. Un descendiente que muere durante el recorrido deja de ser un problema.
+    """
+    adoptados: list[int] = []
+    for _ in range(pasadas_maximas):
+        pendientes = 0
+        for hijo in _hijos_vivos(raiz_pid):
+            try:
+                handle = abrir_proceso(hijo.pid)
+            except JobObjectError:
+                continue  # murió entre la enumeración y la apertura
+            try:
+                if not proceso_en_job(handle, job):
+                    asignar_a_job(job, handle)
+                    adoptados.append(hijo.pid)
+                    pendientes += 1
+            except JobObjectError:
+                pendientes += 1  # no se pudo adoptar: reintentar o fallar al final
+            finally:
+                cerrar_handle(handle)
+        if pendientes == 0:
+            break
+    fuera: list[int] = []
+    for hijo in _hijos_vivos(raiz_pid):
+        try:
+            handle = abrir_proceso(hijo.pid)
+        except JobObjectError:
+            continue
+        try:
+            if not proceso_en_job(handle, job):
+                fuera.append(hijo.pid)
+        finally:
+            cerrar_handle(handle)
+    if fuera:
+        raise JobObjectError(0, f"quedaron descendientes fuera del Job tras la adopción: {fuera}")
+    return tuple(adoptados)
+
+
 def matar_arbol(pid: int) -> None:
     """Limpieza del laboratorio: mata un proceso y sus descendientes si aún viven."""
     with contextlib.suppress(psutil.Error):

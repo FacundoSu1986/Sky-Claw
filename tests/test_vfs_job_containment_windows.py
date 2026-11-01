@@ -243,6 +243,83 @@ def test_un_proceso_puede_consultar_su_propio_job_y_ver_a_su_lanzador(tmp_path, 
         assert visto["kill_on_close"] is True
 
 
+def test_la_adopcion_de_descendientes_previos_los_deja_contenidos(tmp_path, limpieza) -> None:
+    """PROTOTIPO de la propuesta bridge-side: tras asignar al lanzado, adoptar lo que ya había creado."""
+    # Arrange: el "worker" ya tiene un hijo cuando el bridge lo asigna (la carrera de onefile).
+    sondas = _sondas()
+    salida = tmp_path / "hijo.pid"
+    with sondas.job_temporal() as job:
+        padre = sondas.lanzar_como_mo2([sys.executable, "-c", _PADRE_QUE_YA_TIENE_HIJO, str(salida)])
+        limpieza.append(padre)
+        hijo_pid = _esperar_pid(salida)
+        limpieza.append(hijo_pid)
+        _asignar_pid(sondas, job, padre.pid)
+        antes = hijo_pid in sondas.pids_del_job(job)
+
+        # Act
+        adoptados = sondas.adoptar_descendientes(job, padre.pid)
+        despues = hijo_pid in sondas.pids_del_job(job)
+        sondas.terminar_job(job)
+
+        # Assert: sin adopción el hijo previo está fuera; con ella, dentro y muere con el Job.
+        assert antes is False
+        assert hijo_pid in adoptados and despues is True
+        assert _esperar_muerte(padre.pid)
+        assert _esperar_muerte(hijo_pid), "el hijo adoptado debía morir con el Job"
+
+
+def test_en_jobs_anidados_el_proceso_ve_el_limite_de_su_job(tmp_path, limpieza, monkeypatch) -> None:
+    """Exploratorio: qué responde ``QueryInformationJobObject(NULL)`` según los Jobs que contienen al proceso.
+
+    Informa si una auto-verificación del worker (¿mi Job tiene kill-on-close?) distinguiría el Job del
+    bridge del de un lanzador ajeno. Se asierta lo establecido (un único Job); el caso anidado se reporta.
+    """
+    # Arrange
+    monkeypatch.chdir(REPO)
+    sondas = _sondas()
+    codigo = (
+        "import json, os, sys, time;"
+        "from scripts import windows_job_probe as w;"
+        "time.sleep(0.8);"
+        "open(sys.argv[1], 'w').write(json.dumps({'pid': os.getpid(), 'pids': list(w.pids_del_job(None)),"
+        " 'kill_on_close': w.job_tiene_kill_on_close(None)}))"
+    )
+
+    def _observar(asignaciones: list[int], nombre: str) -> dict:
+        informe = tmp_path / f"{nombre}.json"
+        proceso = sondas.lanzar_como_mo2([sys.executable, "-c", codigo, str(informe)])
+        limpieza.append(proceso)
+        for job in asignaciones:
+            _asignar_pid(sondas, job, proceso.pid)
+        proceso.wait(timeout=60)
+        return json.loads(informe.read_text(encoding="utf-8"))
+
+    # Act
+    with (
+        sondas.job_temporal(kill_on_close=False) as sin_kill,
+        sondas.job_temporal(kill_on_close=True) as con_kill,
+        sondas.job_temporal(kill_on_close=False) as sin_kill_b,
+        sondas.job_temporal(kill_on_close=True) as con_kill_b,
+    ):
+        solo_sin = _observar([sin_kill], "solo_sin_kill")
+        solo_con = _observar([con_kill], "solo_con_kill")
+        externo_luego_propio = _observar([sin_kill_b, con_kill_b], "anidado_externo_luego_propio")
+    print(  # noqa: T201 - evidencia para -rA / auditoría
+        "HALLAZGO jobs anidados: "
+        + json.dumps(
+            {
+                "solo_job_sin_kill_on_close": solo_sin["kill_on_close"],
+                "solo_job_con_kill_on_close": solo_con["kill_on_close"],
+                "anidado_externo_sin_kill__interno_con_kill": externo_luego_propio["kill_on_close"],
+            }
+        )
+    )
+
+    # Assert: con un único Job la respuesta es exactamente la del Job.
+    assert solo_sin["kill_on_close"] is False
+    assert solo_con["kill_on_close"] is True
+
+
 # ---------------------------------------------------------------------------
 # El BridgeLaunchController de producción con el Win32JobObject REAL
 # ---------------------------------------------------------------------------

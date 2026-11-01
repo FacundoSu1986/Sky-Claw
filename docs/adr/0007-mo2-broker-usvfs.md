@@ -38,7 +38,10 @@ sequenceDiagram
     D->>D: HITL sin worker vivo
     D->>B: VfsJob firmado
     B->>P: launch_worker(profile, manifest)
-    P->>W: startApplication bajo USVFS
+    P->>W: startApplication bajo USVFS (el worker nace CORRIENDO)
+    P->>P: AssignProcessToJobObject
+    P->>B: launch_ack (solo si el assign tuvo exito)
+    B->>W: supervised (autenticado, ligado al job_id)
     W->>W: attestation del canary
     W->>T: probe nieto + tool allowlisted
     W->>B: VfsJobResult autenticado
@@ -56,6 +59,20 @@ sequenceDiagram
 - Un owner de broker y un job mutante por instancia MO2. El lock de instancia
   es interproceso y reclama PIDs caidos. Perfil, fingerprint y canary se
   revalidan dentro del worker antes de ejecutar.
+- **Fence de supervision.** `startApplication` deja al worker CORRIENDO y la asignacion
+  al Job Object ocurre despues; un descendiente creado antes de esa asignacion queda
+  FUERA del Job y sobrevive a su terminacion. Por eso el worker no crea ningun
+  descendiente (ni el nieto de la attestation ni la herramienta) hasta recibir un
+  mensaje `supervised`, autenticado y ligado a su `job_id`. El broker lo envia UNA vez,
+  solo tras un `launch_ack` del bridge para ESE job (que el bridge emite unicamente si
+  `AssignProcessToJobObject` tuvo exito), mientras el job siga vivo y no este siendo
+  cancelado. Un ack de otro job o de un job no pendiente no autoriza nada; un launch
+  fallido corta al worker. El plazo del worker (30 s) solo puede ABORTAR: jamas habilita.
+  Un worker que no declara `supervision_fence` en su `hello` es rechazado (sin fallback
+  silencioso). El bridge instalado no cambia: `launch_ack` existe desde su primera
+  version (#350) y, en las cuatro versiones del historial, se emite despues de `assign`.
+  Actualizacion coordinada: daemon y worker son el mismo ejecutable.
+  Limites documentados en `docs/audits/2026-11-02_fence_de_supervision_del_broker.md`.
 - Worker y descendientes quedan contenidos en un Win32 Job Object
   `KILL_ON_JOB_CLOSE`. Cancelacion y timeout se envian al plugin y al worker;
   el broker no libera el job ni habilita rollback hasta recibir `worker_exit`

@@ -26,6 +26,14 @@ raíz.
 - Si falla el rollback, preservar el backup.
 - Timeout/cancelación termina y recolecta (`reap`) el worker y todo su árbol de
   procesos descendientes.
+- **El worker no crea descendientes antes de estar supervisado.** Espera `supervised`
+  (autenticado, ligado a su `job_id`) ANTES de la attestation, que crea el proceso nieto; el
+  broker lo envía una vez, solo tras el `launch_ack` del bridge para ese job. El plazo solo
+  puede abortar, nunca habilitar; un worker sin `supervision_fence` en el `hello` se rechaza.
+  Anclas: `tests/test_vfs_fence_de_supervision.py` (protocolo, enumera `ALLOWED_VFS_TOOL_IDS`),
+  `tests/test_vfs_fence_e2e_proceso_real.py` (worker real) y
+  `tests/test_vfs_job_containment_windows.py` (Job Objects reales). Un consumidor nuevo del
+  broker hereda el fence: no lo reimplementes por herramienta.
 - `ganadores.py` (NP-A0d) contesta UNA vez «¿qué capa provee esta ruta virtual en el overlay del perfil?». Recibe `enabled` ya
   normalizado por `vfs_attestation.read_enabled_mods` (no parsea el modlist: un test lo ancla), recorre con
   `links.iter_archivos_propios` (no entra a enlaces), trata `overwrite` como la capa más alta y un `*.mohidden` como ausente, y

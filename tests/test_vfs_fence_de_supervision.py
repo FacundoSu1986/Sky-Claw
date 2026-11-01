@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
-from sky_claw.local.mo2.vfs_broker import VfsBridgeLaunchError, VfsExecutionBroker
+from sky_claw.local.mo2.vfs_broker import VfsBridgeLaunchError, VfsExecutionBroker, VfsWorkerDisconnectedError
 from sky_claw.local.mo2.vfs_contracts import (
     ALLOWED_VFS_SESSION_TOOL_IDS,
     ALLOWED_VFS_TOOL_IDS,
@@ -494,10 +494,16 @@ async def test_el_timeout_de_supervision_falla_cerrado_sin_despachar(tmp_path: p
         await arnes.lanzar_job()
         worker = arnes.worker_real(observado, supervision_timeout=0.3)
 
-        # Act / Assert: sin ack el worker NO prosigue al vencer el plazo: aborta.
+        # Act / Assert 1: sin ack el worker NO prosigue al vencer el plazo: aborta.
         with pytest.raises(VfsWorkerBootstrapError, match="supervisi"):
             await asyncio.wait_for(worker, timeout=5)
         assert observado == []
+
+        # Assert 2 (daemon): el bridge informa que el worker terminó (código 70) sin resultado y el job FALLA;
+        # jamás se reporta éxito de un worker que no llegó a estar supervisado.
+        await arnes.worker_exit(exit_code=70)
+        with pytest.raises(VfsWorkerDisconnectedError):
+            await asyncio.wait_for(arnes.tarea, timeout=6)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
