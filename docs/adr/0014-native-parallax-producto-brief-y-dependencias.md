@@ -958,7 +958,9 @@ siempre **antes** de tocar el disco.
   cuando quita la papelera. La poda de entradas cuyo resto ya no está ocurre SOLO al anotar (`_registrar_resto`); la apertura
   (`_avisar_de_sobrantes`) únicamente lee y no reescribe el registro, así que una entrada vieja puede quedar hasta la próxima
   anotación, y el aviso la ignora porque lista lo que hay en `trash/`. Anclas (`tests/test_native_parallax_output_writer.py`):
-  `test_cada_resto_que_deja_el_escritor_se_nombra_en_la_apertura_siguiente` (un escenario por cada uno de los nueve sitios), y por
+  `test_cada_resto_que_deja_el_escritor_se_nombra_en_la_apertura_siguiente` (un escenario por cada uno de los nueve sitios),
+  `test_el_aviso_nombra_hasta_veinte_restos_y_resume_el_resto` (el tope de 20 y la línea «y N más sin nombrar», recorriendo el
+  borde 19/20/21 y un caso holgado, con y sin entrada en el registro), y por
   AST `test_los_sitios_que_llaman_a_registrar_resto_estan_enumerados_y_cada_motivo_se_usa` (congela las llamadas a
   `_registrar_resto`, con multiplicidad),
   `test_todo_retorno_que_dice_donde_quedo_lo_apartado_registra_el_resto_justo_antes` y
