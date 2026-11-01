@@ -719,7 +719,7 @@ def _coincide_con_lo_escrito(
     registro: RegistroRecuperacion,
     actuales: bytes,
     *,
-    escritura_intentada: bool = True,
+    escritura_intentada: bool = False,
 ) -> bool:
     """¿Estos bytes son los que ESTA transición escribió?
 
@@ -772,9 +772,17 @@ def _escrita_por_tercero(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
     *,
-    escritura_intentada: bool = True,
+    escritura_intentada: bool = False,
 ) -> tuple[bool, str]:
     r"""¿La superficie actual NO es ni el snapshot ni lo que escribió la transición?
+
+    ``escritura_intentada`` viene en ``False`` por defecto y eso es deliberado: la
+    recuperación en PROCESO NUEVO no puede probar que la transición llegara a
+    escribir. La fase ``INI_ESCRITO`` se marca ANTES de escribir, así que no es
+    evidencia de autoría, y tampoco descarta que un tercero haya modificado el
+    archivo entre el crash y la recuperación —una ventana que puede ser de horas—.
+    Sin esa prueba, un estado intermedio ambiguo se conserva como evidencia y
+    queda para el propietario (Codex sobre #851).
 
     Devuelve ``(es_ajena, motivo)``. Restaurar sobre una escritura ajena es
     exactamente lo que un rollback NO debe hacer: el snapshot es viejo por
@@ -853,7 +861,7 @@ def _restaurar_persistida(
     registro: RegistroRecuperacion,
     *,
     raiz_evidencia: pathlib.Path | None = None,
-    escritura_intentada: bool = True,
+    escritura_intentada: bool = False,
 ) -> VerificacionSuperficie:
     """Devuelve la superficie a sus bytes previos y VERIFICA el resultado."""
     if superficie.path is None:
@@ -950,7 +958,7 @@ def restaurar_registro_locked(
     environ: MutableMapping[str, str] | None,
     *,
     solo_superficies: frozenset[str] | None = None,
-    escritura_intentada: bool = True,
+    escritura_intentada: bool = False,
 ) -> tuple[VerificacionSuperficie, ...]:
     """Restaura las superficies capturadas y devuelve la verificación de cada una.
 

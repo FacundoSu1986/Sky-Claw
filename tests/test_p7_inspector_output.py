@@ -381,3 +381,71 @@ def test_una_raiz_protegida_por_junction_no_habilita_la_escritura(tmp_path: path
             inspector.validar_destino_informe(real / "informe.json", arboles_protegidos=protegidos)
     finally:
         os.rmdir(alias)
+
+
+def test_la_managed_source_descubierta_tambien_protege_el_destino(tmp_path: pathlib.Path) -> None:
+    """Omitir ``--managed-source`` no puede dejar la Steam descubierta escribible.
+
+    El preflight descubre la instalación y la devuelve en
+    ``evaluacion.managed_source_root``. Proteger sólo ``args.managed_source``
+    dejaba `--json-salida <steam>/informe.json` aceptado (Codex sobre #851).
+    """
+    arboles = Arboles(tmp_path)
+    descubierta = arboles.managed
+    destino = descubierta / "informe.json"
+
+    original = inspector.construir_informe
+
+    def _falso(**_: object):  # type: ignore[no-untyped-def]
+        return {"veredicto": "BLOCKED", "listo_para_p7": False, "clone_objetivo": None, "hallazgos": []}, descubierta
+
+    inspector.construir_informe = _falso
+    try:
+        codigo = inspector.main(
+            [
+                "--storage-root",
+                str(arboles.storage),
+                "--mo2-instance",
+                str(arboles.mo2),
+                "--json-salida",
+                str(destino),
+            ]
+        )
+    finally:
+        inspector.construir_informe = original
+
+    assert codigo == 2, f"se aceptó escribir dentro de la Managed Source descubierta (código {codigo})"
+    assert not destino.exists()
+
+
+def test_el_desired_sin_raiz_resuelta_no_habilita_p7(tmp_path: pathlib.Path) -> None:
+    """Tener ``clone_id`` no alcanza: sin ``clone_root`` el runtime no se resuelve.
+
+    ``desired_runtime_from_storage`` devuelve ``clone_root=None`` cuando la
+    Generation no es del linaje del clone. Clasificarlo OK por tener id permitía
+    ``READY_FOR_P7`` sobre un Desired inconsistente (Codex sobre #851).
+    """
+    from sky_claw.local.frozen_runtime.effective_runtime.models import DesiredRuntime
+
+    arboles = Arboles(tmp_path)
+    original = inspector.desired_runtime_from_storage
+    inspector.desired_runtime_from_storage = lambda _root: DesiredRuntime(
+        clone_id="clone-1", clone_root=None, generation_id="gen-otra"
+    )
+    try:
+        informe, _ = inspector.construir_informe(
+            storage_root=arboles.storage,
+            mo2_instance_dir=arboles.mo2,
+            config_path=None,
+            managed_source_root=None,
+            clone_id=None,
+            mostrar_rutas=False,
+        )
+    finally:
+        inspector.desired_runtime_from_storage = original
+
+    hallazgo = next(h for h in informe["hallazgos"] if h["clave"] == "desired_runtime")
+    assert hallazgo["veredicto"] == inspector.HALLAZGO_BLOQUEADO, (
+        f"un Desired sin raíz resuelta se reportó como {hallazgo['veredicto']}"
+    )
+    assert informe["listo_para_p7"] is False

@@ -18,6 +18,7 @@ Un ``INDETERMINATE`` nunca autoriza: se comprueba explícitamente.
 
 from __future__ import annotations
 
+import ast
 import os
 import pathlib
 import subprocess
@@ -640,11 +641,15 @@ _PREVIOS = (
     b"gamePath=@ByteArray(G:////////Modding////////Skyrim_Runtime_1.6.1170_muy_largo)//r//n"
     b"version=2.5.2\r\n"
 )
-_NUEVO = (
-    b"[General]\r\ngameName=Skyrim Special Edition\r\ngame_edition=Steam\r\n"
-    b"gamePath=@ByteArray(G:////////M////////R)//r//n"
-    b"version=2.5.2\r\n"
-)
+#: La ruta objetivo y el contenido que el ESCRITOR produciría para ella.
+#:
+#: Se DERIVA de ``prever_bytes`` en vez de escribirse a mano: el predicado de
+#: autoría se define contra la previsión, así que un literal que no coincida con
+#: ella haría que los tests midieran otra cosa. Pasó: el literal tenía los
+#: backslashes duplicados y el control positivo del test de recuperación fallaba
+#: por esa diferencia, no por el código.
+_RUTA_NUEVA = "G:////M////R"
+_NUEVO = escritura.prever_bytes(_PREVIOS, _RUTA_NUEVA)
 
 
 def _divergencia(previos: bytes, nuevo: bytes) -> int:
@@ -795,6 +800,7 @@ def test_el_binder_no_escribe_el_ini_por_ruta() -> None:
 # F — La inspección de P7 es READ-ONLY por AST, no por promesa
 # ---------------------------------------------------------------------------
 
+#: Métodos que mutan el disco por sí solos, sin importar el modo.
 _ESCRITURAS_PROHIBIDAS = frozenset(
     {
         "write_text",
@@ -803,12 +809,84 @@ _ESCRITURAS_PROHIBIDAS = frozenset(
         "rmdir",
         "mkdir",
         "touch",
-        "rename",
         "chmod",
         "symlink_to",
         "hardlink_to",
     }
 )
+
+#: Caracteres de modo que implican ESCRITURA en la API de ``open``.
+_CARACTERES_DE_ESCRITURA = frozenset("wax+")
+
+
+def _modo_de_apertura(nodo: ast.Call) -> str | None:
+    """Modo declarado en una llamada de apertura, o ``None``.
+
+    ``Path.open(mode)`` recibe el modo en la posición 0; el ``open`` de siempre
+    lo recibe en la 1, porque la 0 es la ruta. Confundirlos haría que una ruta
+    con una «w» se leyera como modo de escritura.
+    """
+    # ``Path.open(mode)`` es método; ``open(path, mode)``, ``io.open(path, mode)``
+    # y ``os.open(path, flags, mode)`` son estilo función aunque los dos últimos
+    # lleven punto. Confundirlos lee la RUTA como si fuera el modo.
+    estilo_funcion = isinstance(nodo.func, ast.Name) or (
+        isinstance(nodo.func, ast.Attribute)
+        and isinstance(nodo.func.value, ast.Name)
+        and nodo.func.value.id in {"io", "os", "codecs"}
+    )
+    candidatos: list[ast.expr] = []
+    if not estilo_funcion and nodo.args:
+        candidatos.append(nodo.args[0])
+    elif estilo_funcion and len(nodo.args) > 1:
+        candidatos.append(nodo.args[1])
+    for palabra in nodo.keywords:
+        if palabra.arg == "mode":
+            candidatos.append(palabra.value)
+    for candidato in candidatos:
+        if isinstance(candidato, ast.Constant) and isinstance(candidato.value, str):
+            return candidato.value
+    return None
+
+
+def ofensas_de_escritura(fuente: str) -> list[str]:
+    """Nombres de operaciones de escritura encontradas en ``fuente``, por AST.
+
+    Es una función y no un bloque inline para poder probar el DETECTOR con
+    fragmentos sintéticos. Un ancla que no se puede falsificar no es un ancla:
+    la versión anterior ignoraba ``Path.open``, así que cambiar
+    ``config_path.open("rb")`` por ``"wb"`` pasaba el test (Codex sobre #851).
+    """
+    arbol = ast.parse(fuente)
+    ofensas: list[str] = []
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        funcional = nodo.func
+        if isinstance(funcional, ast.Attribute):
+            nombre = funcional.attr
+            if nombre in _ESCRITURAS_PROHIBIDAS:
+                ofensas.append(f"{nombre} (línea {nodo.lineno})")
+            # ``replace``/``rename`` como nombre suelto marcan ``str.replace`` y
+            # ``dataclasses.replace``, que no tocan el disco. El que importa es el
+            # de ``os``, y se chequea por receptor.
+            if nombre in {"replace", "rename"} and isinstance(funcional.value, ast.Name) and funcional.value.id == "os":
+                ofensas.append(f"os.{nombre} (línea {nodo.lineno})")
+            if nombre == "open":
+                # ``os.open`` NO se decide por el modo: sus argumentos son
+                # (ruta, banderas, modo) y la ruta podría ser un literal con una
+                # «w». Lo cubre el chequeo dedicado —exactamente una apertura,
+                # dentro del escritor validado, con O_EXCL— que además es más
+                # estricto que mirar banderas.
+                if isinstance(funcional.value, ast.Name) and funcional.value.id == "os":
+                    continue
+                modo = _modo_de_apertura(nodo)
+                if modo and _CARACTERES_DE_ESCRITURA & set(modo):
+                    ofensas.append(f"open({modo!r}) (línea {nodo.lineno})")
+        elif isinstance(funcional, ast.Name) and funcional.id == "open":
+            modo = _modo_de_apertura(nodo)
+            if modo and _CARACTERES_DE_ESCRITURA & set(modo):
+                ofensas.append(f"open({modo!r}) (línea {nodo.lineno})")
+    return ofensas
 
 
 def _unlink_vive_en_el_escritor_validado(arbol: object) -> bool:
@@ -831,52 +909,37 @@ def _unlink_vive_en_el_escritor_validado(arbol: object) -> bool:
 def test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes() -> None:
     """Ancla por AST: la herramienta de P7 no puede escribir sobre el runtime.
 
-    Mismo patrón que el ancla del paquete ``effective_runtime``: se escanea la
-    FUENTE, no se confía en que nadie agregue un ``write_text`` «sólo para el
-    informe».
+    Escanea la FUENTE con :func:`ofensas_de_escritura`, que es una función aparte
+    justamente para poder probar el DETECTOR con fragmentos sintéticos.
 
-    La versión anterior de este ancla tenía una exención para
-    ``json_salida.write_text`` —«es el informe, no el runtime»—. Esa exención era
-    el agujero: cualquier destino pasado por ``--json-salida`` quedaba autorizado
-    por el hecho de llamarse así, incluido ``modorganizer.ini``. Se elimina.
+    Historia de este ancla, porque las tres versiones fallaron distinto:
+
+    1. eximía ``json_salida.write_text`` —«es el informe»—, y con eso autorizaba
+       cualquier destino, incluido ``modorganizer.ini``;
+    2. miraba el ``O_EXCL`` en el archivo entero, y se satisfacía con la mención
+       en el docstring;
+    3. ignoraba ``Path.open``, así que ``config_path.open("wb")`` pasaba.
 
     El informe se escribe con ``os.open(O_CREAT|O_EXCL)`` dentro de
     ``escribir_informe_exclusivo``, y eso es lo único que el ancla permite.
     """
-    import ast
-
     ruta = RAIZ_REPO / "scripts" / "p7_readonly_inspection.py"
     fuente = ruta.read_text(encoding="utf-8")
     arbol = ast.parse(fuente)
 
-    ofensas: list[str] = []
-    aperturas_exclusivas: list[ast.Call] = []
-    for nodo in ast.walk(arbol):
-        if not isinstance(nodo, ast.Call):
-            continue
-        funcional = nodo.func
-        if isinstance(funcional, ast.Attribute):
-            if funcional.attr in _ESCRITURAS_PROHIBIDAS:
-                ofensas.append(f"{funcional.attr} (línea {nodo.lineno})")
-            # ``replace``/``rename`` como nombre suelto marcan ``str.replace`` y
-            # ``dataclasses.replace``, que no tocan el disco. El que importa es el
-            # de ``os``, y se chequea por receptor.
-            if (
-                funcional.attr in {"replace", "rename"}
-                and isinstance(funcional.value, ast.Name)
-                and funcional.value.id == "os"
-            ):
-                ofensas.append(f"os.{funcional.attr} (línea {nodo.lineno})")
-            if funcional.attr == "open" and isinstance(funcional.value, ast.Name) and funcional.value.id == "os":
-                aperturas_exclusivas.append(nodo)
-        elif isinstance(funcional, ast.Name) and funcional.id == "open":
-            modos = [a for a in nodo.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
-            if any(("w" in m or "a" in m or "+" in m) for m in modos):
-                ofensas.append(f"open con modo de escritura (línea {nodo.lineno})")
+    ofensas = ofensas_de_escritura(fuente)
+    aperturas_exclusivas = [
+        nodo
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and nodo.func.attr == "open"
+        and isinstance(nodo.func.value, ast.Name)
+        and nodo.func.value.id == "os"
+    ]
 
     # ``unlink`` de limpieza: se permite SÓLO dentro del escritor validado, donde
-    # borra el informe parcial que él mismo acaba de crear con ``O_EXCL``. En
-    # cualquier otra función sería una capacidad de borrado sin justificar.
+    # borra el informe parcial que él mismo acaba de crear con ``O_EXCL``.
     limpiezas = [o for o in ofensas if o.startswith("unlink")]
     ofensas = [o for o in ofensas if not o.startswith("unlink")]
     assert not ofensas, f"la inspección de P7 contiene operaciones mutantes: {ofensas}"
@@ -886,16 +949,10 @@ def test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes() -> None:
             "el unlink del inspector vive fuera de escribir_informe_exclusivo"
         )
 
-    # La ÚNICA apertura de escritura permitida: os.open con O_EXCL, y sólo dentro
-    # del escritor validado. Una segunda apertura sin O_EXCL podría truncar.
     assert len(aperturas_exclusivas) == 1, (
         f"se esperaba exactamente una os.open de escritura, hay {len(aperturas_exclusivas)}"
     )
     llamada = aperturas_exclusivas[0]
-    # Se miran las BANDERAS REALES, no el archivo. La versión anterior de este
-    # assert tenía un fallback ``or "O_EXCL" in fuente`` que se satisfacía con la
-    # mención en el docstring: quitando ``O_EXCL`` de las banderas, el ancla
-    # seguía en verde. Lo detectó el mutante, no la revisión.
     escritor = next(
         (n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef) and n.name == "escribir_informe_exclusivo"),
         None,
@@ -921,64 +978,49 @@ def test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes() -> None:
     )
 
 
-def test_atribuye_la_escritura_completa_pendiente_de_truncado() -> None:
-    """``nuevo + previos[len(nuevo):]`` es el estado de ``antes_seteof``.
+@pytest.mark.parametrize(
+    "fragmento",
+    [
+        'p.open("wb")',
+        'p.open("ab")',
+        'p.open("r+b")',
+        'p.open(mode="w")',
+        'open(p, "w")',
+        'open(p, "a")',
+        'open(p, mode="x")',
+        "io.open(p, 'wb')",
+        "p.write_text('x')",
+        "p.write_bytes(b'x')",
+        "os.replace(a, b)",
+        "os.rename(a, b)",
+    ],
+)
+def test_el_detector_de_escritura_reconoce_la_variante(fragmento: str) -> None:
+    """Cada forma de escribir tiene que ser detectada, no sólo la que se probó.
 
-    Con el contenido nuevo MÁS CORTO, morir entre ``WriteFile`` y
-    ``SetEndOfFile`` deja exactamente eso. El predicado lo rechazaba porque
-    exigía un corte estrictamente menor que ``len(nuevo)``, así que el INI
-    quedaba con cola vieja y sin restaurar (Codex sobre #851). Es uno de los tres
-    desenlaces que el propio ``exp9_death_points`` había medido.
+    Es la mitad que hace del ancla una enumeración y no una muestra. La variante
+    ``Path.open("wb")`` es la que Codex usó para romper la versión anterior.
     """
-    assert len(_NUEVO) < len(_PREVIOS)
-    estado = _NUEVO + _PREVIOS[len(_NUEVO) :]
-    assert len(estado) == len(_PREVIOS)
-    assert estado != _PREVIOS and estado != _NUEVO
-    assert _es_escritura_propia_interrumpida(_PREVIOS, _NUEVO, estado) is True
+    assert ofensas_de_escritura(fragmento) != [], f"el detector NO ve {fragmento!r}"
 
 
-def test_no_atribuye_un_cambio_ajeno_que_comparte_el_prefijo() -> None:
-    """Un tercero que cambia el valor dejando la misma cola NO es nuestro.
-
-    Es el caso de Codex: el destino autorizado es ``D:/Games/Other`` y un tercero
-    escribe ``D:/Games/Skyrim``. Por contenido es indistinguible de un corte
-    nuestro, así que el discriminador es PROCESO: si el binder no llegó a llamar
-    al escritor, el estado no puede ser suyo.
-    """
-    previos = b"[General]\r\ngamePath=@ByteArray(C:/Games/Skyrim)\r\n"
-    nuevo = b"[General]\r\ngamePath=@ByteArray(D:/Games/Other)\r\n"
-    ajeno = b"[General]\r\ngamePath=@ByteArray(D:/Games/Skyrim)\r\n"
-    # Por contenido, el predicado no puede distinguirlo: por eso existe el flag.
-    assert _es_escritura_propia_interrumpida(previos, nuevo, ajeno) is True
-
-    from sky_claw.local.frozen_runtime import binder_recovery as recovery
-
-    superficie = recovery.SuperficieCapturada(
-        kind=recovery.SUPERFICIE_MO2_INI,
-        path="x",
-        existed=True,
-        sha256=recovery._sha256(previos),
-        contenido_b64=__import__("base64").b64encode(previos).decode("ascii"),
-    )
-    registro = recovery.RegistroRecuperacion(
-        schema_version=1,
-        transition_id="t-ajeno",
-        journal_revision=1,
-        operation="PROMOTION",
-        target_clone_id="c1",
-        target_generation_id="g1",
-        expected_effective_path="D:/Games/Other",
-        superficies=(superficie,),
-        fase=recovery.FaseRecuperacion.INI_ESCRITO,
-        created_at_ns=0,
-        updated_at_ns=0,
-    )
-    # El binder NO llegó a escribir: el contenido es de un tercero.
-    coincide_sin_intento = recovery._coincide_con_lo_escrito(superficie, registro, ajeno, escritura_intentada=False)
-    assert coincide_sin_intento is False
-    # Y si SÍ llegó a escribir, el mismo contenido es atribuible.
-    coincide_con_intento = recovery._coincide_con_lo_escrito(superficie, registro, ajeno, escritura_intentada=True)
-    assert coincide_con_intento is True
+@pytest.mark.parametrize(
+    "fragmento",
+    [
+        'p.open("rb")',
+        "p.open()",
+        "open(p)",
+        'open(p, "rb")',
+        "p.read_text()",
+        "p.read_bytes()",
+        "os.stat(p)",
+        "open('C:/tmp/w')",  # la ruta contiene una «w»: no es un modo
+        "os.open(p, flags, 0o600)",  # os.open tiene su propio chequeo
+    ],
+)
+def test_el_detector_no_marca_lecturas(fragmento: str) -> None:
+    """Un detector que marca todo tampoco sirve: los negativos son el control."""
+    assert ofensas_de_escritura(fragmento) == [], f"el detector marca de más en {fragmento!r}"
 
 
 def test_ningun_modulo_productivo_escribe_el_ini_por_ruta() -> None:
@@ -1016,3 +1058,60 @@ def test_ningun_modulo_productivo_escribe_el_ini_por_ruta() -> None:
         "hay llamadores del escritor del INI SIN exclusión: "
         f"{ofensas}. Usá actualizar_game_path_por_handle dentro del gate"
     )
+
+
+def test_la_recuperacion_en_proceso_nuevo_no_atribuye_una_escritura_ambigua(tmp_path: pathlib.Path) -> None:
+    """Sin evidencia de PROCESO, un estado intermedio no se restaura.
+
+    ``recuperar_transicion_interrumpida`` corre en un proceso nuevo: no sabe si la
+    transición llegó a escribir, y la fase ``INI_ESCRITO`` se marca ANTES de
+    escribir, así que tampoco lo prueba. Entre el crash y la recuperación puede
+    pasar cualquier cosa —horas, incluso—, así que la ventana de una escritura
+    ajena es mucho mayor que en el rollback in-process.
+
+    Este test fija la decisión: el default es NO atribuir. Se conserva evidencia y
+    el propietario decide (Codex sobre #851).
+    """
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo = tmp_path / "modorganizer.ini"
+    divergencia = _divergencia(_PREVIOS, _NUEVO)
+    intermedio = _NUEVO[: divergencia + 5] + _PREVIOS[divergencia + 5 :]
+    objetivo.write_bytes(intermedio)
+
+    superficie = recovery.SuperficieCapturada(
+        kind=recovery.SUPERFICIE_MO2_INI,
+        path=str(objetivo),
+        existed=True,
+        sha256=recovery._sha256(_PREVIOS),
+        contenido_b64=__import__("base64").b64encode(_PREVIOS).decode("ascii"),
+    )
+    registro = recovery.RegistroRecuperacion(
+        schema_version=1,
+        transition_id="t-proceso-nuevo",
+        journal_revision=1,
+        operation="PROMOTION",
+        target_clone_id="c1",
+        target_generation_id="g1",
+        expected_effective_path="G:////M////R",
+        superficies=(superficie,),
+        fase=recovery.FaseRecuperacion.INI_ESCRITO,
+        created_at_ns=0,
+        updated_at_ns=0,
+    )
+
+    # Sin ``escritura_intentada``: es lo que hace la recuperación en proceso nuevo.
+    veredicto = recovery._restaurar_persistida(superficie, registro, raiz_evidencia=tmp_path)
+    assert veredicto.escritura_ajena is True, "la recuperación atribuyó una escritura que no puede probar"
+    assert objetivo.read_bytes() == intermedio, "la recuperación pisó el contenido ambiguo"
+    evidencia = list((tmp_path / "recovery_evidence").rglob("*.bin"))
+    assert evidencia, "no se conservó evidencia del contenido ambiguo"
+    assert evidencia[0].read_bytes() == intermedio
+
+    # Control positivo: CON evidencia de proceso, el mismo estado sí se restaura.
+    objetivo.write_bytes(intermedio)
+    veredicto_con_flag = recovery._restaurar_persistida(
+        superficie, registro, raiz_evidencia=tmp_path, escritura_intentada=True
+    )
+    assert veredicto_con_flag.escritura_ajena is False
+    assert objetivo.read_bytes() == _PREVIOS, "con intento probado, el rollback tenía que restaurar"

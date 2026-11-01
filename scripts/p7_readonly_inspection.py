@@ -289,18 +289,24 @@ def construir_informe(
     managed_source_root: pathlib.Path | None,
     clone_id: str | None,
     mostrar_rutas: bool,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], pathlib.Path | None]:
     """Arma el informe completo. Función pura respecto del disco: sólo lee."""
     ruta = _redactor(mostrar_rutas)
     hallazgos: list[Hallazgo] = []
 
     # --- 1. Desired Runtime -------------------------------------------------
     desired = desired_runtime_from_storage(storage_root)
+    # ``desired_runtime_from_storage`` devuelve ``clone_root=None`` cuando el
+    # Desired NO se pudo resolver (p. ej. una Generation que no es del linaje del
+    # clone). Tener id no alcanza: sin raíz resuelta, P7 no puede afirmar sobre
+    # qué runtime se va a ejecutar (Codex sobre #851).
+    resuelto = bool(desired.clone_id) and desired.clone_root is not None
     hallazgos.append(
         Hallazgo(
             "desired_runtime",
-            HALLAZGO_OK if desired.clone_id else HALLAZGO_BLOQUEADO,
-            f"clone={desired.clone_id!r} generation={desired.generation_id!r} root={ruta(desired.clone_root)}",
+            HALLAZGO_OK if resuelto else HALLAZGO_BLOQUEADO,
+            f"clone={desired.clone_id!r} generation={desired.generation_id!r} root={ruta(desired.clone_root)}"
+            + ("" if resuelto else " · el Desired NO se resuelve a una raíz: no se puede afirmar el runtime efectivo"),
         )
     )
 
@@ -320,6 +326,21 @@ def construir_informe(
                 f"generation={registro.source_generation_id} root={ruta(clone_root)}",
             )
         )
+        # El preflight posterior se invoca con ``clone_id=objetivo`` y por eso no
+        # compara el Desired contra la Generation persistida. Esa coherencia se
+        # exige acá o nadie la exige (Codex sobre #851).
+        if desired.clone_id and (
+            desired.clone_id != registro.clone_id or desired.generation_id != registro.source_generation_id
+        ):
+            hallazgos.append(
+                Hallazgo(
+                    "desired_coherencia",
+                    HALLAZGO_BLOQUEADO,
+                    "el Desired declara "
+                    f"({desired.clone_id!r}, {desired.generation_id!r}) y el Clone inspeccionado es "
+                    f"({registro.clone_id!r}, {registro.source_generation_id!r})",
+                )
+            )
 
     # --- 3. Versiones del Clone --------------------------------------------
     if clone_root is not None and clone_root.is_dir():
@@ -414,6 +435,12 @@ def construir_informe(
     else:
         veredicto = VEREDICTO_LISTO
 
+    # La raíz EFECTIVA se devuelve aparte, sin redactar: ``main`` la necesita para
+    # PROTEGER el destino del informe. Si sólo se usara ``args.managed_source``,
+    # omitir el argumento dejaría la instalación descubierta escribible (Codex
+    # sobre #851).
+    managed_efectiva = managed_source_root or evaluacion.managed_source_root
+
     return {
         "veredicto": veredicto,
         "listo_para_p7": veredicto == VEREDICTO_LISTO,
@@ -426,7 +453,7 @@ def construir_informe(
         "preflight_ready": evaluacion.is_ready,
         "hallazgos": [h.como_dict() for h in hallazgos],
         "matriz_p7": _matriz_p7(),
-    }
+    }, managed_efectiva
 
 
 def _matriz_p7() -> list[dict[str, str]]:
@@ -610,7 +637,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json-salida", type=pathlib.Path, default=None, help="escribe el informe JSON en esta ruta")
     args = parser.parse_args(argv)
 
-    informe = construir_informe(
+    informe, managed_efectiva = construir_informe(
         storage_root=args.storage_root,
         mo2_instance_dir=args.mo2_instance,
         config_path=args.config,
@@ -637,7 +664,10 @@ def main(argv: list[str] | None = None) -> int:
                     storage_root=args.storage_root,
                     mo2_instance_dir=args.mo2_instance,
                     clone_roots=clone_roots,
-                    managed_source_root=args.managed_source,
+                    # La DESCUBIERTA, no la del argumento: omitir
+                    # ``--managed-source`` no puede dejar la instalación de Steam
+                    # escribible por el propio inspector.
+                    managed_source_root=managed_efectiva,
                 ),
             )
             escribir_informe_exclusivo(destino, texto + "\n")

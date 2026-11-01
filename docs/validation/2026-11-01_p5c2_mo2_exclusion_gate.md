@@ -60,6 +60,37 @@ El finding 2 es el más incómodo: el rig había medido ese estado y el ADR lo
 documentaba, pero el predicado lo rechazaba. Medir y después escribir un
 predicado que contradice la medición no es medir.
 
+### 0.2 Segunda ronda de revisión (sobre `0deddf6c`)
+
+Codex volvió a revisar y dejó **4 findings más**. También reales.
+
+| # | Finding | Veredicto | Corrección |
+|---|---|---|---|
+| 11 | **P1** · La recuperación en **proceso nuevo** heredaba `escritura_intentada=True`: podía destruir un cambio ajeno hecho entre el crash y la recuperación | CONFIRMADO | El default pasa a `False`. Sin evidencia de proceso no se atribuye: evidencia + propietario |
+| 12 | **P1** · `desired_runtime` daba OK sólo por tener `clone_id`, aunque `clone_root` fuera `None` | CONFIRMADO | Exige raíz resuelta y coherencia Desired↔Clone |
+| 13 | **P2** · `--json-salida` podía escribir dentro de la Managed Source **descubierta** (se protegió la búsqueda de dependencias, no el destino) | CONFIRMADO | `construir_informe` devuelve la raíz efectiva sin redactar y `main` la usa para proteger |
+| 14 | **P2** · El ancla AST no veía `Path.open("wb")` | CONFIRMADO con mutante | Detector extraído a función y parametrizado (12 variantes positivas, 9 negativas) |
+
+**El #11 es la respuesta a la pregunta que le hice a Codex en el comentario** («¿alcanza
+con la fase, o hay que exigir al propietario?»). Contestó que no alcanza, y tiene
+razón: la fase `INI_ESCRITO` se marca **antes** de escribir, así que no prueba
+autoría, y entre el crash y la recuperación puede pasar cualquier cosa.
+
+**El #14 se demostró antes de corregirlo**: se cambió `config_path.open("rb")` por
+`"wb"` en una copia y el ancla anterior **pasó**. Después de la corrección, el
+mismo mutante muere con `open('wb') (línea 155)`.
+
+### Estado de los revisores
+
+| Revisor | Estado | Se cuenta como aprobación |
+|---|---|---|
+| Codex | 2 rondas, 11 findings, todos corregidos | Sí, cuando la ronda quede limpia |
+| CodeRabbit | 1 finding corregido; luego **`BLOCKED_BY_QUOTA`** (61 revisiones en 7 días, cupo 1/hora) | **No** |
+| Qodo (×2 workflows) | `pass` | Sí, como check |
+
+`BLOCKED_BY_QUOTA` no es una revisión aprobada ni un fallo del código: es una
+límite del plan. Queda registrado como tal.
+
 ## 1. Rama, worktree y SHAs
 
 | Elemento | Valor |
