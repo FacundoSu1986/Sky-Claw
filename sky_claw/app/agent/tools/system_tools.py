@@ -20,6 +20,7 @@ from sky_claw.app.core.models import LootExecutionParams
 from sky_claw.app.security.hitl import Decision, new_hitl_request_id
 from sky_claw.app.security.sanitize import sanitize_for_prompt
 from sky_claw.local.tools.output_targets import BODYSLIDE_MESHES_RESOURCE_ID
+from sky_claw.local.tools.wrye_bash_asistida import FASE_PREPARAR
 
 logger = logging.getLogger(__name__)
 
@@ -558,72 +559,55 @@ async def generate_bashed_patch(
     lock_manager: Any | None = None,
     snapshot_manager: Any | None = None,
     journal: Any | None = None,
+    path_resolver: Any | None = None,
+    profile: str = "Default",
+    fase: str = FASE_PREPARAR,
+    testigo_previo: dict[str, object] | None = None,
 ) -> str:
-    """Generate 'Bashed Patch, 0.esp' using WryeBashRunner.
+    """Etapa 6 ASISTIDA desde la superficie del agente LLM (ADR 0016).
 
-    NOTE: Plugin limit validation (M-04) is handled at the Supervisor level
-    (execute_wrye_bash_pipeline). Here we only execute the runner.
-    This handler is used when AsyncToolRegistry invokes the tool directly.
+    **Superficie 3 de 3 del cableado.** El humano construye el Bashed Patch en la GUI de
+    Wrye Bash lanzado **desde MO2**; este handler prepara (fase 1) o verifica (fase 2)
+    delegando en :meth:`WryeBashPipelineService.ejecutar_fase_asistida`, el punto ÚNICO de
+    enrutado que comparte con el dispatcher de la GUI y con el ``SupervisorAgent``.
 
-    #315 (PR A) extrajo :class:`WryeBashPipelineService`, el mismo servicio que
-    usa el Ritual de la GUI/dispatcher, con lock ANIDADO (``Bashed Patch, 0.esp``
-    + ``load-order``): serializa contra otra corrida de Wrye Bash y contra un
-    sort de LOOT concurrente — el lock cross-process solo protege si TODOS los
-    mutadores participan. Este path del agente delega al mismo servicio en vez
-    de mantener una segunda implementación del lock (§2.1 auditoría original:
-    mismo vector P1 que ``run_loot_sort``/``run_pandora``). Sin lock manager
-    (callers legacy / tests) corre directo, preservando el comportamiento
-    anterior.
+    Antes del PR B este handler llamaba a ``execute_pipeline``: tomaba el lock anidado
+    (``Bashed Patch, 0.esp`` + ``load-order``), emitía el ``ActionManifest`` y abría una
+    TX para que el runner fallara cerrado —``bash.py`` no expone build headless—. Ahora
+    **no toma lock, no abre TX y no emite caja negra**, porque ninguna de las dos fases
+    muta: la caja negra existe para lo que puede mutar (ADR 0016 §2) y una etapa que
+    sólo lee y describe no debe dejar una TX ``rolled_back`` por ritual.
 
-    T-26/T-28 (ADR 0002, "PR C" del #315): cuando ``journal`` está cableado (via
-    ``app_context``) este path del agente TAMBIÉN emite la caja negra de vuelo —
-    igual que ``run_loot_sort``/``run_pandora``. Con ``journal=None`` no se emite.
+    ``path_resolver`` y ``profile`` son la precondición H-1 de ADR 0016 §7: hasta el PR B
+    esta superficie construía el servicio **sin** resolver y llamaba con el perfil
+    literal ``"agent-tool"``, que no existe en la instancia MO2. Sin resolver no hay
+    ``plugins.txt`` ni superposición del perfil, y la etapa devolvería
+    ``SinRutasResolubles``; el perfil real lo aporta el registry (``mo2_profile``, fijo
+    por sesión).
+
+    ``wrye_bash_runner`` se conserva en la firma porque el descriptor del registry lo
+    sigue pasando; las fases asistidas **no lo usan** (no hay subproceso que lanzar). El
+    parámetro y el camino headless se retiran juntos en el PR C.
+
+    Siempre devuelve JSON serializable (contrato T11).
     """
-    if wrye_bash_runner is None:
-        return json.dumps({"error": "WryeBashRunner is not configured. Set WRYE_BASH_PATH."})
+    from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
 
-    if lock_manager is not None and snapshot_manager is not None:
-        from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
-
-        service = WryeBashPipelineService(
-            lock_manager=lock_manager,
-            snapshot_manager=snapshot_manager,
-            wrye_bash_runner=wrye_bash_runner,
-            journal=journal,
-        )
-        # El servicio siempre devuelve un dict serializable (guard M-04, lock
-        # contention, LockLeaseLostError, error de ejecución) — nunca propaga.
-        # validate_limit=False: M-04 se valida a nivel Supervisor para este path.
-        res = await service.execute_pipeline(profile="agent-tool", validate_limit=False)
-        out: dict[str, Any] = {
-            "success": res.get("success", False),
-            "return_code": res.get("return_code", -1),
-            "stdout": sanitize_for_prompt(str(res.get("stdout", ""))) if res.get("stdout") else "",
-            "stderr": sanitize_for_prompt(str(res.get("stderr", ""))) if res.get("stderr") else "",
-            "duration_seconds": res.get("duration_seconds", 0.0),
-            # U-04: el hermano LLM del log del servicio. Un fallo revertido y uno que
-            # dejó un Bashed Patch parcial piden acciones DISTINTAS del operador, y el
-            # log no viaja al agente: sin este campo los dos se ven igual desde acá.
-            "rolled_back": res.get("rolled_back", False),
-        }
-        if not out["success"] and res.get("message"):
-            out["error"] = res["message"]
-        return json.dumps(out)
-
-    try:
-        result = await wrye_bash_runner.generate_bashed_patch()
-    except Exception as exc:
-        return json.dumps({"error": str(exc)})
-
-    return json.dumps(
-        {
-            "success": result.success,
-            "return_code": result.return_code,
-            "stdout": sanitize_for_prompt(result.stdout) if result.stdout else "",
-            "stderr": sanitize_for_prompt(result.stderr) if result.stderr else "",
-            "duration_seconds": result.duration_seconds,
-        }
+    service = WryeBashPipelineService(
+        lock_manager=lock_manager,
+        snapshot_manager=snapshot_manager,
+        wrye_bash_runner=wrye_bash_runner,
+        journal=journal,
+        path_resolver=path_resolver,
     )
+    resultado = await service.ejecutar_fase_asistida(
+        profile=profile,
+        fase=fase,
+        # M-04 se valida a nivel Supervisor para este path (igual que antes del PR B).
+        validate_limit=False,
+        testigo_previo=testigo_previo,
+    )
+    return json.dumps(resultado)
 
 
 async def run_pandora(

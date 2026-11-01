@@ -8,7 +8,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_VALID_BASHED_PATCH_KEYS = {"profile", "validate_limit"}
+# ADR 0016 §7: `fase` elige media etapa asistida (preparar | verificar) y
+# `testigo_previo` es el campo homónimo que la fase 1 devolvió, que la fase 2
+# necesita para probar frescura. Sin `fase` acá, la GUI y el supervisor no podían
+# llegar nunca a la verificación: el filtro la descartaba en silencio y toda
+# invocación caía en la preparación.
+_VALID_BASHED_PATCH_KEYS = {"profile", "validate_limit", "fase", "testigo_previo"}
 
 
 class GenerateBashedPatchStrategy:
@@ -31,6 +36,13 @@ class GenerateBashedPatchStrategy:
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         filtered = self._filter_payload(payload_dict)
+        # `fase=None` (clave presente y vacía, típico del formulario de la GUI) llegaría
+        # al servicio como fase inválida y devolvería `FaseInvalida`. Se descarta acá para
+        # que el default del pipeline (`preparar`) aplique en vez de fallar por un None.
+        # `in` + `pop` y no `get(...) is None`: la clave ausente también da None.
+        for clave_opcional in ("fase", "testigo_previo"):
+            if clave_opcional in filtered and filtered[clave_opcional] is None:
+                del filtered[clave_opcional]
         return await self.wrye_bash_pipeline(**filtered)
 
     def _filter_payload(self, payload_dict: dict[str, Any], *, warn: bool = True) -> dict[str, Any]:

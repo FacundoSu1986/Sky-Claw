@@ -443,7 +443,13 @@ class IdempotencyMiddleware:
             )
             raise
 
-        if _is_error_result(result):
+        if _es_etapa_pendiente(result):
+            # ADR 0016: una etapa ASISTIDA no falló ni terminó. ``success=False`` es
+            # deliberado —no se construyó nada—, así que sin esta rama la etapa se
+            # registraría como FAILED y el panel diría que el ritual falló cuando en
+            # realidad está esperando al operador.
+            self._sm.transition(task.task_id, "AWAITING_OPERATOR", result=result)
+        elif _is_error_result(result):
             self._sm.transition(
                 task.task_id,
                 "FAILED",
@@ -453,6 +459,17 @@ class IdempotencyMiddleware:
         else:
             self._sm.transition(task.task_id, "COMPLETED", result=result)
         return result
+
+
+def _es_etapa_pendiente(result: Any) -> bool:
+    """True si el resultado declara una etapa ESPERANDO a un humano (ADR 0016).
+
+    Se pregunta por ``pendiente`` y no por ``success=False``: ``success`` es el veredicto
+    de la ETAPA (no se construyó) y ``pendiente`` es el del TOOL (hizo su trabajo y dejó
+    instrucciones). Un fallo real —preflight rojo, M-04, rutas irresolubles— devuelve
+    ``success=False`` SIN ``pendiente`` y sigue siendo ``FAILED``.
+    """
+    return isinstance(result, dict) and result.get("pendiente") is True
 
 
 def _is_error_result(result: Any) -> bool:

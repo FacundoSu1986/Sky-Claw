@@ -40,6 +40,7 @@ import pytest
 from sky_claw.app.agent.tools import AsyncToolRegistry, system_tools
 from sky_claw.app.security.path_validator import PathViolationError
 from sky_claw.local.fomod.installer import InstallResult
+from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 PAQUETE = RAIZ / "sky_claw"
@@ -111,6 +112,10 @@ FAMILIA_DEL_PERFIL = {
     "analyze_esp_conflicts",
     "check_load_order",
     "detect_conflicts",
+    # ADR 0016 (H-1, PR B): la tool de la etapa 6 dejó de llamar con el perfil
+    # literal `"agent-tool"` —que no es un perfil de MO2— y recibe el de sesión.
+    # Entra a la familia por introspección, no por decisión de esta lista.
+    "generate_bashed_patch",
     "install_mod_from_archive",
     "launch_game",
     "run_loot_sort",
@@ -199,6 +204,7 @@ RECETAS: dict[str, dict[str, Any]] = {
     "analyze_esp_conflicts": {},
     "check_load_order": {},
     "detect_conflicts": {},
+    "generate_bashed_patch": {},
     "install_mod_from_archive": {
         "archive_path": str(pathlib.Path.home() / "Modding" / "TestMod.zip"),
         "selections": {},
@@ -215,7 +221,7 @@ def test_toda_la_familia_tiene_receta() -> None:
 
 
 @pytest.mark.parametrize("tool", sorted(RECETAS))
-async def test_el_tool_usa_el_perfil_de_sesion(tool: str) -> None:
+async def test_el_tool_usa_el_perfil_de_sesion(tool: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Ninguna operación de MO2 puede ver un perfil distinto al de la sesión.
 
     Se afirma sobre lo que el tool le pidió a MO2, no sobre el fuente del wiring:
@@ -233,8 +239,27 @@ async def test_el_tool_usa_el_perfil_de_sesion(tool: str) -> None:
         mo2_profile=PERFIL,
     )
 
-    salida = await registry.execute(tool, RECETAS[tool])
+    # La etapa 6 asistida no le pide nada a MO2 ni devuelve `profile` en el payload: su
+    # perfil compone rutas DENTRO del servicio. Se observa en el único punto donde el
+    # handler decide —el enrutado de fase de ADR 0016—, porque espiar el servicio no
+    # relaja el oráculo: si el lambda ignorara `self._mo2_profile`, acá se vería
+    # "Default". Para las demás tools la lista queda vacía y no aporta nada.
+    perfiles_del_servicio: list[str] = []
+    original = WryeBashPipelineService.ejecutar_fase_asistida
 
+    async def espia(self: Any, *, profile: str, **kwargs: Any) -> dict[str, Any]:
+        perfiles_del_servicio.append(profile)
+        return {"success": False, "reason": "SinRutasResolubles"}
+
+    monkeypatch.setattr(WryeBashPipelineService, "ejecutar_fase_asistida", espia)
+    try:
+        salida = await registry.execute(tool, RECETAS[tool])
+    finally:
+        monkeypatch.setattr(WryeBashPipelineService, "ejecutar_fase_asistida", original)
+
+    assert [p for p in perfiles_del_servicio if p != PERFIL] == [], (
+        f"{tool} enrutó la etapa con otro perfil: {perfiles_del_servicio}"
+    )
     equivocados = [(op, visto) for op, visto in mo2.perfiles_vistos if visto != PERFIL]
     assert not equivocados, f"{tool} operó sobre otro perfil: {equivocados}"
     # Los tools que devuelven el perfil en su payload también tienen que nombrar el
@@ -253,10 +278,13 @@ async def test_el_tool_usa_el_perfil_de_sesion(tool: str) -> None:
 #: punto de extensión más probable, y con un set de nombres pasaría sin romper nada
 #: (mismo criterio que ``tests/test_db_connection_invariant.py``).
 LITERALES_ESPERADOS: dict[str, int] = {
-    # `profile="agent-tool"` NO es un perfil de MO2: es la etiqueta de identidad con
-    # la que el pipeline de Wrye Bash firma su manifiesto en el journal. Exención
-    # deliberada.
-    "sky_claw/app/agent/tools/system_tools.py": 1,
+    # Vacío a propósito desde ADR 0016 (PR B). La única exención que quedaba era
+    # `profile="agent-tool"` en `system_tools.generate_bashed_patch`: no era un perfil
+    # de MO2 sino una etiqueta de identidad para el manifiesto del journal, y el PR B la
+    # retiró junto con el cableado — la tool ahora compone `profiles/<perfil>/plugins.txt`
+    # con el perfil de sesión, así que el literal habría resuelto rutas de un perfil
+    # inexistente (H-1). El censo se deja VACÍO y no se borra el test: la primera llamada
+    # nueva con perfil literal vuelve a romper acá.
 }
 
 _KWARGS_DE_PERFIL = {"profile", "profile_name", "source_profile"}

@@ -58,11 +58,22 @@ def crear_dependencias_desde_doble(supervisor: Any) -> OrchestrationDispatcherDe
     async def ejecutar_wrye_bash(
         profile: str | None = None,
         validate_limit: bool = True,
+        fase: str = "preparar",
+        testigo_previo: dict[str, object] | None = None,
     ) -> dict[str, Any]:
+        """Doble del callable ``WryeBashPipeline``, con la MISMA firma que el Protocol.
+
+        ADR 0016 (PR B): esta conveniencia es el gemelo de test del cableado. Si se
+        quedaba con dos argumentos, el dispatch del supervisor reenviaba ``fase`` a un
+        callable que la descartaba y la fase 2 seguía siendo inalcanzable desde el test
+        que dice probarla — el defecto dominante del repo, mudado a un helper.
+        """
         pipeline = getattr(supervisor, "execute_wrye_bash_pipeline", AsyncMock())
         return await pipeline(
             profile=profile,
             validate_limit=validate_limit,
+            fase=fase,
+            testigo_previo=testigo_previo,
         )
 
     async def validar_limite(profile: str) -> dict[str, Any]:

@@ -90,6 +90,18 @@ _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 #: estrategias (bytes para el parser, texto para el nombre).
 _BOM_UTF8 = b"\xef\xbb\xbf"
 
+#: Fases del ritual asistido (ADR 0016). Son la ÚNICA elección que hace un llamador:
+#: ``preparar`` entrega instrucciones + testigo previo; ``verificar`` emite el veredicto
+#: por evidencia. Ninguna de las dos muta, así que elegir mal no puede corromper nada
+#: —solo devuelve la respuesta de la otra fase— y aun así el valor se valida, porque un
+#: ``fase`` inventado tiene que fallar cerrado y no caer en un default silencioso.
+FASE_PREPARAR = "preparar"
+FASE_VERIFICAR = "verificar"
+
+#: Vocabulario cerrado de fases. Un valor nuevo rompe
+#: ``tests/test_wrye_bash_cableado_asistido.py`` hasta que se clasifique.
+FASES_ASISTIDAS: frozenset[str] = frozenset({FASE_PREPARAR, FASE_VERIFICAR})
+
 
 class EstadoEnPlugins(enum.StrEnum):
     """Estado del artefacto en el ``plugins.txt`` del perfil (vocabulario cerrado).
@@ -498,18 +510,18 @@ def preparacion_como_resultado(preparacion: PreparacionAsistida) -> dict[str, ob
     ``success`` es ``False`` a propósito: preparar **no** construye nada, así que
     declarar éxito sería el falso verde que la etapa 6 entera existe para cerrar.
 
-    **``pendiente`` NO es un contrato ratificado todavía.** El dispatcher y
-    ``ToolStateMachine`` solo conocen ``PENDING → RUNNING → COMPLETED/FAILED``, y no hay
-    ningún consumidor de este campo en ``sky_claw/app/`` (verificado por grep): tal como
-    está, una etapa *asistida* se va a ver como una etapa *fallida*. El mapeo se decide y
-    se congela en el PR B de ADR 0016 §7, junto con el cableado de las tres superficies;
-    hasta entonces el campo viaja marcado con ``pendiente_no_ratificado=True`` para que
-    nadie lo consuma creyendo que el contrato está cerrado.
+    **``pendiente`` es contrato ratificado (PR B de ADR 0016 §7).** ``success`` sigue
+    siendo ``False`` —la etapa no se construyó—, pero ``success`` **no** es la única
+    lectura posible del resultado. ``pendiente=True`` dice lo que realmente pasó: el tool
+    hizo su trabajo (dejó instrucciones y un testigo) y la etapa quedó esperando al
+    operador. ``IdempotencyMiddleware`` traduce ese campo al estado
+    ``AWAITING_OPERATOR`` de ``ToolStateMachine``: ni ``FAILED`` (nada falló) ni
+    ``COMPLETED`` (nada se construyó), y el lock de idempotencia se libera igual que en
+    cualquier estado terminal para que reintentar la preparación sea posible.
     """
     return {
         "success": False,
         "pendiente": True,
-        "pendiente_no_ratificado": True,
         "motivo": MotivoAsistido.ESPERANDO_OPERADOR.value,
         "message": (
             f"Etapa 6 (Bashed Patch) requiere tu intervención: construí '{BASHED_PATCH_NAME}' en la GUI "

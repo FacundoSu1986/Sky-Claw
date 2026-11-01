@@ -39,6 +39,7 @@ from .schemas import (
     DiagnosticarParallaxParams,
     DownloadModParams,
     EvaluarElegibilidadParallaxParams,
+    GenerateBashedPatchParams,
     GenerateLodsParams,
     InstallFromArchiveParams,
     InstallModParams,
@@ -149,6 +150,11 @@ class AsyncToolRegistry:
         # plano. Delega en el MISMO servicio que la GUI (publicado por el
         # bootloader); None = la etapa 9 no está disponible en esta sesión.
         lod_jobs: Any | None = None,
+        # ADR 0016 (H-1, PR B): la etapa 6 asistida resuelve el `plugins.txt` del perfil
+        # y la superposición del artefacto (overwrite/mods/Data) desde el resolver, igual
+        # que la GUI. Sin él la fase falla cerrado con `SinRutasResolubles` — que es lo
+        # honesto, y sigue siendo preferible a que este path vuelva al camino headless.
+        path_resolver: Any | None = None,
     ) -> None:
         self._registry = registry
         self._lod_jobs = lod_jobs
@@ -182,6 +188,7 @@ class AsyncToolRegistry:
         # desaparece: se muda acá, que es el ÚNICO punto por el que el perfil entra
         # al registry. Misma primitiva que usa `app_context._resolve_mo2_profile`.
         self._mo2_profile = assert_safe_component(mo2_profile, field="mo2_profile")
+        self._path_resolver = path_resolver
         self._tools: dict[str, ToolDescriptor] = {}
         self._register_builtins()
 
@@ -602,19 +609,25 @@ class AsyncToolRegistry:
         self._tools["generate_bashed_patch"] = ToolDescriptor(
             name="generate_bashed_patch",
             description=(
-                "Generate the Bashed Patch using Wrye Bash. "
-                "Runs validate_load_order_limit (M-04) first and aborts if the 254-plugin limit is exceeded."
+                "Stage 6 (Bashed Patch) — ASSISTED: the patch is built by the human in the Wrye Bash GUI "
+                "launched from MO2; Sky-Claw never builds it headless. Pass fase='preparar' to get the "
+                "steps plus the previous fingerprint of the artifact, and fase='verificar' afterwards to "
+                "get the verdict derived from the artifact on disk and the profile's plugins.txt."
             ),
-            params_model=None,
-            # #315: delega a WryeBashPipelineService (lock anidado Bashed
-            # Patch + load-order) cuando el lock manager está cableado — mismo
-            # servicio que usa el Ritual de la GUI/dispatcher. #315 PR C: pasar el
-            # journal para que este path también emita la caja negra (T-26/T-28).
-            fn=lambda: generate_bashed_patch(
+            # ADR 0016: `fase` es el único argumento que el LLM elige, y las dos fases son de
+            # sólo lectura. El perfil lo fija el registry (mo2_profile), no el modelo.
+            params_model=GenerateBashedPatchParams,
+            # #315 → ADR 0016 (PR B): mismo servicio que el Ritual de la GUI y el
+            # SupervisorAgent, y la MISMA ruta de enrutado (`ejecutar_fase_asistida`).
+            # Las fases asistidas no toman lock ni emiten caja negra: no mutan.
+            fn=lambda fase="preparar": generate_bashed_patch(
                 self._wrye_bash_runner,
                 lock_manager=self._lock_manager,
                 snapshot_manager=self._snapshot_manager,
                 journal=self._journal,
+                path_resolver=self._path_resolver,
+                profile=self._mo2_profile,
+                fase=fase,
             ),
         )
         # #661: etapa 9 desde la superficie remota. Lanza un TRABAJO en segundo

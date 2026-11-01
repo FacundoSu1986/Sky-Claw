@@ -7,6 +7,7 @@ State machine::
 
     PENDING ──► RUNNING ──► COMPLETED
       │              │
+      │              ├────► AWAITING_OPERATOR   (etapa asistida: ADR 0016)
       │              ▼
       │           FAILED
       │
@@ -47,6 +48,12 @@ TaskState = Literal[
     "COMPLETED",
     "FAILED",
     "AWAITING_APPROVAL",
+    # ADR 0016 (etapa 6 asistida): el tool hizo su trabajo y la etapa espera una
+    # acción HUMANA fuera de Sky-Claw (construir el Bashed Patch en la GUI de Wrye
+    # Bash lanzado desde MO2). No es ``FAILED`` —nada falló— ni ``COMPLETED`` —nada se
+    # construyó—, y la etapa se cierra con OTRA invocación (fase ``verificar``), así
+    # que este estado no tiene transiciones salientes.
+    "AWAITING_OPERATOR",
 ]
 
 # ---------------------------------------------------------------------------
@@ -56,10 +63,18 @@ TaskState = Literal[
 _VALID_TRANSITIONS: dict[str, set[str]] = {
     "PENDING": {"RUNNING", "AWAITING_APPROVAL"},
     "AWAITING_APPROVAL": {"RUNNING", "FAILED"},
-    "RUNNING": {"COMPLETED", "FAILED"},
+    "RUNNING": {"COMPLETED", "FAILED", "AWAITING_OPERATOR"},
     "COMPLETED": set(),  # terminal
     "FAILED": set(),  # terminal
+    "AWAITING_OPERATOR": set(),  # terminal
 }
+
+#: Estados de los que NO se sale. Existe como constante y no como dos tuplas repetidas
+#: porque el repo ya pagó esta clase de defecto tres veces («arreglar un hermano y no
+#: al otro»): la lista estaba escrita a mano en ``transition``, en ``active_task_count``
+#: y en ``cleanup_terminal``, y agregar un terminal en una sola dejaba las otras dos
+#: mintiendo —una tarea terminada contaba como activa y nunca se limpiaba—.
+_TERMINAL_STATES: frozenset[str] = frozenset({"COMPLETED", "FAILED", "AWAITING_OPERATOR"})
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -320,7 +335,7 @@ class ToolStateMachine:
 
         # Release idempotency lock on terminal states.  Pass the task_id so a
         # stale long-running task doesn't clear a newer task's lock (Codex P2).
-        if new_state in ("COMPLETED", "FAILED"):
+        if new_state in _TERMINAL_STATES:
             self._guard.release(current.idempotency_key, task_id=current.task_id)
 
         updated = TaskRecord(
@@ -356,7 +371,7 @@ class ToolStateMachine:
     @property
     def active_task_count(self) -> int:
         """Number of non-terminal tasks."""
-        return sum(1 for t in self._tasks.values() if t.state not in ("COMPLETED", "FAILED"))
+        return sum(1 for t in self._tasks.values() if t.state not in _TERMINAL_STATES)
 
     def acquire_idempotency(self, task_id: str) -> bool:
         """Acquire the idempotency lock for a task.
@@ -370,7 +385,7 @@ class ToolStateMachine:
         return self._guard.acquire(task.idempotency_key, task_id)
 
     def cleanup_terminal(self, max_age_seconds: float = 3600.0) -> int:
-        """Remove completed/failed tasks older than max_age_seconds.
+        """Remove terminal (completed/failed/awaiting-operator) tasks older than max_age_seconds.
 
         Returns:
             Number of tasks cleaned up.
@@ -379,7 +394,7 @@ class ToolStateMachine:
         to_remove = [
             tid
             for tid, task in self._tasks.items()
-            if task.state in ("COMPLETED", "FAILED") and (now - task.updated_at) >= max_age_seconds
+            if task.state in _TERMINAL_STATES and (now - task.updated_at) >= max_age_seconds
         ]
         for tid in to_remove:
             del self._tasks[tid]
