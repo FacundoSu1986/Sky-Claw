@@ -410,7 +410,10 @@ def _hijos_vivos(pid: int) -> list[psutil.Process]:
 
 def _argumentos(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="windows_job_probe", description=__doc__)
-    parser.add_argument("--exe", type=pathlib.Path, required=True, help="ejecutable bajo prueba")
+    parser.add_argument("--exe", type=pathlib.Path, help="ejecutable bajo prueba")
+    parser.add_argument(
+        "--resumir", type=pathlib.Path, help="imprime una tabla compacta de un JSON de resultados y termina"
+    )
     parser.add_argument(
         "--arg",
         action="append",
@@ -424,8 +427,37 @@ def _argumentos(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def resumir(ruta: pathlib.Path) -> str:
+    """Tabla compacta por retardo de asignación: cuántas veces el Python efectivo quedó dentro del Job."""
+    filas: list[dict[str, Any]] = json.loads(ruta.read_text(encoding="utf-8"))
+    por_retardo: dict[float, list[dict[str, Any]]] = {}
+    for fila in filas:
+        por_retardo.setdefault(float(fila["retardo_de_asignacion_ms"]), []).append(fila)
+    lineas = [
+        f"{ruta.name}: {len(filas)} mediciones",
+        "retardo_ms | n | python_efectivo_en_job | arbol_completo_en_job | procesos(min-max) | asignado_ms(max)",
+    ]
+    for retardo in sorted(por_retardo):
+        grupo = por_retardo[retardo]
+        efectivo = sum(1 for f in grupo if f["imagen_python_efectiva_en_job"] is True)
+        arbol = sum(1 for f in grupo if f["arbol_completo_en_job"])
+        cuenta = [len(f["procesos"]) for f in grupo]
+        asignado = max(float(f["asignacion_completada_ms"]) for f in grupo)
+        lineas.append(
+            f"{retardo:>10.0f} | {len(grupo)} | {efectivo}/{len(grupo)} | {arbol}/{len(grupo)} | "
+            f"{min(cuenta)}-{max(cuenta)} | {asignado:.0f}"
+        )
+    return "\n".join(lineas)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _argumentos(argv)
+    if args.resumir is not None:
+        print(resumir(args.resumir))  # noqa: T201 - CLI
+        return 0
+    if args.exe is None:
+        print("windows_job_probe: falta --exe", file=sys.stderr)  # noqa: T201 - CLI
+        return 2
     if sys.platform != "win32":
         print("windows_job_probe: solo Windows", file=sys.stderr)  # noqa: T201 - CLI
         return 2

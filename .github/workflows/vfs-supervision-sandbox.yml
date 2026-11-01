@@ -48,15 +48,18 @@ jobs:
           pip install -e ".[dev]"
           pip install pyinstaller
 
+      - name: Preparar carpeta de resultados
+        run: New-Item -ItemType Directory -Force sandbox_min | Out-Null
+
       - name: "Job Objects reales y protocolo (-rA: un SKIPPED no es un PASS)"
         run: >
           pytest -v -rA -p no:cacheprovider
           tests/test_vfs_job_containment_windows.py
-          tests/test_vfs_supervision_fence.py
+          tests/test_vfs_fence_de_supervision.py
+          2>&1 | Tee-Object -FilePath sandbox_min\pytest.txt
 
       - name: Ejecutable mínimo onefile (réplica de las opciones del spec) - construir
         run: |
-          New-Item -ItemType Directory -Force sandbox_min | Out-Null
           Set-Content -Path sandbox_min\dormilon.py -Value "import time`ntime.sleep(6)"
           pyinstaller --onefile --noconsole --name MinimoOnefile --distpath sandbox_min\dist --workpath sandbox_min\build --specpath sandbox_min sandbox_min\dormilon.py
       - name: Ejecutable mínimo onefile - medir pertenencia al Job según el retardo de asignación
@@ -71,6 +74,15 @@ jobs:
           python -m scripts.windows_job_probe --exe dist\SkyClawApp.exe
           '--arg=--vfs-probe-child' '--arg={probe_file}' '--arg={probe_sha}'
           --retardos 0,0.5,1,2,4 --repeticiones 3 --ventana 40 --json sandbox_min\resultados_real.json
+
+      - name: Resumen compacto (lo que importa, al final del log)
+        if: always()
+        run: |
+          Write-Output "=== pytest (PASSED/FAILED/SKIPPED/XFAIL/ERROR) ==="
+          if (Test-Path sandbox_min\pytest.txt) { Select-String -Path sandbox_min\pytest.txt -Pattern '^(PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS) |^=+ .*(passed|failed|skipped|error)' | ForEach-Object { $_.Line } }
+          foreach ($f in @('sandbox_min\resultados.json','sandbox_min\resultados_real.json')) {
+            if (Test-Path $f) { Write-Output "=== $f ==="; python -m scripts.windows_job_probe --resumir $f }
+          }
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
