@@ -475,7 +475,9 @@ mientras la transición lo retiene, venga el intento de donde venga.
 ## 9. Requisitos para la sesión P7
 
 1. Correr `scripts/p7_readonly_inspection.py` sobre el rig real y archivar el JSON
-   **con rutas redactadas** (por defecto).
+   **con rutas redactadas** (por defecto), redirigiendo stdout:
+   `python scripts/p7_readonly_inspection.py ... > informe.json`. El script ya no
+   tiene opción de escritura: la persistencia es del operador.
 2. Confirmar que MO2, al no poder leer su INI en la ventana, produce un error
    visible y **no** persiste una configuración por defecto.
 3. Ejecutar la matriz P7-A..P7-G. Ninguna se ejecutó en esta sesión.
