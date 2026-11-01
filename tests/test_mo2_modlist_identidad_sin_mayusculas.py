@@ -272,7 +272,7 @@ async def test_toggle_mod_in_modlist_no_escribe_si_no_hay_entrada(tmp_path: path
 # ── La consecuencia del issue, de punta a punta ─────────────────────────────────
 
 
-@pytest.mark.parametrize("mod_pedido", ["X", "x", "X"])
+@pytest.mark.parametrize("mod_pedido", ["X", "x"])
 async def test_ningun_camino_deja_el_duplicado_que_ganadores_rechaza(tmp_path: pathlib.Path, mod_pedido: str) -> None:
     """Con ``+x`` en el perfil, agregar ``X`` no puede terminar en un perfil irresoluble.
 
@@ -355,6 +355,37 @@ def _literales(nodo: ast.AST) -> set[str]:
     return {hijo.value for hijo in ast.walk(nodo) if isinstance(hijo, ast.Constant) and isinstance(hijo.value, str)}
 
 
+def _nombres_del_nodo(nodo: ast.AST) -> set[str]:
+    return {hijo.id for hijo in ast.walk(nodo) if isinstance(hijo, ast.Name)}
+
+
+def _llamadas_del_nodo(nodo: ast.AST) -> set[str]:
+    return {hijo.func.id for hijo in ast.walk(nodo) if isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Name)}
+
+
+def _compara_por_clave(nodo: ast.AST) -> bool:
+    """``True`` sólo si NINGUNA comparación enfrenta un nombre crudo contra otro.
+
+    Mencionar el helper no alcanza: ``_clave_de_nombre_de_mod(x) == mod_name`` lo
+    menciona y sigue comparando exacto. Toda comparación que toque ``mod_name`` o
+    ``nombre_en_linea`` tiene que llevar el helper **y** ``clave_del_mod``, y al
+    menos una tiene que estar enfrentando dos claves de verdad.
+    """
+    comparaciones = [hijo for hijo in ast.walk(nodo) if isinstance(hijo, ast.Compare)]
+    if not comparaciones:
+        return False
+    for comparacion in comparaciones:
+        nombres = _nombres_del_nodo(comparacion)
+        con_clave = "_clave_de_nombre_de_mod" in _llamadas_del_nodo(comparacion) and "clave_del_mod" in nombres
+        if {"mod_name", "nombre_en_linea"} & nombres and not con_clave:
+            return False
+    return any(
+        "clave_del_mod" in _nombres_del_nodo(comparacion)
+        and "_clave_de_nombre_de_mod" in _llamadas_del_nodo(comparacion)
+        for comparacion in comparaciones
+    )
+
+
 def test_todo_mutador_del_modlist_compara_con_la_misma_clave() -> None:
     """La identidad del mod es UNA: si un mutador compara de otra forma, la clase vuelve."""
     metodos = _metodos_de_mo2controller()
@@ -365,6 +396,10 @@ def test_todo_mutador_del_modlist_compara_con_la_misma_clave() -> None:
             assert "_clave_de_nombre_de_mod" in cargados, (
                 f"{nombre} no compara los nombres con _clave_de_nombre_de_mod: "
                 "volvería a tratar `X` y `x` como mods distintos"
+            )
+            assert _compara_por_clave(metodos[nombre]), (
+                f"{nombre} menciona _clave_de_nombre_de_mod pero compara un nombre crudo contra otro: "
+                "`X` y `x` volverían a ser mods distintos"
             )
         else:
             assert "_clave_de_nombre_de_mod" not in cargados
@@ -397,7 +432,13 @@ def test_los_callers_de_la_primitiva_estan_enumerados() -> None:
         if any(
             isinstance(nodo, ast.Call)
             and isinstance(nodo.func, ast.Attribute)
-            and nodo.func.attr in {"add_mod_to_modlist", "add_mod_to_modlist_highest_priority"}
+            and nodo.func.attr
+            in {
+                "add_mod_to_modlist",
+                "add_mod_to_modlist_highest_priority",
+                "remove_mod_from_modlist",
+                "toggle_mod_in_modlist",
+            }
             for nodo in ast.walk(ast.parse(ruta.read_text(encoding="utf-8")))
         )
     }
