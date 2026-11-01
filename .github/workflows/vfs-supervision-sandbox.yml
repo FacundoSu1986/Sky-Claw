@@ -1,0 +1,80 @@
+name: VFS supervision sandbox (Windows)
+
+# Laboratorio AISLADO y descartable para el fence de supervisión del broker MO2/USVFS.
+# Corre en un runner efímero de GitHub: NO toca ningún rig, backup, perfil, mod ni MO2 real,
+# y los únicos procesos que lanza son python.exe durmiendo, un ejecutable mínimo construido
+# acá y SkyClawApp.exe con --vfs-probe-child (lee un archivo temporal y devuelve su hash).
+# No ejecuta TexGen, DynDOLOD ni Skyrim.
+#
+# Responde con evidencia del sistema operativo lo que las pruebas sintéticas del protocolo
+# no pueden: qué contiene realmente un Job Object y si el proceso que ejecuta Python en el
+# ejecutable PyInstaller onefile pertenece al Job al que se asignó el proceso lanzado.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "sky_claw/local/mo2/**"
+      - "scripts/windows_job_probe.py"
+      - "tests/test_vfs_job_containment_windows.py"
+      - "tests/test_vfs_supervision_fence.py"
+      - ".github/workflows/vfs-supervision-sandbox.yml"
+  # Temporal, mientras la rama no tiene PR: el CI general solo corre push en main/master.
+  push:
+    branches: [claude/vfs-supervision-fence]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  sandbox:
+    name: "🔬 Supervisión VFS (Windows, sandbox) / py3.11"
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Instalar dependencias de desarrollo y PyInstaller
+        run: |
+          pip install -e ".[dev]"
+          pip install pyinstaller
+
+      - name: "Job Objects reales y protocolo (-rA: un SKIPPED no es un PASS)"
+        run: >
+          pytest -v -rA -p no:cacheprovider
+          tests/test_vfs_job_containment_windows.py
+          tests/test_vfs_supervision_fence.py
+
+      - name: Ejecutable mínimo onefile (réplica de las opciones del spec) - construir
+        run: |
+          New-Item -ItemType Directory -Force sandbox_min | Out-Null
+          Set-Content -Path sandbox_min\dormilon.py -Value "import time`ntime.sleep(6)"
+          pyinstaller --onefile --noconsole --name MinimoOnefile --distpath sandbox_min\dist --workpath sandbox_min\build --specpath sandbox_min sandbox_min\dormilon.py
+      - name: Ejecutable mínimo onefile - medir pertenencia al Job según el retardo de asignación
+        run: >
+          python -m scripts.windows_job_probe --exe sandbox_min\dist\MinimoOnefile.exe
+          --retardos 0,0.05,0.2,0.5,1,2 --repeticiones 5 --ventana 14 --json sandbox_min\resultados.json
+
+      - name: SkyClawApp.exe real (pyinstaller sky_claw.spec) - construir
+        run: pyinstaller sky_claw.spec --clean
+      - name: SkyClawApp.exe real - medir pertenencia al Job con --vfs-probe-child (inocuo)
+        run: >
+          python -m scripts.windows_job_probe --exe dist\SkyClawApp.exe
+          '--arg=--vfs-probe-child' '--arg={probe_file}' '--arg={probe_sha}'
+          --retardos 0,0.5,1,2,4 --repeticiones 3 --ventana 40 --json sandbox_min\resultados_real.json
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: vfs-supervision-sandbox-resultados
+          path: sandbox_min/resultados*.json
+          if-no-files-found: warn
