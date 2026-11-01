@@ -161,6 +161,14 @@ class _BridgeFalso:
     async def recv(self, *, timeout: float = 3.0) -> dict[str, object]:
         return await asyncio.wait_for(read_authenticated_message(self.reader, self.secret), timeout=timeout)
 
+    async def launch_ack(self, job_id: str) -> None:
+        """Lo que el bridge real emite tras asignar el worker al Job Object: autoriza al worker a despachar."""
+        await write_authenticated_message(
+            self.writer,
+            {"protocol_version": VFS_PROTOCOL_VERSION, "type": "launch_ack", "job_id": job_id},
+            self.secret,
+        )
+
     async def worker_exit(self, job_id: str, *, exit_code: int = 0) -> None:
         await write_authenticated_message(
             self.writer,
@@ -207,6 +215,7 @@ class _WorkerFalso:
                 "protocol_version": VFS_PROTOCOL_VERSION,
                 "type": "hello",
                 "role": "worker",
+                "supervision_fence": True,  # un worker nuevo declara que espera la supervisión
                 "instance_id": "portable-main",
                 "session_id": descriptor["session_id"],
                 "job_id": job_id,
@@ -1004,6 +1013,7 @@ async def test_sesion_end_to_end_con_worker_real_y_proceso_real(tmp_path: pathli
             broker.open_session(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=virtual)
         )
         launch = await bridge.recv()
+        await bridge.launch_ack(job.job_id)  # el worker REAL no despacha sin la supervisión confirmada
         worker_task = await _lanzar_worker_end_to_end(
             broker,
             manifest_path=pathlib.Path(str(launch["manifest_path"])),
@@ -1041,6 +1051,7 @@ async def test_sesion_end_to_end_cancel_mata_el_proceso_real(tmp_path: pathlib.P
             broker.open_session(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=virtual)
         )
         launch = await bridge.recv()
+        await bridge.launch_ack(job.job_id)  # el worker REAL no despacha sin la supervisión confirmada
         worker_task = await _lanzar_worker_end_to_end(
             broker,
             manifest_path=pathlib.Path(str(launch["manifest_path"])),

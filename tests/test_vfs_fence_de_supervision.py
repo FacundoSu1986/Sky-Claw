@@ -1,0 +1,651 @@
+"""Fence de supervisión del worker: sin confirmación del bridge no hay nietos ni herramientas.
+
+El bridge hace ``startApplication`` (el worker nace CORRIENDO) y *después* asigna el
+proceso al Job Object ``KILL_ON_JOB_CLOSE``; recién entonces emite ``launch_ack``. Un
+descendiente creado antes de esa asignación queda fuera del Job y sobrevive a su
+terminación. Antes de este fence nada ordenaba el despacho del worker después del
+``launch_ack``: el broker contestaba ``hello_ack`` sin esperar al bridge y el worker
+pasaba directo a la attestation (que crea un proceso NIETO) y a la herramienta.
+
+Propiedad del mecanismo (no un recordatorio): **el worker no crea ningún descendiente
+hasta recibir un mensaje ``supervised`` autenticado y ligado a su ``job_id``, y el
+broker solo lo envía tras un ``launch_ack`` del bridge para ESE job, mientras el job
+siga vivo y no esté siendo cancelado.**
+
+Los tests ejercen el broker REAL y el ``run_worker_session`` REAL; el bridge se simula
+con un cliente de socket que habla el protocolo autenticado y decide cuándo (o si)
+confirma. Las pruebas de contención del sistema operativo viven en
+``test_vfs_job_containment_windows.py``: estas no las sustituyen.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import contextlib
+import json
+import pathlib
+import time
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import pytest
+
+from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
+from sky_claw.local.mo2.vfs_broker import VfsBridgeLaunchError, VfsExecutionBroker
+from sky_claw.local.mo2.vfs_contracts import (
+    ALLOWED_VFS_SESSION_TOOL_IDS,
+    ALLOWED_VFS_TOOL_IDS,
+    VFS_PROTOCOL_VERSION,
+    VfsJob,
+)
+from sky_claw.local.mo2.vfs_ipc import VfsFrameError, read_authenticated_message, write_authenticated_message
+from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest
+from sky_claw.local.mo2.vfs_worker import (
+    VfsToolExecution,
+    VfsWorkerBootstrapError,
+    _esperar_supervision,
+    run_worker_session,
+)
+
+_VENTANA_DE_ESPERA = 0.4  # un worker que despacha lo hace en milisegundos: 0.4 s sobra para detectarlo
+
+
+def _manifiesto(tmp_path: pathlib.Path, *, tool_id: str = "health") -> VfsWorkerManifest:
+    """Perfil MO2 mínimo con un canary visible bajo el Data virtual (como ``test_vfs_worker``)."""
+    mo2 = tmp_path / "MO2"
+    perfil = mo2 / "profiles" / "Default"
+    mod = mo2 / "mods" / "CanaryMod"
+    data_fisico = tmp_path / "Skyrim" / "Data"
+    data_virtual = tmp_path / "virtual" / "Data"
+    for carpeta in (perfil, mod, data_fisico, data_virtual):
+        carpeta.mkdir(parents=True)
+    (perfil / "modlist.txt").write_text("+CanaryMod\n", encoding="utf-8-sig")
+    (mod / "canary.txt").write_bytes(b"canary")
+    (data_virtual / "canary.txt").write_bytes(b"canary")
+    desafio = build_attestation_challenge(mo2_root=mo2, profile="Default", physical_data_dir=data_fisico)
+    payload: dict[str, object] = {}
+    if tool_id in ALLOWED_VFS_SESSION_TOOL_IDS:
+        nombre = {"texgen": "TexGenx64.exe", "dyndolod": "DynDOLODx64.exe"}[tool_id]
+        payload = {"executable": str(tmp_path / nombre), "argv": ["-sse"], "cwd": str(tmp_path)}
+    job = VfsJob.create(
+        instance_id="portable-main",
+        profile="Default",
+        tool_id=tool_id,
+        payload=payload,
+        timeout_seconds=15,
+        expected_fingerprint=desafio.profile_fingerprint,
+        mutation_targets=(),
+    )
+    return VfsWorkerManifest(
+        protocol_version=VFS_PROTOCOL_VERSION,
+        job=job,
+        challenge=desafio,
+        mo2_root=mo2,
+        virtual_data_dir=data_virtual,
+        descriptor_path=tmp_path / "descriptor.json",
+    )
+
+
+async def _hasta(condicion: Callable[[], bool], *, timeout: float = 3.0) -> None:
+    limite = time.monotonic() + timeout
+    while time.monotonic() < limite:
+        if condicion():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("la condición no se cumplió a tiempo")
+
+
+class _WorkerCrudo:
+    """Un 'worker' que habla el protocolo a mano: sirve para ver QUÉ recibe del broker y CUÁNDO."""
+
+    def __init__(self, lector: asyncio.StreamReader, escritor: asyncio.StreamWriter, secreto: bytes) -> None:
+        self._lector = lector
+        self._escritor = escritor
+        self._secreto = secreto
+        self.recibidos: list[dict[str, Any]] = []
+
+    async def leer(self, *, timeout: float = _VENTANA_DE_ESPERA) -> dict[str, Any] | None:
+        try:
+            mensaje = await asyncio.wait_for(read_authenticated_message(self._lector, self._secreto), timeout)
+        except (TimeoutError, asyncio.IncompleteReadError, ConnectionError, VfsFrameError):
+            return None  # nada recibido: plazo vencido o el broker cerró la conexión
+        self.recibidos.append(dict(mensaje))
+        return dict(mensaje)
+
+    async def cerrar(self) -> None:
+        self._escritor.close()
+        with contextlib.suppress(Exception):
+            await self._escritor.wait_closed()
+
+
+class _Arnes:
+    """Broker real + bridge simulado por socket autenticado. Decide cuándo se confirma la supervisión."""
+
+    def __init__(self, tmp_path: pathlib.Path, *, tool_id: str = "health") -> None:
+        self.tmp_path = tmp_path
+        self.tool_id = tool_id
+        self.tarea: asyncio.Task[Any] | None = None
+        self._auxiliares: list[asyncio.Task[Any]] = []
+        self._conexiones: list[asyncio.StreamWriter] = []
+
+    async def __aenter__(self) -> _Arnes:
+        self.manifiesto = _manifiesto(self.tmp_path, tool_id=self.tool_id)
+        self.broker = VfsExecutionBroker(
+            instance_id="portable-main",
+            state_dir=self.tmp_path / "state",
+            secret=b"x" * 32,
+            descriptor_hardener=lambda _ruta: None,
+            # Teardown acotado: los caminos de fallo no deben esperar los 30 s de producción.
+            fence_grace_seconds=0.5,
+            connected_worker_exit_deadline_seconds=1.5,
+            bridge_reconnect_replay_grace_seconds=0.2,
+        )
+        await self.broker.start()
+        self.descriptor = json.loads(self.broker.descriptor_path.read_text(encoding="utf-8"))
+        self.secreto = base64.urlsafe_b64decode(self.descriptor["token"])
+        await self._conectar_bridge()
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        with contextlib.suppress(Exception):
+            await self.worker_exit()  # desbloquea el fence terminal del broker en los caminos de fallo
+        for tarea in [self.tarea, *self._auxiliares]:
+            if tarea is not None and not tarea.done():
+                tarea.cancel()
+        for tarea in [self.tarea, *self._auxiliares]:
+            if tarea is not None:
+                with contextlib.suppress(BaseException):
+                    await asyncio.wait_for(tarea, timeout=4)
+        for escritor in self._conexiones:
+            escritor.close()
+        for escritor in self._conexiones:
+            with contextlib.suppress(Exception):
+                await escritor.wait_closed()
+        with contextlib.suppress(Exception):
+            await self.broker.close()
+        await asyncio.sleep(0.05)  # deja terminar los handlers de conexión del broker
+
+    @property
+    def job_id(self) -> str:
+        return self.manifiesto.job.job_id
+
+    async def _conectar_bridge(self) -> None:
+        self.lector_bridge, self.escritor_bridge = await asyncio.open_connection(
+            self.descriptor["host"], self.descriptor["port"]
+        )
+        self._conexiones.append(self.escritor_bridge)
+        await write_authenticated_message(
+            self.escritor_bridge,
+            {
+                "protocol_version": VFS_PROTOCOL_VERSION,
+                "type": "hello",
+                "role": "bridge",
+                "instance_id": "portable-main",
+                "session_id": self.descriptor["session_id"],
+            },
+            self.secreto,
+        )
+        await read_authenticated_message(self.lector_bridge, self.secreto)
+        await self.broker.wait_until_ready(timeout=2)
+
+    async def caer_el_bridge(self) -> None:
+        self.escritor_bridge.close()
+        with contextlib.suppress(Exception):
+            await self.escritor_bridge.wait_closed()
+        await _hasta(lambda: self.broker._bridge_writer is None)
+
+    async def reconectar_bridge(self) -> None:
+        await self._conectar_bridge()
+
+    async def lanzar_job(self) -> dict[str, Any]:
+        """Somete el job y devuelve el ``launch_worker`` que recibe el bridge (el worker aún no existe)."""
+        job = self.manifiesto.job
+        argumentos: dict[str, Any] = {
+            "challenge": self.manifiesto.challenge,
+            "mo2_root": self.manifiesto.mo2_root,
+            "virtual_data_dir": self.manifiesto.virtual_data_dir,
+        }
+        if self.tool_id in ALLOWED_VFS_SESSION_TOOL_IDS:
+            coro: Awaitable[Any] = self.broker.open_session(job, **argumentos)
+        else:
+            coro = self.broker.submit(job, **argumentos)
+        self.tarea = asyncio.create_task(coro)
+        lanzamiento = await read_authenticated_message(self.lector_bridge, self.secreto)
+        assert lanzamiento["type"] == "launch_worker"
+        return dict(lanzamiento)
+
+    async def enviar_bridge(self, mensaje: dict[str, Any]) -> None:
+        await write_authenticated_message(self.escritor_bridge, mensaje, self.secreto)
+
+    async def launch_ack(self, job_id: str | None = None, *, veces: int = 1) -> None:
+        for _ in range(veces):
+            await self.enviar_bridge(
+                {"protocol_version": VFS_PROTOCOL_VERSION, "type": "launch_ack", "job_id": job_id or self.job_id}
+            )
+
+    async def error_de_asignacion(self) -> None:
+        """Lo que el bridge real emite si ``AssignProcessToJobObject`` falla (ver ``bridge_error_event``)."""
+        await self.enviar_bridge(
+            {
+                "protocol_version": VFS_PROTOCOL_VERSION,
+                "type": "event",
+                "event": "bridge_error",
+                "command": "launch_worker",
+                "job_id": self.job_id,
+                "message": "AssignProcessToJobObject falló: simulado",
+                "kind": "rejected",
+            }
+        )
+
+    async def worker_exit(self, *, exit_code: int = 0) -> None:
+        await self.enviar_bridge(
+            {
+                "protocol_version": VFS_PROTOCOL_VERSION,
+                "type": "event",
+                "event": "worker_exit",
+                "job_id": self.job_id,
+                "wait_ok": True,
+                "exit_code": exit_code,
+            }
+        )
+
+    async def siguiente_del_bridge(self, *, timeout: float = 5.0) -> dict[str, Any]:
+        return dict(await asyncio.wait_for(read_authenticated_message(self.lector_bridge, self.secreto), timeout))
+
+    def worker_real(self, observado: list[str], *, supervision_timeout: float = 30.0) -> asyncio.Task[Any]:
+        """``run_worker_session`` REAL con espías: ``probe`` = el proceso NIETO, ``handler`` = la herramienta."""
+
+        async def probe(_ruta: pathlib.Path, sha256: str, _timeout: float) -> str:
+            observado.append("probe")
+            return sha256
+
+        async def handler(_manifiesto: VfsWorkerManifest) -> VfsToolExecution:
+            observado.append("handler")
+            return VfsToolExecution.ok()
+
+        tarea = asyncio.create_task(
+            run_worker_session(
+                manifest_path=self.broker._jobs_dir / f"{self.job_id}.json",
+                descriptor_path=self.broker.descriptor_path,
+                expected_job_id=self.job_id,
+                handlers={"health": handler},
+                grandchild_probe=probe,
+                supervision_timeout=supervision_timeout,
+            )
+        )
+        self._auxiliares.append(tarea)
+        return tarea
+
+    async def worker_crudo(self, *, con_capacidad: bool = True) -> _WorkerCrudo:
+        lector, escritor = await asyncio.open_connection(self.descriptor["host"], self.descriptor["port"])
+        self._conexiones.append(escritor)
+        hola: dict[str, Any] = {
+            "protocol_version": VFS_PROTOCOL_VERSION,
+            "type": "hello",
+            "role": "worker",
+            "instance_id": "portable-main",
+            "session_id": self.descriptor["session_id"],
+            "job_id": self.job_id,
+        }
+        if con_capacidad:
+            hola["supervision_fence"] = True
+        await write_authenticated_message(escritor, hola, self.secreto)
+        return _WorkerCrudo(lector, escritor, self.secreto)
+
+    async def esperar_worker_conectado(self, worker: asyncio.Task[Any] | None = None) -> None:
+        """Espera a que el worker esté conectado — o a que ya haya terminado (en cuyo caso el test lo nota)."""
+        await _hasta(lambda: self.job_id in self.broker._worker_by_job or (worker is not None and worker.done()))
+
+
+# ---------------------------------------------------------------------------
+# 2. Worker sin confirmación: cero nietos y cero herramientas
+# ---------------------------------------------------------------------------
+
+
+async def test_el_worker_no_crea_nietos_ni_despacha_hasta_recibir_la_confirmacion(tmp_path: pathlib.Path) -> None:
+    # Arrange
+    observado: list[str] = []
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        worker = arnes.worker_real(observado)
+        await arnes.esperar_worker_conectado(worker)
+
+        # Act 1: ventana sin confirmación del bridge.
+        await asyncio.sleep(_VENTANA_DE_ESPERA)
+        antes_del_ack = list(observado)
+        # Act 2: el bridge confirma.
+        await arnes.launch_ack()
+        resultado_del_worker = await asyncio.wait_for(worker, timeout=6)
+        await arnes.worker_exit()
+        resultado = await asyncio.wait_for(arnes.tarea, timeout=6)
+
+        # Assert: nada antes del ack; probe (nieto) y herramienta, en ese orden, después.
+        assert antes_del_ack == [], f"el worker creó descendientes/despachó sin supervisión confirmada: {antes_del_ack}"
+        assert observado == ["probe", "handler"]
+        assert resultado_del_worker is not None and resultado_del_worker.success is True
+        assert resultado.success is True
+
+
+# ---------------------------------------------------------------------------
+# 1. launch_ack antes o después del hello del worker
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("orden", ["ack_antes_del_hello", "ack_despues_del_hello"])
+async def test_el_ack_autoriza_al_worker_llegue_antes_o_despues_de_su_hello(tmp_path: pathlib.Path, orden: str) -> None:
+    # Arrange
+    observado: list[str] = []
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+
+        # Act
+        if orden == "ack_antes_del_hello":
+            await arnes.launch_ack()
+            await _hasta(lambda: arnes.job_id in arnes.broker._launch_acked)
+            worker = arnes.worker_real(observado)
+        else:
+            worker = arnes.worker_real(observado)
+            await arnes.esperar_worker_conectado(worker)
+            await arnes.launch_ack()
+        await asyncio.wait_for(worker, timeout=6)
+        await arnes.worker_exit()
+        resultado = await asyncio.wait_for(arnes.tarea, timeout=6)
+
+        # Assert
+        assert observado == ["probe", "handler"]
+        assert resultado.success is True
+
+
+# ---------------------------------------------------------------------------
+# 3. launch_ack de otro job: rechazo
+# ---------------------------------------------------------------------------
+
+
+async def test_un_launch_ack_de_otro_job_no_autoriza_a_este_worker(tmp_path: pathlib.Path) -> None:
+    # Arrange
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        crudo = await arnes.worker_crudo()
+        assert (await crudo.leer(timeout=5))["type"] == "hello_ack"  # type: ignore[index]
+
+        # Act: el bridge confirma OTRO job (que además no existe en el broker).
+        await arnes.launch_ack("job-ajeno")
+        recibido_con_ack_ajeno = await crudo.leer()
+        await arnes.launch_ack()  # el correcto
+        recibido_con_ack_propio = await crudo.leer(timeout=5)
+
+        # Assert
+        assert recibido_con_ack_ajeno is None, "un ack de otro job no puede autorizar a este worker"
+        assert recibido_con_ack_propio is not None
+        assert recibido_con_ack_propio["type"] == "supervised"
+        assert recibido_con_ack_propio["job_id"] == arnes.job_id
+        assert "job-ajeno" not in arnes.broker._launch_acked, "no se acumulan acks de jobs desconocidos"
+
+
+async def test_el_worker_rechaza_un_supervised_atribuido_a_otro_job(tmp_path: pathlib.Path) -> None:
+    # Arrange: el broker (suplantado) manda `supervised` con el job_id equivocado.
+    secreto = b"s" * 32
+    servidor_listo: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+    async def servidor(_lector: asyncio.StreamReader, escritor: asyncio.StreamWriter) -> None:
+        await write_authenticated_message(
+            escritor,
+            {"protocol_version": VFS_PROTOCOL_VERSION, "type": "supervised", "job_id": "job-ajeno"},
+            secreto,
+        )
+        await escritor.drain()
+        servidor_listo.set_result(None)
+        escritor.close()  # el lado servidor también se cierra: sin transportes huérfanos
+        with contextlib.suppress(Exception):
+            await escritor.wait_closed()
+
+    srv = await asyncio.start_server(servidor, "127.0.0.1", 0)
+    puerto = srv.sockets[0].getsockname()[1]
+    lector, escritor = await asyncio.open_connection("127.0.0.1", puerto)
+    try:
+        # Act / Assert
+        with pytest.raises(VfsWorkerBootstrapError, match="job"):
+            await _esperar_supervision(lector, secret=secreto, job_id="job-propio", timeout=2.0)
+    finally:
+        escritor.close()
+        with contextlib.suppress(Exception):
+            await escritor.wait_closed()
+        srv.close()
+        await srv.wait_closed()
+
+
+# ---------------------------------------------------------------------------
+# 4. Confirmación duplicada: idempotente
+# ---------------------------------------------------------------------------
+
+
+async def test_una_confirmacion_duplicada_entrega_un_solo_supervised(tmp_path: pathlib.Path) -> None:
+    # Arrange
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        crudo = await arnes.worker_crudo()
+        await crudo.leer(timeout=5)  # hello_ack
+
+        # Act: el bridge reenvía el ack (reconexión con reenvío de eventos pendientes).
+        await arnes.launch_ack(veces=3)
+        primero = await crudo.leer(timeout=5)
+        extra = await crudo.leer()
+
+        # Assert: el worker recibe UN solo `supervised`.
+        assert primero is not None and primero["type"] == "supervised"
+        assert extra is None, f"llegó un segundo mensaje por el ack duplicado: {extra}"
+
+
+async def test_una_confirmacion_duplicada_no_despacha_dos_veces(tmp_path: pathlib.Path) -> None:
+    # Arrange
+    observado: list[str] = []
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        worker = arnes.worker_real(observado)
+        await arnes.esperar_worker_conectado(worker)
+
+        # Act
+        await arnes.launch_ack(veces=3)
+        await asyncio.wait_for(worker, timeout=6)
+        await arnes.worker_exit()
+        resultado = await asyncio.wait_for(arnes.tarea, timeout=6)  # type: ignore[arg-type]
+
+        # Assert
+        assert observado == ["probe", "handler"]
+        assert resultado.success is True
+
+
+# ---------------------------------------------------------------------------
+# 5. Fallo de AssignProcessToJobObject: no autorizar la ejecución
+# ---------------------------------------------------------------------------
+
+
+async def test_si_falla_la_asignacion_al_job_object_no_se_autoriza_la_ejecucion(tmp_path: pathlib.Path) -> None:
+    # Arrange
+    observado: list[str] = []
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        worker = arnes.worker_real(observado, supervision_timeout=1.5)
+        await arnes.esperar_worker_conectado(worker)
+
+        # Act: el bridge informa el fallo del assign y, inconsistentemente, un ack posterior.
+        await arnes.error_de_asignacion()
+        with pytest.raises(VfsBridgeLaunchError, match="AssignProcessToJobObject"):
+            await asyncio.wait_for(arnes.tarea, timeout=5)
+        await arnes.launch_ack()
+        with pytest.raises(VfsWorkerBootstrapError):
+            await asyncio.wait_for(worker, timeout=5)
+
+        # Assert
+        assert observado == [], "una asignación fallida jamás habilita al worker"
+
+
+# ---------------------------------------------------------------------------
+# 6. Timeout de supervisión: fallo cerrado
+# ---------------------------------------------------------------------------
+
+
+async def test_el_timeout_de_supervision_falla_cerrado_sin_despachar(tmp_path: pathlib.Path) -> None:
+    # Arrange
+    observado: list[str] = []
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        worker = arnes.worker_real(observado, supervision_timeout=0.3)
+
+        # Act / Assert: sin ack el worker NO prosigue al vencer el plazo: aborta.
+        with pytest.raises(VfsWorkerBootstrapError, match="supervisi"):
+            await asyncio.wait_for(worker, timeout=5)
+        assert observado == []
+
+
+# ---------------------------------------------------------------------------
+# 7. Desconexión o caída del bridge antes de la confirmación
+# ---------------------------------------------------------------------------
+
+
+async def test_la_caida_del_bridge_antes_de_la_confirmacion_no_autoriza(tmp_path: pathlib.Path) -> None:
+    # Arrange
+    observado: list[str] = []
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        worker = arnes.worker_real(observado, supervision_timeout=0.8)
+        await arnes.esperar_worker_conectado(worker)
+
+        # Act: el bridge cae sin haber confirmado.
+        await arnes.caer_el_bridge()
+
+        # Assert
+        with pytest.raises(VfsWorkerBootstrapError):
+            await asyncio.wait_for(worker, timeout=5)
+        assert observado == []
+
+
+async def test_un_ack_tras_la_reconexion_del_bridge_autoriza_una_sola_vez(tmp_path: pathlib.Path) -> None:
+    """El bridge real reencola los eventos no enviados: un ack legítimo puede llegar tras reconectar."""
+    # Arrange
+    observado: list[str] = []
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        worker = arnes.worker_real(observado)
+        await arnes.esperar_worker_conectado(worker)
+        await arnes.caer_el_bridge()
+        await asyncio.sleep(_VENTANA_DE_ESPERA)
+        antes = list(observado)
+
+        # Act
+        await arnes.reconectar_bridge()
+        await arnes.launch_ack(veces=2)
+        await asyncio.wait_for(worker, timeout=6)
+        await arnes.worker_exit()
+        resultado = await asyncio.wait_for(arnes.tarea, timeout=6)
+
+        # Assert
+        assert antes == []
+        assert observado == ["probe", "handler"]
+        assert resultado.success is True
+
+
+# ---------------------------------------------------------------------------
+# 8. Cancelación concurrente con confirmación tardía
+# ---------------------------------------------------------------------------
+
+
+async def test_una_confirmacion_tardia_durante_la_cancelacion_no_autoriza_al_worker(tmp_path: pathlib.Path) -> None:
+    # Arrange: el worker espera la supervisión cuando se cancela el job.
+    observado: list[str] = []
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        worker = arnes.worker_real(observado)
+        await arnes.esperar_worker_conectado(worker)
+
+        # Act: cancelación; mientras el broker espera el worker_exit llega el ack TARDÍO.
+        arnes.tarea.cancel()  # type: ignore[union-attr]
+        cancelacion = await arnes.siguiente_del_bridge()
+        await arnes.launch_ack()
+        resultado_del_worker = await asyncio.wait_for(worker, timeout=5)
+        await arnes.worker_exit()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(arnes.tarea, timeout=6)  # type: ignore[arg-type]
+
+        # Assert
+        assert cancelacion["type"] == "cancel"
+        assert resultado_del_worker is None, "el worker salió por cancelación"
+        assert observado == [], "una confirmación tardía no revive a un worker cancelado"
+
+
+# ---------------------------------------------------------------------------
+# 10. Compatibilidad: toda herramienta del broker (LOOT, vfs-health, TexGen, DynDOLOD)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tool_id", sorted(ALLOWED_VFS_TOOL_IDS))
+async def test_toda_herramienta_del_broker_espera_la_misma_confirmacion(tmp_path: pathlib.Path, tool_id: str) -> None:
+    """Se enumera la familia COMPLETA de tool_ids: un cuarto consumidor del broker nace con el fence."""
+    # Arrange: submit (health, loot_sort) y open_session (texgen, dyndolod) comparten el mismo fence.
+    async with _Arnes(tmp_path, tool_id=tool_id) as arnes:
+        await arnes.lanzar_job()
+        crudo = await arnes.worker_crudo()
+        assert (await crudo.leer(timeout=5))["type"] == "hello_ack"  # type: ignore[index]
+
+        # Act
+        sin_ack = await crudo.leer()
+        await arnes.launch_ack()
+        con_ack = await crudo.leer(timeout=5)
+
+        # Assert
+        assert sin_ack is None
+        assert con_ack is not None and con_ack["type"] == "supervised" and con_ack["job_id"] == arnes.job_id
+
+
+def test_la_familia_de_herramientas_no_cambio_sin_revisar_el_fence() -> None:
+    # Arrange / Act / Assert: igualdad literal (enumerar, no muestrear).
+    assert frozenset({"health", "loot_sort", "texgen", "dyndolod"}) == ALLOWED_VFS_TOOL_IDS
+
+
+# ---------------------------------------------------------------------------
+# Un worker sin la capacidad no puede correr bajo este broker (sin fallback silencioso)
+# ---------------------------------------------------------------------------
+
+
+async def test_un_worker_sin_la_capacidad_de_fence_es_rechazado_por_el_broker(tmp_path: pathlib.Path) -> None:
+    """Un worker viejo despacharía sin esperar: el broker no puede ejecutar un job con él."""
+    # Arrange
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        viejo = await arnes.worker_crudo(con_capacidad=False)
+
+        # Act
+        respuesta = await viejo.leer(timeout=2)
+        await arnes.launch_ack()
+        despues_del_ack = await viejo.leer()
+
+        # Assert: ni siquiera hay hello_ack, y el ack no le entrega nada.
+        assert respuesta is None
+        assert despues_del_ack is None
+        assert arnes.job_id not in arnes.broker._worker_by_job
+
+
+# ---------------------------------------------------------------------------
+# Higiene del estado del broker
+# ---------------------------------------------------------------------------
+
+
+async def test_el_estado_de_supervision_se_limpia_al_terminar_el_job(tmp_path: pathlib.Path) -> None:
+    # Arrange
+    observado: list[str] = []
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        worker = arnes.worker_real(observado)
+        await arnes.esperar_worker_conectado(worker)
+        await arnes.launch_ack()
+        await _hasta(lambda: arnes.job_id in arnes.broker._launch_acked)  # el estado SÍ se registró...
+        await asyncio.wait_for(worker, timeout=6)
+        await arnes.worker_exit()
+
+        # Act
+        await asyncio.wait_for(arnes.tarea, timeout=6)  # type: ignore[arg-type]
+
+        # Assert: ...y un job posterior no hereda confirmaciones de este.
+        assert arnes.broker._launch_acked == set()
+        assert arnes.broker._supervised_sent == set()

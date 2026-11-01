@@ -251,6 +251,12 @@ async def test_worker_reporta_resultado_por_su_canal_autenticado(tmp_path: pathl
             )
         )
         launch = await read_authenticated_message(bridge_reader, secret)
+        # Lo que el bridge real emite tras asignar el worker al Job Object: sin esto el worker no despacha.
+        await write_authenticated_message(
+            bridge_writer,
+            {"protocol_version": VFS_PROTOCOL_VERSION, "type": "launch_ack", "job_id": manifest.job.job_id},
+            secret,
+        )
         worker = asyncio.create_task(
             run_worker_session(
                 manifest_path=pathlib.Path(str(launch["manifest_path"])),
