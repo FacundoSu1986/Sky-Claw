@@ -3217,24 +3217,63 @@ async def test_un_resto_sin_registro_se_avisa_con_su_casilla_y_se_dice_que_no_ti
     assert "sin registro" in caplog.text
 
 
+# Contenidos que ``json.loads`` no puede devolver como un documento: no es JSON (``ValueError``) y JSON tan anidado que agota la
+# recursión (``RecursionError``, que NO es un ``ValueError``: lo encontró la revisión de Codex en #850). Un archivo de ~4 KB basta.
+_REGISTROS_QUE_NO_SE_PUEDEN_INTERPRETAR = (
+    pytest.param(b"{esto no es json", id="no_es_json"),
+    pytest.param(b"[" * 2000 + b"]" * 2000, id="anidado_hasta_agotar_la_recursion"),
+)
+
+
+@pytest.mark.parametrize("contenido", _REGISTROS_QUE_NO_SE_PUEDEN_INTERPRETAR)
 async def test_un_registro_ilegible_se_avisa_y_no_impide_abrir_ni_se_pisa(
-    escenario: Escenario, caplog: pytest.LogCaptureFixture
+    escenario: Escenario, caplog: pytest.LogCaptureFixture, contenido: bytes
 ) -> None:
     """El registro es un diagnóstico: si no se puede interpretar, la sesión abre igual, lo dice y no lo reescribe."""
     caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
     await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
     resto = _apartar_a_mano(escenario, RUTA_A, b"RESTO-DE-UNA-SESION-ANTERIOR")
     registro = escenario.control() / REGISTRO_DE_RESTOS
-    registro.write_bytes(b"{esto no es json")
+    registro.write_bytes(contenido)
     caplog.clear()
 
     async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
         pass
 
     assert resto.read_bytes() == b"RESTO-DE-UNA-SESION-ANTERIOR"
-    assert registro.read_bytes() == b"{esto no es json"  # abrir no reescribe lo que no pudo leer
+    assert registro.read_bytes() == contenido  # abrir no reescribe lo que no pudo leer
     assert "registro de la papelera" in caplog.text
     assert "tiene 1 archivo(s) que no se borran solos" in caplog.text
+
+
+@pytest.mark.parametrize("contenido", _REGISTROS_QUE_NO_SE_PUEDEN_INTERPRETAR)
+async def test_un_registro_ilegible_no_impide_anotar_un_resto_nuevo_en_medio_de_un_lote(
+    escenario: Escenario,
+    interponer: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    contenido: bytes,
+) -> None:
+    """El otro lector del registro: ``_registrar_resto`` lo lee para conservar las entradas vigentes. Si lo que encuentra no
+    se puede interpretar, el lote sigue, el resultado de la ruta no cambia y el resto queda anotado igual (el registro roto
+    se reemplaza). Es el hermano del test de arriba, que cubre la apertura: los dos lectores comparten el mismo decodificador."""
+    caplog.set_level(logging.WARNING, logger=output_writer.logger.name)
+    await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A")})
+    interponer("tras_apartar", lambda: (escenario.control() / REGISTRO_DE_RESTOS).write_bytes(contenido))
+    _que_el_primer_borrado_en_la_papelera_falle(monkeypatch, escenario.control())
+
+    resultado = await escenario.lote({RUTA_A: escenario.fuente(b"DDS-A2", escala=2.0)})
+
+    assert _efectos(resultado) == {RUTA_A: EfectoDeSalida.REEMPLAZADA}  # el lote no se cayó
+    assert escenario.leer(RUTA_A) == b"DDS-A2"
+    monkeypatch.undo()
+    caplog.clear()
+
+    async with abrir_sesion_de_salida(escenario.raiz, coordinacion=escenario.coordinacion):
+        pass
+
+    assert RUTA_A in caplog.text  # el resto quedó anotado pese al registro roto
+    assert "sin registro" not in caplog.text
 
 
 async def test_una_entrada_del_registro_que_no_corresponde_a_su_casilla_se_ignora(
@@ -3424,3 +3463,26 @@ def test_la_recuperacion_registra_cada_resto_que_deja_junto_a_su_aviso() -> None
             assert _registra_un_resto(sentencias[indice + 1]), f"línea {sentencia.lineno}: avisa sin registrar"
 
     assert encontrados == len(avisos)
+
+
+def test_el_registro_se_decodifica_en_un_solo_lugar_y_solo_dos_funciones_lo_leen() -> None:
+    """La garantía «un registro que no se puede interpretar nunca bloquea» vive en UN decodificador. Si otra función llamara a
+    ``json.loads`` (o a ``_leer_registro_de_restos`` desde un tercer sitio) con su propio manejo de errores, reabriría el
+    hueco de #850 (``RecursionError`` no es un ``ValueError``). Los lectores son exactamente dos: la apertura y el que anota."""
+    decodifican = {
+        funcion.name
+        for funcion in ast.walk(_arbol())
+        if isinstance(funcion, ast.FunctionDef)
+        for nodo in ast.walk(funcion)
+        if isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and isinstance(nodo.func.value, ast.Name)
+        and nodo.func.value.id == "json"
+        and nodo.func.attr == "loads"
+    }
+    quien_nombra: dict[str, set[str]] = {}
+    for nombre, funcion in _recorrer().nombres:
+        quien_nombra.setdefault(nombre, set()).add(funcion)
+
+    assert decodifican == {"_leer_registro_de_restos"}
+    assert quien_nombra["_leer_registro_de_restos"] == {"_registrar_resto", "_avisar_de_sobrantes"}

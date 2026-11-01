@@ -534,7 +534,10 @@ def _leer_registro_de_restos(control: pathlib.Path) -> dict[str, tuple[str, _Mot
         return {}
     try:
         documento = json.loads(datos)
-    except ValueError as exc:  # JSONDecodeError y UnicodeDecodeError
+    except (
+        ValueError,
+        RecursionError,
+    ) as exc:  # JSONDecodeError, UnicodeDecodeError y JSON anidado hasta agotar la recursión
         logger.warning("El registro de la papelera de la salida (%s) es ilegible: %s", archivo, exc)
         return {}
     restos = documento.get("restos") if isinstance(documento, dict) else None
