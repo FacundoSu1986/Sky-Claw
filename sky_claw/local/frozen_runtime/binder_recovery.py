@@ -719,7 +719,7 @@ def _coincide_con_lo_escrito(
     registro: RegistroRecuperacion,
     actuales: bytes,
     *,
-    escritura_intentada: bool = False,
+    escritura_intentada: bool | None = None,
 ) -> bool:
     """¿Estos bytes son los que ESTA transición escribió?
 
@@ -757,7 +757,14 @@ def _coincide_con_lo_escrito(
         except (FormatoIniNoAdmitidoError, RecuperacionError, ValueError):
             return False
         if previsto == actuales:
-            return True
+            # Escritura COMPLETA: los bytes actuales son exactamente lo que el
+            # escritor habría producido. Se atribuye SÓLO cuando el binder prueba
+            # que la transición intentó escribir (True). Con autoría desconocida
+            # (None, recuperación en proceso nuevo) no se atribuye: es
+            # preferible no auto-reparar que destruir un cambio ajeno. Con
+            # False (no-op confirmado) tampoco: el binder sabe que no mutó.
+            # CodeRabbit sobre #851, Codex tercera ronda.
+            return escritura_intentada is True
         if not escritura_intentada:
             # El binder NO llegó a escribir el INI. Un estado intermedio sólo
             # puede serlo si hubo escritura: sin eso, atribuirlo sería apropiarse
@@ -772,7 +779,7 @@ def _escrita_por_tercero(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
     *,
-    escritura_intentada: bool = False,
+    escritura_intentada: bool | None = None,
 ) -> tuple[bool, str]:
     r"""¿La superficie actual NO es ni el snapshot ni lo que escribió la transición?
 
@@ -861,7 +868,7 @@ def _restaurar_persistida(
     registro: RegistroRecuperacion,
     *,
     raiz_evidencia: pathlib.Path | None = None,
-    escritura_intentada: bool = False,
+    escritura_intentada: bool | None = None,
 ) -> VerificacionSuperficie:
     """Devuelve la superficie a sus bytes previos y VERIFICA el resultado."""
     if superficie.path is None:
@@ -958,7 +965,7 @@ def restaurar_registro_locked(
     environ: MutableMapping[str, str] | None,
     *,
     solo_superficies: frozenset[str] | None = None,
-    escritura_intentada: bool = False,
+    escritura_intentada: bool | None = None,
 ) -> tuple[VerificacionSuperficie, ...]:
     """Restaura las superficies capturadas y devuelve la verificación de cada una.
 

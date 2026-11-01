@@ -183,6 +183,27 @@ def _loader_skse_en_instancia(instance: pathlib.Path) -> tuple[str, str]:
     return HALLAZGO_OK, f"loader de SKSE presente: {encontrados[0]}"
 
 
+def _variantes_de_ruta_para_busqueda(ruta: pathlib.Path) -> tuple[str, ...]:
+    """Genera las representaciones textuales más probables de ``ruta``.
+
+    En Windows ``str(Path)`` usa barras invertidas, pero los archivos de
+    configuración pueden usar barras normales o duplicar las invertidas. Sin
+    normalizar, una dependencia externa escrita con ``/`` pasa desapercibida
+    (Codex tercera ronda sobre #851).
+    """
+    raw = str(ruta)
+    posix = ruta.as_posix()
+    escapada = raw.replace("\\", "\\\\")
+    variantes = {raw, posix}
+    if escapada != raw:
+        variantes.add(escapada)
+    # También la forma con barras invertidas escapadas en estilo TOML/JSON
+    doble_backslash = posix.replace("/", "\\\\")
+    if doble_backslash not in variantes:
+        variantes.add(doble_backslash)
+    return tuple(v for v in variantes if v)
+
+
 def _dependencias_en_arbol(instance: pathlib.Path, agujas: tuple[str, ...]) -> list[str]:
     """Archivos de configuración del runtime que todavía nombran ``agujas``.
 
@@ -413,7 +434,7 @@ def construir_informe(
         # devolverla. Usar sólo el argumento dejaba ``agujas`` vacío y el chequeo
         # de dependencias era vacuo por omisión (Codex sobre #851).
         origen = managed_source_root or evaluacion.managed_source_root
-        agujas = tuple(a for a in (str(origen) if origen else None,) if a)
+        agujas = _variantes_de_ruta_para_busqueda(origen) if origen else ()
         sospechosas = _dependencias_en_arbol(clone_root, agujas)
         if sospechosas:
             hallazgos.append(Hallazgo("dependencias", HALLAZGO_BLOQUEADO, "; ".join(sospechosas)))

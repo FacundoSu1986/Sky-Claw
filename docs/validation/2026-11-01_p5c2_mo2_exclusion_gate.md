@@ -80,7 +80,29 @@ autoría, y entre el crash y la recuperación puede pasar cualquier cosa.
 `"wb"` en una copia y el ancla anterior **pasó**. Después de la corrección, el
 mismo mutante muere con `open('wb') (línea 155)`.
 
-### 0.3 Defecto encontrado por mí, no por el revisor
+### 0.3 Tercera ronda de revisión (sobre ``5565b28c``)
+
+Codex volvió a revisar y dejó **3 findings más**; CodeRabbit dejó **2** (Major y
+Minor). Todos reales.
+
+| # | Finding | Veredicto | Corrección |
+|---|---|---|---|
+| 15 | **P1** · El flag de intento de escritura podía quedar en ``True`` si la lectura post-escritura fallaba (aunque ``escribir_bytes`` hubiera fallado) | CONFIRMADO | Tri-estado: ``True`` = intentó y escribió, ``False`` = no-op confirmado, ``None`` = autoría desconocida. Sólo ``True`` atribuye una escritura completa. |
+| 16 | **P2** · El detector AST no cubría ``rename``, ``remove``, ``shutil.*``, ``tempfile.NamedTemporaryFile`` | CONFIRMADO | Familias agregadas al set prohibido con controles positivos parametrizados. |
+| 17 | **P2** · ``_dependencias_en_arbol`` no normalizaba separadores: una ruta escrita con ``/`` o ``\\`` en un TOML pasaba desapercibida | CONFIRMADO | ``_variantes_de_ruta_para_busqueda`` genera las representaciones probables (raw, POSIX, escapada) y el detector las busca todas. |
+| 18 | **Major (CodeRabbit)** · No atribuir una escritura completa cuando el binder no intentó una | CONFIRMADO | Mismo fix que #15: el tri-estado exige ``escritura_intentada is True`` para atribuir ``previsto == actuales``. |
+| 19 | **Minor (CodeRabbit)** · Detectar ``os.remove`` como mutación | CONFIRMADO | Incluido en la ampliación del detector (#16). |
+
+**El #15 es la respuesta a la pregunta 1 que le hice a Codex** («¿el hook puede
+no invocarse antes de una mutación real?»). La respuesta es que SÍ puede haber
+una falla entre el hook y la verificación post-escritura, pero lo que importa
+es que el hook se invoca **sólo si se va a mutar**. Con el tri-estado, si la
+mutación no se completa, el flag puede quedar en ``True``, pero el rollback lo
+tratá como autoría probada — que es correcto, porque la transición SÍ intentó
+escribir. Lo que se corrigió es que una escritura completa (``previsto == actuales``)
+no se atribuía sin prueba de intento.
+
+### 0.4 Defecto encontrado por mí, no por el revisor
 
 Al revisar mi propia respuesta a Codex apareció un quinto problema en el mismo
 mecanismo: el binder marcaba ``ini_escritura_intentada = True`` **antes** de
@@ -285,10 +307,14 @@ mientras la transición lo retiene, venga el intento de donde venga.
    una configuración por defecto. Requisito de P7.
 2. **Un lector concurrente bloquea la adquisición** hasta agotar los reintentos.
    Fail-closed, con diagnóstico. Medido: 0 fallos con 40 reintentos.
-3. **La escritura no es atómica.** La recuperación depende de `binder_recovery`.
-   El predicado cubre el único estado intermedio alcanzable; cualquier otro se
-   trata como ajeno, se conserva como evidencia y **requiere intervención del
-   propietario**.
+3. **La escritura no es atómica, y un crash a mitad ya no se auto-repara.**
+   Es la consecuencia deliberada de la segunda ronda: la recuperación en proceso
+   nuevo **no** atribuye estados intermedios, porque no puede probar autoría. Un
+   INI a medio escribir tras un crash queda con su evidencia en
+   `recovery_evidence/` y **requiere intervención del propietario**. Antes se
+   auto-restauraba; se cambió porque el precio de equivocarse era destruir un
+   cambio ajeno. Es una pérdida de disponibilidad a cambio de integridad, y es
+   una decisión, no un descuido.
 4. **Reparse points**: el gate los rechaza; crear symlinks requiere privilegio que
    esta sesión no tiene (1314), así que el caso queda `INDETERMINATE`, que nunca
    autoriza.

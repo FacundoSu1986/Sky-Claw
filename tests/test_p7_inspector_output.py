@@ -350,6 +350,7 @@ def test_los_detalles_de_los_hallazgos_no_publican_rutas(tmp_path: pathlib.Path)
     assert contenido["rutas_completas"] is False
 
 
+@pytest.mark.skipif(os.name != "nt", reason="mklink /J es de Windows")
 def test_una_raiz_protegida_por_junction_no_habilita_la_escritura(tmp_path: pathlib.Path) -> None:
     """Si ``--storage-root`` llega por un junction, el destino físico es el mismo árbol.
 
@@ -449,3 +450,38 @@ def test_el_desired_sin_raiz_resuelta_no_habilita_p7(tmp_path: pathlib.Path) -> 
         f"un Desired sin raíz resuelta se reportó como {hallazgo['veredicto']}"
     )
     assert informe["listo_para_p7"] is False
+
+
+def test_las_dependencias_se_detectan_con_cualquier_separador(tmp_path: pathlib.Path) -> None:
+    """Una ruta escrita con ``/`` o ``\\`` tiene que ser detectada igual.
+
+    Codex tercera ronda (#851): ``str(Path)`` en Windows devuelve barras
+    invertidas, pero los TOML pueden usar barras normales o duplicarlas. Sin
+    normalizar, la dependencia pasa desapercibida y P7 declara OK.
+    """
+    managed = tmp_path / "Steam" / "Skyrim Special Edition"
+    managed.mkdir(parents=True, exist_ok=True)
+
+    plugins = tmp_path / "Data" / "SKSE" / "Plugins"
+    plugins.mkdir(parents=True, exist_ok=True)
+    toml = plugins / "EngineFixes.toml"
+
+    # Forma POSIX
+    toml.write_text(
+        f'skyrim_path = "{str(managed).replace(chr(92), "/")}"\n',
+        encoding="utf-8",
+    )
+    sospechosos = inspector._dependencias_en_arbol(tmp_path, inspector._variantes_de_ruta_para_busqueda(managed))
+    assert any("EngineFixes.toml" in s for s in sospechosos), (
+        f"la dependencia con separadores '/' no se detectó: {sospechosos}"
+    )
+
+    # Forma con barras invertidas escapadas (estilo TOML/JSON raw)
+    toml.write_text(
+        f'skyrim_path = "{str(managed).replace(chr(92), chr(92) + chr(92))}"\n',
+        encoding="utf-8",
+    )
+    sospechosos2 = inspector._dependencias_en_arbol(tmp_path, inspector._variantes_de_ruta_para_busqueda(managed))
+    assert any("EngineFixes.toml" in s for s in sospechosos2), (
+        f"la dependencia con separadores '\\\\' no se detectó: {sospechosos2}"
+    )

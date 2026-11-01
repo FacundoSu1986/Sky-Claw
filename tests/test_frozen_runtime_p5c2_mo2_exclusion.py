@@ -812,6 +812,17 @@ _ESCRITURAS_PROHIBIDAS = frozenset(
         "chmod",
         "symlink_to",
         "hardlink_to",
+        # Familias que retiran o sobrescriben sin pasar por open(): Codex las usó
+        # para romper el ancla (config_path.rename y shutil.copyfile pasaban).
+        "rename",
+        "remove",
+        "rmtree",
+        "copyfile",
+        "copy2",
+        "copy",
+        "copytree",
+        "move",
+        "NamedTemporaryFile",
     }
 )
 
@@ -1011,6 +1022,11 @@ def test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes() -> None:
         "p.write_bytes(b'x')",
         "os.replace(a, b)",
         "os.rename(a, b)",
+        "p.rename(q)",
+        "os.remove(p)",
+        "shutil.copyfile(a, b)",
+        "shutil.rmtree(p)",
+        "tempfile.NamedTemporaryFile(dir=p)",
     ],
 )
 def test_el_detector_de_escritura_reconoce_la_variante(fragmento: str) -> None:
@@ -1169,3 +1185,63 @@ def test_el_hook_de_escritura_solo_dispara_cuando_se_escribe(tmp_path: pathlib.P
         assert disparos == [1], f"el hook disparó {len(disparos)} veces en una escritura real"
     finally:
         gate.cerrar()
+
+
+def test_una_escritura_completa_no_se_atribuye_sin_evidencia_de_intento(tmp_path: pathlib.Path) -> None:
+    """Los bytes actuales coinciden con lo previsto, pero sin prueba de intento no se restaura.
+
+    CodeRabbit (tercera ronda, #851): si un tercero escribe exactamente los
+    bytes que el escritor habría producido, y el binder no intentó escribir
+    (``False``) o no lo sabe (``None``), el rollback NO debe atribuir esos bytes
+    a la transición. Atribuirlos restauraría el snapshot y destruiría el cambio
+    ajeno.
+
+    Se prueban los tres valores del tri-estado: sólo ``True`` atribuye.
+    """
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo = tmp_path / "modorganizer.ini"
+    # El contenido YA es el previsto: un tercero lo escribió exactamente igual.
+    objetivo.write_bytes(_NUEVO)
+
+    superficie = recovery.SuperficieCapturada(
+        kind=recovery.SUPERFICIE_MO2_INI,
+        path=str(objetivo),
+        existed=True,
+        sha256=recovery._sha256(_PREVIOS),
+        contenido_b64=__import__("base64").b64encode(_PREVIOS).decode("ascii"),
+    )
+    registro = recovery.RegistroRecuperacion(
+        schema_version=1,
+        transition_id="t-atribucion",
+        journal_revision=1,
+        operation="PROMOTION",
+        target_clone_id="c1",
+        target_generation_id="g1",
+        expected_effective_path=_RUTA_NUEVA,
+        superficies=(superficie,),
+        fase=recovery.FaseRecuperacion.INI_ESCRITO,
+        created_at_ns=0,
+        updated_at_ns=0,
+    )
+
+    for flag, espera_ajena in [
+        (None, True),  # autoría desconocida: no atribuye
+        (False, True),  # no-op confirmado: no atribuye
+        (True, False),  # intento probado: sí atribuye y restaura
+    ]:
+        objetivo.write_bytes(_NUEVO)
+        (tmp_path / "recovery_evidence").mkdir(parents=True, exist_ok=True)
+        for f in (tmp_path / "recovery_evidence").rglob("*.bin"):
+            f.unlink()
+        veredicto = recovery._restaurar_persistida(
+            superficie, registro, raiz_evidencia=tmp_path, escritura_intentada=flag
+        )
+        assert veredicto.escritura_ajena is espera_ajena, (
+            f"flag={flag!r}: escritura_ajena={veredicto.escritura_ajena}, esperaba {espera_ajena}"
+        )
+        if espera_ajena:
+            assert objetivo.read_bytes() == _NUEVO, f"flag={flag!r}: se restauró cuando no debía"
+            assert list((tmp_path / "recovery_evidence").rglob("*.bin"))
+        else:
+            assert objetivo.read_bytes() == _PREVIOS, f"flag={flag!r}: no se restauró cuando debía"
