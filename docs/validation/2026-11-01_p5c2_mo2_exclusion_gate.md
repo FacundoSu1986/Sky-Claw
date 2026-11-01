@@ -25,6 +25,12 @@ midiendo, no razonando:
 4. El predicado de escritura interrumpida se calibró **matando procesos reales**
    en cada punto, y se endureció: ya no atribuye a la transición estados que el
    escritor no puede producir.
+5. **CI encontró lo que la suite local no podía.** En `windows-latest` la consola
+   es cp1252 y el informe contiene «→»; `print` lanzaba `UnicodeEncodeError`
+   antes de escribir el archivo, así que el informe nunca se producía. Local
+   pasaba porque la consola era UTF-8. Se emite ASCII puro a stdout y UTF-8 al
+   archivo, con dos tests que fuerzan `PYTHONIOENCODING=cp1252` — y que fallan si
+   se revierte la corrección.
 
 ## 1. Rama, worktree y SHAs
 

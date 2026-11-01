@@ -229,3 +229,56 @@ def test_un_destino_valido_por_la_cli_escribe_el_informe(tmp_path: pathlib.Path)
     contenido = json.loads(destino.read_text(encoding="utf-8"))
     assert "veredicto" in contenido
     assert contenido["rutas_completas"] is False, "por defecto el informe NO debe incluir rutas completas"
+
+
+def _correr_cli(arboles: Arboles, destino: pathlib.Path, *, ioencoding: str) -> subprocess.CompletedProcess[str]:
+    entorno = dict(os.environ)
+    entorno["PYTHONIOENCODING"] = ioencoding
+    return subprocess.run(
+        [
+            sys.executable,
+            str(RUTA_INSPECTOR),
+            "--storage-root",
+            str(arboles.storage),
+            "--mo2-instance",
+            str(arboles.mo2),
+            "--json-salida",
+            str(destino),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=300,
+        cwd=str(RAIZ_REPO),
+        env=entorno,
+    )
+
+
+def test_la_cli_sobrevive_a_una_consola_cp1252(tmp_path: pathlib.Path) -> None:
+    """El informe contiene «→» y acentos; una consola cp1252 no puede imprimirlos.
+
+    Regresión real: en ``windows-latest`` la consola es cp1252 y ``print`` lanzaba
+    ``UnicodeEncodeError`` ANTES de escribir el archivo, así que el informe nunca
+    se producía. Localmente la consola era UTF-8 y el test pasaba.
+
+    Se fuerza la página de códigos con ``PYTHONIOENCODING`` para que el caso sea
+    reproducible fuera de Windows.
+    """
+    arboles = Arboles(tmp_path)
+    destino = arboles.permitido / "informe-cp1252.json"
+    proc = _correr_cli(arboles, destino, ioencoding="cp1252")
+    assert "UnicodeEncodeError" not in proc.stderr, f"la CLI reventó por codificación: {proc.stderr[-400:]}"
+    assert destino.is_file(), f"el informe no se escribió con consola cp1252: {proc.stderr[-400:]}"
+    contenido = json.loads(destino.read_text(encoding="utf-8"))
+    assert "veredicto" in contenido
+
+
+def test_la_cli_rechaza_el_destino_invalido_tambien_con_cp1252(tmp_path: pathlib.Path) -> None:
+    """El rechazo no puede depender de que la consola sepa imprimir el informe."""
+    arboles = Arboles(tmp_path)
+    ini = arboles.mo2 / "modorganizer.ini"
+    antes = ini.read_bytes()
+    proc = _correr_cli(arboles, ini, ioencoding="cp1252")
+    assert proc.returncode == 2, f"se esperaba 2, se obtuvo {proc.returncode}: {proc.stderr[-400:]}"
+    assert ini.read_bytes() == antes

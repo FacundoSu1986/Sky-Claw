@@ -568,8 +568,13 @@ def main(argv: list[str] | None = None) -> int:
         clone_id=args.clone_id,
         mostrar_rutas=args.mostrar_rutas,
     )
+    # A stdout se emite ASCII puro: la consola de Windows puede estar en cp1252 y
+    # el informe contiene «→» y acentos. `print` con un carácter fuera de la
+    # página de códigos lanza UnicodeEncodeError y el informe NUNCA se escribe.
+    # Lo detectó CI en windows-latest; localmente la consola era UTF-8.
+    print(json.dumps(informe, indent=2, ensure_ascii=True))
+    # Al archivo va UTF-8 legible: ahí la página de códigos no aplica.
     texto = json.dumps(informe, indent=2, ensure_ascii=False)
-    print(texto)
 
     if args.json_salida is not None:
         # La validación corre DESPUÉS de leer: si el destino es inválido, el
