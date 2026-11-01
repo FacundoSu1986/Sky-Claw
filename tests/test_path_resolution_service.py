@@ -1467,8 +1467,11 @@ class TestAnclaConstructoresManualesDeMods:
         # de atributos de teardown en LOOTTimeoutError) las corrió a
         # (138, 420, 429); mismos tres sites.
         "sky_claw/local/mo2/brokered_loot.py": (138, 420, 429),
-        # MO2Controller: modo explícito recibe mods_dir; línea 127 es el fallback legacy.
-        "sky_claw/local/mo2/vfs.py": (127,),
+        # MO2Controller: modo explícito recibe mods_dir; línea 150 es el fallback legacy.
+        # #838 (identidad de mod sin mayúsculas) insertó `_clave_de_nombre_de_mod` arriba
+        # de la clase y corrió el mismo constructor (127 → 150). No es un sitio nuevo: la
+        # activación en modlist.txt que ese PR tocó no construye rutas de `mods/`.
+        "sky_claw/local/mo2/vfs.py": (150,),
         # #633 (fingerprint v2: canonicalización semántica de plugins.txt por su
         # identidad case-insensitive, secciones con largo explícito y modelado de
         # `primaryPlugins()` con Creation Club) movió las líneas

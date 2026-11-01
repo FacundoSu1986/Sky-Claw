@@ -18,26 +18,45 @@ jobs:
   debug:
     name: "tmp debug (windows)"
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: "3.11"
           cache: pip
       - name: Install dev dependencies
         run: pip install -e ".[dev]"
-      - name: Run full suite
+      - name: Compare head vs main on the two vault tests
         shell: bash
         run: |
           set +e
-          python -m pytest -q --tb=line --timeout=600 tests/ > out.txt 2>&1
-          echo "EXIT=$?" >> out.txt
           {
-            echo 'Diagnóstico temporal de la suite Windows COMPLETA (PR #849). Se borra este workflow antes de mergear.'
+            echo 'Diagnóstico temporal (PR #849): los dos tests de `runtime_vault` que fallaron en la suite Windows, en el mismo runner, contra este HEAD y contra `origin/main`.'
             echo
+            echo '### HEAD de la rama'
             echo '```'
-            tail -c 55000 out.txt
+            python -m pytest -q --tb=line \
+              tests/test_runtime_vault_trusted_namespace.py::TestNamespaceBootstrapWindows::test_ns_unelevated_without_privilege_fails_closed \
+              tests/test_runtime_vault_trusted_registry.py::TestTrustedGoldenRegistryAtomicStorage::test_tgr_unelevated_without_privilege_fails_closed 2>&1 | tail -40
+            git log --oneline -1
+            echo '```'
+            git checkout --detach origin/main
+            echo
+            echo '### origin/main'
+            echo '```'
+            git log --oneline -1
+            python -m pip install -q -e ".[dev]"
+            python -m pytest -q --tb=line \
+              tests/test_runtime_vault_trusted_namespace.py::TestNamespaceBootstrapWindows::test_ns_unelevated_without_privilege_fails_closed \
+              tests/test_runtime_vault_trusted_registry.py::TestTrustedGoldenRegistryAtomicStorage::test_tgr_unelevated_without_privilege_fails_closed 2>&1 | tail -40
+            echo '```'
+            echo
+            echo '### ¿Corre elevado?'
+            echo '```'
+            net session > /dev/null 2>&1 && echo "net session: elevado" || echo "net session: NO elevado"
             echo '```'
           } > comentario.txt
           GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" gh pr comment 849 --body-file comentario.txt || true
