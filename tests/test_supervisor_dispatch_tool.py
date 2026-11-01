@@ -510,7 +510,13 @@ async def test_generate_bashed_patch_delegates(supervisor):
         {"profile": "MyProfile", "validate_limit": False},
     )
 
-    supervisor.execute_wrye_bash_pipeline.assert_awaited_once_with(profile="MyProfile", validate_limit=False)
+    # ADR 0016 (PR B): el dispatch normal viaja en fase `preparar` y sin testigo.
+    supervisor.execute_wrye_bash_pipeline.assert_awaited_once_with(
+        profile="MyProfile",
+        validate_limit=False,
+        fase="preparar",
+        testigo_previo=None,
+    )
     assert result == {"success": True, "return_code": 0}
 
 
@@ -523,7 +529,39 @@ async def test_generate_bashed_patch_filters_extra_llm_keys(supervisor):
         {"profile": "P", "validate_limit": True, "tool_name": "generate_bashed_patch", "extra": 42},
     )
 
-    supervisor.execute_wrye_bash_pipeline.assert_awaited_once_with(profile="P", validate_limit=True)
+    supervisor.execute_wrye_bash_pipeline.assert_awaited_once_with(
+        profile="P",
+        validate_limit=True,
+        fase="preparar",
+        testigo_previo=None,
+    )
+    assert result == {"success": True}
+
+
+async def test_generate_bashed_patch_reenvia_la_fase_de_verificacion(supervisor):
+    """ADR 0016: `fase` y `testigo_previo` dejaron de ser claves descartadas.
+
+    Antes del PR B el filtro de la estrategia sólo conocía ``profile`` y
+    ``validate_limit``, así que un pedido de verificación se convertía en SILENCIO en una
+    segunda preparación. La fase 2 del ritual era inalcanzable por diseño accidental.
+    """
+    supervisor.execute_wrye_bash_pipeline = AsyncMock(return_value={"success": True})
+
+    result = await supervisor.dispatch_tool(
+        "generate_bashed_patch",
+        {
+            "fase": "verificar",
+            "testigo_previo": {"sha256": "b" * 64, "existia": True},
+            "profile": "P",
+        },
+    )
+
+    supervisor.execute_wrye_bash_pipeline.assert_awaited_once_with(
+        profile="P",
+        validate_limit=True,
+        fase="verificar",
+        testigo_previo={"sha256": "b" * 64, "existia": True},
+    )
     assert result == {"success": True}
 
 

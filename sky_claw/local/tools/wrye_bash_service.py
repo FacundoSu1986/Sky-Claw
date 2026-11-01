@@ -47,6 +47,9 @@ from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.tools.output_targets import ArtefactoEnOverlay, bashed_patch_en_overlay, bashed_patch_target
 from sky_claw.local.tools.wrye_bash_asistida import (
+    FASE_PREPARAR,
+    FASE_VERIFICAR,
+    FASES_ASISTIDAS,
     TestigoPrevio,
     preparacion_como_resultado,
     preparar_etapa_asistida,
@@ -580,6 +583,39 @@ class WryeBashPipelineService:
     # ------------------------------------------------------------------
     # Etapa 6 ASISTIDA (ADR 0016) — preparar y verificar, sin spawnear
     # ------------------------------------------------------------------
+
+    async def ejecutar_fase_asistida(
+        self,
+        *,
+        profile: str,
+        fase: str = FASE_PREPARAR,
+        validate_limit: bool = True,
+        testigo_previo: dict[str, object] | None = None,
+    ) -> dict[str, Any]:
+        """Punto ÚNICO de enrutado de la etapa 6 asistida: elige fase y delega.
+
+        Existe porque la etapa tiene **tres superficies de producción** —el dispatcher de
+        la GUI (`build_wrye_bash_pipeline`), el `SupervisorAgent` y la tool del agente LLM
+        (`system_tools.generate_bashed_patch`)— y el defecto dominante de este repo es
+        justamente cablear una y dejar las gemelas. Si cada superficie eligiera entre
+        `preparar` y `verificar` por su cuenta, la tercera vez que alguien tocara una
+        regla las otras dos quedarían atrás. Acá la decisión es una sola y las tres
+        llaman al mismo método (anclado en `tests/test_wrye_bash_cableado_asistido.py`).
+
+        ``fase`` falla cerrado: un valor fuera de :data:`FASES_ASISTIDAS` devuelve un
+        dict de error en vez de caer en un default silencioso. La validación ocurre
+        ANTES de tocar el perfil o de correr el preflight, así que una llamada mal
+        formada no cuesta I/O ni bloquea al operador con un semáforo que no aplica.
+        """
+        if fase not in FASES_ASISTIDAS:
+            return {
+                "success": False,
+                "reason": "FaseInvalida",
+                "message": (f"Fase asistida desconocida: {fase!r}. Las fases válidas son {sorted(FASES_ASISTIDAS)}."),
+            }
+        if fase == FASE_VERIFICAR:
+            return await self.verificar_etapa_asistida(profile=profile, testigo_previo=testigo_previo)
+        return await self.preparar_etapa_asistida(profile=profile, validate_limit=validate_limit)
 
     async def preparar_etapa_asistida(self, *, profile: str, validate_limit: bool = True) -> dict[str, Any]:
         """Fase 1 de la etapa 6: instrucciones para el operador + testigo previo.

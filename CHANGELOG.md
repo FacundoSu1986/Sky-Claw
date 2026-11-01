@@ -26,10 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   falla cerrado ante `plugins.txt` ilegible y solo prueba frescura cuando el llamador
   trae la `huella_previa` (nunca por `mtime`). El módulo no spawnea: se mantiene fuera
   del censo `LANZADORES_ESPERADOS` y no reabre la ambigüedad headless. Los dos métodos
-  nuevos del servicio (`preparar_etapa_asistida`, `verificar_etapa_asistida`) todavía
-  **no están cableados** a las tres superficies de producción —eso es PR B de §7 del ADR,
-  justamente para no arreglar una y dejar las hermanas—, así que el comportamiento de
-  producción no cambia en este PR.
+  nuevos del servicio (`preparar_etapa_asistida`, `verificar_etapa_asistida`) llegaron
+  **sin cablear** a propósito —para no arreglar una superficie y dejar a las hermanas—;
+  el cableado de las tres es la entrada del PR B más abajo en esta misma sección.
 - **La etapa 6 asistida distingue a sus DOS ejecutores: el runner y el operador.** La
   corrida spawneada lee el `Data` físico; el operador abre Wrye Bash *desde MO2* y lee la
   superposición del perfil bajo la USVFS. `tools/output_targets.bashed_patch_en_overlay`
@@ -40,6 +39,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mods/`, y el sensor de permisos sondea el `overwrite` del perfil en vez del `Data`
   —la VFS redirige la escritura, no hereda sus permisos—. `TestigoPrevio` gana el tercer estado *no sé* (`None`) y rechaza la forma
   imposible `{existia: True, sha256: None}`.
+- **La etapa 6 ASISTIDA queda cableada a las TRES superficies de producción (PR B de ADR 0016 §7).**
+  El PR #839 dejó el contrato y el servicio, pero las tres superficies seguían llamando a
+  `execute_pipeline`: el camino headless que no puede construir el parche y que, por eso,
+  tomaba los locks `bashed-patch` + `load-order`, emitía el `ActionManifest` y abría una TX
+  para fallar cerrado **siempre**. Ahora `dispatcher_dependencies.build_wrye_bash_pipeline`
+  (GUI/dispatcher), `SupervisorAgent.execute_wrye_bash_pipeline` y
+  `system_tools.generate_bashed_patch` (agente LLM/Telegram) delegan todas en
+  `WryeBashPipelineService.ejecutar_fase_asistida`, el **punto único** que elige entre
+  `preparar` y `verificar`. La decisión vive en un solo método a propósito: es el defecto
+  dominante del repo —9 de 13 follow-ups auditados arreglaron una superficie y dejaron a la
+  gemela— y tres copias de la elección garantizan que dos se queden atrás.
+  `tests/test_wrye_bash_cableado_asistido.py` la congela con un ancla por AST que **enumera**
+  los call sites por archivo + función envolvente: una cuarta superficie, o una que vuelva a
+  `execute_pipeline`, rompe el test; también se probó por mutación (cuarta superficie → rojo,
+  regreso al camino headless → rojo).
+- **`fase` y `testigo_previo` entran al filtro de la estrategia `generate_bashed_patch`.**
+  Sin esto la fase 2 era **inalcanzable**: el filtro sólo conocía `profile` y `validate_limit`,
+  así que un pedido de verificación se convertía en silencio en una segunda preparación.
+- **H-1: la tool del agente LLM resuelve rutas con el perfil de la sesión.**
+  `system_tools.generate_bashed_patch` construía `WryeBashPipelineService` **sin**
+  `path_resolver` —así que `_plugins_txt_path()` devolvía `None` y la etapa nacía con
+  `SinRutasResolubles`— y llamaba con el perfil literal `"agent-tool"`, que no existe en la
+  instancia MO2. `AsyncToolRegistry` acepta ahora `path_resolver`, `app_context` le inyecta el
+  mismo `PathResolutionService` que usa la GUI, y el perfil lo aporta `mo2_profile` (fijo por
+  sesión). La tool expone al LLM **sólo** `fase` (`GenerateBashedPatchParams`, con
+  `extra="forbid"`): las dos fases son de sólo lectura, el perfil no se delega al modelo y
+  `testigo_previo` no se expone porque un hash que el modelo podría inventar convertiría la
+  prueba de frescura en una afirmación sin evidencia. Mandar cualquiera de los dos campos
+  —o cualquier otro— devuelve un `ValidationError` explícito en vez de ignorarse, para que el
+  modelo no se quede creyendo que eligió el perfil o que trajo evidencia.
+- **`AWAITING_OPERATOR`: una etapa asistida ya no se registra como `FAILED`.**
+  `ToolStateMachine` sólo conocía `PENDING → RUNNING → COMPLETED/FAILED`, así que
+  `preparar` —que devuelve `success=False` a propósito, porque no construyó nada— se veía como
+  un ritual fallido. `IdempotencyMiddleware` traduce `pendiente=True` al estado nuevo, terminal
+  y sin salidas (la etapa se cierra con **otra** invocación en fase `verificar`), que libera la
+  clave de idempotencia como cualquier terminal. Un fallo real —preflight rojo, M-04, rutas
+  irresolubles— sigue siendo `FAILED`: no trae `pendiente`. El marcador provisional
+  `pendiente_no_ratificado` del PR A **se retiró**: dos campos para una sola decisión vuelven
+  a divergir.
 
 ### Fixed
 - **`add_mod_to_modlist` veía el mismo mod como dos si cambiaba una mayúscula (#838).**

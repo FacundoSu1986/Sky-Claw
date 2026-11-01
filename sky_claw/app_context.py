@@ -2152,6 +2152,10 @@ class AppContext:
                 session_id=session_id,
                 mo2_profile=active_profile,
                 lod_jobs=lod_jobs,
+                # ADR 0016 (H-1, PR B): el MISMO resolver que arma el dispatcher de la
+                # GUI. Sin esto la etapa 6 asistida del agente LLM no puede ubicar el
+                # `plugins.txt` del perfil ni la superposición del artefacto.
+                path_resolver=path_service,
             )
 
             history_db = str(self._args.db_path).replace(".db", "_history.db")
