@@ -848,7 +848,12 @@ def _correr_hasta_crashear(rig_dir: pathlib.Path, frontera: str) -> None:
         if frontera == "ini":
             real_ini = binder.actualizar_game_path_por_handle
 
-            def _ini_y_morir(retenido, valor):  # type: ignore[no-untyped-def]
+            def _ini_y_morir(retenido, valor, *, al_escribir=None):  # type: ignore[no-untyped-def]
+                # El escritor real avisa justo ANTES de mutar; el doble tiene que
+                # hacer lo mismo o el binder no registra el intento y el rollback
+                # trataría su propia escritura como ajena.
+                if al_escribir is not None:
+                    al_escribir()
                 real_ini(retenido, valor)
                 os._exit(9)
 

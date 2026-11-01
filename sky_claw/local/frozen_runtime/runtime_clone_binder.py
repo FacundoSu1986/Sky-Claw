@@ -925,6 +925,12 @@ def ejecutar_transicion_binder(
         # abortar sin tocar el archivo. Este flag es la verdad de proceso y es lo
         # que impide atribuir a la transición un cambio de un tercero.
         ini_escritura_intentada = False
+
+        def _marcar_escritura_iniciada() -> None:
+            """Se invoca justo antes de mutar el INI, y sólo si se va a mutar."""
+            nonlocal ini_escritura_intentada
+            ini_escritura_intentada = True
+
         try:
             # -----------------------------------------------------------------
             # 5.4 — BIND EFFECTIVE (mutación de superficies)
@@ -958,9 +964,10 @@ def ejecutar_transicion_binder(
                         "modorganizer.ini cambió entre el snapshot durable y la exclusión: "
                         f"no se muta una superficie cuya identidad no liga ({exc})"
                     ) from exc
-                ini_escritura_intentada = True
                 try:
-                    actualizar_game_path_por_handle(exclusion, target_clone_root)
+                    actualizar_game_path_por_handle(
+                        exclusion, target_clone_root, al_escribir=_marcar_escritura_iniciada
+                    )
                 except Mo2IniEscrituraError as exc:
                     raise BinderEscrituraIniError(f"no se pudo escribir modorganizer.ini: {exc}") from exc
             finally:

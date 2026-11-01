@@ -80,6 +80,19 @@ autoría, y entre el crash y la recuperación puede pasar cualquier cosa.
 `"wb"` en una copia y el ancla anterior **pasó**. Después de la corrección, el
 mismo mutante muere con `open('wb') (línea 155)`.
 
+### 0.3 Defecto encontrado por mí, no por el revisor
+
+Al revisar mi propia respuesta a Codex apareció un quinto problema en el mismo
+mecanismo: el binder marcaba ``ini_escritura_intentada = True`` **antes** de
+llamar al escritor, pero entre esa llamada y la mutación están la admisión de
+formato y el no-op, que pueden terminar sin tocar el archivo. En el no-op,
+marcar «escribí» haría que un contenido ajeno se atribuyera a la transición.
+
+Se corrigió con un hook ``al_escribir`` que el escritor invoca
+**inmediatamente antes** de mutar, y sólo si va a mutar. El test cubre los dos
+lados: no-op (no dispara) y escritura real (dispara una vez). Verificado con
+mutante: mover el hook antes del chequeo de no-op rompe el test.
+
 ### Estado de los revisores
 
 | Revisor | Estado | Se cuenta como aprobación |

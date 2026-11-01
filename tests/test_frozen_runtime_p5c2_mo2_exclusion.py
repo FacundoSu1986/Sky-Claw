@@ -871,6 +871,10 @@ def ofensas_de_escritura(fuente: str) -> list[str]:
             # de ``os``, y se chequea por receptor.
             if nombre in {"replace", "rename"} and isinstance(funcional.value, ast.Name) and funcional.value.id == "os":
                 ofensas.append(f"os.{nombre} (línea {nodo.lineno})")
+            if nombre == "fdopen":
+                # ``os.fdopen(fd, "w")`` escribe sin pasar por ``open``. Se
+                # permite sólo dentro del escritor validado, como ``unlink``.
+                ofensas.append(f"fdopen (línea {nodo.lineno})")
             if nombre == "open":
                 # ``os.open`` NO se decide por el modo: sus argumentos son
                 # (ruta, banderas, modo) y la ruta podría ser un literal con una
@@ -889,21 +893,29 @@ def ofensas_de_escritura(fuente: str) -> list[str]:
     return ofensas
 
 
-def _unlink_vive_en_el_escritor_validado(arbol: object) -> bool:
-    """¿El único ``unlink`` del inspector está dentro de ``escribir_informe_exclusivo``?"""
-    import ast
+def _solo_en_el_escritor_validado(arbol: ast.Module, nombre: str) -> bool:
+    """¿Toda llamada a ``nombre`` vive dentro de ``escribir_informe_exclusivo``?
 
-    assert isinstance(arbol, ast.Module)
+    Se generalizó al agregar ``fdopen``: la pregunta «¿esta capacidad está
+    confinada al único escritor validado?» se repite para cada operación que el
+    inspector necesita y no puede prohibir del todo.
+    """
     for nodo in ast.walk(arbol):
         if not isinstance(nodo, ast.FunctionDef):
             continue
-        tiene_unlink = any(
-            isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Attribute) and hijo.func.attr == "unlink"
+        lo_usa = any(
+            isinstance(hijo, ast.Call) and isinstance(hijo.func, ast.Attribute) and hijo.func.attr == nombre
             for hijo in ast.walk(nodo)
         )
-        if tiene_unlink and nodo.name != "escribir_informe_exclusivo":
+        if lo_usa and nodo.name != "escribir_informe_exclusivo":
             return False
     return True
+
+
+def _unlink_vive_en_el_escritor_validado(arbol: object) -> bool:
+    """¿El único ``unlink`` del inspector está dentro de ``escribir_informe_exclusivo``?"""
+    assert isinstance(arbol, ast.Module)
+    return _solo_en_el_escritor_validado(arbol, "unlink")
 
 
 def test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes() -> None:
@@ -942,7 +954,13 @@ def test_la_inspeccion_de_p7_no_contiene_operaciones_mutantes() -> None:
     # borra el informe parcial que él mismo acaba de crear con ``O_EXCL``.
     limpiezas = [o for o in ofensas if o.startswith("unlink")]
     ofensas = [o for o in ofensas if not o.startswith("unlink")]
+    # ``fdopen`` sobre el descriptor que abrió el escritor validado es parte de la
+    # misma operación; en cualquier otra función sería una escritura suelta.
+    fdopens = [o for o in ofensas if o.startswith("fdopen")]
+    ofensas = [o for o in ofensas if not o.startswith("fdopen")]
     assert not ofensas, f"la inspección de P7 contiene operaciones mutantes: {ofensas}"
+    if fdopens:
+        assert _solo_en_el_escritor_validado(arbol, "fdopen"), "un fdopen vive fuera de escribir_informe_exclusivo"
     if limpiezas:
         assert len(limpiezas) == 1, f"hay más de un unlink en el inspector: {limpiezas}"
         assert _unlink_vive_en_el_escritor_validado(arbol), (
@@ -1115,3 +1133,39 @@ def test_la_recuperacion_en_proceso_nuevo_no_atribuye_una_escritura_ambigua(tmp_
     )
     assert veredicto_con_flag.escritura_ajena is False
     assert objetivo.read_bytes() == _PREVIOS, "con intento probado, el rollback tenía que restaurar"
+
+
+@SOLO_WINDOWS
+def test_el_hook_de_escritura_solo_dispara_cuando_se_escribe(tmp_path: pathlib.Path) -> None:
+    """``al_escribir`` marca el intento REAL, no la llamada al escritor.
+
+    El binder necesita saber si la transición llegó a mutar el INI para decidir
+    si un estado intermedio es suyo. Marcar antes de llamar al escritor era
+    impreciso: entre la llamada y la escritura están la admisión de formato y el
+    no-op, que pueden terminar sin tocar el archivo. En el no-op, marcar «escribí»
+    haría que un contenido ajeno se atribuyera a la transición.
+
+    Se prueban los tres desenlaces: no-op (no dispara), escritura real (dispara
+    una vez) y fallo de admisión (no dispara).
+    """
+    ini = _ini_sintetico(tmp_path)
+    # Se lee ANTES de adquirir el gate: con la exclusión tomada, leer por ruta
+    # está bloqueado a propósito, así que el valor del no-op tiene que venir de
+    # afuera de la sección crítica.
+    actual = escritura.leer_game_path_de_mo2(ini).path
+    assert actual, "el INI sintético no tiene gamePath legible"
+    gate = exclusion.adquirir_exclusion_ini(ini)
+    try:
+        disparos: list[int] = []
+
+        # 1) No-op: el valor ya es el pedido. Se toma del LECTOR y no de un
+        #    literal: el escapado de Qt duplica las barras, así que escribir la
+        #    ruta a mano produce un valor distinto y el «no-op» deja de serlo.
+        escritura.actualizar_game_path_por_handle(gate, actual, al_escribir=lambda: disparos.append(1))
+        assert disparos == [], "el hook disparó en un no-op"
+
+        # 2) Escritura real: dispara exactamente una vez.
+        escritura.actualizar_game_path_por_handle(gate, RUTA_NUEVA, al_escribir=lambda: disparos.append(1))
+        assert disparos == [1], f"el hook disparó {len(disparos)} veces en una escritura real"
+    finally:
+        gate.cerrar()

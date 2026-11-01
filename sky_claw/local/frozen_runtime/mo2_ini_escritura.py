@@ -46,6 +46,7 @@ import hashlib
 import os
 import pathlib
 import tempfile
+from collections.abc import Callable
 from typing import Protocol
 
 from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import leer_game_path_de_mo2
@@ -489,6 +490,8 @@ class IniRetenido(Protocol):
 def actualizar_game_path_por_handle(
     retenido: IniRetenido,
     nuevo_game_path: str | pathlib.Path,
+    *,
+    al_escribir: Callable[[], None] | None = None,
 ) -> bytes:
     """Hermano de :func:`actualizar_game_path_en_ini` para un INI ya retenido.
 
@@ -514,6 +517,13 @@ def actualizar_game_path_por_handle(
     Args:
         retenido: handle con exclusión de mutación ya establecida.
         nuevo_game_path: ruta que debe quedar en ``gamePath``.
+        al_escribir: se invoca INMEDIATAMENTE antes de mutar el archivo, y sólo
+            si se va a mutar. El binder lo usa para marcar «esta transición
+            intentó escribir» sin tener que adivinar: entre el inicio de esta
+            función y la escritura están la admisión de formato y el no-op, que
+            pueden terminar sin tocar el archivo. Marcar antes de llamarla haría
+            que un estado intermedio de un TERCERO se atribuyera a la transición
+            (auditoría del PR #851).
 
     Returns:
         Los bytes que quedaron en el archivo.
@@ -529,6 +539,9 @@ def actualizar_game_path_por_handle(
         # El valor ya era el pedido. No se escribe: escribir cambiaría el mtime
         # y dispararía la detección de estabilidad del preflight sin motivo.
         return contenido
+
+    if al_escribir is not None:
+        al_escribir()
 
     try:
         retenido.escribir_bytes(bytes_finales)
