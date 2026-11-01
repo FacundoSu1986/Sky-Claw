@@ -1,0 +1,57 @@
+# TEMPORAL — diagnóstico de la suite Windows para el PR #849. Se borra antes de mergear.
+name: tmp-debug-849
+
+on:
+  push:
+    branches: ["arena/d71c5733-sky-claw"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: tmp-debug-849
+  cancel-in-progress: true
+
+jobs:
+  debug:
+    name: "tmp debug (windows)"
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+      - name: Run targeted tests
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q --tb=long \
+            tests/test_mo2_modlist_identidad_sin_mayusculas.py \
+            tests/test_fomod_installer.py \
+            tests/test_mo2_modlist_priority.py \
+            tests/test_mo2_ganadores.py \
+            tests/test_cs_activacion_modlist.py \
+            tests/test_vfs.py \
+            tests/test_grass_profile.py \
+            tests/test_ritual_install.py \
+            tests/test_mo2_controller_split_roots.py \
+            tests/test_perfil_sesion_invariante.py \
+            tests/test_fomod_tools_contract.py \
+            > out.txt 2>&1
+          echo "EXIT=$?" >> out.txt
+          tail -c 55000 out.txt > cuerpo.txt
+          {
+            echo 'Diagnóstico temporal de la suite Windows (PR #849). Se borra este workflow antes de mergear.'
+            echo
+            echo '```'
+            head -c 55000 out.txt
+            echo '```'
+          } > comentario.txt
+          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" gh pr comment 849 --body-file comentario.txt || true
+          exit 1
