@@ -595,12 +595,27 @@ def main(argv: list[str] | None = None) -> int:
 def _clones_del_informe(storage_root: pathlib.Path, informe: dict[str, Any]) -> list[pathlib.Path]:
     """Raíces de Clone que el informe conoce, para protegerlas.
 
-    Se toma del registro durable y no del texto del informe: el informe redacta
-    las rutas para stdout, y una ruta redactada no sirve para decidir si el
-    destino cae dentro. La protección tiene que usar la ruta real.
+    Se toman del almacenamiento durable y NO del texto del informe: el informe
+    redacta las rutas para stdout, y una ruta redactada no sirve para decidir si
+    el destino cae dentro. La protección tiene que usar la ruta real.
+
+    Se juntan las dos fuentes porque cualquiera de las dos puede existir sola: el
+    registro del Clone puede faltar mientras ``active.json`` todavía declara un
+    ``clone_root``. Proteger sólo la que está de moda dejaría la otra escribible.
     """
-    raiz = _raiz_de_clone(storage_root, informe.get("clone_objetivo"))
-    return [raiz] if raiz is not None else []
+    raices: list[pathlib.Path] = []
+    registro = _raiz_de_clone(storage_root, informe.get("clone_objetivo"))
+    if registro is not None:
+        raices.append(registro)
+    try:
+        deseado = desired_runtime_from_storage(storage_root)
+    except Exception:  # noqa: BLE001 - el informe no debe caerse por un storage raro
+        deseado = None
+    if deseado is not None and deseado.clone_root:
+        raiz_deseada = pathlib.Path(deseado.clone_root)
+        if all(_canonico(raiz_deseada) != _canonico(r) for r in raices):
+            raices.append(raiz_deseada)
+    return raices
 
 
 def _raiz_de_clone(storage_root: pathlib.Path, clone_id: str | None) -> pathlib.Path | None:
