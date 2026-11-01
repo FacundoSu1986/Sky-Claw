@@ -97,6 +97,13 @@ class SupervisorAgent:
         # mute el root correcto y su fence viva. Sin anotar por la misma frontera
         # de dominio que `stage9_coordination`.
         dyndolod_workspace=None,  # WorkspaceResuelto | None
+        # E3-R3: strategy de spawn de TexGen/DynDOLOD que `AppContext` resolvió
+        # desde la configuración explícita (`dyndolod_backend`). `None` conserva
+        # standalone; un guard fail-closed llega como cualquier otra strategy y
+        # NO se reemplaza. El supervisor sólo la enhebra al composition root: no
+        # la construye ni la inspecciona. Sin anotar por la misma frontera de
+        # dominio que `stage9_coordination`/`dyndolod_workspace`.
+        dyndolod_spawn_strategy=None,  # DynDOLODSpawnStrategy | None
     ):
         self.db = DatabaseAgent()
         # C2: reutilizar el NetworkGateway del AppContext cuando se inyecta, para
@@ -223,6 +230,7 @@ class SupervisorAgent:
             scan_asset_conflicts_json=asset_conflict_scanner.scan_json,
             stage9_coordination=stage9_coordination,
             dyndolod_workspace=dyndolod_workspace,
+            dyndolod_spawn_strategy=dyndolod_spawn_strategy,
         )
         self._synthesis_service = composition.synthesis_service
         self._dyndolod_service = composition.dyndolod_service

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Backend brokered de TexGen/DynDOLOD seleccionable en producción (E3-R3).** `build_brokered_dyndolod_spawn_strategy` existía pero nadie lo llamaba: la composición aceptaba `dyndolod_spawn_strategy` y `SupervisorAgent` no lo pasaba, así que la etapa 9 corría siempre standalone. Ahora `dyndolod_backend` (`config.toml`, default `standalone`) decide el backend y `resolve_dyndolod_spawn_strategy` arma la strategy en `AppContext` con las raíces del arranque (datos de la instancia MO2, mods, instalación, `<juego>/Data` y los `-o:` por herramienta derivados del workspace). Pedir `brokered` sin poder cumplirlo, con una instancia que no corresponde o con un valor desconocido devuelve un guard que falla cerrado en el spawn y en el gate de handoff: nunca cae a standalone. **En `WIRING_SECURITY_HOLD`:** el protocolo no impide que el worker cree descendientes antes de estar asignado al Job Object; ver `docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md`.
 - **Etapa 6 (Wrye Bash) pasa a ser una etapa ASISTIDA de dos fases ([ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md)).**
   Wrye Bash no expone build headless del Bashed Patch —`-b/--backup` es el backup de
   settings y ningún flag reconstruye el parche—, así que la etapa fallaba cerrado

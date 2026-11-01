@@ -49,6 +49,7 @@ from sky_claw.local.mo2.vfs_attestation import (
     read_enabled_mods,
     read_enabled_plugins,
 )
+from sky_claw.local.mo2.vfs_broker import vfs_instance_id
 from sky_claw.local.mo2.vfs_contracts import (
     VFS_TOOL_EXECUTABLE_NAMES,
     VfsJob,
@@ -56,6 +57,7 @@ from sky_claw.local.mo2.vfs_contracts import (
 )
 from sky_claw.local.mo2.vfs_session import VfsProcessSession
 from sky_claw.local.tools.artifact_digest import digest_arbol
+from sky_claw.local.tools.output_targets import HerramientaDynDOLOD, derivar_layout_de_dyndolod
 from sky_claw.local.tools.texgen_handoff import (
     HandoffDriftError,
     TexGenHandoffApproval,
@@ -838,3 +840,228 @@ def build_brokered_dyndolod_spawn_strategy(
         virtual_data_dir=virtual_data_dir,
         output_roots=output_roots,
     )
+
+
+# ---------------------------------------------------------------------------
+# E3-R3 — selección EXPLÍCITA de backend en el composition root
+# ---------------------------------------------------------------------------
+#
+# ``build_brokered_dyndolod_spawn_strategy`` es un seam "todo o nada": con TODAS
+# sus entradas en ``None`` devuelve ``None``, y ``None`` significa standalone. Es
+# correcto como seam, pero llamado desde producción sería un fallback silencioso:
+# un broker ausente + una raíz sin resolver darían standalone sin que nadie lo
+# pida. Por eso el backend lo decide UNA configuración explícita y este resolver
+# es el único llamador productivo: pedir ``brokered`` NUNCA devuelve ``None``.
+
+DYNDOLOD_BACKEND_STANDALONE = "standalone"
+DYNDOLOD_BACKEND_BROKERED = "brokered"
+
+_BACKENDS_VALIDOS = (DYNDOLOD_BACKEND_STANDALONE, DYNDOLOD_BACKEND_BROKERED)
+
+
+class VfsRequiredDynDOLODSpawnStrategy:
+    """Guard fail-closed: se PIDIÓ el backend brokered y no se puede construir.
+
+    Análogo, para DynDOLOD, de ``VfsRequiredLootRunner`` (F8). Existe para que la
+    imposibilidad de construir la strategy brokered nunca se resuelva volviendo a
+    standalone: es una strategy VÁLIDA (el servicio y el runner la aceptan como
+    cualquier otra, y ``normalize_dyndolod_spawn_strategy`` preserva su
+    identidad), cuyo spawn falla con el error tipado del dominio y cuyo gate de
+    handoff bloquea. El motivo viaja al operador en ambos.
+
+    Declara ``"virtual_usvfs"`` porque ese es el namespace del backend PEDIDO: el
+    sensor físico U-01 no mide nada útil para él, y de todos modos nada se lanza.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+
+    @property
+    def reason(self) -> str:
+        return self._reason
+
+    @property
+    def data_visibility_domain(self) -> DataVisibilityDomain:
+        return "virtual_usvfs"
+
+    async def spawn(
+        self,
+        *,
+        executable: pathlib.Path,
+        args: list[str],
+        tool_name: str,
+        cwd: pathlib.Path,
+        timeout: float,
+        handoff: TexGenHandoffApproval | None = None,
+    ) -> DynDOLODProcess:
+        del executable, args, cwd, timeout, handoff
+        # Import local: este módulo mantiene al runner como dependencia solo de
+        # tipos (mismo idioma que los imports locales de ``vfs_broker``).
+        from sky_claw.local.tools.dyndolod_runner import DynDOLODExecutionError
+
+        raise DynDOLODExecutionError(f"{tool_name}: {self._reason}")
+
+    async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult:
+        del request
+        return TexGenHandoffResult.bloqueado(self._reason)
+
+
+def _normalizar_backend(valor: object) -> str | None:
+    """``standalone`` | ``brokered`` (tolerante a espacios/mayúsculas); lo demás es desconocido."""
+    if isinstance(valor, str):
+        normalizado = valor.strip().casefold()
+        if normalizado in _BACKENDS_VALIDOS:
+            return normalizado
+    return None
+
+
+def _esta_vacio(valor: object) -> bool:
+    return valor is None or (isinstance(valor, str) and not valor.strip())
+
+
+def resolve_dyndolod_spawn_strategy(
+    *,
+    backend: object,
+    broker: BrokeredDynDOLODProtocol | None,
+    instance_id: str | None,
+    profile: str | None,
+    data_root: pathlib.Path | None,
+    mods_dir: pathlib.Path | None,
+    install_root: pathlib.Path | None,
+    game_data_dir: pathlib.Path | None,
+    external_work_root: pathlib.Path | None,
+) -> BrokeredDynDOLODSpawnStrategy | VfsRequiredDynDOLODSpawnStrategy | None:
+    """Resuelve la strategy de spawn de DynDOLOD/TexGen según el backend CONFIGURADO.
+
+    * ``standalone`` → ``None``: el servicio conserva su comportamiento histórico
+      (``StandaloneDynDOLODSpawnStrategy`` + sensor físico U-01).
+    * ``brokered`` → :class:`BrokeredDynDOLODSpawnStrategy` si TODO está
+      disponible y es coherente; si no, :class:`VfsRequiredDynDOLODSpawnStrategy`.
+      **Jamás ``None``**: ni por una entrada ausente, ni por una instancia que no
+      corresponde, ni por una excepción al construir.
+    * cualquier otro valor → el guard (un typo no desactiva la protección).
+
+    Las raíces siguen la semántica del broker, y no se confunden entre sí:
+
+    * ``data_root`` — raíz de DATOS de la instancia MO2 (``profiles/``,
+      ``overwrite/``): NO es ``game\\Data``.
+    * ``mods_dir`` / ``install_root`` — carpeta de mods e instalación MO2
+      (``ModOrganizer.exe``).
+    * ``game_data_dir`` — ``<juego>/Data``: la USVFS monta el overlay SOBRE esa
+      ruta, así que es a la vez el ``Data`` físico y el virtual que la herramienta
+      recibe por ``-d:`` (el worker exige que coincidan). ``overwrite`` NO es el
+      Data virtual: es la capa de mayor prioridad del overlay.
+    * ``external_work_root`` — de él se derivan los ``-o:`` por herramienta con la
+      MISMA función que usa ``DynDOLODConfig``; el worker exige ``-o:`` igual al
+      único ``mutation_target`` del job.
+    """
+    solicitado = _normalizar_backend(backend)
+    if solicitado == DYNDOLOD_BACKEND_STANDALONE:
+        logger.info("DynDOLOD: backend standalone (configurado explícitamente).")
+        return None
+    if solicitado != DYNDOLOD_BACKEND_BROKERED:
+        return _guard(
+            f"el backend DynDOLOD {backend!r} no es válido (valores admitidos: "
+            f"'{DYNDOLOD_BACKEND_STANDALONE}' | '{DYNDOLOD_BACKEND_BROKERED}'). No se asume ninguno: "
+            "corregí 'dyndolod_backend' en config.toml."
+        )
+    try:
+        return _construir_brokered(
+            broker=broker,
+            instance_id=instance_id,
+            profile=profile,
+            data_root=data_root,
+            mods_dir=mods_dir,
+            install_root=install_root,
+            game_data_dir=game_data_dir,
+            external_work_root=external_work_root,
+        )
+    except Exception as exc:  # noqa: BLE001 -- boundary fail-closed: lo DESCONOCIDO jamás degrada a standalone
+        # Deliberado y acotado, como el gate de handoff: cada condición conocida
+        # ya devuelve su guard con razón propia; esta frontera convierte lo que
+        # no se anticipó en el guard (y queda registrado con su traza), nunca en
+        # ``None`` — ``None`` es standalone, y standalone no fue lo que se pidió.
+        logger.error("DynDOLOD brokered: fallo inesperado al construir la strategy", exc_info=True)
+        return _guard(f"no se pudo construir la strategy brokered ({type(exc).__name__}: {exc})")
+
+
+def _guard(reason: str) -> VfsRequiredDynDOLODSpawnStrategy:
+    mensaje = f"F8 guard: {reason}"
+    logger.error("DynDOLOD brokered no disponible; la etapa 9 falla cerrada: %s", mensaje)
+    return VfsRequiredDynDOLODSpawnStrategy(mensaje)
+
+
+def _construir_brokered(
+    *,
+    broker: BrokeredDynDOLODProtocol | None,
+    instance_id: str | None,
+    profile: str | None,
+    data_root: pathlib.Path | None,
+    mods_dir: pathlib.Path | None,
+    install_root: pathlib.Path | None,
+    game_data_dir: pathlib.Path | None,
+    external_work_root: pathlib.Path | None,
+) -> BrokeredDynDOLODSpawnStrategy | VfsRequiredDynDOLODSpawnStrategy:
+    faltantes = [
+        nombre
+        for nombre, valor in (
+            ("instance_id", instance_id),
+            ("profile", profile),
+            ("data_root", data_root),
+            ("mods_dir", mods_dir),
+            ("install_root", install_root),
+            ("game_data_dir", game_data_dir),
+            ("external_work_root", external_work_root),
+        )
+        if _esta_vacio(valor)
+    ]
+    if broker is None:
+        faltantes.insert(0, "broker")
+    if faltantes:
+        detalle = ", ".join(faltantes)
+        extra = (
+            " El backend brokered requiere el VfsExecutionBroker de MO2/USVFS (broker) y no se va a "
+            "reemplazar por un subprocess standalone."
+            if broker is None
+            else " Sin todas las raíces no se construye la strategy ni se cae a standalone."
+        )
+        return _guard(f"el backend DynDOLOD 'brokered' fue solicitado pero faltan: {detalle}.{extra}")
+
+    # Estrechamiento de tipos tras el chequeo de `faltantes` (mismo idioma que
+    # `build_brokered_dyndolod_spawn_strategy`): sin `type: ignore`.
+    assert broker is not None
+    assert instance_id is not None
+    assert profile is not None
+    assert data_root is not None
+    assert mods_dir is not None
+    assert install_root is not None
+    assert game_data_dir is not None
+    assert external_work_root is not None
+    instalacion = pathlib.Path(install_root)
+    esperado = vfs_instance_id(instalacion)
+    if instance_id != esperado:
+        return _guard(
+            f"la instancia MO2 del broker ({instance_id}) no corresponde a la instalación seleccionada "
+            f"({esperado}): se rechaza para no lanzar herramientas contra otra instancia"
+        )
+
+    layout = derivar_layout_de_dyndolod(external_work_root=pathlib.Path(external_work_root))
+    juego_data = pathlib.Path(game_data_dir)
+    estrategia = build_brokered_dyndolod_spawn_strategy(
+        broker=broker,
+        instance_id=instance_id,
+        profile=profile,
+        data_root=pathlib.Path(data_root),
+        mods_dir=pathlib.Path(mods_dir),
+        install_root=instalacion,
+        physical_data_dir=juego_data,
+        virtual_data_dir=juego_data,
+        output_roots={
+            "texgen": layout.raiz_de(HerramientaDynDOLOD.TEXGEN),
+            "dyndolod": layout.raiz_de(HerramientaDynDOLOD.DYNDOLOD),
+        },
+    )
+    if estrategia is None:
+        return _guard("el seam brokered devolvió None para un backend 'brokered' solicitado")
+    logger.info("DynDOLOD: backend brokered (instancia %s, perfil %s).", instance_id, profile)
+    return estrategia

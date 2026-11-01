@@ -58,6 +58,12 @@ from sky_claw.local.ai.patch_advisor_llm import LLMCallable
 from sky_claw.local.auto_detect import AutoDetector, run_off_loop
 from sky_claw.local.local_config import escribir_campo
 from sky_claw.local.local_config import load as _load_legacy_json
+from sky_claw.local.mo2.brokered_dyndolod import (
+    DYNDOLOD_BACKEND_STANDALONE,
+    BrokeredDynDOLODSpawnStrategy,
+    VfsRequiredDynDOLODSpawnStrategy,
+    resolve_dyndolod_spawn_strategy,
+)
 from sky_claw.local.mo2.brokered_loot import (
     BrokeredLootRunner,
     VfsRequiredLootRunner,
@@ -389,6 +395,11 @@ class AppContext:
         self.vfs_broker: VfsExecutionBroker | None = None
         self.vfs_instance_id: str | None = None
         self.vfs_loot_runner: BrokeredLootRunner | VfsRequiredLootRunner | None = None
+        #: E3-R3: strategy de spawn de TexGen/DynDOLOD de esta sesión. `None` =
+        #: standalone (configurado explícitamente); un `VfsRequiredDynDOLODSpawnStrategy`
+        #: = se pidió brokered y no se pudo cumplir (falla cerrado, no degrada).
+        #: Retiene el broker, así que vive y muere con él (ver `_close_vfs_broker`).
+        self.dyndolod_spawn_strategy: BrokeredDynDOLODSpawnStrategy | VfsRequiredDynDOLODSpawnStrategy | None = None
 
         self.hitl: HITLGuard | None = None
         # Registry efímero: request_id → mensaje Telegram exacto. Nunca se
@@ -764,6 +775,7 @@ class AppContext:
         self.vfs_broker = None
         self.vfs_instance_id = None
         self.vfs_loot_runner = None
+        self.dyndolod_spawn_strategy = None
         self.install_dir = None
         self.mo2_install_dir = None
         self.mo2_profile = PERFIL_MO2_POR_DEFECTO
@@ -800,6 +812,36 @@ class AppContext:
         crea un segundo servicio en paralelo.
         """
         self.servicio_de_etapa9 = servicio
+
+    @staticmethod
+    def _resolver_estrategia_de_dyndolod(*, local_cfg, broker, instance_id, active_profile, mo2, game, workspace):
+        """Resuelve la strategy de spawn de TexGen/DynDOLOD de ESTE arranque (E3-R3).
+
+        El backend lo decide ``dyndolod_backend`` del config, no la
+        disponibilidad del broker: ``standalone`` (default; y la ausencia de la
+        clave en un config anterior) devuelve ``None`` y deja el servicio como
+        siempre; ``brokered`` devuelve la strategy brokered o, si algo falta o
+        falla, el guard fail-closed — **nunca** ``None``. Todo el criterio vive en
+        :func:`resolve_dyndolod_spawn_strategy`; acá sólo se reúnen las entradas
+        con las MISMAS fuentes que ya usa el arranque para LOOT y para el
+        workspace: raíces de ``mo2`` (instalación, datos de la instancia, mods),
+        ``<juego>/Data`` del ``skyrim_path`` configurado y el ``root`` del
+        ``WorkspaceResuelto`` (de él salen los ``-o:`` por herramienta).
+
+        Es un snapshot del arranque, igual que el workspace: cambiar el backend
+        se aplica en el PRÓXIMO arranque.
+        """
+        return resolve_dyndolod_spawn_strategy(
+            backend=getattr(local_cfg, "dyndolod_backend", DYNDOLOD_BACKEND_STANDALONE),
+            broker=broker,
+            instance_id=instance_id,
+            profile=active_profile,
+            data_root=getattr(mo2, "data_root", None),
+            mods_dir=getattr(mo2, "mods_dir", None),
+            install_root=getattr(mo2, "install_root", None),
+            game_data_dir=(game / "Data") if game is not None else None,
+            external_work_root=getattr(workspace, "root", None),
+        )
 
     @staticmethod
     def _sonda_de_transaccion_pendiente(journal):
@@ -2082,6 +2124,21 @@ class AppContext:
             if self.dyndolod_workspace is not None:
                 self._push_startup_cleanup(self._liberar_ownership_del_workspace, self.dyndolod_workspace)
 
+            # E3-R3 — backend de spawn de TexGen/DynDOLOD. Corre DESPUÉS de resolver
+            # el workspace porque los `-o:` por herramienta salen de su root, y con
+            # el broker YA iniciado (arriba). Siempre se ASIGNA: `None` significa
+            # "standalone pedido", nunca "no se llegó a resolver" — pedir brokered y
+            # no poder cumplirlo produce el guard fail-closed, no `None`.
+            self.dyndolod_spawn_strategy = self._resolver_estrategia_de_dyndolod(
+                local_cfg=local_cfg,
+                broker=broker,
+                instance_id=instance_id,
+                active_profile=active_profile,
+                mo2=mo2,
+                game=configured_game,
+                workspace=self.dyndolod_workspace,
+            )
+
             # Auditoría FOMOD: el motor (parser/resolver/installer) existía pero
             # nunca se cableó — las tools preview_mod_installer /
             # install_mod_from_archive / resolve_fomod respondían "not configured".
@@ -2258,6 +2315,7 @@ class AppContext:
                 self.vfs_broker = None
                 self.vfs_instance_id = None
                 self.vfs_loot_runner = None
+                self.dyndolod_spawn_strategy = None
 
     async def _close_router(self, router: LLMRouter) -> None:
         """Callback for AsyncExitStack: close LLM router."""
