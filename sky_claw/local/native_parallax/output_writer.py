@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import pathlib
@@ -82,6 +83,7 @@ from sky_claw.local.native_parallax.output import (
     planificar,
     reconciliar_tras_corte,
     serializar_manifiesto,
+    validar_ruta_de_salida,
 )
 
 __all__ = [
@@ -106,6 +108,12 @@ _MANIFIESTO: Final = "manifest.json"
 _PENDIENTE: Final = "pending.json"
 _ETAPAS: Final = "staging"
 _PAPELERA: Final = "trash"
+#: Registro de propiedad de los restos de la papelera (ítem 6 de #834): solo diagnóstico, vive en la carpeta de control
+#: (no dentro de ``trash/``, que ``_limpiar_control`` quita cuando queda vacía).
+_REGISTRO_DE_RESTOS: Final = "trash-registry.json"
+_ESQUEMA_DEL_REGISTRO_DE_RESTOS: Final = 1
+#: Cuántos restos nombra el aviso de cada apertura: la papelera no se borra sola, y un tercero podría llenarla.
+_MAXIMO_DE_RESTOS_NOMBRADOS: Final = 20
 _SUBDIR_DE_ESTADO: Final = "native_parallax_output"
 _ARCHIVO_DE_LOCKS: Final = "output_locks.db"
 #: ``MAX_PATH`` de Windows menos el terminador: ni el juego ni MO2 cargan una textura cuya ruta completa lo supere.
@@ -459,6 +467,117 @@ def _limpiar_control(control: pathlib.Path) -> None:
     if _es_carpeta_contenida(control.parent, control / _PAPELERA):
         with contextlib.suppress(OSError):
             os.rmdir(control / _PAPELERA)  # solo prospera si está vacía
+    if not os.path.lexists(control / _PAPELERA):  # sin papelera no hay restos que describir: el registro se va con ella
+        with contextlib.suppress(OSError):  # es un diagnóstico: no poder quitarlo no impide abrir
+            os.unlink(control / _REGISTRO_DE_RESTOS)
+
+
+class _MotivoDeResto(Enum):
+    """Por qué quedó un archivo en la papelera (ítem 6 de #834). Vocabulario CERRADO, congelado por igualdad en los tests.
+
+    El NOMBRE es lo que se guarda en el registro; el VALOR es lo que lee el operador. Contesta la pregunta de propiedad
+    que el aviso no podía contestar: ¿es un original nuestro, verificado, o algo que cambió? «Verificado» quiere decir
+    que su huella coincidió con la autorizada justo antes de que algo fallara; la recuperación tras un corte no verifica
+    de quién es lo que no puede devolver, y lo dice.
+    """
+
+    MODIFICADO_Y_RUTA_OCUPADA = "lo modificó un tercero y su ruta se ocupó, así que no pudo volver"
+    NUESTRO_Y_RUTA_OCUPADA = "es un original nuestro verificado y su ruta se ocupó, así que no pudo volver"
+    NUESTRO_NO_SE_DEJO_BORRAR = "es un original nuestro verificado y el sistema no dejó borrarlo"
+    CAMBIO_DESPUES_DE_VERIFICAR = "cambió después de verificarlo y por eso no se borró"
+    NO_SE_PUDO_DEVOLVER = "la recuperación no pudo devolverlo porque su ruta se ocupó (no se verificó de quién es)"
+
+
+def _serializar_registro_de_restos(restos: Mapping[str, tuple[str, _MotivoDeResto]]) -> bytes:
+    documento = {
+        "esquema": _ESQUEMA_DEL_REGISTRO_DE_RESTOS,
+        "restos": {casilla: {"ruta": ruta, "motivo": motivo.name} for casilla, (ruta, motivo) in restos.items()},
+    }
+    return json.dumps(documento, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+
+
+def _interpretar_resto(casilla: str, entrada: object) -> tuple[str, _MotivoDeResto] | None:
+    """``(ruta, motivo)`` si la entrada es coherente con su casilla; ``None`` si no.
+
+    La casilla ES ``sha256(clave_de_ruta(ruta))``: una entrada cuya ruta no da su casilla está mal o la tocaron, y no se le
+    cree (así el aviso nunca nombra una ruta que no es la del resto). La ruta pasa por el mismo validador que las del
+    manifiesto: ASCII imprimible, así que es segura de escribir en un log.
+    """
+    if not isinstance(entrada, dict):
+        return None
+    ruta, nombre = entrada.get("ruta"), entrada.get("motivo")
+    if not isinstance(ruta, str) or not isinstance(nombre, str):
+        return None
+    try:
+        validar_ruta_de_salida(ruta)
+        motivo = _MotivoDeResto[nombre]
+    except (ValueError, KeyError):  # RutaDeSalidaInvalidaError es un ValueError
+        return None
+    if _id_de_ruta(ruta) != casilla:
+        return None
+    return ruta, motivo
+
+
+def _leer_registro_de_restos(control: pathlib.Path) -> dict[str, tuple[str, _MotivoDeResto]]:
+    """``{casilla: (ruta, motivo)}`` de lo que el registro dice, o ``{}`` si no hay o no se puede interpretar.
+
+    Es un DIAGNÓSTICO y NUNCA levanta: un registro ilegible, de otro esquema o con entradas que no cuadran se dice por log
+    y se ignora (lo que no se interpreta se avisa como un resto sin registro). No reescribe nada.
+    """
+    archivo = control / _REGISTRO_DE_RESTOS
+    try:
+        datos = _leer_documento(archivo, "el registro de la papelera")
+    except SalidaNoEscribibleError as exc:
+        logger.warning("No se pudo leer el registro de la papelera de la salida (%s): %s", archivo, exc)
+        return {}
+    if datos is None:
+        return {}
+    try:
+        documento = json.loads(datos)
+    except ValueError as exc:  # JSONDecodeError y UnicodeDecodeError
+        logger.warning("El registro de la papelera de la salida (%s) es ilegible: %s", archivo, exc)
+        return {}
+    restos = documento.get("restos") if isinstance(documento, dict) else None
+    if not isinstance(restos, dict) or documento.get("esquema") != _ESQUEMA_DEL_REGISTRO_DE_RESTOS:
+        logger.warning("El registro de la papelera de la salida (%s) no tiene el formato esperado: se ignora", archivo)
+        return {}
+    interpretados: dict[str, tuple[str, _MotivoDeResto]] = {}
+    for casilla, entrada in restos.items():
+        interpretado = _interpretar_resto(casilla, entrada)
+        if interpretado is None:
+            logger.warning(
+                "El registro de la papelera de la salida (%s) tiene una entrada que no corresponde a su casilla %r: "
+                "se ignora",
+                archivo,
+                casilla,
+            )
+            continue
+        interpretados[casilla] = interpretado
+    return interpretados
+
+
+def _registrar_resto(control: pathlib.Path, ruta: str, motivo: _MotivoDeResto) -> None:
+    """Anota que *ruta* dejó un resto en la papelera y por qué. Es la ÚNICA puerta del registro.
+
+    Se llama en el instante en que NACE el resto, desde los nueve sitios donde el escritor lo deja (``_reemplazar``,
+    ``_retirar`` y ``_recuperar``; el ancla por AST los enumera): al terminar la sesión ``pending.json`` ya no está y el
+    nombre de la casilla, un SHA-256, no dice de qué ruta es. Es un DIAGNÓSTICO: que no se pueda anotar se dice por log y no
+    cambia el resultado de la ruta ni aborta el lote. Corre bajo el lock de la sesión (lo llaman unidades que ya lo tienen)
+    y descarta de paso las entradas cuyo resto ya no está. Solo anota lo que está: en la recuperación «cambió o desapareció»
+    comparten rama, y un registro de algo que ya no existe sería un archivo de control huérfano.
+    """
+    archivo = control / _REGISTRO_DE_RESTOS
+    papelera = control / _PAPELERA
+    casilla = _id_de_ruta(ruta)
+    try:
+        presentes = {p.name for p in papelera.iterdir()} if _es_carpeta_contenida(control.parent, papelera) else set()
+        if casilla not in presentes:
+            return
+        restos = {c: e for c, e in _leer_registro_de_restos(control).items() if c in presentes}
+        restos[casilla] = (ruta, motivo)
+        _escribir_atomico(archivo, _serializar_registro_de_restos(restos))
+    except OSError as exc:
+        logger.warning("No se pudo anotar el resto de %s en el registro de la papelera (%s): %s", ruta, archivo, exc)
 
 
 def _avisar_de_sobrantes(raiz: pathlib.Path, control: pathlib.Path) -> None:
@@ -466,7 +585,8 @@ def _avisar_de_sobrantes(raiz: pathlib.Path, control: pathlib.Path) -> None:
 
     Lo que queda ahí es un original nuestro verificado que no se pudo devolver (la ruta se ocupó) o algo que cambió
     después de verificarlo: nunca se borra solo, así que sin este aviso nadie sabría que sigue ahí hasta que una ruta
-    falle contra su casilla.
+    falle contra su casilla. El registro (``_registrar_resto``) dice de qué ruta es cada resto y por qué quedó; un resto sin
+    entrada válida se avisa igual, con su casilla, como «sin registro».
     """
     papelera = control / _PAPELERA
     if not _es_carpeta_contenida(raiz, papelera):
@@ -476,13 +596,23 @@ def _avisar_de_sobrantes(raiz: pathlib.Path, control: pathlib.Path) -> None:
     except OSError as exc:  # es un diagnóstico: que no se pueda listar no debe impedir abrir la sesión
         logger.warning("No se pudo inspeccionar la papelera de la salida (%s): %s", papelera, exc)
         return
-    if sobrantes:
-        logger.warning(
-            "La papelera de la salida (%s) tiene %d archivo(s) que no se borran solos; revisalos y, si no los "
-            "necesitás, borralos a mano",
-            papelera,
-            len(sobrantes),
-        )
+    if not sobrantes:
+        return
+    logger.warning(
+        "La papelera de la salida (%s) tiene %d archivo(s) que no se borran solos; revisalos y, si no los "
+        "necesitás, borralos a mano",
+        papelera,
+        len(sobrantes),
+    )
+    registro = _leer_registro_de_restos(control)
+    for casilla in sobrantes[:_MAXIMO_DE_RESTOS_NOMBRADOS]:
+        if casilla in registro:
+            ruta, motivo = registro[casilla]
+            logger.warning("En la papelera: %s (casilla %s) %s", ruta, casilla, motivo.value)
+        else:
+            logger.warning("En la papelera: casilla %r, sin registro de qué ruta es ni por qué quedó ahí", casilla)
+    if len(sobrantes) > _MAXIMO_DE_RESTOS_NOMBRADOS:
+        logger.warning("En la papelera: y %d más sin nombrar", len(sobrantes) - _MAXIMO_DE_RESTOS_NOMBRADOS)
 
 
 def _borrar_pendiente(control: pathlib.Path) -> None:
@@ -541,6 +671,7 @@ def _recuperar(raiz: pathlib.Path) -> Manifiesto | None:
     for ruta in recuperacion.restaurar:
         if not _restaurar_desde_papelera(raiz, control, ruta):
             logger.warning("No se pudo devolver %s desde la papelera: la ruta ya está ocupada", ruta)
+            _registrar_resto(control, ruta, _MotivoDeResto.NO_SE_PUDO_DEVOLVER)
     for descarte in recuperacion.descartar:
         apartado = control / _PAPELERA / _id_de_ruta(descarte.ruta)
         try:
@@ -551,12 +682,14 @@ def _recuperar(raiz: pathlib.Path) -> Manifiesto | None:
             OSError
         ) as exc:  # nuestro y verificado, pero no se deja borrar (solo lectura, antivirus): no bloquea la sesión
             logger.warning("No se pudo descartar %s de la papelera (%s); queda ahí", descarte.ruta, exc)
+            _registrar_resto(control, descarte.ruta, _MotivoDeResto.NUESTRO_NO_SE_DEJO_BORRAR)
             continue
         if not borrado:
             logger.warning(
                 "No se descartó %s de la papelera: ya no tiene la huella que se observó (cambió o desapareció)",
                 descarte.ruta,
             )
+            _registrar_resto(control, descarte.ruta, _MotivoDeResto.CAMBIO_DESPUES_DE_VERIFICAR)
     _punto_de_corte("recuperacion_tras_papelera")
     actual = serializar_manifiesto(vigente) if vigente is not None else serializar_manifiesto(Manifiesto(entradas=()))
     resultante = serializar_manifiesto(recuperacion.manifiesto)
@@ -757,6 +890,7 @@ def _reemplazar(
             os.unlink(etapa)
         if _devolver(apartado, destino):
             return ResultadoPorRuta(ruta, EfectoDeSalida.CONFLICTO, "lo modificó un tercero: no se tocó"), None
+        _registrar_resto(control, ruta, _MotivoDeResto.MODIFICADO_Y_RUTA_OCUPADA)
         return ResultadoPorRuta(ruta, EfectoDeSalida.CONFLICTO, f"lo modificó un tercero y quedó en {apartado}"), None
     _punto_de_corte("tras_verificar")
     try:
@@ -767,6 +901,7 @@ def _reemplazar(
         if _devolver(apartado, destino):
             return ResultadoPorRuta(ruta, EfectoDeSalida.CONFLICTO, f"no se pudo publicar el reemplazo: {exc}"), vigente
         logger.warning("La ruta %s quedó ocupada; el original verificado quedó en %s", ruta, apartado)
+        _registrar_resto(control, ruta, _MotivoDeResto.NUESTRO_Y_RUTA_OCUPADA)
         return ResultadoPorRuta(
             ruta, EfectoDeSalida.CONFLICTO, f"la ruta quedó ocupada; el original está en {apartado}"
         ), None
@@ -775,11 +910,13 @@ def _reemplazar(
         borrado = _borrar_si_es_el_autorizado(apartado, autorizado)
     except OSError as exc:  # el reemplazo ya está publicado; el original (nuestro y verificado) queda en la papelera
         logger.warning("No se pudo borrar el original apartado de %s (%s); quedó en %s", ruta, exc, apartado)
+        _registrar_resto(control, ruta, _MotivoDeResto.NUESTRO_NO_SE_DEJO_BORRAR)
         return ResultadoPorRuta(
             ruta, EfectoDeSalida.REEMPLAZADA, f"no se pudo borrar el original apartado ({exc}); quedó en {apartado}"
         ), trabajo.entrada
     if not borrado:  # cambió en la papelera después de verificarlo
         logger.warning("El original apartado de %s cambió después de verificarlo; quedó en %s", ruta, apartado)
+        _registrar_resto(control, ruta, _MotivoDeResto.CAMBIO_DESPUES_DE_VERIFICAR)
         return ResultadoPorRuta(
             ruta,
             EfectoDeSalida.REEMPLAZADA,
@@ -805,12 +942,14 @@ def _retirar(
     except OSError as exc:  # era nuestro, pero no se deja borrar (solo lectura, antivirus): vuelve a su ruta
         if _devolver(apartado, destino):
             return ResultadoPorRuta(ruta, EfectoDeSalida.FALLIDA, f"no se pudo borrar: {exc}"), vigente
+        _registrar_resto(control, ruta, _MotivoDeResto.NUESTRO_Y_RUTA_OCUPADA)
         return ResultadoPorRuta(
             ruta, EfectoDeSalida.CONFLICTO, f"no se pudo borrar ({exc}) y la ruta se ocupó; quedó en {apartado}"
         ), None
     if not borrado:  # lo tocó un tercero (o no se pudo leer): es suyo, no lo borramos
         if _devolver(apartado, destino):
             return ResultadoPorRuta(ruta, EfectoDeSalida.SOLTADA, "lo modificó un tercero: no se borró"), None
+        _registrar_resto(control, ruta, _MotivoDeResto.MODIFICADO_Y_RUTA_OCUPADA)
         return ResultadoPorRuta(ruta, EfectoDeSalida.CONFLICTO, f"lo modificó un tercero y quedó en {apartado}"), None
     _punto_de_corte("tras_borrar")
     _podar_directorios_vacios(raiz, ruta)
