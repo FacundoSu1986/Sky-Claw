@@ -42,6 +42,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   imposible `{existia: True, sha256: None}`.
 
 ### Fixed
+- **`add_mod_to_modlist` veía el mismo mod como dos si cambiaba una mayúscula (#838).**
+  La primitiva comparaba los nombres del `modlist.txt` de forma exacta, mientras
+  `ganadores._exigir_enabled` los compara con `lower()` porque MO2 resuelve
+  `mods/<Nombre>` contra NTFS, que no distingue mayúsculas. Con `+x` ya en el perfil,
+  `add_mod_to_modlist("X")` no lo reconocía como presente: agregaba `+X` y dejaba un
+  perfil que el diagnóstico de overlay rechaza entero («el modlist repite el mod»), sin
+  aviso —el WARNING de #835 sólo contaba coincidencias exactas—. Decisión (#838):
+  **`X` y `x` son el mismo mod**. Los tres mutadores del modlist
+  (`add_mod_to_modlist` —sus dos ramas y las dos formas de pedir máxima prioridad—,
+  `remove_mod_from_modlist` y `toggle_mod_in_modlist`) comparan ahora con una única clave,
+  `vfs._clave_de_nombre_de_mod`, que usa `lower()` y **no** `casefold()`: `casefold`
+  colapsa `Straße`/`Strasse`, que NTFS no unifica, y fabricaría un «ya presente» (o un
+  duplicado) que no existe —el mismo límite que `vfs_attestation._case_insensitive_key`
+  y `tests/test_mo2_ganadores.py`—. Lo que se conserva es la **grafía** ya escrita:
+  `-x` se habilita como `+x`, y el WARNING de duplicados nombra las variantes
+  encontradas (`+x, +X`). Los callers no se tocan: el cambio vive en la primitiva y
+  alcanza a `external_tools._activar_en_modlist` (NGIO, Community Shaders),
+  `system_tools` (FOMOD), `ritual_runner` (GUI) y `grass_profile`
+  (`highest_priority=True`). Ancla:
+  `tests/test_mo2_modlist_identidad_sin_mayusculas.py`, que enumera los caminos de la
+  primitiva (dos ramas, dos alias, `remove`, `toggle`), el límite `lower` vs.
+  `casefold`, la consecuencia de punta a punta sobre `indexar_ganadores` y, por
+  enumeración, qué métodos del modlist comparan por clave y cuáles son los callers.
 - **Una corrida de TexGen que el operador autorizó continuar se revertía entera por
   el `Error:` de un modal de arranque CONOCIDO (F1).** El binario escribe la
   instrucción de sus diálogos de arranque como `Error: <instrucción>` en su propio

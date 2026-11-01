@@ -11,6 +11,16 @@ raíz.
 ## Invariantes
 
 - Instancia y perfil explícitos; drift falla cerrado.
+- **La identidad de un nombre de mod no distingue mayúsculas** (#838): MO2 resuelve
+  `mods/<Nombre>` contra NTFS, así que `X` y `x` son el mismo mod. Todo mutador del
+  `modlist.txt` (`add_mod_to_modlist` —sus dos ramas y las dos formas de pedir máxima
+  prioridad—, `remove_mod_from_modlist`, `toggle_mod_in_modlist`) compara con la única clave
+  `vfs._clave_de_nombre_de_mod`, que usa `lower()` y **no** `casefold()` (NTFS sí
+  distingue `Straße` de `Strasse`) — la misma identidad que asume
+  `ganadores._exigir_enabled` y `vfs_attestation._case_insensitive_key`. Al escribir se
+  conserva la grafía que ya estaba en el archivo; sólo se usa la del caller si el mod
+  no estaba. Ancla: `tests/test_mo2_modlist_identidad_sin_mayusculas.py` (enumera las
+  ramas, el límite `lower`/`casefold`, los mutadores y los callers).
 - El canary debe probar visibilidad virtual, no sólo el directorio físico.
 - La promoción usa baseline, backup, escritura transaccional y rollback.
 - Si falla el rollback, preservar el backup.

@@ -83,6 +83,29 @@ async def _write_modlist_atomic(path: pathlib.Path, lines: list[str]) -> None:
         raise
 
 
+def _clave_de_nombre_de_mod(nombre: str) -> str:
+    """Identidad de un nombre de mod en ``modlist.txt``: **sin distinguir mayúsculas** (#838).
+
+    MO2 resuelve ``mods/<Nombre>`` contra un sistema de archivos de Windows, que no
+    distingue mayúsculas: ``X`` y ``x`` son el MISMO mod. ``ganadores._exigir_enabled``
+    ya lo asume —rechaza el perfil que trae el mismo nombre dos veces comparando con
+    ``lower()``—, así que los mutadores del modlist tienen que usar esa misma
+    identidad. Con la comparación exacta que tenían, ``add_mod_to_modlist("X")``
+    sobre un perfil con ``+x`` no lo reconocía como presente: agregaba un segundo
+    ``+X`` y dejaba un perfil que el diagnóstico de overlay rechazaba, sin aviso.
+
+    Se usa ``lower()`` y **no** ``casefold()``, por la misma razón que
+    ``vfs_attestation._case_insensitive_key``: ``casefold`` colapsa pares que NTFS
+    **no** unifica (``Straße`` / ``Strasse``) y fabricaría un «ya presente» —o un
+    duplicado— que no existe. ``tests/test_mo2_ganadores.py`` congela el mismo límite
+    para los duplicados del modlist.
+
+    La función devuelve **sólo** la clave de comparación; la grafía que ya está en el
+    archivo es la que se conserva al escribir (ver ``add_mod_to_modlist``).
+    """
+    return nombre.lower()
+
+
 class ModlistParseError(Exception):
     """Raised when a modlist.txt line cannot be parsed."""
 
@@ -244,6 +267,17 @@ class MO2Controller:
         ``ganadores._exigir_enabled`` that rejects the repeated name, until the
         operator fixes the profile in MO2.
 
+        **La identidad del mod no distingue mayúsculas** (#838): ``X`` y ``x`` son
+        el mismo mod —MO2 resuelve ``mods/<Nombre>`` sobre un sistema de archivos
+        de Windows—, así que ``add_mod_to_modlist("X")`` sobre un perfil con ``+x``
+        es un no-op, ``-x`` se habilita en su lugar, y ``highest_priority=True``
+        mueve la entrada existente en vez de duplicarla. La comparación usa
+        :func:`_clave_de_nombre_de_mod`, la misma de ``ganadores._exigir_enabled``.
+        Lo que se **conserva** es la grafía que ya está en el archivo: el nombre lo
+        escribió el operador y reescribirlo sería tocar su ``modlist.txt`` sin que
+        el caller lo haya pedido. Sólo se usa la grafía del caller cuando el mod no
+        estaba en el perfil.
+
         Args:
             mod_name: The mod directory name (e.g. ``"Requiem"``).
             profile: MO2 profile name.
@@ -256,38 +290,50 @@ class MO2Controller:
         validated = self._validator.validate(modlist_path)
 
         is_highest = highest_priority or (priority == "highest")
+        clave_del_mod = _clave_de_nombre_de_mod(mod_name)
 
         async with self._modlist_lock:
             # Read the existing entries (and their order) so the atomic rewrite
-            # keeps them; build existing_names in the same pass. The rewrite
-            # normalizes line endings and always writes a UTF-8 BOM (not a
-            # byte-for-byte copy of the original).
+            # keeps them. The rewrite normalizes line endings and always writes a
+            # UTF-8 BOM (not a byte-for-byte copy of the original).
             lines: list[str] = []
-            existing_names: set[str] = set()
+            # Entradas del mod pedido que ya estaban en el perfil, en orden físico:
+            # (índice en `lines`, signo, nombre tal como está escrito). El
+            # nombre se guarda para conservar su grafía al escribir (``x`` no se
+            # reescribe como ``X``) y para que el WARNING muestre las variantes que
+            # el operador tiene que corregir en MO2.
+            entradas_del_mod: list[tuple[int, str, str]] = []
+            # Grafía que el operador ya tenía escrita para el mod (la primera entrada
+            # que coincide, habilitada o no), para conservarla al escribir.
+            nombre_existente: str | None = None
             try:
                 async with aiofiles.open(validated, encoding="utf-8-sig") as fh:
                     async for raw_line in fh:
                         stripped = raw_line.strip()
-                        # Si es highest_priority, filtramos cualquier ocurrencia previa
-                        # del mod (habilitado o deshabilitado) para moverlo limpiamente.
-                        if is_highest and stripped and stripped[0] in ("+", "-") and stripped[1:].strip() == mod_name:
-                            continue
+                        es_entrada = bool(stripped) and stripped[0] in ("+", "-")
+                        nombre_en_linea = stripped[1:].strip() if es_entrada else ""
+                        coincide = es_entrada and _clave_de_nombre_de_mod(nombre_en_linea) == clave_del_mod
+                        if coincide:
+                            if nombre_existente is None:
+                                nombre_existente = nombre_en_linea
+                            # Si es highest_priority, filtramos cualquier ocurrencia
+                            # previa del mod (habilitado o deshabilitado, en cualquier
+                            # grafía) para moverlo limpiamente.
+                            if is_highest:
+                                continue
+                            entradas_del_mod.append((len(lines), stripped[0], nombre_en_linea))
                         lines.append(raw_line)
-                        if stripped and stripped[0] in ("+", "-"):
-                            existing_names.add(stripped[1:].strip())
             except FileNotFoundError:
                 pass
 
             if not is_highest:
-                if mod_name in existing_names:
+                if entradas_del_mod:
                     # Entradas del mod, en orden físico. Un `modlist.txt` escrito por
-                    # MO2 trae una sola; más de una solo sale de un archivo editado a mano.
-                    habilitadas: list[int] = []
-                    deshabilitadas: list[int] = []
-                    for i, raw_line in enumerate(lines):
-                        stripped = raw_line.strip()
-                        if stripped and stripped[0] in ("+", "-") and stripped[1:].strip() == mod_name:
-                            (habilitadas if stripped[0] == "+" else deshabilitadas).append(i)
+                    # MO2 trae una sola; más de una solo sale de un archivo editado a mano
+                    # (o de variantes de mayúsculas, que son el mismo mod en Windows).
+                    habilitadas = [i for i, signo, _ in entradas_del_mod if signo == "+"]
+                    deshabilitadas = [i for i, signo, _ in entradas_del_mod if signo == "-"]
+                    nombres_por_indice = {i: nombre for i, _, nombre in entradas_del_mod}
                     # Una `+X` existente manda: su posición ES la prioridad efectiva del
                     # mod, así que se conserva y las `-X` se descartan. Flipear una `-X`
                     # junto a una `+X` dejaría dos habilitadas y `ganadores._exigir_enabled`
@@ -298,15 +344,15 @@ class MO2Controller:
                         # No se repara: MO2 no define cuál `+X` gana y borrar una línea
                         # del usuario excede lo que pidió el caller. Solo se avisa.
                         logger.warning(
-                            "Mod %r aparece habilitado %d veces en el modlist del perfil %r; "
-                            "las entradas +%s repetidas no se reparan (solo se descartan las -%s, "
-                            "si las hay); ganadores._exigir_enabled rechazará el perfil "
-                            "hasta corregirlo en MO2",
+                            "Mod %r aparece habilitado %d veces en el modlist del perfil %r "
+                            "(grafías encontradas: %s; el nombre se compara sin distinguir "
+                            "mayúsculas); las entradas habilitadas repetidas no se reparan "
+                            "(solo se descartan las deshabilitadas, si las hay); "
+                            "ganadores._exigir_enabled rechazará el perfil hasta corregirlo en MO2",
                             mod_name,
                             len(habilitadas),
                             profile,
-                            mod_name,
-                            mod_name,
+                            ", ".join(f"+{n}" for n in sorted({nombres_por_indice[i] for i in habilitadas})),
                         )
                     flipear = deshabilitadas[0] if not habilitadas and deshabilitadas else None
                     descartar = set(deshabilitadas) - {flipear}
@@ -314,10 +360,15 @@ class MO2Controller:
                         logger.info("Mod %r already enabled in modlist for profile %r", mod_name, profile)
                         return
                     if flipear is not None:
-                        lines[flipear] = f"+{mod_name}\n"
+                        # Se conserva la grafía que ya estaba en el archivo.
+                        lines[flipear] = f"+{nombres_por_indice[flipear]}\n"
                     lines = [ln for i, ln in enumerate(lines) if i not in descartar]
                     if flipear is not None:
-                        logger.info("Enabled +%s in modlist for profile %r (in place)", mod_name, profile)
+                        logger.info(
+                            "Enabled +%s in modlist for profile %r (in place)",
+                            nombres_por_indice[flipear],
+                            profile,
+                        )
                     else:
                         logger.info(
                             "Discarded %d disabled -%s entries in modlist for profile %r",
@@ -336,7 +387,10 @@ class MO2Controller:
                     if line_str and not line_str.startswith("#"):
                         break
                     insert_idx += 1
-                lines.insert(insert_idx, f"+{mod_name}\n")
+                # Si el mod ya estaba (en cualquier grafía) se reusa cómo lo escribió
+                # el operador; si no, la grafía del caller.
+                nombre_a_escribir = mod_name if nombre_existente is None else nombre_existente
+                lines.insert(insert_idx, f"+{nombre_a_escribir}\n")
 
             # Atomic tmp->rename rewrite (with BOM), consistent with
             # remove/toggle — a non-atomic append could expose a partial line to
@@ -365,6 +419,12 @@ class MO2Controller:
     ) -> None:
         """Remove *mod_name* entirely from the profile modlist.
 
+        Quita **todas** las entradas del mod, sin distinguir mayúsculas (#838): en
+        Windows ``X`` y ``x`` son el mismo mod, así que dejar viva una variante que
+        ``add_mod_to_modlist`` considera «ya presente» haría que desinstalar no
+        desinstale. La identidad es :func:`_clave_de_nombre_de_mod`, la misma de
+        ``add_mod_to_modlist`` y de ``ganadores._exigir_enabled``.
+
         Args:
             mod_name: The mod directory name.
             profile: MO2 profile name.
@@ -374,6 +434,8 @@ class MO2Controller:
         modlist_path = self._data_root / "profiles" / profile / "modlist.txt"
         validated = self._validator.validate(modlist_path)
 
+        clave_del_mod = _clave_de_nombre_de_mod(mod_name)
+
         async with self._modlist_lock:
             lines: list[str] = []
             found = False
@@ -381,7 +443,11 @@ class MO2Controller:
                 async with aiofiles.open(validated, encoding="utf-8-sig") as fh:
                     async for raw_line in fh:
                         line = raw_line.strip()
-                        if line and line[1:].strip() == mod_name and line[0] in ("+", "-"):
+                        if (
+                            line
+                            and line[0] in ("+", "-")
+                            and _clave_de_nombre_de_mod(line[1:].strip()) == clave_del_mod
+                        ):
                             found = True
                             continue  # Skip this line
                         lines.append(raw_line)
@@ -402,6 +468,12 @@ class MO2Controller:
     ) -> None:
         """Toggle the enabled state of *mod_name* in the modlist.
 
+        El nombre se compara sin distinguir mayúsculas (#838), igual que en
+        ``add_mod_to_modlist`` y ``remove_mod_from_modlist``: con ``+x`` en el
+        perfil, ``toggle_mod_in_modlist("X", enable=False)`` deshabilita ``x`` en
+        vez de no encontrar nada. Al cambiar el signo se **conserva la grafía** que
+        ya estaba escrita; sólo el signo cambia.
+
         Args:
             mod_name: The mod directory name.
             profile: MO2 profile name.
@@ -412,6 +484,8 @@ class MO2Controller:
         modlist_path = self._data_root / "profiles" / profile / "modlist.txt"
         validated = self._validator.validate(modlist_path)
 
+        clave_del_mod = _clave_de_nombre_de_mod(mod_name)
+
         async with self._modlist_lock:
             lines: list[str] = []
             changed = False
@@ -421,9 +495,14 @@ class MO2Controller:
                 async with aiofiles.open(validated, encoding="utf-8-sig") as fh:
                     async for raw_line in fh:
                         line = raw_line.strip()
-                        if line and line[1:].strip() == mod_name and line[0] in ("+", "-"):
+                        if (
+                            line
+                            and line[0] in ("+", "-")
+                            and _clave_de_nombre_de_mod(line[1:].strip()) == clave_del_mod
+                        ):
                             if line[0] != target_prefix:
-                                lines.append(f"{target_prefix}{mod_name}\n")
+                                # Se conserva la grafía existente: sólo cambia el signo.
+                                lines.append(f"{target_prefix}{line[1:].strip()}\n")
                                 changed = True
                             else:
                                 lines.append(raw_line)

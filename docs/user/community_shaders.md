@@ -58,6 +58,12 @@ fijado con `--profile` / `MO2_PROFILE`), por las dos superficies:
 - Si ya estaba pero deshabilitado (`-<Nombre>`), se habilita **en su lugar**, sin mover
   su posición.
 - Si ya estaba habilitado, no se toca. No se reordena nada del resto del perfil. Si el perfil ya traía el mismo mod habilitado más de una vez (solo pasa editando `modlist.txt` a mano), no se repara: se avisa en el log y hay que corregirlo en MO2.
+- El nombre se compara **sin distinguir mayúsculas** (`#838`): MO2 corre sobre el
+  sistema de archivos de Windows, así que `+Community Shaders` y
+  `+community shaders` son el mismo mod. Una entrada con otra grafía cuenta como «ya
+  está» y no se duplica; si hay que habilitarla, se conserva la grafía que ya estaba
+  escrita en tu `modlist.txt`. Los duplicados por mayúsculas (`+x` y `+X` juntos)
+  también se avisan en el log.
 
 Los tres se procesan en el orden de instalación (Address Library, SSE Engine Fixes,
 Community Shaders), así que los que se agregan quedan al final del perfil en ese mismo
