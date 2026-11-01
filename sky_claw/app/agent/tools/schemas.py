@@ -257,7 +257,11 @@ class GenerateBashedPatchParams(pydantic.BaseModel):
     modelo podría inventar.
     """
 
-    model_config = pydantic.ConfigDict(strict=True)
+    # `extra="forbid"` y no `ignore`: si el modelo manda `profile` —o un `testigo_previo`
+    # que todavía no persiste nadie— tiene que recibir un rechazo, no un silencio. Un
+    # campo ignorado deja al LLM creyendo que eligió el perfil (spec de #454) o que probó
+    # frescura; es el mismo criterio que `DiagnosticarParallaxParams`.
+    model_config = pydantic.ConfigDict(strict=True, extra="forbid")
 
     fase: Literal["preparar", "verificar"] = pydantic.Field(
         default="preparar",

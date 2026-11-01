@@ -63,10 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SinRutasResolubles`— y llamaba con el perfil literal `"agent-tool"`, que no existe en la
   instancia MO2. `AsyncToolRegistry` acepta ahora `path_resolver`, `app_context` le inyecta el
   mismo `PathResolutionService` que usa la GUI, y el perfil lo aporta `mo2_profile` (fijo por
-  sesión). La tool expone al LLM **sólo** `fase` (verbo nuevo `GenerateBashedPatchParams`):
-  las dos fases son de sólo lectura, el perfil no se delega al modelo y `testigo_previo` no se
-  expone porque un hash que el modelo podría inventar convertiría la prueba de frescura en una
-  afirmación sin evidencia.
+  sesión). La tool expone al LLM **sólo** `fase` (`GenerateBashedPatchParams`, con
+  `extra="forbid"`): las dos fases son de sólo lectura, el perfil no se delega al modelo y
+  `testigo_previo` no se expone porque un hash que el modelo podría inventar convertiría la
+  prueba de frescura en una afirmación sin evidencia. Mandar cualquiera de los dos campos
+  —o cualquier otro— devuelve un `ValidationError` explícito en vez de ignorarse, para que el
+  modelo no se quede creyendo que eligió el perfil o que trajo evidencia.
 - **`AWAITING_OPERATOR`: una etapa asistida ya no se registra como `FAILED`.**
   `ToolStateMachine` sólo conocía `PENDING → RUNNING → COMPLETED/FAILED`, así que
   `preparar` —que devuelve `success=False` a propósito, porque no construyó nada— se veía como

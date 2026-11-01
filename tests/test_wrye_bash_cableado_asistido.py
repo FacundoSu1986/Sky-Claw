@@ -33,6 +33,7 @@ import pathlib
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pydantic
 import pytest
 
 from sky_claw.app.agent.tools import AsyncToolRegistry
@@ -490,3 +491,19 @@ def test_el_schema_de_la_tool_solo_expone_fase(tmp_path: pathlib.Path) -> None:
     assert descriptor.params_model is GenerateBashedPatchParams
     assert sorted(descriptor.params_model.model_fields) == ["fase"]
     assert list(descriptor.input_schema["properties"]) == ["fase"]
+
+
+@pytest.mark.asyncio
+async def test_el_llm_no_puede_colar_el_perfil_ni_el_testigo(tmp_path: pathlib.Path) -> None:
+    """`extra="forbid"`: el rechazo es explícito, no un silencio.
+
+    Con `extra="ignore"` (el default de pydantic) un `profile="Otro"` del modelo se
+    descartaba sin decirle nada: el LLM creería haber elegido el perfil, que es
+    exactamente lo que la spec de #454 prohíbe. Y un `testigo_previo` inventado pasaría
+    por la puerta como si fuera evidencia de la fase 1.
+    """
+    registry = _registry(tmp_path, perfil="Requiem")
+
+    for campo in ({"profile": "Otro"}, {"testigo_previo": {"sha256": "c" * 64}}):
+        with pytest.raises(pydantic.ValidationError):
+            await registry.execute("generate_bashed_patch", campo)
