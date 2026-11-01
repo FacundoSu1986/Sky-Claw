@@ -80,7 +80,7 @@ jobs:
         if: always()
         run: |
           Write-Output "=== pytest (PASSED/FAILED/SKIPPED/XFAIL/ERROR) ==="
-          if (Test-Path sandbox_min\pytest.txt) { Select-String -Path sandbox_min\pytest.txt -Pattern '^(PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS) |^=+ .*(passed|failed|skipped|error)' | ForEach-Object { $_.Line } }
+          if (Test-Path sandbox_min\pytest.txt) { Select-String -Path sandbox_min\pytest.txt -Pattern '^(PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS) |^=+ .*(passed|failed|skipped|error)|HALLAZGO' | ForEach-Object { $_.Line } }
           foreach ($f in @('sandbox_min\resultados.json','sandbox_min\resultados_real.json')) {
             if (Test-Path $f) { Write-Output "=== $f ==="; python -m scripts.windows_job_probe --resumir $f }
           }
@@ -89,5 +89,7 @@ jobs:
         if: always()
         with:
           name: vfs-supervision-sandbox-resultados
-          path: sandbox_min/resultados*.json
+          path: |
+            sandbox_min/resultados*.json
+            sandbox_min/pytest.txt
           if-no-files-found: warn
