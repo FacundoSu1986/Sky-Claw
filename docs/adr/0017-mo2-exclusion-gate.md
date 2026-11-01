@@ -110,9 +110,13 @@ lector estilo CRT en bucle:
 
 72 sobre 109.270 es 0,066 %: suficiente para descartar «no pasa», insuficiente
 para llamarlo seguro. Un MO2 que arrancara en esa ventana leería un INI
-truncado. Por eso la configuración final **sí** incluye `DELETE`: bloquea a los
-lectores y convierte la lectura rasgada de improbable en imposible por
-construcción.
+truncado.
+
+`DELETE` **no** cierra esta ventana: sólo impide borrar y renombrar. La lectura
+rasgada se cierra con `dwShareMode = 0`, que impide abrir el archivo para
+lectura mientras se retiene —ver §3.5 y §3.7—. La versión anterior de este ADR
+atribuía la garantía a `DELETE` y llamaba «imposible por construcción» a lo que
+seguía midiéndose; §3.7 lo refuta con la medición.
 
 ### 3.5 Configuración final y su validación
 
@@ -249,28 +253,43 @@ Se corrige reconociendo el estado intermedio de la escritura por handle.
 
 **El predicado se calibró matando procesos reales**, no construyendo bytes a mano
 (rig `exp9_death_points`). Matando el escritor en cada punto, los desenlaces
-observados son exactamente tres:
+observados son CUATRO:
 
 | Muerte | Estado en disco |
 |---|---|
 | antes de `WriteFile` | idéntico al snapshot |
 | durante `WriteFile` | `nuevo[:k] + previos[k:]`, mismo tamaño que el snapshot |
+| durante `WriteFile`, extendiendo | `nuevo[:k]` con `len(previos) < k < len(nuevo)` |
+| tras `SetEndOfFile`, antes del truncado | `nuevo + previos[len(nuevo):]` |
 | tras `SetEndOfFile` | completo (`nuevo`) |
+
+El tercero lo encontró Codex en la cuarta ronda de revisión, **no** el rig:
+`WriteFile` extiende el archivo si escribe más allá del EOF anterior, y un corte
+a mitad deja un prefijo puro de `nuevo` más largo que el snapshot. Rechazarlo
+dejaba el INI corrupto sin restaurar. El cuarto es el `antes_seteof` que el rig
+sí había medido cuando el contenido nuevo es más corto.
 
 `FlushFileBuffers` no cambia lo observable: sólo la durabilidad, que sigue en
 `POWER_LOSS_GUARANTEE = NOT_CLAIMED`.
 
-Por eso se acepta **un solo** estado intermedio, con dos condiciones que lo hacen
-atribuible: mismo tamaño que el snapshot (el truncado no ocurrió) y corte
-**estrictamente posterior** al primer byte divergente. Un corte anterior a la
-divergencia no modifica ningún byte —el archivo seguiría siendo el snapshot— y un
-estado que sólo coincide en el prefijo común es indistinguible de un truncado
-ajeno.
+Por eso se aceptan esos estados intermedios, cada uno con condiciones que lo
+hacen atribuible: el corte cae **estrictamente después** del primer byte
+divergente, y la cola posterior al corte coincide con el snapshot —o, en la
+extensión, el archivo es un prefijo puro de `nuevo` porque la cola vieja ya no
+existe—. Un corte anterior a la divergencia no modifica ningún byte y el archivo
+seguiría siendo el snapshot.
 
-La versión anterior aceptaba además `nuevo[:n]` (archivo truncado). Se quitó:
-`SetEndOfFile` corre sólo después de una escritura completa, así que ese estado
-**no es alcanzable** por este escritor y atribuírselo sería apropiarse del
-truncado de un tercero.
+La versión anterior aceptaba además `nuevo[:n]` **más corto** que el snapshot
+(archivo truncado). Se quitó: `SetEndOfFile` corre sólo después de una escritura
+completa, así que ese estado no es alcanzable por este escritor y atribuírselo
+sería apropiarse del truncado de un tercero.
+
+**La autoría se exige, no se infiere.** El predicado sólo atribuye cuando el
+binder prueba que llamó al escritor (`escritura_intentada is True`). En la
+recuperación de un proceso nuevo ese dato no existe: la fase `INI_ESCRITO` se
+marca ANTES de escribir y no prueba autoría. Sin prueba, el estado se conserva
+como evidencia y decide el propietario —un INI a medio escribir tras un crash ya
+no se auto-repara, y eso es una decisión, no un descuido—.
 
 **Cuando la autoría no se establece, no se elige: se conserva evidencia y se pide
 intervención del propietario.** El rollback copia los bytes actuales a

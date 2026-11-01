@@ -21,7 +21,8 @@ midiendo, no razonando:
 2. Se adoptó `FILE_SHARE_NONE`, se midió su costo (casi nulo) y se agregaron
    tests que fallan con la configuración anterior.
 3. `--json-salida` del inspector P7 **truncaba** `modorganizer.ini` si se le
-   pasaba esa ruta. Ahora valida el destino y crea con `O_EXCL`.
+   pasaba esa ruta. Se validó el destino y se creó con `O_EXCL`; después el
+   gate final retiró la opción entera (§0.5, FIX A).
 4. El predicado de escritura interrumpida se calibró **matando procesos reales**
    en cada punto, y se endureció: ya no atribuye a la transición estados que el
    escritor no puede producir.
@@ -258,6 +259,21 @@ Ver §0.6.
 | CodeRabbit Major · no atribuir prefijo por intento | `binder_recovery.py:781` | **FIX_VERIFIED** | Hook al punto de mutación: la revalidación aborta sin marcar |
 | CodeRabbit Minor · detectar `os.remove` | `test_p5c2:868` | **FIX_VERIFIED** | En el set prohibido |
 
+### 0.7 Quinta ronda (CodeRabbit sobre `5dae5098`)
+
+Cuatro findings Minor; los cuatro reales.
+
+| # | Finding | Veredicto | Corrección |
+|---|---|---|---|
+| 21 | La aserción de fuga de rutas era **vacua en Windows**: `ensure_ascii=True` escapa las barras y `str(tmp_path)` no aparece nunca en stdout | CONFIRMADO | Se compara sobre el JSON **decodificado** (`hallazgos[].detalle`); mutante de redacción desactivada lo mata |
+| 22 | `_preservar_evidencia` escribía con `write_bytes`: un corte dejaba un `.bin` truncado con el nombre del contenido completo, y la recuperación siguiente lo daba por bueno | CONFIRMADO | `_escribir_bytes_atomico`; test con `os.fsync` fallido + control positivo |
+| 23 | El ADR §3.4 atribuía la garantía a `DELETE` y llamaba «imposible por construcción» a lo refutado en §3.7 | CONFIRMADO | §3.4 corregido: la garantía es `dwShareMode = 0` |
+| 24 | El ADR §5.1 describía tres desenlaces y un solo estado intermedio | CONFIRMADO | Cuatro desenlaces; se documenta que el tercero lo encontró Codex, no el rig |
+
+El #21 es el más importante de esta ronda: es exactamente la doctrina del repo
+—«un assert que no puede fallar no es un ancla»— aplicada a mi propio test. La
+aserción pasaba en verde sin comprobar nada.
+
 **Ningún hilo queda `STILL_REPRODUCIBLE`.**
 
 ## 1. Rama, worktree y SHAs
@@ -358,7 +374,7 @@ alternativas descartadas en ADR 0017 §4–§6.
 
 | Archivo | Qué aporta |
 |---|---|
-| `tests/test_p7_inspector_output.py` | 9 casos de salida del inspector: INI, `active.json`, Clone, Managed Source, existente, junction, destino válido, carrera, CLI |
+| `tests/test_p7_inspector_output.py` | 11 casos de salida del inspector: contenido del informe, redacción, consola cp1252, rechazo de `--json-salida`, cero escrituras |
 
 **Modificados en esta revisión**
 
@@ -366,7 +382,7 @@ alternativas descartadas en ADR 0017 §4–§6.
 |---|---|
 | `mo2_ini_exclusion.py` | `COMPARTICION_EXCLUSIVA = 0`; docstring corregido con la medición |
 | `binder_recovery.py` | `_es_prefijo_rasgado` → `_es_escritura_propia_interrumpida` (endurecido); `_preservar_evidencia` |
-| `p7_readonly_inspection.py` | `validar_destino_informe` + `escribir_informe_exclusivo` (`O_EXCL`) |
+| `p7_readonly_inspection.py` | **sin ninguna escritura**: se retiraron `validar_destino_informe`, `escribir_informe_exclusivo` y `--json-salida` (FIX A) |
 | `tests/…p5c2_mo2_exclusion.py` | 4 tests de lector, ancla de compartición, ancla AST reescrita, 6 tests de recuperación |
 | `tests/…p5c1_mo2_clone_binder.py` | Caso 11 pasa a inyectar el estado intermedio REAL (sin truncar) |
 
@@ -379,9 +395,10 @@ alternativas descartadas en ADR 0017 §4–§6.
 - `test_una_escritura_a_medias_no_es_observable`.
 - `test_no_atribuye_un_archivo_truncado` y `…_un_corte_dentro_del_prefijo_comun`.
 - `test_la_evidencia_se_conserva_cuando_la_autoria_no_se_establece`.
-- El ancla AST del inspector ya **no** exime `json_salida.write_text`; exige que
-  la única apertura de escritura sea `os.open` con `O_EXCL` dentro del escritor
-  validado.
+- El ancla AST del inspector exige **cero** operaciones de escritura y **ningún**
+  `os.open`. Pasó por cuatro versiones: eximir el informe, mirar el `O_EXCL` en
+  el archivo entero, ignorar `Path.open`, y aceptar un `os.open` «validado por
+  ruta» que una junction bypaseaba.
 
 ## 6. Regresiones y resultados
 
@@ -397,7 +414,7 @@ Cada archivo con un directorio temporal propio y recién creado.
 | `p5c1_ini_escritura` | 34 passed | 34 passed |
 | `p5c1_mo2_clone_binder` | 20 passed | 20 passed |
 | `p5c1_superficies` | 18 passed | 18 passed |
-| `p5c2_mo2_exclusion` | — | 68 passed, 1 skipped |
+| `p5c2_mo2_exclusion` | — | 69 passed, 1 skipped |
 | `p7_inspector_output` (nuevo) | — | 11 passed |
 
 Los 2 fallos de `p4_root_lock` (`test_rl05`, `test_rl17`) **fallan igual en
@@ -413,11 +430,19 @@ las cifras usan un directorio nuevo por archivo.
 | Mutante | Tests que mata |
 |---|---|
 | `COMPARTICION_EXCLUSIVA = FILE_SHARE_READ` | 3 (lector compatible, ancla de compartición, escritura a medias) |
-| quitar `O_EXCL` de las banderas | 1 (ancla AST del inspector) |
+| reintroducir `pathlib.Path("x").write_text(...)` en el inspector | 1 (ancla de cero escrituras) |
+| quitar el rechazo de `nlinks != 1` al adquirir | 1 (INI con dos nombres) |
+| quitar la revalidación de `nlinks` antes de escribir | 1 (hardlink tardío) |
+| ignorar el fallo de `FlushFileBuffers` | 2 (no finaliza; escritura ajena) |
+| el rollback no atribuye la escritura propia | 1 (restauración tras fallo de volcado) |
+| mover `al_escribir` antes de la revalidación | 1 (el intento no se marca si aborta) |
+| redacción desactivada | 1 (detalles sin rutas) |
+| evidencia escrita sin atomicidad | 1 (archivo truncado con nombre bueno) |
 
-El segundo mutante **sobrevivió** en el primer intento: el assert tenía un
-fallback `or "O_EXCL" in fuente` que se satisfacía con la mención en el
-docstring. Se corrigió para mirar la asignación de banderas real.
+El mutante de `O_EXCL` de la revisión anterior **sobrevivió** en su primer
+intento: el assert tenía un fallback `or "O_EXCL" in fuente` que se satisfacía
+con la mención en el docstring. Se corrigió para mirar la asignación real; hoy
+ese camino ya no existe.
 
 ## 7. Cobertura de lanzadores
 

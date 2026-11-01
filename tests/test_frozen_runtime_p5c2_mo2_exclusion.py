@@ -1324,3 +1324,55 @@ def test_el_intento_no_se_marca_si_la_revalidacion_aborta(tmp_path: pathlib.Path
         gate.cerrar()
 
     assert disparos == [], f"el hook marcó un intento que nunca llegó a escribir ({len(disparos)} disparos)"
+
+
+def test_la_evidencia_no_deja_un_archivo_truncado_con_el_nombre_bueno(tmp_path: pathlib.Path) -> None:
+    """El nombre de la evidencia ES el digest: un corte dejaría una copia mentirosa.
+
+    ``_preservar_evidencia`` nombra el archivo con el sha256 del contenido
+    completo. Con un ``write_bytes`` directo, un fallo a mitad deja un ``.bin``
+    truncado bajo ese nombre; la recuperación siguiente lo ve existir, se salta
+    la escritura y lo devuelve como evidencia buena. Esas serían las ÚNICAS
+    copias de lo que la transición no escribió (CodeRabbit sobre #851).
+
+    Con escritura atómica, el fallo no publica nada bajo el nombre final.
+    """
+    from unittest.mock import patch
+
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo = tmp_path / "modorganizer.ini"
+    ajeno = b"contenido de un tercero"
+    objetivo.write_bytes(ajeno)
+    superficie = recovery.SuperficieCapturada(
+        kind=recovery.SUPERFICIE_MO2_INI,
+        path=str(objetivo),
+        existed=True,
+        sha256="0" * 64,
+        contenido_b64=__import__("base64").b64encode(_PREVIOS).decode("ascii"),
+    )
+    registro = recovery.RegistroRecuperacion(
+        schema_version=1,
+        transition_id="t-evidence-atomica",
+        journal_revision=1,
+        operation="PROMOTION",
+        target_clone_id="clone-1",
+        target_generation_id="gen-1",
+        expected_effective_path="G:////M////R",
+        superficies=(superficie,),
+        fase=recovery.FaseRecuperacion.INI_ESCRITO,
+        created_at_ns=0,
+        updated_at_ns=0,
+    )
+
+    with patch("sky_claw.local.frozen_runtime.binder_recovery.os.fsync", side_effect=OSError(28, "ENOSPC")):
+        devuelto = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+
+    assert devuelto is None, "se devolvió una evidencia que no se pudo escribir"
+    publicados = list((tmp_path / "recovery_evidence").rglob("*.bin"))
+    assert publicados == [], f"quedó un archivo truncado con el nombre del contenido completo: {publicados}"
+
+    # Control positivo: sin el fallo, la evidencia sí se publica y se puede leer.
+    devuelto_ok = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+    assert devuelto_ok is not None
+    assert devuelto_ok.read_bytes() == ajeno

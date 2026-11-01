@@ -278,9 +278,17 @@ def test_los_detalles_de_los_hallazgos_no_publican_rutas(tmp_path: pathlib.Path)
     # Sin INI: el preflight emite un detalle con la ruta de la instancia MO2.
     (arboles.mo2 / "modorganizer.ini").unlink()
     proc = _correr_cli(arboles)
-    texto = proc.stdout
-    assert str(tmp_path) not in texto, "una ruta privada completa apareció en el informe"
-    contenido = json.loads(texto)
+    contenido = json.loads(proc.stdout)
+
+    # La comparación va sobre el JSON DECODIFICADO, no sobre el texto crudo.
+    # ``json.dumps(ensure_ascii=True)`` escapa cada barra invertida de una ruta
+    # de Windows como ``\\``, así que ``str(tmp_path)`` no aparece nunca en
+    # ``proc.stdout`` y la aserción pasaba aunque el detalle publicara el árbol
+    # privado entero. Un assert que no puede fallar no es un ancla (CodeRabbit
+    # sobre #851).
+    detalles = "\n".join(str(h.get("detalle", "")) for h in contenido["hallazgos"])
+    assert str(tmp_path) not in detalles, f"una ruta privada completa apareció en un detalle: {detalles}"
+    assert str(arboles.mo2) not in detalles, f"la ruta de la instancia MO2 apareció sin redactar: {detalles}"
     assert contenido["rutas_completas"] is False
 
 

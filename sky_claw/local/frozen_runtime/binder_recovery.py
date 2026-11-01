@@ -869,10 +869,17 @@ def _preservar_evidencia(
     huella = _sha256(actuales)[:12]
     destino = raiz / "recovery_evidence" / registro.transition_id / f"{kind}-{huella}.bin"
     try:
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        if not destino.exists():
-            destino.write_bytes(actuales)
-    except OSError:
+        if destino.exists():
+            # El nombre ES el digest del contenido. Si el archivo ya está, se
+            # asume completo —pero sólo se puede asumir porque la escritura es
+            # atómica: un ``write_bytes`` interrumpido por ENOSPC dejaría un
+            # ``.bin`` truncado con el nombre del contenido COMPLETO, y toda
+            # recuperación posterior lo daría por bueno y se saltaría la
+            # escritura. Esas serían las únicas copias de lo que la transición
+            # no escribió (CodeRabbit sobre #851).
+            return destino
+        _escribir_bytes_atomico(destino, actuales)
+    except (OSError, RecuperacionError):
         return None
     return destino
 
