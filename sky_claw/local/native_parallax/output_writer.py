@@ -563,10 +563,10 @@ def _registrar_resto(control: pathlib.Path, ruta: str, motivo: _MotivoDeResto) -
     """Anota que *ruta* dejó un resto en la papelera y por qué. Es la ÚNICA puerta del registro.
 
     Se llama en el instante en que NACE el resto, desde los nueve sitios donde el escritor lo deja (``_reemplazar``,
-    ``_retirar`` y ``_recuperar``; el ancla por AST los enumera): al terminar la sesión ``pending.json`` ya no está y el
+    ``_retirar`` y ``_recuperar``; las anclas por AST congelan sus llamadas): al terminar la sesión ``pending.json`` ya no está y el
     nombre de la casilla, un SHA-256, no dice de qué ruta es. Es un DIAGNÓSTICO: que no se pueda anotar se dice por log y no
     cambia el resultado de la ruta ni aborta el lote. Corre bajo el lock de la sesión (lo llaman unidades que ya lo tienen)
-    y descarta de paso las entradas cuyo resto ya no está. Solo anota lo que está: en la recuperación «cambió o desapareció»
+    y, al anotar, descarta de paso las entradas cuyo resto ya no está (la apertura solo lee). Solo anota lo que está: en la recuperación «cambió o desapareció»
     comparten rama, y un registro de algo que ya no existe sería un archivo de control huérfano.
     """
     archivo = control / _REGISTRO_DE_RESTOS

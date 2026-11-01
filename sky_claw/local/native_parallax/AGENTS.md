@@ -110,7 +110,8 @@ La política clean-room, `docs/design/research/native-parallax/` y
   lote interrumpido después de escribir su intención inutiliza la sesión hasta reabrirla. Lo que queda en la papelera no se borra solo y se
   avisa en toda apertura (`_avisar_de_sobrantes`), nombrando de qué ruta es cada resto y por qué quedó ahí: lo anota
   `_registrar_resto` (la ÚNICA puerta; `trash-registry.json`, solo diagnóstico) desde los nueve sitios que dejan uno, por los dos
-  caminos (`_reemplazar`, `_retirar`, `_recuperar`), y un décimo sin anotar rompe el ancla; el tope de 1 GiB por archivo es uno solo (`output.TAMANO_MAXIMO_DEL_ARCHIVO`). No crea
+  caminos (`_reemplazar`, `_retirar`, `_recuperar`). Las anclas congelan esas llamadas (una décima sin declarar rompe el test) pero NO
+  enumeran todo lo que podría dejar un archivo en `trash/`: un camino nuevo que lo haga por fuera de esas formas lo decide la revisión; el tope de 1 GiB por archivo es uno solo (`output.TAMANO_MAXIMO_DEL_ARCHIVO`). No crea
   `meta.ini` ni habilita el mod (es de NP-A0).
   Ver ADR 0014, "Actualización de NP-O0b2".
 - `lote.py` y `cli.py` (NP-A0a) arman la tubería completa sobre las piezas de arriba (leer → integrar → medir → gate → exportar → escritor) y NO

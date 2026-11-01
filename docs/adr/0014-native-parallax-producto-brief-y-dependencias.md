@@ -954,13 +954,18 @@ siempre **antes** de tocar el disco.
   (hasta 20; el resto se resume); uno sin entrada válida se avisa con su casilla y «sin registro». **No devuelve ni borra nada
   solo: la regla de arriba no cambia.** Es un diagnóstico, así que nunca decide: un registro ilegible, de otro esquema, o con una
   entrada cuya ruta no da su casilla (`sha256(clave_de_ruta(ruta))`) se avisa y se ignora; no poder anotarlo no cambia el resultado
-  de la ruta ni aborta el lote; solo anota lo que está en la papelera; descarta de paso las entradas de restos que ya no están; y se
-  va con la papelera cuando `_limpiar_control` la quita. Anclas (`tests/test_native_parallax_output_writer.py`, enumeran la
-  familia): `test_cada_resto_que_deja_el_escritor_se_nombra_en_la_apertura_siguiente` (los nueve escenarios), y por AST
-  `test_los_sitios_que_llaman_a_registrar_resto_estan_enumerados_y_cada_motivo_se_usa`,
+  de la ruta ni aborta el lote; solo anota lo que está en la papelera; y se va con ella: `_limpiar_control` quita el registro entero
+  cuando quita la papelera. La poda de entradas cuyo resto ya no está ocurre SOLO al anotar (`_registrar_resto`); la apertura
+  (`_avisar_de_sobrantes`) únicamente lee y no reescribe el registro, así que una entrada vieja puede quedar hasta la próxima
+  anotación, y el aviso la ignora porque lista lo que hay en `trash/`. Anclas (`tests/test_native_parallax_output_writer.py`):
+  `test_cada_resto_que_deja_el_escritor_se_nombra_en_la_apertura_siguiente` (un escenario por cada uno de los nueve sitios), y por
+  AST `test_los_sitios_que_llaman_a_registrar_resto_estan_enumerados_y_cada_motivo_se_usa` (congela las llamadas a
+  `_registrar_resto`, con multiplicidad),
   `test_todo_retorno_que_dice_donde_quedo_lo_apartado_registra_el_resto_justo_antes` y
-  `test_la_recuperacion_registra_cada_resto_que_deja_junto_a_su_aviso`: un décimo sitio que deje un resto sin anotarlo rompe el
-  test. **No verificado:** un corte del proceso justo entre dejar el resto y anotarlo (en ese caso el resto
+  `test_la_recuperacion_registra_cada_resto_que_deja_junto_a_su_aviso`. **Límite del ancla:** atrapan una llamada a
+  `_registrar_resto` no declarada, un retorno que le diga al operador dónde quedó lo apartado sin anotarlo, y un aviso de la
+  recuperación sin su anotación; NO enumeran todo lo que podría dejar un archivo en `trash/`: un camino nuevo que lo haga por fuera
+  de esas formas pasaría la suite, y ahí manda la revisión. **No verificado:** un corte del proceso justo entre dejar el resto y anotarlo (en ese caso el resto
   queda «sin registro»; la recuperación siguiente puede anotarlo si tampoco logra devolverlo, pero no se probó), y el comportamiento sobre NTFS real (antivirus, junctions): solo se ejecutó en
   Linux.
 - **Un lote a medias inutiliza la sesión.** Un plan se aplica una sola vez. Si el lote se interrumpe después de escribir su intención (una
