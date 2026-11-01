@@ -16,6 +16,7 @@ Todos los casos son fail-closed: ante duda, no se escribe.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import pathlib
 import subprocess
@@ -197,3 +198,34 @@ def test_un_destino_invalido_devuelve_codigo_2_y_no_escribe(tmp_path: pathlib.Pa
     assert proc.returncode == 2, f"se esperaba 2 (salida rechazada), se obtuvo {proc.returncode}: {proc.stderr[-400:]}"
     assert "ERROR" in proc.stderr
     assert ini.read_bytes() == antes, "el INI fue modificado por el inspector"
+
+
+def test_un_destino_valido_por_la_cli_escribe_el_informe(tmp_path: pathlib.Path) -> None:
+    """Control positivo por la CLI: un destino permitido se escribe de verdad.
+
+    Sin este caso, un validador que rechazara TODO pasaría los tests negativos y
+    rompería la herramienta en el único uso que tiene.
+    """
+    arboles = Arboles(tmp_path)
+    destino = arboles.permitido / "informe-cli.json"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(RUTA_INSPECTOR),
+            "--storage-root",
+            str(arboles.storage),
+            "--mo2-instance",
+            str(arboles.mo2),
+            "--json-salida",
+            str(destino),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=str(RAIZ_REPO),
+    )
+    assert proc.returncode in (0, 1), f"la CLI falló por un motivo inesperado: {proc.stderr[-400:]}"
+    assert destino.is_file(), "el informe no se escribió"
+    contenido = json.loads(destino.read_text(encoding="utf-8"))
+    assert "veredicto" in contenido
+    assert contenido["rutas_completas"] is False, "por defecto el informe NO debe incluir rutas completas"
