@@ -20,6 +20,7 @@ confirma. Las pruebas de contención del sistema operativo viven en
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import contextlib
@@ -680,3 +681,74 @@ async def test_el_estado_de_supervision_se_limpia_al_terminar_el_job(tmp_path: p
         # Assert: ...y un job posterior no hereda confirmaciones de este.
         assert arnes.broker._launch_acked == set()
         assert arnes.broker._supervised_sent == set()
+
+
+# ---------------------------------------------------------------------------
+# Ancla por AST: la familia de caminos al despacho, enumerada (no muestreada)
+# ---------------------------------------------------------------------------
+
+_RAIZ_DEL_PAQUETE = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
+
+
+def _nombre_llamado(llamada: ast.Call) -> str | None:
+    funcion = llamada.func
+    if isinstance(funcion, ast.Name):
+        return funcion.id
+    if isinstance(funcion, ast.Attribute):
+        return funcion.attr
+    return None
+
+
+def _llamadas_a(nombre: str) -> list[tuple[str, str, int]]:
+    """``(archivo relativo, función contenedora, línea)`` de cada llamada a ``nombre`` en ``sky_claw/``."""
+    encontradas: list[tuple[str, str, int]] = []
+    for ruta in sorted(_RAIZ_DEL_PAQUETE.rglob("*.py")):
+        arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+        for funcion in ast.walk(arbol):
+            if not isinstance(funcion, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            for nodo in ast.walk(funcion):
+                if isinstance(nodo, ast.Call) and _nombre_llamado(nodo) == nombre:
+                    encontradas.append(
+                        (ruta.relative_to(_RAIZ_DEL_PAQUETE.parent).as_posix(), funcion.name, nodo.lineno)
+                    )
+    return encontradas
+
+
+def test_el_unico_camino_al_despacho_del_worker_pasa_por_la_espera_de_supervision() -> None:
+    """Un segundo llamador de ``execute_worker_manifest`` (hermano) saltearía el fence sin romper nada.
+
+    Se enumera, no se muestrea: hoy hay UN llamador, en ``run_worker_session``, y la espera
+    de supervisión está ANTES en el mismo cuerpo. Otro llamador, o reordenar las líneas, rompe
+    el ancla hasta que alguien decida a conciencia cómo participa del fence.
+    """
+    # Arrange / Act
+    despacho = _llamadas_a("execute_worker_manifest")
+    espera = _llamadas_a("_esperar_supervision")
+
+    # Assert
+    assert [(a, f) for a, f, _ in despacho] == [("sky_claw/local/mo2/vfs_worker.py", "run_worker_session")]
+    assert [(a, f) for a, f, _ in espera] == [("sky_claw/local/mo2/vfs_worker.py", "run_worker_session")]
+    assert espera[0][2] < despacho[0][2], "la espera de supervisión debe preceder al despacho"
+
+
+def test_el_unico_hello_de_worker_declara_la_capacidad_de_fence() -> None:
+    """Todo literal ``{"role": "worker", ...}`` del paquete declara ``supervision_fence``."""
+    # Arrange / Act
+    literales: list[tuple[str, set[str]]] = []
+    for ruta in sorted(_RAIZ_DEL_PAQUETE.rglob("*.py")):
+        for nodo in ast.walk(ast.parse(ruta.read_text(encoding="utf-8"))):
+            if not isinstance(nodo, ast.Dict):
+                continue
+            pares = {
+                clave.value: valor.value
+                for clave, valor in zip(nodo.keys, nodo.values, strict=True)
+                if isinstance(clave, ast.Constant) and isinstance(valor, ast.Constant)
+            }
+            if pares.get("role") == "worker":
+                claves = {k.value for k in nodo.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+                literales.append((ruta.relative_to(_RAIZ_DEL_PAQUETE.parent).as_posix(), claves))
+
+    # Assert
+    assert [archivo for archivo, _ in literales] == ["sky_claw/local/mo2/vfs_worker.py"]
+    assert "supervision_fence" in literales[0][1]

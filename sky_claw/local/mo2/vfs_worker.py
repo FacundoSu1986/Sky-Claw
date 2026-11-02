@@ -58,12 +58,11 @@ logger = logging.getLogger(__name__)
 _GRANDCHILD_TIMEOUT_SECONDS = 10.0
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
 _RESULT_ACK_TIMEOUT_SECONDS = 5.0
-#: Captura por stream de un proceso de sesión: COLA acotada, no buffer completo.
 #: Plazo MÁXIMO para que el bridge confirme la supervisión. Es una cota de FALLO CERRADO,
 #: no un sustituto de la garantía: vencido el plazo el worker ABORTA sin haber creado ningún
 #: descendiente; jamás prosigue "por las dudas". La confirmación real llega en milisegundos.
 _SUPERVISION_TIMEOUT_SECONDS = 30.0
-
+#: Captura por stream de un proceso de sesión: COLA acotada, no buffer completo.
 #: Un tool charlatán no puede inflar el ``VfsJobResult`` (frame IPC de 1 MiB) ni
 #: la memoria del worker; el diagnóstico conserva los últimos bytes.
 _MAX_CAPTURA_EN_BYTES = 64 * 1024

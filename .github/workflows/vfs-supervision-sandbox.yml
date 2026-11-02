@@ -16,11 +16,9 @@ on:
       - "sky_claw/local/mo2/**"
       - "scripts/windows_job_probe.py"
       - "tests/test_vfs_job_containment_windows.py"
-      - "tests/test_vfs_supervision_fence.py"
+      - "tests/test_vfs_fence_de_supervision.py"
+      - "tests/test_vfs_fence_e2e_proceso_real.py"
       - ".github/workflows/vfs-supervision-sandbox.yml"
-  # Temporal, mientras la rama no tiene PR: el CI general solo corre push en main/master.
-  push:
-    branches: [claude/vfs-supervision-fence]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
