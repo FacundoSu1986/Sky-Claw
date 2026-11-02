@@ -21,7 +21,7 @@
 |---|---|---|
 | ¿El worker puede crear un nieto o despachar una herramienta antes de la confirmación del bridge? | **No.** Se agregó el mensaje `supervised`; sin él el worker aborta sin crear nada. | `[EJECUTADO]` tests deterministas + e2e con worker real (Linux y Windows) |
 | ¿Un `launch_ack` de otro job, duplicado, tardío o tras un `assign` fallido autoriza algo? | **No.** Cada caso tiene su test y sus mutantes. | `[EJECUTADO]` |
-| ¿Queda demostrado que el proceso Python **efectivo** del worker pertenece al Job del bridge? | **No.** Con `assign` inmediato (7–8 ms) lo observamos dentro del Job en todos los casos, pero el protocolo no acota esa demora y con demoras ≥ 200 ms (exe mínimo) / ≥ 2 s (exe real) el hijo Python queda **fuera**. | `[EJECUTADO]` en `windows-latest`; la cota superior real de MO2 `[NO VERIFICADO]` |
+| ¿Queda demostrado que el proceso Python **efectivo** del worker pertenece al Job del bridge? | **No.** Con `assign` inmediato (7–10 ms) lo observamos dentro del Job en todos los casos, pero el protocolo no acota esa demora y con demoras ≥ 200 ms (exe mínimo) / ≥ 2 s (exe real) el hijo Python queda **fuera** con frecuencia. | `[EJECUTADO]` en `windows-latest`; la cota superior real de MO2 `[NO VERIFICADO]` |
 | ¿Se puede recomendar uso real? | **No** hasta cerrar la identidad del proceso (§6). | — |
 
 El fence es una condición **necesaria** (impide el despacho prematuro) pero **no suficiente** para la
@@ -97,8 +97,16 @@ reales (restricción de la tarea).
 
 ## 4. Evidencia de Windows
 
-Entorno: **GitHub Actions `windows-latest`**, Python 3.11.9, run `41364300325`, commit `ee116c73`
-(workflow `.github/workflows/vfs-supervision-sandbox.yml`). Es un sandbox efímero y aislado del rig; **no**
+Entorno: **GitHub Actions `windows-latest`**, Python 3.11.9 (workflow `.github/workflows/vfs-supervision-sandbox.yml`).
+Se corrió **tres veces**; los números de §4.2 acumulan las tres:
+
+| Run | Commit | Tests | Laboratorio |
+|---|---|---|---|
+| `41364300325` | `ee116c73` | 31 passed, 0 skipped | completo (la fila de 4000 ms del exe real **no es concluyente**, ver §4.2) |
+| `41366217821` | `a476fc32` | 33 passed, 0 skipped | **abortó** en 4000 ms: el `assign` apuntó a una raíz ya terminada (`GetLastError=5`) y el script no lo contemplaba |
+| `41367342228` | `55711087` | 35 passed, 0 skipped | completo, con el script corregido (medición nula / inconclusa) |
+
+Es un sandbox efímero y aislado del rig; **no**
 tiene MO2 ni USVFS `[LEÍDO]`: el "bridge" es el `BridgeLaunchController` real con un `organizer` falso que
 lanza el worker real y un `Win32JobObject` real. Los procesos son inocuos (el worker sale tras el probe).
 
@@ -116,8 +124,9 @@ lanza el worker real y un `Win32JobObject` real. Los procesos son inocuos (el wo
 | Bridge real: worker + `--probe-child` dentro del Job correcto | `test_el_bridge_real_contiene_al_worker_y_a_sus_descendientes_en_el_job_correcto` |
 | Bridge real con `assign` tardío: un descendiente queda **fuera** (caracterización del riesgo) | `test_con_una_asignacion_tardia_el_bridge_real_deja_un_descendiente_fuera_del_job` |
 
-Resultado del run: `31 passed in 18.88s`, **0 skipped** (los skips cuentan como "no verificado", no como
-PASS). Incluye los tests Windows, los 20+ del fence y el e2e con worker real.
+Resultado del último run (`55711087`): `35 passed in 26.63s`, **0 skipped** (los skips cuentan como
+"no verificado", no como PASS). Incluye los 11 tests de Windows (9 de semántica/bridge real y 2 de higiene del
+laboratorio), los 22 del fence (20 de protocolo + 2 anclas AST) y los 2 e2e con worker real.
 
 ### 4.2 PyInstaller *onefile*: ¿el bootloader crea un hijo antes del `assign`?
 
@@ -129,43 +138,52 @@ con `NULL`). El «Python efectivo» es el descendiente más profundo que compart
 (en onefile el bootloader re-ejecuta el mismo `.exe` como hijo); el árbol se muestrea cada 10 ms, así que un
 proceso más efímero que eso podría no verse. `[EJECUTADO]`
 
-Exe mínimo (onefile de juguete), 5 repeticiones por fila:
+Un «Python efectivo» solo se cuenta si **se vio** un descendiente con la imagen del exe distinto de la raíz
+(`efectiva_es_la_raiz` falso) y si la raíz seguía viva cuando llegó el `assign` (`raiz_ya_termino` falso). El
+resto es **inconcluso**: ni a favor ni en contra.
 
-| retardo del `assign` (ms) | Python efectivo en el Job | árbol completo en el Job | procesos | `assign` máx (ms) |
-|---:|---:|---:|---:|---:|
-| 0 | 5/5 | 5/5 | 2 | 7 |
-| 50 | 5/5 | 5/5 | 2 | 53 |
-| 200 | **1/5** | 1/5 | 2 | 206 |
-| 500 | **1/5** | 1/5 | 2 | 503 |
-| 1000 | **0/5** | 0/5 | 2 | 1003 |
-| 2000 | **0/5** | 0/5 | 2 | 2003 |
+Exe mínimo (onefile de juguete), 5 repeticiones por fila y por run; todas las filas concluyentes
+(siempre 2 procesos). Acumulado de los 3 runs (15 muestras por fila):
 
-`SkyClawApp.exe` real (`pyinstaller sky_claw.spec`, `--vfs-probe-child`), 3 repeticiones por fila:
+| retardo del `assign` (ms) | Python efectivo en el Job (por run: ee116c73 / a476fc32 / 55711087) | acumulado | `assign` máx (ms) |
+|---:|---|---:|---:|
+| 0 | 5/5 · 5/5 · 5/5 | **15/15** | 10 |
+| 50 | 5/5 · 5/5 · 5/5 | **15/15** | 53 |
+| 200 | 1/5 · 0/5 · 0/5 | **1/15** | 206 |
+| 500 | 1/5 · 0/5 · 0/5 | **1/15** | 503 |
+| 1000 | 0/5 · 0/5 · 0/5 | **0/15** | 1004 |
+| 2000 | 0/5 · 0/5 · 0/5 | **0/15** | 2003 |
 
-| retardo (ms) | Python efectivo en el Job | árbol completo en el Job | procesos | `assign` máx (ms) |
-|---:|---:|---:|---:|---:|
-| 0 | 3/3 | 3/3 | 6 | 8 |
-| 500 | 3/3 | 3/3 | 6 | 503 |
-| 1000 | 3/3 | 3/3 | 6 | 1002 |
-| 2000 | **2/3** | 2/3 | 6 | 2002 |
-| 4000 | **2/3** | 2/3 | 1–2 | 4003 |
+`SkyClawApp.exe` real (`pyinstaller sky_claw.spec`, `--vfs-probe-child`), 3 repeticiones por fila y por run
+(6 procesos en las filas concluyentes):
+
+| retardo (ms) | Python efectivo en el Job (por run) | acumulado | `assign` máx (ms) |
+|---:|---|---:|---:|
+| 0 | 3/3 · 3/3 · 3/3 | **9/9** | 8 |
+| 500 | 3/3 · 3/3 · 3/3 | **9/9** | 503 |
+| 1000 | 3/3 · 3/3 · 3/3 | **9/9** | 1003 |
+| 2000 | 2/3 · 0/3 · 1/3 | **3/9** | 2003 |
+| 4000 | inconcluso · (abortó) · 0/0 concluyentes, 3 inconclusas | — | 4003 |
 
 Lectura honesta:
 
-1. El hijo Python **sí** puede nacer antes del `assign` y entonces queda fuera del Job: con el exe real
-   falló 1 de 3 a 2 s y a 4 s. El exe real tarda más en arrancar (descomprime el onefile), por eso su umbral
-   es más alto que el del exe mínimo; el umbral depende de la máquina y de la carga.
-2. Con `assign` inmediato (~7–8 ms) el proceso Python efectivo estuvo dentro en **todas** las observaciones.
-   Eso **no es una prueba**: son 5 + 3 muestras en un runner compartido, y el protocolo no acota esa demora
-   (AV, carga, USVFS en `startApplication` real). No se afirma seguridad absoluta a partir de estas muestras.
-3. En la fila de 4000 ms el árbol tenía 1–2 procesos (no 6): no se investigó por qué; esa fila se lee con
-   cautela.
+1. El hijo Python **sí** puede nacer antes del `assign` y entonces queda fuera del Job. Con el exe real el
+   resultado a 2 s **varía entre runs** (2/3, 0/3, 1/3): no es un umbral determinista, depende de la carga del
+   runner. El exe real tarda más en arrancar (descomprime el onefile), por eso su umbral es más alto que el
+   del exe mínimo.
+2. Con `assign` inmediato (7–10 ms) el proceso Python efectivo estuvo dentro en **todas** las observaciones
+   (15/15 y 9/9). Eso **no es una prueba**: son muestras de un runner compartido, y el protocolo no acota esa
+   demora (AV, carga, USVFS en `startApplication` real). No se afirma seguridad absoluta a partir de ellas.
+3. **Corrección de lo publicado antes:** la primera versión de este informe leía la fila de 4000 ms del exe
+   real como «2/3». Era un artefacto: con esa demora el probe ya había terminado (el árbol tenía 1–2 procesos)
+   y la raíz sola «en el Job» no dice nada sobre el hijo. La fila es **inconclusa** y no entra en ninguna
+   conclusión; el laboratorio la marca así desde `a421d40a`.
 4. La cota real de MO2 (`startApplication` + USVFS hasta devolver el HANDLE) **no se midió**: no hay MO2 en
    el sandbox.
 
 ### 4.3 ¿Qué crea el worker *antes* del fence? `[EJECUTADO]`
 
-El e2e imprime `HALLAZGO descendientes previos al ack (arranque del worker)`. En Windows:
+El e2e imprime `HALLAZGO descendientes previos al ack (arranque del worker)`. En Windows (los mismos dos procesos en los tres runs):
 `{"7144": {"cmdline": "C:\\Windows\\system32\\cmd.exe /c ver", "en_job": true}, "7824": {…"cmd.exe /c ver", "en_job": true}}`.
 Es decir, el **arranque** del intérprete (imports, anteriores al `hello`) crea dos `cmd.exe /c ver`. El fence
 no los cubre —no puede: ocurren antes de que el worker hable con el broker—. En el run quedaron dentro del
