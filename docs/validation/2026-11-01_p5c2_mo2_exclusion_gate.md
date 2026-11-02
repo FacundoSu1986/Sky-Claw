@@ -285,6 +285,7 @@ aserción pasaba en verde sin comprobar nada.
 | Base | `origin/main` `9fbf0b2fef177e143ff0be68e058ae875d501c6f` |
 | HEAD auditado (revisión 1) | `eff1ea6369311d55335d3e42aea62f1382167e10` |
 | HEAD final (post-adversarial) | `3e62d399` |
+| HEAD final (fix censo boundary) | `15a2408b` |
 | P5-C1 integrado | `ac19cb28f74e6495808d7606fdbc29ceab9f578d` |
 | Rig de experimentos | `E:\Skyclaw_Rig_MO2_Exclusion` (fuera del repo) |
 
@@ -511,7 +512,7 @@ mientras la transición lo retiene, venga el intento de donde venga.
 ## 10. Dictamen
 
 ```text
-P5C2_BLOCKED
+P5C2_SAFE_TO_MERGE_SYNTHETIC_ONLY
 ```
 
 La exclusión de mutación y la no observabilidad del contenido se establecen,
@@ -521,15 +522,13 @@ productiva deshabilitada. El inspector P7 **no tiene ninguna capacidad de
 escritura**: el TOCTOU del destino se cerró quitando la escritura, no
 parcheando la comprobación.
 
-**Dictamen `P5C2_BLOCKED` por CI, no por el código.** El run ``41359474257``
-sobre ``ea0ff974`` falló en ``windows py3.11``, ``windows py3.12`` y
-``Tests (Pytest)``; ``Build`` quedó ``skipped`` por ``needs``. Causa única:
-``test_escritura_solo_en_modulos_permitidos`` — al mover
-``_preservar_evidencia`` a ``_escribir_bytes_atomico``, ``binder_recovery.py``
-dejó de usar ``write_bytes`` y el censo de boundary exige coincidencia exacta
-del conjunto. Corregido en el commit local ``cedd1dc6`` (sin pushear al momento
-de esta pausa). Se vuelve a ``SAFE_TO_MERGE_SYNTHETIC_ONLY`` **sólo** cuando el
-CI del SHA que lo contenga esté verde.
+**Dictamen `P5C2_SAFE_TO_MERGE_SYNTHETIC_ONLY`.** El run ``41526294460``
+sobre ``15a2408b`` pasó verde en todos los checks: ``windows py3.11`` (53m),
+``windows py3.12`` (51m), ``Tests (Pytest)``, ``Build``, ``Lint``, ``Mypy``,
+``Security Scan``, ``CodeRabbit``, ``CodeQL`` y ``Regression & Test Oracle``.
+La regresión que bloqueaba ``ea0ff974`` —``test_escritura_solo_en_modulos_permitidos``
+por el censo de boundary tras el cambio de ``write_bytes`` a
+``_escribir_bytes_atomico``— está corregida y verificada por CI.
 
 Los cuatro frentes del gate final están cerrados con evidencia:
 TOCTOU (test RED + eliminación del camino), hardlinks (medición real + rechazo
