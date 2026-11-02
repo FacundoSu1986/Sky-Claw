@@ -364,6 +364,13 @@ class MedicionDeAsignacion:
     imagen_python_efectiva_en_job: bool | None
     arbol_completo_en_job: bool
     ventana_de_observacion_ms: float
+    #: El proceso lanzado ya había terminado cuando llegó el ``assign`` (Windows responde
+    #: ``ACCESS_DENIED``): no hay árbol que observar. NO es «dentro» ni «fuera» del Job.
+    raiz_ya_termino: bool = False
+    #: Nunca se vio un descendiente con la imagen del ejecutable: el «Python efectivo» es la
+    #: propia raíz (en *onefile*, el hijo ya había terminado antes de la primera observación).
+    #: Una raíz «en el Job» no dice nada sobre el hijo: la fila es inconclusa.
+    efectiva_es_la_raiz: bool = False
 
     def a_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -391,15 +398,23 @@ def medir_asignacion(
             if retardo_de_asignacion_s > 0:
                 time.sleep(retardo_de_asignacion_s)
             handle_raiz = abrir_proceso(proceso.pid)
+            raiz_ya_termino = False
             try:
                 asignar_a_job(job, handle_raiz)
+            except JobObjectError:
+                # Un proceso que ya terminó no se puede asignar (ACCESS_DENIED). Con demoras largas el
+                # ejecutable de prueba termina antes: es una medición NULA, no una falla del laboratorio.
+                # Si la raíz sigue viva, el error es real y se propaga.
+                if proceso.poll() is None:
+                    raise
+                raiz_ya_termino = True
             finally:
                 cerrar_handle(handle_raiz)
             asignado_wall = time.time()
             asignado_ms = (time.perf_counter() - inicio) * 1000.0
 
             vistos: dict[int, ProcesoObservado] = {}
-            limite = inicio + ventana_s
+            limite = 0.0 if raiz_ya_termino else inicio + ventana_s  # raíz terminada: no hay nada que observar
             while time.perf_counter() < limite:
                 try:
                     raiz = psutil.Process(proceso.pid)
@@ -445,6 +460,8 @@ def medir_asignacion(
         imagen_python_efectiva_en_job=efectiva.en_job_propio if efectiva else None,
         arbol_completo_en_job=bool(ordenados) and all(p.en_job_propio for p in ordenados),
         ventana_de_observacion_ms=ventana_s * 1000.0,
+        raiz_ya_termino=raiz_ya_termino,
+        efectiva_es_la_raiz=efectiva is not None and efectiva.pid == proceso.pid,
     )
 
 
@@ -480,24 +497,34 @@ def _argumentos(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def resumir(ruta: pathlib.Path) -> str:
-    """Tabla compacta por retardo de asignación: cuántas veces el Python efectivo quedó dentro del Job."""
+    """Tabla compacta por retardo de asignación: cuántas veces el Python efectivo quedó dentro del Job.
+
+    Solo cuentan las filas CONCLUYENTES: las que tuvieron árbol que observar (``raiz_ya_termino`` es
+    falso) y en las que se vio un descendiente distinto de la raíz (``efectiva_es_la_raiz`` es falso).
+    El resto se cuenta aparte en ``inconclusas``: ni suma a favor ni en contra. Las filas de un JSON
+    anterior (sin esos campos) se leen como concluyentes.
+    """
     filas: list[dict[str, Any]] = json.loads(ruta.read_text(encoding="utf-8"))
     por_retardo: dict[float, list[dict[str, Any]]] = {}
     for fila in filas:
         por_retardo.setdefault(float(fila["retardo_de_asignacion_ms"]), []).append(fila)
     lineas = [
         f"{ruta.name}: {len(filas)} mediciones",
-        "retardo_ms | n | python_efectivo_en_job | arbol_completo_en_job | procesos(min-max) | asignado_ms(max)",
+        "retardo_ms | n | python_efectivo_en_job(concluyentes) | arbol_completo_en_job | "
+        "procesos(min-max) | asignado_ms(max) | inconclusas",
     ]
     for retardo in sorted(por_retardo):
         grupo = por_retardo[retardo]
-        efectivo = sum(1 for f in grupo if f["imagen_python_efectiva_en_job"] is True)
-        arbol = sum(1 for f in grupo if f["arbol_completo_en_job"])
-        cuenta = [len(f["procesos"]) for f in grupo]
+        con_arbol = [f for f in grupo if not f.get("raiz_ya_termino", False)]
+        concluyentes = [f for f in con_arbol if not f.get("efectiva_es_la_raiz", False)]
+        efectivo = sum(1 for f in concluyentes if f["imagen_python_efectiva_en_job"] is True)
+        arbol = sum(1 for f in con_arbol if f["arbol_completo_en_job"])
+        cuenta = [len(f["procesos"]) for f in con_arbol]
+        rango = f"{min(cuenta)}-{max(cuenta)}" if cuenta else "-"
         asignado = max(float(f["asignacion_completada_ms"]) for f in grupo)
         lineas.append(
-            f"{retardo:>10.0f} | {len(grupo)} | {efectivo}/{len(grupo)} | {arbol}/{len(grupo)} | "
-            f"{min(cuenta)}-{max(cuenta)} | {asignado:.0f}"
+            f"{retardo:>10.0f} | {len(grupo)} | {efectivo}/{len(concluyentes)} | {arbol}/{len(con_arbol)} | "
+            f"{rango} | {asignado:.0f} | {len(grupo) - len(concluyentes)}"
         )
     return "\n".join(lineas)
 
@@ -536,6 +563,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "n_procesos": len(fila["procesos"]),
                             "python_efectivo_en_job": fila["imagen_python_efectiva_en_job"],
                             "arbol_completo_en_job": fila["arbol_completo_en_job"],
+                            "raiz_ya_termino": fila["raiz_ya_termino"],
+                            "efectiva_es_la_raiz": fila["efectiva_es_la_raiz"],
                         }
                     ),
                     flush=True,

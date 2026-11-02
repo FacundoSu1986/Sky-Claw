@@ -434,3 +434,46 @@ def test_con_una_asignacion_tardia_el_bridge_real_deja_un_descendiente_fuera_del
     assert psutil.pid_exists(hijo_pid), "el descendiente previo a la asignación quedó fuera del Job"
     with contextlib.suppress(psutil.Error):
         psutil.Process(hijo_pid).kill()
+
+
+# ---------------------------------------------------------------------------
+# Higiene del laboratorio: una raíz ya terminada es una medición nula, no una falla
+# ---------------------------------------------------------------------------
+
+
+def test_una_raiz_que_ya_termino_antes_del_assign_es_una_medicion_nula(limpieza) -> None:
+    """Con una demora larga el proceso lanzado ya murió: antes esto abortaba el laboratorio (ACCESS_DENIED)."""
+    # Arrange
+    sondas = _sondas()
+
+    # Act: ``python -c pass`` termina en decenas de ms; el assign llega 1.5 s después.
+    medicion = sondas.medir_asignacion(
+        [sys.executable, "-c", "pass"],
+        retardo_de_asignacion_s=1.5,
+        ventana_s=2.0,
+    )
+
+    # Assert: ni «dentro» ni «fuera»: no hay árbol que medir.
+    assert medicion.raiz_ya_termino is True
+    assert medicion.imagen_python_efectiva_en_job is None
+    assert medicion.procesos == ()
+    assert medicion.arbol_completo_en_job is False
+
+
+def test_una_falla_real_de_asignacion_con_la_raiz_viva_no_se_disfraza_de_medicion_nula(limpieza, monkeypatch) -> None:
+    """Solo se tolera el error cuando la raíz YA terminó; con la raíz viva la falla se propaga."""
+    # Arrange
+    sondas = _sondas()
+
+    def _falla(job: int, proceso: int) -> None:
+        raise sondas.JobObjectError(5, "AssignProcessToJobObject falló (simulado)")
+
+    monkeypatch.setattr(sondas, "asignar_a_job", _falla)
+
+    # Act / Assert
+    with pytest.raises(sondas.JobObjectError):
+        sondas.medir_asignacion(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            retardo_de_asignacion_s=0.0,
+            ventana_s=2.0,
+        )
