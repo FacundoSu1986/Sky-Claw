@@ -511,7 +511,7 @@ mientras la transición lo retiene, venga el intento de donde venga.
 ## 10. Dictamen
 
 ```text
-P5C2_SAFE_TO_MERGE_SYNTHETIC_ONLY
+P5C2_BLOCKED
 ```
 
 La exclusión de mutación y la no observabilidad del contenido se establecen,
@@ -520,6 +520,16 @@ integrado al binder respetando su journal y sus locks, con la activación
 productiva deshabilitada. El inspector P7 **no tiene ninguna capacidad de
 escritura**: el TOCTOU del destino se cerró quitando la escritura, no
 parcheando la comprobación.
+
+**Dictamen `P5C2_BLOCKED` por CI, no por el código.** El run ``41359474257``
+sobre ``ea0ff974`` falló en ``windows py3.11``, ``windows py3.12`` y
+``Tests (Pytest)``; ``Build`` quedó ``skipped`` por ``needs``. Causa única:
+``test_escritura_solo_en_modulos_permitidos`` — al mover
+``_preservar_evidencia`` a ``_escribir_bytes_atomico``, ``binder_recovery.py``
+dejó de usar ``write_bytes`` y el censo de boundary exige coincidencia exacta
+del conjunto. Corregido en el commit local ``cedd1dc6`` (sin pushear al momento
+de esta pausa). Se vuelve a ``SAFE_TO_MERGE_SYNTHETIC_ONLY`` **sólo** cuando el
+CI del SHA que lo contenga esté verde.
 
 Los cuatro frentes del gate final están cerrados con evidencia:
 TOCTOU (test RED + eliminación del camino), hardlinks (medición real + rechazo

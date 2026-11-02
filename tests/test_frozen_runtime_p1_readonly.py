@@ -80,9 +80,12 @@ MODULOS_CON_ESCRITURA_PERMITIDA: dict[str, frozenset[str]] = {
     # y al restaurar superficies reescribe los BYTES previos de cada una con
     # temporal + fsync + replace. `mkdir` es para el directorio padre de una
     # superficie que el rollback tiene que recrear (el store lo crea el storage).
-    "binder_recovery.py": frozenset(
-        {"fdopen", "flush", "fsync", "mkdir", "mkstemp", "replace", "unlink", "write", "write_bytes"}
-    ),
+    # La evidencia de recuperación se escribe con `_escribir_bytes_atomico`
+    # (temporal + fsync + replace), no con `Path.write_bytes`: un corte dejaba
+    # un `.bin` truncado bajo el nombre del contenido COMPLETO y la recuperación
+    # siguiente lo daba por bueno. `write_bytes` salió del boundary con ese
+    # cambio (CodeRabbit sobre #851).
+    "binder_recovery.py": frozenset({"fdopen", "flush", "fsync", "mkdir", "mkstemp", "replace", "unlink", "write"}),
     # P5-C1 FIX 8: la escritura quirúrgica de modorganizer.ini. Mismo patrón
     # atómico (temporal en el mismo directorio + fsync + replace) y `unlink` del
     # temporal ante fallo. NO usa `open()` en modo escritura: escribe por el
