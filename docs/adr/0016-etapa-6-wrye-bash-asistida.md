@@ -155,22 +155,31 @@ El retiro era la opción barata de *código* y la cara de *producto*.
 3. verificar → veredicto por evidencia; con huella_previa prueba frescura
 ```
 
-**Quién puede pedir cada fase HOY (post PR B), sin adornos.** El enrutado único acepta
-`fase` desde las tres superficies, pero el affordance del panel todavía no lo manda:
+**Quién puede pedir cada fase (post PR B), sin adornos.** Las tres superficies pueden:
 
 | Camino | Fase 1 | Fase 2 | Nota |
 | --- | --- | --- | --- |
 | Tool del agente LLM (`generate_bashed_patch`) | sí | sí | `fase` es el único parámetro del schema |
 | `SupervisorAgent.execute_wrye_bash_pipeline` | sí (default) | sí | lo usa también la API |
-| Botón del ritual en el panel | sí | **no** | despacha payload vacío ⇒ `preparar` |
+| Botón del ritual en el panel | sí | sí | fase 2 = botón «Ya construí el parche — verificar» |
 
-Es decir: el operador que sólo usa el botón ve el paso 1 y el paso 2, pero **no puede
-disparar el paso 3 desde la UI**; la verificación tiene que pedirla por el agente o la API.
-Falta el affordance (un segundo botón «ya lo construí») y le falta su precondición real: el
-`testigo_previo` que hoy viaja sólo si el caller lo transporta. Los dos son el **PR D**
-(handoff durable, patrón `texgen_handoff`): un botón de verificación sin testigo persistido
-daría verdes con `frescura_probada=False`, que es honesto pero no es el contrato completo.
-Se declara acá en vez de dejarlo implícito.
+El botón del panel no inventa la fase: la **deriva del resultado** de la fase 1 con el mismo
+predicado que usa el toast (`tool_result.es_etapa_pendiente`), y sólo la ofrece si la etapa 1
+se **completó** (`pendiente=True`). Tras un `PreflightBlocked`, un `SinRutasResolubles` o un
+veredicto (`OK`/`SIN_CAMBIO`) no hay acción: mandar al operador a construir un parche que el
+sistema acaba de declarar inviable, o a «verificar» lo ya verificado, sería un botón que sólo
+puede fallar.
+
+El `testigo_previo` viaja en el payload **sólo si es la forma canónica válida**
+(`{existia: bool, sha256: str | None}`, con `existia ⇒ sha256`), y se valida en el seam antes
+de ofrecer el botón — no en el servicio, porque el payload es lo que el operador ve confirmado.
+Sin testigo, la fase 2 igual es útil (existencia, tamaño y activación en `plugins.txt`) y el
+veredicto declara `frescura_probada=False`: honesto, aunque no sea el contrato completo.
+
+**Lo que sigue faltando (PR D).** El testigo vive lo que vive el resultado en el panel. Si la
+GUI se cierra entre las dos fases, la verificación corre sin él. Persistirlo entre sesiones
+(patrón `texgen_handoff`) es lo que convierte «verificable» en «verificable siempre», y es la
+razón por la que el PR D no queda vacío.
 
 ## 7. Secuencia de PRs — y por qué se parte
 
@@ -226,9 +235,9 @@ y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de
   `sanitize_for_prompt` vivía en el handler. `execute_pipeline` devuelve texto crudo del
   subproceso y hoy no tiene callers; si se conserva como compat, necesita su propio saneo.
 - **PR D:** persistir el handoff de la fase 1 (huella previa durable, patrón `texgen_handoff`) para
-  que la frescura no dependa de que el caller transporte el `sha256`, **y** darle al panel el
-  affordance de la fase 2 (hoy el botón del ritual sólo puede preparar: §6). Sin el handoff, ese
-  botón verificaría siempre con `frescura_probada=False`.
+  que la frescura no dependa de que el resultado siga vivo en el panel. El affordance de la fase 2
+  **ya no** es deuda: entró en el PR B (§6) junto con el `payload` explícito de
+  `run_ritual_resume`; lo que falta es que el testigo sobreviva el cierre de la GUI, no el botón.
 
 ## 8. Revisión adversarial del propio PR (2026-10-30)
 
@@ -362,7 +371,7 @@ sostiene, y superficies nuevas sin cubrir. Todos verificados por conducta o por 
 | S-5 | **La superficie de inyección de esta tool no desapareció con la rama headless.** `artefacto` y `plugins_txt` se componen con nombres de carpeta de MODS —texto de terceros— y viajaban al prompt sin pasar por `sanitize_for_prompt`, que es lo que esta tool hacía antes con el `stdout`/`stderr` del runner. El CHANGELOG lo declaraba como hueco *del servicio*, pero éste lo alcanza al modelo. | El vector no es el marcador ASCII: Windows prohíbe `<`/`>` en nombres. Sí permite zero-width/bidi, y NFKC colapsa delimitadores de ancho completo (`＜tool_call＞`). Reproducido con un mod llamado `Salida<ZWSP>＜tool_call＞`. | `_sanear_rutas` sanea las dos claves de ruta antes de `json.dumps`, sobre una COPIA (el `preflight` adjunto es el mismo objeto que recibió otro consumidor). |
 | S-6 | **Mi primer test del saneo era vacuo.** Afirmaba `"\u200b" not in json.dumps(salida)`, y `json.dumps` con `ensure_ascii=True` escapa el zero-width como la secuencia de seis caracteres `\u200b`: la aserción no podía fallar nunca. | **Lo demostró la propia mutación**: con `_sanear_rutas` desactivado el test seguía verde. | Se afirma sobre el VALOR de la clave, más control positivo (el veneno está en la ruta real) y oráculo igualdad con `sanitize_for_prompt(str(ruta))`. Mutación → rojo. |
 | S-7 | **El oráculo del perfil en `test_perfil_sesion_invariante` era vacuo por construcción.** `assert [p for p in vistos if p != PERFIL] == []` pasa cuando la lista está vacía, es decir cuando el handler NO llama al enrutado. Para esta tool —única de la familia cuyo perfil no viaja a MO2 ni vuelve en el payload— esa lista vacía era el único oráculo. | Confirmado: si el lambda dejara de llamar al enrutado, el test seguía verde. | Igualdad con el número de llamadas esperado por tool (`[PERFIL]` para la etapa 6, `[]` para las demás). Mutación → rojo con el mensaje nombrando el perfil visto. |
-| S-8 | **La fase 2 no tiene affordance en el panel**, y el ADR lo daba por hecho: «verificar → veredicto» como si el operador pudiera pedirlo. El botón del ritual despacha payload vacío ⇒ siempre `preparar`. | Confirmado: `ritual_runner.run_ritual` despacha `{}` y ningún módulo de `sky_claw/app/gui/` menciona `fase`. | **Declarado, no arreglado**: §6 gana la tabla de quién puede pedir cada fase y el PR D incorpora el affordance. Arreglarlo acá sin el handoff durable daría verdes con `frescura_probada=False`. |
+| S-8 | **La fase 2 no tiene affordance en el panel**, y el ADR lo daba por hecho: «verificar → veredicto» como si el operador pudiera pedirlo. El botón del ritual despacha payload vacío ⇒ siempre `preparar`. | Confirmado: `ritual_runner.run_ritual` despacha `{}` y ningún módulo de `sky_claw/app/gui/` menciona `fase`. | **Arreglado en este PR**: `resume_action_from_result` deriva la fase 2 del resultado estructural (tabla `_ACCIONES_DE_RESUME`, cerrada por igualdad) y `run_ritual_resume` recibe el `payload` **obligatorio** — se fue el hardcode `{"run_texgen": False}`, que era lo que ataba el resume a DynDOLOD. 13 tests nuevos en `tests/test_resume_etapa6_asistida.py`, 5 mutaciones probadas. Persistir el testigo entre sesiones sigue en el PR D. |
 | S-9 | **`ProgressMiddleware` emitiría `ops.tool.completed` con `status="unknown"`** para la etapa pendiente (el contrato no tiene clave `status`). | Cierto pero **latente**: `ProgressMiddleware` no está cableado en ninguna composición de producción (grep: cero construcciones). | Sin cambio, con el motivo escrito: si alguien lo cablea, el evento necesita su `pendiente`/`AWAITING_OPERATOR`. |
 
 **Lo que la revisión NO encontró** (buscado a propósito): fallos donde `pendiente` pudiera estar

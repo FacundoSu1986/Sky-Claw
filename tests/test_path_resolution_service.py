@@ -1520,7 +1520,9 @@ class TestAnclaConstructoresManualesDeMods:
         # ADR 0016 (PR B): la rama del toast asistido agregó 13 líneas ARRIBA en el
         # mismo módulo y corrió el sitio (1084 → 1097). Es el MISMO constructor del
         # fallback `<raíz>/mods`; no se agregó ninguna construcción nueva.
-        "sky_claw/app/gui/controllers/ritual_runner.py": (1097,),
+        # Re-pin S-8: el sitio es el MISMO (`install_dir = pathlib.Path(mo2_root) / "mods"`
+        # en `run_ritual_install`), sólo se corrió al agregar el seam de resume (1097 → 1184).
+        "sky_claw/app/gui/controllers/ritual_runner.py": (1184,),
         # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con

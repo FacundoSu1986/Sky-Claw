@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **El panel del ritual ofrece la fase 2 de la etapa 6 (`Ya construí el parche — verificar`).**
+  Antes, el botón del ritual sólo podía *preparar*: despachaba `payload` vacío y la
+  verificación quedaba alcanzable únicamente por el agente o la API, así que la etapa 6 no se
+  completaba desde la GUI. La acción de resume ahora se **deriva del resultado estructural**
+  (`ritual_runner.resume_action_from_result`) con una tabla cerrada por igualdad
+  (`_ACCIONES_DE_RESUME`: `dyndolod` → handoff, `wrye_bash` → verificar), y el payload deja de
+  ser un literal: `run_ritual_resume` recibe `payload` **obligatorio y keyword-only** en vez del
+  `{"run_texgen": False}` hardcodeado, que era lo que ataba el resume a DynDOLOD y habría hecho
+  que cualquier etapa nueva heredara su intención.
+  La fase 2 se ofrece sólo si la fase 1 **se completó** (`pendiente=True`): tras
+  `PreflightBlocked`, `SinRutasResolubles` o un veredicto no hay botón — un CTA que sólo puede
+  fallar. El `testigo_previo` viaja en el payload cuando es la forma canónica
+  (`{existia: bool, sha256}`, con `existia ⇒ sha256`), validada en el seam **antes** de ofrecer el
+  botón, de modo que el testigo de frescura sobrevive el round-trip GUI → estrategia → servicio.
+  El detalle del CTA deja de rotularse «TexGen Output listo en:» en todas las tools.
+  Tests: `tests/test_resume_etapa6_asistida.py` (13, con 5 mutaciones verificadas); los anclajes
+  de `test_resume_hardening.py` pasan a recorrer la cadena completa resultado → payload →
+  dispatcher en vez de asumir el hardcode.
+
 - **Etapa 6 (Wrye Bash) pasa a ser una etapa ASISTIDA de dos fases ([ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md)).**
   Wrye Bash no expone build headless del Bashed Patch —`-b/--backup` es el backup de
   settings y ningún flag reconstruye el parche—, así que la etapa fallaba cerrado
