@@ -1409,6 +1409,38 @@ class TestWiringProductivoAppContext:
         assert raiz is None, f"drive root no debió registrarse como raíz de sandbox: {raiz}"
 
 
+def _sitios_de_mods(texto: str) -> dict[str, int]:
+    """``{función envolvente: cantidad de sitios}`` para un módulo.
+
+    La identidad de un sitio es **estructural** —dónde vive—, no posicional. Con la
+    línea como clave, cualquier inserción arriba (un comentario, un import) corría el
+    número y ponía el censo en rojo sin que el invariante se hubiera tocado: el
+    mensaje «el inventario cambió» mentía, y en el PR #853 eso costó dos re-pins
+    (ver #858). El nombre va **calificado** (``Clase.método``, ``externa.anidada``)
+    para que un método homónimo en otra clase no oculte un sitio nuevo.
+    """
+    arbol = ast.parse(texto)
+    sitios: dict[str, int] = {}
+
+    def visitar(nodo: ast.AST, pila: list[str]) -> None:
+        for hijo in ast.iter_child_nodes(nodo):
+            if isinstance(hijo, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                visitar(hijo, [*pila, hijo.name])
+                continue
+            if (
+                isinstance(hijo, ast.BinOp)
+                and isinstance(hijo.op, ast.Div)
+                and isinstance(hijo.right, ast.Constant)
+                and hijo.right.value == "mods"
+            ):
+                clave = ".".join(pila) or "<module>"
+                sitios[clave] = sitios.get(clave, 0) + 1
+            visitar(hijo, pila)
+
+    visitar(arbol, [])
+    return sitios
+
+
 class TestAnclaConstructoresManualesDeMods:
     """Congela los sitios de producción que construyen ``<raíz>/mods`` a mano.
 
@@ -1418,187 +1450,162 @@ class TestAnclaConstructoresManualesDeMods:
     ruta por su cuenta queda enumerado con su racional — un constructor nuevo
     rompe el ancla hasta que alguien decida si centraliza o lo exime con un
     racional (regla del repo: la exclusión se justifica, no se muestra).
+
+    **Identidad por `(módulo, función envolvente) → cantidad de sitios`** (#858).
+    Antes la clave era la línea, así que el ancla gritaba por movimientos de texto y
+    no por sitios nuevos: dos re-pins en el PR #853 fueron el síntoma. Con la clave
+    estructural el conteo sigue enumerando —un segundo sitio en una función ya
+    enumerada es un cambio— y una línea insertada arriba ya no rompe nada.
     """
 
-    # módulo relativo -> líneas con `expr / "mods"` (RHS literal)
-    _CONSTRUCTORES: dict[str, tuple[int, ...]] = {
-        # El propio resolver construye `<base>/mods` desde la metadata de la
-        # instancia (mismo concepto que centraliza este PR: la "raíz de datos"
-        # de la instancia activa). Aparece en el helper de deferencia
-        # (228), en la construcción de la metadata del modo "mo2_path_datos"
-        # (288) y en el paso legacy de get_mo2_mods_path (903). Cualquier
-        # nueva construcción de `<base>/mods` debe ir por estas tres rutas
-        # o extender el ancla con su racional.
-        # NP-A0h sumó `raices_de_instancia_mo2` (1218): el fallback `<datos>/mods` que
-        # ANTES construía AppContext a mano (su entrada de abajo desapareció) vive ahora
-        # en el resolver, un solo sitio para las dos superficies (agente y GUI). Mismo
-        # concepto, no una construcción nueva; las otras tres líneas corrieron por el
-        # método y la dataclass agregados arriba.
-        "sky_claw/app/core/path_resolver.py": (266, 327, 947, 1218),
-        # Instaladores NGIO/FOMOD del agente LLM: ahora aceptan mods_dir explícito
-        # (Issue #557); las líneas 220 y 267 son el fallback legacy portable.
-        # system_tools.py ya no construye <expr> / "mods" porque usa mo2.mods_dir.
-        # PR #825 (activación de CS en modlist.txt) sumó los params `mo2`/`profile` a la
-        # firma de setup_tools y corrió ambos sitios (220, 267 → 222, 269); mismo
-        # fallback legacy, no una construcción nueva.
-        # El helper `_activar_en_modlist` (activación compartida de NGIO y CS) se agregó
-        # ARRIBA de setup_tools y los corrió (222, 269 → 266, 313); mismo fallback
-        # legacy, ninguna construcción nueva de `<base>/mods`.
-        "sky_claw/app/agent/tools/external_tools.py": (266, 313),
-        # MO2PluginStateProvider: usa mods_dir inyectado; línea 74 es el fallback legacy.
-        "sky_claw/local/fomod/plugin_state.py": (74,),
-        # BrokeredLootRunner: acepta mods_dir; los dos sites son fallbacks
-        # legacy. PR-0 (contrato del id de juego + guard F8 de backend
-        # MO2-internal) movió las líneas (61, 233 → 97, 285) sin agregar
-        # nuevas construcciones de `<base>/mods`. Review FINDING A (guard F8
-        # case-insensitive, comparación componente a componente) movió las
-        # líneas (97, 285 → 109, 297): el cuerpo de _is_mo2_internal_loot
-        # creció, mismo número y sites de construcciones; el comentario
-        # que justifica `zip(..., strict=False)` (ruff B905) sumó una
-        # línea más (109, 297 → 110, 298). PR-1 (aislamiento LOOT data root)
-        # añadió dos sites que resuelven mods_dir para validar que el loot
-        # data root no esté dentro de mods (392, 403) y movió el base default
-        # (110 → 124) por import de data_root. PR-2 (resultado verificable:
-        # imports de testigo/timeout tipado + helpers de transporte) movió las
-        # líneas (124, 388, 397 → 136, 413, 422); mismos tres sites, ninguna
-        # construcción nueva de `<base>/mods`. El hardening de PR-2 (import de
-        # LOOT_FAILURE_KINDS y LOOTWorkerProtocolError) las corrió dos más
-        # (136, 413, 422 → 138, 415, 424); y PR #695 / issue #623 (propagación
-        # de atributos de teardown en LOOTTimeoutError) las corrió a
-        # (138, 420, 429); mismos tres sites.
-        "sky_claw/local/mo2/brokered_loot.py": (138, 420, 429),
-        # MO2Controller: modo explícito recibe mods_dir; línea 150 es el fallback legacy.
-        # #838 (identidad de mod sin mayúsculas) insertó `_clave_de_nombre_de_mod` arriba
-        # de la clase y corrió el mismo constructor (127 → 150). No es un sitio nuevo: la
-        # activación en modlist.txt que ese PR tocó no construye rutas de `mods/`.
-        "sky_claw/local/mo2/vfs.py": (150,),
-        # #633 (fingerprint v2: canonicalización semántica de plugins.txt por su
-        # identidad case-insensitive, secciones con largo explícito y modelado de
-        # `primaryPlugins()` con Creation Club) movió las líneas
-        # (182, 243 → 444, 513) sin agregar ni quitar construcciones de
-        # `<base>/mods`: el cuerpo de _profile_fingerprint y sus helpers crecieron
-        # arriba de los dos sites. PR-586D (gate mode-aware TexGen→DynDOLOD)
-        # sumó un tercer builder (build_attestation_challenge_for_source) que
-        # duplicaba la misma resolución de mods_dir, y la revisión adversarial
-        # exigió centralizarla ANTES de tocar este inventario: los tres sites
-        # (los dos builders + verify_vfs_attestation) colapsaron en el helper
-        # único `_raices_del_overlay` — la única construcción de `<base>/mods`
-        # del módulo, que es el concepto "directorio de mods de la instancia".
-        # H1 (#650: normalización de prioridad canónica en boundary de parser)
-        # expandió `read_enabled_mods` y PR-586F agregó el gate de visibilidad
-        # brokered, moviendo la construcción canónica de mods_dir a la línea 576.
-        # D2 (canario diferencial MO2/USVFS) agregó la modalidad diferencial y sus
-        # helpers arriba de `_raices_del_overlay` (misma función, sin duplicación
-        # ni cambio de semántica): la construcción canónica de `<base>/mods`
-        # sigue siendo una sola y corrió de la línea 576 a la 708 (+132).
-        # D2-H2 (subárbol autorizado en la selección de canarios) agregó la
-        # validación del prefijo y el filtro de elegibilidad, también arriba de
-        # `_raices_del_overlay`: misma función única, ahora en la línea 800 (+92).
-        # D2-H3 (inspección física de la primera pasada con la primitiva
-        # compartida) agregó el comentario del criterio de ausencia, otra vez
-        # arriba de `_raices_del_overlay`: misma función única, línea 813 (+13).
-        "sky_claw/local/mo2/vfs_attestation.py": (813,),
-        # VfsExecutionBroker: fallback legacy compartido por submit/open_session
-        # (`_raices_efectivas`; PR-586A lo movió de la ~302 a la ~323, sus
-        # follow-ups a la ~339, PR #695 / issue #623 a la ~581 por cuarentena,
-        # y pase de identidad/replay grace a la ~589) y VfsWorkerManifest: única
-        # construcción cuando no se pasa mods_dir.
-        "sky_claw/local/mo2/vfs_broker.py": (589,),
-        "sky_claw/local/mo2/vfs_manifest.py": (61,),
-        # Detectores de estado de mods instalados (Community Shaders) sobre la
-        # raíz que detectó el scanner: concepto de detección, no de instancia.
-        # P3: detección de versión de herramientas movió las líneas (424, 800 → 460, 858).
-        "sky_claw/local/discovery/scanner.py": (460, 858),
-        # P2: centralización de tool registry movió la línea (1068 → 1057).
-        # Es el mismo constructor de siempre: el sitio no cambió de concepto.
-        # PR-586D (CTA de resume con handoff_action) la movió (1057 → 1077);
-        # mismo constructor del default `<raíz>/mods`.
-        # PR #825: la instancia de instalación de CS pasó a priorizar el controlador que
-        # activa en modlist.txt (`app_context.mo2`) sobre el snapshot; el comentario y la
-        # reordenación movieron la línea (1077 → 1084). Sigue siendo el fallback
-        # `<raíz>/mods` cuando ni el controlador ni el snapshot traen `mods_dir`.
-        # ADR 0016 (PR B): la rama del toast asistido agregó 13 líneas ARRIBA en el
-        # mismo módulo y corrió el sitio (1084 → 1097). Es el MISMO constructor del
-        # fallback `<raíz>/mods`; no se agregó ninguna construcción nueva.
-        # Re-pin S-8: el sitio es el MISMO (`install_dir = pathlib.Path(mo2_root) / "mods"`
-        # en `run_ritual_install`), sólo se corrió al agregar el seam de resume (1097 → 1184).
-        "sky_claw/app/gui/controllers/ritual_runner.py": (1184,),
-        # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
-        # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
-        # caller no pasó un MODS_DIR declarado (``mods_dir=``): con
-        # ``mod_directory`` custom el valor declarado manda (get_mo2_mods_path*).
-        # PR-1 añadió resolución de loot_data_path que usa mods_dir para validar.
-        # PR-2 (helpers del veredicto verificable) movió la línea (497 → 576);
-        # mismo constructor del default de `_build_sources_resolver`. El
-        # hardening de PR-2 (import de LOOTWorkerProtocolError + docstring del
-        # diagnóstico de timeout) la corrió (576 → 580); mismo constructor.
-        "sky_claw/local/tools/loot_service.py": (580,),
-        "sky_claw/local/validators/vfs_health.py": (141,),
-        # #585: el resolver del perfil pasó a leer plugins.txt + loadorder.txt
-        # por separado y a fallar cerrado si la activación es ilegible; el
-        # formateo posterior movió la línea (193 → 219). Mismo constructor.
-        "sky_claw/local/validators/preflight_sensors.py": (219,),
-        # T5-v2.1: el wiring del readiness movió la línea (339 → 346). Es el
-        # mismo constructor de siempre; el sitio no cambió de concepto.
-        "sky_claw/app/orchestrator/preview/chain_preview_service.py": (346,),
-        # AppContext: fallback legacy en bootstrap de MO2Controller (1124).
-        # Handoff reconciliation usa mo2.mods_dir directamente (Issue #557).
-        # P2.3 fenced mueve la línea (autoridad temporal + veredicto tipado +
-        # cleanup de cancelación).
-        # PR-1 añadió loot_data_path en _construir_raices_sandbox y en start_full
-        # #661 (servicio de etapa 9 publicado para la superficie remota) la movió
-        # (1409 → 1426) y la declaración de `lod_jobs`/`servicio_de_etapa9` en el
-        # constructor, para que `stop()` los lea sin arranque (1426 → 1431);
-        # mismo constructor.
-        # NP-A0h: AppContext ya no construye `<datos>/mods` a mano; pide las raíces a
-        # `PathResolutionService.raices_de_instancia_mo2` (ver la entrada del resolver).
-        # __main__.py: fallback legacy en _run_vfs_health si destino_mods es None.
-        # T5-v2.1 movió la línea (257 → 271) por el despacho del worker UIA; #665
-        # (271 → 277) al extraer `_build_parser` y derivar el default de --mode.
-        # #661 (despacho del helper del driver UIA desatendido) la movió (277 → 287).
-        "sky_claw/__main__.py": (287,),
-        "sky_claw/local/tools/rollback_reconciler.py": (305,),
-        # ADR 0016 (etapa 6 asistida): ``bashed_patch_en_overlay`` se insertó arriba de
-        # ``synthesis_output_target`` y corrió su constructor del default `<raíz>/mods`
-        # (225 → 333 → 341 → 351). Sigue siendo el MISMO constructor, no un sitio nuevo.
-        "sky_claw/local/tools/output_targets.py": (351,),
-        # GrassRuntimeDepsProvider: fallback legacy portable si get_mo2_mods_path_para_destino es None.
-        "sky_claw/app/orchestrator/grass_runtime_deps.py": (81,),
+    # (módulo relativo, función envolvente calificada) -> cantidad de `expr / "mods"`
+    _CONSTRUCTORES: dict[tuple[str, str], int] = {
+        # El propio resolver construye `<base>/mods` desde la metadata de la instancia
+        # (es la "raíz de datos" de la instancia activa que centraliza este PR). Las
+        # cuatro rutas son las únicas puertas legítimas: cualquier construcción nueva
+        # debe ir por ellas o extender el ancla con su racional.
+        ("sky_claw/app/core/path_resolver.py", "descubrir_metadata_instancia_mo2"): 1,
+        ("sky_claw/app/core/path_resolver.py", "mo2_path_apunta_a_datos"): 1,
+        ("sky_claw/app/core/path_resolver.py", "PathResolutionService.get_mo2_mods_path"): 1,
+        # NP-A0h: el fallback `<datos>/mods` que ANTES construía AppContext a mano vive
+        # acá, un solo sitio para las dos superficies (agente y GUI).
+        ("sky_claw/app/core/path_resolver.py", "PathResolutionService.raices_de_instancia_mo2"): 1,
+        # Instaladores NGIO/FOMOD del agente LLM: aceptan `mods_dir` explícito (Issue
+        # #557) y esto es el fallback legacy portable. `system_tools.py` ya no construye:
+        # usa `mo2.mods_dir`.
+        ("sky_claw/app/agent/tools/external_tools.py", "setup_tools"): 2,
+        # `_run_vfs_health` (fallback legacy cuando `destino_mods is None`).
+        ("sky_claw/__main__.py", "_run_vfs_health"): 1,
+        # Botón "Instalar" del ritual: default cuando ni el controlador de CS ni el
+        # snapshot traen `mods_dir` (PR #825 priorizó el controlador).
+        ("sky_claw/app/gui/controllers/ritual_runner.py", "run_ritual_install"): 1,
+        # GrassRuntimeDepsProvider: fallback legacy portable si
+        # `get_mo2_mods_path_para_destino` devuelve None.
+        ("sky_claw/app/orchestrator/grass_runtime_deps.py", "GrassRuntimeDepsProvider.__call__"): 1,
+        # Preview de la cadena (read-only) sobre la raíz MO2 cruda.
+        ("sky_claw/app/orchestrator/preview/chain_preview_service.py", "ChainPreviewService._plugin_dirs"): 1,
+        # Scanner de descubrimiento: detecta los mods instalados (detectores de estado
+        # tipo Community Shaders). Concepto de **detección**, no de instancia.
+        ("sky_claw/local/discovery/scanner.py", "EnvironmentScanner._resolve_mo2_instance_roots"): 1,
+        ("sky_claw/local/discovery/scanner.py", "EnvironmentScanner._scan_inner"): 1,
+        # MO2PluginStateProvider: usa `mods_dir` inyectado; esto es el fallback legacy.
+        ("sky_claw/local/fomod/plugin_state.py", "MO2PluginStateProvider.__init__"): 1,
+        # BrokeredLootRunner: acepta `mods_dir`; los sitios son fallbacks portables
+        # (el de `build_vfs_loot_runner` cubre las dos ramas: declarado y default).
+        ("sky_claw/local/mo2/brokered_loot.py", "BrokeredLootRunner.__init__"): 1,
+        ("sky_claw/local/mo2/brokered_loot.py", "build_vfs_loot_runner"): 2,
+        # MO2Controller: fallback legacy del overlay.
+        ("sky_claw/local/mo2/vfs.py", "MO2Controller.__init__"): 1,
+        # Atestación del overlay: el helper único `_raices_del_overlay` es la única
+        # construcción de `<base>/mods` del módulo (PR-586D colapsó tres sitios acá).
+        ("sky_claw/local/mo2/vfs_attestation.py", "_raices_del_overlay"): 1,
+        # VfsExecutionBroker: fallback legacy compartido por `submit`/`open_session`.
+        ("sky_claw/local/mo2/vfs_broker.py", "VfsExecutionBroker._raices_efectivas"): 1,
+        # VfsWorkerManifest: única construcción cuando no se pasa `mods_dir`.
+        ("sky_claw/local/mo2/vfs_manifest.py", "VfsWorkerManifest.__init__"): 1,
+        # Preflight/preview/checkers read-only sobre la raíz MO2 cruda/validada: cada
+        # uno es el DEFAULT histórico que sólo aplica si el caller no declaró
+        # `mods_dir=` (con `mod_directory` custom manda el declarado).
+        ("sky_claw/local/tools/loot_service.py", "LootSortingService._build_sources_resolver"): 1,
+        ("sky_claw/local/validators/preflight_sensors.py", "build_mo2_profile_sources_resolver"): 1,
+        ("sky_claw/local/validators/vfs_health.py", "VfsHealthChecker.check"): 1,
+        # Objetivo de salida de la síntesis (raíz MO2 cruda).
+        ("sky_claw/local/tools/output_targets.py", "synthesis_output_target"): 1,
+        # Reconciliador de `move_aside`: productores sobre la raíz MO2 cruda.
+        ("sky_claw/local/tools/rollback_reconciler.py", "construir_productores_de_move_aside"): 1,
     }
 
-    @staticmethod
-    def _lineas_div_mods(texto: str) -> tuple[int, ...]:
-        """Líneas con ``<expr> / "mods"`` (RHS literal) en un módulo."""
-        arbol = ast.parse(texto)
-        return tuple(
-            sorted(
-                nodo.lineno
-                for nodo in ast.walk(arbol)
-                if isinstance(nodo, ast.BinOp)
-                and isinstance(nodo.op, ast.Div)
-                and isinstance(nodo.right, ast.Constant)
-                and nodo.right.value == "mods"
-            )
-        )
-
     def test_constructores_enumerados_y_congelados(self) -> None:
-        """Cada módulo con `expr / "mods"` está en el mapa con su racional."""
+        """Cada módulo con `expr / "mods"` está en el mapa con su racional, y el conteo cuadra.
+
+        Enumera TODO `sky_claw/` (no una lista de archivos): un módulo nuevo con un
+        constructor manual entra en el diff del assert.
+        """
         raiz = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
-        hallados: dict[str, tuple[int, ...]] = {}
+        hallados: dict[tuple[str, str], int] = {}
         for py in sorted(raiz.rglob("*.py")):
             texto = py.read_text(encoding="utf-8")
             try:
-                lineas = self._lineas_div_mods(texto)
+                sitios = _sitios_de_mods(texto)
             except SyntaxError:
                 continue
-            if lineas:
-                hallados[str(py.relative_to(raiz.parents[0])).replace("\\", "/")] = lineas
+            modulo = str(py.relative_to(raiz.parent)).replace("\\", "/")
+            for funcion, cantidad in sitios.items():
+                hallados[(modulo, funcion)] = cantidad
 
         assert hallados == self._CONSTRUCTORES, (
             "El inventario de constructores manuales de mods cambió. Si el sitio "
             "nuevo representa el mismo concepto que get_mo2_mods_path(), "
-            "centralízalo; si no, actualiza el mapa con su racional."
+            "centralízalo; si no, actualiza el mapa con su racional. "
+            f"Nuevos o con conteo distinto: "
+            f"{ {k: (self._CONSTRUCTORES.get(k), v) for k, v in hallados.items() if self._CONSTRUCTORES.get(k) != v} }"
+            f" — desaparecidos: "
+            f"{sorted(set(self._CONSTRUCTORES) - set(hallados))}"
         )
+
+    def test_la_identidad_del_censo_no_depende_de_la_posicion(self) -> None:
+        """Insertar texto arriba no mueve la clave (#858).
+
+        Es el defecto que costó dos re-pins en el PR #853: con la línea como clave,
+        una línea de comentario ajena ponía el censo en rojo por un motivo que no
+        tiene nada que ver con el invariante que el ancla protege.
+        """
+        base = 'def construir(raiz):\n    return raiz / "mods"\n'
+        corrido = '"""Docstring nuevo."""\n\n# comentario ajeno\nimport os\n' + base
+        con_linea_en_medio = 'def construir(raiz):\n    # el default portable\n\n    return raiz / "mods"\n'
+
+        assert _sitios_de_mods(base) == {"construir": 1}
+        assert _sitios_de_mods(corrido) == {"construir": 1}
+        assert _sitios_de_mods(con_linea_en_medio) == {"construir": 1}
+
+    def test_un_sitio_nuevo_en_otra_funcion_rompe_el_censo(self) -> None:
+        """El ancla sigue mordiendo donde importa: una construcción nueva aparece."""
+        base = 'def construir(raiz):\n    return raiz / "mods"\n'
+        con_otro = base + '\n\ndef otra(raiz):\n    return raiz / "mods"\n'
+
+        assert _sitios_de_mods(con_otro) != _sitios_de_mods(base)
+
+    def test_un_segundo_sitio_en_una_funcion_ya_enumerada_rompe_el_censo(self) -> None:
+        """El conteo conserva la enumeración: dos sitios en la misma función es un cambio.
+
+        Sin el conteo, una clave `(módulo, función)` colapsaría el segundo sitio y el
+        ancla dejaría de enumerar lo que dice enumerar.
+        """
+        base = 'def construir(raiz):\n    return raiz / "mods"\n'
+        # DOS sitios en la MISMA función: el primero alimenta la variable, el segundo
+        # es el valor de retorno.
+        con_segundo = 'def construir(raiz, otra):\n    a = raiz / "mods"\n    return otra / "mods"\n'
+
+        assert _sitios_de_mods(base) == {"construir": 1}
+        assert _sitios_de_mods(con_segundo) == {"construir": 2}
+
+    def test_un_sitio_que_cambia_de_funcion_rompe_el_censo(self) -> None:
+        """Mudar el sitio de función no es cosmético: cambia quién lo posee."""
+        base = 'def construir(raiz):\n    return raiz / "mods"\n'
+        mudado = 'def construir(raiz):\n    return raiz\n\n\ndef otra(raiz):\n    return raiz / "mods"\n'
+
+        assert _sitios_de_mods(base) != _sitios_de_mods(mudado)
+        assert _sitios_de_mods(mudado) == {"otra": 1}
+
+    def test_el_nombre_califica_clase_y_funcion_anidada(self) -> None:
+        """`Clase.método` y `externa.anidada`: dos homónimos no pueden ocultarse.
+
+        Sin calificar, un `__init__` con constructor en dos clases distintas del mismo
+        módulo se agregaría como conteo 2 de la misma clave y el sitio nuevo pasaría
+        como «ya enumerado».
+        """
+        dos_clases = (
+            "class A:\n"
+            "    def __init__(self, raiz):\n"
+            '        self.mods = raiz / "mods"\n'
+            "\n\nclass B:\n"
+            "    def __init__(self, raiz):\n"
+            '        self.mods = raiz / "mods"\n'
+        )
+        anidada = 'def externa(raiz):\n    def anidada():\n        return raiz / "mods"\n\n    return anidada\n'
+
+        assert _sitios_de_mods(dos_clases) == {"A.__init__": 1, "B.__init__": 1}
+        assert _sitios_de_mods(anidada) == {"externa.anidada": 1}
 
 
 class TestInstalacionMo2Inyectada:
