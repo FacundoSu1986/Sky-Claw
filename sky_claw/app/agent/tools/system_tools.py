@@ -639,7 +639,34 @@ def _sanear_rutas(resultado: dict[str, Any]) -> dict[str, Any]:
         valor = saneado.get(clave)
         if isinstance(valor, str):
             saneado[clave] = sanitize_for_prompt(valor)
+    preflight = saneado.get("preflight")
+    if isinstance(preflight, dict):
+        saneado["preflight"] = _sanear_preflight(preflight)
     return saneado
+
+
+def _sanear_preflight(reporte: dict[str, Any]) -> dict[str, Any]:
+    """Copia del reporte de preflight con ``summary``/``details`` saneados.
+
+    Los ``details`` incluyen nombres de archivo del overwrite (texto de terceros) que el
+    sensor compone sin escapar; ``name`` y ``status`` son enums/constantes del dominio.
+    """
+    checks = reporte.get("checks")
+    if not isinstance(checks, list):
+        return dict(reporte)
+    saneados: list[Any] = []
+    for check in checks:
+        if not isinstance(check, dict):
+            saneados.append(check)
+            continue
+        copia = dict(check)
+        if isinstance(copia.get("summary"), str):
+            copia["summary"] = sanitize_for_prompt(copia["summary"])
+        detalles = copia.get("details")
+        if isinstance(detalles, list):
+            copia["details"] = [sanitize_for_prompt(d) if isinstance(d, str) else d for d in detalles]
+        saneados.append(copia)
+    return {**reporte, "checks": saneados}
 
 
 async def run_pandora(

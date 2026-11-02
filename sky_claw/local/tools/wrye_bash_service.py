@@ -607,7 +607,8 @@ class WryeBashPipelineService:
         ANTES de tocar el perfil o de correr el preflight, así que una llamada mal
         formada no cuesta I/O ni bloquea al operador con un semáforo que no aplica.
         """
-        if fase not in FASES_ASISTIDAS:
+        # `isinstance` primero: `[] in frozenset` lanza TypeError (no hashable) en vez de caer acá.
+        if not isinstance(fase, str) or fase not in FASES_ASISTIDAS:
             return {
                 "success": False,
                 "reason": "FaseInvalida",
