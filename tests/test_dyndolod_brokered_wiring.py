@@ -1110,6 +1110,31 @@ def test_appcontext_con_brokered_y_un_insumo_ausente_devuelve_el_guard(tmp_path:
     assert isinstance(resultado, VfsRequiredDynDOLODSpawnStrategy)
 
 
+def test_appcontext_lee_la_clave_del_config_toml_real(
+    tmp_path: pathlib.Path, sin_attestation_de_disco: list[dict[str, Any]]
+) -> None:
+    """La clave viaja de ``config.toml`` a la strategy por la clase ``Config`` REAL, la de ``start_full``.
+
+    ``_start_full_inner`` hace ``local_cfg = Config(config_path)`` (TOML). Los tests de arriba pasan un
+    ``SimpleNamespace`` y no distinguirían un resolver que leyera la fuente equivocada (``LocalConfig``, JSON):
+    el defecto de #442, donde los fixtures usaban otra clase que la de producción.
+    """
+    from sky_claw.config import Config
+
+    # Arrange: la clave escrita a mano en un config.toml real (como la edita el operador).
+    esc = _escenario(tmp_path)
+    ruta = tmp_path / "config.toml"
+    ruta.write_text(f'dyndolod_backend = "{DYNDOLOD_BACKEND_BROKERED}"\n', encoding="utf-8")
+
+    # Act: el objeto es el que construye start_full; el segundo no tiene la clave en disco.
+    pedido = _resolver_de_appcontext(esc, local_cfg=Config(ruta))
+    sin_la_clave = _resolver_de_appcontext(esc, local_cfg=Config(tmp_path / "sin_clave.toml"))
+
+    # Assert
+    assert isinstance(pedido, BrokeredDynDOLODSpawnStrategy)
+    assert sin_la_clave is None, "sin la clave en el TOML rige el default (standalone = None), no un guard"
+
+
 def test_config_trae_standalone_como_default_y_respeta_lo_persistido(tmp_path: pathlib.Path) -> None:
     # Arrange
     from sky_claw.config import Config
