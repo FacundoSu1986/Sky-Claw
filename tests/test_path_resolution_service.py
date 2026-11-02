@@ -1517,7 +1517,10 @@ class TestAnclaConstructoresManualesDeMods:
         # activa en modlist.txt (`app_context.mo2`) sobre el snapshot; el comentario y la
         # reordenación movieron la línea (1077 → 1084). Sigue siendo el fallback
         # `<raíz>/mods` cuando ni el controlador ni el snapshot traen `mods_dir`.
-        "sky_claw/app/gui/controllers/ritual_runner.py": (1084,),
+        # ADR 0016 (PR B): la rama del toast asistido agregó 13 líneas ARRIBA en el
+        # mismo módulo y corrió el sitio (1084 → 1097). Es el MISMO constructor del
+        # fallback `<raíz>/mods`; no se agregó ninguna construcción nueva.
+        "sky_claw/app/gui/controllers/ritual_runner.py": (1097,),
         # Preflight/preview/checkers read-only sobre mo2 raw/validado. Cada
         # uno es el DEFAULT histórico ``<raíz>/mods`` que solo se usa cuando el
         # caller no pasó un MODS_DIR declarado (``mods_dir=``): con
