@@ -560,7 +560,10 @@ async def generate_bashed_patch(
     snapshot_manager: Any | None = None,
     journal: Any | None = None,
     path_resolver: Any | None = None,
-    profile: str = "Default",
+    # Sin default: un perfil inventado ("Default") prepararía instrucciones para una
+    # instancia que puede no existir. Vacío ⇒ `PerfilInvalido`, que es lo que el
+    # operador necesita leer. El registry SIEMPRE pasa `mo2_profile`.
+    profile: str = "",
     fase: str = FASE_PREPARAR,
     testigo_previo: dict[str, object] | None = None,
 ) -> str:
@@ -589,6 +592,15 @@ async def generate_bashed_patch(
     sigue pasando; las fases asistidas **no lo usan** (no hay subproceso que lanzar). El
     parámetro y el camino headless se retiran juntos en el PR C.
 
+    Las dos claves con ruta (``artefacto``, ``plugins_txt``) atraviesan
+    :func:`sanitize_for_prompt` antes de viajar al modelo: se componen con nombres de
+    carpeta de mods y de perfil, que son texto de terceros. El modelo NO las usa para
+    escribir nada —las fases asistidas no mutan—, así que normalizarlas no le quita
+    información accionable; en cambio, sin NFKC ni el barrido de controles invisibles,
+    un nombre de mod con un delimitador de ancho completo o un carácter bidi llegaba
+    crudo al prompt. Es la propiedad que este handler tenía cuando devolvía el
+    ``stdout``/``stderr`` del runner saneados, y que el cableado no debe perder.
+
     Siempre devuelve JSON serializable (contrato T11).
     """
     from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
@@ -607,7 +619,27 @@ async def generate_bashed_patch(
         validate_limit=False,
         testigo_previo=testigo_previo,
     )
-    return json.dumps(resultado)
+    return json.dumps(_sanear_rutas(resultado))
+
+
+#: Claves del contrato asistido que contienen una ruta del sistema de archivos. Las demás
+#: son enums, un hash, un booleano o textos constantes del módulo de dominio.
+_CLAVES_CON_RUTA: tuple[str, ...] = ("artefacto", "plugins_txt")
+
+
+def _sanear_rutas(resultado: dict[str, Any]) -> dict[str, Any]:
+    """Pasa por :func:`sanitize_for_prompt` las rutas antes de entregarlas al LLM.
+
+    Copia y no muta: el dict del servicio puede estar referenciado por el journal o por el
+    preflight adjunto (``preflight`` es el MISMO objeto que se devolvió), y sanear in situ
+    alteraría lo que otro consumidor ya recibió.
+    """
+    saneado = dict(resultado)
+    for clave in _CLAVES_CON_RUTA:
+        valor = saneado.get(clave)
+        if isinstance(valor, str):
+            saneado[clave] = sanitize_for_prompt(valor)
+    return saneado
 
 
 async def run_pandora(

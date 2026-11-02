@@ -39,6 +39,7 @@ from sky_claw.app.orchestrator.tool_strategies.base import (
 )
 from sky_claw.app.security.hitl import Decision, HITLGuard
 from sky_claw.app.security.loop_guardrail import AgenticLoopGuardrail
+from sky_claw.local.tools.tool_result import es_etapa_pendiente
 
 logger = logging.getLogger(__name__)
 
@@ -443,7 +444,7 @@ class IdempotencyMiddleware:
             )
             raise
 
-        if _es_etapa_pendiente(result):
+        if es_etapa_pendiente(result):
             # ADR 0016: una etapa ASISTIDA no falló ni terminó. ``success=False`` es
             # deliberado —no se construyó nada—, así que sin esta rama la etapa se
             # registraría como FAILED y el panel diría que el ritual falló cuando en
@@ -459,17 +460,6 @@ class IdempotencyMiddleware:
         else:
             self._sm.transition(task.task_id, "COMPLETED", result=result)
         return result
-
-
-def _es_etapa_pendiente(result: Any) -> bool:
-    """True si el resultado declara una etapa ESPERANDO a un humano (ADR 0016).
-
-    Se pregunta por ``pendiente`` y no por ``success=False``: ``success`` es el veredicto
-    de la ETAPA (no se construyó) y ``pendiente`` es el del TOOL (hizo su trabajo y dejó
-    instrucciones). Un fallo real —preflight rojo, M-04, rutas irresolubles— devuelve
-    ``success=False`` SIN ``pendiente`` y sigue siendo ``FAILED``.
-    """
-    return isinstance(result, dict) and result.get("pendiente") is True
 
 
 def _is_error_result(result: Any) -> bool:

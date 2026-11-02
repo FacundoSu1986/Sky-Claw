@@ -257,8 +257,13 @@ async def test_el_tool_usa_el_perfil_de_sesion(tool: str, monkeypatch: pytest.Mo
     finally:
         monkeypatch.setattr(WryeBashPipelineService, "ejecutar_fase_asistida", original)
 
-    assert [p for p in perfiles_del_servicio if p != PERFIL] == [], (
-        f"{tool} enrutó la etapa con otro perfil: {perfiles_del_servicio}"
+    # Igualdad, no "ninguno distinto": la versión laxa pasaba VACUAMENTE si el handler
+    # no llamaba al enrutado (lista vacía ⊆ cualquier cosa). Para la etapa 6 el perfil
+    # sólo se puede observar ahí, así que el número de llamadas ES parte del oráculo.
+    esperados = [PERFIL] if tool == "generate_bashed_patch" else []
+    assert perfiles_del_servicio == esperados, (
+        f"{tool} enrutó la etapa {len(perfiles_del_servicio)} vez/veces con "
+        f"{perfiles_del_servicio}; se esperaba {esperados}"
     )
     equivocados = [(op, visto) for op, visto in mo2.perfiles_vistos if visto != PERFIL]
     assert not equivocados, f"{tool} operó sobre otro perfil: {equivocados}"

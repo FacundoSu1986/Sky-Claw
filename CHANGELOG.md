@@ -68,7 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `testigo_previo` no se expone porque un hash que el modelo podría inventar convertiría la
   prueba de frescura en una afirmación sin evidencia. Mandar cualquiera de los dos campos
   —o cualquier otro— devuelve un `ValidationError` explícito en vez de ignorarse, para que el
-  modelo no se quede creyendo que eligió el perfil o que trajo evidencia.
+  modelo no se quede creyendo que eligió el perfil o que trajo evidencia. El handler, además,
+  **no adivina** un perfil si no se lo pasan (`PerfilInvalido` en vez de preparar contra
+  `"Default"`) y sanea `artefacto`/`plugins_txt` con `sanitize_for_prompt` antes de devolverlas:
+  se componen con nombres de carpeta de mods, que son texto de terceros.
+- **El toast del ritual dejó de decir «falló» sobre la etapa asistida.** Con el cableado, la
+  fase 1 empezó a llegar al panel, y `summarize_ritual_result` la renderizaba como
+  «El ritual «wrye_bash» falló: Etapa 6 (Bashed Patch) requiere tu intervención…» en rojo: un
+  mensaje que se contradice solo y que reporta un fracaso donde había una instrucción. Ahora
+  devuelve `warning` con el mensaje de la etapa. Los dos consumidores del contrato (el toast y
+  `IdempotencyMiddleware`, que marca `AWAITING_OPERATOR`) comparten el predicado
+  `tool_result.es_etapa_pendiente`, para que no puedan divergir.
 - **`AWAITING_OPERATOR`: una etapa asistida ya no se registra como `FAILED`.**
   `ToolStateMachine` sólo conocía `PENDING → RUNNING → COMPLETED/FAILED`, así que
   `preparar` —que devuelve `success=False` a propósito, porque no construyó nada— se veía como

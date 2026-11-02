@@ -27,7 +27,7 @@ from sky_claw.local.discovery.registry import (
     build_ritual_installer_map,
     build_ritual_tool_map,
 )
-from sky_claw.local.tools.tool_result import normalize_tool_result
+from sky_claw.local.tools.tool_result import es_etapa_pendiente, normalize_tool_result
 from sky_claw.local.tools_installer import InstallVerification
 
 if TYPE_CHECKING:
@@ -626,6 +626,19 @@ def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str,
     normalized = normalize_tool_result(result)
     if normalized["success"]:
         return (f"Ritual «{tool_key}» completado.", "positive")
+
+    if es_etapa_pendiente(result):
+        # ADR 0016: la etapa ASISTIDA no falló — está esperando que el operador haga su
+        # parte fuera de Sky-Claw. Sin esta rama el toast decía, literalmente,
+        # «El ritual «wrye_bash» falló: Etapa 6 (Bashed Patch) requiere tu
+        # intervención…»: un mensaje que se contradice solo, en ROJO, y que le dice al
+        # operador que algo se rompió cuando lo único que falta es que él construya el
+        # parche. Es el mismo error de lectura que el estado ``FAILED`` del
+        # ``ToolStateMachine``, pero en la superficie que el humano SÍ ve.
+        return (
+            normalized["message"] or "Etapa asistida preparada: falta tu intervención fuera de Sky-Claw.",
+            "warning",
+        )
 
     reason = str(result.get("reason", "") or "")
     if reason in {"HITLApprovalDenied", "HITLGateUnavailable"}:
