@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`{existia: bool, sha256}`, con `existia ⇒ sha256`), validada en el seam **antes** de ofrecer el
   botón, de modo que el testigo de frescura sobrevive el round-trip GUI → estrategia → servicio.
   El detalle del CTA deja de rotularse «TexGen Output listo en:» en todas las tools.
-  Tests: `tests/test_resume_etapa6_asistida.py` (13, con 5 mutaciones verificadas); los anclajes
+  Tests: `tests/test_resume_etapa6_asistida.py` (19 casos, con las mutaciones verificadas); los anclajes
   de `test_resume_hardening.py` pasan a recorrer la cadena completa resultado → payload →
   dispatcher en vez de asumir el hardcode.
 

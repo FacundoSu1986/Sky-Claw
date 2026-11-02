@@ -128,6 +128,36 @@ def test_un_testigo_malformado_no_viaja() -> None:
     assert "testigo_previo" not in accion["payload"]
 
 
+@pytest.mark.parametrize(
+    ("testigo", "por_que"),
+    [
+        ({"existia": True, "sha256": ""}, "digest vacío"),
+        ({"existia": True, "sha256": "a" * 63}, "digest de 63 caracteres"),
+        ({"existia": True, "sha256": "A" * 64}, "mayúsculas (el dominio exige [0-9a-f])"),
+        ({"existia": False, "sha256": "a" * 64}, "estado IMPOSIBLE: ausencia con identidad"),
+        ({"existia": 1, "sha256": "a" * 64}, "bool que no es bool"),
+        ({"existia": True, "sha256": 123}, "identidad que no es texto"),
+    ],
+)
+def test_un_testigo_que_el_dominio_rechaza_no_viaja(testigo: dict[str, Any], por_que: str) -> None:
+    """La forma canónica es la del DOMINIO, no una aproximación (hallazgo de la auditoría).
+
+    ``TestigoPrevio.__post_init__`` rechaza cinco formas que un validador laxo acepta
+    (digest vacío/corto/en mayúsculas, y el estado imposible *ausencia CON identidad*).
+    Si el seam las dejara pasar, el botón afirmaría en su payload un testigo que
+    ``_testigo_desde_resultado`` descarta en silencio: el operador vería
+    ``frescura_probada=False`` después de que el panel le prometió frescura. Dos
+    validadores con reglas distintas es el defecto que este repo paga siempre.
+    """
+    payload = _payload_de_preparar()
+    payload["testigo_previo"] = testigo
+
+    accion = rr_mod.resume_action_from_result("wrye_bash", payload)
+
+    assert accion is not None, f"la acción se ofrece igual (sin el testigo): {por_que}"
+    assert "testigo_previo" not in accion["payload"], por_que
+
+
 def test_un_fallo_real_no_ofrece_verificar() -> None:
     """Preflight rojo, M-04 o rutas irresolubles: no hay etapa preparada que cerrar.
 
@@ -217,20 +247,64 @@ def test_el_payload_del_resume_es_obligatorio() -> None:
 
 
 def test_el_payload_del_resume_llega_al_dispatcher_sin_filtrar_en_la_gui() -> None:
-    """La GUI no reescribe el payload: es la acción la que lo deriva (F-001)."""
-    fuente = (RAIZ / "sky_claw/app/gui/views/forge_dashboard.py").read_text(encoding="utf-8")
+    """La GUI no reescribe el payload: es la acción la que lo deriva (F-001).
 
-    assert "fn(tool_key_de_la_corrida, dict(payload_de_la_accion))" in fuente, (
-        "la vista no le pasa el payload de la acción al callback de resume"
+    Anclas por AST y no por texto: un `ruff format` que parta la línea, o un comentario
+    que nombre la expresión, romperían una búsqueda de substring sin que el contrato
+    haya cambiado. Es la misma razón por la que la comprobación del rótulo mira
+    constantes.
+    """
+    arbol = ast.parse((RAIZ / "sky_claw/app/gui/views/forge_dashboard.py").read_text(encoding="utf-8"))
+
+    # 1. El payload del botón sale de la acción derivada, no de un literal.
+    asignaciones = [
+        nodo
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, (ast.Assign, ast.AnnAssign))
+        and any(
+            getattr(t, "id", None) == "payload_de_la_accion"
+            for t in (nodo.targets if isinstance(nodo, ast.Assign) else [nodo.target])
+        )
+    ]
+    assert len(asignaciones) == 1, "debe haber UNA sola fuente del payload del botón"
+    # Estructura, no texto: `dict(<algo>.get("payload") or {})`. Comparar substrings
+    # choca con la comilla que elija `ast.unparse`, que es cosmética.
+    valor = asignaciones[0].value
+    assert isinstance(valor, ast.Call) and getattr(valor.func, "id", None) == "dict", ast.unparse(valor)
+    origen = valor.args[0]
+    assert isinstance(origen, ast.BoolOp) and isinstance(origen.op, ast.Or), ast.unparse(origen)
+    lectura = origen.values[0]
+    assert isinstance(lectura, ast.Call) and isinstance(lectura.func, ast.Attribute), ast.unparse(lectura)
+    assert ast.unparse(lectura.func.value) == "accion" and lectura.func.attr == "get", ast.unparse(lectura)
+    assert ast.literal_eval(lectura.args[0]) == "payload", (
+        f"el payload del botón debe salir de la acción derivada, no de un literal: {ast.unparse(valor)!r}"
     )
-    assert 'payload_de_la_accion = dict(accion.get("payload") or {})' in fuente, (
-        "el payload del botón debe salir de la acción derivada, no de un literal"
+
+    # 2. El callback recibe (tool_key, payload) — dos argumentos, el segundo el payload.
+    # Se mira DENTRO de `_on_resume`: el módulo tiene otros `fn(...)` legítimos (el
+    # aprobador de HITL) y buscarlos a nivel módulo mezclaba dos contratos.
+    on_resume = [
+        nodo
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)) and nodo.name == "_on_resume"
+    ]
+    assert len(on_resume) == 1, f"se esperaba UN `_on_resume` en la vista, hay {len(on_resume)}"
+    llamadas = [
+        nodo for nodo in ast.walk(on_resume[0]) if isinstance(nodo, ast.Call) and getattr(nodo.func, "id", None) == "fn"
+    ]
+    assert len(llamadas) == 1, f"se esperaba UNA llamada al callback de resume, hay {len(llamadas)}"
+    assert len(llamadas[0].args) == 2, (
+        "la vista no le pasa el payload de la acción al callback de resume "
+        f"(argumentos: {[ast.unparse(a) for a in llamadas[0].args]})"
     )
-    # El detalle ya no se rotula como TexGen: se afirma sobre las CONSTANTES del AST y
-    # no sobre el texto del archivo, porque un comentario que nombre el rótulo (como el
+    assert "payload_de_la_accion" in ast.unparse(llamadas[0].args[1]), (
+        f"el segundo argumento no es el payload derivado: {ast.unparse(llamadas[0].args[1])!r}"
+    )
+
+    # 3. El detalle ya no se rotula como TexGen: se afirma sobre las CONSTANTES del AST
+    # y no sobre el texto del archivo, porque un comentario que nombre el rótulo (como el
     # que explica este mismo cambio) haría fallar la búsqueda de texto sin que el rótulo
-    # exista en el render. Ancla por AST, como el resto del repo.
-    arbol = ast.parse(fuente)
+    # exista en el render.
     rotulos = [
         nodo.value
         for nodo in ast.walk(arbol)

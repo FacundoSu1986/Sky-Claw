@@ -28,7 +28,7 @@ from sky_claw.local.discovery.registry import (
     build_ritual_tool_map,
 )
 from sky_claw.local.tools.tool_result import es_etapa_pendiente, normalize_tool_result
-from sky_claw.local.tools.wrye_bash_asistida import BASHED_PATCH_NAME, FASE_VERIFICAR
+from sky_claw.local.tools.wrye_bash_asistida import BASHED_PATCH_NAME, FASE_VERIFICAR, TestigoPrevio
 from sky_claw.local.tools_installer import InstallVerification
 
 if TYPE_CHECKING:
@@ -1033,9 +1033,18 @@ def _accion_etapa6_asistida(result: dict[str, Any]) -> dict[str, Any] | None:
 def _testigo_utilizable(testigo: Any) -> dict[str, object] | None:
     """Forma canónica ``{existia: bool, sha256: str | None}``, o ``None``.
 
-    Se valida acá y no se delega al servicio porque el payload es lo que el
-    operador ve confirmado en el botón: mandar un testigo a medias afirmaría una
-    frescura que nadie puede probar.
+    El contrato **no se re-implementa acá**: se le pregunta al dominio
+    (:class:`TestigoPrevio`), que es su única definición. La auditoría de este PR
+    encontró la versión anterior aceptando cuatro formas que el dominio rechaza
+    —digest vacío, de 63 caracteres o en mayúsculas, y el estado imposible
+    *ausencia CON identidad*—, así que el botón afirmaba en su payload un testigo
+    que ``_testigo_desde_resultado`` después descartaba en silencio: el operador
+    veía ``frescura_probada=False`` justo después de que el panel le prometió
+    frescura. Fail-closed en el resultado, pero dos validadores con reglas
+    distintas es el defecto que este repo paga siempre.
+
+    Los ``isinstance`` van primero porque la dataclass no valida tipos en runtime
+    (un ``sha256`` entero haría explotar el ``re.fullmatch`` de adentro).
     """
     if not isinstance(testigo, dict):
         return None
@@ -1043,14 +1052,11 @@ def _testigo_utilizable(testigo: Any) -> dict[str, object] | None:
     sha256 = testigo.get("sha256")
     if not isinstance(existia, bool) or (sha256 is not None and not isinstance(sha256, str)):
         return None
-    if existia and sha256 is None:
-        # Estado IMPOSIBLE, el mismo que `TestigoPrevio.__post_init__` rechaza en el
-        # dominio (hallazgo C5 de ADR 0016): «existía» sin identidad no permite probar
-        # frescura y, pasado al veredicto, se convertiría en `frescura_probada=True`
-        # sin evidencia. La GUI valida ANTES de ofrecer el botón en vez de confiar en
-        # que el servicio lo descarte después.
+    try:
+        canonico = TestigoPrevio(existia=existia, sha256=sha256)
+    except ValueError:
         return None
-    return {"existia": existia, "sha256": sha256}
+    return {"existia": canonico.existia, "sha256": canonico.sha256}
 
 
 #: Tabla ÚNICA de acciones de resume. Cerrarla por igualdad es el ancla: una tool
