@@ -15,6 +15,9 @@ on:
     paths:
       - "sky_claw/local/mo2/**"
       - "scripts/windows_job_probe.py"
+      - "scripts/windows_onefile_census.py"
+      - "scripts/windows_spawn_origin.py"
+      - "tests/test_windows_onefile_census.py"
       - "tests/test_vfs_job_containment_windows.py"
       - "tests/test_vfs_fence_de_supervision.py"
       - "tests/test_vfs_fence_e2e_proceso_real.py"
@@ -47,6 +50,7 @@ jobs:
         run: |
           pip install -e ".[dev]"
           pip install pyinstaller
+          pip install wmi==1.5.1 pywin32==306
 
       - name: Preparar carpeta de resultados
         run: New-Item -ItemType Directory -Force sandbox_min | Out-Null
@@ -54,10 +58,14 @@ jobs:
       - name: "Job Objects reales y protocolo (-rA: un SKIPPED no es un PASS)"
         run: >
           pytest -v -rA -p no:cacheprovider
+          tests/test_windows_onefile_census.py
           tests/test_vfs_job_containment_windows.py
           tests/test_vfs_fence_de_supervision.py
           tests/test_vfs_fence_e2e_proceso_real.py
           2>&1 | Tee-Object -FilePath sandbox_min\pytest.txt
+
+      - name: Origen de los procesos que crea el arranque del intérprete (hook de auditoría, Python de desarrollo)
+        run: python -m scripts.windows_spawn_origin --json sandbox_min\resultados_origen.json
 
       - name: Ejecutable mínimo onefile (réplica de las opciones del spec) - construir
         run: |
@@ -68,6 +76,11 @@ jobs:
           python -m scripts.windows_job_probe --exe sandbox_min\dist\MinimoOnefile.exe
           --retardos 0,0.05,0.2,0.5,1,2 --repeticiones 5 --ventana 14 --json sandbox_min\resultados.json
 
+      - name: Ejecutable mínimo onefile - censo EXACTO (IOCP + WMI) y supervivientes tras terminar el Job
+        run: >
+          python -m scripts.windows_onefile_census --exe sandbox_min\dist\MinimoOnefile.exe
+          --retardos 0,0.05,0.5,2 --repeticiones 3 --ventana 14 --json sandbox_min\resultados_censo_min.json
+
       - name: SkyClawApp.exe real (pyinstaller sky_claw.spec) - construir
         run: pyinstaller sky_claw.spec --clean
       - name: SkyClawApp.exe real - medir pertenencia al Job con --vfs-probe-child (inocuo)
@@ -76,6 +89,12 @@ jobs:
           '--arg=--vfs-probe-child' '--arg={probe_file}' '--arg={probe_sha}'
           --retardos 0,0.5,1,2,4 --repeticiones 3 --ventana 40 --json sandbox_min\resultados_real.json
 
+      - name: SkyClawApp.exe real - censo EXACTO del arranque (IOCP + WMI) con --vfs-probe-child (inocuo)
+        run: >
+          python -m scripts.windows_onefile_census --exe dist\SkyClawApp.exe
+          '--arg=--vfs-probe-child' '--arg={probe_file}' '--arg={probe_sha}'
+          --retardos 0,0.5,1,2 --repeticiones 3 --ventana 40 --json sandbox_min\resultados_censo_real.json
+
       - name: Resumen compacto (lo que importa, al final del log)
         if: always()
         run: |
@@ -83,6 +102,13 @@ jobs:
           if (Test-Path sandbox_min\pytest.txt) { Select-String -Path sandbox_min\pytest.txt -Pattern '^(PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS) |^=+ .*(passed|failed|skipped|error)|HALLAZGO' | ForEach-Object { $_.Line } }
           foreach ($f in @('sandbox_min\resultados.json','sandbox_min\resultados_real.json')) {
             if (Test-Path $f) { Write-Output "=== $f ==="; python -m scripts.windows_job_probe --resumir $f }
+          }
+          foreach ($f in @('sandbox_min\resultados_censo_min.json','sandbox_min\resultados_censo_real.json')) {
+            if (Test-Path $f) { Write-Output "=== $f ==="; python -m scripts.windows_onefile_census --resumir $f }
+          }
+          if (Test-Path sandbox_min\resultados_origen.json) {
+            Write-Output "=== origen de los procesos del arranque ==="
+            python -m scripts.windows_spawn_origin --resumir sandbox_min\resultados_origen.json
           }
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
