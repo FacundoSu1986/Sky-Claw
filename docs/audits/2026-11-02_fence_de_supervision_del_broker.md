@@ -19,7 +19,7 @@
 
 | Pregunta | Respuesta | Estado |
 |---|---|---|
-| ¿El worker puede crear un nieto o despachar una herramienta antes de la confirmación del bridge? | **No.** Se agregó el mensaje `supervised`; sin él el worker aborta sin crear nada. | `[EJECUTADO]` tests deterministas + e2e con worker real (Linux y Windows) |
+| ¿El worker puede crear el nieto de la attestation o despachar una herramienta antes de la confirmación del bridge? | **No.** Se agregó el mensaje `supervised`; sin él el worker aborta antes de crearlos. **Alcance:** lo que el intérprete crea al arrancar (imports, anterior al `hello`; en Windows, dos `cmd.exe /c ver`, §4.3) **no** lo cubre el fence. | `[EJECUTADO]` tests deterministas + e2e con worker real (Linux y Windows) |
 | ¿Un `launch_ack` de otro job, duplicado, tardío o tras un `assign` fallido autoriza algo? | **No.** Cada caso tiene su test y sus mutantes. | `[EJECUTADO]` |
 | ¿Queda demostrado que el proceso Python **efectivo** del worker pertenece al Job del bridge? | **No.** Con `assign` inmediato (7–10 ms) lo observamos dentro del Job en todos los casos, pero el protocolo no acota esa demora y con demoras ≥ 200 ms (exe mínimo) / ≥ 2 s (exe real) el hijo Python queda **fuera** con frecuencia. | `[EJECUTADO]` en `windows-latest`; la cota superior real de MO2 `[NO VERIFICADO]` |
 | ¿Se puede recomendar uso real? | **No** hasta cerrar la identidad del proceso (§6). | — |
@@ -77,7 +77,7 @@ indica. Nombres en español, AAA.
 | # | Escenario | Test |
 |---|---|---|
 | 1 | `launch_ack` antes / después del hello | `test_el_ack_autoriza_al_worker_llegue_antes_o_despues_de_su_hello[ack_antes_del_hello\|ack_despues_del_hello]` |
-| 2 | Sin confirmación: cero nietos / herramientas | `test_el_worker_no_crea_nietos_ni_despacha_hasta_recibir_la_confirmacion`; e2e real: `test_el_worker_real_no_crea_descendientes_antes_del_ack_y_todos_quedan_en_el_job` |
+| 2 | Sin confirmación: sin nieto de la attestation ni herramienta | `test_el_worker_no_crea_nietos_ni_despacha_hasta_recibir_la_confirmacion`; e2e real: `test_el_worker_real_no_crea_descendientes_antes_del_ack_y_todos_quedan_en_el_job` |
 | 3 | Ack de otro job | `test_un_launch_ack_de_otro_job_no_autoriza_a_este_worker`, `test_el_worker_rechaza_un_supervised_atribuido_a_otro_job` |
 | 4 | Confirmación duplicada idempotente | `test_una_confirmacion_duplicada_entrega_un_solo_supervised`, `test_una_confirmacion_duplicada_no_despacha_dos_veces` |
 | 5 | Falla `AssignProcessToJobObject` | `test_si_falla_la_asignacion_al_job_object_no_se_autoriza_la_ejecucion` |
@@ -259,7 +259,9 @@ En Windows (sandbox aislado, procesos inocuos):
 
 ```bash
 .venv/Scripts/python -m pytest tests/test_vfs_job_containment_windows.py tests/test_vfs_fence_de_supervision.py tests/test_vfs_fence_e2e_proceso_real.py -q
-.venv/Scripts/python -m scripts.windows_job_probe --exe dist\SkyClawApp.exe --retardos 0,0.5,1,2,4 --repeticiones 3
+# --vfs-probe-child lee un archivo y devuelve su hash (inocuo); sin esos argumentos el exe arrancaría la GUI normal.
+# {probe_file} y {probe_sha} los expande el propio script con un archivo temporal.
+.venv/Scripts/python -m scripts.windows_job_probe --exe dist\SkyClawApp.exe '--arg=--vfs-probe-child' '--arg={probe_file}' '--arg={probe_sha}' --retardos 0,0.5,1,2,4 --repeticiones 3 --ventana 40 --json sandbox_min\resultados_real.json
 ```
 
 El workflow `vfs-supervision-sandbox.yml` hace ambas cosas en `windows-latest` y sube los JSON como artefacto.

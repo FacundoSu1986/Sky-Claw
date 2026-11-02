@@ -59,8 +59,8 @@ _GRANDCHILD_TIMEOUT_SECONDS = 10.0
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
 _RESULT_ACK_TIMEOUT_SECONDS = 5.0
 #: Plazo MÁXIMO para que el bridge confirme la supervisión. Es una cota de FALLO CERRADO,
-#: no un sustituto de la garantía: vencido el plazo el worker ABORTA sin haber creado ningún
-#: descendiente; jamás prosigue "por las dudas". La confirmación real llega en milisegundos.
+#: no un sustituto de la garantía: vencido el plazo el worker ABORTA sin haber creado el nieto de
+#: la attestation ni despachado la herramienta; jamás prosigue "por las dudas". La confirmación real llega en milisegundos.
 _SUPERVISION_TIMEOUT_SECONDS = 30.0
 #: Captura por stream de un proceso de sesión: COLA acotada, no buffer completo.
 #: Un tool charlatán no puede inflar el ``VfsJobResult`` (frame IPC de 1 MiB) ni
@@ -938,18 +938,18 @@ async def _esperar_supervision(
     job_id: str,
     timeout: float,
 ) -> str:
-    """Espera la confirmación de supervisión del broker ANTES de crear cualquier descendiente.
+    """Espera la confirmación de supervisión del broker ANTES del nieto de la attestation y de la herramienta.
 
     Devuelve ``"supervised"`` (el bridge asignó este worker al Job Object) o
     ``"cancelled"`` (el job se canceló mientras esperaba; no se despacha nada). Todo
     lo demás —plazo vencido, EOF, mensaje de otro job, tipo inesperado, versión
-    incompatible— es un fallo CERRADO: ``VfsWorkerBootstrapError`` y cero descendientes.
+    incompatible— es un fallo CERRADO: ``VfsWorkerBootstrapError`` sin nieto ni herramienta.
     """
     try:
         mensaje = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=timeout)
     except TimeoutError as exc:
         raise VfsWorkerBootstrapError(
-            f"supervisión no confirmada por el bridge en {timeout:g}s: el worker aborta sin crear descendientes"
+            f"supervisión no confirmada por el bridge en {timeout:g}s: el worker aborta sin crear el nieto de la attestation ni despachar la herramienta"
         ) from exc
     except (asyncio.IncompleteReadError, ConnectionError, OSError, VfsFrameError) as exc:
         raise VfsWorkerBootstrapError(

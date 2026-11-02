@@ -107,3 +107,21 @@ def test_un_retardo_sin_ninguna_medicion_valida_no_rompe_el_resumen(tmp_path: pa
     # Assert: 0/0 concluyentes, 3 inconclusas, y el rango de procesos no inventa un número.
     assert celdas[2] == "0/0"
     assert celdas[-1] == "3"
+
+
+def test_una_fila_donde_nunca_se_observo_la_imagen_no_cuenta_como_fuera_del_job(tmp_path: pathlib.Path) -> None:
+    # Arrange: la raíz salió tras el assign pero antes de la primera observación (o la imagen no
+    # coincidió): ``imagen_python_efectiva_en_job`` es None y NINGÚN flag nuevo está presente, como en
+    # un JSON viejo. «Nunca se vio» no es «fuera del Job».
+    filas = [
+        _fila(700, en_job=True),
+        _fila(700, en_job=None, procesos=0, arbol=False),
+        _fila(700, en_job=False, arbol=False),
+    ]
+
+    # Act
+    celdas = _lineas_por_retardo(tmp_path, filas)[700]
+
+    # Assert: solo 2 concluyentes (1 dentro, 1 fuera) y 1 inconclusa; la fila sin observación no suma «fuera».
+    assert celdas[2] == "1/2"
+    assert celdas[-1] == "1"

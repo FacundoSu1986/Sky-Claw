@@ -505,7 +505,9 @@ def resumir(ruta: pathlib.Path) -> str:
     """Tabla compacta por retardo de asignación: cuántas veces el Python efectivo quedó dentro del Job.
 
     Solo cuentan las filas CONCLUYENTES: las que tuvieron árbol que observar (``raiz_ya_termino`` es
-    falso) y en las que se vio un descendiente distinto de la raíz (``efectiva_es_la_raiz`` es falso).
+    falso), en las que se vio un descendiente distinto de la raíz (``efectiva_es_la_raiz`` es falso) y
+    en las que se llegó a observar algún proceso con la imagen del ejecutable (``None`` = nunca se vio:
+    no es «fuera del Job»).
     El resto se cuenta aparte en ``inconclusas``: ni suma a favor ni en contra. Las filas de un JSON
     anterior (sin esos campos) se leen como concluyentes.
     """
@@ -521,7 +523,11 @@ def resumir(ruta: pathlib.Path) -> str:
     for retardo in sorted(por_retardo):
         grupo = por_retardo[retardo]
         con_arbol = [f for f in grupo if not f.get("raiz_ya_termino", False)]
-        concluyentes = [f for f in con_arbol if not f.get("efectiva_es_la_raiz", False)]
+        concluyentes = [
+            f
+            for f in con_arbol
+            if not f.get("efectiva_es_la_raiz", False) and f["imagen_python_efectiva_en_job"] is not None
+        ]
         efectivo = sum(1 for f in concluyentes if f["imagen_python_efectiva_en_job"] is True)
         arbol = sum(1 for f in con_arbol if f["arbol_completo_en_job"])
         cuenta = [len(f["procesos"]) for f in con_arbol]

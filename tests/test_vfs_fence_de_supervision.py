@@ -7,8 +7,8 @@ terminación. Antes de este fence nada ordenaba el despacho del worker después 
 ``launch_ack``: el broker contestaba ``hello_ack`` sin esperar al bridge y el worker
 pasaba directo a la attestation (que crea un proceso NIETO) y a la herramienta.
 
-Propiedad del mecanismo (no un recordatorio): **el worker no crea ningún descendiente
-hasta recibir un mensaje ``supervised`` autenticado y ligado a su ``job_id``, y el
+Propiedad del mecanismo (no un recordatorio): **el worker no crea el nieto de la attestation
+ni despacha la herramienta hasta recibir un mensaje ``supervised`` autenticado y ligado a su ``job_id``, y el
 broker solo lo envía tras un ``launch_ack`` del bridge para ESE job, mientras el job
 siga vivo y no esté siendo cancelado.**
 

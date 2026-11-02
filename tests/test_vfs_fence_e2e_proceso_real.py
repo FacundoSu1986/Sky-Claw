@@ -9,8 +9,9 @@ un doble (el orden del protocolo se verifica igual, la contención del SO no).
 Lo que se demuestra:
 
 * el ``launch_ack`` del bridge se emite DESPUÉS de ``assign``, y se retrasa a propósito
-  (``startApplication`` ya devolvió y el worker ya corre): ningún descendiente del worker
-  nace antes de que el ack haya sido emitido;
+  (``startApplication`` ya devolvió y el worker ya corre): el nieto de la attestation
+  (``--probe-child``) no nace antes de que el ack haya sido emitido. Lo que el intérprete
+  crea al arrancar (anterior al ``hello``) no lo cubre el fence y se informa como HALLAZGO;
 * en Windows, TODO descendiente observado del worker pertenece al Job del bridge
   (``IsProcessInJob`` contra el handle propio, no contra "cualquier Job");
 * el job completa con éxito (la attestation del nieto y la herramienta corrieron).

@@ -38,9 +38,9 @@ sequenceDiagram
     D->>D: HITL sin worker vivo
     D->>B: VfsJob firmado
     B->>P: launch_worker(profile, manifest)
-    P->>W: startApplication bajo USVFS (el worker nace CORRIENDO)
-    P->>P: AssignProcessToJobObject
-    P->>B: launch_ack (solo si el assign tuvo exito)
+    P->>W: startApplication bajo USVFS (nace CORRIENDO: en onefile es el bootloader y su hijo Python puede nacer ANTES del assign)
+    P->>P: AssignProcessToJobObject sobre el proceso lanzado
+    P->>B: launch_ack (solo si el assign tuvo exito, NO prueba que el proceso Python efectivo este en el Job)
     B->>W: supervised (autenticado, ligado al job_id)
     W->>W: attestation del canary
     W->>T: probe nieto + tool allowlisted
@@ -61,16 +61,19 @@ sequenceDiagram
   revalidan dentro del worker antes de ejecutar.
 - **Fence de supervision.** `startApplication` deja al worker CORRIENDO y la asignacion
   al Job Object ocurre despues; un descendiente creado antes de esa asignacion queda
-  FUERA del Job y sobrevive a su terminacion. Por eso el worker no crea ningun
-  descendiente (ni el nieto de la attestation ni la herramienta) hasta recibir un
-  mensaje `supervised`, autenticado y ligado a su `job_id`. El broker lo envia UNA vez,
+  FUERA del Job y sobrevive a su terminacion. Por eso el worker no crea el nieto de la
+  attestation ni despacha la herramienta hasta recibir un mensaje `supervised`,
+  autenticado y ligado a su `job_id`. El fence NO cubre lo que el interprete crea al
+  arrancar (imports, anterior al `hello`): en Windows se observaron dos `cmd.exe /c ver`. El broker lo envia UNA vez,
   solo tras un `launch_ack` del bridge para ESE job (que el bridge emite unicamente si
   `AssignProcessToJobObject` tuvo exito), mientras el job siga vivo y no este siendo
   cancelado. Un ack de otro job o de un job no pendiente no autoriza nada; un launch
   fallido corta al worker. El plazo del worker (30 s) solo puede ABORTAR: jamas habilita.
   Un worker que no declara `supervision_fence` en su `hello` es rechazado (sin fallback
-  silencioso). El bridge instalado no cambia: `launch_ack` existe desde su primera
-  version (#350) y, en las cuatro versiones del historial, se emite despues de `assign`.
+  silencioso). Esta revision no modifica el codigo del bridge del arbol: `launch_ack`
+  existe desde su primera version (#350) y, en las cuatro versiones del historial, se
+  emite despues de `assign`. La compatibilidad del bridge INSTALADO sigue sin verificarse
+  y es condicion pendiente antes de retirar el HOLD.
   Actualizacion coordinada: daemon y worker son el mismo ejecutable.
   Limites documentados en `docs/audits/2026-11-02_fence_de_supervision_del_broker.md`.
 - Worker y descendientes quedan contenidos en un Win32 Job Object

@@ -1,6 +1,6 @@
 """Contención con Job Objects REALES de Windows, con procesos inocuos (``python.exe`` durmiendo).
 
-Las pruebas sintéticas del protocolo (``test_vfs_supervision_fence.py``) no sustituyen
+Las pruebas sintéticas del protocolo (``test_vfs_fence_de_supervision.py``) no sustituyen
 la verificación de contención del sistema operativo: acá se ejercitan los Job Objects
 de verdad, sin MO2, sin USVFS y sin herramientas de modding.
 

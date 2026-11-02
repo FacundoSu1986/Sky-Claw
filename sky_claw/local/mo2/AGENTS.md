@@ -26,8 +26,10 @@ raíz.
 - Si falla el rollback, preservar el backup.
 - Timeout/cancelación termina y recolecta (`reap`) el worker y todo su árbol de
   procesos descendientes.
-- **El worker no crea descendientes antes de estar supervisado.** Espera `supervised`
-  (autenticado, ligado a su `job_id`) ANTES de la attestation, que crea el proceso nieto; el
+- **El worker no crea el nieto de la attestation ni despacha la herramienta antes de estar
+  supervisado.** Espera `supervised` (autenticado, ligado a su `job_id`) ANTES de la
+  attestation, que crea el proceso nieto; lo que el intérprete crea al arrancar (imports,
+  anterior al `hello`) NO está cubierto; el
   broker lo envía una vez, solo tras el `launch_ack` del bridge para ese job. El plazo solo
   puede abortar, nunca habilitar; un worker sin `supervision_fence` en el `hello` se rechaza.
   Anclas: `tests/test_vfs_fence_de_supervision.py` (protocolo, enumera `ALLOWED_VFS_TOOL_IDS`),

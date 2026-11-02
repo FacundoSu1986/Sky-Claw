@@ -22,6 +22,8 @@ PRODUCTORES_ESPERADOS = {
 PRODUCTORES_SIN_PUBLICACION = {
     ("vfs-supervision-sandbox.yml", "sandbox"),
 }
+#: Rutas que esos productores pueden subir como artefacto: únicamente los resultados de las mediciones.
+RUTAS_DE_ARTEFACTO_PERMITIDAS = frozenset({"sandbox_min/resultados*.json", "sandbox_min/pytest.txt"})
 
 
 def _cargar_workflows() -> dict[str, dict[str, Any]]:
@@ -122,7 +124,9 @@ def test_los_productores_sin_publicacion_no_publican_el_ejecutable() -> None:
             # Ningún paso de firma, SBOM ni release (ni por nombre ni por acción ni por comando).
             for campo in (step.get("name", ""), step.get("uses", ""), step.get("run", "")):
                 assert patron_publicacion.search(campo) is None, (nombre_workflow, campo)
-            # Ningún artefacto subido incluye el directorio del ejecutable.
+            # Los artefactos subidos son SOLO los resultados del laboratorio (allowlist, no una búsqueda de
+            # subcadena: ``path: .`` subiría ``dist/SkyClawApp.exe`` sin pasar por el smoke).
             if step.get("uses", "").startswith("actions/upload-artifact@"):
-                ruta = str(step.get("with", {}).get("path", ""))
-                assert "dist" not in ruta.lower(), (nombre_workflow, ruta)
+                rutas = {linea.strip() for linea in str(step.get("with", {}).get("path", "")).splitlines()}
+                rutas.discard("")
+                assert rutas and rutas <= RUTAS_DE_ARTEFACTO_PERMITIDAS, (nombre_workflow, sorted(rutas))
