@@ -448,6 +448,11 @@ def medir_asignacion(
                 time.sleep(paso_s)
         finally:
             matar_arbol(proceso.pid)
+            # Reapear al hijo directo: sin ``wait()`` el ``Popen`` conserva ``returncode=None`` y su
+            # ``__del__`` emite un ``ResourceWarning`` (este repo los eleva a error) cuando la
+            # medición termina por excepción y el bucle de observación nunca llegó a hacer ``poll()``.
+            with contextlib.suppress(Exception):
+                proceso.wait(timeout=10)
 
     ordenados = tuple(sorted(vistos.values(), key=lambda p: p.creado_ms))
     de_la_imagen = [p for p in ordenados if p.exe.casefold() == ejecutable]
