@@ -78,11 +78,23 @@ def test_resume_action_es_estructural_y_no_parsea_el_message() -> None:
 
 async def test_run_ritual_resume_despacha_generate_lods_con_run_texgen_false() -> None:
     """La NUEVA intención de continuación atraviesa el MISMO dispatcher real con
-    ``run_texgen=False`` — el service conserva la validación durable."""
+    ``run_texgen=False`` — el service conserva la validación durable.
+
+    ADR 0016 (PR B): el payload ya **no** está hardcodeado en ``run_ritual_resume``
+    —lo deriva ``resume_action_from_result``—, así que este test recorre la cadena
+    completa: resultado estructural → acción → payload → dispatcher. Es MÁS fuerte
+    que antes: si el seam dejara de derivar ``run_texgen=False``, el resume
+    despacharía una regeneración completa (``run_texgen=True``) y se vería acá.
+    """
     sup = _FakeSupervisor({"success": True})
     store = ReactiveStore()
+    accion = rr_mod.resume_action_from_result(
+        "dyndolod",
+        {"success": False, "needs_deployment": True, "handoff_action": "physical_deployment"},
+    )
+    assert accion is not None
 
-    await rr_mod.run_ritual_resume("dyndolod", supervisor=sup, store=store)
+    await rr_mod.run_ritual_resume("dyndolod", payload=accion["payload"], supervisor=sup, store=store)
 
     assert sup.calls == [("generate_lods", {"run_texgen": False})]
 
@@ -141,7 +153,9 @@ async def test_run_ritual_resume_usa_el_mismo_single_flight_y_feedback() -> None
     store.set(rr_mod.STORE_KEY_RITUAL_IN_FLIGHT, True)
     sup = _FakeSupervisor()
 
-    await rr_mod.run_ritual_resume("dyndolod", supervisor=sup, store=store)
+    accion = rr_mod.resume_action_from_result("dyndolod", {"success": False, "needs_deployment": True})
+    assert accion is not None
+    await rr_mod.run_ritual_resume("dyndolod", payload=accion["payload"], supervisor=sup, store=store)
 
     assert sup.calls == []
     fb = store.get(rr_mod.STORE_KEY_RITUAL_FEEDBACK)

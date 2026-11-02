@@ -39,6 +39,7 @@ from sky_claw.app.orchestrator.tool_strategies.base import (
 )
 from sky_claw.app.security.hitl import Decision, HITLGuard
 from sky_claw.app.security.loop_guardrail import AgenticLoopGuardrail
+from sky_claw.local.tools.tool_result import es_etapa_pendiente
 
 logger = logging.getLogger(__name__)
 
@@ -443,7 +444,13 @@ class IdempotencyMiddleware:
             )
             raise
 
-        if _is_error_result(result):
+        if es_etapa_pendiente(result):
+            # ADR 0016: una etapa ASISTIDA no falló ni terminó. ``success=False`` es
+            # deliberado —no se construyó nada—, así que sin esta rama la etapa se
+            # registraría como FAILED y el panel diría que el ritual falló cuando en
+            # realidad está esperando al operador.
+            self._sm.transition(task.task_id, "AWAITING_OPERATOR", result=result)
+        elif _is_error_result(result):
             self._sm.transition(
                 task.task_id,
                 "FAILED",
