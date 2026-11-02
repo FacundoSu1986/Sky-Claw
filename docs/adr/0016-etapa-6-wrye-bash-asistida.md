@@ -238,6 +238,17 @@ y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de
   que la frescura no dependa de que el resultado siga vivo en el panel. El affordance de la fase 2
   **ya no** es deuda: entró en el PR B (§6) junto con el `payload` explícito de
   `run_ritual_resume`; lo que falta es que el testigo sobreviva el cierre de la GUI, no el botón.
+- **Deuda declarada (PR B): la compuerta HITL sigue sobre `generate_bashed_patch`.** El ítem 8 de §2
+  dice que la fase 2 «no requiere HITL», pero `tool_dispatcher.py` registra la estrategia con
+  `_destructive_middleware` y la tool sigue en `DESTRUCTIVE_TOOL_PATTERNS`. Efecto medido leyendo
+  `HitlGateMiddleware`: sin `HITLGuard` configurado **ambas** fases (de solo lectura) devuelven
+  `HITLGateUnavailable` antes de correr; con guard, el operador aprueba dos fases que no mutan. Se
+  deja así a propósito en este PR: quitar una compuerta es una decisión de seguridad aparte, no parte
+  de un cableado (hilo de revisión de CodeRabbit sobre `tool_dispatcher.py`, resuelto con esta nota).
+  Para cerrarla hay que decidir si las fases asistidas salen de `DESTRUCTIVE_TOOL_PATTERNS` (y el
+  dispatcher pasa a `ErrorWrappingMiddleware` + `DictResultGuardMiddleware`) y agregar un test del
+  dispatcher que alcance el enrutado asistido sin guard. No verificado: si en el entorno de producción
+  `AppContext.hitl` está siempre configurado (de ser así, el efecto es solo fricción, no bloqueo).
 
 ## 8. Revisión adversarial del propio PR (2026-10-30)
 
