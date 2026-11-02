@@ -27,7 +27,8 @@ from sky_claw.local.discovery.registry import (
     build_ritual_installer_map,
     build_ritual_tool_map,
 )
-from sky_claw.local.tools.tool_result import normalize_tool_result
+from sky_claw.local.tools.tool_result import es_etapa_pendiente, normalize_tool_result
+from sky_claw.local.tools.wrye_bash_asistida import BASHED_PATCH_NAME, FASE_VERIFICAR, TestigoPrevio
 from sky_claw.local.tools_installer import InstallVerification
 
 if TYPE_CHECKING:
@@ -627,6 +628,19 @@ def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str,
     if normalized["success"]:
         return (f"Ritual «{tool_key}» completado.", "positive")
 
+    if es_etapa_pendiente(result):
+        # ADR 0016: la etapa ASISTIDA no falló — está esperando que el operador haga su
+        # parte fuera de Sky-Claw. Sin esta rama el toast decía, literalmente,
+        # «El ritual «wrye_bash» falló: Etapa 6 (Bashed Patch) requiere tu
+        # intervención…»: un mensaje que se contradice solo, en ROJO, y que le dice al
+        # operador que algo se rompió cuando lo único que falta es que él construya el
+        # parche. Es el mismo error de lectura que el estado ``FAILED`` del
+        # ``ToolStateMachine``, pero en la superficie que el humano SÍ ve.
+        return (
+            normalized["message"] or "Etapa asistida preparada: falta tu intervención fuera de Sky-Claw.",
+            "warning",
+        )
+
     reason = str(result.get("reason", "") or "")
     if reason in {"HITLApprovalDenied", "HITLGateUnavailable"}:
         return (
@@ -896,24 +910,34 @@ async def run_ritual(
 async def run_ritual_resume(
     tool_key: str,
     *,
+    payload: dict[str, Any],
     supervisor: Any,
     store: ReactiveStore,
     auto_approve: bool = False,
     tab_id: str | None = None,
 ) -> None:
-    """Intención EXPLÍCITA de continuación post-deployment (F-001, post-D2).
+    """Intención EXPLÍCITA de continuación de un ritual (F-001, ADR 0016 §6).
 
     Es la MISMA implementación que :func:`run_ritual` —mismo single-flight,
-    mismo HITL gate del dispatcher, mismo feedback— con UN payload explícito:
-    ``{"run_texgen": False}``. La GUI expresa la intención "Continuar DynDOLOD
-    después de completar la acción de handoff" (materializar el artifact en el
-    Data físico o habilitar el mod en el perfil MO2, según el backend); la
-    validación durable del handoff sigue siendo propiedad exclusiva de
-    ``DynDOLODPipelineService.execute`` (acá no se consulta ni se duplica
-    estado durable).
+    mismo HITL gate del dispatcher, mismo feedback— con el payload que la acción
+    de resume derivó del resultado.
 
-    El botón normal "Generar" NO pasa por acá: ``run_texgen=True`` sigue siendo
-    la vía de regeneración/supersede y conserva su payload vacío histórico.
+    **``payload`` es obligatorio y sin default a propósito.** Antes vivía acá
+    hardcodeado ``{"run_texgen": False}``, y ese hardcode era la razón por la que
+    sólo DynDOLOD podía reanudar: cualquier otra etapa que necesitara una
+    continuación habría tenido que meter su intención en este mismo lugar, o
+    —peor— heredar la de DynDOLOD en silencio. El significado de "continuar" lo
+    deriva :func:`resume_action_from_result`, que es quien lee el resultado
+    estructural; acá sólo se despacha.
+
+    La validación durable del handoff sigue siendo propiedad exclusiva de cada
+    servicio (``DynDOLODPipelineService.execute`` para DynDOLOD, la fase
+    ``verificar`` de la etapa 6 asistida): esta función no consulta ni duplica
+    estado.
+
+    El botón normal "Generar" NO pasa por acá: conserva su payload vacío
+    histórico (``run_texgen=True`` como vía de regeneración/supersede; fase
+    ``preparar`` como vía de la etapa 6).
     """
     await run_ritual(
         tool_key,
@@ -921,25 +945,38 @@ async def run_ritual_resume(
         store=store,
         auto_approve=auto_approve,
         tab_id=tab_id,
-        payload={"run_texgen": False},
+        payload=payload,
     )
 
 
 def resume_action_from_result(tool_key: str, result: dict[str, Any]) -> dict[str, Any] | None:
     """Acción de Resume derivada ESTRUCTURALMENTE del resultado (F-001).
 
-    Sólo ``dyndolod`` + ``needs_deployment is True`` (el flag, nunca el texto
-    del ``message``) produce la acción. El dict devuelto es lo único que el
-    panel necesita para renderizar el botón; el payload es lo único que
-    :func:`run_ritual_resume` necesita para despachar.
+    Cada tool declara en :data:`_ACCIONES_DE_RESUME` **su** condición y **su**
+    payload; cualquier otra devuelve ``None``. La tabla existe porque la versión
+    anterior tenía la condición escrita a mano (``tool_key != "dyndolod"``) y el
+    payload hardcodeado en :func:`run_ritual_resume`: agregar la etapa 6 asistida
+    obligaba a editar los dos lugares, y olvidar uno producía un botón que
+    despachaba la intención de OTRA tool. Con la tabla, una tool nueva sin entrada
+    no ofrece nada —falla cerrado— en vez de heredar una acción ajena.
 
-    PR-586D: ``needs_deployment`` generalizó su semántica a "falta la acción
-    humana de handoff". La acción CONCRETA llega estructurada en
-    ``handoff_action`` (materializar en el Data físico / habilitar el mod en el
-    perfil MO2) y se refleja en el detalle del CTA — el flag solo ya no puede
-    decirle al operador QUÉ hacer.
+    El ``payload`` es lo único que :func:`run_ritual_resume` necesita despachar; el
+    ``label``/``detail`` son sólo para renderizar el botón.
     """
-    if tool_key != "dyndolod" or result.get("needs_deployment") is not True:
+    constructor = _ACCIONES_DE_RESUME.get(tool_key)
+    if constructor is None:
+        return None
+    return constructor(result)
+
+
+def _accion_dyndolod(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Handoff de la etapa 9: materializar el árbol de TexGen o habilitar el mod.
+
+    ``needs_deployment`` (el flag, nunca el texto del ``message``) es la señal; la
+    acción CONCRETA llega estructurada en ``handoff_action`` y se refleja en el
+    detalle del CTA.
+    """
+    if result.get("needs_deployment") is not True:
         return None
     detail = result.get("texgen_mod_path")
     accion_pendiente = result.get("handoff_action")
@@ -960,6 +997,75 @@ def resume_action_from_result(tool_key: str, result: dict[str, Any]) -> dict[str
         "detail": texto,
         "payload": {"run_texgen": False},
     }
+
+
+def _accion_etapa6_asistida(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Fase 2 de la etapa 6 desde el panel: «ya construí el parche, verificá».
+
+    Condición: la fase 1 **se completó** (``pendiente=True``), no que haya fallado.
+    Ofrecer «ya lo construí» después de un ``PreflightBlocked`` o un
+    ``SinRutasResolubles`` mandaría al operador a hacer un trabajo manual que el
+    sistema acaba de declarar inviable, y después a un veredicto que sólo puede
+    fallar.
+
+    El ``testigo_previo`` de la fase 1 viaja en el payload cuando es bien formado:
+    es lo que permite **probar** frescura comparando contra lo que había antes del
+    build. Si no lo es, no viaja — la fase 2 igual es útil (existencia, tamaño y
+    estado en ``plugins.txt``) y declara ``frescura_probada=False``, que es
+    honesto. Persistirlo entre sesiones es el PR D de ADR 0016 §7; acá el testigo
+    vive lo que vive el resultado en el panel.
+    """
+    if not es_etapa_pendiente(result):
+        return None
+    payload: dict[str, Any] = {"fase": FASE_VERIFICAR}
+    testigo = _testigo_utilizable(result.get("testigo_previo"))
+    if testigo is not None:
+        payload["testigo_previo"] = testigo
+    artefacto = result.get("artefacto")
+    return {
+        "tool_key": "wrye_bash",
+        "label": "Ya construí el parche — verificar",
+        "detail": artefacto if isinstance(artefacto, str) and artefacto else f"Verificar {BASHED_PATCH_NAME}",
+        "payload": payload,
+    }
+
+
+def _testigo_utilizable(testigo: Any) -> dict[str, object] | None:
+    """Forma canónica ``{existia: bool, sha256: str | None}``, o ``None``.
+
+    El contrato **no se re-implementa acá**: se le pregunta al dominio
+    (:class:`TestigoPrevio`), que es su única definición. La auditoría de este PR
+    encontró la versión anterior aceptando cuatro formas que el dominio rechaza
+    —digest vacío, de 63 caracteres o en mayúsculas, y el estado imposible
+    *ausencia CON identidad*—, así que el botón afirmaba en su payload un testigo
+    que ``_testigo_desde_resultado`` después descartaba en silencio: el operador
+    veía ``frescura_probada=False`` justo después de que el panel le prometió
+    frescura. Fail-closed en el resultado, pero dos validadores con reglas
+    distintas es el defecto que este repo paga siempre.
+
+    Los ``isinstance`` van primero porque la dataclass no valida tipos en runtime
+    (un ``sha256`` entero haría explotar el ``re.fullmatch`` de adentro).
+    """
+    if not isinstance(testigo, dict):
+        return None
+    existia = testigo.get("existia")
+    sha256 = testigo.get("sha256")
+    if not isinstance(existia, bool) or (sha256 is not None and not isinstance(sha256, str)):
+        return None
+    try:
+        canonico = TestigoPrevio(existia=existia, sha256=sha256)
+    except ValueError:
+        return None
+    return {"existia": canonico.existia, "sha256": canonico.sha256}
+
+
+#: Tabla ÚNICA de acciones de resume. Cerrarla por igualdad es el ancla: una tool
+#: nueva con ``pendiente``/``needs_deployment`` y sin entrada no ofrece botón, y
+#: agregar una entrada obliga a decidir su payload acá (no en el caller).
+_ACCIONES_DE_RESUME: dict[str, Callable[[dict[str, Any]], dict[str, Any] | None]] = {
+    "dyndolod": _accion_dyndolod,
+    "wrye_bash": _accion_etapa6_asistida,
+}
 
 
 async def run_ritual_install(

@@ -33,6 +33,23 @@ class ToolResult(TypedDict):
 _LEGACY_DETAIL_KEYS: tuple[str, ...] = ("details", "error", "logs", "stderr")
 
 
+def es_etapa_pendiente(raw: Any) -> bool:
+    """True si el resultado declara una etapa ESPERANDO a un humano (ADR 0016).
+
+    Vive acá —y no en cada consumidor— por el mismo motivo que ``normalize_tool_result``:
+    ``pendiente`` es parte del contrato de resultado del tool, y sus dos consumidores
+    (el ``IdempotencyMiddleware`` del orquestador y el toast del operador en la GUI)
+    tienen que contestar la MISMA pregunta. Duplicado, el primero que cambie deja al
+    otro mintiendo: el estado diría ``AWAITING_OPERATOR`` mientras el panel dice «falló».
+
+    Se pregunta por ``pendiente`` y no por ``success=False``: ``success`` es el veredicto
+    de la ETAPA (no se construyó nada) y ``pendiente`` el del TOOL (hizo su trabajo y
+    dejó instrucciones). Un fallo real —preflight rojo, M-04, rutas irresolubles— trae
+    ``success=False`` SIN ``pendiente``.
+    """
+    return isinstance(raw, dict) and raw.get("pendiente") is True
+
+
 def normalize_tool_result(raw: dict[str, Any]) -> ToolResult:
     """Normaliza el dict crudo de un servicio/tool al contrato :class:`ToolResult`.
 

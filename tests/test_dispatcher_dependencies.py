@@ -6,7 +6,7 @@ import ast
 import dataclasses
 import inspect
 import pathlib
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from sky_claw.app.orchestrator.dispatcher_dependencies import (
     OrchestrationDispatcherDependencies,
@@ -286,22 +286,52 @@ def test_synthesis_flow_provider_lanza_runtime_error_distinguiendo_raices() -> N
 
 
 async def test_wrye_bash_callable_acepta_cero_args_y_preserva_fallback() -> None:
+    """El callable de la superficie 1 enruta por fase y conserva el perfil de sesión.
+
+    Re-pin de ADR 0016 (PR B): antes el doble espiaba ``execute_pipeline`` —el camino
+    headless—, que es justo lo que la etapa asistida dejó de usar. Ahora espía
+    ``ejecutar_fase_asistida``, el punto ÚNICO de enrutado, y las cuatro llamadas fijan
+    la fase que viaja: sin ``fase`` el default debe ser ``preparar`` y el valor explícito
+    (incluido el de la fase 2 con su testigo) no puede perderse en el adaptador.
+    """
     service = MagicMock()
-    service.execute_pipeline = MagicMock()
+    service.ejecutar_fase_asistida = AsyncMock()
 
     async def ejecutar(**kwargs: object) -> dict[str, object]:
         service.kwargs = kwargs
         return {"success": True}
 
-    service.execute_pipeline.side_effect = ejecutar
+    service.ejecutar_fase_asistida.side_effect = ejecutar
     pipeline = build_wrye_bash_pipeline(
         service=service,
         default_profile="PerfilSesion",
     )
 
     assert await pipeline() == {"success": True}
-    assert service.kwargs == {"profile": "PerfilSesion", "validate_limit": True}
+    assert service.kwargs == {
+        "profile": "PerfilSesion",
+        "fase": "preparar",
+        "validate_limit": True,
+        "testigo_previo": None,
+    }
     await pipeline(profile="", validate_limit=False)
-    assert service.kwargs == {"profile": "PerfilSesion", "validate_limit": False}
+    assert service.kwargs == {
+        "profile": "PerfilSesion",
+        "fase": "preparar",
+        "validate_limit": False,
+        "testigo_previo": None,
+    }
     await pipeline(profile="Explicito", validate_limit=False)
-    assert service.kwargs == {"profile": "Explicito", "validate_limit": False}
+    assert service.kwargs == {
+        "profile": "Explicito",
+        "fase": "preparar",
+        "validate_limit": False,
+        "testigo_previo": None,
+    }
+    await pipeline(fase="verificar", testigo_previo={"sha256": "a" * 64})
+    assert service.kwargs == {
+        "profile": "PerfilSesion",
+        "fase": "verificar",
+        "validate_limit": True,
+        "testigo_previo": {"sha256": "a" * 64},
+    }

@@ -738,13 +738,17 @@ def main_page() -> None:
         name="gui-ritual-run",
     )
 
-    # F-001 (post-D2): la acción "Continuar DynDOLOD" del toast de feedback. Es
-    # el MISMO dispatcher/supervisor que "Generar" — la vista sólo expresa la
-    # intención resume; el payload ``run_texgen=False`` es fijo y la validación
-    # durable del handoff queda en DynDOLODPipelineService.execute.
-    callbacks["on_ritual_resume"] = lambda tool_key: create_tracked_task(
+    # F-001 (post-D2) / ADR 0016 §6: el botón de continuación del toast de
+    # feedback. Es el MISMO dispatcher/supervisor que "Generar" — la vista sólo
+    # expresa la intención resume. El payload **no** es fijo: lo derivó
+    # ``resume_action_from_result`` del resultado estructural (``run_texgen=False``
+    # para el handoff de DynDOLOD, ``fase="verificar"`` + testigo para la etapa 6
+    # asistida), y esta función sólo lo transporta. La validación durable del
+    # handoff queda en el servicio de cada etapa.
+    callbacks["on_ritual_resume"] = lambda tool_key, payload: create_tracked_task(
         run_ritual_resume(
             tool_key,
+            payload=payload,
             supervisor=runtime.supervisor,
             store=get_store(),
             auto_approve=modo_local_enabled(),
