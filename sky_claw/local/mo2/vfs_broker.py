@@ -1326,21 +1326,35 @@ class VfsExecutionBroker:
         self._launch_acked.add(job_id)
         await self._autorizar_worker_si_corresponde(job_id)
 
+    def _supervision_vigente(self, job_id: str, writer: asyncio.StreamWriter | None) -> bool:
+        """El job sigue pendiente, NO se está cancelando y ``writer`` sigue siendo su worker conectado."""
+        future = self._pending.get(job_id)
+        if future is None or future.done() or job_id in self._termination_tasks:
+            return False
+        return writer is not None and writer is self._worker_by_job.get(job_id) and not writer.is_closing()
+
     async def _autorizar_worker_si_corresponde(self, job_id: str) -> None:
         """Envía `supervised` al worker del job si, y sólo si, se dan TODAS las condiciones."""
         if job_id not in self._launch_acked or job_id in self._supervised_sent:
             return
-        future = self._pending.get(job_id)
-        if future is None or future.done() or job_id in self._termination_tasks:
-            return
         writer = self._worker_by_job.get(job_id)
-        if writer is None or writer.is_closing():
+        if not self._supervision_vigente(job_id, writer):
             return
+        assert writer is not None  # lo garantiza _supervision_vigente
         # Se marca ANTES del await: el hello del worker y el ack del bridge corren en
-        # tareas distintas y ambos intentan autorizar; sólo uno debe enviar.
+        # tareas distintas y ambos intentan autorizar; sólo uno debe enviar. La reserva se
+        # conserva si el job se cancela mientras se espera el lock: un job en cancelación
+        # no se autoriza nunca.
         self._supervised_sent.add(job_id)
         try:
             async with self._write_lock:
+                # Re-chequeo DENTRO del lock: si estaba tomado, esta tarea se suspendió acá y la
+                # cancelación pudo registrarse durante la espera. Su `cancel` quedó detrás de este
+                # `supervised` en la cola FIFO del lock; sin este chequeo el worker sería
+                # autorizado con el job ya cancelándose.
+                if not self._supervision_vigente(job_id, writer):
+                    logger.warning("supervised no enviado: el job %s dejó de estar vigente esperando el lock", job_id)
+                    return
                 await write_authenticated_message(
                     writer,
                     {"protocol_version": VFS_PROTOCOL_VERSION, "type": "supervised", "job_id": job_id},

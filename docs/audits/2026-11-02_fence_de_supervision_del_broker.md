@@ -57,6 +57,7 @@ canal como el resto.
 | `hello` del worker | declara `"supervision_fence": true`; el broker **rechaza** (`VfsBrokerError`) a un worker que no lo declara. Sin fallback silencioso. |
 | Broker | `_launch_acked` / `_supervised_sent` por `job_id`. `supervised` se envía **una vez**, sólo si hubo `launch_ack` **para ese job**, el job sigue pendiente, no está en `_termination_tasks` y el worker está conectado. |
 | Orden ack/hello | `_registrar_launch_ack` (llega el ack) y `_autorizar_worker_si_corresponde` (tras `hello_ack`) llaman al mismo autorizador; se marca `_supervised_sent` **antes** del `await` para que sólo uno envíe. |
+| Cancelación durante la espera del lock | `_supervision_vigente` (job pendiente, no cancelándose, mismo worker conectado) se evalúa antes **y otra vez dentro de `_write_lock`**, justo antes de escribir: si el lock estaba tomado, el `cancel` quedaría detrás de `supervised` en la cola FIFO (hallazgo P2 de la revisión automática, verificado leyendo el código y con un test rojo→verde). La reserva se conserva: un job en cancelación no se autoriza nunca. |
 | `launch` fallido | `bridge_error` de launch → `_denegar_supervision`: descarta el ack y corta al worker. |
 | Worker | `_esperar_supervision` devuelve `"supervised"` / `"cancelled"` o lanza `VfsWorkerBootstrapError` (plazo, EOF, otro `job_id`, tipo o versión inesperados). **Antes** de cualquier subproceso. |
 | Plazo (30 s) | sólo **aborta**; jamás habilita. No hay espera temporal sustituyendo una garantía. |
@@ -82,7 +83,7 @@ indica. Nombres en español, AAA.
 | 5 | Falla `AssignProcessToJobObject` | `test_si_falla_la_asignacion_al_job_object_no_se_autoriza_la_ejecucion` |
 | 6 | Timeout de supervisión → fail-closed | `test_el_timeout_de_supervision_falla_cerrado_sin_despachar` |
 | 7 | Caída / desconexión del bridge | `test_la_caida_del_bridge_antes_de_la_confirmacion_no_autoriza`, `test_un_ack_tras_la_reconexion_del_bridge_autoriza_una_sola_vez` |
-| 8 | Cancelación concurrente con confirmación tardía | `test_una_confirmacion_tardia_durante_la_cancelacion_no_autoriza_al_worker`, `test_un_worker_que_conecta_tarde_tras_la_cancelacion_no_es_autorizado` |
+| 8 | Cancelación concurrente con confirmación tardía | `test_una_confirmacion_tardia_durante_la_cancelacion_no_autoriza_al_worker`, `test_un_worker_que_conecta_tarde_tras_la_cancelacion_no_es_autorizado`, `test_una_cancelacion_registrada_mientras_se_espera_el_lock_no_deja_pasar_supervised`, `test_un_job_ya_resuelto_no_autoriza_a_un_worker_que_llega_tarde` |
 | 9 | Worker + descendientes en el Job correcto | `tests/test_vfs_job_containment_windows.py::test_el_bridge_real_contiene_al_worker_y_a_sus_descendientes_en_el_job_correcto` (Windows) |
 | 10 | Compatibilidad LOOT / `vfs-health` / DynDOLOD | `test_toda_herramienta_del_broker_espera_la_misma_confirmacion[dyndolod\|health\|loot_sort\|texgen]` + `test_la_familia_de_herramientas_no_cambio_sin_revisar_el_fence` (igualdad literal de `ALLOWED_VFS_TOOL_IDS`) |
 
@@ -208,6 +209,8 @@ nieto de la attestation (`--probe-child`) y declara este límite.
 | M8 | el plazo vencido **prosigue** en vez de abortar |
 | M9 | el broker acepta workers sin la capacidad |
 | M10 | no se limpia el estado del job |
+
+Tras el hallazgo P2 se agregaron tres mutantes del helper de vigencia, también muertos: H1 (ignora la cancelación), H2 (sin re-chequeo dentro del lock) y H3 (ignora que el job ya terminó; sobrevivió hasta agregar `test_un_job_ya_resuelto_no_autoriza_a_un_worker_que_llega_tarde`).
 
 ## 6. Por qué HOLD y mecanismo mínimo propuesto (no implementado)
 

@@ -606,6 +606,66 @@ async def test_un_worker_que_conecta_tarde_tras_la_cancelacion_no_es_autorizado(
         assert recibido is None, f"un job en cancelación autorizó a un worker tardío: {recibido}"
 
 
+async def test_una_cancelacion_registrada_mientras_se_espera_el_lock_no_deja_pasar_supervised(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Hallazgo de revisión (P2): chequear la cancelación ANTES de esperar ``_write_lock`` no alcanza.
+
+    Con el lock ocupado, la autorización pasa sus chequeos y se suspende esperándolo. Si en esa
+    suspensión se registra la cancelación, su ``cancel`` queda DETRÁS de ``supervised`` en la cola
+    (``asyncio.Lock`` es FIFO) y el worker sería autorizado con el job ya cancelándose. El estado se
+    rechequea dentro del lock, justo antes de escribir.
+    """
+    # Arrange: worker conectado y el lock de escritura del broker tomado por otro emisor.
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        crudo = await arnes.worker_crudo()
+        assert (await crudo.leer(timeout=5))["type"] == "hello_ack"  # type: ignore[index]
+        await arnes.broker._write_lock.acquire()
+        try:
+            # Act 1: llega el ack; la autorización pasa los chequeos y queda esperando el lock.
+            await arnes.launch_ack()
+            await _hasta(lambda: arnes.job_id in arnes.broker._supervised_sent)
+            # Act 2: en esa suspensión se cancela el job (misma ruta de producción que los demás tests).
+            arnes.tarea.cancel()  # type: ignore[union-attr]
+            await _hasta(lambda: arnes.job_id in arnes.broker._termination_tasks)
+        finally:
+            arnes.broker._write_lock.release()
+
+        # Assert: lo primero (y único) que recibe el worker es el cancel; jamás supervised.
+        primero = await crudo.leer(timeout=5)
+        siguiente = await crudo.leer()
+        await arnes.worker_exit()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(arnes.tarea, timeout=6)  # type: ignore[arg-type]
+        assert primero is not None and primero["type"] == "cancel", f"se esperaba cancel, llegó: {primero}"
+        assert "supervised" not in [m["type"] for m in crudo.recibidos], "un job en cancelación fue autorizado"
+        assert siguiente is None
+
+
+async def test_un_job_ya_resuelto_no_autoriza_a_un_worker_que_llega_tarde(tmp_path: pathlib.Path) -> None:
+    """El ack ya estaba registrado, pero el job terminó (futuro resuelto) antes del hello del worker."""
+    # Arrange: el bridge confirmó y el job falla (futuro resuelto) mientras el broker espera el worker_exit.
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        await arnes.launch_ack()
+        await _hasta(lambda: arnes.job_id in arnes.broker._launch_acked)
+        arnes.broker._pending[arnes.job_id].set_exception(VfsBridgeLaunchError("job resuelto antes del worker"))
+        await _hasta(lambda: arnes.broker._pending[arnes.job_id].done())
+
+        # Act: el worker llega después de que el job quedó resuelto.
+        tardio = await arnes.worker_crudo()
+        hello_ack = await tardio.leer(timeout=5)
+        recibido = await tardio.leer()
+        await arnes.worker_exit()
+        with pytest.raises(VfsBridgeLaunchError):
+            await asyncio.wait_for(arnes.tarea, timeout=6)  # type: ignore[arg-type]
+
+        # Assert
+        assert hello_ack is not None and hello_ack["type"] == "hello_ack"
+        assert recibido is None, f"un job ya resuelto autorizó a un worker tardío: {recibido}"
+
+
 # ---------------------------------------------------------------------------
 # 10. Compatibilidad: toda herramienta del broker (LOOT, vfs-health, TexGen, DynDOLOD)
 # ---------------------------------------------------------------------------
