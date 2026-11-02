@@ -1,6 +1,6 @@
 # Prueba del generador nativo de parallax en el rig (plan v3.2): resultados y límites
 
-> **Estado:** registro de evidencia de una prueba real, 27–30 de octubre de 2026. **No es un ADR** y no cambia ningún contrato.
+> **Estado:** registro de evidencia de pruebas reales, 27 de octubre al 2 de noviembre de 2026. **No es un ADR** y no cambia ningún contrato.
 >
 > **Procedencia:** el informe lo redactó la sesión de agente que corrió la prueba en la PC del operador; este documento lo resume.
 > **Quien lo resume no reprodujo las mediciones**: no tiene acceso al rig. Lo medido figura como *reportado*; lo que la propia sesión
@@ -206,4 +206,47 @@ que la métrica no avisa; por eso la métrica del gate **no alcanza para juzgar 
 
 **7. DXT5 (Solitude u otro mod con normales DXT5).** El operador respondió que por ahora no le importa. Se deja como límite conocido, **sin trabajo de código**: dos texturas de un
 mod quedaron `NO_PROCESADA` y siguen sin un camino soportado.
+
+## 11. Adenda 4 (02/11): la elegibilidad contra el juego, por tipo de objeto base (#834 ítem 3)
+
+> Misma procedencia: lo redactó la sesión de agente que corrió la prueba en la PC del operador (informe propio) y lo resume quien **no** reprodujo las mediciones.
+> Lo medido figura como *reportado* (**REAL_RIG_REQUIRED**). La evidencia cruda (capturas, logs del plugin, JSON de resultados) queda en una carpeta local del operador, fuera del repositorio.
+> Los criterios se fijaron antes de mirar; el rig se restauró al terminar y la sesión lo verificó por huella.
+
+**1. Qué se preguntó.** Si lo que dice `cli elegibilidad` coincide con lo que pasa en el juego, por tipo de objeto base, con `bAutoEnableParallax` activo y apagado. Predicción fijada de antemano: con el INI
+apagado la elegibilidad baja los `SI` a `NO` y en el juego no hay relieve.
+
+**2. Rig y método.** La DLL instalada del plugin es la **1.0.6.0** (610 304 bytes; coincide con la referencia de #833). Se reusó el método de la prueba v3.2: celda interior propia, luz fija, piso
+con testigo sin relieve, y la regla de efecto ≥ 3 × ruido. La **misma malla y la misma textura** (`woodwalkway01`, con `SI` en la elegibilidad) en cinco estaciones que difieren solo en el tipo de
+registro base: Static, Movable Static, Container, Door y Activator. Cada estación usa una copia de la malla con su propia ruta: la primera versión de la celda, con un solo archivo compartido, dio
+resultados que dependían del orden (2 y 3 estaciones procesadas en dos corridas iguales) y se descartó. Tres sesiones: salida del generador con el INI activo (A), mapa plano con el INI activo (B) y
+salida del generador con el INI apagado (C). Medida: diferencia media de luminancia en un recorte fijo del muro; ruido = la misma estación entre sesiones (0,11).
+
+**3. Elegibilidad (solo lectura).** Sobre un mod de 830 texturas y 6 798 mallas leídas: con el INI activo, 269 `SI`, 155 `NO` y 406 `NO_VERIFICADO`; con el INI apagado, **0 `SI`**, 424 `NO` y los mismos 406
+`NO_VERIFICADO`. `woodwalkway01` pasó de `SI` a `NO` con el motivo textual del INI apagado. La predicción de #845 se cumple.
+
+**4. En el juego.**
+
+| Tipo de objeto base | Elegibilidad (INI activo) | Juego (INI activo) | Juego (INI apagado) |
+|---|---|---|---|
+| Static | `SI` | relieve | sin relieve |
+| Movable Static | `SI` | relieve | sin relieve |
+| Container | `SI` | relieve | sin relieve |
+| Door | `SI` (la herramienta no ve el tipo base) | **sin relieve** (diferencia 0,11: idénticas) | sin relieve |
+| Activator | `SI` (ídem) | **sin relieve** | sin relieve |
+
+En las tres estaciones procesadas, salida contra mapa plano da 13,81 de diferencia (unas 125 veces el ruido). El log de depuración del plugin lo confirma: con el INI activo procesó exactamente
+esas tres referencias y con el INI apagado no cargó ninguna ruta `_p`. Dentro de la sesión del mapa plano las procesadas también difieren de las no procesadas (12,24): es el cambio de material que hace el
+plugin, no altura; por eso la comparación válida del efecto es salida contra plano en las mismas estaciones.
+
+**5. Lectura.** Con el INI activo, la versión 1.0.6.0 enciende relieve en Static, Movable Static y Container y **no** en Door ni Activator; con el INI apagado, en ninguno. El `SI` es correcto para los tres
+tipos que el plugin procesa y **demasiado amplio** para Door y Activator: es la limitación ya declarada en `ALCANCE_DE_LA_ELEGIBILIDAD` (el tipo de objeto base no se ve en la malla), no un defecto nuevo.
+
+**6. Límites (no verificado).** Una persona, una máquina, una textura, una celda. Los registros de las estaciones son propios y con la misma malla: prueban el filtro por tipo base, no un contenedor, una
+puerta o un activador reales con inventario, animación o script (no se abrió ningún contenedor ni se activó ninguna puerta). No se varió la DLL; no se probó el INI ausente o indeterminado en el juego, ni el
+exterior, el clima, el ENB u otra pila de render. El código público del plugin se leyó de su rama principal, sin SHA fijado.
+
+**7. Hallazgo lateral (HYPOTHESIS, no confirmada).** Con un solo archivo de malla compartido entre referencias, el resultado dependía del orden de carga. La sesión lo atribuyó a que el plugin modifica
+materiales compartidos entre referencias de la misma malla. **No se probó.** Si fuera así, un `SI` para una malla que usan a la vez objetos de tipos distintos podría depender del orden; queda como
+punto a revisar, no como defecto afirmado.
 

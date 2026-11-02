@@ -127,7 +127,10 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
    INI que **gana en tu perfil de MO2**: si está **apagado**, un `SI` pasa a `NO` (con el mod que entrega ese INI) y la salida imprime el aviso; si no hay INI en ningún mod del perfil,
    o no se puede interpretar (valor que no es `true/false/1/0`, clave repetida, archivo ilegible), **no cambia ningún veredicto** y se avisa que no se pudo comprobar. Tampoco ve un INI que viva
    solo en la carpeta del juego, fuera de MO2. La DLL (`AutoParallax.dll`) solo se comprueba por **presencia** suelta en el perfil (su ausencia avisa, no cambia nada: puede estar instalada
-   fuera de MO2); su versión y la combinación DLL × INI × tipo de objeto **no están verificadas** y necesitan el rig.
+   fuera de MO2); la herramienta **no lee su versión**. Una prueba en el rig (02/11, **reportada**: una persona, una máquina, la DLL 1.0.6.0, una textura, una celda de prueba) vio relieve con el
+   INI activo solo en objetos base Static, Movable Static y Container, **no** en puertas ni en activadores (la herramienta no ve el tipo base y da `SI` igual: es la limitación ya declarada), y con el INI
+   apagado no lo vio en ninguno de los cinco tipos. **No están verificadas** otras versiones de la DLL, el INI ausente o indeterminado, ni otras texturas o mallas (ver la sección 11 de
+   `docs/design/research/native-parallax/np-prueba-rig-v32-resultados.md`).
 3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas. **Si ya tenés otro mod con relieve para esa textura**, no compares relieve
    contra relieve: dos mapas con relieve parecido (en la prueba del 30/10, desvíos de 48 y 32 sobre 255) no se distinguen a ojo. Compará contra un mapa **plano**.
    Dos cosas que la prueba del 30/10 vio y que **no demuestran por sí solas un defecto de la salida** según la lectura del operador (observación suya): una **banda oscura** en el borde
