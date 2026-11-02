@@ -6,6 +6,9 @@ no puede demostrarse con el código actual. Este documento fija qué se midió, 
 fence mínimo propuesto. **No implementa el fence**: es un cambio de protocolo y requiere una
 decisión explícita.
 
+**Estado actual (barrera de runtime):** el HOLD ya no es sólo prosa. Está aplicado en código —ver
+«Barrera de runtime» más abajo— y `dyndolod_backend = "brokered"` devuelve un guard fail-closed.
+
 Alcance de la evidencia: lectura del código + pruebas deterministas sobre el
 `VfsExecutionBroker` real con un bridge simulado en Linux. **No se ejecutó** MO2, USVFS,
 TexGen, DynDOLOD ni `vfs-health`; los tests con Job Object real de Windows no corrieron
@@ -110,8 +113,46 @@ Residual aun con el fence: no cubre procesos creados por el propio arranque del 
 antes de que corra código de Sky-Claw (el matiz onefile); eso requeriría verificar el
 orden con el binario real.
 
+## Barrera de runtime (`WIRING_RUNTIME_HOLD_ENFORCED`)
+
+`resolve_dyndolod_spawn_strategy` (`sky_claw/local/mo2/brokered_dyndolod.py`) evalúa la constante
+interna `_CONTENCION_DEL_WORKER_VERIFICADA` (literal `False`) **antes** de construir la strategy.
+Mientras valga `False`, pedir `dyndolod_backend = "brokered"` devuelve
+`VfsRequiredDynDOLODSpawnStrategy` con un motivo explícito que nombra el `WIRING_SECURITY_HOLD`, el
+Job Object y este documento:
+
+* aun con broker de la instancia correcta y todas las raíces válidas, la strategy real **no se
+  construye** (tampoco la attestation), el broker **no recibe** ninguna sesión (`open_session` /
+  `submit`) y **no hay subprocess local**: ni TexGen ni DynDOLOD se lanzan, y no hay fallback a
+  standalone;
+* `standalone` conserva su comportamiento (`None`) y un valor de backend inválido conserva su propio
+  guard («no es válido»), que se evalúa antes;
+* la constante es **interna**: no es una clave de `config.toml`, ni una variable de entorno, ni un
+  parámetro del resolver. Sólo los tests del cableado la levantan, por `monkeypatch`;
+* la GUI y el agente LLM comparten UN servicio de etapa 9 (el del composition root), así que una sola
+  barrera cubre las dos superficies.
+
+Anclas (`tests/test_dyndolod_brokered_hold.py`): igualdad literal del valor y de su forma (literal del
+módulo), censo de quién lee/toca la constante en producción y en los tests, censo de la cadena de
+llamadores que alcanzan la strategy real (`BrokeredDynDOLODSpawnStrategy` ← `build_brokered_…` ←
+`_construir_brokered` ← resolver ← `AppContext`), orden (la barrera va antes de construir) y la grilla
+de TODAS las entradas del resolver.
+
+### Cuándo se levanta (y cuándo NO)
+
+**No pasa a `True` cuando se fusione el fence de supervisión del broker (#856).** Ese fence impide que
+el worker despache antes de la confirmación del bridge, pero **no demuestra** que el proceso Python
+efectivo de un ejecutable PyInstaller *onefile* (el hijo del bootloader) pertenezca al Job Object
+correcto, ni cubre los descendientes creados antes de la verificación (el arranque del intérprete crea
+procesos antes del `hello`). Se levanta únicamente con una **contención verificada** de ese problema:
+adopción de los descendientes previos en el bridge (P1), un Job con nombre que el worker compruebe
+(P2) u otra solución equivalente, con evidencia en un sandbox Windows con procesos inocuos que cubra
+también lo creado antes de la verificación. Hasta entonces la única forma de correr la etapa 9 es
+`dyndolod_backend = "standalone"`.
+
 ## Reproducir
 
 ```bash
 .venv/bin/python -m pytest tests/test_vfs_supervision_fence.py -v -rxX
+.venv/bin/python -m pytest tests/test_dyndolod_brokered_hold.py tests/test_dyndolod_brokered_wiring.py -q
 ```

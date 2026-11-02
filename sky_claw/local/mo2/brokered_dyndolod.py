@@ -858,6 +858,32 @@ DYNDOLOD_BACKEND_BROKERED = "brokered"
 
 _BACKENDS_VALIDOS = (DYNDOLOD_BACKEND_STANDALONE, DYNDOLOD_BACKEND_BROKERED)
 
+#: WIRING_SECURITY_HOLD — barrera de runtime, INTERNA y activa por defecto.
+#:
+#: Mientras valga ``False``, pedir ``dyndolod_backend = "brokered"`` devuelve el guard fail-closed
+#: del HOLD (``resolve_dyndolod_spawn_strategy``): la strategy real no se construye, el broker no
+#: recibe ninguna sesión y no hay fallback a standalone. NO es una clave de config, ni una variable
+#: de entorno, ni un parámetro: un operador no puede levantarla editando una línea. Sólo los tests
+#: del cableado la levantan, con ``monkeypatch``.
+#:
+#: NO pasa a ``True`` por fusionar el fence de supervisión del broker (#856): ese fence impide que
+#: el worker despache antes de la confirmación del bridge, pero NO prueba que el proceso Python
+#: efectivo de un ejecutable PyInstaller *onefile* (el hijo del bootloader) pertenezca al Job
+#: Object correcto, ni cubre los descendientes creados antes de la verificación. Se habilita sólo
+#: con una contención VERIFICADA —adopción de los descendientes previos en el bridge (P1), un Job
+#: con nombre que el worker compruebe (P2) u otra solución equivalente— y con la evidencia en
+#: ``docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md``.
+_CONTENCION_DEL_WORKER_VERIFICADA = False
+
+_MOTIVO_DEL_HOLD = (
+    "el backend 'brokered' está en WIRING_SECURITY_HOLD: la contención del worker en el Job Object "
+    "no está verificada (el proceso Python efectivo y los descendientes creados antes de la "
+    "verificación pueden quedar fuera del Job y sobrevivir a su terminación). No se construye la "
+    "strategy ni se lanza ninguna herramienta, y no hay fallback a standalone. Para correr la etapa 9 "
+    "poné dyndolod_backend = 'standalone' en config.toml. "
+    "Ver docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md."
+)
+
 
 class VfsRequiredDynDOLODSpawnStrategy:
     """Guard fail-closed: se PIDIÓ el backend brokered y no se puede construir.
@@ -940,6 +966,9 @@ def resolve_dyndolod_spawn_strategy(
       **Jamás ``None``**: ni por una entrada ausente, ni por una instancia que no
       corresponde, ni por una excepción al construir.
     * cualquier otro valor → el guard (un typo no desactiva la protección).
+    * **mientras ``_CONTENCION_DEL_WORKER_VERIFICADA`` sea ``False`` (WIRING_SECURITY_HOLD),
+      pedir ``brokered`` devuelve el guard del HOLD ANTES de construir nada**, aun con broker y
+      raíces completos y coherentes. El valor inválido se evalúa antes: conserva su propio motivo.
 
     Las raíces siguen la semántica del broker, y no se confunden entre sí:
 
@@ -965,6 +994,11 @@ def resolve_dyndolod_spawn_strategy(
             f"'{DYNDOLOD_BACKEND_STANDALONE}' | '{DYNDOLOD_BACKEND_BROKERED}'). No se asume ninguno: "
             "corregí 'dyndolod_backend' en config.toml."
         )
+    if not _CONTENCION_DEL_WORKER_VERIFICADA:
+        # WIRING_SECURITY_HOLD aplicado en CÓDIGO: antes de construir la strategy, de tocar el
+        # broker o de calcular la attestation. Pedir 'brokered' sin poder cumplirlo es el guard,
+        # nunca ``None`` (= standalone).
+        return _guard(_MOTIVO_DEL_HOLD)
     try:
         return _construir_brokered(
             broker=broker,
