@@ -187,7 +187,9 @@ La política clean-room, `docs/design/research/native-parallax/` y
   overlay (`SKSE/Plugins/AutoParallax.ini`, resuelto por `diagnostico_perfil.cargar_plugin_del_perfil`, el tercer uso del resolutor de ganadores). Solo un INI legible con
   `bAutoEnableParallax` apagado baja un `SI` a `NO`; ausente o sin determinar (valor no booleano, clave o sección repetidas, ilegible, mayor que `MAXIMO_DEL_INI`) avisa y no cambia el
   veredicto. La DLL se comprueba por presencia (solo aviso). Ancla: `tests/test_native_parallax_elegibilidad_plugin.py` (enumera los estados de `AjusteDelIni` y su decisión sobre un
-  `SI`). **NO verificado:** que la versión instalada lea el INI con estas reglas, la versión de la DLL y la matriz DLL × INI × tipo de objeto (rig).
+  `SI`). **Visto en el rig una vez** (02/11, **reportado**, `docs/design/research/native-parallax/np-prueba-rig-v32-resultados.md` §11): con la DLL 1.0.6.0, una textura y una celda de prueba, INI activo ⇒
+  relieve en Static, Movable Static y Container y no en Door ni Activator (la elegibilidad da `SI` igual: no ve el tipo base); INI apagado ⇒ ninguno. **NO verificado:** otras versiones de la DLL, el INI
+  ausente o indeterminado en el juego y la versión de la DLL como dato de la herramienta (no la lee).
   NP-A0j parte 2: `elegibilidad.py` (`evaluar_elegibilidad`) cruza esas dos piezas con el perfil de MO2 y contesta, por cada `*_p.dds` que el generador publicaría,
   `EFECTO_POSIBLE = SI | NO | NO_VERIFICADO` (`EfectoPosible`, vocabulario cerrado). Tres propiedades, con su ancla en `tests/test_native_parallax_elegibilidad.py` y
   `tests/test_native_parallax_cli_elegibilidad.py`: `SI` solo si una forma elegible terminaría USANDO esa salida siguiendo el orden de búsqueda del plugin (si antes
