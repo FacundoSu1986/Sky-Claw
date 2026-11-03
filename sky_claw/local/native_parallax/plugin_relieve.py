@@ -12,8 +12,8 @@ Cuatro estados del INI (``AjusteDelIni``) y solo uno apaga un ``SI``:
 - ``NO_DETERMINADO``: el INI está pero no se puede afirmar el valor (ilegible, demasiado grande, clave ausente, valor que no es un booleano claro,
   sección o clave duplicada). Mismo trato que ``AUSENTE``: lo que no se observa no se da por apagado ni por activo.
 
-**Lo que NO está verificado:** que la versión instalada del plugin lea el INI con estas reglas (la rama pública leída no está fijada a un SHA) ni la
-matriz DLL × INI × tipo de objeto, que necesita el rig. La DLL solo se comprueba por presencia: no se lee su versión.
+**Lo que NO está verificado:** que cualquier versión del plugin lea el INI con estas reglas (la rama pública leída no está fijada a un SHA; el rig reportó la
+1.0.6.0, una vez, con el INI en ``true`` y en ``false``) ni la matriz con otras DLL o con el INI ausente. La DLL solo se comprueba por presencia: no se lee su versión.
 """
 
 from __future__ import annotations
