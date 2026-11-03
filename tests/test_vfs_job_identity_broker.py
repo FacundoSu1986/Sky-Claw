@@ -157,6 +157,37 @@ async def test_el_nombre_del_job_se_limpia_cuando_el_job_termina(tmp_path: pathl
         assert arnes.job_id not in arnes.broker._job_objects
 
 
+@pytest.mark.parametrize("tool_id", _HERRAMIENTAS)
+async def test_tras_un_ack_con_identidad_ajena_el_job_termina_sin_dejar_estado_de_identidad_ni_de_fence(
+    tmp_path: pathlib.Path, tool_id: str
+) -> None:
+    """Revisión: ``_denegar_supervision`` no suelta el job (solo corta al worker); lo suelta el cierre de su ciclo de vida.
+
+    Una denegación que dejara ``_job_objects`` o el estado del fence vivos filtraría un nombre por cada ack inválido.
+    Las dos superficies (``submit`` y ``open_session``) pasan por aquí, igual que en el resto de las anclas.
+    """
+    # Arrange
+    async with _Arnes(tmp_path, tool_id=tool_id) as arnes:
+        await arnes.lanzar_job()
+        crudo = await arnes.worker_crudo()
+        assert (await crudo.leer(timeout=5))["type"] == "hello_ack"  # type: ignore[index]
+        await arnes.launch_ack(job_object=generar_nombre_de_job())
+        await _hasta(lambda: arnes.job_id not in arnes.broker._worker_by_job)
+        assert arnes.job_id in arnes.broker._job_objects, "premisa: la denegación sola todavía no suelta el job"
+
+        # Act: el worker cortado termina y el job se cierra por su ciclo de vida normal.
+        await arnes.worker_exit()
+        await _hasta(lambda: arnes.tarea is not None and arnes.tarea.done(), timeout=8.0)
+
+        # Assert
+        if not arnes.tarea.cancelled():  # type: ignore[union-attr]
+            arnes.tarea.exception()  # type: ignore[union-attr]  # se consume: el job denegado termina con error
+        assert arnes.job_id not in arnes.broker._job_objects
+        assert arnes.job_id not in arnes.broker._pending
+        assert arnes.job_id not in arnes.broker._launch_acked
+        assert arnes.job_id not in arnes.broker._supervised_sent
+
+
 async def test_un_worker_cuya_prueba_nombra_otro_job_no_ejecuta_la_herramienta(tmp_path: pathlib.Path) -> None:
     """El worker REAL (``run_worker_session``) con una prueba de otro Job: el broker lo rechaza → cero herramientas."""
     # Arrange

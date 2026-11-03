@@ -221,17 +221,35 @@ def test_un_worker_fuera_del_job_falla_cerrado() -> None:
 
 
 @pytest.mark.parametrize(
-    "donde", ["proceso_actual_en_job", "banderas_de_limite", "contabilidad", "descendientes_vivos"]
+    "donde", ["abrir_job", "proceso_actual_en_job", "banderas_de_limite", "contabilidad", "descendientes_vivos"]
 )
 @pytest.mark.parametrize("excepcion", [None, OSError("Win32"), RuntimeError("inesperado"), ValueError("raro")])
 def test_cualquier_falla_al_consultar_es_un_error_de_identidad_nunca_una_prueba(
     donde: str, excepcion: Exception | None
 ) -> None:
-    # Arrange
+    # Arrange: `abrir_job` es la primera frontera (su `except Exception` propio) y las otras cuatro, la segunda.
     api = _ApiFalsa(falla_en=donde, excepcion=excepcion)
     # Act / Assert: ni siquiera una excepción inesperada puede salir como éxito ni como otro tipo de error.
     with pytest.raises(JobIdentityError):
         verificar_identidad_del_job(NOMBRE, api=api)
+
+
+@pytest.mark.parametrize("excepcion", [None, OSError("Win32"), RuntimeError("inesperado"), ValueError("raro")])
+def test_si_no_se_pudo_abrir_el_job_no_hay_handle_que_cerrar_ni_otro_error_que_el_de_identidad(
+    excepcion: Exception | None,
+) -> None:
+    """Revisión: se sospechó de un ``UnboundLocalError`` del ``finally`` si ``abrir_job`` fallaba con otro tipo de error.
+
+    El ``finally`` solo rodea a la comprobación, que se alcanza con el handle ya asignado; si abrir falla se sale antes.
+    """
+    # Arrange
+    api = _ApiFalsa(falla_en="abrir_job", excepcion=excepcion)
+    # Act / Assert: exactamente el error de identidad (un `UnboundLocalError` no es subclase y rompería esta aserción).
+    with pytest.raises(JobIdentityError):
+        verificar_identidad_del_job(NOMBRE, api=api)
+    # Nada se abrió ⇒ nada se cierra (cerrar un handle inexistente sería cerrar uno ajeno).
+    assert api.abiertos == []
+    assert api.cerrados == []
 
 
 def test_un_error_al_preguntar_por_un_descendiente_falla_cerrado() -> None:

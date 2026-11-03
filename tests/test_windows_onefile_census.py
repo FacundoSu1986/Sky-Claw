@@ -196,6 +196,114 @@ def test_el_resumen_del_origen_nombra_la_fase_y_el_codigo_responsable(tmp_path: 
     assert "sky_claw/z.py:30:g" in resultado.stdout  # el último marco que NO es de site-packages ni de importlib
 
 
+class _RelojFalso:
+    """Reloj controlado: ``sleep`` lo adelanta y nada espera de verdad (el estado de partida no depende del reloj real)."""
+
+    def __init__(self) -> None:
+        self.ahora = 1000.0
+
+    def perf_counter(self) -> float:
+        return self.ahora
+
+    def time(self) -> float:
+        return 1_700_000_000.0 + self.ahora
+
+    def sleep(self, segundos: float) -> None:
+        self.ahora += segundos
+
+
+class _ProcesoFalso:
+    pid = 4242
+
+    def poll(self) -> None:
+        return None  # sigue vivo: solo el límite de la ventana corta la observación
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+
+def _censar_con_traza_que_tarda(
+    monkeypatch: pytest.MonkeyPatch, *, autoprueba_s: float, ventana_s: float, paso_s: float
+) -> tuple[dict[str, object], int]:
+    """Corre ``medir_censo`` sin Windows: la traza de WMI «tarda» ``autoprueba_s`` en montarse (como el canario sin eventos)."""
+    reloj = _RelojFalso()
+    muestreos: list[int] = []
+
+    class _TrazaLentaFalsa:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            reloj.ahora += autoprueba_s  # la autoprueba espera su plazo entero cuando no llega ningún evento
+            self.disponible = False
+            self.motivo = "la traza se suscribió pero NO entregó el evento del proceso canario"
+            self.eventos: list[dict[str, object]] = []
+
+        def fijar_origen(self, _t0: float) -> None:  # lo usa el arreglo; el contrato lo fija el test, no la forma
+            return None
+
+        def detener(self) -> None:
+            return None
+
+    class _PuertoFalso:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.mensajes: list[dict[str, object]] = []
+
+        def cerrar(self) -> None:
+            return None
+
+    class _PsutilFalso:
+        Error = psutil.Error
+
+        class Process:
+            def __init__(self, pid: int) -> None:
+                muestreos.append(pid)  # una construcción por iteración del bucle de observación
+                self.pid = pid
+
+            def children(self, recursive: bool = False) -> list[object]:
+                return []
+
+    def _no_se_puede_abrir(_pid: int) -> int:
+        raise censo.sonda.JobObjectError("falso: nada que abrir")
+
+    monkeypatch.setattr(censo, "time", reloj)
+    monkeypatch.setattr(censo, "psutil", _PsutilFalso)
+    monkeypatch.setattr(censo, "_TrazaWmi", _TrazaLentaFalsa)
+    monkeypatch.setattr(censo, "_Puerto", _PuertoFalso)
+    monkeypatch.setattr(censo, "_abrir_para_censo", _no_se_puede_abrir)
+    monkeypatch.setattr(censo, "_total_y_activos", lambda _job: (None, None))
+    monkeypatch.setattr(censo, "_supervivientes", lambda *_a, **_k: [])
+    monkeypatch.setattr(censo, "_pids_del_arbol", lambda *_a, **_k: set())
+    monkeypatch.setattr(censo, "_matar_vivos", lambda *_a, **_k: None)
+    sonda = censo.sonda
+    monkeypatch.setattr(sonda, "_exigir_windows", lambda: None)
+    monkeypatch.setattr(sonda, "crear_job", lambda **_k: 11)
+    monkeypatch.setattr(sonda, "lanzar_como_mo2", lambda _argv: _ProcesoFalso())
+    monkeypatch.setattr(sonda, "abrir_proceso", lambda _pid: 7)
+    monkeypatch.setattr(sonda, "asignar_a_job", lambda _job, _proceso: None)
+    monkeypatch.setattr(sonda, "terminar_job", lambda _job, **_k: None)
+    monkeypatch.setattr(sonda, "cerrar_handle", lambda _handle: None)
+    monkeypatch.setattr(sonda, "matar_arbol", lambda _pid: None)
+    corrida = censo.medir_censo(["falso.exe"], retardo_s=0.0, ventana_s=ventana_s, paso_s=paso_s, con_wmi=True)
+    return corrida, len(muestreos)
+
+
+@pytest.mark.parametrize("autoprueba_s", [0.0, 8.5], ids=["control-sin-espera", "wmi-sin-eventos-gasta-8.5s"])
+def test_la_ventana_de_observacion_cuenta_desde_el_lanzamiento_y_no_desde_antes_de_montar_la_traza(
+    monkeypatch: pytest.MonkeyPatch, autoprueba_s: float
+) -> None:
+    """Hallazgo de la revisión: con WMI suscripto pero mudo, la autoprueba gastaba la ventana y no se muestreaba nada.
+
+    Con ``ventana_s=6`` y una autoprueba de 8,5 s el bucle de observación no corría ni una vez, así que los
+    escapados faltaban del muestreo y de los «supervivientes» justo cuando WMI no podía verlos por su cuenta.
+    """
+    # Arrange / Act: ventana 6 s, paso 0,5 s ⇒ 12 observaciones si el reloj arranca en el lanzamiento.
+    corrida, observaciones = _censar_con_traza_que_tarda(
+        monkeypatch, autoprueba_s=autoprueba_s, ventana_s=6.0, paso_s=0.5
+    )
+    # Assert: la ventana entera se observa, haya tardado o no la traza (el control prueba que los falsos andan).
+    assert observaciones == 12
+    # Y el instante de asignación es relativo al lanzamiento, no inflado por la instrumentación previa.
+    assert corrida["asignado_ms"] == pytest.approx(0.0, abs=1.0)
+
+
 # ---------------------------------------------------------------------------
 # Parte Windows: el instrumento contra una verdad conocida
 # ---------------------------------------------------------------------------

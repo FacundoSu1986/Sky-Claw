@@ -376,6 +376,10 @@ class _TrazaWmi:
             f"(eventos totales={len(self.eventos)}, errores={self.errores[:3]})"
         )
 
+    def fijar_origen(self, t0: float) -> None:
+        """Rebasa los ``t_ms`` de los eventos siguientes al instante del LANZAMIENTO (la autoprueba corre antes)."""
+        self._t0 = t0
+
     def detener(self) -> None:
         self._parar.set()
         self._hilo.join(timeout=5)
@@ -425,10 +429,16 @@ def medir_censo(
     escapado ya murió por su cuenta): no mediría la terminación, que es justo lo que se quiere medir.
     """
     sonda._exigir_windows()
+    # La traza se monta (y se autovalida: hasta ~8 s si WMI se suscribe pero no entrega ningún evento) ANTES de
+    # fijar el origen del reloj. La ventana de observación, `asignado_ms` y los `t_ms` son relativos al
+    # LANZAMIENTO: si el origen precediera a la instrumentación, esa espera se descontaría de la ventana y,
+    # justo cuando WMI no puede ver lo que nace fuera del Job, el muestreo de los escapados quedaría recortado.
+    traza = _TrazaWmi(time.perf_counter()) if con_wmi else None
+    job = sonda.crear_job()
     t0 = time.perf_counter()
     inicio_wall = time.time()
-    traza = _TrazaWmi(t0) if con_wmi else None
-    job = sonda.crear_job()
+    if traza is not None:
+        traza.fijar_origen(t0)
     puerto = _Puerto(job, t0)
     muestreo: dict[int, dict[str, Any]] = {}
     handles: dict[int, int] = {}

@@ -119,6 +119,15 @@ Lectura (lo medido, no lo deseado):
 
 Ninguna de estas cifras es una demostración: caracterizan la geometría (cuánto tarda el hijo en nacer frente a cuánto tarda el `assign`).
 
+**Defecto del instrumento hallado en la revisión (corregido).** `medir_censo` tomaba el origen del reloj (`t0`) **antes** de montar la traza de WMI. Cuando WMI se suscribe pero
+no entrega eventos (el caso de este runner, §4.5) la autoprueba espera su plazo entero (~8 s) y ese tiempo se descontaba de `ventana_s`: con la ventana por defecto (12 s) quedaban ~3 s, y
+con `ventana_s=6` el bucle de observación no corría ni una vez, de modo que los escapados faltaban del muestreo y de los «supervivientes» justo cuando WMI no podía verlos. También inflaba
+`asignado_ms`. Ahora el origen se fija **después** de montar la traza y los `t_ms` de WMI se rebasan a él (`test_la_ventana_de_observacion_cuenta_desde_el_lanzamiento...`: rojo `0 == 12`
+antes, verde después). **Alcance, leyendo las banderas del workflow `[LEÍDO]`:** las cifras de esta sección no dependían de la ventana recortada: el censo del `.exe` real se corre con `--ventana 40`
+(~29 s útiles tras la autoprueba) o con `--terminar-tras` (el límite es `ahora + N`, no `t0 + ventana`), y el censo del ejecutable mínimo con `--ventana 14 --terminar-tras 1.5`
+(límite ≈ `t0 + 12,4`, margen estrecho pero sin recorte). El único caso con recorte real era el test de WMI (`ventana_s=6`), que se **salta** cuando la traza no entrega eventos, así que no producía un PASS falso.
+Los resultados se vuelven a medir con el instrumento corregido en la run del CI del commit que lo corrige.
+
 ## 5. Evidencia de P2 en Windows `[EJECUTADO]`
 
 Entorno: `windows-latest`, Python 3.11.9, run del sandbox `41601455721` (commit `2cb47030`; `contents: read`, sin publicación; procesos inocuos).
@@ -178,6 +187,10 @@ efímeros que (§5) no dejan residuos: no justifica el cambio de empaquetado. Se
 * **Disponibilidad, no seguridad.** Si `startApplication`→`assign` tarda más que la extracción del onefile, el hijo Python nace fuera y el launch **falla cerrado** (72). En el runner el margen es de ~1–2 s;
   **la latencia real de MO2/USVFS no se midió** `[NO VERIFICADO]`. Si fuera mayor, el launch fallaría siempre (seguro, pero inutilizable) y habría que pasar al stub de §9.
 * **Huérfanos** (§6.3-d).
+* **Doble fallo: identidad y limpieza.** Si el worker no prueba su contención **y** `terminar_descendientes_vivos` tampoco logra terminar a un descendiente (agota los intentos; p. ej. `TerminateProcess` denegado
+  sobre un proceso de mayor integridad), `_abortar_por_identidad` registra `CRITICAL` (`vfs_worker_cleanup_failed`) y **sale igual con 72**, dejando vivo a ese descendiente (queda huérfano al morir el worker).
+  No abre ningún socket ni autoriza nada, pero la terminación no está garantizada en ese caso. Solo lo cubre un test con dobles
+  (`test_si_la_limpieza_tambien_falla_el_worker_igual_sale_con_el_codigo_de_identidad`); **no hay una prueba con un proceso real que se niegue a morir** `[NO VERIFICADO]`.
 * **Token no elevado.** La DACL usa `OW` (propietario) y `BA`. El runner corre con token de administrador elevado; con el token filtrado de un usuario estándar `BA` no concede y todo depende de `OW`.
   `[NO VERIFICADO]` con token no elevado. Si `OW` no bastara, el worker no podría abrir el Job y el launch fallaría cerrado.
 * **WMI** no disponible (§4.5).
@@ -189,7 +202,10 @@ efímeros que (§5) no dejan residuos: no justifica el cambio de empaquetado. Se
 * `ruff check` y `ruff format --check` sobre `sky_claw/ scripts/ tests/`: limpios.
 * `mypy --platform win32 sky_claw/ scripts/ --ignore-missing-imports`: **0 errores**, igual que la base de #856. (En Linux el mismo comando da errores de la API de Windows en ambos lados; el gate de CI corre en Windows.)
 * **Mutación:** 20 mutantes del mecanismo (nombre sin validar, pertenencia contra `NULL`, handle sin cerrar, sin `KILL_ON_JOB_CLOSE`, breakaway tolerado, descendientes ignorados, broker que no compara
-  `hello`/`ack`, camino de limpieza que olvida la identidad, bridge que no valida/pasa/confirma el nombre, patrón divergente…): **20 muertos, 0 sobrevivientes**.
+  `hello`/`ack`, camino de limpieza que olvida la identidad, bridge que no valida/pasa/confirma el nombre, patrón divergente…): **20 muertos, 0 sobrevivientes** — *de ese conjunto*. La revisión
+  encontró un mutante **fuera** del conjunto que sí sobrevivía: quitar el `except Exception` que envuelve a `abrir_job` (la parametrización de fallos no incluía `abrir_job`; la suite anterior dio 63 passed con el mutante aplicado).
+  Ahora `abrir_job` está en la parametrización y un test fija que, si abrir falla, no se cierra ningún handle y el único error es el de identidad (6 tests lo matan). Con el mismo método se comprobó que quitar el `pop` de
+  `_job_objects` en `_limpiar_registro` lo matan 6 tests, 4 de ellos nuevos (uno por herramienta: un ack con identidad ajena debe terminar sin dejar estado). El script de mutación **no está versionado** (vive en el scratchpad de la sesión).
 * Barrido amplio de las suites relacionadas (VFS, MO2, bridge, brokered, worker): 3624 passed, 84 skipped y 1 error de colección **preexistente** (`test_runtime_vault_operator_verifier.py`, símbolo solo-Windows; figura en la línea base).
 
 ## 8. Merge con la base que avanzó
