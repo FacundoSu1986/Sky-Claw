@@ -17,9 +17,11 @@ Propiedades del mecanismo que estos tests fijan:
 from __future__ import annotations
 
 import contextlib
+import logging
 import sys
 from collections.abc import Sequence
 
+import psutil
 import pytest
 
 from sky_claw.local.mo2 import vfs_job_identity as identidad
@@ -55,6 +57,7 @@ class _ApiFalsa:
         no_se_dejan_matar: Sequence[int] = (),
         falla_en: str | None = None,
         excepcion: Exception | None = None,
+        tambien_falla_en: str | None = None,
     ) -> None:
         self.pertenece = pertenece
         self.banderas = banderas
@@ -65,6 +68,9 @@ class _ApiFalsa:
         self.murieron = set(murieron)
         self.no_se_dejan_matar = set(no_se_dejan_matar)
         self.falla_en = falla_en
+        self.tambien_falla_en = (
+            tambien_falla_en  # un SEGUNDO punto de falla: fallos que ocurren juntos (verificar + cerrar)
+        )
         self.excepcion = excepcion if excepcion is not None else JobIdentityError(f"falla inyectada en {falla_en}")
         self.abiertos: list[int] = []
         self.cerrados: list[int] = []
@@ -72,7 +78,7 @@ class _ApiFalsa:
         self.terminados: list[int] = []
 
     def _fallar(self, donde: str) -> None:
-        if self.falla_en == donde:
+        if donde in (self.falla_en, self.tambien_falla_en):
             raise self.excepcion
 
     def abrir_job(self, nombre: str) -> int:
@@ -112,7 +118,8 @@ class _ApiFalsa:
             self._vivos = [vivo for vivo in self._vivos if vivo != pid]
 
     def cerrar(self, handle: int) -> None:
-        self.cerrados.append(handle)
+        self.cerrados.append(handle)  # se registra el INTENTO: un cierre que falla igual se intentó
+        self._fallar("cerrar")
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +228,8 @@ def test_un_worker_fuera_del_job_falla_cerrado() -> None:
 
 
 @pytest.mark.parametrize(
-    "donde", ["abrir_job", "proceso_actual_en_job", "banderas_de_limite", "contabilidad", "descendientes_vivos"]
+    "donde",
+    ["abrir_job", "proceso_actual_en_job", "banderas_de_limite", "contabilidad", "descendientes_vivos", "cerrar"],
 )
 @pytest.mark.parametrize("excepcion", [None, OSError("Win32"), RuntimeError("inesperado"), ValueError("raro")])
 def test_cualquier_falla_al_consultar_es_un_error_de_identidad_nunca_una_prueba(
@@ -277,6 +285,78 @@ def test_si_la_api_por_defecto_no_se_puede_construir_el_error_es_de_identidad_y_
     # Act / Assert: exactamente el error de identidad (un `OSError` crudo no es subclase y rompería esta aserción).
     with pytest.raises(JobIdentityError):
         consumidor()  # type: ignore[operator]
+
+
+@pytest.mark.parametrize("excepcion", [None, OSError("CloseHandle"), RuntimeError("raro")])
+def test_si_la_verificacion_falla_y_el_cierre_tambien_se_conserva_la_causa_real_y_el_cierre_se_registra(
+    caplog: pytest.LogCaptureFixture, excepcion: Exception | None
+) -> None:
+    """Revisión: el error del ``finally`` reemplazaba al de la verificación y el log solo veía «no se pudo cerrar».
+
+    Con dos fallos, el que viaja hacia ``worker_main`` es la CAUSA («no pertenece al Job…»); el fallo de cierre queda
+    registrado aparte. Es solo diagnóstico: el resultado sigue siendo fail-closed en ambos casos.
+    """
+    # Arrange: el worker NO está en el Job y, además, cerrar el handle falla.
+    api = _ApiFalsa(pertenece=False, falla_en="cerrar", excepcion=excepcion)
+    # Act / Assert
+    with (
+        caplog.at_level(logging.ERROR, logger=identidad.__name__),
+        pytest.raises(JobIdentityError, match="no pertenece"),
+    ):
+        verificar_identidad_del_job(NOMBRE, api=api)
+    assert api.cerrados == [HANDLE], "el cierre se intentó igual"
+    assert any("cerrar el handle" in registro.getMessage() for registro in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "donde", ["proceso_actual_en_job", "banderas_de_limite", "contabilidad", "descendientes_vivos"]
+)
+def test_si_una_excepcion_inesperada_de_la_verificacion_y_el_cierre_fallan_juntos_se_conserva_la_causa(
+    caplog: pytest.LogCaptureFixture, donde: str
+) -> None:
+    """Hermana de la anterior: ``verificar_identidad_del_job`` tiene DOS ramas de fallo (error de identidad y error crudo).
+
+    El mismo arreglo vive en las dos; una sola quedó probada y quitarlo de la otra no rompía nada (mutante sobreviviente).
+    """
+    # Arrange: la API lanza un error CRUDO al verificar y, además, al cerrar.
+    api = _ApiFalsa(falla_en=donde, tambien_falla_en="cerrar", excepcion=RuntimeError("inesperado"))
+    # Act / Assert: viaja la causa de la verificación, envuelta; el cierre fallido solo se registra.
+    with (
+        caplog.at_level(logging.ERROR, logger=identidad.__name__),
+        pytest.raises(JobIdentityError, match="falló la verificación"),
+    ):
+        verificar_identidad_del_job(NOMBRE, api=api)
+    assert api.cerrados == [HANDLE], "el cierre se intentó igual"
+    assert any("cerrar el handle" in registro.getMessage() for registro in caplog.records)
+
+
+def test_si_la_verificacion_tiene_exito_pero_el_cierre_falla_no_hay_prueba() -> None:
+    # Arrange: control — sin un fallo previo, un handle que no se cierra SÍ invalida la prueba
+    # (``KILL_ON_JOB_CLOSE`` solo dispara al cerrarse el último handle).
+    api = _ApiFalsa(falla_en="cerrar")
+    # Act / Assert
+    with pytest.raises(JobIdentityError, match="cerrar"):
+        verificar_identidad_del_job(NOMBRE, api=api)
+
+
+@pytest.mark.parametrize(
+    "excepcion", [OSError("psutil"), RuntimeError("raro"), psutil.AccessDenied(pid=1), JobIdentityError("propio")]
+)
+@pytest.mark.parametrize("donde", ["descendientes_vivos", "terminar_proceso"])
+def test_la_limpieza_de_descendientes_tambien_falla_cerrado_con_el_error_de_identidad(
+    donde: str, excepcion: Exception
+) -> None:
+    """Revisión: ``terminar_descendientes_vivos`` llamaba a la API sin envolver; un error crudo se escapaba de ``worker_main``.
+
+    ``psutil`` no garantiza que ``Process().children(...)`` (el ``descendientes_vivos`` real) nunca lance ``psutil.Error``
+    (no se reprodujo un fallo real: es un defecto de contrato). La limpieza es el gemelo de la verificación y cumple el
+    mismo contrato del módulo: toda falla es un ``JobIdentityError``.
+    """
+    # Arrange: hay un descendiente vivo, para que la limpieza llegue a llamar a `terminar_proceso`.
+    api = _ApiFalsa(descendientes=(11,), falla_en=donde, excepcion=excepcion)
+    # Act / Assert
+    with pytest.raises(JobIdentityError):
+        terminar_descendientes_vivos(api=api, pausa_s=0.0)
 
 
 def test_un_error_al_preguntar_por_un_descendiente_falla_cerrado() -> None:

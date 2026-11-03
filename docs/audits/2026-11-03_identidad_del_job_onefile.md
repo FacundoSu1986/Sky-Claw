@@ -211,6 +211,11 @@ efímeros que (§5) no dejan residuos: no justifica el cambio de empaquetado. Se
   (`_abrir_motor`) dentro de la frontera fail-closed, y un ancla por AST fija que es el único sitio; (b) `_abreviar` del audit hook deformaba los marcos `<frozen importlib...>` (salían como `..._unlocked.py:`; se vio
   en los logs del sandbox sin advertirlo); (c) la redacción «termina a sus descendientes» contradecía el límite del doble fallo: corregida en `AGENTS.md`, el docstring del módulo y de `_abortar_por_identidad`, la tabla de §2 y el CHANGELOG; (d) el índice de
   auditorías seguía diciendo `ONEFILE_CONTAINMENT_HOLD`.
+* **Segunda pasada de PR-Agent sobre `28b820f9`** (dos puntos, ambos reales, con test rojo antes del arreglo): (a) en `verificar_identidad_del_job` el error de `_cerrar` dentro del `finally` **reemplazaba** a la causa
+  de la verificación (el log de `worker_main` solo veía «no se pudo cerrar el handle»); ahora viaja la causa y el cierre fallido se registra, **pero si la verificación tuvo éxito un cierre fallido sigue vetando la prueba**
+  (control probado: un handle retenido impediría que `KILL_ON_JOB_CLOSE` dispare); (b) `terminar_descendientes_vivos` llamaba a `descendientes_vivos`/`terminar_proceso` sin envolver (`psutil` no garantiza que
+  `Process().children(...)` nunca lance `psutil.Error`; **no se reprodujo** un fallo real, el defecto es de contrato) y era el gemelo de la verificación, que sí envolvía. Una ancla por AST congela los 8 métodos de la API (`ApiDeJobs`) y exige que cada uno tenga su modo de falla probado. La mutación halló que el arreglo del
+  enmascaramiento estaba probado en una de sus dos ramas (error de identidad) y no en la otra (excepción inesperada): mutante sobreviviente → test hermano. 4 mutantes de esta ronda, 4 muertos.
 * Barrido amplio de las suites relacionadas (VFS, MO2, bridge, brokered, worker): 3624 passed, 84 skipped y 1 error de colección **preexistente** (`test_runtime_vault_operator_verifier.py`, símbolo solo-Windows; figura en la línea base).
 
 ## 8. Merge con la base que avanzó

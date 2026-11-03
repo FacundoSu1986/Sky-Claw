@@ -17,7 +17,9 @@ el broker, el worker efectivo:
 5. cierra el handle: ``KILL_ON_JOB_CLOSE`` solo dispara cuando se cierra el ÚLTIMO handle, así que un
    worker que conservara el suyo impediría que el cierre del Job del bridge matara el árbol.
 
-Cualquier falla es un ``JobIdentityError`` (fail-closed), también la de construir la API de Windows. Quien lo
+Cualquier falla es un ``JobIdentityError`` (fail-closed), también la de construir la API de Windows y la de la
+limpieza (``terminar_descendientes_vivos``). Si la verificación y el cierre del handle fallan a la vez, viaja la causa
+de la verificación y el fallo de cierre solo se registra. Quien lo
 captura debe llamar a ``terminar_descendientes_vivos`` antes de salir: un worker que no puede demostrar su
 contención INTENTA no dejar procesos propios corriendo. La terminación es un intento, no una garantía: si algún
 descendiente no muere tras los intentos, ``terminar_descendientes_vivos`` falla y ese proceso puede quedar vivo.
@@ -32,16 +34,19 @@ Se importa muy temprano en el arranque del worker: solo stdlib, ``ctypes`` y ``p
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import re
 import secrets
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import psutil
+
+logger = logging.getLogger(__name__)
 
 #: Formato CERRADO del nombre. ``fullmatch`` (no ``$``: aceptaría un ``\n`` final) y espacio de nombres
 #: ``Local\`` (por sesión): el SO nunca recibe un string arbitrario. El bridge del plugin lleva una copia
@@ -141,14 +146,19 @@ def verificar_identidad_del_job(nombre: object, *, api: ApiDeJobs | None = None)
         raise
     except Exception as exc:  # frontera de verificación: toda falla se vuelve un error de identidad
         raise JobIdentityError(f"no se pudo abrir el Job: {exc}") from exc
+    # Con una verificación exitosa, un handle que no se cierra invalida la prueba (``_cerrar`` lanza). Con un fallo
+    # previo, el error que viaja es la CAUSA: el del cierre no la reemplaza (``_cerrar_sin_enmascarar`` lo registra).
+    cerrar: Callable[[ApiDeJobs, int], None] = _cerrar
     try:
         return _comprobar(motor, handle, nombre_valido)
     except JobIdentityError:
+        cerrar = _cerrar_sin_enmascarar
         raise
     except Exception as exc:  # fail-closed: ni una excepción inesperada puede salir como éxito
+        cerrar = _cerrar_sin_enmascarar
         raise JobIdentityError(f"falló la verificación del Job: {exc}") from exc
     finally:
-        _cerrar(motor, handle)
+        cerrar(motor, handle)
 
 
 def _comprobar(motor: ApiDeJobs, handle: int, nombre: str) -> PruebaDeJob:
@@ -179,6 +189,18 @@ def _cerrar(motor: ApiDeJobs, handle: int) -> None:
         raise JobIdentityError(f"no se pudo cerrar el handle del Job: {exc}") from exc
 
 
+def _cerrar_sin_enmascarar(motor: ApiDeJobs, handle: int) -> None:
+    """Cierra el handle cuando YA hay un fallo de verificación: si el cierre también falla, solo se registra.
+
+    Reemplazar la causa real («no pertenece al Job…») por «no se pudo cerrar» deja el log sin el diagnóstico útil.
+    El resultado sigue siendo fail-closed: viaja el error de la verificación.
+    """
+    try:
+        _cerrar(motor, handle)
+    except JobIdentityError as exc:
+        logger.error("además del fallo de verificación, no se pudo cerrar el handle del Job: %s", exc)
+
+
 def terminar_descendientes_vivos(
     *,
     api: ApiDeJobs | None = None,
@@ -190,19 +212,28 @@ def terminar_descendientes_vivos(
     Es lo que hace el worker cuando no puede probar su contención: antes de salir intenta no dejar procesos propios
     corriendo. Si alguno sigue vivo tras ``intentos`` rondas, falla: no se afirma «sin residuos» sin haberlo
     comprobado (y ese proceso puede quedar vivo). Un proceso que ya murió al intentar terminarlo no es un error.
+
+    Cumple el mismo contrato que la verificación: toda falla de la API (``psutil.Error`` al enumerar, un error de
+    ``ctypes`` al terminar) es un ``JobIdentityError``. ``worker_main`` solo captura ese tipo: un error crudo se saldría
+    de ahí sin el código 72 y sin cerrar el logging.
     """
     motor = _abrir_motor(api)
     terminados: list[int] = []
-    for _ in range(intentos):
-        vivos = list(motor.descendientes_vivos())
-        if not vivos:
-            return tuple(terminados)
-        for pid in vivos:
-            motor.terminar_proceso(pid)
-            if pid not in terminados:
-                terminados.append(pid)
-        time.sleep(pausa_s)
-    restantes = sorted(motor.descendientes_vivos())
+    try:
+        for _ in range(intentos):
+            vivos = list(motor.descendientes_vivos())
+            if not vivos:
+                return tuple(terminados)
+            for pid in vivos:
+                motor.terminar_proceso(pid)
+                if pid not in terminados:
+                    terminados.append(pid)
+            time.sleep(pausa_s)
+        restantes = sorted(motor.descendientes_vivos())
+    except JobIdentityError:
+        raise
+    except Exception as exc:  # frontera de limpieza: toda falla se vuelve un error de identidad
+        raise JobIdentityError(f"falló la limpieza de los descendientes: {exc}") from exc
     if restantes:
         raise JobIdentityError(f"no se pudo terminar a los descendientes: {restantes}")
     return tuple(terminados)

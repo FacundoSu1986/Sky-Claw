@@ -47,7 +47,8 @@ raíz.
   handle** (`KILL_ON_JOB_CLOSE` solo dispara al cerrarse el último). Si falla, `worker_main` **intenta** terminar a sus
   descendientes y sale con 72 sin abrir un socket; la terminación no está garantizada: si la limpieza también falla
   (un descendiente que no muere), se registra `CRITICAL` y ese proceso puede quedar vivo. Cualquier falla, incluida la de
-  construir la API de Windows, es un `JobIdentityError` (no un error crudo). El broker solo autoriza con el nombre pedido en el ack **y** en el
+  construir la API de Windows o la de la propia limpieza, es un `JobIdentityError` (no un error crudo); si la
+  verificación y el cierre del handle fallan a la vez, viaja la causa de la verificación y el cierre se registra. El broker solo autoriza con el nombre pedido en el ack **y** en el
   `hello`. Es contención, no autoría (la autenticidad sigue siendo el HMAC). Convive con el fence: no lo reemplaza.
   Anclas: `tests/test_vfs_job_identity.py` (lógica, API falsa), `tests/test_vfs_job_identity_anclas.py` (enumeran
   quién toca `job_object`, quién suelta un job y quién fabrica una prueba),

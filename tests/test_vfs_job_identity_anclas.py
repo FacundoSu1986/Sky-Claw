@@ -208,6 +208,34 @@ def test_la_api_por_defecto_solo_se_construye_en_un_punto_que_falla_cerrado() ->
     assert constructores == ["_abrir_motor"]
 
 
+def test_cada_metodo_de_la_api_de_jobs_tiene_su_modo_de_falla_probado() -> None:
+    """La familia completa de llamadas al SO: el error crudo de CUALQUIERA tiene que salir como ``JobIdentityError``.
+
+    Se arregló la construcción de la API en los dos consumidores y la limpieza quedó con llamadas sin envolver: arreglar
+    una mitad de la familia es el defecto dominante. Un método nuevo rompe esto hasta entrar en las matrices de
+    ``verificar_identidad_del_job`` y de ``terminar_descendientes_vivos`` (``tests/test_vfs_job_identity.py``).
+    """
+    # Arrange / Act
+    metodos = {
+        miembro.name
+        for clase in ast.walk(_arbol(IDENTIDAD))
+        if isinstance(clase, ast.ClassDef) and clase.name == "ApiDeJobs"
+        for miembro in clase.body
+        if isinstance(miembro, ast.FunctionDef)
+    }
+    # Assert
+    assert metodos == {
+        "abrir_job",  # verificar: matriz «cualquier_falla_al_consultar»
+        "proceso_actual_en_job",  # verificar: ídem
+        "banderas_de_limite",  # verificar: ídem
+        "contabilidad",  # verificar: ídem
+        "descendientes_vivos",  # verificar: ídem + limpieza: «la_limpieza_de_descendientes_tambien_falla_cerrado»
+        "proceso_en_job",  # verificar: «un_error_al_preguntar_por_un_descendiente_falla_cerrado»
+        "terminar_proceso",  # limpieza: «la_limpieza_de_descendientes_tambien_falla_cerrado»
+        "cerrar",  # verificar: matriz «cualquier_falla_al_consultar» + «la_verificacion_falla_y_el_cierre_tambien»
+    }
+
+
 def test_el_modulo_de_identidad_abre_el_job_solo_con_permiso_de_consulta() -> None:
     """Mínimo privilegio: el worker no puede terminar el Job, cambiarle límites ni asignarle procesos."""
     # Arrange / Act
