@@ -28,6 +28,7 @@ agregarle saneo y mantener 36 tests de un camino inalcanzable.
 from __future__ import annotations
 
 import ast
+import functools
 import inspect
 import pathlib
 
@@ -62,6 +63,19 @@ _HELPERS_DEL_CAMINO_MUERTO = frozenset(
 
 #: Dependencias que sólo existían para ese camino.
 _DEPENDENCIAS_DEL_CAMINO_MUERTO = frozenset({"lock_manager", "snapshot_manager", "journal", "wrye_bash_runner"})
+
+
+@functools.lru_cache(maxsize=1)
+def _arboles_del_paquete() -> dict[pathlib.Path, ast.Module]:
+    """Parsea TODOS los módulos de producción UNA vez por proceso.
+
+    Tres anclas de este archivo barren `sky_claw/` entero (dependencias muertas, nombre del
+    artefacto, registry). Parsear el paquete tres veces costaba ~4 s de la suite; el AST es
+    puro y el árbol no cambia dentro de una corrida, así que se memoiza. Si un módulo no
+    parsea, la excepción sube: un paquete que no compila rompe cualquier gate, y tolerarlo
+    acá sólo escondería el error detrás de un ancla verde.
+    """
+    return {py: ast.parse(py.read_text(encoding="utf-8")) for py in sorted((RAIZ / "sky_claw").rglob("*.py"))}
 
 
 def _clase_del_modulo() -> ast.ClassDef:
@@ -141,12 +155,7 @@ def test_la_firma_no_pide_las_dependencias_del_camino_muerto() -> None:
 def test_ningun_modulo_de_produccion_construye_el_servicio_con_dependencias_muertas() -> None:
     """Enumera TODO `sky_claw/`: el servicio se construye sin lock/snapshot/journal/runner."""
     ofensores: list[str] = []
-    for py in sorted((RAIZ / "sky_claw").rglob("*.py")):
-        texto = py.read_text(encoding="utf-8")
-        try:
-            arbol = ast.parse(texto)
-        except SyntaxError:  # pragma: no cover - un módulo ilegible ya rompe otros gates
-            continue
+    for py, arbol in _arboles_del_paquete().items():
         for nodo in ast.walk(arbol):
             if not isinstance(nodo, ast.Call):
                 continue
@@ -172,7 +181,7 @@ _MODULO_CANONICO = pathlib.Path("sky_claw/local/tools/wrye_bash_runner.py")
 _DEFINICIONES_TOLERADAS = frozenset({"sky_claw/local/xedit/patch_orchestrator.py"})
 
 
-def _literales_del_artefacto(py: pathlib.Path) -> list[tuple[int, str]]:
+def _literales_del_artefacto(arbol: ast.Module) -> list[tuple[int, str]]:
     """`(línea, valor)` de CADA constante `str` que mencione el artefacto, por AST.
 
     Por AST y no por texto: un docstring o un comentario que lo nombre en prosa es un
@@ -180,7 +189,6 @@ def _literales_del_artefacto(py: pathlib.Path) -> list[tuple[int, str]]:
     sólo lo menciona de pasada —``"mods"``, una lista de rutas— ya no gana la exención que
     la versión anterior daba por contener una subcadena cualquiera.
     """
-    arbol = ast.parse(py.read_text(encoding="utf-8"))
     return [
         (nodo.lineno, nodo.value)
         for nodo in ast.walk(arbol)
@@ -215,8 +223,7 @@ def test_el_registry_del_agente_ya_no_recibe_un_runner_de_wrye_bash() -> None:
     assert "wrye_bash_runner" not in parametros, "el registry volvió a aceptar un runner del camino retirado"
 
     ofensores: list[str] = []
-    for py in sorted((RAIZ / "sky_claw").rglob("*.py")):
-        arbol = ast.parse(py.read_text(encoding="utf-8"))
+    for py, arbol in _arboles_del_paquete().items():
         for nodo in ast.walk(arbol):
             if not isinstance(nodo, ast.Call):
                 continue
@@ -240,8 +247,8 @@ def test_el_nombre_del_artefacto_se_define_una_sola_vez() -> None:
     de xEdit). Cualquier otra —en código o en prosa— rompe el ancla.
     """
     apariciones: list[tuple[str, int, str]] = []
-    for py in sorted((RAIZ / "sky_claw").rglob("*.py")):
-        for linea, valor in _literales_del_artefacto(py):
+    for py, arbol in _arboles_del_paquete().items():
+        for linea, valor in _literales_del_artefacto(arbol):
             apariciones.append((py.relative_to(RAIZ).as_posix(), linea, valor))
 
     archivos = {archivo for archivo, _, _ in apariciones}
