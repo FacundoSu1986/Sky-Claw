@@ -30,12 +30,20 @@ if TYPE_CHECKING:
 
 
 class WryeBashPipeline(Protocol):
-    """Capacidad mínima que consume ``GenerateBashedPatchStrategy``."""
+    """Capacidad mínima que consume ``GenerateBashedPatchStrategy``.
+
+    ``fase`` (ADR 0016) elige media etapa: ``preparar`` entrega instrucciones y testigo
+    previo, ``verificar`` emite el veredicto por evidencia. Ninguna de las dos spawnea
+    ni muta. ``testigo_previo`` es el campo homónimo que devolvió la fase 1; sin él la
+    verificación es honesta y declara ``frescura_probada=False``.
+    """
 
     def __call__(
         self,
         profile: str | None = None,
         validate_limit: bool = True,
+        fase: str = "preparar",
+        testigo_previo: dict[str, object] | None = None,
     ) -> Awaitable[dict[str, Any]]: ...
 
 
@@ -174,15 +182,26 @@ def build_wrye_bash_pipeline(
     service: WryeBashPipelineService,
     default_profile: str,
 ) -> WryeBashPipeline:
-    """Adapta servicio+perfil al callable estrecho que consume la estrategia."""
+    """Adapta servicio+perfil al callable estrecho que consume la estrategia.
+
+    **Superficie 1 de 3 del cableado asistido (ADR 0016 §7).** Hasta el PR B esto
+    llamaba a ``service.execute_pipeline`` —el camino headless que no puede construir el
+    parche— y por eso la etapa 6 de la GUI fallaba cerrado siempre, después de tomar los
+    locks. Ahora delega en ``ejecutar_fase_asistida``, el punto ÚNICO de enrutado: si
+    esta función eligiera la fase por su cuenta habría tres copias de esa decisión.
+    """
 
     async def execute(
         profile: str | None = None,
         validate_limit: bool = True,
+        fase: str = "preparar",
+        testigo_previo: dict[str, object] | None = None,
     ) -> dict[str, Any]:
-        return await service.execute_pipeline(
+        return await service.ejecutar_fase_asistida(
             profile=profile or default_profile,
+            fase=fase,
             validate_limit=validate_limit,
+            testigo_previo=testigo_previo,
         )
 
     return execute

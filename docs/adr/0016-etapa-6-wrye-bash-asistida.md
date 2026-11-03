@@ -155,6 +155,33 @@ El retiro era la opción barata de *código* y la cara de *producto*.
 3. verificar → veredicto por evidencia; con huella_previa prueba frescura
 ```
 
+**Quién puede pedir cada fase (post PR B), sin adornos.** Las tres superficies pueden:
+
+| Camino | Fase 1 | Fase 2 | Nota |
+| --- | --- | --- | --- |
+| Tool del agente LLM (`generate_bashed_patch`) | sí | sí | `fase` es el único parámetro del schema |
+| `SupervisorAgent.execute_wrye_bash_pipeline` | sí (default) | sí | lo usa también la API |
+| Botón del ritual en el panel | sí | sí | fase 2 = botón «Ya construí el parche — verificar» |
+
+El botón del panel no inventa la fase: la **deriva del resultado** de la fase 1 con el mismo
+predicado que usa el toast (`tool_result.es_etapa_pendiente`), y sólo la ofrece si la etapa 1
+se **completó** (`pendiente=True`). Tras un `PreflightBlocked`, un `SinRutasResolubles` o un
+veredicto (`OK`/`SIN_CAMBIO`) no hay acción: mandar al operador a construir un parche que el
+sistema acaba de declarar inviable, o a «verificar» lo ya verificado, sería un botón que sólo
+puede fallar.
+
+El `testigo_previo` viaja en el payload **sólo si es la forma canónica válida**, y esa forma
+**no se re-implementa en la GUI**: el seam construye un `TestigoPrevio` y traduce su `ValueError`
+a `None` (ronda 10, S-10), de modo que validador y dominio no puedan divergir. Se valida antes
+de ofrecer el botón — no en el servicio, porque el payload es lo que el operador ve confirmado.
+Sin testigo, la fase 2 igual es útil (existencia, tamaño y activación en `plugins.txt`) y el
+veredicto declara `frescura_probada=False`: honesto, aunque no sea el contrato completo.
+
+**Lo que sigue faltando (PR D).** El testigo vive lo que vive el resultado en el panel. Si la
+GUI se cierra entre las dos fases, la verificación corre sin él. Persistirlo entre sesiones
+(patrón `texgen_handoff`) es lo que convierte «verificable» en «verificable siempre», y es la
+razón por la que el PR D no queda vacío.
+
 ## 7. Secuencia de PRs — y por qué se parte
 
 `AGENTS.md` §«La regla que más se viola» documenta que 9 de 13 follow-ups auditados son un fix que
@@ -162,21 +189,67 @@ aterrizó en una superficie y dejó intacta a su gemela. Esta etapa tiene **tres
 producción: `dispatcher_dependencies.build_wrye_bash_pipeline`, `SupervisorAgent.execute_wrye_bash_pipeline`
 y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de a una:
 
-- **PR A (este):** contrato + servicio + tests. **Sin wiring.** No cambia comportamiento de
-  producción; 93 tests nuevos (91 passed + 2 skips en Windows) y las 17 anclas verdes.
+- **PR A (mergeado, #839):** contrato + servicio + tests. **Sin wiring.** No cambió
+  comportamiento de producción; 93 tests nuevos (91 passed + 2 skips en Windows) y las 17 anclas
+  verdes.
 
-  `pendiente=True` viaja marcado `pendiente_no_ratificado=True` a propósito: `ToolStateMachine`
-  solo conoce `PENDING → RUNNING → COMPLETED/FAILED` y no hay consumidor de ese campo (verificado
-  por grep), así que hoy una etapa *asistida* se vería como *fallida*. El mapeo se decide y se
-  congela junto con el cableado; hasta entonces ningún consumidor debe tratarlo como contrato.
-- **PR B:** cablear **las tres** superficies en el mismo PR, con un ancla por AST que **enumera**
-  las superficies del cableado (una cuarta, o una que vuelva a `execute_pipeline`, rompe el test).
-  Requiere `fase` en `_VALID_BASHED_PATCH_KEYS` de la estrategia. Además, la tool del agente LLM (`system_tools`) hoy se construye sin `path_resolver` y llama con `profile="agent-tool"`; cablear esa superficie exige inyectar `path_resolver` y pasar el perfil activo de MO2 (H-1).
-- **PR C:** retirar `execute_pipeline` (el camino headless) y sus 45 tests (36 en servicio + 9 de lock), o declararlo compat
-  documentada. Decidir con la evidencia de PR B; hoy es la superficie que conserva la deuda
-  "TX por ritual imposible" para callers directos.
+  `pendiente=True` viajó marcado `pendiente_no_ratificado=True` **a propósito**: en ese momento
+  `ToolStateMachine` solo conocía `PENDING → RUNNING → COMPLETED/FAILED` y no había consumidor de
+  ese campo (verificado por grep), así que una etapa *asistida* se habría visto como *fallida*.
+  El marcador era explícitamente provisional: «El mapeo se decide y se congela junto con el
+  cableado». Se retiró en el PR B junto con su consumidor (§9, ronda 8).
+- **PR B (este):** cablea **las tres** superficies en el mismo PR:
+
+  | Superficie | Antes | Ahora |
+  | --- | --- | --- |
+  | `dispatcher_dependencies.build_wrye_bash_pipeline` | `service.execute_pipeline` | `service.ejecutar_fase_asistida` |
+  | `SupervisorAgent.execute_wrye_bash_pipeline` | idem | idem, con `fase`/`testigo_previo` en la firma |
+  | `system_tools.generate_bashed_patch` | idem, **sin** `path_resolver` y con `profile="agent-tool"` | idem, con `path_resolver` y el perfil de sesión (H-1) |
+
+  La decisión de fase vive en **un** método del servicio —`ejecutar_fase_asistida`— y las tres
+  superficies llaman a ese, no a `preparar`/`verificar` por su cuenta: tres copias de la elección
+  es la forma en que dos superficies se quedan atrás. El ancla
+  `tests/test_wrye_bash_cableado_asistido.py` **enumera** los call sites por AST (archivo +
+  función envolvente): una cuarta superficie, o una que vuelva a `execute_pipeline`, rompe el
+  test. `fase` y `testigo_previo` entraron a `_VALID_BASHED_PATCH_KEYS` de la estrategia — sin
+  eso la fase 2 era inalcanzable: el filtro la descartaba en silencio y toda invocación caía en
+  la preparación.
+
+  El mapeo de `pendiente` se congeló como **estado `AWAITING_OPERATOR`** (`ToolStateMachine`),
+  y no como `AWAITING_APPROVAL` (inalcanzable desde `RUNNING`), ni `FAILED` (nada falló), ni
+  `COMPLETED` (nada se construyó). Es terminal sin salidas —la etapa se cierra con **otra**
+  invocación en fase `verificar`— y libera la clave de idempotencia como cualquier terminal.
+
+  Y el **toast del operador** aprendió lo mismo: `summarize_ritual_result` devuelve
+  `warning` con el mensaje de la etapa en vez de «El ritual «X» falló: …» en rojo. Los dos
+  consumidores comparten el predicado (`tool_result.es_etapa_pendiente`) para que no puedan
+  divergir. El estado `AWAITING_OPERATOR` **no tiene hoy ningún consumidor de UI** (verificado
+  por grep): el que el humano ve es el toast, y ese era el que mentía.
+- **PR C:** retirar `execute_pipeline` (el camino headless) o declararlo compat documentada.
+  Decidir con la evidencia de PR B, que ya está disponible: tras el cableado **no queda ningún
+  caller de producción** de `execute_pipeline` en `sky_claw/` (verificado por grep sobre `ast`:
+  sólo la definición y la prosa). Sus 36 tests de servicio siguen verdes y siguen siendo la
+  cobertura del lock/rollback/caja negra; los 9 de `tests/test_wrye_bash_lock.py` **no** eran
+  duplicados del servicio, eran el contrato del handler, y en el PR B se reescribieron al
+  contrato nuevo (no muta ⇒ ni lock ni TX) en vez de borrarse.
+  Queda declarado un hueco que el PR C debe cerrar: el saneo de `stdout`/`stderr` con
+  `sanitize_for_prompt` vivía en el handler. `execute_pipeline` devuelve texto crudo del
+  subproceso y hoy no tiene callers; si se conserva como compat, necesita su propio saneo.
 - **PR D:** persistir el handoff de la fase 1 (huella previa durable, patrón `texgen_handoff`) para
-  que la frescura no dependa de que el caller transporte el `sha256`.
+  que la frescura no dependa de que el resultado siga vivo en el panel. El affordance de la fase 2
+  **ya no** es deuda: entró en el PR B (§6) junto con el `payload` explícito de
+  `run_ritual_resume`; lo que falta es que el testigo sobreviva el cierre de la GUI, no el botón.
+- **Deuda declarada (PR B): la compuerta HITL sigue sobre `generate_bashed_patch`.** El ítem 8 de §2
+  dice que la fase 2 «no requiere HITL», pero `tool_dispatcher.py` registra la estrategia con
+  `_destructive_middleware` y la tool sigue en `DESTRUCTIVE_TOOL_PATTERNS`. Efecto medido leyendo
+  `HitlGateMiddleware`: sin `HITLGuard` configurado **ambas** fases (de solo lectura) devuelven
+  `HITLGateUnavailable` antes de correr; con guard, el operador aprueba dos fases que no mutan. Se
+  deja así a propósito en este PR: quitar una compuerta es una decisión de seguridad aparte, no parte
+  de un cableado (hilo de revisión de CodeRabbit sobre `tool_dispatcher.py`, resuelto con esta nota).
+  Para cerrarla hay que decidir si las fases asistidas salen de `DESTRUCTIVE_TOOL_PATTERNS` (y el
+  dispatcher pasa a `ErrorWrappingMiddleware` + `DictResultGuardMiddleware`) y agregar un test del
+  dispatcher que alcance el enrutado asistido sin guard. No verificado: si en el entorno de producción
+  `AppContext.hitl` está siempre configurado (de ser así, el efecto es solo fricción, no bloqueo).
 
 ## 8. Revisión adversarial del propio PR (2026-10-30)
 
@@ -229,7 +302,7 @@ PR-Agent; el mismo criterio: verificar antes de aceptar.
 | R3-3 | El test del junction hacía `pytest.skip` en todas las plataformas, contra el contrato documentado de `crear_junction`. | Correcto, y contradecía la lección de F7 (Windows es la única plataforma que puede ejercer el reparse point). | `@junction_guard` + `assert`, como `tests/test_links.py`. |
 | R3-4 | El mensaje de `ARTEFACTO_AUSENTE` nombraba sólo el `Data` del juego, aunque la resolución ya revisa `overwrite` y los mods. | Correcto: mandaba al operador a mirar donde el sistema sabe que no está. | El mensaje nombra las tres capas, con ancla. |
 | R3-5 | Un acierto en `overwrite` con los mods no enumerables quedaba marcado como cobertura parcial. | Correcto pero por la razón opuesta a la que sugería el reporte: `overwrite` gana a toda capa, así que ninguna capa no leída puede taparlo. | `cobertura_completa=True` para ese caso; la degradación parcial se registra con nombre en el log en vez de heredar un verde. |
-| R3-6 | `pendiente_no_ratificado` sin consumidor; `_perfil_es_usable` sin normalizar mayúsculas. | El primero es F6, adjudicado en §7 (PR B). El segundo no es un defecto: el nombre compone una ruta que consume el mismo sistema de archivos, y normalizar rompería instalaciones case-sensitive sin ganar nada (los separadores ya se rechazan). | Sin cambio, con el motivo escrito acá. |
+| R3-6 | `pendiente_no_ratificado` sin consumidor; `_perfil_es_usable` sin normalizar mayúsculas. | El primero era F6: **cerrado en el PR B** — la clave se retiró y `IdempotencyMiddleware` traduce `pendiente=True` al estado `AWAITING_OPERATOR` de `ToolStateMachine`, con la clave de idempotencia liberada como en cualquier terminal. El segundo no es un defecto: el nombre compone una ruta que consume el mismo sistema de archivos, y normalizar rompería instalaciones case-sensitive sin ganar nada (los separadores ya se rechazan). | Sin cambio, con el motivo escrito acá. |
 
 **Cambio de censo que estos fixes obligan.** `wrye_bash_service.py` pasó de `FAMILY_D`
 (*sólo nombra el modlist en un docstring*) a `FAMILY_A` (*lo lee e interpreta la prioridad*):
@@ -273,6 +346,51 @@ mayor a menor prioridad. Es la clasificación que el censo existe para forzar, y
 | # | Hallazgo | Verificación | Corrección |
 |---|---|---|---|
 | CR-1 | Validación de nombres de mods en `output_targets.py:276` y perfiles en `wrye_bash_service.py:138-140` usaba subcadena `".." in nombre`. Esto rechazaba nombres legítimos con puntos internos (ej. `Foo... Bar`, `Mod..v2`), bloqueando ambas fases con `CoberturaDeOverlayIncompleta` o `PerfilInvalido`. Tampoco rechazaba explícitamente el nombre exacto `"."` en `output_targets.py`. | Confirmado: subcadena `".." in nombre` causa falso positivo en nombres con elipsis o puntos suspensivos sin traversal, mientras que `.` pasaba como nombre válido resolviendo a `mods_dir`. | Alinear al patrón canónico del repo (`ganadores.py:112` y `output_targets.py:390`): `if not nombre or nombre in (".", "..") or any(sep in nombre for sep in ("/", "\\", ":")):` en `bashed_patch_en_overlay`, y simétricamente en `_perfil_es_usable` de `wrye_bash_service.py`. Tests dedicados para nombres válidos con puntos internos y rechazo estricto de `.`, `..` y separadores. |
+
+**Ronda 8 (PR B, cableado de las tres superficies).** Auditoría del propio cableado, con el
+criterio de siempre: cada afirmación verificada contra el código o contra una corrida real.
+
+| # | Hallazgo | Verificación | Corrección |
+|---|---|---|---|
+| B-1 | El filtro de `GenerateBashedPatchStrategy` descartaba `fase`: toda invocación —GUI, supervisor y agente— caía en la preparación. La fase 2 del ritual era **inalcanzable**, no por diseño sino por un `set` de dos claves. | **Confirmado por conducta**: con `fase="verificar"` en el payload, el pipeline recibía sólo `profile`/`validate_limit`. | `fase` y `testigo_previo` entran a `_VALID_BASHED_PATCH_KEYS`; `fase=None` (clave presente y vacía del formulario) se descarta para que aplique el default en vez de fallar con `FaseInvalida`. |
+| B-2 | Mi primer filtro usaba `filtered.get("fase") is None` y después `pop("fase")`: `get` devuelve `None` también cuando la clave **no está**, así que toda invocación sin `fase` elevaba `KeyError: 'fase'`. | Lo atajó `test_destructive_strategies_error_contract.py` (7 rojos) antes del commit: el `error_message` de la tarea era literalmente `"'fase'"`. | `in` + `del`, no `get` + `pop`; el contrato de errores destructivos vuelve a verde sin tocarlo. |
+| B-3 | `tests/_orchestration_dispatcher_dependencies.crear_dependencias_desde_doble` —el gemelo de test del cableado— seguía con la firma vieja de dos argumentos: reenviaba `profile`/`validate_limit` y **descartaba** `fase`. El test que dice probar la fase 2 la habría visto llegar como preparación. | Confirmado: el mock registraba `mock(profile='MyProfile', validate_limit=False)`. Es el defecto dominante del repo, mudado a un helper. | El doble honra la firma completa del Protocol (`fase`, `testigo_previo`) y la reenvía. |
+| B-4 | 7 de los 9 tests de `tests/test_wrye_bash_lock.py` pineaban el contrato viejo del handler (lock anidado, caja negra, lease perdido, saneo del runner). Uno de los dos que «pasaban», `test_handler_bloqueado_si_loot_tiene_el_load_order`, lo hacía **por otro motivo**: ahora fallaba con `SinRutasResolubles`, no por contención de lock. | Confirmado por corrida: 7 rojos y un falso verde detectable leyendo el `reason` del payload. | El módulo se reescribe a su contrato nuevo (delega en el enrutado, **no** toma lock, **no** emite caja negra, **no** invoca el runner), con el mismo número de tests. La cobertura de lock/rollback/manifiesto sigue donde vive el código: `test_wrye_bash_service.py` (36 tests, verdes). |
+| B-5 | Dos tests de `test_system_tools_medio001.py` pineaban la sanitización del `stdout`/`stderr` del runner en el handler. Esa rama ya no existe, pero el saneo **tampoco vive en el servicio**: `execute_pipeline` devuelve texto crudo. | Confirmado por grep: `sanitize_for_prompt` no aparece en `wrye_bash_service.py`; y `execute_pipeline` no tiene callers de producción tras el cableado. | Los dos tests se reescriben al contrato nuevo (ninguna salida de subproceso llega al LLM). El hueco queda **declarado en §7 (PR C)**: si `execute_pipeline` se conserva como compat, necesita su propio saneo. |
+| B-6 | El censo `test_perfil_sesion_invariante` se rompe por partida doble: desaparece el único literal exento (`profile="agent-tool"`) y `generate_bashed_patch` entra a la familia `FAMILIA_DEL_PERFIL` por introspección. | Confirmado: `{} == {'sky_claw/app/agent/tools/system_tools.py': 1}` y la familia medida incluía el handler nuevo. | `LITERALES_ESPERADOS = {}` (se deja el censo **vacío**, no se borra el test) y el handler entra a la familia con receta propia. El oráculo de comportamiento no quedaba vacío: para esta tool el perfil no viaja a MO2 ni vuelve en el payload, así que se observa espiando `ejecutar_fase_asistida`. **Probado por mutación**: con `profile="Default"` el test rojo, con `self._mo2_profile` verde. |
+| B-7 | `AWAITING_APPROVAL` no es alcanzable desde `RUNNING` en `ToolStateMachine`, así que no podía mapear `pendiente`. | Confirmado leyendo `_VALID_TRANSITIONS`. | Estado nuevo `AWAITING_OPERATOR` (terminal, sin salidas), con `_TERMINAL_STATES` consumido por los tres lugares que antes repetían la tupla a mano (`transition`, `active_task_count`, `cleanup_terminal`). Ancla doble: estado esperado y clave de idempotencia liberada. |
+| B-9 | `GenerateBashedPatchParams` nació con el default de pydantic (`extra="ignore"`): un `profile` mandado por el modelo se descartaba **en silencio** y el LLM creería haber elegido el perfil. | Verificado contra el `execute()` del registry: con `ignore` no hay error ni aviso; con `forbid` el `ValidationError` es explícito y el router lo puede devolver al modelo. | `extra="forbid"`, igual que `DiagnosticarParallaxParams` y por el mismo motivo (spec de #454), con test de que `profile` y `testigo_previo` se rechazan. |
+| B-8 | `tests/test_wrye_bash_asistida.py` exigía `pendiente_no_ratificado is True`, el marcador provisional del PR A. | Al retirarlo, el test quedaba rojo a propósito. | El test ahora exige la **ausencia** de la clave: dos campos para una sola decisión vuelven a divergir. Es el contrato ratificado, no la desaparición de una aserción. |
+
+**Censo de tests que el cableado mueve, para el PR C.** Medido con `--collect-only` en esta
+rama: `test_wrye_bash_asistida.py` **129**, `test_wrye_bash_service.py` **36**,
+`test_wrye_bash_cableado_asistido.py` **24** (nuevos), `test_wrye_bash_lock.py` **9**
+(reescritos, mismos 9 que antes). `execute_pipeline` conserva sus 36 tests de servicio y **ya
+no tiene callers de producción**; los 9 del lock dejaron de ser suyos y ahora anclan la
+superficie del agente. Con eso, «retirar `execute_pipeline` y sus 45 tests (36 + 9)» ya no es
+un número correcto: quedan **36** tests que dependen del camino headless.
+
+**Ronda 9 (revisión adversarial del PR B, 2026-11-01).** Code review nivel senior sobre el
+propio cableado: se buscaron huecos en las anclas, afirmaciones del PR que el código no
+sostiene, y superficies nuevas sin cubrir. Todos verificados por conducta o por mutación.
+
+| # | Hallazgo | Verificación | Corrección |
+|---|---|---|---|
+| S-1 | **El toast del operador decía «falló» sobre la etapa asistida.** El PR B arregló el `ToolStateMachine`, pero ningún consumidor de UI lee ese estado (grep: cero referencias fuera del módulo): lo que el humano ve es `summarize_ritual_result`, que con `success=False` devuelve `negative` con el prefijo «El ritual «X» falló: …». | **Reproducido**: el payload real de la fase 1 renderiza `("El ritual «wrye_bash» falló: Etapa 6 (Bashed Patch) requiere tu intervención…", "negative")` — un mensaje que se contradice solo, en rojo. | `summarize_ritual_result` devuelve `warning` con el mensaje de la etapa cuando `pendiente=True`. El predicado se extrajo a `tool_result.es_etapa_pendiente` y lo comparten el toast y `IdempotencyMiddleware`: duplicado, el primero que cambie deja al otro mintiendo. Anclas: toast amarillo, fallo real sigue rojo, verificación OK sigue verde. |
+| S-2 | **El ancla enumeraba el router pero no a los que eligen fase por su cuenta.** Una cuarta superficie que llamara `preparar_etapa_asistida`/`verificar_etapa_asistida` directo no aparecía en ningún test: reintroducía una copia de la decisión de fase, justo lo que el punto único evita. | Confirmado por mutación: una función nueva llamando `servicio.preparar_etapa_asistida(profile=…)` pasaba la suite completa. | `test_las_dos_fases_solo_se_invocan_desde_el_enrutado` enumera los llamadores de los dos métodos con receptor: en producción sólo puede ser el router. Mutación → rojo. |
+| S-3 | **«Sin callers de producción» se afirmaba sobre las tres superficies, no sobre el paquete.** El pin sólo miraba los tres archivos de `SUPERFICIES`; un caller nuevo en cualquier otro archivo volvía al camino headless sin romper nada. | Confirmado por mutación: un módulo nuevo con `servicio.execute_pipeline(...)` pasaba. | `test_ningun_caller_de_produccion_usa_el_camino_headless` enumera TODO `sky_claw/`: el único `.execute_pipeline(` es el de `execute_synthesis.py` (otro servicio, camino legítimo). Mutación → rojo; y sirve de tripwire para el PR C. |
+| S-4 | **El `path_resolver` nuevo de la tool no tenía oráculo de *fallo* en la dirección del default.** El schema y el wiring estaban, pero `profile="Default"` seguía en la firma del handler: un registry/caller que no lo pasara prepararía instrucciones con el perfil de MO2 de otra instalación. | Confirmado: el handler devolvía `pendiente=True` con un resolver del perfil `Default` en vez de fallar cerrado. | `profile: str = ""` (sin default inventado) ⇒ `PerfilInvalido`. Test nuevo, mutación → rojo. |
+| S-5 | **La superficie de inyección de esta tool no desapareció con la rama headless.** `artefacto` y `plugins_txt` se componen con nombres de carpeta de MODS —texto de terceros— y viajaban al prompt sin pasar por `sanitize_for_prompt`, que es lo que esta tool hacía antes con el `stdout`/`stderr` del runner. El CHANGELOG lo declaraba como hueco *del servicio*, pero éste lo alcanza al modelo. | El vector no es el marcador ASCII: Windows prohíbe `<`/`>` en nombres. Sí permite zero-width/bidi, y NFKC colapsa delimitadores de ancho completo (`＜tool_call＞`). Reproducido con un mod llamado `Salida<ZWSP>＜tool_call＞`. | `_sanear_rutas` sanea las dos claves de ruta antes de `json.dumps`, sobre una COPIA (el `preflight` adjunto es el mismo objeto que recibió otro consumidor). |
+| S-6 | **Mi primer test del saneo era vacuo.** Afirmaba `"\u200b" not in json.dumps(salida)`, y `json.dumps` con `ensure_ascii=True` escapa el zero-width como la secuencia de seis caracteres `\u200b`: la aserción no podía fallar nunca. | **Lo demostró la propia mutación**: con `_sanear_rutas` desactivado el test seguía verde. | Se afirma sobre el VALOR de la clave, más control positivo (el veneno está en la ruta real) y oráculo igualdad con `sanitize_for_prompt(str(ruta))`. Mutación → rojo. |
+| S-7 | **El oráculo del perfil en `test_perfil_sesion_invariante` era vacuo por construcción.** `assert [p for p in vistos if p != PERFIL] == []` pasa cuando la lista está vacía, es decir cuando el handler NO llama al enrutado. Para esta tool —única de la familia cuyo perfil no viaja a MO2 ni vuelve en el payload— esa lista vacía era el único oráculo. | Confirmado: si el lambda dejara de llamar al enrutado, el test seguía verde. | Igualdad con el número de llamadas esperado por tool (`[PERFIL]` para la etapa 6, `[]` para las demás). Mutación → rojo con el mensaje nombrando el perfil visto. |
+| S-8 | **La fase 2 no tiene affordance en el panel**, y el ADR lo daba por hecho: «verificar → veredicto» como si el operador pudiera pedirlo. El botón del ritual despacha payload vacío ⇒ siempre `preparar`. | Confirmado: `ritual_runner.run_ritual` despacha `{}` y ningún módulo de `sky_claw/app/gui/` menciona `fase`. | **Arreglado en este PR**: `resume_action_from_result` deriva la fase 2 del resultado estructural (tabla `_ACCIONES_DE_RESUME`, cerrada por igualdad) y `run_ritual_resume` recibe el `payload` **obligatorio** — se fue el hardcode `{"run_texgen": False}`, que era lo que ataba el resume a DynDOLOD. 19 casos nuevos (14 funciones) en `tests/test_resume_etapa6_asistida.py`, con las mutaciones probadas: 5 sobre la acción/el wiring y 3 sobre la validación del testigo (ronda 10, S-10). Persistir el testigo entre sesiones sigue en el PR D. |
+| S-9 | **`ProgressMiddleware` emitiría `ops.tool.completed` con `status="unknown"`** para la etapa pendiente (el contrato no tiene clave `status`). | Cierto pero **latente**: `ProgressMiddleware` no está cableado en ninguna composición de producción (grep: cero construcciones). | Sin cambio, con el motivo escrito: si alguien lo cablea, el evento necesita su `pendiente`/`AWAITING_OPERATOR`. |
+| S-10 | **El seam de S-8 re-implementaba el contrato del testigo, con cuatro agujeros.** `_testigo_utilizable` aceptaba `sha256=""`, un digest de 63 caracteres, uno en mayúsculas y el estado imposible *ausencia CON identidad* — las cuatro formas que `TestigoPrevio.__post_init__` rechaza. | Reproducido con el predicado real (7 formas, 4 divergentes) y congelado en `test_un_testigo_que_el_dominio_rechaza_no_viaja` (6 casos): 4 en rojo antes del fix. Consecuencia: el botón afirmaba en su payload un testigo que `_testigo_desde_resultado` descartaba en silencio ⇒ `frescura_probada=False` después de que el panel prometió frescura. Fail-closed en el resultado, pero dos validadores con reglas distintas. | `_testigo_utilizable` **delega el contrato en el dominio**: construye `TestigoPrevio` y traduce su `ValueError` a `None` (los `isinstance` quedan porque la dataclass no valida tipos en runtime). Mutaciones: validador casero, `except` que devuelve el dict y pérdida de los `isinstance` → rojo las tres. |
+
+**Lo que la revisión NO encontró** (buscado a propósito): fallos donde `pendiente` pudiera estar
+presente (ninguna otra tool emite esa clave, grep), colisiones de idempotencia entre fase 1 y
+fase 2 (claves distintas: el payload difiere), y regresiones en las anclas de censo (`24` tools,
+`FAMILIA_DEL_PERFIL`, `LITERALES_ESPERADOS` vacío) — las tres verificadas por corrida.
 
 ## 10. Registro de adjudicación
 

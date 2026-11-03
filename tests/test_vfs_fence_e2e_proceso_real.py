@@ -33,9 +33,10 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import psutil
+import pytest
 
 from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import PROTOCOL_VERSION, BridgeLaunchController
 from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker
@@ -166,7 +167,16 @@ class _Observador:
         if job is not None and ficha["en_job"] is None:
             from scripts import windows_job_probe
 
-            handle = windows_job_probe.abrir_proceso(hijo.pid)
+            try:
+                handle = windows_job_probe.abrir_proceso(hijo.pid)
+            except windows_job_probe.JobObjectError as exc:
+                # El hijo pudo terminar entre `children()` y `OpenProcess` (GetLastError=87): los `cmd.exe` del
+                # arranque del worker viven milisegundos. Antes esta excepción mataba el hilo y el observador dejaba
+                # de muestrear, así que el nieto de la attestation (que nace después) nunca se registraba. Se anota
+                # que no se pudo medir y se sigue; el assert 3 distingue «no medido» de «fuera del Job».
+                ficha["sin_medir"] = str(exc)
+                return
+            ficha.pop("sin_medir", None)
             try:
                 ficha["en_job"] = windows_job_probe.proceso_en_job(handle, job)
             finally:
@@ -311,8 +321,12 @@ async def test_el_worker_real_no_crea_descendientes_antes_del_ack_y_todos_quedan
             )
         # Assert 3 (Windows): TODO nieto pertenece al Job del bridge, comprobado contra su handle.
         if ES_WINDOWS:
-            fuera = [pid for pid, ficha in nietos.items() if ficha["en_job"] is not True]
+            fuera = [pid for pid, ficha in nietos.items() if ficha["en_job"] is False]
+            sin_medir = [pid for pid, ficha in nietos.items() if ficha["en_job"] is None]
             assert not fuera, f"nietos fuera del Job del bridge: {fuera}"
+            assert not sin_medir, (
+                f"nietos que terminaron antes de poder medirse ({sin_medir}): el test no mediría su pertenencia al Job"
+            )
         # HALLAZGO (informativo, no asertado): procesos que el propio ARRANQUE del worker crea antes de
         # llegar al fence, p. ej. por el import de librerías de terceros. Se reporta para la auditoría.
         previos = {
@@ -345,6 +359,55 @@ async def test_el_worker_real_no_crea_descendientes_antes_del_ack_y_todos_quedan
         with contextlib.suppress(Exception):
             await escritor.wait_closed()
         await broker.close()
+
+
+class _HijoFalso:
+    """Doble mínimo de ``psutil.Process`` para ``_Observador._registrar``."""
+
+    def __init__(self, pid: int, cmdline: list[str]) -> None:
+        self.pid = pid
+        self._cmdline = cmdline
+
+    def cmdline(self) -> list[str]:
+        return self._cmdline
+
+    def create_time(self) -> float:
+        return 1000.0 + self.pid / 1_000_000
+
+
+def test_el_observador_sobrevive_a_un_hijo_que_termino_antes_de_poder_abrirse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un hijo de vida corta puede morir entre ``children()`` y ``OpenProcess``; el observador sigue muestreando.
+
+    En el CI de #856 el ``OpenProcess`` de uno de esos hijos (los ``cmd.exe`` del arranque del worker)
+    falló con ``GetLastError=87`` y la excepción mató el hilo: dejó de muestrear y el nieto de la
+    attestation, que nace DESPUÉS, no se registró («el test no mediría nada»). El observador tiene que
+    anotar lo que no pudo medir y seguir con el resto.
+    """
+    from scripts import windows_job_probe
+
+    # Arrange: el pid 2952 ya no existe al abrirlo; el 3000 (el nieto) sí, y está en el Job.
+    def abrir_proceso(pid: int) -> int:
+        if pid == 2952:
+            raise windows_job_probe.JobObjectError(87, f"OpenProcess({pid}) falló (GetLastError=87)")
+        return 99
+
+    monkeypatch.setattr(windows_job_probe, "abrir_proceso", abrir_proceso)
+    monkeypatch.setattr(windows_job_probe, "proceso_en_job", lambda _handle, _job: True)
+    monkeypatch.setattr(windows_job_probe, "cerrar_handle", lambda _handle: None)
+    observador = _Observador(cast(Any, None), cast(Any, None), "job-1")
+    monkeypatch.setattr(observador, "_handle_del_job", lambda: 1234)
+    efimero = cast(psutil.Process, _HijoFalso(2952, ["cmd.exe", "/c", "ver"]))
+    nieto = cast(psutil.Process, _HijoFalso(3000, ["python.exe", "--probe-child"]))
+
+    # Act: no debe lanzar, y el hijo siguiente se registra y se mide.
+    observador._registrar(efimero)
+    observador._registrar(nieto)
+
+    # Assert
+    assert observador.descendientes[2952]["en_job"] is None, "un hijo que no se pudo abrir no se da por medido"
+    assert "GetLastError=87" in observador.descendientes[2952]["sin_medir"]
+    assert observador.descendientes[3000]["en_job"] is True
+    assert "sin_medir" not in observador.descendientes[3000]
 
 
 def test_el_protocolo_del_bridge_que_usa_este_e2e_es_el_de_produccion() -> None:

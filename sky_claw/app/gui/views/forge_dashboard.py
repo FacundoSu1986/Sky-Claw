@@ -842,14 +842,18 @@ def _ritual_feedback_panel() -> None:
             detalle = _e(str(accion.get("detail", "")))
             resume_fn = _RITUAL_RESUME_CALLBACKS.get("resume")
 
+            payload_de_la_accion = dict(accion.get("payload") or {})
+
             def _on_resume(_: Any = None, fn: Callable | None = resume_fn) -> None:
                 # Cerrar el toast antes de despachar: el nuevo run publicará su
                 # propio feedback; este quedó consumido por la acción.
                 get_store().set(STORE_KEY_RITUAL_FEEDBACK, None)
                 clear_ritual_result_owned(get_store(), current_tab_id())
                 _ritual_feedback_panel.refresh()
+                # El payload viaja tal como lo derivó el seam: la vista no decide qué
+                # intención se despacha (F-001), sólo transporta.
                 if callable(fn):
-                    fn(tool_key_de_la_corrida)
+                    fn(tool_key_de_la_corrida, dict(payload_de_la_accion))
 
             if callable(resume_fn):
                 r = (
@@ -859,11 +863,15 @@ def _ritual_feedback_panel() -> None:
                 )
                 r.on("click", _on_resume)
                 with r:
-                    ui.html(str(accion.get("label", "Continuar DynDOLOD")))
+                    ui.html(str(accion.get("label", "Continuar")))
                 if detalle:
+                    # El detalle lo redacta el seam y ya dice QUÉ falta y SOBRE QUÉ
+                    # artefacto. El rótulo «TexGen Output listo en:» era de la etapa 9 y
+                    # se imprimía sobre cualquier tool con acción de resume — con la
+                    # etapa 6 habría anunciado un TexGen inexistente junto a un .esp.
                     ui.html(
                         f"<div style=\"font-family:'EB Garamond',serif; font-size:11px; color:#8a8270; line-height:1.3;\">"
-                        f"TexGen Output listo en: {detalle}</div>"
+                        f"{detalle}</div>"
                     )
         x = ui.element("button").style(
             "cursor:pointer; background:none; border:none; color:#8a8270; font-size:15px; line-height:1; padding:0 2px;"
