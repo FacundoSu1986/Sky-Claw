@@ -180,7 +180,7 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
   daría normales equivocadas sin ningún error. En la tanda del 30/10 dos texturas de un mod (normales DXT5) quedaron `NO_PROCESADA` con `FormatoNoSoportadoError: … DXT5 no verificado`. **Todavía no hay
   un camino soportado** para esas texturas (reconvertirlas a mano sin respetar ese canal sería peor que no usarlas); soportarlas es trabajo de código aparte y, por decisión del operador (30/10), **no es prioridad por ahora**.
 - No hay un control de «altura» o «intensidad» en el generador: la salida siempre se normaliza a [0, 1] y qué tan fuerte se ve lo decide el juego. Un control así queda como idea
-  pendiente (ver el issue de la auditoría), no como funcionalidad. `--centrado media` (experimental, #834 ítem 8) **no** es ese control: mueve la media de la altura, no su intensidad.
+  pendiente (ver el issue de la auditoría), no como funcionalidad. `--centrado media` (experimental, #834 ítem 8) **no** es ese control: mueve la media de la altura y, como efecto secundario, reduce la amplitud (entre 0,5 y 1 veces; ver la tabla de arriba).
 - Un mapa casi plano era sobre todo un defecto de la integración (unos pocos píxeles bajo el horizonte lo arruinaban) y ya está corregido; si igual lo ves en el informe (`amplitud` con
   desviación cercana a 0), mandame la textura de entrada.
 - La generación solo existe como línea de comandos (sin interfaz gráfica ni agente). El diagnóstico del perfil (`diagnosticar_parallax_perfil`) sí está en la GUI y en el agente. La integración con MO2 (habilitar el mod solo) viene después.

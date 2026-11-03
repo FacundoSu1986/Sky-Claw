@@ -1698,7 +1698,7 @@ la procedencia son idénticas a las de antes: `centrado` figura en la procedenci
 
 **Consecuencias.** (1) La amplitud baja por el factor (hasta la mitad en una distribución muy asimétrica): como el piso `DESVIACION_MINIMA_DE_ALTURA` (8/255) se mide sobre la altura exportada,
 una textura de poco contraste puede pasar a `SIN_CONTENIDO` solo con el interruptor encendido. (2) Las métricas del gate (`acuerdo_normal`, residuo, costura, no finitos) se calculan sobre la altura integrada,
-no sobre la exportada: no cambian. La `amplitud` del informe describe la exportada y sí cambia. (3) No es un control de intensidad.
+no sobre la exportada: no cambian. La `amplitud` del informe describe la exportada y sí cambia. (3) No es un control dedicado de intensidad: la reducción de amplitud es un efecto secundario de centrar, no un parámetro que se elige.
 
 **Descartado.** Desplazar la media a 0,5 y recortar: pierde datos y no es afín. Centrar por la mediana: sin evidencia que lo prefiera a la media. Cambiar el default ahora: se decide con la prueba A/B.
 
