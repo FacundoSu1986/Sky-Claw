@@ -560,6 +560,15 @@ categoría: 31 fallan idéntico en `origin/main` (`b0e30bbc`), 7 pasan en ambos
 lados al correr el mismo grupo de 38 y sólo fallan por el ORDEN de la suite
 completa, 0 regresiones atribuibles. Detalle en §0.8.
 
+**Alcance de la corrida local de la suite completa.** Se lanzó sobre `e3660688`
+y se **abortó a las 1h45m** sin resumen: el conteo de directorios del
+`--basetemp` quedó clavado en 1.628 (la corrida de referencia llegó a 42.000) y
+el proceso estaba esperando a un subproceso de un test de empaquetado. No se
+usa ese resultado como señal, ni en verde ni en rojo: el mismo commit ya tenía
+CI verde en los dos jobs de Windows (54m21s y 40m43s), que es la señal que este
+repo acepta. Lo que sí está medido localmente es lo de arriba: los 7 archivos
+afectados (214 passed) y el A/B del grupo de 38 contra `main`.
+
 **Nota metodológica.** En esta máquina hay un hook de borrado que impide eliminar
 el `--basetemp`; dos corridas que lo comparten producen cientos de fallos de
 infraestructura (se observaron 129 en el baseline sin cambios aplicados). Todas
@@ -683,13 +692,19 @@ productiva deshabilitada. El inspector P7 **no tiene ninguna capacidad de
 escritura**: el TOCTOU del destino se cerró quitando la escritura, no
 parcheando la comprobación.
 
-**Dictamen `P5C2_SAFE_TO_MERGE_SYNTHETIC_ONLY`, condicionado al CI del SHA que
-contiene la sexta ronda.** El run ``41526294460`` sobre ``15a2408b`` pasó verde
-en todos los checks (``windows py3.11`` 53m, ``windows py3.12`` 51m,
-``Tests (Pytest)``, ``Build``, ``Lint``, ``Mypy``, ``Security Scan``,
-``CodeRabbit``, ``CodeQL``, ``Regression & Test Oracle``). La sexta ronda
-cambia dos módulos y sus tests, así que ese verde **no se hereda**: el dictamen
-se sostiene sobre el CI del HEAD nuevo, que es el único que prueba ese árbol.
+**Dictamen `P5C2_SAFE_TO_MERGE_SYNTHETIC_ONLY`, con el CI del SHA de la sexta
+ronda verificado.** El run ``41711091624`` sobre ``e3660688`` pasó verde en
+todos los checks: ``Tests / windows-latest / py3.11`` (54m21s), ``py3.12``
+(40m43s), ``Tests (Pytest)``, ``Build``, ``POSIX Core``, ``Lint (Ruff)`` ×3,
+``Mypy`` ×3, ``Security Scan``, ``CodeQL``, ``Analyze`` ×3, ``Regression & Test
+Oracle`` y ``Auto-revisión en PR interno``. El verde anterior (run
+``41526294460`` sobre ``15a2408b``) **no se heredó**: se exigió uno nuevo porque
+la sexta ronda cambia dos módulos y sus tests.
+
+``CodeRabbit`` figura como ``skipping`` en ese SHA: **no revisó este push y no
+se cuenta como aprobación**. Sus dos hallazgos están cerrados —uno con
+divergencia declarada en §0.8— y el resto de su historial quedó verificado
+contra el árbol en §9bis.
 
 Los cuatro frentes del gate final están cerrados con evidencia:
 TOCTOU (test RED + eliminación del camino), hardlinks (medición real + rechazo
