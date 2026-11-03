@@ -48,6 +48,10 @@ La política clean-room, `docs/design/research/native-parallax/` y
   receta en `CONSUMIDORES_DE_ESPECTRAL`. `amplitud` (NP-V0) declara en el informe del lote los percentiles 2/98 y la
   desviación de la altura que se exporta (`lote.PERCENTILES_DE_LA_AMPLITUD`): describe, sin umbral ni objetivo, y no
   cambia el default `min_max` (ese default se decide con más de una textura juzgada en el juego).
+  `centrado` (#834 ítem 8, `integrate.Centrado`, `--centrado`) es **opt-in** y por defecto `ninguno`: apagado, la altura y la procedencia (y con ella la clave de caché de toda salida
+  ya escrita) son exactamente las de antes (ausente de la procedencia = `ninguno`); `media` lleva la media a 0,5 con un reescalado afín y simétrico (factor entre 0,5 y 1, sin recortar). Las métricas
+  del gate se calculan sobre la altura integrada, no sobre la exportada, así que no cambian; la `amplitud` del informe sí. Ancla: `test_los_llamadores_de_produccion_del_centrado_estan_enumerados`
+  (`tests/test_native_parallax_lote.py`, por AST) y la enumeración de `Centrado` en los tests de `integrate` y `lote`. El default se decide después del A/B en el rig, no antes.
 - `gates.py` (NP-Q0b) es el gate de calidad y es **fail-closed**: sin un registro de umbrales validado contra un
   corpus REAL, todo va a `REVIEW` (`UMBRALES_VIGENTES is None`, congelado por igualdad). `AUTO_ACCEPT` exige
   evidencia calculada (conteos → cota binomial), no un booleano; el corpus sintético no puede validar; la evidencia

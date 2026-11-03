@@ -38,7 +38,7 @@ from sky_claw.local.native_parallax import lote, provider
 from sky_claw.local.native_parallax.decode import ArchivoNormalInvalidoError, ConvencionNormal, NormalDecoder
 from sky_claw.local.native_parallax.export import ExportError, generar_mips
 from sky_claw.local.native_parallax.gates import Decision, MetricasDeCalidad, Motivo, Veredicto
-from sky_claw.local.native_parallax.integrate import Bordes, ModoNormalizacion
+from sky_claw.local.native_parallax.integrate import Bordes, Centrado, ModoNormalizacion
 from sky_claw.local.native_parallax.lote import (
     EXPORTADOR_ID,
     EstadoDeArchivo,
@@ -272,6 +272,88 @@ async def test_los_parametros_que_cambian_los_bytes_cambian_la_clave_y_los_que_n
     informe = await escenario.lote([normal], parametros=otra)
     assert informe.archivos[0].efecto is EfectoDeSalida.REEMPLAZADA
     assert escenario.manifiesto().entradas[0].clave_de_cache != clave_base
+
+
+async def test_el_centrado_es_opt_in_cambia_la_clave_y_apagado_deja_la_procedencia_de_siempre(
+    escenario: Escenario,
+) -> None:
+    # #834 ítem 8: encendido, la altura que se exporta tiene media 0,5; apagado, la procedencia es la de antes (misma clave).
+    normal = escenario.normal("muro01")
+    await escenario.lote([normal])
+    clave_base = escenario.manifiesto().entradas[0].clave_de_cache
+
+    informe = await escenario.lote(
+        [normal], parametros=ParametrosDelLote(centrado=Centrado.MEDIA, escribir_revision=True)
+    )
+
+    assert informe.archivos[0].efecto is EfectoDeSalida.REEMPLAZADA
+    entrada = escenario.manifiesto().entradas[0]
+    assert entrada.clave_de_cache != clave_base
+    assert json.loads(entrada.procedencia.parametros)["centrado"] == "media"
+    altura = escenario.exportador.alturas[-1]
+    assert float(altura.mean()) == pytest.approx(0.5, abs=1e-9)
+    assert float(altura.min()) >= 0.0 and float(altura.max()) <= 1.0
+
+    informe = await escenario.lote([normal], parametros=ParametrosDelLote(escribir_revision=True))
+    assert informe.archivos[0].efecto is EfectoDeSalida.REEMPLAZADA  # volvió a lo de siempre
+    assert escenario.manifiesto().entradas[0].clave_de_cache == clave_base
+    assert "centrado" not in json.loads(escenario.manifiesto().entradas[0].procedencia.parametros)
+
+
+def test_el_centrado_apagado_es_el_valor_por_defecto_y_no_entra_a_la_procedencia_ni_al_informe() -> None:
+    parametros = ParametrosDelLote()
+
+    assert parametros.centrado is Centrado.NINGUNO
+    assert "centrado" not in parametros.a_parametros_de_procedencia()
+    assert "centrado" not in parametros.a_diccionario()
+
+
+@pytest.mark.parametrize("centrado", list(Centrado), ids=lambda c: c.name)
+def test_todo_centrado_tiene_una_procedencia_definida(centrado: Centrado) -> None:
+    # Enumera el vocabulario entero: un miembro nuevo sin decisión de procedencia rompe acá (apagado ⇒ ausente).
+    parametros = ParametrosDelLote(centrado=centrado)
+
+    procedencia = parametros.a_parametros_de_procedencia()
+    assert ("centrado" in procedencia) == (centrado is not Centrado.NINGUNO)
+    assert procedencia.get("centrado", centrado.value) == centrado.value
+    assert json.loads(json.dumps(parametros.a_diccionario(), allow_nan=False))  # serializable
+
+
+@pytest.mark.parametrize("malo", ["media", None, 1, True])
+def test_el_centrado_debe_ser_un_miembro_de_centrado(malo: object) -> None:
+    with pytest.raises(ParametrosDelLoteInvalidosError, match="centrado"):
+        ParametrosDelLote(centrado=malo)  # type: ignore[arg-type]
+
+
+def _llamadas_de_produccion(nombre: str) -> list[tuple[str, bool]]:
+    """``(archivo, pasa centrado=)`` por cada llamada a ``nombre`` en ``sky_claw/`` y ``scripts/`` (por AST, ordenado)."""
+    raiz = pathlib.Path(__file__).resolve().parents[1]
+    encontradas: list[tuple[str, bool]] = []
+    for carpeta in ("sky_claw", "scripts"):
+        for archivo in sorted((raiz / carpeta).rglob("*.py")):
+            for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8"))):
+                if not isinstance(nodo, ast.Call):
+                    continue
+                f = nodo.func
+                llamado = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+                if llamado == nombre:
+                    pasa = any(k.arg == "centrado" for k in nodo.keywords)
+                    encontradas.append((archivo.relative_to(raiz).as_posix(), pasa))
+    return sorted(encontradas)
+
+
+def test_los_llamadores_de_produccion_del_centrado_estan_enumerados() -> None:
+    # Hermanos del interruptor (#834 ítem 8): quien arma los parámetros y quien normaliza la altura. Un llamador nuevo
+    # rompe este ancla hasta que se decide si lleva ``centrado``. La generación solo existe en la línea de comandos.
+    assert _llamadas_de_produccion("normalizar_altura") == [
+        ("sky_claw/local/native_parallax/experiments/medicion.py", False),  # experimento de research: MIN_MAX fijo
+        ("sky_claw/local/native_parallax/lote.py", True),  # la tubería del producto
+    ]
+    assert _llamadas_de_produccion("ParametrosDelLote") == [
+        ("sky_claw/local/native_parallax/cli.py", False),  # autoprueba: sintética, con los valores por defecto
+        ("sky_claw/local/native_parallax/cli.py", True),  # generar: lo que pide el operador
+        ("sky_claw/local/native_parallax/lote.py", False),  # procesar_lote sin parámetros: los valores por defecto
+    ]
 
 
 async def test_una_segunda_corrida_identica_es_cache_vigente_y_no_reescribe(escenario: Escenario) -> None:

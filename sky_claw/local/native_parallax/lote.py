@@ -65,6 +65,7 @@ from sky_claw.local.native_parallax.gates import Decision, GateError, MetricasDe
 from sky_claw.local.native_parallax.integrate import (
     PONDERACION_DEL_PRODUCTO,
     Bordes,
+    Centrado,
     IntegracionError,
     ModoNormalizacion,
     _exigir_escala,
@@ -262,6 +263,7 @@ class ParametrosDelLote:
     normalizacion: ModoNormalizacion = ModoNormalizacion.MIN_MAX
     percentil_bajo: float | None = None
     percentil_alto: float | None = None
+    centrado: Centrado = Centrado.NINGUNO
     escribir_revision: bool = False
     retirar_no_incluidas: bool = False
 
@@ -270,6 +272,7 @@ class ParametrosDelLote:
             ("convencion", ConvencionNormal),
             ("bordes", Bordes),
             ("normalizacion", ModoNormalizacion),
+            ("centrado", Centrado),
         ):
             if not isinstance(getattr(self, nombre), tipo):
                 raise ParametrosDelLoteInvalidosError(
@@ -291,8 +294,12 @@ class ParametrosDelLote:
             raise ParametrosDelLoteInvalidosError(str(exc)) from exc
 
     def a_parametros_de_procedencia(self) -> dict[str, Any]:
-        """Los parámetros que determinan los bytes de la salida (la política no entra)."""
-        return {
+        """Los parámetros que determinan los bytes de la salida (la política no entra).
+
+        ``centrado`` solo figura si está encendido: ausente significa ``ninguno``. Así apagado la procedencia, y con ella
+        la clave de caché de toda salida ya escrita, es EXACTAMENTE la de antes de que existiera el interruptor.
+        """
+        procedencia: dict[str, Any] = {
             "version_del_lote": VERSION_DEL_LOTE,
             "convencion": self.convencion.value,
             "bordes": self.bordes.value,
@@ -302,6 +309,9 @@ class ParametrosDelLote:
             "percentil_bajo": None if self.percentil_bajo is None else float(self.percentil_bajo),
             "percentil_alto": None if self.percentil_alto is None else float(self.percentil_alto),
         }
+        if self.centrado is not Centrado.NINGUNO:
+            procedencia["centrado"] = self.centrado.value
+        return procedencia
 
     def a_diccionario(self) -> dict[str, Any]:
         return {
@@ -489,6 +499,7 @@ def _medir(ruta: pathlib.Path, parametros: ParametrosDelLote, decisor: Decisor) 
         parametros.normalizacion,
         percentil_bajo=parametros.percentil_bajo,
         percentil_alto=parametros.percentil_alto,
+        centrado=parametros.centrado,
     )
     acuerdo = acuerdo_normal(
         normal, integrada.altura, bordes=parametros.bordes, escala_x=parametros.escala_x, escala_y=parametros.escala_y

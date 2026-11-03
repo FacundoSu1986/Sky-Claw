@@ -1684,3 +1684,25 @@ Las cuatro que ya estaban bien no cambiaron (±0,4°) y las cuatro de 47–65° 
 **No verificado.** Que el pozo vuelva a verse como E5 después de destildar V1 y V2; la calidad en el juego de las 8 texturas de la Parte A (no se generaron archivos); cualquier otra superficie u otro propietario; la explicación de por qué V1 se ve y el `_p` de Skyland no.
 
 **Qué sigue.** (a) *Hecho:* #794, #796 y #797 están en `main` (más abajo, lo que dejó su revisión). (b) NP-V0e: veredicto en el juego de cuatro texturas más, generado contra sin generar, empezando por las que quedaron en 22–32°. (c) Reanudar NP-A0 con el resolvedor de VFS de MO2 (solo lectura). **Siguen congelados los umbrales.**
+
+### Actualización: centrado opcional de la altura (#834 ítem 8, 2026-11-03)
+
+**Contexto.** La integración devuelve una altura de media cero (la media no es observable desde los gradientes) y la normalización la lleva a [0, 1] con
+`min_max` o percentiles. La media exportada queda entonces en `-mínimo / (máximo - mínimo)`: 0,5 solo si la distribución es simétrica. **Medido con el
+pipeline real sobre tres campos sintéticos** (`integrar` + `normalizar_altura`, MIN_MAX): 0,500 para uno simétrico, 0,025 para uno con bultos hacia arriba y
+0,975 para uno con pozos hacia abajo. La auditoría externa lo señaló («altura no centrada en 0,5»); que importe en el juego **no está verificado**.
+
+**Decisión.** `Centrado.MEDIA`, **opt-in** (`--centrado media`; por defecto `ninguno`): reescala de forma afín y simétrica alrededor de la media, con factor
+`0,5 / max(media, 1 - media)` entre 0,5 y 1. La media va a 0,5, el valor más lejano de la media toca 0 o 1, el orden se conserva y no se recorta nada. Apagado, la altura y
+la procedencia son idénticas a las de antes: `centrado` figura en la procedencia solo si está encendido (ausente = `ninguno`), así la clave de caché de toda salida ya escrita no cambia.
+
+**Consecuencias.** (1) La amplitud baja por el factor (hasta la mitad en una distribución muy asimétrica): como el piso `DESVIACION_MINIMA_DE_ALTURA` (8/255) se mide sobre la altura exportada,
+una textura de poco contraste puede pasar a `SIN_CONTENIDO` solo con el interruptor encendido. (2) Las métricas del gate (`acuerdo_normal`, residuo, costura, no finitos) se calculan sobre la altura integrada,
+no sobre la exportada: no cambian. La `amplitud` del informe describe la exportada y sí cambia. (3) No es un control de intensidad.
+
+**Descartado.** Desplazar la media a 0,5 y recortar: pierde datos y no es afín. Centrar por la mediana: sin evidencia que lo prefiera a la media. Cambiar el default ahora: se decide con la prueba A/B.
+
+**Ancla.** `test_los_llamadores_de_produccion_del_centrado_estan_enumerados` (por AST: quién construye los parámetros y quién normaliza la altura), `test_el_vocabulario_de_centrado_esta_congelado`,
+`test_todo_miembro_de_centrado_produce_una_altura_valida` y `test_todo_centrado_tiene_una_procedencia_definida` (enumeran `Centrado`), y `test_centrado_ninguno_es_el_valor_por_defecto_y_no_cambia_un_solo_valor`.
+
+**No verificado.** Cuánto se corren las texturas reales (los campos medidos son sintéticos y extremos); si el juego toma 0,5 como nivel neutro; cuál de las dos salidas se ve mejor. Queda la prueba A/B en el rig.
