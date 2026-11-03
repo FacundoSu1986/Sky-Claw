@@ -583,19 +583,17 @@ VRAMr (scripts en Nexus).
 `vramr_service.py` además no usa Job Object, a diferencia de DynDOLOD (U-07) y
 grass: si VRAMr spawnea compresores externos, un timeout deja huérfanos.
 
-Dos deudas que deja abiertas el fail-closed de la etapa 6, para no confundirlas
-con el defecto ya cerrado:
+Deudas que deja abiertas el fail-closed de la etapa 6 (la primera ya se cobró), para
+no confundirlas con el defecto ya cerrado:
 
-- `WryeBashPipelineService.execute_pipeline` **no** cortocircuita: sigue corriendo
-  el preflight, tomando los locks `bashed-patch` + `load-order` y persistiendo un
-  `ActionManifest` que declara una mutación, y recién ahí el runner eleva
-  `WryeBashHeadlessUnsupportedError` y la TX queda `rolled_back`. **Ya no lo alcanza
-  ninguna superficie de producción** (PR B de ADR 0016: las tres delegan en
-  `ejecutar_fase_asistida`, que no muta y por eso no toma locks ni abre TX), así que
-  la deuda quedó latente en vez de cobrarse en cada invocación. Sigue siendo la razón
-  por la que el PR C del ADR §7 tiene que decidir: retirarlo, o declararlo compat
-  documentada — en ese caso necesita su propio saneo de `stdout`/`stderr`, que vivía
-  en el handler del agente y se retiró con la rama headless.
+- ~~`WryeBashPipelineService.execute_pipeline` **no** cortocircuitaba~~ — **cerrada
+  (PR C de ADR 0016 §7).** El método corría el preflight, tomaba los locks
+  `bashed-patch` + `load-order` y persistía un `ActionManifest` que declaraba una
+  mutación, y recién ahí el runner elevaba `WryeBashHeadlessUnsupportedError` con la TX
+  `rolled_back`. El PR B lo dejó sin callers de producción y el PR C **lo retiró** con
+  sus 8 helpers, sus 3 clases module-level y sus 4 dependencias: sin camino que
+  devuelva la salida cruda de un subproceso, el saneo de `stdout`/`stderr` que había
+  quedado anotado **se cierra por retiro** en vez de por parche (ADR 0016 §7.1).
 - `--auto_run` de Pandora corre "using the same active mods as cached from the last
   successful run": en una instalación sin corrida previa exitosa no hay caché, y no
   está verificado en rig real qué hace el motor en ese caso. Es el escenario que
