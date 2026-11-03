@@ -38,6 +38,12 @@ from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 MODULO = RAIZ / "sky_claw/local/tools/wrye_bash_service.py"
 
+#: El nombre canónico, medido desde el módulo que lo define y no desde un literal acá: si
+#: el contrato cambia, este archivo no tiene que cambiar para seguir midiendo.
+_NOMBRE_DEL_ARTEFACTO = __import__(
+    "sky_claw.local.tools.wrye_bash_runner", fromlist=["BASHED_PATCH_NAME"]
+).BASHED_PATCH_NAME
+
 #: Helpers del camino headless. Enumeración literal: si alguno sobrevive —o vuelve— el
 #: ancla falla hasta que alguien decida si es parte del camino vivo.
 _HELPERS_DEL_CAMINO_MUERTO = frozenset(
@@ -154,23 +160,112 @@ def test_ningun_modulo_de_produccion_construye_el_servicio_con_dependencias_muer
     assert ofensores == [], "construcciones con dependencias del camino muerto:\n" + "\n".join(ofensores)
 
 
+#: Módulo que DEFINE el nombre del artefacto. Es el único lugar de `sky_claw/` donde el
+#: literal puede existir: todo lo demás lo nombra por la constante.
+_MODULO_CANONICO = pathlib.Path("sky_claw/local/tools/wrye_bash_runner.py")
+
+#: Duplicado PREEXISTENTE en el carril de xEdit (``DelegateToBashedPatch``), declarado y
+#: no tocado por este PR: ``sky_claw/local/xedit/**`` es de otro carril (ADR 0016 §7). Se
+#: enumera para que la excepción sea exacta —una tercera definición, o mover esta de
+#: archivo, rompe el ancla— y el drift ya está cubierto por comportamiento en
+#: ``test_wrye_bash_lock.py::test_nombre_canonico_del_bashed_patch_sincronizado``.
+_DEFINICIONES_TOLERADAS = frozenset({"sky_claw/local/xedit/patch_orchestrator.py"})
+
+
+def _literales_del_artefacto(py: pathlib.Path) -> list[tuple[int, str]]:
+    """`(línea, valor)` de CADA constante `str` que mencione el artefacto, por AST.
+
+    Por AST y no por texto: un docstring o un comentario que lo nombre en prosa es un
+    `ast.Constant` como cualquier otro (y también se reporta), mientras que un archivo que
+    sólo lo menciona de pasada —``"mods"``, una lista de rutas— ya no gana la exención que
+    la versión anterior daba por contener una subcadena cualquiera.
+    """
+    arbol = ast.parse(py.read_text(encoding="utf-8"))
+    return [
+        (nodo.lineno, nodo.value)
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str) and _NOMBRE_DEL_ARTEFACTO in nodo.value
+    ]
+
+
 def test_el_lock_del_bashed_patch_ya_no_existe() -> None:
     """Sin tomador no hay contrato: el id de lock del Bashed Patch se retira con el camino.
 
-    Se afirma sobre el MÓDULO y sobre el paquete: un id de lock que nadie toma es una mentira
-    silenciosa sobre la etapa 6 (alguien podría creer que sigue serializada).
+    Se afirma sobre el MÓDULO: un id de lock que nadie toma es una mentira silenciosa sobre
+    la etapa 6 (alguien podría creer que sigue serializada).
     """
     assert not hasattr(__import__("sky_claw.local.tools.wrye_bash_service", fromlist=["x"]), "BASHED_PATCH_RESOURCE_ID")
 
-    apariciones: list[str] = []
-    for py in sorted((RAIZ / "sky_claw").rglob("*.py")):
-        texto = py.read_text(encoding="utf-8")
-        if "Bashed Patch, 0.esp" in texto and '"mods"' not in texto:
-            for nro, linea in enumerate(texto.splitlines(), 1):
-                if "Bashed Patch, 0.esp" in linea and "BASHED_PATCH_NAME" not in linea:
-                    apariciones.append(f"{py.relative_to(RAIZ)}:{nro}: {linea.strip()[:90]}")
 
-    assert apariciones == [], "el id de lock/literal sigue en producción:\n" + "\n".join(apariciones)
+def test_el_registry_del_agente_ya_no_recibe_un_runner_de_wrye_bash() -> None:
+    """El asa que quedaba: `AsyncToolRegistry(wrye_bash_runner=...)`.
+
+    El handler dejó de admitir un runner, pero el **registry** seguía con el parámetro (y con
+    su atributo) para pasárselo. Ningún caller lo usaba, así que era un parámetro muerto que
+    sólo servía de asa para reconstruir el camino. Se retiró en el PR C; este test es lo que
+    lo mantiene retirado — hallado por mutación, no por lectura: sin él, volver a agregarlo
+    no rompía **ningún** test.
+
+    Se distinguen las dependencias: ``lock_manager``/``snapshot_manager``/``journal`` siguen
+    siendo legítimas en el registry (las usan otras tools), así que el ancla es específica.
+    """
+    from sky_claw.app.agent.tools import AsyncToolRegistry
+
+    parametros = set(inspect.signature(AsyncToolRegistry.__init__).parameters)
+    assert "wrye_bash_runner" not in parametros, "el registry volvió a aceptar un runner del camino retirado"
+
+    ofensores: list[str] = []
+    for py in sorted((RAIZ / "sky_claw").rglob("*.py")):
+        arbol = ast.parse(py.read_text(encoding="utf-8"))
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Call):
+                continue
+            nombre = getattr(nodo.func, "id", None) or getattr(nodo.func, "attr", None)
+            if nombre not in {"AsyncToolRegistry", "ToolRegistry"}:
+                continue
+            if any(kw.arg == "wrye_bash_runner" for kw in nodo.keywords):
+                ofensores.append(f"{py.relative_to(RAIZ)}:{nodo.lineno}")
+
+    assert ofensores == [], "construcciones del registry con un runner retirado:\n" + "\n".join(ofensores)
+
+
+def test_el_nombre_del_artefacto_se_define_una_sola_vez() -> None:
+    """Igualdad exacta: el literal vive en UNA definición, y su duplicado es uno declarado.
+
+    La versión anterior de este ancla eximía por archivo (``'"mods"' not in texto``) y esa
+    exención era un punto ciego medible: un literal suelto en ``output_targets.py`` —que
+    menciona ``"mods"``— pasaba el test. Acá la unidad de cuenta es la CONSTANTE, así que
+    no hay subcadena que pueda comprar una exención: cada aparición se enumera por archivo
+    y línea, y sólo se toleran las dos definiciones conocidas (la canónica y la del carril
+    de xEdit). Cualquier otra —en código o en prosa— rompe el ancla.
+    """
+    apariciones: list[tuple[str, int, str]] = []
+    for py in sorted((RAIZ / "sky_claw").rglob("*.py")):
+        for linea, valor in _literales_del_artefacto(py):
+            apariciones.append((py.relative_to(RAIZ).as_posix(), linea, valor))
+
+    archivos = {archivo for archivo, _, _ in apariciones}
+    assert archivos - _DEFINICIONES_TOLERADAS == {_MODULO_CANONICO.as_posix()}, (
+        "el nombre del artefacto se define en módulos no declarados:\n"
+        + "\n".join(
+            f"{a}:{n}: {v[:80]}"
+            for a, n, v in apariciones
+            if a not in _DEFINICIONES_TOLERADAS | {_MODULO_CANONICO.as_posix()}
+        )
+    )
+
+    del_canonico = [(n, v) for a, n, v in apariciones if a == _MODULO_CANONICO.as_posix()]
+    assert del_canonico == [(21, _NOMBRE_DEL_ARTEFACTO)], (
+        "el módulo canónico debe contener el literal UNA vez, en la asignación de "
+        f"``BASHED_PATCH_NAME``; encontré {del_canonico}. Fuera de ahí, se nombra la constante."
+    )
+
+    del_tolerado = [(n, v) for a, n, v in apariciones if a in _DEFINICIONES_TOLERADAS]
+    assert del_tolerado == [(384, _NOMBRE_DEL_ARTEFACTO)], (
+        "el duplicado declarado del carril de xEdit cambió (o apareció otro): "
+        f"encontré {del_tolerado}. Si la duplicación se consolidó, sacá la excepción de "
+        "``_DEFINICIONES_TOLERADAS`` en el mismo commit."
+    )
 
 
 @pytest.mark.parametrize(

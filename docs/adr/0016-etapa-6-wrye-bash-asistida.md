@@ -257,7 +257,7 @@ opción que no agrega mentiras.
 |---|---|---|
 | ¿Quién llama `execute_pipeline` en producción? | **0** callers en `sky_claw/` | `grep` de `execute_pipeline` sobre el paquete: sólo la definición y 3 menciones en prosa (docstrings de `wrye_bash_service`, `system_tools` y un comentario de `__init__.py`). El dispatcher, el supervisor y la tool llaman a `ejecutar_fase_asistida` desde el PR B. |
 | ¿Cuánto código muerto hay? | **9 métodos** (`execute_pipeline` + 8 helpers de caja negra y rollback, incluido `ensure_runner`) y **3 clases module-level** (`_DesenlaceDelRollback`, `_ActionManifestError`, `_RunFallidoError`) | AST: alcanzabilidad desde los 3 métodos públicos. 8 de los 10 métodos privados no eran alcanzables desde ningún camino vivo; `ensure_runner` sólo lo llamaba `execute_pipeline`. |
-| ¿Cuánto pesa? | `wrye_bash_service.py`: **1231 → 658 líneas** (−573 netas) | `git diff --numstat` del archivo en este PR. |
+| ¿Cuánto pesa? | `wrye_bash_service.py`: **1231 → 661 líneas** (−570 netas) | `wc -l` sobre `b247aea` y sobre el HEAD del PR. |
 | ¿Qué dependencias se van? | `lock_manager`, `snapshot_manager`, `journal`, `wrye_bash_runner`; `__init__` pasa de **8 a 4** parámetros | AST por método: sólo `execute_pipeline` y sus 6 helpers tocaban `_lock_manager`/`_snapshot_manager`/`_journal`; **ninguno** de los 9 métodos que quedan los toca. |
 | ¿Se pierde cobertura real? | De los 36 tests de `test_wrye_bash_service.py`, **8 contratos sobreviven** (4 se portaron a la suite asistida en este PR) y **28 se retiran con el código** | Mapeo test por test, abajo. |
 | ¿Y el hueco de saneo de `stdout`/`stderr` que el PR B dejó anotado? | **Se cierra por retiro**: sin camino que devuelva la salida de un subproceso no hay texto de terceros que sanear | `wrye_bash_service.py` ya no importa `sanitize_for_prompt` ni menciona `stdout`/`stderr`; el ancla nueva prohíbe que vuelva a existir un runner en la firma de la tool. |
@@ -272,7 +272,7 @@ es exactamente cómo se reconstruye un camino muerto por partes. El ADR §2 dice
 existe para lo que puede mutar: la etapa asistida no muta, así que no hay nada que la compat
 documentada pudiera proteger.
 
-**El ancla.** `tests/test_wrye_bash_retiro_headless.py` (7 funciones, 10 ítems) congela el retiro
+**El ancla.** `tests/test_wrye_bash_retiro_headless.py` (8 funciones, 12 ítems) congela el retiro
 por AST en tres direcciones: (1) los 9 helpers **no están** (intersección sobre nombres
 literales, para que el mensaje nombre al que volvió); (2) el conjunto de métodos de la clase es
 **cerrado e igual** a los 10 que quedan —un helper nuevo con otro nombre no tiene hueco—; (3) la
@@ -283,7 +283,7 @@ superficie pública es exactamente
 dependencias muertas, prohíbe el literal `Bashed Patch, 0.esp` fuera de una línea que nombre
 `BASHED_PATCH_NAME`, y enumera los 5 símbolos de lock/TX que el módulo ya no puede importar.
 
-**Prueba por mutación (11/11).** Cada mutación reintroduce un trozo de lo retirado (o algo
+**Prueba por mutación (12/12).** Cada mutación reintroduce un trozo de lo retirado (o algo
 equivalente) y se corre el test que debería verlo:
 
 | Mutación | Test que la mata |
@@ -299,6 +299,8 @@ equivalente) y se corre el test que debería verlo:
 | `validate_limit=False` consulta el guard igual | `test_validate_limit_false_no_consulta_el_guard` |
 | entra un helper privado con un nombre **nuevo** (no está en la lista de retirados) | `test_el_servicio_ya_no_expone_el_camino_headless` (segunda aserción: conjunto **cerrado** de métodos) |
 | el módulo vuelve a importar `LockError` | `test_el_modulo_ya_no_importa_la_maquinaria_del_camino_muerto` |
+| `AsyncToolRegistry` vuelve a aceptar `wrye_bash_runner` | `test_el_registry_del_agente_ya_no_recibe_un_runner_de_wrye_bash` |
+| una construcción del registry vuelve a pasar `wrye_bash_runner=` | idem (segunda aserción, por AST) |
 
 **Mapeo test por test de `tests/test_wrye_bash_service.py` (36 retirados, 8 contratos vivos).**
 «Vive» significa que el contrato se sigue midiendo; entre paréntesis, dónde.
@@ -499,6 +501,23 @@ sostiene, y superficies nuevas sin cubrir. Todos verificados por conducta o por 
 presente (ninguna otra tool emite esa clave, grep), colisiones de idempotencia entre fase 1 y
 fase 2 (claves distintas: el payload difiere), y regresiones en las anclas de censo (`24` tools,
 `FAMILIA_DEL_PERFIL`, `LITERALES_ESPERADOS` vacío) — las tres verificadas por corrida.
+
+**Ronda 11 (auditoría externa del PR C, 2026-11-03).** Auditoría adversarial del retiro, con
+worktree propio sobre el HEAD del PR y ~1.750 tests ejecutados. Cuatro hallazgos, todos
+corregidos acá y probados por mutación.
+
+| # | Hallazgo | Verificación | Corrección |
+|---|---|---|---|
+| C-1 | **El ancla del nombre del artefacto tenía un punto ciego medible.** `test_el_lock_del_bashed_patch_ya_no_existe` eximía archivos por contener la subcadena `"mods"` (un truco para no tocar `output_targets.py`); el auditor agregó `X_LITERAL_MUERTO = "Bashed Patch, 0.esp"` en ese archivo —código vivo— y **el ancla pasó**. | **Confirmado por mutación** (reproducida acá): la versión por texto no veía un literal vivo en un archivo que menciona `"mods"`. | El ancla se parte en dos: el id de lock (sobre el módulo) y `test_el_nombre_del_artefacto_se_define_una_sola_vez`, que cuenta **constantes `str` por AST** y exige igualdad exacta en dos listas: el literal UNA vez en `wrye_bash_runner.py` (línea de la asignación) y UNA vez en el único módulo declarado como excepción. Las 3 docstrings de `output_targets.py` que lo nombraban pasaron a prosa sin el literal. **4/4 mutaciones nuevas mueren**, incluida la del auditor. Y al re-correr el set completo de mutaciones apareció un segundo hueco, no señalado por la auditoría: **re-agregar `wrye_bash_runner` a `AsyncToolRegistry` no rompía ningún test**. Se agregó `test_el_registry_del_agente_ya_no_recibe_un_runner_de_wrye_bash` (firma + construcciones por AST) y ahora **12/12 + 4/4** mueren. |
+| C-2 | **Prosa que citaba una clase eliminada**: `system_tools._BodySlideRunFallidoError` y `pandora_service._PandoraRunFallidoError` decían «mismo patrón que `wrye_bash_service._RunFallidoError`», que el PR C borró. Un lector que fuera a buscar el ejemplo no lo encontraría. | Confirmado por grep: dos referencias, ambas en docstrings. | Ambos apuntan al ejemplo **vivo** (`pandora_service._RunFallidoError` y el `raise` de `synthesis_service`), y `pandora_service` deja escrito que el ejemplo anterior se retiró en §7.1. |
+| C-3 | **Cifras del propio PR desalineadas con el archivo**: decía 1231 → 658 líneas cuando el módulo quedó en 661 (creció con dos docstrings posteriores), y el CHANGELOG decía «9/9 mutaciones» mientras el cuerpo decía 11/11. | `wc -l` sobre `b247aea` y el HEAD: 1231 → **661** (−570). `pytest --collect-only` del ancla: **11 ítems**. | Cifras corregidas en este ADR, en `CHANGELOG.md`, en el tablero y en el cuerpo del PR. Regla que se aplica: toda cifra se vuelve a medir **después** del último edit, no antes. |
+| C-4 | **Duplicado de la constante fuera de este carril**: `sky_claw/local/xedit/patch_orchestrator.py` define su propia `DelegateToBashedPatch.BASHED_PATCH_NAME` con el mismo literal. | Confirmado por grep. **No se toca**: `sky_claw/local/xedit/**` pertenece a otro carril (constraint 5) y no es un cambio que este PR fuerce. El drift ya está anclado por comportamiento en `test_wrye_bash_lock.py::test_nombre_canonico_del_bashed_patch_sincronizado` (igualdad entre las dos definiciones). | Se **declara** como excepción enumerada en `_DEFINICIONES_TOLERADAS` del ancla, con archivo y línea exactos: una tercera definición, o mover ésta de archivo, rompe el test. Si el carril de xEdit la consolida, la excepción caduca y el ancla exige quitarla en el mismo commit. |
+
+**Lo que la auditoría confirmó sin hallazgos** (buscado a propósito): 0 callers con la firma vieja
+del registry/handler (scan AST sobre `sky_claw/`, `tests/` y `scripts/`), 0 líneas de código
+agregadas al servicio, las tres superficies enrutando por `ejecutar_fase_asistida`, HITL intacto
+(`generate_bashed_patch` sigue en `DESTRUCTIVE_TOOL_PATTERNS`), y las notas de `execute_pipeline`
+en `test_synthesis_service.py` son el método homónimo de **Synthesis**, servicio vivo.
 
 ## 10. Registro de adjudicación
 

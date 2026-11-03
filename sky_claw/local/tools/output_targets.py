@@ -17,7 +17,7 @@ Synthesis apuntando al ``overwrite``.
 
 De ahí sale la regla que este módulo materializa: **el ``overwrite`` solo se
 alcanza por (b), nunca por (a)**. Quien no lleva la ruta en su línea de comandos
-—Wrye Bash (``[bash, -b, "Bashed Patch, 0.esp"]`` con ``cwd=game_path``) y
+—Wrye Bash (``[bash, -b, <BASHED_PATCH_NAME>]`` con ``cwd=game_path``) y
 BodySlide (``-o`` relativo al ``cwd``)— escribe **físicamente** relativo a su
 ``cwd``. Pandora usa (b): Sky-Claw le pasa una ruta explícita absoluta y
 administrada bajo ``Pandora_Output``. Esta propiedad está verificada por código
@@ -47,7 +47,7 @@ USVFS?— para el único servicio donde la respuesta no es constante.
 **El caso (a) dejó de ser inalcanzable para Wrye Bash, y lo hizo por la puerta del
 operador, no por un runner.** La etapa 6 *asistida* (ADR 0016) no spawnea nada: el
 humano abre Wrye Bash **desde MO2**, así que ese proceso sí hereda la USVFS y su
-``Bashed Patch, 0.esp`` aterriza en ``overwrite/`` o en el mod de salida habilitado,
+artefacto de la etapa 6 aterriza en ``overwrite/`` o en el mod de salida habilitado,
 no en el ``Data`` físico. ``bashed_patch_target`` sigue siendo correcto para la
 corrida spawneada —el único camino que este paquete lanza—; para *verificar* lo que
 construyó el operador el artefacto hay que buscarlo en la superposición del perfil,
@@ -187,7 +187,7 @@ def pandora_output_target(*, game: pathlib.Path | None) -> pathlib.Path | None:
 
 
 def bashed_patch_target(game: pathlib.Path | None) -> pathlib.Path | None:
-    """Ruta física del ``Bashed Patch, 0.esp``, o ``None`` si el juego no resuelve.
+    """Ruta física del artefacto de la etapa 6, o ``None`` si el juego no resuelve.
 
     ``bash.py`` corre con ``cwd=game_path`` y **sin ruta de salida en el
     comando** (caso (a) inalcanzable, caso (b) no aplicado): el plugin cae en el

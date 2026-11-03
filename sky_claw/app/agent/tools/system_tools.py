@@ -748,8 +748,8 @@ class _BodySlideRunFallidoError(Exception):
     """Interno (U-04): un resultado con ``success=False`` se convierte en excepción
     DENTRO del lock para disparar el rollback real de la salida.
 
-    Mismo patrón que ``wrye_bash_service._RunFallidoError`` / ``pandora_service.
-    _RunFallidoError``: tanto ``SnapshotTransactionLock`` como
+    Mismo patrón que ``pandora_service._RunFallidoError`` (el hermano vivo que
+    ``synthesis_service`` ya usaba en producción): tanto ``SnapshotTransactionLock`` como
     ``DirectoryRollback`` sólo restauran en la rama de excepción de su
     ``__aexit__``; un resultado ``success=False`` (exit non-zero) sale "limpio"
     del ``async with`` si no se puentea, y el backup se descartaría con el

@@ -113,8 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — ADR 0016 §7.1.** Tras el cableado asistido del PR B no quedaba **ningún** caller de
   producción: `bash.py` no expone build, así que cada invocación tomaba los locks
   (`Bashed Patch, 0.esp` + `load-order`), emitía `ActionManifest`, abría una TX y fallaba
-  cerrado. Con él se van 8 helpers (`ensure_runner` incluido), 3 clases module-level, **573
-  líneas netas** (el módulo pasa de 1231 a 658) y las dependencias `lock_manager`,
+  cerrado. Con él se van 8 helpers (`ensure_runner` incluido), 3 clases module-level, **570
+  líneas netas** (el módulo pasa de 1231 a 661) y las dependencias `lock_manager`,
   `snapshot_manager`, `journal` y `wrye_bash_runner` de la firma del servicio (8 → 4
   parámetros). El hueco de saneo de `stdout`/`stderr` que el PR B había asignado a este PR
   **se cierra por retiro**: sin subproceso no hay texto de terceros que sanear, y la tool del
@@ -123,7 +123,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BASHED_PATCH_NAME` en los 5 módulos donde estaba suelto. Los 36 tests de
   `tests/test_wrye_bash_service.py` se retiran con el código que probaban: **8 de sus contratos
   siguen vivos** (4 se portaron a la suite asistida) y el mapeo test por test está en el ADR.
-  Ancla nueva: `tests/test_wrye_bash_retiro_headless.py` (10 ítems, 9/9 mutaciones muertas).
+  Anclas nuevas: `tests/test_wrye_bash_retiro_headless.py` (8 funciones, 12 ítems; **12/12**
+  mutaciones muertas sobre el retiro —incluido el registry del agente, que había quedado con
+  un parámetro muerto— y **4/4** sobre el nombre del artefacto, contadas por constante `str`
+  y no por texto).
   Tres censos (raíces MO2, mecanismos de rollback, productores de evidencia orphan) detectaron
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 
