@@ -60,6 +60,8 @@ class _Corrida:
     nietos_de_attestation: list[int] = field(default_factory=list)
     residuales: list[int] = field(default_factory=list)
     huerfanos: list[int] = field(default_factory=list)
+    #: Al momento de cancelar: ¿el broker ya había aceptado el `hello` del worker (= identidad verificada)?
+    worker_conectado_al_cancelar: bool | None = None
 
 
 async def _correr(
@@ -68,6 +70,7 @@ async def _correr(
     retardo_assign_s: float,
     congelado: pathlib.Path | None,
     cancelar_tras_s: float | None = None,
+    retraso_del_ack_s: float = 0.0,
 ) -> _Corrida:
     """Un launch completo del broker con el worker real; devuelve lo observable, sin interpretarlo."""
     inicio = time.time()
@@ -109,6 +112,10 @@ async def _correr(
     cola: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     def enviar_evento(evento: dict[str, object]) -> None:
+        if evento.get("type") == "launch_ack" and retraso_del_ack_s > 0:
+            # El `assign` ya ocurrió, pero el broker se entera tarde: el worker puede verificarse, conectar y quedar
+            # esperando `supervised` (verificado pero NO autorizado).
+            time.sleep(retraso_del_ack_s)
         bucle.call_soon_threadsafe(cola.put_nowait, dict(evento))
 
     worker_exe = congelado if congelado is not None else tmp_path / "worker.exe"
@@ -175,6 +182,7 @@ async def _correr(
                 # Cancelación del caller mientras el worker todavía arranca (antes de verificarse): el broker pide el
                 # `cancel` al bridge, que termina el Job. El broker espera el `worker_exit` terminal antes de soltar.
                 await asyncio.sleep(cancelar_tras_s)
+                corrida.worker_conectado_al_cancelar = job_id in broker._worker_by_job
                 submit.cancel()
             corrida.resultado = await asyncio.wait_for(submit, timeout=150)
         except (VfsBrokerError, TimeoutError, asyncio.CancelledError) as exc:
@@ -338,6 +346,26 @@ async def test_cancelar_antes_de_la_verificacion_termina_al_worker_con_el_job_y_
     # Assert 2: TerminateJobObject mató al worker (código 1) ANTES de que llegara a verificarse (72) o a trabajar.
     assert corrida.codigo_del_worker == 1, corrida.codigo_del_worker
     # Assert 3: nada de la attestation ni de la herramienta, y ningún proceso residual.
+    assert corrida.nietos_de_attestation == []
+    assert corrida.residuales == [], f"procesos residuales: {corrida.residuales}"
+    assert corrida.huerfanos == [], f"huérfanos de la imagen del worker: {corrida.huerfanos}"
+
+
+async def test_cancelar_despues_de_verificarse_y_antes_de_ser_autorizado_termina_al_worker_sin_herramienta(
+    tmp_path: pathlib.Path,
+) -> None:
+    # Arrange: el ack llega 20 s tarde → el worker (~1.5 s de arranque) se verifica, conecta y queda esperando `supervised`.
+    # Act: a los 5 s se cancela, con el worker ya VERIFICADO pero NO autorizado.
+    corrida = await _correr(tmp_path, retardo_assign_s=0.0, congelado=None, cancelar_tras_s=5.0, retraso_del_ack_s=20.0)
+    # Assert 1: el estado de partida es el que se quería probar (identidad aceptada por el broker, sin autorización).
+    assert corrida.worker_conectado_al_cancelar is True, (
+        "el worker debía haberse verificado y conectado antes de cancelar"
+    )
+    # Assert 2: la cancelación llegó al caller y no hubo resultado.
+    assert corrida.resultado is None
+    assert isinstance(corrida.error, asyncio.CancelledError), corrida.error
+    # Assert 3: TerminateJobObject lo mató (código 1); jamás recibió `supervised`: ni nieto ni herramienta ni residuos.
+    assert corrida.codigo_del_worker == 1, corrida.codigo_del_worker
     assert corrida.nietos_de_attestation == []
     assert corrida.residuales == [], f"procesos residuales: {corrida.residuales}"
     assert corrida.huerfanos == [], f"huérfanos de la imagen del worker: {corrida.huerfanos}"
