@@ -196,6 +196,7 @@ class _WorkerFalso:
                 "type": "hello",
                 "role": "worker",
                 "supervision_fence": True,  # un worker nuevo declara que espera la supervisión
+                "job_object": broker._job_objects[job_id],  # y el Job (pedido por el broker) donde se verificó
                 "instance_id": "portable-main",
                 "session_id": descriptor["session_id"],
                 "job_id": job_id,
@@ -499,7 +500,8 @@ class _OrganizerFake:
 
 
 class _JobObjectFake:
-    def __init__(self) -> None:
+    def __init__(self, nombre: str | None = None) -> None:
+        self.nombre = nombre
         self.assigned: list[int] = []
         self.terminated = False
         self.closed = False
@@ -569,6 +571,7 @@ async def test_benign_cancel_race_with_real_bridge_launch_controller(tmp_path: p
                 "profile": job.profile,
                 "manifest_path": str((broker._jobs_dir / f"{job.job_id}.json").resolve()),
                 "overwrite_mod": None,
+                "job_object": broker._job_objects[job.job_id],
             }
         )
 

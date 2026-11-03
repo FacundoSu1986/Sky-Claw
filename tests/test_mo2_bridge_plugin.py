@@ -20,6 +20,8 @@ from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import (
     validate_launch_request,
 )
 
+JOB_OBJECT = "Local\\SkyClawVfs-" + "0123456789abcdef" * 2
+
 
 def test_outbox_espera_hasta_que_evento_terminal_fue_enviado() -> None:
     outbox = BridgeEventOutbox()
@@ -136,7 +138,8 @@ class _ProcessWaiter:
 
 
 class _JobObject:
-    def __init__(self) -> None:
+    def __init__(self, nombre: str | None = None) -> None:
+        self.nombre = nombre
         self.assigned: list[int] = []
         self.terminated = False
         self.closed = False
@@ -165,6 +168,7 @@ def test_launch_request_solo_acepta_manifest_bajo_jobs_root(tmp_path: pathlib.Pa
             "profile": "Default",
             "manifest_path": str(manifest),
             "overwrite_mod": None,
+            "job_object": JOB_OBJECT,
         },
         jobs_root=jobs,
     )
@@ -187,6 +191,7 @@ def test_launch_request_overwrite_es_nombre_de_mod_y_no_ruta(tmp_path: pathlib.P
             "profile": "Default",
             "manifest_path": str(manifest),
             "overwrite_mod": "SkyClaw Output",
+            "job_object": JOB_OBJECT,
         },
         jobs_root=jobs,
     )
@@ -202,6 +207,7 @@ def test_launch_request_overwrite_es_nombre_de_mod_y_no_ruta(tmp_path: pathlib.P
                 "profile": "Default",
                 "manifest_path": str(manifest),
                 "overwrite_mod": str(tmp_path / "MO2" / "overwrite"),
+                "job_object": JOB_OBJECT,
             },
             jobs_root=jobs,
         )
@@ -222,6 +228,7 @@ def test_launch_request_rechaza_manifest_fuera_del_jobs_root(tmp_path: pathlib.P
                 "profile": "Default",
                 "manifest_path": str(outside),
                 "overwrite_mod": None,
+                "job_object": JOB_OBJECT,
             },
             jobs_root=jobs,
         )
@@ -240,6 +247,7 @@ def test_worker_args_no_admiten_executable_desde_el_request(tmp_path: pathlib.Pa
             "profile": "Default",
             "manifest_path": str(manifest),
             "overwrite_mod": None,
+            "job_object": JOB_OBJECT,
         },
         jobs_root=jobs,
     )
@@ -265,6 +273,7 @@ def test_launch_request_rechaza_campos_desconocidos() -> None:
                 "profile": "Default",
                 "manifest_path": "C:/jobs/job-1.json",
                 "overwrite_mod": None,
+                "job_object": JOB_OBJECT,
                 "executable": "malware.exe",
             },
             jobs_root=pathlib.Path("C:/jobs"),
@@ -290,7 +299,7 @@ def test_controller_lanza_worker_fijo_con_perfil_explicito(tmp_path: pathlib.Pat
         descriptor_path=descriptor,
         jobs_root=jobs,
         send_event=events.append,
-        job_factory=lambda: job_object,
+        job_factory=lambda _nombre: job_object,
         process_waiter=lambda handle: organizer.waitForApplication(handle, False),
     )
 
@@ -302,6 +311,7 @@ def test_controller_lanza_worker_fijo_con_perfil_explicito(tmp_path: pathlib.Pat
             "profile": "ExplicitProfile",
             "manifest_path": str(manifest),
             "overwrite_mod": None,
+            "job_object": JOB_OBJECT,
         }
     )
 
@@ -354,6 +364,7 @@ def test_controller_monitor_usa_waiter_win32_y_no_api_mo2(tmp_path: pathlib.Path
             "profile": "Default",
             "manifest_path": str(manifest),
             "overwrite_mod": None,
+            "job_object": JOB_OBJECT,
         }
     )
     waiter.release.set()
@@ -376,7 +387,7 @@ def test_controller_no_lanza_si_no_puede_crear_job_object(tmp_path: pathlib.Path
     descriptor.write_text("{}", encoding="utf-8")
     organizer = _Organizer()
 
-    def _fallar_job_object():
+    def _fallar_job_object(_nombre: str):
         raise BridgeCommandError("Job Object indisponible")
 
     controller = BridgeLaunchController(
@@ -398,6 +409,7 @@ def test_controller_no_lanza_si_no_puede_crear_job_object(tmp_path: pathlib.Path
                 "profile": "Default",
                 "manifest_path": str(manifest),
                 "overwrite_mod": None,
+                "job_object": JOB_OBJECT,
             }
         )
 
@@ -437,6 +449,7 @@ def test_monitor_emite_worker_exit_si_espera_win32_falla(tmp_path: pathlib.Path)
             "profile": "Default",
             "manifest_path": str(manifest),
             "overwrite_mod": None,
+            "job_object": JOB_OBJECT,
         }
     )
     controller.wait_for_monitors(timeout=1)
@@ -464,7 +477,7 @@ def test_controller_cancel_termina_job_object_completo(tmp_path: pathlib.Path) -
         descriptor_path=descriptor,
         jobs_root=jobs,
         send_event=lambda _event: None,
-        job_factory=lambda: job_object,
+        job_factory=lambda _nombre: job_object,
         process_waiter=lambda handle: organizer.waitForApplication(handle, False),
     )
     controller.launch(
@@ -475,6 +488,7 @@ def test_controller_cancel_termina_job_object_completo(tmp_path: pathlib.Path) -
             "profile": "Default",
             "manifest_path": str(manifest),
             "overwrite_mod": None,
+            "job_object": JOB_OBJECT,
         }
     )
 

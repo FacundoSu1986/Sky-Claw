@@ -72,13 +72,28 @@ def medir(fases: Sequence[str]) -> list[dict[str, Any]]:
     return registro
 
 
+def _abreviar(marco: str) -> str:
+    """``C:/.../site-packages/pkg/mod.py:12:f`` → ``pkg/mod.py:12:f``; ``.../sky_claw/x.py`` → ``sky_claw/x.py``."""
+    ruta, _, resto = marco.partition(".py:")
+    normal = ruta.replace("\\", "/")
+    for ancla in ("site-packages/", "/Lib/", "sky_claw/"):
+        if ancla in normal:
+            cola = normal.split(ancla, 1)[1]
+            normal = f"sky_claw/{cola}" if ancla == "sky_claw/" else cola
+            break
+    return f"{normal}.py:{resto}"
+
+
 def resumir(registro: Sequence[dict[str, Any]]) -> str:
     if not registro:
         return "ningún import creó procesos"
     lineas = [f"{len(registro)} creaciones de proceso durante los imports:"]
     for evento in registro:
-        ultimo = next((m for m in reversed(evento["pila"]) if "site-packages" not in m and "importlib" not in m), "?")
-        lineas.append(f"  [{evento['fase']}] {evento['evento']} {evento['argumentos']}  <- {ultimo}")
+        lineas.append(f"  [{evento['fase']}] {evento['evento']} {evento['argumentos']}")
+        # Pila completa y legible (de la más externa a la que crea el proceso): sin ella el «origen» es un nombre
+        # de librería estándar (``subprocess.py``) que no dice quién lo pidió.
+        for marco in evento["pila"]:
+            lineas.append(f"      {_abreviar(marco)}")
     return "\n".join(lineas)
 
 

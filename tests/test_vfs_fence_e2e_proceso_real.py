@@ -32,6 +32,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 import psutil
@@ -45,12 +46,24 @@ from tests.test_vfs_fence_de_supervision import _manifiesto
 REPO = pathlib.Path(__file__).resolve().parents[1]
 ES_WINDOWS = sys.platform == "win32"
 
+#: Lanzador del worker en plataformas sin Job Objects (ver ``armar_argv``): reemplaza únicamente la verificación.
+_LANZADOR_SIN_WINDOWS = (
+    "import sys;"
+    "from sky_claw.local.mo2 import vfs_worker as w;"
+    "from sky_claw.local.mo2.vfs_job_identity import PruebaDeJob;"
+    "w.verificar_identidad_del_job = lambda n: PruebaDeJob(nombre=n, pid=0, procesos_totales=0, procesos_activos=0);"
+    "raise SystemExit(w.worker_main(sys.argv[1:]))"
+)
+
 #: Retraso deliberado del ``launch_ack``: el worker ya está corriendo y esperando.
 _RETRASO_DEL_ACK_S = 1.5
 
 
 class _JobFalso:
     """Doble para plataformas sin Job Objects: conserva el ORDEN assign → ack, no la contención."""
+
+    def __init__(self, nombre: str) -> None:
+        self.nombre = nombre
 
     def assign(self, process_handle: int) -> None:
         self.asignado = process_handle
@@ -65,15 +78,20 @@ class _JobFalso:
 class _OrganizerQueLanzaElWorkerReal:
     """``startApplication`` como la API de MO2: el worker REAL nace corriendo y se devuelve su handle."""
 
-    def __init__(self, argv: list[str], env: dict[str, str]) -> None:
-        self._argv = argv
+    def __init__(self, armar_argv: Callable[[str], list[str]], env: dict[str, str], *, retardo_s: float = 0.0) -> None:
+        self._armar_argv = armar_argv
         self._env = env
+        #: Tiempo que `startApplication` tarda en DEVOLVER el handle tras crear el proceso (= retardo del assign).
+        self._retardo_s = retardo_s
         self.proceso: subprocess.Popen[bytes] | None = None
         self.t_popen: float | None = None  # `time.time()` apenas nace el worker (referencia para medir en relativo)
 
-    def startApplication(self, *_args: object) -> int:  # noqa: N802 - API de MO2
+    def startApplication(self, _ejecutable: str, argumentos: list[str], *_resto: object) -> int:  # noqa: N802 - API de MO2
+        # El nombre del Job llega por el camino REAL: el broker lo pide en `launch_worker`, el bridge lo pone en el argv
+        # que MO2 recibe, y de ahí lo toma el worker. El test no lo conoce de antemano.
+        nombre = argumentos[argumentos.index("--job-object") + 1]
         self.proceso = subprocess.Popen(  # noqa: S603 - argv construido por el test
-            self._argv,
+            self._armar_argv(nombre),
             cwd=REPO,
             env=self._env,
             stdin=subprocess.DEVNULL,
@@ -81,6 +99,8 @@ class _OrganizerQueLanzaElWorkerReal:
             stderr=subprocess.DEVNULL,
         )
         self.t_popen = time.time()
+        if self._retardo_s > 0:
+            time.sleep(self._retardo_s)
         if ES_WINDOWS:
             from scripts import windows_job_probe
 
@@ -174,20 +194,26 @@ async def test_el_worker_real_no_crea_descendientes_antes_del_ack_y_todos_quedan
     home.mkdir()
     entorno = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "PYTHONUNBUFFERED": "1"}
     manifiesto_path = broker._jobs_dir / f"{job_id}.json"
-    organizer = _OrganizerQueLanzaElWorkerReal(
-        [
-            sys.executable,
-            "-m",
-            "sky_claw.local.mo2.vfs_worker",
+
+    def armar_argv(nombre_del_job: str) -> list[str]:
+        base = [
             "--manifest",
             str(manifiesto_path),
             "--descriptor",
             str(broker.descriptor_path),
+            "--job-object",
+            nombre_del_job,
             "--job-id",
             job_id,
-        ],
-        entorno,
-    )
+        ]
+        if ES_WINDOWS:
+            # Worker de producción tal cual: la verificación de identidad contra el Job REAL del bridge.
+            return [sys.executable, "-m", "sky_claw.local.mo2.vfs_worker", *base]
+        # Sin Windows no hay Job Object que verificar y la verificación real falla cerrado (a propósito). El subproceso
+        # sustituye SOLO esa función por una prueba; el resto del worker (hello, fence, attestation, herramienta) es real.
+        return [sys.executable, "-c", _LANZADOR_SIN_WINDOWS, *base]
+
+    organizer = _OrganizerQueLanzaElWorkerReal(armar_argv, entorno)
     bucle = asyncio.get_running_loop()
     cola: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     instante_del_ack: list[float] = []

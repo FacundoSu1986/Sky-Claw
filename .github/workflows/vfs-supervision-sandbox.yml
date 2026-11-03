@@ -18,6 +18,7 @@ on:
       - "scripts/windows_onefile_census.py"
       - "scripts/windows_spawn_origin.py"
       - "tests/test_windows_onefile_census.py"
+      - "tests/test_vfs_job_identity*.py"
       - "tests/test_vfs_job_containment_windows.py"
       - "tests/test_vfs_fence_de_supervision.py"
       - "tests/test_vfs_fence_e2e_proceso_real.py"
@@ -59,6 +60,13 @@ jobs:
         run: >
           pytest -v -rA -p no:cacheprovider
           tests/test_windows_onefile_census.py
+          tests/test_vfs_job_identity_windows.py
+          tests/test_vfs_job_identity_e2e_windows.py
+          tests/test_vfs_job_identity.py
+          tests/test_vfs_job_identity_broker.py
+          tests/test_vfs_job_identity_bridge.py
+          tests/test_vfs_job_identity_anclas.py
+          tests/test_mo2_bridge_worker_argv.py
           tests/test_vfs_job_containment_windows.py
           tests/test_vfs_fence_de_supervision.py
           tests/test_vfs_fence_e2e_proceso_real.py
@@ -83,11 +91,20 @@ jobs:
         if: ${{ !cancelled() }}
         run: >
           python -m scripts.windows_onefile_census --exe sandbox_min\dist\MinimoOnefile.exe
-          --retardos 0,0.05,0.5,2 --repeticiones 3 --ventana 14 --json sandbox_min\resultados_censo_min.json
+          --retardos 0,0.05,0.5,2 --repeticiones 3 --ventana 14 --terminar-tras 1.5 --json sandbox_min\resultados_censo_min.json
 
       - name: SkyClawApp.exe real (pyinstaller sky_claw.spec) - construir
         if: ${{ !cancelled() }}
         run: pyinstaller sky_claw.spec --clean
+      - name: SkyClawApp.exe CONGELADO - identidad del Job de punta a punta (assign a tiempo y assign tardío)
+        if: ${{ !cancelled() }}
+        env:
+          SKYCLAW_FROZEN_EXE: dist\SkyClawApp.exe
+        run: >
+          pytest -v -rA -p no:cacheprovider
+          tests/test_vfs_job_identity_e2e_windows.py
+          2>&1 | Tee-Object -FilePath sandbox_min\pytest_congelado.txt
+
       - name: SkyClawApp.exe real - medir pertenencia al Job con --vfs-probe-child (inocuo)
         if: ${{ !cancelled() }}
         run: >
@@ -102,15 +119,23 @@ jobs:
           '--arg=--vfs-probe-child' '--arg={probe_file}' '--arg={probe_sha}'
           --retardos 0,0.5,1,2 --repeticiones 3 --ventana 40 --json sandbox_min\resultados_censo_real.json
 
+      - name: SkyClawApp.exe real - terminar el Job con el árbol VIVO (un escapado del Job, ¿sobrevive al cancel?)
+        if: ${{ !cancelled() }}
+        run: >
+          python -m scripts.windows_onefile_census --exe dist\SkyClawApp.exe
+          '--arg=--vfs-probe-child' '--arg={probe_file}' '--arg={probe_sha}'
+          --retardos 1,2,3 --repeticiones 3 --ventana 40 --terminar-tras 0.5 --json sandbox_min\resultados_censo_real_terminado.json
+
       - name: Resumen compacto (lo que importa, al final del log)
         if: always()
         run: |
           Write-Output "=== pytest (PASSED/FAILED/SKIPPED/XFAIL/ERROR) ==="
           if (Test-Path sandbox_min\pytest.txt) { Select-String -Path sandbox_min\pytest.txt -Pattern '^(PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS) |^=+ .*(passed|failed|skipped|error)|HALLAZGO' | ForEach-Object { $_.Line } }
+          if (Test-Path sandbox_min\pytest_congelado.txt) { Write-Output "=== pytest con el ejecutable CONGELADO ==="; Select-String -Path sandbox_min\pytest_congelado.txt -Pattern '^(PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS) |^=+ .*(passed|failed|skipped|error)' | ForEach-Object { $_.Line } }
           foreach ($f in @('sandbox_min\resultados.json','sandbox_min\resultados_real.json')) {
             if (Test-Path $f) { Write-Output "=== $f ==="; python -m scripts.windows_job_probe --resumir $f }
           }
-          foreach ($f in @('sandbox_min\resultados_censo_min.json','sandbox_min\resultados_censo_real.json')) {
+          foreach ($f in @('sandbox_min\resultados_censo_min.json','sandbox_min\resultados_censo_real.json','sandbox_min\resultados_censo_real_terminado.json')) {
             if (Test-Path $f) { Write-Output "=== $f ==="; python -m scripts.windows_onefile_census --resumir $f }
           }
           if (Test-Path sandbox_min\resultados_origen.json) {

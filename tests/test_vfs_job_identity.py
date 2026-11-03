@@ -1,0 +1,366 @@
+"""Identidad del Job del worker (P2): el verificador, con una API Win32 FALSA e inyectable.
+
+Lo que se prueba acá es la LÓGICA de decisión: qué se acepta y, sobre todo, que todo lo demás falla
+CERRADO. La semántica real del sistema operativo (``IsProcessInJob`` contra el handle correcto, la ACL
+del Job, jobs anidados) se prueba con procesos reales en ``test_vfs_job_identity_windows.py``; un doble
+no reemplaza esa validación nativa.
+
+Propiedades del mecanismo que estos tests fijan:
+
+* el nombre del Job es inadivinable y de formato cerrado (no se le pasa al SO un string arbitrario);
+* la pertenencia se pregunta contra el handle del Job ABIERTO por nombre, nunca contra ``NULL``;
+* cualquier falla —abrir, consultar, límites, descendientes— es un ``JobIdentityError``, jamás una prueba;
+* el handle se cierra SIEMPRE: ``KILL_ON_JOB_CLOSE`` solo dispara cuando se cierra el ÚLTIMO handle, así
+  que un worker que conservara el suyo impediría que el cierre del Job matara el árbol.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import sys
+from collections.abc import Sequence
+
+import pytest
+
+from sky_claw.local.mo2 import vfs_job_identity as identidad
+from sky_claw.local.mo2.vfs_job_identity import (
+    JobIdentityError,
+    PruebaDeJob,
+    generar_nombre_de_job,
+    terminar_descendientes_vivos,
+    validar_nombre_de_job,
+    verificar_identidad_del_job,
+)
+
+KILL_ON_JOB_CLOSE = 0x2000
+BREAKAWAY_OK = 0x0800
+SILENT_BREAKAWAY_OK = 0x1000
+NOMBRE = "Local\\SkyClawVfs-" + "0123456789abcdef" * 2
+HANDLE = 4242
+
+
+class _ApiFalsa:
+    """API Win32 en memoria con registro de llamadas y fallas inyectables."""
+
+    def __init__(
+        self,
+        *,
+        pertenece: bool = True,
+        banderas: int = KILL_ON_JOB_CLOSE,
+        totales: int = 2,
+        activos: int = 2,
+        descendientes: Sequence[int] = (),
+        fuera_del_job: Sequence[int] = (),
+        murieron: Sequence[int] = (),
+        no_se_dejan_matar: Sequence[int] = (),
+        falla_en: str | None = None,
+        excepcion: Exception | None = None,
+    ) -> None:
+        self.pertenece = pertenece
+        self.banderas = banderas
+        self.totales = totales
+        self.activos = activos
+        self._vivos = list(descendientes)
+        self.fuera_del_job = set(fuera_del_job)
+        self.murieron = set(murieron)
+        self.no_se_dejan_matar = set(no_se_dejan_matar)
+        self.falla_en = falla_en
+        self.excepcion = excepcion if excepcion is not None else JobIdentityError(f"falla inyectada en {falla_en}")
+        self.abiertos: list[int] = []
+        self.cerrados: list[int] = []
+        self.consultas_de_pertenencia: list[int] = []
+        self.terminados: list[int] = []
+
+    def _fallar(self, donde: str) -> None:
+        if self.falla_en == donde:
+            raise self.excepcion
+
+    def abrir_job(self, nombre: str) -> int:
+        self._fallar("abrir_job")
+        assert nombre == NOMBRE
+        self.abiertos.append(HANDLE)
+        return HANDLE
+
+    def proceso_actual_en_job(self, job: int) -> bool:
+        self._fallar("proceso_actual_en_job")
+        self.consultas_de_pertenencia.append(job)
+        return self.pertenece
+
+    def banderas_de_limite(self, job: int) -> int:
+        self._fallar("banderas_de_limite")
+        return self.banderas
+
+    def contabilidad(self, job: int) -> tuple[int, int]:
+        self._fallar("contabilidad")
+        return self.totales, self.activos
+
+    def descendientes_vivos(self) -> Sequence[int]:
+        self._fallar("descendientes_vivos")
+        return tuple(self._vivos)
+
+    def proceso_en_job(self, pid: int, job: int) -> bool | None:
+        self._fallar("proceso_en_job")
+        self.consultas_de_pertenencia.append(job)
+        if pid in self.murieron:
+            return None
+        return pid not in self.fuera_del_job
+
+    def terminar_proceso(self, pid: int) -> None:
+        self._fallar("terminar_proceso")
+        self.terminados.append(pid)
+        if pid not in self.no_se_dejan_matar:
+            self._vivos = [vivo for vivo in self._vivos if vivo != pid]
+
+    def cerrar(self, handle: int) -> None:
+        self.cerrados.append(handle)
+
+
+# ---------------------------------------------------------------------------
+# 1. El nombre: formato cerrado e inadivinable
+# ---------------------------------------------------------------------------
+
+
+def test_un_nombre_bien_formado_se_acepta_tal_cual() -> None:
+    # Act / Assert
+    assert validar_nombre_de_job(NOMBRE) == NOMBRE
+
+
+@pytest.mark.parametrize(
+    "malo",
+    [
+        "",
+        "Global\\SkyClawVfs-" + "0" * 32,  # otro espacio de nombres: visible entre sesiones
+        "SkyClawVfs-" + "0" * 32,  # sin prefijo de espacio de nombres
+        "Local\\SkyClawVfs-" + "0" * 31,  # corto
+        "Local\\SkyClawVfs-" + "0" * 33,  # largo
+        "Local\\SkyClawVfs-" + "A" * 32,  # mayúsculas: no es lo que genera el broker
+        "Local\\SkyClawVfs-" + "g" * 32,  # no hexadecimal
+        "Local\\SkyClawVfs-" + "0" * 32 + "\n",  # `$` de una regex lo aceptaría
+        "Local\\SkyClawVfs-" + "0" * 32 + "\\..\\x",  # intento de salirse del espacio de nombres
+        "Local\\SkyClawVfs-" + "0" * 32 + "\x00",
+        " Local\\SkyClawVfs-" + "0" * 32,
+        None,
+        42,
+        b"Local\\SkyClawVfs-" + b"0" * 32,
+    ],
+)
+def test_un_nombre_mal_formado_se_rechaza_antes_de_llegar_al_sistema_operativo(malo: object) -> None:
+    # Act / Assert
+    with pytest.raises(JobIdentityError):
+        validar_nombre_de_job(malo)
+
+
+def test_los_nombres_generados_son_validos_y_no_se_repiten() -> None:
+    # Act
+    nombres = {generar_nombre_de_job() for _ in range(2000)}
+    # Assert: 128 bits de azar → sin colisiones, y todos pasan el mismo validador que usan bridge y worker.
+    assert len(nombres) == 2000
+    assert all(validar_nombre_de_job(nombre) == nombre for nombre in nombres)
+
+
+# ---------------------------------------------------------------------------
+# 2. Qué se acepta
+# ---------------------------------------------------------------------------
+
+
+def test_un_worker_dentro_del_job_correcto_con_limites_seguros_se_acepta() -> None:
+    # Arrange
+    api = _ApiFalsa(totales=2, activos=2)
+    # Act
+    prueba = verificar_identidad_del_job(NOMBRE, api=api)
+    # Assert
+    assert isinstance(prueba, PruebaDeJob)
+    assert prueba.nombre == NOMBRE
+    assert (prueba.procesos_totales, prueba.procesos_activos) == (2, 2)
+
+
+def test_la_pertenencia_se_pregunta_contra_el_handle_abierto_nunca_contra_null() -> None:
+    # Arrange
+    api = _ApiFalsa(descendientes=(77,))
+    # Act
+    verificar_identidad_del_job(NOMBRE, api=api)
+    # Assert: IsProcessInJob(p, NULL) responde TRUE para CUALQUIER job; no prueba identidad (#856 §4.1).
+    assert api.consultas_de_pertenencia == [HANDLE, HANDLE]
+    assert 0 not in api.consultas_de_pertenencia
+
+
+def test_un_descendiente_vivo_dentro_del_job_no_es_problema() -> None:
+    # Arrange
+    api = _ApiFalsa(descendientes=(11, 12))
+    # Act / Assert
+    assert verificar_identidad_del_job(NOMBRE, api=api).nombre == NOMBRE
+
+
+def test_un_descendiente_que_murio_durante_el_barrido_no_es_problema() -> None:
+    # Arrange: el proceso 11 terminó entre la enumeración y la consulta (``None``).
+    api = _ApiFalsa(descendientes=(11,), murieron=(11,))
+    # Act / Assert
+    assert verificar_identidad_del_job(NOMBRE, api=api).nombre == NOMBRE
+
+
+# ---------------------------------------------------------------------------
+# 3. Todo lo demás falla CERRADO
+# ---------------------------------------------------------------------------
+
+
+def test_si_el_job_no_existe_o_no_se_puede_abrir_falla_cerrado() -> None:
+    # Arrange: un bridge viejo (Job anónimo) o un nombre equivocado → OpenJobObjectW falla.
+    api = _ApiFalsa(falla_en="abrir_job")
+    # Act / Assert
+    with pytest.raises(JobIdentityError):
+        verificar_identidad_del_job(NOMBRE, api=api)
+    assert api.abiertos == [] and api.cerrados == []
+
+
+def test_un_worker_fuera_del_job_falla_cerrado() -> None:
+    # Arrange: el hijo Python nació ANTES del assign del bridge → no pertenece al Job.
+    api = _ApiFalsa(pertenece=False)
+    # Act / Assert
+    with pytest.raises(JobIdentityError, match="no pertenece"):
+        verificar_identidad_del_job(NOMBRE, api=api)
+
+
+@pytest.mark.parametrize(
+    "donde", ["proceso_actual_en_job", "banderas_de_limite", "contabilidad", "descendientes_vivos"]
+)
+@pytest.mark.parametrize("excepcion", [None, OSError("Win32"), RuntimeError("inesperado"), ValueError("raro")])
+def test_cualquier_falla_al_consultar_es_un_error_de_identidad_nunca_una_prueba(
+    donde: str, excepcion: Exception | None
+) -> None:
+    # Arrange
+    api = _ApiFalsa(falla_en=donde, excepcion=excepcion)
+    # Act / Assert: ni siquiera una excepción inesperada puede salir como éxito ni como otro tipo de error.
+    with pytest.raises(JobIdentityError):
+        verificar_identidad_del_job(NOMBRE, api=api)
+
+
+def test_un_error_al_preguntar_por_un_descendiente_falla_cerrado() -> None:
+    # Arrange
+    api = _ApiFalsa(descendientes=(11,), falla_en="proceso_en_job")
+    # Act / Assert
+    with pytest.raises(JobIdentityError):
+        verificar_identidad_del_job(NOMBRE, api=api)
+
+
+@pytest.mark.parametrize(
+    "banderas",
+    [0, BREAKAWAY_OK, SILENT_BREAKAWAY_OK, KILL_ON_JOB_CLOSE | BREAKAWAY_OK, KILL_ON_JOB_CLOSE | SILENT_BREAKAWAY_OK],
+)
+def test_un_job_sin_kill_on_close_o_con_breakaway_no_contiene_y_falla_cerrado(banderas: int) -> None:
+    # Arrange: sin KILL_ON_JOB_CLOSE cerrar el Job no mata nada; con BREAKAWAY un descendiente puede salirse.
+    api = _ApiFalsa(banderas=banderas)
+    # Act / Assert
+    with pytest.raises(JobIdentityError):
+        verificar_identidad_del_job(NOMBRE, api=api)
+
+
+def test_un_descendiente_vivo_fuera_del_job_falla_cerrado_y_se_informa_cual() -> None:
+    # Arrange: el pid 77 nació antes del assign y sigue vivo fuera del Job.
+    api = _ApiFalsa(descendientes=(11, 77), fuera_del_job=(77,))
+    # Act / Assert
+    with pytest.raises(JobIdentityError, match="77"):
+        verificar_identidad_del_job(NOMBRE, api=api)
+
+
+@pytest.mark.parametrize("nombre", ["Global\\SkyClawVfs-" + "0" * 32, "", None])
+def test_un_nombre_invalido_falla_antes_de_tocar_la_api(nombre: object) -> None:
+    # Arrange
+    api = _ApiFalsa()
+    # Act / Assert
+    with pytest.raises(JobIdentityError):
+        verificar_identidad_del_job(nombre, api=api)
+    assert api.abiertos == []
+
+
+# ---------------------------------------------------------------------------
+# 4. El handle se cierra SIEMPRE (KILL_ON_JOB_CLOSE solo dispara con el último handle)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        _ApiFalsa(),  # éxito
+        _ApiFalsa(pertenece=False),
+        _ApiFalsa(banderas=0),
+        _ApiFalsa(falla_en="proceso_actual_en_job"),
+        _ApiFalsa(falla_en="banderas_de_limite"),
+        _ApiFalsa(falla_en="contabilidad"),
+        _ApiFalsa(falla_en="descendientes_vivos"),
+        _ApiFalsa(descendientes=(77,), fuera_del_job=(77,)),
+        _ApiFalsa(descendientes=(77,), falla_en="proceso_en_job", excepcion=RuntimeError("x")),
+    ],
+    ids=lambda a: f"pert={a.pertenece},banderas={a.banderas:#x},falla={a.falla_en},fuera={sorted(a.fuera_del_job)}",
+)
+def test_el_handle_del_job_se_cierra_en_exito_y_en_cualquier_falla(api: _ApiFalsa) -> None:
+    # Act
+    with contextlib.suppress(JobIdentityError):
+        verificar_identidad_del_job(NOMBRE, api=api)
+    # Assert: todo lo abierto quedó cerrado; si el worker conservara el handle, el cierre del Job del bridge no mataría el árbol.
+    assert api.abiertos == [HANDLE]
+    assert api.cerrados == [HANDLE]
+
+
+# ---------------------------------------------------------------------------
+# 5. Terminación de lo no autorizado
+# ---------------------------------------------------------------------------
+
+
+def test_terminar_descendientes_mata_a_todos_los_vivos_y_devuelve_cuales() -> None:
+    # Arrange
+    api = _ApiFalsa(descendientes=(11, 12, 13))
+    # Act
+    terminados = terminar_descendientes_vivos(api=api)
+    # Assert
+    assert sorted(terminados) == [11, 12, 13]
+    assert api.descendientes_vivos() == ()
+
+
+def test_terminar_descendientes_sin_nada_vivo_no_hace_nada() -> None:
+    # Arrange
+    api = _ApiFalsa()
+    # Act / Assert
+    assert terminar_descendientes_vivos(api=api) == ()
+    assert api.terminados == []
+
+
+def test_si_un_descendiente_no_muere_el_limpiador_falla_en_vez_de_afirmar_que_limpio() -> None:
+    # Arrange: el proceso 13 ignora la terminación.
+    api = _ApiFalsa(descendientes=(11, 13), no_se_dejan_matar=(13,))
+    # Act / Assert: no se puede afirmar «sin residuos» cuando queda uno vivo.
+    with pytest.raises(JobIdentityError, match="13"):
+        terminar_descendientes_vivos(api=api)
+
+
+def test_un_descendiente_que_ya_murio_al_terminarlo_no_es_un_error() -> None:
+    # Arrange: terminar_proceso encuentra al proceso ya muerto (carrera benigna) y no falla.
+    api = _ApiFalsa(descendientes=(11,))
+    # Act / Assert
+    assert terminar_descendientes_vivos(api=api) == (11,)
+
+
+# ---------------------------------------------------------------------------
+# 6. Sin API de Windows no hay forma de probar identidad: falla cerrado
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="en Windows la API por defecto es la real")
+def test_fuera_de_windows_el_verificador_por_defecto_falla_cerrado() -> None:
+    # Act / Assert
+    with pytest.raises(JobIdentityError, match="Windows"):
+        verificar_identidad_del_job(NOMBRE)
+
+
+def test_el_modulo_no_importa_nada_pesado_de_la_aplicacion() -> None:
+    """Se importa muy temprano en el worker congelado: solo stdlib y psutil, nada de ``sky_claw.*``."""
+    import ast
+    import pathlib
+
+    arbol = ast.parse(pathlib.Path(identidad.__file__).read_text(encoding="utf-8"))
+    importados = {
+        (nodo.module or "") if isinstance(nodo, ast.ImportFrom) else alias.name
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Import | ast.ImportFrom)
+        for alias in (nodo.names if isinstance(nodo, ast.Import) else [None])
+    }
+    assert not {m for m in importados if m == "sky_claw" or m.startswith("sky_claw.")}

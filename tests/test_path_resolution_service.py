@@ -1505,7 +1505,7 @@ class TestAnclaConstructoresManualesDeMods:
         # estado `_launch_acked`/`_supervised_sent` en `__init__` y la corrió a la ~599:
         # mismo constructor, no un sitio nuevo) y VfsWorkerManifest: única
         # construcción cuando no se pasa mods_dir.
-        "sky_claw/local/mo2/vfs_broker.py": (599,),
+        "sky_claw/local/mo2/vfs_broker.py": (607,),
         "sky_claw/local/mo2/vfs_manifest.py": (61,),
         # Detectores de estado de mods instalados (Community Shaders) sobre la
         # raíz que detectó el scanner: concepto de detección, no de instancia.

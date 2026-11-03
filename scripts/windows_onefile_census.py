@@ -178,6 +178,9 @@ def resumir(ruta: pathlib.Path) -> str:
     lineas.append(
         "imagenes del arbol (apariciones sobre todas las corridas): " + json.dumps(dict(imagenes.most_common()))
     )
+    motivos = sorted({str(c["wmi"]["motivo"]) for c in corridas if c.get("wmi", {}).get("motivo")})
+    if motivos:
+        lineas.append("wmi NO disponible, motivo: " + " | ".join(motivos))
     return "\n".join(lineas)
 
 
@@ -410,11 +413,16 @@ def medir_censo(
     modo_fin: str = "terminate",
     paso_s: float = 0.005,
     con_wmi: bool = True,
+    terminar_tras_s: float | None = None,
 ) -> dict[str, Any]:
     """Lanza ``argv`` como MO2 (corriendo), asigna al Job tras ``retardo_s`` y levanta el censo exacto.
 
     ``modo_fin`` ``"terminate"`` imita el ``cancel`` del bridge (``TerminateJobObject``); ``"close"`` cierra
     el handle del Job (``KILL_ON_JOB_CLOSE``, lo que ocurre si el bridge muere).
+
+    ``terminar_tras_s``: segundos DESPUÉS de la asignación en que se termina el Job aunque el árbol siga vivo.
+    Sin él, el censo observa hasta que el árbol termina solo y los «supervivientes» salen siempre en cero (el
+    escapado ya murió por su cuenta): no mediría la terminación, que es justo lo que se quiere medir.
     """
     sonda._exigir_windows()
     t0 = time.perf_counter()
@@ -444,6 +452,8 @@ def medir_censo(
             sonda.cerrar_handle(handle_raiz)
         asignado_ms = (time.perf_counter() - t0) * 1000.0
         limite = 0.0 if raiz_ya_termino else t0 + ventana_s
+        if terminar_tras_s is not None:
+            limite = min(limite, time.perf_counter() + terminar_tras_s)
         while time.perf_counter() < limite:
             try:
                 raiz = psutil.Process(proceso.pid)
@@ -584,6 +594,12 @@ def _argumentos(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--ventana", type=float, default=12.0)
     parser.add_argument("--modo-fin", choices=("terminate", "close"), default="terminate")
     parser.add_argument(
+        "--terminar-tras",
+        type=float,
+        default=None,
+        help="segundos tras la asignación en que se termina el Job con el árbol VIVO (mide la terminación real)",
+    )
+    parser.add_argument(
         "--sin-wmi", action="store_true", help="no usa la traza de WMI (queda NO verificado lo externo)"
     )
     parser.add_argument("--json", type=pathlib.Path, help="ruta del JSON de resultados")
@@ -616,6 +632,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ventana_s=args.ventana,
                     modo_fin=args.modo_fin,
                     con_wmi=not args.sin_wmi,
+                    terminar_tras_s=args.terminar_tras,
                 )
                 corrida["repeticion"] = repeticion
                 resultados.append(corrida)

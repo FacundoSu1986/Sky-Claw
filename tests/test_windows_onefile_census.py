@@ -258,3 +258,23 @@ def test_la_traza_de_wmi_ve_al_nieto_creado_fuera_del_job_aunque_el_muestreo_no_
     # Assert: WMI vio el nieto por su cuenta (independiente del muestreo y del IOCP).
     nietos = [e for e in corrida["wmi"]["eventos"] if e["ppid"] == corrida["raiz_pid"]]  # type: ignore[index]
     assert len(nietos) == 1
+
+
+@solo_windows
+def test_terminar_tras_corta_con_el_arbol_vivo_y_mide_al_escapado_aunque_el_payload_termine_solo_despues() -> None:
+    # Arrange: el nieto (6 s) nace a los 1.5 s, ANTES de la asignación (2.5 s); sin `terminar_tras_s` el censo
+    # esperaría a que todo terminara solo y el escapado habría muerto: «supervivientes = 0» sería un artefacto.
+    carga = (
+        "import subprocess, sys, time; time.sleep(1.5); "
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(6)']); time.sleep(6)"
+    )
+    # Act
+    corrida = censo.medir_censo(
+        [sys.executable, "-c", carga], retardo_s=2.5, ventana_s=12.0, con_wmi=False, terminar_tras_s=0.5
+    )
+    clasificacion = censo.clasificar(corrida)
+    # Assert
+    assert len(clasificacion["fuera"]) == 1, corrida
+    assert clasificacion["supervivientes"] == clasificacion["fuera"], (
+        "el escapado debía seguir vivo tras terminar el Job"
+    )
