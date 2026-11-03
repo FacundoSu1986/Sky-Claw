@@ -108,6 +108,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pendiente_no_ratificado` del PR A **se retiró**: dos campos para una sola decisión vuelven
   a divergir.
 
+### Removed
+- **Se retira el camino headless de la etapa 6 (`WryeBashPipelineService.execute_pipeline`)
+  — ADR 0016 §7.1.** Tras el cableado asistido del PR B no quedaba **ningún** caller de
+  producción: `bash.py` no expone build, así que cada invocación tomaba los locks
+  (`Bashed Patch, 0.esp` + `load-order`), emitía `ActionManifest`, abría una TX y fallaba
+  cerrado. Con él se van 8 helpers (`ensure_runner` incluido), 3 clases module-level, **573
+  líneas netas** (el módulo pasa de 1231 a 658) y las dependencias `lock_manager`,
+  `snapshot_manager`, `journal` y `wrye_bash_runner` de la firma del servicio (8 → 4
+  parámetros). El hueco de saneo de `stdout`/`stderr` que el PR B había asignado a este PR
+  **se cierra por retiro**: sin subproceso no hay texto de terceros que sanear, y la tool del
+  agente ya no admite un runner. El id de lock `Bashed Patch, 0.esp` se retira con el camino
+  —sin tomador sería una mentira sobre la etapa 6— y el literal del artefacto se consolida en
+  `BASHED_PATCH_NAME` en los 5 módulos donde estaba suelto. Los 36 tests de
+  `tests/test_wrye_bash_service.py` se retiran con el código que probaban: **8 de sus contratos
+  siguen vivos** (4 se portaron a la suite asistida) y el mapeo test por test está en el ADR.
+  Ancla nueva: `tests/test_wrye_bash_retiro_headless.py` (10 ítems, 9/9 mutaciones muertas).
+  Tres censos (raíces MO2, mecanismos de rollback, productores de evidencia orphan) detectaron
+  el retiro por igualdad literal y se actualizaron sin relajarlos.
+
 ### Fixed
 - **`add_mod_to_modlist` veía el mismo mod como dos si cambiaba una mayúscula (#838).**
   La primitiva comparaba los nombres del `modlist.txt` de forma exacta, mientras

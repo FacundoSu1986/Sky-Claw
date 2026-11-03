@@ -116,10 +116,6 @@ _PRODUCTORES_CONGELADOS: dict[str, list[str]] = {
     "local/tools/synthesis_service.py": [
         "SynthesisPipelineService._emit_action_manifest",
     ],
-    "local/tools/wrye_bash_service.py": [
-        "WryeBashPipelineService._emit_action_manifest",
-        "WryeBashPipelineService._emit_flight_report",
-    ],
     "local/tools/xedit_service.py": [
         "XEditPipelineService._emit_action_manifest",
         "XEditPipelineService._emit_flight_report",

@@ -554,11 +554,7 @@ async def close_game(mo2: Any) -> str:
 
 
 async def generate_bashed_patch(
-    wrye_bash_runner: Any,
     *,
-    lock_manager: Any | None = None,
-    snapshot_manager: Any | None = None,
-    journal: Any | None = None,
     path_resolver: Any | None = None,
     # Sin default: un perfil inventado ("Default") prepararía instrucciones para una
     # instancia que puede no existir. Vacío ⇒ `PerfilInvalido`, que es lo que el
@@ -575,7 +571,7 @@ async def generate_bashed_patch(
     enrutado que comparte con el dispatcher de la GUI y con el ``SupervisorAgent``.
 
     Antes del PR B este handler llamaba a ``execute_pipeline``: tomaba el lock anidado
-    (``Bashed Patch, 0.esp`` + ``load-order``), emitía el ``ActionManifest`` y abría una
+    (el del Bashed Patch + ``load-order``), emitía el ``ActionManifest`` y abría una
     TX para que el runner fallara cerrado —``bash.py`` no expone build headless—. Ahora
     **no toma lock, no abre TX y no emite caja negra**, porque ninguna de las dos fases
     muta: la caja negra existe para lo que puede mutar (ADR 0016 §2) y una etapa que
@@ -605,13 +601,10 @@ async def generate_bashed_patch(
     """
     from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
 
-    service = WryeBashPipelineService(
-        lock_manager=lock_manager,
-        snapshot_manager=snapshot_manager,
-        wrye_bash_runner=wrye_bash_runner,
-        journal=journal,
-        path_resolver=path_resolver,
-    )
+    # PR C (ADR 0016 §7): el servicio ya no pide lock/snapshot/journal/runner — el camino
+    # headless que los usaba se retiró. Pedirlos "por compatibilidad" invitaría a
+    # reconstruirlo por partes.
+    service = WryeBashPipelineService(path_resolver=path_resolver)
     resultado = await service.ejecutar_fase_asistida(
         profile=profile,
         fase=fase,

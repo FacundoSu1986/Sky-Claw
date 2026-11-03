@@ -140,9 +140,6 @@ def test_wrye_bash_no_sondea_el_overwrite(tmp_path: pathlib.Path) -> None:
     game = tmp_path / "game"
     mo2 = tmp_path / "mo2"
     svc = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
-        journal=MagicMock(),
         path_resolver=_resolver(game=game, mo2=mo2),
     )
 

@@ -790,8 +790,6 @@ def _servicio(
     resolver.get_skyrim_path.return_value = game
     resolver.get_mo2_instance_data_root.return_value = mo2
     return WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=resolver,
         plugin_limit_guard=guard,
         preflight=_preflight_verde(),
@@ -893,8 +891,6 @@ async def test_preparar_bloquea_si_el_preflight_esta_en_rojo(tmp_path: pathlib.P
     preflight.run = AsyncMock(return_value=reporte)
 
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=MagicMock(),
         preflight=preflight,
     )
@@ -913,8 +909,6 @@ async def test_preparar_sin_data_resoluble_falla_cerrado(tmp_path: pathlib.Path)
     resolver.get_skyrim_path.return_value = None
     resolver.get_mo2_instance_data_root.return_value = None
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=resolver,
     )
 
@@ -1013,8 +1007,6 @@ def _resolver_real(game: pathlib.Path, mo2: pathlib.Path, *, mods_dir: pathlib.P
 def _con_resolver_real(game: pathlib.Path, mo2: pathlib.Path) -> WryeBashPipelineService:
     """Servicio con resolver de rutas reales: ``mods/`` y ``overwrite/`` se resuelven de verdad."""
     return WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=_resolver_real(game, mo2),
         preflight=_preflight_verde(),
     )
@@ -1048,8 +1040,6 @@ def test_el_preflight_asistido_no_cablea_el_sensor_de_visibilidad_fisica(tmp_pat
     _escribir_modlist(perfil, ["SoloEnMods"])
     (tmp_path / "mods" / "SoloEnMods").mkdir(parents=True)
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=_resolver_real(game, tmp_path),
     )
 
@@ -1073,8 +1063,6 @@ async def test_el_preflight_asistido_no_bloquea_un_perfil_que_solo_vive_en_mods(
     _escribir_modlist(perfil, ["SoloEnMods"])
     (tmp_path / "mods" / "SoloEnMods").mkdir(parents=True)
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=_resolver_real(game, tmp_path),
     )
 
@@ -1087,8 +1075,6 @@ async def test_el_preflight_asistido_no_bloquea_un_perfil_que_solo_vive_en_mods(
 def test_el_dominio_desconocido_se_rechaza(tmp_path: pathlib.Path) -> None:
     """``dominio`` elige qué namespace se mide: un valor inventado no puede caer en el default."""
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=_resolver_real(tmp_path / "Skyrim", tmp_path),
     )
 
@@ -1281,8 +1267,6 @@ async def test_la_excepcion_inesperada_conserva_el_semaforo(tmp_path: pathlib.Pa
     preflight = MagicMock()
     preflight.run = AsyncMock(return_value=amarillo)
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=_resolver_real(tmp_path / "Skyrim", tmp_path),
         preflight=preflight,
     )
@@ -1382,8 +1366,6 @@ def test_los_permisos_se_miden_donde_escribe_cada_ejecutor(tmp_path: pathlib.Pat
     game, mo2 = tmp_path / "Skyrim", tmp_path / "mo2"
     (game / "Data").mkdir(parents=True)
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=_resolver_real(game, mo2),
     )
 
@@ -1414,8 +1396,6 @@ async def test_un_data_de_solo_lectura_no_bloquea_la_etapa_asistida(tmp_path: pa
     (mo2 / "mods" / "SoloEnMods").mkdir(parents=True)
     (mo2 / "overwrite").mkdir(parents=True)
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=_resolver_real(game, mo2),
     )
 
@@ -1467,8 +1447,6 @@ async def test_preflight_se_construye_con_el_perfil_pedido(tmp_path: pathlib.Pat
     resolver.get_active_profile.return_value = "Activo"
 
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=resolver,
     )
 
@@ -1496,6 +1474,93 @@ async def test_la_fase_1_aborta_si_el_guard_m04_falla(tmp_path: pathlib.Path) ->
     assert resultado["aborted_by"] == "plugin_limit_guard"
     assert resultado["plugin_count"] == 256
     assert "M-04" in resultado["error"]
+
+
+@pytest.mark.asyncio
+async def test_la_fase_1_sigue_si_el_guard_m04_valida(tmp_path: pathlib.Path) -> None:
+    """Portado de ``test_wrye_bash_service.py::test_guard_m04_valido_corre`` (PR C).
+
+    El caso que faltaba en esta suite era el camino FELIZ del guard: sólo se probaba que
+    un M-04 roto aborta. Un ``valid`` mal leído —``if guard_result.get("valid", True)``
+    invertido, o mirar ``success`` en su lugar— abortaría toda preparación y ningún test
+    lo vería. La preparación tiene que llegar a las instrucciones.
+    """
+    _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
+    guard_mock = AsyncMock(return_value={"valid": True, "plugin_count": 120})
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path, guard=guard_mock)
+
+    resultado = await servicio.preparar_etapa_asistida(profile="Default")
+
+    guard_mock.assert_awaited_once_with("Default")
+    assert "aborted_by" not in resultado
+    assert resultado["pendiente"] is True
+    assert resultado["instrucciones"] == list(PASOS_ASISTIDOS)
+
+
+@pytest.mark.asyncio
+async def test_validate_limit_false_no_consulta_el_guard(tmp_path: pathlib.Path) -> None:
+    """Portado de ``test_wrye_bash_service.py::test_validate_limit_false_saltea_el_guard``.
+
+    El supervisor valida M-04 una sola vez por ritual (y la tool del LLM lo delega ahí):
+    si el servicio re-validara igual, el operador pagaría el guard dos veces por la misma
+    decisión. ``validate_limit`` es el interruptor, y este test lo mide en el servicio.
+    """
+    _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
+    guard_mock = AsyncMock(return_value={"valid": False, "error": "no debería consultarse"})
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path, guard=guard_mock)
+
+    resultado = await servicio.preparar_etapa_asistida(profile="Default", validate_limit=False)
+
+    guard_mock.assert_not_awaited()
+    assert resultado["pendiente"] is True
+
+
+@pytest.mark.asyncio
+async def test_un_preflight_en_rojo_no_consulta_el_guard_m04(tmp_path: pathlib.Path) -> None:
+    """Portado de ``test_wrye_bash_service.py::test_preflight_red_no_llama_al_guard_m04``.
+
+    El orden importa: si el preflight ya sabe que la etapa va a fallar, correr el guard
+    M-04 regala trabajo y —peor— puede devolver ``aborted_by='plugin_limit_guard'``
+    tapando la causa real (un ``Data`` sin permisos se reportaría como límite de plugins).
+    """
+    _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
+    reporte = MagicMock()
+    reporte.blocks_mutations = True
+    reporte.status.value = "red"
+    chequeo = MagicMock()
+    chequeo.status.value = "red"
+    chequeo.summary = "Data sin permisos de escritura"
+    reporte.checks = [chequeo]
+    preflight = MagicMock()
+    preflight.run = AsyncMock(return_value=reporte)
+    guard_mock = AsyncMock(return_value={"valid": True})
+    servicio = WryeBashPipelineService(
+        path_resolver=MagicMock(),
+        plugin_limit_guard=guard_mock,
+        preflight=preflight,
+    )
+
+    resultado = await servicio.preparar_etapa_asistida(profile="Default")
+
+    assert resultado["reason"] == "PreflightBlocked"
+    guard_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_un_preflight_verde_no_ensucia_el_resultado(tmp_path: pathlib.Path) -> None:
+    """Portado de ``test_wrye_bash_service.py::test_preflight_green_no_ensucia_el_result``.
+
+    El contrato T-16b/T-16c de la familia: el semáforo verde no viaja. Si viajara, el
+    panel renderizaría un preflight en cada respuesta y la clave dejaría de significar
+    "algo que mirar".
+    """
+    _perfil_con_plugins(tmp_path, f"*{BASHED_PATCH_NAME}\n")
+    servicio = _servicio(tmp_path / "Skyrim", tmp_path)  # preflight verde inyectado
+
+    resultado = await servicio.preparar_etapa_asistida(profile="Default")
+
+    assert resultado["pendiente"] is True
+    assert "preflight" not in resultado
 
 
 def test_testigo_previo_rechaza_sha256_sintacticamente_invalido() -> None:
@@ -1588,8 +1653,6 @@ def test_ensure_preflight_con_perfil_no_contamina_legacy_sin_perfil(tmp_path: pa
     (mo2 / "profiles" / "Default").mkdir(parents=True)
     (mo2 / "profiles" / "Pedido").mkdir(parents=True)
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=_resolver_real(game, mo2),
     )
 
@@ -1631,8 +1694,6 @@ async def test_ensure_preflight_se_ejecuta_fuera_del_hilo_del_event_loop(tmp_pat
     _parche(game / "Data" / BASHED_PATCH_NAME)
     _perfil_con_plugins(mo2, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n")
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=_resolver_real(game, mo2),
     )
 
@@ -1665,8 +1726,6 @@ async def test_preparaciones_concurrentes_no_corrompen_cache_preflight(tmp_path:
     _perfil_con_plugins(mo2, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n", perfil="P1")
     _perfil_con_plugins(mo2, f"*Skyrim.esm\n*{BASHED_PATCH_NAME}\n", perfil="P2")
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=_resolver_real(game, mo2),
     )
 

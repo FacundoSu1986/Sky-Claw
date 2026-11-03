@@ -264,7 +264,9 @@ def _construir(nombre: str, *, resolver: MagicMock, mo2: pathlib.Path, dominio: 
         from sky_claw.local.tools.wrye_bash_service import DOMINIO_FISICO, DOMINIO_USVFS, WryeBashPipelineService
 
         dom = DOMINIO_USVFS if dominio == "virtual_usvfs" else DOMINIO_FISICO
-        return WryeBashPipelineService(**comunes, default_domain=dom)
+        # PR C: el servicio ya no recibe lock/snapshot — sus dos fases asistidas son de
+        # sólo lectura. Se le pasa el resolver suelto, no el dict ``comunes``.
+        return WryeBashPipelineService(path_resolver=resolver, default_domain=dom)
     raise AssertionError(f"servicio no contemplado en el factory: {nombre}")
 
 

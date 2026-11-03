@@ -620,11 +620,8 @@ class AsyncToolRegistry:
             # #315 → ADR 0016 (PR B): mismo servicio que el Ritual de la GUI y el
             # SupervisorAgent, y la MISMA ruta de enrutado (`ejecutar_fase_asistida`).
             # Las fases asistidas no toman lock ni emiten caja negra: no mutan.
+            # PR C (ADR 0016 §7): sin las dependencias del camino headless retirado.
             fn=lambda fase="preparar": generate_bashed_patch(
-                self._wrye_bash_runner,
-                lock_manager=self._lock_manager,
-                snapshot_manager=self._snapshot_manager,
-                journal=self._journal,
                 path_resolver=self._path_resolver,
                 profile=self._mo2_profile,
                 fase=fase,
