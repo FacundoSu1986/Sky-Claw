@@ -842,16 +842,28 @@ def _preservar_evidencia(
     registro: RegistroRecuperacion,
     kind: str,
     ruta: pathlib.Path,
-) -> pathlib.Path | None:
-    """Guarda una copia de los bytes NO atribuibles, o ``None`` si no se pudo.
+) -> tuple[pathlib.Path | None, str]:
+    """Guarda una copia de los bytes NO atribuibles y VERIFICA que quedó.
 
     Cuando el rollback no puede establecer quién escribió el contenido actual, la
     decisión correcta no es elegir: es no destruir y dejar rastro. El snapshot ya
     preserva lo viejo; esto preserva lo NUEVO, que de otro modo se perdería en la
     primera restauración manual.
 
+    Devuelve ``(ruta_de_la_evidencia, "")`` cuando la evidencia quedó verificada,
+    o ``(None, motivo)`` cuando no se pudo preservar. El motivo NUNCA es vacío
+    cuando la ruta es ``None``: un fallo sin diagnóstico no es un diagnóstico.
+
     Es best-effort a propósito: un fallo al copiar no puede convertir una
-    recuperación en un fallo crítico. Devuelve la ruta escrita, o ``None``.
+    recuperación en un fallo crítico. Lo que NO puede hacer es declarar
+    preservado lo que no comprobó.
+
+    La evidencia EXISTENTE se lee y se compara. El nombre del archivo es el
+    sha256 del contenido, así que antes se asumía que un archivo con ese nombre
+    contenía ese contenido; nada lo garantiza para un archivo escrito por otra
+    versión del código, por otro proceso o por un corte anterior. Y no se
+    sobrescribe: si el archivo existente contradice, esas pueden ser las ÚNICAS
+    copias de lo que la transición no escribió.
 
     Recibe ``kind`` y no la ``SuperficieCapturada`` a propósito: el censo por AST
     marca como escritor de superficies a toda función que reciba una
@@ -861,27 +873,44 @@ def _preservar_evidencia(
     excepción en el censo es cobertura que se declara y no se tiene—.
     """
     if raiz is None:
-        return None
+        return None, "el registro no declara raíz de evidencia"
     try:
         actuales = ruta.read_bytes()
-    except OSError:
-        return None
+    except OSError as exc:
+        return None, f"no se pudo leer {ruta.name} para preservarlo: {exc}"
     huella = _sha256(actuales)[:12]
     destino = raiz / "recovery_evidence" / registro.transition_id / f"{kind}-{huella}.bin"
+
+    if destino.exists():
+        try:
+            existente = destino.read_bytes()
+        except OSError as exc:
+            return None, f"la evidencia {destino} existe pero no se pudo leer: {exc}"
+        if existente == actuales:
+            return destino, ""
+        return None, (
+            f"CONFLICTO: {destino} ya existe con contenido distinto "
+            f"({len(existente)} bytes, sha256 {_sha256(existente)[:12]}) y no se sobrescribe: "
+            "es evidencia de otra escritura y puede ser la única copia"
+        )
+
     try:
-        if destino.exists():
-            # El nombre ES el digest del contenido. Si el archivo ya está, se
-            # asume completo —pero sólo se puede asumir porque la escritura es
-            # atómica: un ``write_bytes`` interrumpido por ENOSPC dejaría un
-            # ``.bin`` truncado con el nombre del contenido COMPLETO, y toda
-            # recuperación posterior lo daría por bueno y se saltaría la
-            # escritura. Esas serían las únicas copias de lo que la transición
-            # no escribió (CodeRabbit sobre #851).
-            return destino
         _escribir_bytes_atomico(destino, actuales)
-    except (OSError, RecuperacionError):
-        return None
-    return destino
+    except (OSError, RecuperacionError) as exc:
+        return None, f"no se pudo publicar la evidencia en {destino}: {exc}"
+
+    # Se relee lo publicado. La escritura es atómica, así que esto no debería
+    # fallar nunca — y justamente por eso es un ancla: el día que el escritor
+    # publique otra cosa, se va a saber.
+    try:
+        publicado = destino.read_bytes()
+    except OSError as exc:
+        return None, f"la evidencia se escribió en {destino} pero no se pudo releer: {exc}"
+    if publicado != actuales:
+        return None, (
+            f"la evidencia publicada en {destino} no coincide con lo leído ({len(publicado)} bytes vs {len(actuales)})"
+        )
+    return destino, ""
 
 
 def _restaurar_persistida(
@@ -903,8 +932,11 @@ def _restaurar_persistida(
         # legítima de otro), pero tampoco se descarta. Se guarda una copia de los
         # bytes actuales para que el propietario pueda decidir, y el veredicto lo
         # dice explícitamente.
-        evidencia = _preservar_evidencia(raiz_evidencia, registro, superficie.kind, ruta)
-        detalle = motivo if evidencia is None else f"{motivo}. Evidencia conservada en {evidencia}"
+        evidencia, diagnostico = _preservar_evidencia(raiz_evidencia, registro, superficie.kind, ruta)
+        if evidencia is None:
+            detalle = f"{motivo}. Evidencia NO preservada: {diagnostico}"
+        else:
+            detalle = f"{motivo}. Evidencia conservada en {evidencia}"
         return VerificacionSuperficie(
             kind=superficie.kind,
             ok=True,

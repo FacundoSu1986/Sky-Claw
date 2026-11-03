@@ -60,14 +60,6 @@ class Arboles:
         (self.mo2 / "modorganizer.ini").write_text("[General]\r\ngamePath=x\r\n", encoding="utf-8", newline="")
         (self.storage / "active.json").write_text("{}", encoding="utf-8")
 
-    def protegidos(self) -> list[tuple[pathlib.Path, str]]:
-        return inspector._arboles_protegidos(
-            storage_root=self.storage,
-            mo2_instance_dir=self.mo2,
-            clone_roots=[self.clone],
-            managed_source_root=self.managed,
-        )
-
 
 # ---------------------------------------------------------------------------
 # FIX A — el inspector NO escribe: el informe sale por stdout
@@ -352,3 +344,236 @@ def test_el_detalle_de_dependencias_se_redacta_aunque_la_source_se_descubra() ->
     texto = f"EngineFixes.toml menciona {source}"
     redactado = inspector._redactar_texto(texto, lambda _: "<ruta>", [source])
     assert str(source) not in redactado
+
+
+# ---------------------------------------------------------------------------
+# FIX 1 de la auditoría de cierre — un candidato sin inspeccionar NO es «OK»
+# ---------------------------------------------------------------------------
+#
+# El defecto: ``_dependencias_en_arbol`` devolvía una lista de sospechosos y
+# colapsaba en el mismo ``continue`` tres situaciones distintas —no existe,
+# no es un archivo regular, excede el límite de tamaño, no se pudo leer—. El
+# llamador convertía la lista vacía en ``HALLAZGO_OK``. Un ``ModOrganizer.ini``
+# de 600 KiB, o uno con una ACL que impide leerlo, producía «ningún archivo de
+# configuración nombra la Managed Source» sin haber leído el archivo. El
+# inspector afirmaba sobre lo que no había mirado.
+
+#: Los tres candidatos que el inspector mira. Se replican acá a propósito: si
+#: la lista cambia, el test tiene que romperse para que alguien decida qué
+#: hacer con el candidato nuevo, en vez de que quede sin cobertura en silencio.
+CANDIDATOS_ESPERADOS = ("SKSE/Plugins/CrashLogger.ini", "Data/SKSE/Plugins/EngineFixes.toml", "ModOrganizer.ini")
+
+
+def _clone_vacio(base: pathlib.Path) -> pathlib.Path:
+    """Un Clone sin ninguno de los candidatos: ausencia verificada de los tres."""
+    clone = base / "Clone"
+    clone.mkdir(parents=True, exist_ok=True)
+    return clone
+
+
+def test_los_candidatos_son_los_que_el_test_cubre() -> None:
+    """El conjunto de candidatos está congelado: agregar uno rompe acá."""
+    clone = pathlib.Path("no-existe")
+    inspeccion = inspector._dependencias_en_arbol(clone, ("x",))
+    assert inspeccion.candidatos == CANDIDATOS_ESPERADOS
+
+
+def test_un_candidato_ausente_es_ausencia_verificada_no_un_fallo(tmp_path: pathlib.Path) -> None:
+    """Sin archivos, no hay nada que inspeccionar: no es lo mismo que no poder."""
+    clone = _clone_vacio(tmp_path)
+    inspeccion = inspector._dependencias_en_arbol(clone, ("C:/Steam/Skyrim",))
+    assert inspeccion.inspeccionados == ()
+    assert inspeccion.no_inspeccionados == (), f"la ausencia se reportó como fallo: {inspeccion.no_inspeccionados}"
+    assert inspeccion.sospechosas == ()
+
+
+def test_un_candidato_leido_sin_dependencias_se_declara_inspeccionado(tmp_path: pathlib.Path) -> None:
+    """Leer y no encontrar nada es una afirmación POSITIVA, no un vacío."""
+    clone = _clone_vacio(tmp_path)
+    (clone / "ModOrganizer.ini").write_text("[General]\r\ngamePath=C:/otro\r\n", encoding="utf-8", newline="")
+    inspeccion = inspector._dependencias_en_arbol(clone, ("C:/Steam/Skyrim",))
+    assert inspeccion.inspeccionados == ("ModOrganizer.ini",)
+    assert inspeccion.no_inspeccionados == ()
+    assert inspeccion.sospechosas == ()
+
+
+def test_un_candidato_que_menciona_la_aguja_es_sospechoso(tmp_path: pathlib.Path) -> None:
+    """Control positivo del detector: si no marca esto, los demás tests son vacuos."""
+    clone = _clone_vacio(tmp_path)
+    (clone / "ModOrganizer.ini").write_text("[General]\r\ngamePath=C:/Steam/Skyrim\r\n", encoding="utf-8", newline="")
+    inspeccion = inspector._dependencias_en_arbol(clone, ("C:/Steam/Skyrim",))
+    assert len(inspeccion.sospechosas) == 1
+    assert "ModOrganizer.ini" in inspeccion.sospechosas[0]
+    assert inspeccion.inspeccionados == ("ModOrganizer.ini",)
+
+
+def test_un_candidato_ilegible_no_se_da_por_inspeccionado(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Un archivo que existe y no se puede leer deja el chequeo INDETERMINADO.
+
+    Es el caso que el defecto silenciaba: ``except OSError: continue`` producía
+    una lista vacía y el llamador la leía como «no hay dependencias».
+    """
+    clone = _clone_vacio(tmp_path)
+    (clone / "ModOrganizer.ini").write_text("[General]\r\n", encoding="utf-8", newline="")
+
+    original = pathlib.Path.open
+
+    def _open_que_niega(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self.name == "ModOrganizer.ini":
+            raise PermissionError(13, "ACCESS_DENIED")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "open", _open_que_niega)
+    inspeccion = inspector._dependencias_en_arbol(clone, ("C:/Steam/Skyrim",))
+
+    assert inspeccion.inspeccionados == ()
+    assert [rel for rel, _ in inspeccion.no_inspeccionados] == ["ModOrganizer.ini"]
+    assert inspeccion.no_inspeccionados[0][1], "un fallo sin motivo no es un diagnóstico"
+
+
+def test_un_candidato_que_excede_el_limite_no_se_da_por_inspeccionado(tmp_path: pathlib.Path) -> None:
+    """El límite de rendimiento se conserva, pero deja de ser silencioso.
+
+    No recorrer el árbol de mods es un requisito; convertir el recorte en un
+    «OK» no lo es. El archivo se declara NO inspeccionado con su motivo.
+    """
+    clone = _clone_vacio(tmp_path)
+    limite = inspector.LIMITE_DE_LECTURA_CANDIDATO
+    grande = clone / "ModOrganizer.ini"
+    grande.write_bytes(b"x" * (limite + 1))
+
+    inspeccion = inspector._dependencias_en_arbol(clone, ("C:/Steam/Skyrim",))
+    assert inspeccion.inspeccionados == ()
+    assert [rel for rel, _ in inspeccion.no_inspeccionados] == ["ModOrganizer.ini"]
+    motivo = inspeccion.no_inspeccionados[0][1]
+    assert str(limite) in motivo, f"el motivo no dice el límite: {motivo}"
+
+
+def test_un_candidato_justo_en_el_limite_si_se_inspecciona(tmp_path: pathlib.Path) -> None:
+    """Control negativo del límite: el borde exacto no es «excedido»."""
+    clone = _clone_vacio(tmp_path)
+    limite = inspector.LIMITE_DE_LECTURA_CANDIDATO
+    (clone / "ModOrganizer.ini").write_bytes(b"x" * limite)
+    inspeccion = inspector._dependencias_en_arbol(clone, ("C:/Steam/Skyrim",))
+    assert inspeccion.inspeccionados == ("ModOrganizer.ini",)
+    assert inspeccion.no_inspeccionados == ()
+
+
+def test_un_candidato_que_no_es_archivo_regular_no_se_inspecciona(tmp_path: pathlib.Path) -> None:
+    """Un directorio con el nombre del candidato es anómalo, no «ausente».
+
+    ``Path.is_file()`` devuelve ``False`` para un directorio, y el ``continue``
+    anterior lo trataba igual que un archivo que no existe.
+    """
+    clone = _clone_vacio(tmp_path)
+    (clone / "ModOrganizer.ini").mkdir()
+
+    inspeccion = inspector._dependencias_en_arbol(clone, ("C:/Steam/Skyrim",))
+    assert inspeccion.inspeccionados == ()
+    assert [rel for rel, _ in inspeccion.no_inspeccionados] == ["ModOrganizer.ini"]
+
+
+def test_el_hallazgo_de_dependencias_es_indeterminado_si_queda_algo_sin_mirar() -> None:
+    """Un candidato sin inspeccionar NO puede producir ``OK``."""
+    inspeccion = inspector.InspeccionDeDependencias(
+        candidatos=CANDIDATOS_ESPERADOS,
+        sospechosas=(),
+        inspeccionados=("SKSE/Plugins/CrashLogger.ini",),
+        no_inspeccionados=(("ModOrganizer.ini", "excede el límite"),),
+    )
+    hallazgo = inspector._hallazgo_de_dependencias(inspeccion)
+    assert hallazgo.veredicto == inspector.HALLAZGO_INDETERMINADO, (
+        f"un candidato sin inspeccionar produjo {hallazgo.veredicto}: {hallazgo.detalle}"
+    )
+    assert "ModOrganizer.ini" in hallazgo.detalle
+
+
+def test_el_hallazgo_de_dependencias_es_ok_solo_si_todo_se_leyo() -> None:
+    """El ``OK`` exige haber leído: dice cuántos archivos miró."""
+    inspeccion = inspector.InspeccionDeDependencias(
+        candidatos=CANDIDATOS_ESPERADOS,
+        sospechosas=(),
+        inspeccionados=("ModOrganizer.ini",),
+        no_inspeccionados=(),
+    )
+    hallazgo = inspector._hallazgo_de_dependencias(inspeccion)
+    assert hallazgo.veredicto == inspector.HALLAZGO_OK
+    assert "ModOrganizer.ini" in hallazgo.detalle
+
+
+def test_el_hallazgo_de_dependencias_bloquea_sobre_indeterminado() -> None:
+    """Si además hay sospechosas, el veredicto más fuerte gana."""
+    inspeccion = inspector.InspeccionDeDependencias(
+        candidatos=CANDIDATOS_ESPERADOS,
+        sospechosas=("ModOrganizer.ini menciona C:/Steam/Skyrim",),
+        inspeccionados=("ModOrganizer.ini",),
+        no_inspeccionados=(("SKSE/Plugins/CrashLogger.ini", "no se pudo leer"),),
+    )
+    hallazgo = inspector._hallazgo_de_dependencias(inspeccion)
+    assert hallazgo.veredicto == inspector.HALLAZGO_BLOQUEADO
+    assert "menciona" in hallazgo.detalle
+
+
+def test_un_indeterminado_impide_ready_for_p7() -> None:
+    """La consolidación no puede devolver LISTO con un solo INDETERMINADO.
+
+    Se prueba sobre la función pura, con control positivo: los mismos hallazgos
+    sin el INDETERMINADO SÍ dan LISTO. Sin ese control el test sería vacuo —
+    cualquier implementación que devolviera INDETERMINADO siempre lo pasaría.
+    """
+    todos_ok = [inspector.Hallazgo(f"ok-{i}", inspector.HALLAZGO_OK, "verificado") for i in range(5)]
+    assert inspector._veredicto_consolidado(todos_ok) == inspector.VEREDICTO_LISTO
+
+    con_sin_mirar = [
+        *todos_ok,
+        inspector.Hallazgo("dependencias", inspector.HALLAZGO_INDETERMINADO, "ModOrganizer.ini sin leer"),
+    ]
+    assert inspector._veredicto_consolidado(con_sin_mirar) == inspector.VEREDICTO_INDETERMINADO
+
+
+def test_el_informe_no_queda_listo_si_un_candidato_no_se_pudo_leer(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """De punta a punta: el informe real no puede salir ``READY_FOR_P7``.
+
+    El hallazgo de ``dependencias`` es el discriminador: con el defecto era
+    ``OK``. Se afirma sobre ÉL y no sobre ``listo_para_p7`` a secas, porque en un
+    árbol sintético otros hallazgos también fallan y esa aserción no
+    discriminaría nada.
+    """
+    from types import SimpleNamespace
+
+    arboles = Arboles(tmp_path)
+    (arboles.clone / "ModOrganizer.ini").write_text("[General]\r\n", encoding="utf-8", newline="")
+
+    monkeypatch.setattr(
+        inspector,
+        "cargar_runtime_clone_record",
+        lambda _root, _clone: SimpleNamespace(
+            root_path=str(arboles.clone),
+            clone_id="clone-1",
+            lifecycle=SimpleNamespace(value="PROVISIONED"),
+            source_generation_id="gen-1",
+        ),
+    )
+    original = pathlib.Path.open
+
+    def _open_que_niega(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self.name == "ModOrganizer.ini" and self.parent == arboles.clone:
+            raise PermissionError(13, "ACCESS_DENIED")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "open", _open_que_niega)
+
+    informe, _ = inspector.construir_informe(
+        storage_root=arboles.storage,
+        mo2_instance_dir=arboles.mo2,
+        config_path=None,
+        managed_source_root=None,
+        clone_id="clone-1",
+        mostrar_rutas=False,
+    )
+
+    hallazgo = next(h for h in informe["hallazgos"] if h["clave"] == "dependencias")
+    assert hallazgo["veredicto"] == inspector.HALLAZGO_INDETERMINADO, (
+        f"un candidato ilegible se reportó como {hallazgo['veredicto']}: {hallazgo['detalle']}"
+    )
+    assert informe["listo_para_p7"] is False

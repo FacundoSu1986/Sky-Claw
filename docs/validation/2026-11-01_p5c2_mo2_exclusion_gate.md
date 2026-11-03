@@ -3,7 +3,8 @@
 **Tracker:** #672
 **PR:** [#851](https://github.com/FacundoSu1986/Sky-Claw/pull/851) (Draft)
 **ADR:** [0017 — Exclusión de mutación de `modorganizer.ini`](../adr/0017-mo2-exclusion-gate.md)
-**Fecha:** 2026-11-01 (revisión 2, tras la auditoría adversarial)
+**Fecha:** 2026-11-01 (revisión 2, tras la auditoría adversarial); cierre
+2026-11-03 (sexta ronda: FIX 1 y FIX 2, §0.8)
 **Alcance:** `SYNTHETIC_ONLY`. Ninguna operación sobre Skyrim, Steam, MO2 ni SKSE productivos.
 
 ---
@@ -276,6 +277,132 @@ aserción pasaba en verde sin comprobar nada.
 
 **Ningún hilo queda `STILL_REPRODUCIBLE`.**
 
+## 0.8 Sexta ronda — auditoría de cierre (FIX 1 y FIX 2)
+
+Revisión focalizada sobre `3a6040b5`. Dos hallazgos confirmados contra el HEAD,
+uno en el inspector P7 y otro en la evidencia de recuperación. No se rediseñó
+P5-C2: se cerraron los dos defectos y nada más.
+
+### FIX 1 — El inspector no puede declarar «limpio» lo que no leyó
+
+**El defecto, reproducido de punta a punta.** `_dependencias_en_arbol` devolvía
+la lista de sospechosos y colapsaba en el mismo `continue` cuatro situaciones
+distintas: el candidato no existe, es un enlace roto, no es un archivo regular,
+excede los 512 KiB o no se pudo leer. El llamador convertía la lista vacía en
+`HALLAZGO_OK` con el texto «ningún archivo de configuración nombra la Managed
+Source». Con un `ModOrganizer.ini` de 600 KiB, o con uno cuya ACL impide
+leerlo, el informe afirmaba sobre un archivo que nunca abrió y podía llegar a
+`READY_FOR_P7`.
+
+El test de punta a punta lo mostró sin ambigüedad: `construir_informe` sobre un
+Clone con `ModOrganizer.ini` ilegible devolvía `dependencias = OK` donde
+correspondía `INDETERMINATE`.
+
+**Corrección.** El resultado pasa a ser un tipo con las tres respuestas
+separadas —`InspeccionDeDependencias`—:
+
+| Campo | Significado |
+|---|---|
+| `inspeccionados` | Se abrió y se buscó. No encontró nada: afirmación POSITIVA. |
+| `no_inspeccionados` | El candidato está y NO se pudo evaluar, con su motivo. |
+| (en ninguna lista) | Ausencia verificada: `stat` dijo que no existe. |
+
+`_hallazgo_de_dependencias` traduce eso a veredicto: `BLOCKED` si hay
+sospechosas, `INDETERMINATE` si queda algo sin mirar, `OK` sólo si se leyó todo
+—y en ese caso el detalle dice **cuántos** archivos miró, para que «OK» no sea
+indistinguible de «no había nada»—. La consolidación se extrajo a
+`_veredicto_consolidado`, que exige todos `OK` para `READY_FOR_P7`.
+
+**El límite de rendimiento se conserva.** Siguen siendo tres candidatos
+cerrados; no se recorre el árbol de mods. Lo que cambió es que el recorte dejó
+de ser silencioso: un candidato que excede el tope queda declarado como no
+inspeccionado. Además la lectura pasó a ser **con tope** (`read(LIMITE + 1)`)
+en vez de `stat` y después `read_text`: así el límite se aplica sobre lo que
+realmente se leyó y no queda ventana entre medir y leer.
+
+**Análisis del caso sin Clone.** Si `clone_root` es `None` o no es un
+directorio, el hallazgo `dependencias` no se emite. No es un hueco: en ese
+camino `runtime_clone` o `version.skyrim` ya están en `BLOCKED`, así que el
+informe no puede llegar a `READY_FOR_P7`. Se deja escrito porque es una
+ausencia deliberada, no un olvido.
+
+### FIX 2 — La evidencia existente se verifica y no se sobrescribe
+
+**El defecto.** `if destino.exists(): return destino`. El nombre del archivo es
+el `sha256` del contenido, y de ahí se seguía que un archivo con ese nombre
+*contenía* ese contenido. Nada lo garantiza para un archivo escrito por otra
+versión del código, por otro proceso o por un corte anterior: la atomicidad
+protege la publicación, no la historia del directorio. Un `.bin` truncado se
+devolvía como evidencia buena y la recuperación siguiente se saltaba la
+escritura.
+
+**Corrección, en cuatro pasos:**
+
+1. Si el destino existe, se **lee y se compara** con lo que se iba a guardar.
+   Si coincide, se acepta sin reescribir (la segunda llamada no toca el mtime).
+2. Si no coincide, **no se pisa**. Esas pueden ser las únicas copias de lo que
+   la transición no escribió. Se devuelve `(None, "CONFLICTO: …")` con el
+   tamaño y el digest de lo encontrado.
+3. Lo publicado se **relee** antes de declararlo preservado. «Se escribió» no
+   es «se puede leer lo que se escribió».
+4. El llamador ya no puede callar el fallo: el detalle del rollback dice
+   `Evidencia NO preservada: <motivo>`. La superficie se sigue sin restaurar
+   (`escritura_ajena=True`), que es lo correcto.
+
+**Divergencia deliberada con el revisor.** CodeRabbit sugería «replace it
+atomically» cuando el contenido difiere. No se hizo: reemplazar destruye la
+evidencia contradictoria, que puede ser la única copia de una escritura de un
+tercero. La instrucción del propietario en esta ronda fue explícita —
+*preservar los archivos existentes y emitir diagnóstico de conflicto*— y es
+además la única opción coherente con el resto del módulo, donde la regla es
+«ante autoría desconocida no se elige: se conserva». Queda registrado como
+decisión, no como omisión.
+
+### Tests y mutantes
+
+13 casos nuevos en `test_p7_inspector_output.py` (11 → 24) y 8 en
+`test_frozen_runtime_p5c2_mo2_exclusion.py` (69 → 77). Dos tests existentes se
+adaptaron a la firma nueva.
+
+| Mutante | Tests que mata |
+|---|---|
+| error de lectura del candidato → `continue` silencioso | 2 (ilegible, informe completo) |
+| tope de tamaño → `continue` silencioso | 1 (excede el límite) |
+| `INDETERMINATE` degradado a `OK` | 2 (hallazgo, informe completo) |
+| consolidación ignora `INDETERMINATE` | 1 (`READY_FOR_P7` imposible) |
+| evidencia existente aceptada sin comparar | 2 (truncada, otros bytes) |
+| no releer lo publicado | 1 |
+| sobrescribir evidencia contradictoria | 3 (truncada, otros bytes, conflicto en rollback) |
+| el detalle no avisa del fallo | 1 |
+
+8 mutantes, 13 muertes. Los controles positivos —candidato ausente, candidato
+justo en el límite, evidencia íntegra— **no** matan ningún mutante, que es lo
+que corresponde: no son anclas de la corrección, son anclas de que el test no
+se satisface por accidente.
+
+### Cobertura REAL del baseline (corrige una afirmación anterior)
+
+La ronda anterior afirmó que los 38 fallos locales eran «todos preexistentes»
+sin haberlo medido: se habían verificado **dos** a mano y el resto se había
+atribuido por categoría. Medido ahora, ejecutando los 38 node ids contra
+`origin/main` (`b0e30bbc`):
+
+| Grupo | Cantidad | Evidencia |
+|---|---|---|
+| Fallan idéntico en `main` | **31** | Mismo `FAILED` en el baseline |
+| Pasan en `main` y en la rama al correr el grupo | **7** | Dependen del ORDEN de la suite completa, no del diff |
+| Regresiones atribuibles a este PR | **0** | A/B idéntico: 31 failed / 7 passed en ambos lados |
+
+Los 7 son `test_async_logging_runtime` (rotación en listener), dos de
+`test_dyndolod_handoff_durable` (raíz inaccesible) y cuatro de
+`test_file_permissions_post_validation` (icacls/SID). Los siete pasan aislados
+en la rama (7 passed en 1,96 s) y pasan también dentro del grupo de 38 en la
+rama: la única diferencia con el baseline es la composición de la suite
+completa. No tocan ninguno de los dos módulos modificados.
+
+**Conclusión honesta:** 31 preexistentes medidos, 7 sensibles al orden,
+0 regresiones. La cifra «38 preexistentes» era incorrecta y se retira.
+
 ## 1. Rama, worktree y SHAs
 
 | Elemento | Valor |
@@ -286,6 +413,7 @@ aserción pasaba en verde sin comprobar nada.
 | HEAD auditado (revisión 1) | `eff1ea6369311d55335d3e42aea62f1382167e10` |
 | HEAD final (post-adversarial) | `3e62d399` |
 | HEAD final (fix censo boundary) | `15a2408b` |
+| HEAD auditado en la sexta ronda | `3a6040b5` |
 | P5-C1 integrado | `ac19cb28f74e6495808d7606fdbc29ceab9f578d` |
 | Rig de experimentos | `E:\Skyclaw_Rig_MO2_Exclusion` (fuera del repo) |
 
@@ -415,11 +543,22 @@ Cada archivo con un directorio temporal propio y recién creado.
 | `p5c1_ini_escritura` | 34 passed | 34 passed |
 | `p5c1_mo2_clone_binder` | 20 passed | 20 passed |
 | `p5c1_superficies` | 18 passed | 18 passed |
-| `p5c2_mo2_exclusion` | — | 69 passed, 1 skipped |
-| `p7_inspector_output` (nuevo) | — | 11 passed |
+| `p5c2_mo2_exclusion` | — | 77 passed, 1 skipped |
+| `p7_inspector_output` (nuevo) | — | 24 passed |
 
 Los 2 fallos de `p4_root_lock` (`test_rl05`, `test_rl17`) **fallan igual en
 `origin/main`**: preexistentes, ajenos a este trabajo.
+
+**Corrida conjunta de los 7 archivos afectados por la sexta ronda** (los que
+importan `binder_recovery` o el inspector): **214 passed, 1 skipped**. Incluye
+el censo de boundary `test_escritura_solo_en_modulos_permitidos`, que sigue
+exigiendo coincidencia EXACTA del conjunto de símbolos: las lecturas nuevas
+(`read_bytes`, `open("rb")`) no son mutadores y no entran al censo.
+
+**Cobertura del baseline de los 38 fallos locales.** Medida, no atribuida por
+categoría: 31 fallan idéntico en `origin/main` (`b0e30bbc`), 7 pasan en ambos
+lados al correr el mismo grupo de 38 y sólo fallan por el ORDEN de la suite
+completa, 0 regresiones atribuibles. Detalle en §0.8.
 
 **Nota metodológica.** En esta máquina hay un hook de borrado que impide eliminar
 el `--basetemp`; dos corridas que lo comparten producen cientos de fallos de
@@ -509,6 +648,28 @@ mientras la transición lo retiene, venga el intento de donde venga.
 3. Ejecutar la matriz P7-A..P7-G. Ninguna se ejecutó en esta sesión.
 4. No habilitar `EMISION_PRODUCTIVA_HABILITADA`. No hay wiring productivo.
 
+## 9bis. Reconciliación de hilos contra el código de la sexta ronda
+
+26 hilos sin resolver en el PR. 24 son **históricos** (su código ya no existe en
+la forma que describen, o el fix está aplicado y el hilo quedó abierto); 2 eran
+**defectos vigentes** y se cerraron en esta ronda.
+
+| Hilo | Archivo | Clasificación | Evidencia |
+|---|---|---|---|
+| «Distingue los archivos no inspeccionados de los libres de dependencias» (Codex P2) | `p7:236` | **DEFECTO VIGENTE — CERRADO (FIX 1)** | `InspeccionDeDependencias` + `INDETERMINATE`; 13 tests, 4 mutantes |
+| «Verify existing evidence before reusing it» (CodeRabbit Minor) | `binder_recovery:880` | **DEFECTO VIGENTE — CERRADO (FIX 2)**, con divergencia declarada: se preserva en vez de reemplazar | Comparación + relectura; 8 tests, 4 mutantes |
+| «Aplica la redacción también a los detalles» (Codex P2) | `p7:306` | HISTÓRICO — corregido | `_redactar_texto` se aplica a **todos** los hallazgos (`p7:579`) |
+| «Limita la garantía a la lectura del contenido» (CodeRabbit Minor) | `docs:467` | HISTÓRICO — corregido | ADR §5.2: la garantía se enuncia sobre el contenido; el acceso a metadatos queda como riesgo residual |
+| «Attribute interrupted writes that grow the INI» (CodeRabbit Minor) | `binder_recovery:728` | HISTÓRICO — corregido | Cuarto desenlace `nuevo[:k]` con `len(previos) < k < len(nuevo)` |
+| «Incluye las otras familias mutantes en el detector AST» (Codex P2) | `test_p5c2:962` | HISTÓRICO — corregido | `rename`, `copyfile`, `NamedTemporaryFile`, `fdopen` en el set |
+| «Normaliza las rutas serializadas» (Codex P2) | `p7:239` | HISTÓRICO — corregido | `_variantes_de_ruta_para_busqueda` |
+| «Rechaza INIs con varios hardlinks» (Codex P2) | `mo2_ini_exclusion:452` | HISTÓRICO — corregido | `nlinks != 1` fail-closed + revalidación |
+| «No marques el intento antes de la lectura previa» (Codex P1) | `runtime_clone_binder` | HISTÓRICO — corregido | Hook `al_escribir` en el punto de mutación |
+| «No atribuyas prefijo por intento» (CodeRabbit Major) | `binder_recovery:781` | HISTÓRICO — corregido | La revalidación aborta sin marcar el intento |
+| Resto (17 hilos) | varios | HISTÓRICOS — `outdated` por el árbol actual | — |
+
+**Ningún hilo queda `STILL_REPRODUCIBLE`.**
+
 ## 10. Dictamen
 
 ```text
@@ -522,21 +683,25 @@ productiva deshabilitada. El inspector P7 **no tiene ninguna capacidad de
 escritura**: el TOCTOU del destino se cerró quitando la escritura, no
 parcheando la comprobación.
 
-**Dictamen `P5C2_SAFE_TO_MERGE_SYNTHETIC_ONLY`.** El run ``41526294460``
-sobre ``15a2408b`` pasó verde en todos los checks: ``windows py3.11`` (53m),
-``windows py3.12`` (51m), ``Tests (Pytest)``, ``Build``, ``Lint``, ``Mypy``,
-``Security Scan``, ``CodeRabbit``, ``CodeQL`` y ``Regression & Test Oracle``.
-La regresión que bloqueaba ``ea0ff974`` —``test_escritura_solo_en_modulos_permitidos``
-por el censo de boundary tras el cambio de ``write_bytes`` a
-``_escribir_bytes_atomico``— está corregida y verificada por CI.
+**Dictamen `P5C2_SAFE_TO_MERGE_SYNTHETIC_ONLY`, condicionado al CI del SHA que
+contiene la sexta ronda.** El run ``41526294460`` sobre ``15a2408b`` pasó verde
+en todos los checks (``windows py3.11`` 53m, ``windows py3.12`` 51m,
+``Tests (Pytest)``, ``Build``, ``Lint``, ``Mypy``, ``Security Scan``,
+``CodeRabbit``, ``CodeQL``, ``Regression & Test Oracle``). La sexta ronda
+cambia dos módulos y sus tests, así que ese verde **no se hereda**: el dictamen
+se sostiene sobre el CI del HEAD nuevo, que es el único que prueba ese árbol.
 
 Los cuatro frentes del gate final están cerrados con evidencia:
 TOCTOU (test RED + eliminación del camino), hardlinks (medición real + rechazo
 fail-closed + revalidación), `FlushFileBuffers` (inyección + verificación de que
 `FINALIZED` no se publica) y reconciliación de hilos (12 `FIX_VERIFIED`, 2
-`NOT_APPLICABLE`, 0 `STILL_REPRODUCIBLE`).
+`NOT_APPLICABLE`, 0 `STILL_REPRODUCIBLE`). La sexta ronda agrega dos:
+el inspector no afirma sobre lo que no leyó, y la evidencia recuperada no se
+declara preservada sin verificarla.
 
 Lo que **no** se declara: comportamiento de MO2 real ante la ventana (requisito de
 P7), `POWER_LOSS_GUARANTEE`, `QT_QSETTINGS_EQUIVALENCE`, ni que Steam permita
 arrancar una versión downgrade. Ningún workflow `skipped` se cuenta como revisión
-aprobada.
+aprobada. Tampoco se declara que los 38 fallos locales sean todos preexistentes:
+son 31 medidos como preexistentes y 7 sensibles al orden de la suite (§0.8).
+

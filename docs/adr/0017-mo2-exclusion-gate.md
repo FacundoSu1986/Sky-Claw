@@ -297,6 +297,18 @@ intervención del propietario.** El rollback copia los bytes actuales a
 abstenerse, así que ni lo viejo (el snapshot) ni lo nuevo (la escritura ajena) se
 pierden.
 
+**La evidencia existente se VERIFICA, y no se sobrescribe.** El nombre del
+archivo es el `sha256` del contenido, y de ahí se seguía que un archivo con ese
+nombre *contenía* ese contenido. Nada lo garantiza para un archivo escrito por
+otra versión del código, por otro proceso o por un corte anterior: la
+atomicidad de la escritura protege la publicación, no la historia del
+directorio. Por eso, si el destino ya existe, se lee y se compara con lo que se
+iba a guardar. Si coincide, se acepta sin reescribir. Si no coincide, **no se
+pisa**: esas pueden ser las únicas copias de lo que la transición no escribió, y
+el conflicto se diagnostica en el detalle del rollback (`CONFLICTO: …`). Lo
+publicado también se relee antes de declararlo preservado, porque «se escribió»
+no es «se puede leer lo que se escribió».
+
 ### 5.2 Mientras dura la transición, el INI no es legible por NADIE
 
 Con `dwShareMode = 0` ningún proceso externo abre el archivo **para leer

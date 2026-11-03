@@ -59,6 +59,7 @@ import json
 import os
 import pathlib
 import re
+import stat
 import sys
 from typing import Any
 
@@ -94,6 +95,22 @@ VEREDICTO_INDETERMINADO = "INDETERMINATE"
 #: Nombres de loader de SKSE por edición. Se listan los tres porque son
 #: binarios distintos y el oráculo los audita por separado.
 LOADERS_SKSE = ("skse64_loader.exe", "skse_loader.exe", "sksevr_loader.exe")
+
+#: Archivos de configuración del runtime que se miran buscando dependencias que
+#: sigan apuntando a la Managed Source. Lista CERRADA a propósito: no se recorre
+#: el árbol de mods (cientos de miles de archivos) porque esta inspección tiene
+#: que poder correr antes de una sesión, no durante una.
+CANDIDATOS_DE_DEPENDENCIAS = (
+    "SKSE/Plugins/CrashLogger.ini",
+    "Data/SKSE/Plugins/EngineFixes.toml",
+    "ModOrganizer.ini",
+)
+
+#: Tope de lectura por candidato. Es un límite de RENDIMIENTO: estos archivos
+#: rondan las decenas de KiB, y uno que lo exceda no se lee entero. Excederlo
+#: NO autoriza a decir «no hay dependencias»: el candidato queda declarado como
+#: NO inspeccionado y el chequeo pasa a INDETERMINATE.
+LIMITE_DE_LECTURA_CANDIDATO = 512 * 1024
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -211,34 +228,139 @@ def _variantes_de_ruta_para_busqueda(ruta: pathlib.Path) -> tuple[str, ...]:
     return tuple(v for v in variantes if v)
 
 
-def _dependencias_en_arbol(instance: pathlib.Path, agujas: tuple[str, ...]) -> list[str]:
+@dataclasses.dataclass(frozen=True, slots=True)
+class InspeccionDeDependencias:
+    """Resultado de mirar los candidatos, con las TRES respuestas separadas.
+
+    El defecto que este tipo cierra: la versión anterior devolvía sólo la lista
+    de sospechosos y colapsaba en el mismo ``continue`` cuatro situaciones
+    distintas —no existe, es un enlace roto, no es un archivo regular, excede el
+    límite, no se pudo leer—. Una lista vacía se leía como «no hay
+    dependencias», que es una afirmación sobre archivos que nunca se abrieron.
+
+    Las tres respuestas son distintas y no se pueden confundir:
+
+    - ``inspeccionados``: se abrió y se buscó. No encontró nada.
+    - ``no_inspeccionados``: el candidato está ahí y NO se pudo evaluar. Con
+      motivo, porque un fallo sin diagnóstico no es un diagnóstico.
+    - ausencia: no aparece en ninguna de las dos listas. Es una ausencia
+      VERIFICADA (``stat`` dijo que no existe), no un fallo.
+    """
+
+    candidatos: tuple[str, ...]
+    sospechosas: tuple[str, ...]
+    inspeccionados: tuple[str, ...]
+    no_inspeccionados: tuple[tuple[str, str], ...]
+
+
+def _dependencias_en_arbol(instance: pathlib.Path, agujas: tuple[str, ...]) -> InspeccionDeDependencias:
     """Archivos de configuración del runtime que todavía nombran ``agujas``.
 
     Sólo mira archivos de texto pequeños y conocidos: no recorre el árbol de
-    mods (cientos de miles de archivos) porque esta inspección tiene que poder
-    correr antes de una sesión, no durante una.
+    mods. Cada candidato termina en exactamente uno de tres estados —
+    inspeccionado, no inspeccionado (con motivo) o ausente verificado— y el
+    llamador no puede leer «no inspeccionado» como «limpio».
     """
-    candidatos = (
-        "SKSE/Plugins/CrashLogger.ini",
-        "Data/SKSE/Plugins/EngineFixes.toml",
-        "ModOrganizer.ini",
-    )
-    sospechosos: list[str] = []
-    for relativo in candidatos:
+    sospechosas: list[str] = []
+    inspeccionados: list[str] = []
+    no_inspeccionados: list[tuple[str, str]] = []
+    for relativo in CANDIDATOS_DE_DEPENDENCIAS:
         ruta = instance / relativo
-        if not ruta.is_file():
-            continue
         try:
-            if ruta.stat().st_size > 512 * 1024:
+            info = ruta.stat()
+        except FileNotFoundError:
+            # ``stat`` sigue enlaces: un enlace roto también da FileNotFoundError.
+            # ``lstat`` distingue «no existe» de «existe y apunta a la nada».
+            try:
+                ruta.lstat()
+            except FileNotFoundError:
+                continue  # ausencia verificada
+            except OSError as exc:
+                no_inspeccionados.append((relativo, f"no se pudo consultar: {exc}"))
                 continue
-            texto = ruta.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            no_inspeccionados.append((relativo, "es un enlace roto"))
             continue
+        except OSError as exc:
+            no_inspeccionados.append((relativo, f"no se pudo consultar: {exc}"))
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            no_inspeccionados.append((relativo, "no es un archivo regular"))
+            continue
+        # Se lee con tope, no ``read_text``: así el límite se aplica sobre lo
+        # que REALMENTE se leyó y no hay ventana entre medir y leer.
+        try:
+            with ruta.open("rb") as descriptor:
+                crudo = descriptor.read(LIMITE_DE_LECTURA_CANDIDATO + 1)
+        except OSError as exc:
+            no_inspeccionados.append((relativo, f"no se pudo leer: {exc}"))
+            continue
+        if len(crudo) > LIMITE_DE_LECTURA_CANDIDATO:
+            no_inspeccionados.append(
+                (relativo, f"excede el límite de {LIMITE_DE_LECTURA_CANDIDATO} bytes y no se leyó")
+            )
+            continue
+        texto = crudo.decode("utf-8", errors="replace")
+        inspeccionados.append(relativo)
         for aguja in agujas:
             if aguja and aguja.lower() in texto.lower():
-                sospechosos.append(f"{relativo} menciona {aguja}")
+                sospechosas.append(f"{relativo} menciona {aguja}")
                 break
-    return sospechosos
+    return InspeccionDeDependencias(
+        candidatos=CANDIDATOS_DE_DEPENDENCIAS,
+        sospechosas=tuple(sospechosas),
+        inspeccionados=tuple(inspeccionados),
+        no_inspeccionados=tuple(no_inspeccionados),
+    )
+
+
+def _lista_de_no_inspeccionados(inspeccion: InspeccionDeDependencias) -> str:
+    return ", ".join(f"{relativo} ({motivo})" for relativo, motivo in inspeccion.no_inspeccionados)
+
+
+def _hallazgo_de_dependencias(inspeccion: InspeccionDeDependencias) -> Hallazgo:
+    """Traduce la inspección a un veredicto. ``OK`` exige haber mirado.
+
+    El orden importa: una sospecha confirmada bloquea aunque además haya
+    candidatos sin mirar, porque el veredicto más fuerte es el que manda.
+    """
+    if inspeccion.sospechosas:
+        detalle = "; ".join(inspeccion.sospechosas)
+        if inspeccion.no_inspeccionados:
+            detalle += f". Además quedaron sin inspeccionar: {_lista_de_no_inspeccionados(inspeccion)}"
+        return Hallazgo("dependencias", HALLAZGO_BLOQUEADO, detalle)
+    if inspeccion.no_inspeccionados:
+        return Hallazgo(
+            "dependencias",
+            HALLAZGO_INDETERMINADO,
+            "no se puede afirmar que no haya dependencias: quedaron candidatos sin inspeccionar: "
+            f"{_lista_de_no_inspeccionados(inspeccion)}",
+        )
+    if not inspeccion.inspeccionados:
+        return Hallazgo(
+            "dependencias",
+            HALLAZGO_OK,
+            f"ningún candidato de configuración existe en el Clone ({len(inspeccion.candidatos)} rutas comprobadas)",
+        )
+    return Hallazgo(
+        "dependencias",
+        HALLAZGO_OK,
+        "ningún archivo de configuración nombra la Managed Source "
+        f"({len(inspeccion.inspeccionados)} inspeccionados: {', '.join(inspeccion.inspeccionados)})",
+    )
+
+
+def _veredicto_consolidado(hallazgos: list[Hallazgo]) -> str:
+    """El veredicto del informe: el más fuerte de los hallazgos.
+
+    ``READY_FOR_P7`` exige que TODOS estén en ``OK``. Un solo ``INDETERMINATE``
+    —un candidato que no se pudo leer, por ejemplo— ya lo impide: el informe no
+    puede declararse listo sobre algo que no miró.
+    """
+    if any(h.veredicto == VEREDICTO_BLOQUEADO for h in hallazgos):
+        return VEREDICTO_BLOQUEADO
+    if any(h.veredicto == VEREDICTO_INDETERMINADO for h in hallazgos):
+        return VEREDICTO_INDETERMINADO
+    return VEREDICTO_LISTO
 
 
 def _estado_del_journal(storage_root: pathlib.Path) -> Hallazgo:
@@ -449,13 +571,7 @@ def construir_informe(
     origen = managed_source_root or evaluacion.managed_source_root
     agujas = _variantes_de_ruta_para_busqueda(origen) if origen else ()
     if clone_root is not None and clone_root.is_dir():
-        sospechosas = _dependencias_en_arbol(clone_root, agujas)
-        if sospechosas:
-            hallazgos.append(Hallazgo("dependencias", HALLAZGO_BLOQUEADO, "; ".join(sospechosas)))
-        else:
-            hallazgos.append(
-                Hallazgo("dependencias", HALLAZGO_OK, "ningún archivo de configuración nombra la Managed Source")
-            )
+        hallazgos.append(_hallazgo_de_dependencias(_dependencias_en_arbol(clone_root, agujas)))
 
     # --- Redacción de los detalles -----------------------------------------
     if not mostrar_rutas:
@@ -463,12 +579,7 @@ def construir_informe(
         hallazgos = [dataclasses.replace(h, detalle=_redactar_texto(h.detalle, ruta, conocidas)) for h in hallazgos]
 
     # --- Veredicto consolidado ---------------------------------------------
-    if any(h.veredicto == VEREDICTO_BLOQUEADO for h in hallazgos):
-        veredicto = VEREDICTO_BLOQUEADO
-    elif any(h.veredicto == VEREDICTO_INDETERMINADO for h in hallazgos):
-        veredicto = VEREDICTO_INDETERMINADO
-    else:
-        veredicto = VEREDICTO_LISTO
+    veredicto = _veredicto_consolidado(hallazgos)
 
     # La raíz EFECTIVA se devuelve aparte, sin redactar: ``main`` la necesita para
     # PROTEGER el destino del informe. Si sólo se usara ``args.managed_source``,

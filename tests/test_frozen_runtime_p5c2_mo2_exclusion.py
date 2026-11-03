@@ -831,8 +831,8 @@ def test_la_evidencia_se_conserva_cuando_la_autoria_no_se_establece(tmp_path: pa
         created_at_ns=0,
         updated_at_ns=0,
     )
-    evidencia = recovery._preservar_evidencia(tmp_path, registro, superficie.kind, objetivo)
-    assert evidencia is not None, "no se conservó evidencia de la escritura ajena"
+    evidencia, motivo = recovery._preservar_evidencia(tmp_path, registro, superficie.kind, objetivo)
+    assert evidencia is not None, f"no se conservó evidencia de la escritura ajena: {motivo}"
     assert evidencia.read_bytes() == ajeno
     assert evidencia.parent.name == "t-evidence"
 
@@ -1366,13 +1366,219 @@ def test_la_evidencia_no_deja_un_archivo_truncado_con_el_nombre_bueno(tmp_path: 
     )
 
     with patch("sky_claw.local.frozen_runtime.binder_recovery.os.fsync", side_effect=OSError(28, "ENOSPC")):
-        devuelto = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+        devuelto, motivo = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
 
     assert devuelto is None, "se devolvió una evidencia que no se pudo escribir"
+    assert motivo
     publicados = list((tmp_path / "recovery_evidence").rglob("*.bin"))
     assert publicados == [], f"quedó un archivo truncado con el nombre del contenido completo: {publicados}"
 
     # Control positivo: sin el fallo, la evidencia sí se publica y se puede leer.
-    devuelto_ok = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
-    assert devuelto_ok is not None
+    devuelto_ok, motivo_ok = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+    assert devuelto_ok is not None, motivo_ok
     assert devuelto_ok.read_bytes() == ajeno
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 de la auditoría de cierre — la evidencia EXISTENTE se verifica
+# ---------------------------------------------------------------------------
+#
+# El defecto: ``if destino.exists(): return destino``. El nombre del archivo es
+# el sha256 del contenido, así que se asumía que un archivo con ese nombre
+# CONTENÍA ese contenido. No hay nada que garantice eso para un archivo que
+# escribió otra versión del código, otro proceso o un corte anterior. Declarar
+# «evidencia conservada» sobre un archivo que no se leyó es exactamente el
+# defecto que la escritura atómica vino a cerrar, un nivel más arriba.
+#
+# La corrección no puede sobrescribir: si el archivo existente contradice, esas
+# pueden ser las ÚNICAS copias de lo que la transición no escribió. Se conserva
+# y se diagnostica.
+
+
+def _superficie_ini(objetivo: pathlib.Path):  # type: ignore[no-untyped-def]
+    """Superficie ``MO2_INI`` con el snapshot de ``_PREVIOS``."""
+    import base64
+
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    return recovery.SuperficieCapturada(
+        kind=recovery.SUPERFICIE_MO2_INI,
+        path=str(objetivo),
+        existed=True,
+        sha256="0" * 64,
+        contenido_b64=base64.b64encode(_PREVIOS).decode("ascii"),
+    )
+
+
+def _registro_evidencia(transition_id: str, superficie):  # type: ignore[no-untyped-def]
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    return recovery.RegistroRecuperacion(
+        schema_version=1,
+        transition_id=transition_id,
+        journal_revision=1,
+        operation="PROMOTION",
+        target_clone_id="clone-1",
+        target_generation_id="gen-1",
+        expected_effective_path=_RUTA_NUEVA,
+        superficies=(superficie,),
+        fase=recovery.FaseRecuperacion.INI_ESCRITO,
+        created_at_ns=0,
+        updated_at_ns=0,
+    )
+
+
+AJENO = b"contenido de un tercero"
+
+
+def _arbol_de_evidencia(tmp_path: pathlib.Path, nombre: str):  # type: ignore[no-untyped-def]
+    """``(objetivo, superficie, registro)`` listos para ``_preservar_evidencia``."""
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    del recovery  # sólo para tipar/documentar la dependencia del módulo
+    objetivo = tmp_path / f"modorganizer-{nombre}.ini"
+    objetivo.write_bytes(AJENO)
+    superficie = _superficie_ini(objetivo)
+    registro = _registro_evidencia(f"t-ev-{nombre}", superficie)
+    return objetivo, superficie, registro
+
+
+def test_la_evidencia_existente_e_integra_se_acepta_sin_reescribir(tmp_path: pathlib.Path) -> None:
+    """Control positivo: la segunda llamada no vuelve a escribir lo ya correcto."""
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo, _, registro = _arbol_de_evidencia(tmp_path, "intacta")
+
+    primera, motivo = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+    assert primera is not None, motivo
+    assert primera.read_bytes() == AJENO
+    mtime = primera.stat().st_mtime_ns
+
+    segunda, motivo2 = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+    assert segunda == primera, motivo2
+    assert segunda.stat().st_mtime_ns == mtime, "se reescribió una evidencia que ya estaba íntegra"
+
+
+def test_la_evidencia_existente_truncada_no_se_da_por_buena(tmp_path: pathlib.Path) -> None:
+    """Un ``.bin`` truncado bajo el nombre del contenido completo es mentira."""
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo, _, registro = _arbol_de_evidencia(tmp_path, "truncada")
+
+    publicada, _ = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+    assert publicada is not None
+    publicada.write_bytes(AJENO[:5])  # el corte que dejaba write_bytes
+
+    devuelta, motivo = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+
+    assert devuelta is None, "se declaró conservada una evidencia truncada"
+    assert "CONFLICTO" in motivo, f"el motivo no diagnostica el conflicto: {motivo!r}"
+    assert publicada.read_bytes() == AJENO[:5], "se sobrescribió la evidencia existente en vez de conservarla"
+
+
+def test_la_evidencia_existente_con_otros_bytes_no_se_pisa(tmp_path: pathlib.Path) -> None:
+    """Contenido distinto = evidencia de otra cosa: se conserva y se avisa."""
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo, _, registro = _arbol_de_evidencia(tmp_path, "distinta")
+
+    publicada, _ = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+    assert publicada is not None
+    contradictorio = b"esto no es lo que se leyo"
+    publicada.write_bytes(contradictorio)
+
+    devuelta, motivo = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+
+    assert devuelta is None
+    assert "CONFLICTO" in motivo, f"el motivo no diagnostica el conflicto: {motivo!r}"
+    assert publicada.read_bytes() == contradictorio, "se destruyó una evidencia contradictoria"
+
+
+def test_si_la_superficie_no_se_puede_leer_no_se_declara_evidencia(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Error de lectura de la superficie: no hay evidencia, y hay motivo."""
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo, _, registro = _arbol_de_evidencia(tmp_path, "ilegible")
+    original = pathlib.Path.read_bytes
+
+    def _read_bytes_que_niega(self):  # type: ignore[no-untyped-def]
+        if self.name == objetivo.name:
+            raise PermissionError(13, "ACCESS_DENIED")
+        return original(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _read_bytes_que_niega)
+    devuelta, motivo = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+
+    assert devuelta is None
+    assert motivo, "un fallo sin diagnóstico no es un diagnóstico"
+
+
+def test_si_no_se_puede_publicar_la_evidencia_no_se_declara_preservada(tmp_path: pathlib.Path) -> None:
+    """Fallo al publicar (ENOSPC en el fsync): nada bajo el nombre final."""
+    from unittest.mock import patch
+
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo, _, registro = _arbol_de_evidencia(tmp_path, "enospc")
+
+    with patch("sky_claw.local.frozen_runtime.binder_recovery.os.fsync", side_effect=OSError(28, "ENOSPC")):
+        devuelta, motivo = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+
+    assert devuelta is None
+    assert motivo
+    publicados = list((tmp_path / "recovery_evidence").rglob("*.bin"))
+    assert publicados == [], f"quedó un archivo con el nombre del contenido completo: {publicados}"
+
+
+def test_no_se_declara_preservada_una_evidencia_que_no_se_releyo(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Se VERIFICA lo publicado: un escritor que miente no pasa el chequeo.
+
+    Sin la relectura, el mutante que escribe otros bytes publicaba una evidencia
+    falsa y la devolvía como buena.
+    """
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo, _, registro = _arbol_de_evidencia(tmp_path, "mentirosa")
+    original = recovery._escribir_bytes_atomico
+
+    def _escribe_otra_cosa(destino: pathlib.Path, _datos: bytes) -> None:
+        original(destino, b"otra cosa")
+
+    monkeypatch.setattr(recovery, "_escribir_bytes_atomico", _escribe_otra_cosa)
+    devuelta, motivo = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+
+    assert devuelta is None, "se declaró preservada una evidencia cuyo contenido no coincide"
+    assert motivo
+
+
+def test_el_rollback_avisa_cuando_no_pudo_preservar_la_evidencia(tmp_path: pathlib.Path) -> None:
+    """Sin raíz de evidencia el detalle lo dice: no se calla el fallo.
+
+    El rollback sigue sin restaurar (correcto: el contenido es ajeno), pero el
+    propietario tiene que enterarse de que no quedó copia.
+    """
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo, superficie, registro = _arbol_de_evidencia(tmp_path, "sin-raiz")
+
+    veredicto = recovery._restaurar_persistida(superficie, registro, raiz_evidencia=None)
+
+    assert veredicto.escritura_ajena is True
+    assert objetivo.read_bytes() == AJENO, "se restauró una superficie con escritura ajena"
+    assert "NO preservada" in veredicto.detail, f"el detalle no avisa del fallo: {veredicto.detail!r}"
+
+
+def test_el_rollback_diagnostica_el_conflicto_de_evidencia(tmp_path: pathlib.Path) -> None:
+    """Con evidencia contradictoria en disco, el detalle nombra el conflicto."""
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    objetivo, superficie, registro = _arbol_de_evidencia(tmp_path, "conflicto-rollback")
+    publicada, _ = recovery._preservar_evidencia(tmp_path, registro, recovery.SUPERFICIE_MO2_INI, objetivo)
+    assert publicada is not None
+    publicada.write_bytes(b"contradictorio")
+
+    veredicto = recovery._restaurar_persistida(superficie, registro, raiz_evidencia=tmp_path)
+
+    assert veredicto.escritura_ajena is True
+    assert objetivo.read_bytes() == AJENO
+    assert "CONFLICTO" in veredicto.detail, f"el detalle no nombra el conflicto: {veredicto.detail!r}"
