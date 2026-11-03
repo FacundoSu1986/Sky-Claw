@@ -303,18 +303,26 @@ class _Puerto:
 
 
 class _TrazaWmi:
-    """Verdad de terreno del árbol: ``Win32_ProcessStartTrace`` ve TAMBIÉN lo que nace fuera del Job."""
+    """Verdad de terreno del árbol: ``Win32_ProcessStartTrace`` ve TAMBIÉN lo que nace fuera del Job.
+
+    «Disponible» NO significa «se pudo suscribir»: significa que la traza ENTREGÓ el evento de un proceso
+    canario creado a propósito. Una traza que se suscribe y no entrega nada (permisos, proveedor) daría una
+    falsa sensación de «no nació nada fuera del Job»; por eso se autovalida y, si falla, dice por qué.
+    """
 
     def __init__(self, t0: float) -> None:
         self._t0 = t0
         self.disponible = False
         self.motivo: str | None = None
         self.eventos: list[dict[str, Any]] = []
-        self._listo = threading.Event()
+        self.errores: list[str] = []
+        self._suscripta = threading.Event()
         self._parar = threading.Event()
         self._hilo = threading.Thread(target=self._correr, name="censo-wmi", daemon=True)
         self._hilo.start()
-        self._listo.wait(timeout=20)
+        self._suscripta.wait(timeout=20)
+        if self.motivo is None:
+            self._autoprobar()
 
     def _correr(self) -> None:
         try:
@@ -324,27 +332,46 @@ class _TrazaWmi:
             pythoncom.CoInitialize()
             try:
                 vigia = wmi.WMI().watch_for(raw_wql="SELECT * FROM Win32_ProcessStartTrace")
-                self.disponible = True
-                self._listo.set()
+                self._suscripta.set()
                 while not self._parar.is_set():
                     try:
                         evento = vigia(timeout_ms=100)
                     except wmi.x_wmi_timed_out:
                         continue
-                    self.eventos.append(
-                        {
+                    try:
+                        registro = {
                             "t_ms": (time.perf_counter() - self._t0) * 1000.0,
                             "pid": int(evento.ProcessID),
                             "ppid": int(evento.ParentProcessID),
                             "nombre": str(evento.ProcessName),
                         }
-                    )
+                    except Exception as exc:  # noqa: BLE001 - instrumento opcional: se registra y se sigue
+                        self.errores.append(f"{type(exc).__name__}: {exc}")
+                        continue
+                    self.eventos.append(registro)
             finally:
                 pythoncom.CoUninitialize()
         except Exception as exc:  # noqa: BLE001 - instrumento opcional: cualquier falla se informa, no se oculta
             self.motivo = f"{type(exc).__name__}: {exc}"
         finally:
-            self._listo.set()
+            self._suscripta.set()
+
+    def _autoprobar(self) -> None:
+        """Crea un proceso canario y espera su evento: solo entonces la traza cuenta como disponible."""
+        import os
+        import subprocess
+
+        subprocess.run(["cmd", "/c", "exit", "0"], check=False, capture_output=True, timeout=30)  # noqa: S603, S607 - canario inocuo
+        limite = time.perf_counter() + 8.0
+        while time.perf_counter() < limite:
+            if any(e["ppid"] == os.getpid() for e in self.eventos):
+                self.disponible = True
+                return
+            time.sleep(0.05)
+        self.motivo = (
+            "la traza se suscribió pero NO entregó el evento del proceso canario "
+            f"(eventos totales={len(self.eventos)}, errores={self.errores[:3]})"
+        )
 
     def detener(self) -> None:
         self._parar.set()

@@ -65,31 +65,38 @@ jobs:
           2>&1 | Tee-Object -FilePath sandbox_min\pytest.txt
 
       - name: Origen de los procesos que crea el arranque del intérprete (hook de auditoría, Python de desarrollo)
+        if: ${{ !cancelled() }}
         run: python -m scripts.windows_spawn_origin --json sandbox_min\resultados_origen.json
 
       - name: Ejecutable mínimo onefile (réplica de las opciones del spec) - construir
+        if: ${{ !cancelled() }}
         run: |
           Set-Content -Path sandbox_min\dormilon.py -Value "import time`ntime.sleep(6)"
           pyinstaller --onefile --noconsole --name MinimoOnefile --distpath sandbox_min\dist --workpath sandbox_min\build --specpath sandbox_min sandbox_min\dormilon.py
       - name: Ejecutable mínimo onefile - medir pertenencia al Job según el retardo de asignación
+        if: ${{ !cancelled() }}
         run: >
           python -m scripts.windows_job_probe --exe sandbox_min\dist\MinimoOnefile.exe
           --retardos 0,0.05,0.2,0.5,1,2 --repeticiones 5 --ventana 14 --json sandbox_min\resultados.json
 
       - name: Ejecutable mínimo onefile - censo EXACTO (IOCP + WMI) y supervivientes tras terminar el Job
+        if: ${{ !cancelled() }}
         run: >
           python -m scripts.windows_onefile_census --exe sandbox_min\dist\MinimoOnefile.exe
           --retardos 0,0.05,0.5,2 --repeticiones 3 --ventana 14 --json sandbox_min\resultados_censo_min.json
 
       - name: SkyClawApp.exe real (pyinstaller sky_claw.spec) - construir
+        if: ${{ !cancelled() }}
         run: pyinstaller sky_claw.spec --clean
       - name: SkyClawApp.exe real - medir pertenencia al Job con --vfs-probe-child (inocuo)
+        if: ${{ !cancelled() }}
         run: >
           python -m scripts.windows_job_probe --exe dist\SkyClawApp.exe
           '--arg=--vfs-probe-child' '--arg={probe_file}' '--arg={probe_sha}'
           --retardos 0,0.5,1,2,4 --repeticiones 3 --ventana 40 --json sandbox_min\resultados_real.json
 
       - name: SkyClawApp.exe real - censo EXACTO del arranque (IOCP + WMI) con --vfs-probe-child (inocuo)
+        if: ${{ !cancelled() }}
         run: >
           python -m scripts.windows_onefile_census --exe dist\SkyClawApp.exe
           '--arg=--vfs-probe-child' '--arg={probe_file}' '--arg={probe_sha}'

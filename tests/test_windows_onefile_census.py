@@ -254,7 +254,7 @@ def test_la_traza_de_wmi_ve_al_nieto_creado_fuera_del_job_aunque_el_muestreo_no_
     # Arrange / Act
     corrida = censo.medir_censo([sys.executable, "-c", _RAIZ_CON_NIETO], retardo_s=3.0, ventana_s=6.0, con_wmi=True)
     if not corrida["wmi"]["disponible"]:  # type: ignore[index]
-        pytest.skip(f"WMI no disponible: {corrida['wmi']['motivo']}")  # type: ignore[index]
+        pytest.skip(f"traza de WMI NO disponible (queda sin verificar): {corrida['wmi']['motivo']}")  # type: ignore[index]
     # Assert: WMI vio el nieto por su cuenta (independiente del muestreo y del IOCP).
     nietos = [e for e in corrida["wmi"]["eventos"] if e["ppid"] == corrida["raiz_pid"]]  # type: ignore[index]
     assert len(nietos) == 1
