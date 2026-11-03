@@ -196,6 +196,25 @@ def test_el_resumen_del_origen_nombra_la_fase_y_el_codigo_responsable(tmp_path: 
     assert "sky_claw/z.py:30:g" in resultado.stdout  # el último marco que NO es de site-packages ni de importlib
 
 
+@pytest.mark.parametrize(
+    "marco",
+    [
+        "<frozen importlib._bootstrap>:1147:_find_and_load_unlocked",
+        "<frozen importlib._bootstrap_external>:940:exec_module",
+    ],
+)
+def test_abreviar_deja_intacto_un_marco_sin_ruta_de_archivo(marco: str) -> None:
+    """Revisión: los marcos ``<frozen importlib...>`` no contienen ``.py:`` y salían como ``...unlocked.py:`` (deformados)."""
+    # Act / Assert
+    assert origen._abreviar(marco) == marco
+
+
+def test_abreviar_sigue_acortando_los_marcos_con_ruta_de_archivo() -> None:
+    # Arrange / Act / Assert: control — el arreglo no puede dejar de abreviar lo que sí tiene `.py:`.
+    assert origen._abreviar("C:/x/site-packages/pkg/y.py:2:f") == "pkg/y.py:2:f"
+    assert origen._abreviar("C:/repo/sky_claw/z.py:30:g") == "sky_claw/z.py:30:g"
+
+
 class _RelojFalso:
     """Reloj controlado: ``sleep`` lo adelanta y nada espera de verdad (el estado de partida no depende del reloj real)."""
 

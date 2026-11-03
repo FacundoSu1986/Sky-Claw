@@ -17,9 +17,10 @@ el broker, el worker efectivo:
 5. cierra el handle: ``KILL_ON_JOB_CLOSE`` solo dispara cuando se cierra el ÚLTIMO handle, así que un
    worker que conservara el suyo impediría que el cierre del Job del bridge matara el árbol.
 
-Cualquier falla es un ``JobIdentityError`` (fail-closed). Quien lo captura debe llamar a
-``terminar_descendientes_vivos`` antes de salir: un worker que no puede demostrar su contención no deja
-procesos propios corriendo.
+Cualquier falla es un ``JobIdentityError`` (fail-closed), también la de construir la API de Windows. Quien lo
+captura debe llamar a ``terminar_descendientes_vivos`` antes de salir: un worker que no puede demostrar su
+contención INTENTA no dejar procesos propios corriendo. La terminación es un intento, no una garantía: si algún
+descendiente no muere tras los intentos, ``terminar_descendientes_vivos`` falla y ese proceso puede quedar vivo.
 
 Qué NO prueba. La autenticidad del worker frente al broker sigue siendo el HMAC del descriptor; este módulo
 prueba CONTENCIÓN, no autoría. Un descendiente huérfano cuyo padre ya murió no es alcanzable por la relación
@@ -113,10 +114,27 @@ def validar_nombre_de_job(valor: object) -> str:
     return valor
 
 
+def _abrir_motor(api: ApiDeJobs | None) -> ApiDeJobs:
+    """La API inyectada, o la de Windows construida DENTRO de la frontera fail-closed.
+
+    Construir ``_ApiWin32`` (``ctypes.WinDLL`` y los ``argtypes`` de kernel32) puede fallar con ``OSError`` o
+    ``AttributeError``. ``worker_main`` solo captura ``JobIdentityError``: un error crudo se saldría de ahí sin el
+    código 72, sin barrer a los descendientes y sin cerrar el logging. Es el ÚNICO lugar que la construye (ancla).
+    """
+    if api is not None:
+        return api
+    try:
+        return _api_por_defecto()
+    except JobIdentityError:
+        raise
+    except Exception as exc:  # frontera de verificación: toda falla se vuelve un error de identidad
+        raise JobIdentityError(f"no se pudo preparar la API de Jobs de Windows: {exc}") from exc
+
+
 def verificar_identidad_del_job(nombre: object, *, api: ApiDeJobs | None = None) -> PruebaDeJob:
     """Demuestra que ESTE proceso y todos sus descendientes vivos están en el Job ``nombre``, o falla cerrado."""
     nombre_valido = validar_nombre_de_job(nombre)
-    motor = api if api is not None else _api_por_defecto()
+    motor = _abrir_motor(api)
     try:
         handle = motor.abrir_job(nombre_valido)
     except JobIdentityError:
@@ -167,13 +185,13 @@ def terminar_descendientes_vivos(
     intentos: int = 5,
     pausa_s: float = 0.1,
 ) -> tuple[int, ...]:
-    """Termina TODOS los descendientes vivos de este proceso y devuelve sus pids.
+    """Intenta terminar TODOS los descendientes vivos de este proceso y devuelve sus pids.
 
-    Es lo que hace el worker cuando no puede probar su contención: antes de salir no deja procesos propios
+    Es lo que hace el worker cuando no puede probar su contención: antes de salir intenta no dejar procesos propios
     corriendo. Si alguno sigue vivo tras ``intentos`` rondas, falla: no se afirma «sin residuos» sin haberlo
-    comprobado. Un proceso que ya murió al intentar terminarlo no es un error.
+    comprobado (y ese proceso puede quedar vivo). Un proceso que ya murió al intentar terminarlo no es un error.
     """
-    motor = api if api is not None else _api_por_defecto()
+    motor = _abrir_motor(api)
     terminados: list[int] = []
     for _ in range(intentos):
         vivos = list(motor.descendientes_vivos())

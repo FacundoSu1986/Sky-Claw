@@ -252,6 +252,33 @@ def test_si_no_se_pudo_abrir_el_job_no_hay_handle_que_cerrar_ni_otro_error_que_e
     assert api.cerrados == []
 
 
+@pytest.mark.parametrize("excepcion", [OSError("kernel32"), AttributeError("OpenJobObjectW"), RuntimeError("raro")])
+@pytest.mark.parametrize(
+    "consumidor",
+    [
+        pytest.param(lambda: verificar_identidad_del_job(NOMBRE), id="verificar_identidad_del_job"),
+        pytest.param(lambda: terminar_descendientes_vivos(pausa_s=0.0), id="terminar_descendientes_vivos"),
+    ],
+)
+def test_si_la_api_por_defecto_no_se_puede_construir_el_error_es_de_identidad_y_no_uno_crudo(
+    monkeypatch: pytest.MonkeyPatch, consumidor: object, excepcion: Exception
+) -> None:
+    """Revisión: construir ``_ApiWin32`` (``ctypes.WinDLL`` y ``argtypes``) puede fallar con ``OSError``/``AttributeError``.
+
+    ``worker_main`` solo captura ``JobIdentityError``: un error crudo se salía de ahí sin código 72, sin barrer a los
+    descendientes y sin cerrar el logging. Los dos consumidores de la API por defecto tienen que cumplir lo mismo.
+    """
+
+    # Arrange
+    def _no_se_puede_construir() -> object:
+        raise excepcion
+
+    monkeypatch.setattr(identidad, "_api_por_defecto", _no_se_puede_construir)
+    # Act / Assert: exactamente el error de identidad (un `OSError` crudo no es subclase y rompería esta aserción).
+    with pytest.raises(JobIdentityError):
+        consumidor()  # type: ignore[operator]
+
+
 def test_un_error_al_preguntar_por_un_descendiente_falla_cerrado() -> None:
     # Arrange
     api = _ApiFalsa(descendientes=(11,), falla_en="proceso_en_job")

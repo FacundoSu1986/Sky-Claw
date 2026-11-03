@@ -1142,7 +1142,11 @@ def _parse_worker_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _abortar_por_identidad(job_id: str, causa: JobIdentityError) -> int:
-    """El worker no pudo probar su contención: no deja procesos propios corriendo y sale con un código propio."""
+    """El worker no pudo probar su contención: intenta no dejar procesos propios corriendo y sale con un código propio.
+
+    La terminación es un intento: si algún descendiente no muere se registra ``CRITICAL`` y se sale igual con 72
+    (sin abrir un socket ni autorizar nada); ese proceso puede quedar vivo.
+    """
     logger.error(
         "VFS worker sin identidad de Job verificada: %s",
         causa,

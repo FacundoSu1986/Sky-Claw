@@ -194,6 +194,20 @@ def test_el_selector_del_nieto_de_los_e2e_cubre_todas_las_formas_en_que_el_worke
     assert "--probe-child" not in "--vfs-probe-child", "premisa: no son subcadena una de la otra"
 
 
+def test_la_api_por_defecto_solo_se_construye_en_un_punto_que_falla_cerrado() -> None:
+    """Dos consumidores la construían a mano fuera de todo ``try``; un tercero repetiría el defecto."""
+    # Arrange / Act: funciones del módulo de identidad que llaman a `_api_por_defecto`.
+    constructores = sorted(
+        nodo.name
+        for nodo in ast.walk(_arbol(IDENTIDAD))
+        if isinstance(nodo, ast.FunctionDef | ast.AsyncFunctionDef)
+        for n in ast.walk(nodo)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_api_por_defecto"
+    )
+    # Assert: únicamente el helper que envuelve cualquier falla en `JobIdentityError`.
+    assert constructores == ["_abrir_motor"]
+
+
 def test_el_modulo_de_identidad_abre_el_job_solo_con_permiso_de_consulta() -> None:
     """Mínimo privilegio: el worker no puede terminar el Job, cambiarle límites ni asignarle procesos."""
     # Arrange / Act

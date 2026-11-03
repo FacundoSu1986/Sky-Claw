@@ -44,8 +44,10 @@ raíz.
   DACL) y lo confirma en el `launch_ack`; el worker lo abre con `JOB_OBJECT_QUERY`, pregunta
   `IsProcessInJob(<este proceso>, <ESE handle>)` —**nunca `NULL`**: contra `NULL` el SO responde `TRUE` para
   CUALQUIER Job—, exige `KILL_ON_JOB_CLOSE` sin breakaway y que todo descendiente vivo esté dentro, y **cierra su
-  handle** (`KILL_ON_JOB_CLOSE` solo dispara al cerrarse el último). Si falla, `worker_main` termina a sus
-  descendientes y sale con 72 sin abrir un socket. El broker solo autoriza con el nombre pedido en el ack **y** en el
+  handle** (`KILL_ON_JOB_CLOSE` solo dispara al cerrarse el último). Si falla, `worker_main` **intenta** terminar a sus
+  descendientes y sale con 72 sin abrir un socket; la terminación no está garantizada: si la limpieza también falla
+  (un descendiente que no muere), se registra `CRITICAL` y ese proceso puede quedar vivo. Cualquier falla, incluida la de
+  construir la API de Windows, es un `JobIdentityError` (no un error crudo). El broker solo autoriza con el nombre pedido en el ack **y** en el
   `hello`. Es contención, no autoría (la autenticidad sigue siendo el HMAC). Convive con el fence: no lo reemplaza.
   Anclas: `tests/test_vfs_job_identity.py` (lógica, API falsa), `tests/test_vfs_job_identity_anclas.py` (enumeran
   quién toca `job_object`, quién suelta un job y quién fabrica una prueba),

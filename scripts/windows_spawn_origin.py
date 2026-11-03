@@ -74,7 +74,9 @@ def medir(fases: Sequence[str]) -> list[dict[str, Any]]:
 
 def _abreviar(marco: str) -> str:
     """``C:/.../site-packages/pkg/mod.py:12:f`` → ``pkg/mod.py:12:f``; ``.../sky_claw/x.py`` → ``sky_claw/x.py``."""
-    ruta, _, resto = marco.partition(".py:")
+    ruta, separador, resto = marco.partition(".py:")
+    if not separador:
+        return marco  # p. ej. ``<frozen importlib._bootstrap>:1147:f``: no hay ruta de archivo que acortar
     normal = ruta.replace("\\", "/")
     for ancla in ("site-packages/", "/Lib/", "sky_claw/"):
         if ancla in normal:
