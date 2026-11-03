@@ -48,6 +48,11 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Job Objects rea
 
 _EXE_CONGELADO = os.environ.get("SKYCLAW_FROZEN_EXE")
 _CODIGO_DE_IDENTIDAD = 72
+#: Las formas en que el worker lanza el nieto de la attestation: ``--probe-child`` (Python de desarrollo) y
+#: ``--vfs-probe-child`` (ejecutable congelado). NO es subcadena una de la otra (``--vfs-probe-child`` no contiene
+#: ``--probe-child``): un selector con una sola forma hace VACUA la aserción «no se creó el nieto» con el otro
+#: ejecutable. Una ancla (``test_vfs_job_identity_anclas``) congela que esta tupla cubre todo lo que el worker usa.
+BANDERAS_DEL_NIETO = ("--probe-child", "--vfs-probe-child")
 
 
 @dataclass
@@ -194,7 +199,9 @@ async def _correr(
                 corrida.codigo_del_worker = organizer.proceso.wait(timeout=30)
         corrida.descendientes = dict(observador.descendientes)
         corrida.nietos_de_attestation = [
-            pid for pid, ficha in corrida.descendientes.items() if "--probe-child" in (ficha["cmdline"] or "")
+            pid
+            for pid, ficha in corrida.descendientes.items()
+            if any(bandera in (ficha["cmdline"] or "") for bandera in BANDERAS_DEL_NIETO)
         ]
         # Residuos: tras un plazo de gracia nada de lo observado (ni el worker) puede seguir vivo.
         pids = [*corrida.descendientes, *([corrida.pid_del_worker] if corrida.pid_del_worker else [])]
@@ -236,7 +243,7 @@ def _procesos_de_la_imagen_del_worker(desde: float, congelado: pathlib.Path | No
         argv = info["cmdline"] or []
         es_nuestro = (
             "--vfs-worker" in argv
-            or "--probe-child" in argv
+            or any(bandera in argv for bandera in BANDERAS_DEL_NIETO)
             or "sky_claw.local.mo2.vfs_worker" in argv
             or (congelado is not None and (info["exe"] or "").casefold() == str(congelado).casefold())
         )
@@ -364,8 +371,10 @@ async def test_cancelar_despues_de_verificarse_y_antes_de_ser_autorizado_termina
     # Assert 2: la cancelación llegó al caller y no hubo resultado.
     assert corrida.resultado is None
     assert isinstance(corrida.error, asyncio.CancelledError), corrida.error
-    # Assert 3: TerminateJobObject lo mató (código 1); jamás recibió `supervised`: ni nieto ni herramienta ni residuos.
-    assert corrida.codigo_del_worker == 1, corrida.codigo_del_worker
+    # Assert 3: murió por la cancelación y jamás recibió `supervised`: ni nieto ni herramienta ni residuos. Dos desenlaces
+    # son válidos y MEDIDOS en Windows: 2 = el worker vio el `cancel` mientras esperaba `supervised` y salió solo
+    # (cancelación cooperativa); 1 = `TerminateJobObject` llegó primero. Cualquier otro código sería otra historia.
+    assert corrida.codigo_del_worker in (1, 2), corrida.codigo_del_worker
     assert corrida.nietos_de_attestation == []
     assert corrida.residuales == [], f"procesos residuales: {corrida.residuales}"
     assert corrida.huerfanos == [], f"huérfanos de la imagen del worker: {corrida.huerfanos}"

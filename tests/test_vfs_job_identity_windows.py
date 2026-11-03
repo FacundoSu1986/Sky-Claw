@@ -19,6 +19,7 @@ un skip es «no verificado», nunca un PASS (el workflow del sandbox corre con `
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import pathlib
 import queue
@@ -131,6 +132,12 @@ class _Hijo:
     def soltar(self) -> None:
         self.bandera.write_text("go", encoding="utf-8")
 
+    def cerrar(self) -> None:
+        """Cierra el pipe de stdout (un FileIO abierto es un ``ResourceWarning``, elevado a error en este repo)."""
+        self._hilo.join(timeout=10)
+        if self.proceso.stdout is not None:
+            self.proceso.stdout.close()
+
 
 @pytest.fixture
 def hijos(tmp_path: pathlib.Path) -> Iterator[list[_Hijo]]:
@@ -145,6 +152,7 @@ def hijos(tmp_path: pathlib.Path) -> Iterator[list[_Hijo]]:
                 psutil.Process(pid).kill()
         with contextlib.suppress(Exception):
             hijo.proceso.wait(timeout=10)
+        hijo.cerrar()
 
 
 def _hijo(hijos: list[_Hijo], tmp_path: pathlib.Path, nombre: str, modo: str = "verificar") -> _Hijo:
@@ -169,9 +177,9 @@ def test_un_worker_dentro_del_job_con_el_nombre_pedido_se_verifica(tmp_path: pat
         # Act
         hijo.soltar()
         resultado = hijo.esperar("OK")
-        # Assert
+        # Assert: la línea es `OK <json>` y el JSON escapa `\\`; se compara el valor parseado, no el texto.
         assert hijo.proceso.wait(timeout=30) == 0
-        assert nombre in resultado
+        assert json.loads(resultado.removeprefix("OK "))["nombre"] == nombre
     finally:
         job.close()
 
@@ -388,7 +396,7 @@ def test_crear_dos_veces_el_mismo_nombre_falla_y_no_adopta_el_job_existente() ->
     primero = Win32JobObject(nombre)
     try:
         # Act / Assert
-        with pytest.raises(BridgeCommandError, match="ya existía"):
+        with pytest.raises(BridgeCommandError, match="ya exist"):
             Win32JobObject(nombre)
         # El primero sigue intacto: el segundo intento no le cerró ni le cambió nada.
         handle, _ = _abrir(_JOB_OBJECT_QUERY, nombre)
@@ -403,7 +411,7 @@ def test_un_job_preexistente_de_un_squatter_no_se_adopta() -> None:
     squatter = sonda.crear_job(nombre=nombre, kill_on_close=False)
     try:
         # Act / Assert
-        with pytest.raises(BridgeCommandError, match="ya existía"):
+        with pytest.raises(BridgeCommandError, match="ya exist"):
             Win32JobObject(nombre)
     finally:
         sonda.cerrar_handle(squatter)

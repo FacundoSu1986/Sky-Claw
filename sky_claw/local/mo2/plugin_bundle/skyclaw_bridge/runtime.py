@@ -494,6 +494,7 @@ class Win32JobObject:
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
     _ERROR_ALREADY_EXISTS = 183
+    _ERROR_ACCESS_DENIED = 5
     _SDDL_REVISION_1 = 1
     #: DACL protegida (sin herencia): solo ``JOB_OBJECT_QUERY`` (0x4) para el propietario y los administradores.
     _SDDL_SOLO_CONSULTA = "D:P(A;;0x4;;;OW)(A;;0x4;;;BA)"
@@ -559,6 +560,13 @@ class Win32JobObject:
         finally:
             self._kernel32.LocalFree(descriptor)
         if not handle:
+            if error == self._ERROR_ACCESS_DENIED:
+                # Medido en Windows: si el nombre existe y OTRO Job (p. ej. uno nuestro con esta misma DACL de solo
+                # consulta) lo tiene, CreateJobObjectW no puede abrirlo con acceso total y falla con ACCESS_DENIED en
+                # lugar de ERROR_ALREADY_EXISTS. Sigue siendo un rechazo; solo se nombra con claridad.
+                raise BridgeCommandError(
+                    f"el Job {name} ya existe y no es accesible (ACCESS_DENIED): no se adopta (squatting o nombre reutilizado)"
+                )
             raise BridgeCommandError(f"CreateJobObjectW falló: {error}")
         if error == self._ERROR_ALREADY_EXISTS:
             # CreateJobObjectW devuelve un handle al Job EXISTENTE: asignarle el worker sería meterlo en un

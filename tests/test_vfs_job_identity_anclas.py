@@ -175,6 +175,25 @@ def test_el_unico_hello_de_worker_declara_la_identidad_del_job() -> None:
     assert {"supervision_fence", "job_object"} <= literales[0][1]
 
 
+def test_el_selector_del_nieto_de_los_e2e_cubre_todas_las_formas_en_que_el_worker_lo_lanza() -> None:
+    """Un selector con una sola forma volvió VACUA la aserción «no se creó el nieto» con el ejecutable congelado."""
+    from tests.test_vfs_job_identity_e2e_windows import BANDERAS_DEL_NIETO
+
+    # Arrange / Act: todo literal «--...probe-child» que el worker usa para lanzar su nieto.
+    usadas = {
+        nodo.value
+        for nodo in ast.walk(_arbol(WORKER))
+        if isinstance(nodo, ast.Constant)
+        and isinstance(nodo.value, str)
+        and nodo.value.startswith("--")
+        and "probe-child" in nodo.value
+    }
+    # Assert: la familia está congelada (una forma nueva rompe esto hasta revisarla) y el selector la cubre entera.
+    assert usadas == {"--probe-child", "--vfs-probe-child"}
+    assert usadas <= set(BANDERAS_DEL_NIETO)
+    assert "--probe-child" not in "--vfs-probe-child", "premisa: no son subcadena una de la otra"
+
+
 def test_el_modulo_de_identidad_abre_el_job_solo_con_permiso_de_consulta() -> None:
     """Mínimo privilegio: el worker no puede terminar el Job, cambiarle límites ni asignarle procesos."""
     # Arrange / Act
