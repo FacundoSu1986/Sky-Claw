@@ -584,9 +584,10 @@ async def generate_bashed_patch(
     ``SinRutasResolubles``; el perfil real lo aporta el registry (``mo2_profile``, fijo
     por sesión).
 
-    ``wrye_bash_runner`` se conserva en la firma porque el descriptor del registry lo
-    sigue pasando; las fases asistidas **no lo usan** (no hay subproceso que lanzar). El
-    parámetro y el camino headless se retiran juntos en el PR C.
+    **No admite un runner**: el PR C retiró el parámetro junto con el camino headless
+    (``execute_pipeline``), porque las fases asistidas no lanzan ningún subproceso. Un
+    llamador que todavía pase uno recibe ``TypeError`` en vez de un runner ignorado — la
+    garantía deja de depender de que el cuerpo no lo use.
 
     Las dos claves con ruta (``artefacto``, ``plugins_txt``) atraviesan
     :func:`sanitize_for_prompt` antes de viajar al modelo: se componen con nombres de
