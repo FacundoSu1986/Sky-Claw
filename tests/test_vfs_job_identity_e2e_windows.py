@@ -74,8 +74,10 @@ async def _correr(
     *,
     retardo_assign_s: float,
     congelado: pathlib.Path | None,
-    cancelar_tras_s: float | None = None,
+    cancelar_tras_nacer_s: float | None = None,
+    cancelar_al_conectar: bool = False,
     retraso_del_ack_s: float = 0.0,
+    arranque_lento_s: float = 0.0,
 ) -> _Corrida:
     """Un launch completo del broker con el worker real; devuelve lo observable, sin interpretarlo."""
     inicio = time.time()
@@ -110,6 +112,14 @@ async def _correr(
         ]
         if congelado is not None:
             return [str(congelado), "--vfs-worker", *base]
+        if arranque_lento_s > 0:
+            # El envoltorio ES el proceso asignado al Job y duerme antes de ejecutar el worker real EN EL MISMO proceso
+            # (``runpy``): así «el worker todavía no empezó a verificarse» es un estado construido, no una apuesta al reloj.
+            envoltorio = (
+                f"import time, runpy; time.sleep({arranque_lento_s}); "
+                "runpy.run_module('sky_claw.local.mo2.vfs_worker', run_name='__main__')"
+            )
+            return [sys.executable, "-c", envoltorio, *base]
         return [sys.executable, "-m", "sky_claw.local.mo2.vfs_worker", *base]
 
     organizer = _OrganizerQueLanzaElWorkerReal(armar_argv, entorno, retardo_s=retardo_assign_s)
@@ -183,10 +193,21 @@ async def _correr(
             )
         )
         try:
-            if cancelar_tras_s is not None:
-                # Cancelación del caller mientras el worker todavía arranca (antes de verificarse): el broker pide el
-                # `cancel` al bridge, que termina el Job. El broker espera el `worker_exit` terminal antes de soltar.
-                await asyncio.sleep(cancelar_tras_s)
+            if cancelar_al_conectar:
+                # Cancela cuando el broker YA aceptó el `hello` del worker (= identidad verificada). Es un evento, no un
+                # plazo: con un plazo, un runner rápido o lento cambiaría el estado que el test dice probar.
+                limite = time.monotonic() + 90.0
+                while job_id not in broker._worker_by_job and time.monotonic() < limite:
+                    await asyncio.sleep(0.02)
+                corrida.worker_conectado_al_cancelar = job_id in broker._worker_by_job
+                submit.cancel()
+            elif cancelar_tras_nacer_s is not None:
+                # Cancela una vez que el worker EXISTE (el bridge ya lo asignó y registró el job: de lo contrario el
+                # `cancel` llegaría a un job desconocido) y mientras duerme en su envoltorio, antes de verificarse.
+                limite = time.monotonic() + 60.0
+                while organizer.proceso is None and time.monotonic() < limite:
+                    await asyncio.sleep(0.01)
+                await asyncio.sleep(cancelar_tras_nacer_s)
                 corrida.worker_conectado_al_cancelar = job_id in broker._worker_by_job
                 submit.cancel()
             corrida.resultado = await asyncio.wait_for(submit, timeout=150)
@@ -252,6 +273,19 @@ def _procesos_de_la_imagen_del_worker(desde: float, congelado: pathlib.Path | No
     return encontrados
 
 
+def _afirmar_todo_el_arbol_en_el_job(corrida: _Corrida) -> None:
+    """Con el ``assign`` a tiempo NINGÚN descendiente observado puede estar fuera del Job del bridge.
+
+    ``en_job`` es ``None`` cuando el proceso murió antes de poder medirse (los ``cmd.exe`` duran milisegundos): eso no se
+    cuenta como «fuera». Lo que no puede aparecer es un ``False``: significaría un proceso nacido fuera del Job que el worker
+    no detectó.
+    """
+    fuera = {pid: ficha["cmdline"] for pid, ficha in corrida.descendientes.items() if ficha["en_job"] is False}
+    assert fuera == {}, f"descendientes FUERA del Job con el assign a tiempo: {fuera}"
+    medidos = [ficha for ficha in corrida.descendientes.values() if ficha["en_job"] is True]
+    assert medidos, "ningún descendiente se pudo medir: el test no demostraría la pertenencia al Job"
+
+
 def _es_el_mismo(pid: int, corrida: _Corrida) -> bool:
     """El pid sigue siendo EL proceso observado (misma hora de creación), no uno que reutilizó el número."""
     ficha = corrida.descendientes.get(pid)
@@ -279,6 +313,7 @@ async def test_con_el_assign_a_tiempo_el_worker_real_se_verifica_en_el_job_y_el_
     assert corrida.nietos_de_attestation, (
         "el worker verificado debía llegar a la attestation (nieto) y a la herramienta"
     )
+    _afirmar_todo_el_arbol_en_el_job(corrida)
     assert corrida.residuales == []
     assert corrida.huerfanos == [], f"huérfanos de la imagen del worker: {corrida.huerfanos}"
 
@@ -323,6 +358,7 @@ async def test_congelado_con_el_assign_a_tiempo_el_worker_efectivo_se_verifica_y
     assert corrida.error is None, corrida.error
     assert corrida.resultado is not None and corrida.resultado.success is True, corrida.resultado
     assert corrida.nietos_de_attestation
+    _afirmar_todo_el_arbol_en_el_job(corrida)
     assert corrida.residuales == []
     assert corrida.huerfanos == [], f"huérfanos de la imagen del worker: {corrida.huerfanos}"
 
@@ -345,8 +381,13 @@ async def test_congelado_con_un_assign_tardio_el_hijo_python_falla_cerrado_y_no_
 async def test_cancelar_antes_de_la_verificacion_termina_al_worker_con_el_job_y_no_deja_residuos(
     tmp_path: pathlib.Path,
 ) -> None:
-    # Arrange / Act: el worker real lleva ~1 s importando; a los 0.5 s se cancela (assign ya hecho, verificación pendiente).
-    corrida = await _correr(tmp_path, retardo_assign_s=0.0, congelado=None, cancelar_tras_s=0.5)
+    # Arrange: el proceso asignado al Job duerme 8 s ANTES de iniciar el worker real (``arranque_lento_s``).
+    # Act: 1 s después de nacer —assign hecho, job registrado en el bridge— se cancela: la verificación NO pudo haber ocurrido.
+    corrida = await _correr(
+        tmp_path, retardo_assign_s=0.0, congelado=None, arranque_lento_s=8.0, cancelar_tras_nacer_s=1.0
+    )
+    # Assert 0: el estado de partida es el que se quería probar.
+    assert corrida.worker_conectado_al_cancelar is False, "el worker no debía haberse conectado todavía"
     # Assert 1: no hubo resultado; la cancelación llegó al caller.
     assert corrida.resultado is None
     assert isinstance(corrida.error, asyncio.CancelledError), corrida.error
@@ -361,9 +402,11 @@ async def test_cancelar_antes_de_la_verificacion_termina_al_worker_con_el_job_y_
 async def test_cancelar_despues_de_verificarse_y_antes_de_ser_autorizado_termina_al_worker_sin_herramienta(
     tmp_path: pathlib.Path,
 ) -> None:
-    # Arrange: el ack llega 20 s tarde → el worker (~1.5 s de arranque) se verifica, conecta y queda esperando `supervised`.
-    # Act: a los 5 s se cancela, con el worker ya VERIFICADO pero NO autorizado.
-    corrida = await _correr(tmp_path, retardo_assign_s=0.0, congelado=None, cancelar_tras_s=5.0, retraso_del_ack_s=20.0)
+    # Arrange: el ack llega 20 s tarde → el worker se verifica, conecta y queda esperando `supervised`.
+    # Act: se cancela en cuanto el broker acepta su `hello` (evento), con el worker VERIFICADO pero NO autorizado.
+    corrida = await _correr(
+        tmp_path, retardo_assign_s=0.0, congelado=None, cancelar_al_conectar=True, retraso_del_ack_s=20.0
+    )
     # Assert 1: el estado de partida es el que se quería probar (identidad aceptada por el broker, sin autorización).
     assert corrida.worker_conectado_al_cancelar is True, (
         "el worker debía haberse verificado y conectado antes de cancelar"
