@@ -71,6 +71,16 @@ class TestParseArgs:
         args = _parse_args(["--loot-exe", str(loot)])
         assert args.loot_exe == loot
 
+    @pytest.mark.parametrize(
+        "modo_posicional",
+        ["cli", "telegram", "oneshot", "gui", "security", "install-vfs-bridge", "vfs-health"],
+    )
+    def test_rechaza_modo_pasado_como_argumento_posicional_sin_flag_mode(self, modo_posicional: str) -> None:
+        """Pasar p. ej. ``python -m sky_claw vfs-health`` sin ``--mode`` no debe caer en silencio al REPL."""
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_args([modo_posicional])
+        assert exc_info.value.code == 2
+
 
 # ------------------------------------------------------------------
 # AppContext lifecycle
@@ -227,6 +237,30 @@ class TestInstallVfsBridge:
             "sky_claw.local.mo2.vfs_worker",
         )
         assert result == tmp_path
+
+    async def test_allow_dev_worker_prefiere_base_executable_sobre_trampoline_de_venv(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """En un venv de Windows, ``sys._base_executable`` apunta al CPython real y evita el trampoline."""
+        args = MagicMock(mo2_root=tmp_path)
+        trampoline = tmp_path / "venv" / "Scripts" / "python.exe"
+        base_python = tmp_path / "Python311" / "python.exe"
+        base_python.parent.mkdir(parents=True)
+        base_python.write_bytes(b"MZ")
+        with (
+            patch("sky_claw.__main__.sys.platform", "win32"),
+            patch("sky_claw.__main__.sys.executable", str(trampoline)),
+            patch("sky_claw.__main__.sys._base_executable", str(base_python), create=True),
+            patch.dict("sky_claw.__main__.os.environ", {"SKYCLAW_ALLOW_DEV_WORKER": "1"}, clear=False),
+            patch(
+                "sky_claw.local.mo2.bridge_installer.MO2BridgeInstaller.install",
+                return_value=tmp_path,
+            ) as install,
+        ):
+            await _install_vfs_bridge(args)
+
+        install.assert_called_once()
+        assert install.call_args.kwargs["worker_executable"] == base_python
 
 
 class TestVfsHealth:

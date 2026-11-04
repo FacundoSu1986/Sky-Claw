@@ -96,7 +96,15 @@ async def _correr(
     secreto = base64.urlsafe_b64decode(descriptor["token"])
     home = tmp_path / "home"
     home.mkdir()
-    entorno = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "PYTHONUNBUFFERED": "1"}
+    python_directo = getattr(sys, "_base_executable", sys.executable)
+    rutas_python = os.pathsep.join([str(pathlib.Path(__file__).resolve().parents[1]), *(p for p in sys.path if p)])
+    entorno = {
+        **os.environ,
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONPATH": rutas_python,
+    }
     manifiesto_path = broker._jobs_dir / f"{job_id}.json"
 
     def armar_argv(nombre_del_job: str) -> list[str]:
@@ -119,8 +127,8 @@ async def _correr(
                 f"import time, runpy; time.sleep({arranque_lento_s}); "
                 "runpy.run_module('sky_claw.local.mo2.vfs_worker', run_name='__main__')"
             )
-            return [sys.executable, "-c", envoltorio, *base]
-        return [sys.executable, "-m", "sky_claw.local.mo2.vfs_worker", *base]
+            return [python_directo, "-c", envoltorio, *base]
+        return [python_directo, "-m", "sky_claw.local.mo2.vfs_worker", *base]
 
     organizer = _OrganizerQueLanzaElWorkerReal(armar_argv, entorno, retardo_s=retardo_assign_s)
     bucle = asyncio.get_running_loop()

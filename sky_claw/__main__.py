@@ -189,7 +189,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    return _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.mode != "oneshot" and args.command is not None:
+        parser.error(
+            f"el argumento posicional {args.command!r} solo se admite con `--mode oneshot` "
+            f"(¿quisiste pasar `--mode {args.command}`?)"
+        )
+    return args
 
 
 # Compat: el helper vive ahora en logging_config (compartido con el bootstrap de
@@ -225,7 +232,9 @@ async def _install_vfs_bridge(args: argparse.Namespace) -> pathlib.Path:
             "install-vfs-bridge: worker NO congelado por SKYCLAW_ALLOW_DEV_WORKER=1. "
             "USVFS puede rechazar la inyección de un intérprete de venv (Error 5)."
         )
-        worker_executable = pathlib.Path(sys.executable)
+        base_exe = getattr(sys, "_base_executable", None)
+        candidato = pathlib.Path(base_exe) if isinstance(base_exe, str) and base_exe else None
+        worker_executable = candidato if candidato is not None and candidato.is_file() else pathlib.Path(sys.executable)
         worker_prefix = ("-m", "sky_claw.local.mo2.vfs_worker")
     else:
         # Fail-closed: el worker en producción DEBE ser el binario congelado
