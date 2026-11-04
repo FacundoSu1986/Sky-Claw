@@ -24,15 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expone una partición total en `testigo_durable` (`guardado`, `conservado_por_build`,
   `conservado_sin_observacion`, `sin_observacion`, `no_disponible`, `error_de_almacen`): si el
   operador reabre la GUI en frío después de construir y vuelve a pulsar la etapa 6, conserva el
-  testigo **previo al build** (`construido_despues_de_la_preparacion=True`) para que el nuevo CTA
-  demuestre frescura en vez de fallar con `SIN_CAMBIO`. En la fase 2 rige `payload` > `durable` >
-  `ninguno` (`testigo_origen`), sin sustituir un payload explícito malformado por estado de disco;
-  una verificación fallida (p. ej. `NO_HABILITADO`) preserva el testigo para el reintento y una con
-  `frescura_probada=True` lo consume tanto por `durable` como por `payload`. Cableado en
-  `orchestration_composition` y en `system_tools.generate_bashed_patch` (el agente LLM gana frescura
-  demostrada entre sesiones sin exponer `testigo_previo` al modelo).
-  Tests: `tests/test_etapa6_testigo_durable.py` (39 tests + ancla AST sobre todos los sitios de
-  construcción + oráculo conductual; matriz de mutación **19/19**).
+  `construido_despues_de_la_preparacion=True`) para que el nuevo CTA demuestre frescura en vez de
+  fallar con `SIN_CAMBIO`. Toda sincronización de fase 1 ocurre dentro de una única transacción
+  atómica del almacén (`sincronizar_preparacion`: `cargar → observar → decidir → escribir`, sin
+  locks globales del pipeline) y etiqueta cada época con un `generacion` de 128 bits propagado en
+  `testigo_previo` mediante un único parser cerrado (`parsear_testigo_de_payload`, compartido por
+  GUI y servicio). En la fase 2 rige `payload` > `durable` > `ninguno` (`testigo_origen`), sin
+  sustituir un payload explícito malformado por estado de disco; una verificación fallida (p. ej.
+  `NO_HABILITADO`) preserva el testigo para el reintento y una con `frescura_probada=True` ejecuta
+  consumo condicional CAS (`olvidar_si_coincide` por `(testigo, generacion)`), de modo que un replay
+  o CTA obsoleto de una preparación previa jamás borra el testigo durable de una preparación
+  posterior. Cableado en `orchestration_composition` y en `system_tools.generate_bashed_patch` (el
+  agente LLM gana frescura demostrada entre sesiones sin exponer `testigo_previo` al modelo).
+  Tests: `tests/test_etapa6_testigo_durable.py` (48 funciones / 70 casos + anclas AST de
+  construcción, mutación atómica/condicional y delegación de parser; matriz de mutación verificada).
 
 - **El panel del ritual ofrece la fase 2 de la etapa 6 (`Ya construí el parche — verificar`).**
   Antes, el botón del ritual sólo podía *preparar*: despachaba `payload` vacío y la

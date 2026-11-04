@@ -49,7 +49,6 @@ import dataclasses
 import enum
 import logging
 import pathlib
-import re
 import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -63,9 +62,10 @@ from sky_claw.local.tools.wrye_bash_asistida import (
     FASES_ASISTIDAS,
     OrigenDelTestigo,
     PreparacionAsistida,
+    TestigoDePayload,
     TestigoPrevio,
     VeredictoAsistido,
-    decidir_testigo_de_preparacion,
+    parsear_testigo_de_payload,
     preparacion_como_resultado,
     preparar_etapa_asistida,
     veredicto_como_resultado,
@@ -126,32 +126,22 @@ _SEPARADORES_DE_PERFIL = ("/", "\\", ":")
 _NOMBRE_MODLIST = "modlist.txt"
 
 
-def _testigo_desde_resultado(testigo_previo: dict[str, object] | None) -> TestigoPrevio | None:
-    """Reconstruye el ``TestigoPrevio`` que viajó por el tool-result, o ``None``.
+def _testigo_desde_resultado(testigo_previo: dict[str, object] | None) -> TestigoDePayload | None:
+    """Reconstruye el :class:`TestigoDePayload` que viajó por el tool-result, o ``None``.
 
-    Falla cerrado: una forma inesperada (falta una clave, tipo equivocado) devuelve
-    ``None`` — el veredicto sigue siendo válido pero declara la frescura no probada, en
-    vez de inventar un testigo que después daría un ``SIN_CAMBIO`` falso.
-
-    Eso incluye la combinación **imposible** ``{existia: True, sha256: None}``: "estaba,
-    pero no sé cuál". Los tipos por separado la aceptaban (``bool`` y ``None`` son
-    válidos cada uno) y el resultado era un testigo que hacía
-    ``frescura_demostrable() == True`` por la vía de ``sha256 != huella.sha256`` aunque
-    la fase 1 nunca hubiera podido identificar el archivo. El invariante vive en
-    ``TestigoPrevio.__post_init__``: acá se traduce su rechazo a ``None``.
+    Falla cerrado delegando en :func:`parsear_testigo_de_payload` (la misma definición que
+    consume ``ritual_runner._testigo_utilizable``): una clave faltante, extra o un tipo
+    inválido devuelve ``None`` y declara frescura no probada sin caer en silencio al estado
+    de disco.
     """
-    if not isinstance(testigo_previo, dict):
-        return None
-    existia, sha256 = testigo_previo.get("existia"), testigo_previo.get("sha256")
-    if not isinstance(existia, bool) or not (sha256 is None or isinstance(sha256, str)):
-        return None
-    if sha256 is not None and re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
-        return None
-    try:
-        return TestigoPrevio(existia=existia, sha256=sha256)
-    except ValueError:
-        logger.warning("[FASE-6-asistida] testigo_previo inconsistente descartado: %r", testigo_previo)
-        return None
+    parseado = parsear_testigo_de_payload(testigo_previo)
+    if parseado is None and testigo_previo is not None:
+        logger.warning(
+            "[FASE-6-asistida] testigo_previo inconsistente descartado: %r",
+            testigo_previo,
+            extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+        )
+    return parseado
 
 
 def _normalizar_dominio(dominio: str | None, *, default: str = DOMINIO_FISICO) -> str:
@@ -186,41 +176,48 @@ def _preparar_con_almacen(
     destino_data: pathlib.Path | None,
     almacen: AlmacenDeTestigos | None,
 ) -> tuple[PreparacionAsistida, EstadoDelTestigoDurable, bool]:
-    """Ejecuta la observación de fase 1 y sincroniza con el almacén durable (hilo worker)."""
-    preparacion = preparar_etapa_asistida(artefacto=artefacto, plugins_txt=plugins_txt)
+    """Ejecuta la observación de fase 1 y la sincroniza atómicamente con el almacén durable."""
     if almacen is None or destino_data is None:
-        return preparacion, EstadoDelTestigoDurable.NO_DISPONIBLE, False
+        return (
+            preparar_etapa_asistida(artefacto=artefacto, plugins_txt=plugins_txt),
+            EstadoDelTestigoDurable.NO_DISPONIBLE,
+            False,
+        )
 
     clave = clave_de_testigo(plugins_txt=plugins_txt, destino_data=destino_data)
+    observadas: list[PreparacionAsistida] = []
+
+    def _observar_en_transaccion() -> TestigoPrevio | None:
+        prep = preparar_etapa_asistida(artefacto=artefacto, plugins_txt=plugins_txt)
+        observadas.append(prep)
+        return prep.testigo_previo
+
     try:
-        durable = almacen.leer(clave)
+        sincronizado = almacen.sincronizar_preparacion(clave, _observar_en_transaccion)
     except OSError as exc:
         logger.warning(
-            "[FASE-6-asistida] No se pudo leer el almacén de testigos (%s): se continúa con el testigo en memoria.",
+            "[FASE-6-asistida] No se pudo sincronizar el almacén de testigos (%s): se continúa con el testigo en memoria.",
             exc,
             extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
         )
-        return preparacion, EstadoDelTestigoDurable.ERROR_DE_ALMACEN, False
+        en_memoria = (
+            observadas[-1] if observadas else preparar_etapa_asistida(artefacto=artefacto, plugins_txt=plugins_txt)
+        )
+        return en_memoria, EstadoDelTestigoDurable.ERROR_DE_ALMACEN, False
 
-    decision = decidir_testigo_de_preparacion(
-        observado_ahora=preparacion.testigo_previo,
-        durable=None if durable is None else durable.como_testigo_previo(),
-    )
-    if decision.testigo != preparacion.testigo_previo:
-        preparacion = dataclasses.replace(preparacion, testigo_previo=decision.testigo)
+    preparacion = observadas[-1]
+    decision = sincronizado.decision
+    durable = sincronizado.durable
+    generacion = None if durable is None else durable.generacion
+    if decision.testigo != preparacion.testigo_previo or generacion is not None:
+        preparacion = dataclasses.replace(
+            preparacion,
+            testigo_previo=decision.testigo,
+            generacion=generacion if decision.testigo is not None else None,
+        )
 
     if decision.persistir and decision.testigo is not None:
-        try:
-            almacen.guardar(clave, decision.testigo)
-        except OSError as exc:
-            logger.warning(
-                "[FASE-6-asistida] No se pudo persistir el testigo durable (%s): el testigo viaja igual en el payload.",
-                exc,
-                extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
-            )
-            return preparacion, EstadoDelTestigoDurable.ERROR_DE_ALMACEN, False
         return preparacion, EstadoDelTestigoDurable.GUARDADO, False
-
     if decision.construido_despues:
         return preparacion, EstadoDelTestigoDurable.CONSERVADO_POR_BUILD, True
     if decision.origen is OrigenDelTestigo.DURABLE:
@@ -236,16 +233,18 @@ def _verificar_con_almacen(
     testigo_previo: dict[str, object] | None,
     almacen: AlmacenDeTestigos | None,
 ) -> tuple[VeredictoAsistido, OrigenDelTestigo]:
-    """Ejecuta el veredicto de fase 2 con precedencia payload > durable y consume en éxito."""
+    """Ejecuta el veredicto de fase 2 con precedencia payload > durable y consumo CAS."""
     clave = (
         clave_de_testigo(plugins_txt=plugins_txt, destino_data=destino_data)
         if almacen is not None and destino_data is not None
         else None
     )
+    generacion_para_consumir: str | None = None
     if testigo_previo is not None:
         del_payload = _testigo_desde_resultado(testigo_previo)
         if del_payload is not None:
-            testigo: TestigoPrevio | None = del_payload
+            testigo: TestigoPrevio | None = del_payload.testigo
+            generacion_para_consumir = del_payload.generacion
             origen = OrigenDelTestigo.PAYLOAD
         else:
             # Un payload explícito malformado no se sustituye en silencio por estado de disco.
@@ -263,6 +262,7 @@ def _verificar_con_almacen(
             durable = None
         if durable is not None:
             testigo = durable.como_testigo_previo()
+            generacion_para_consumir = durable.generacion
             origen = OrigenDelTestigo.DURABLE
         else:
             testigo = None
@@ -276,13 +276,18 @@ def _verificar_con_almacen(
         plugins_txt=plugins_txt,
         testigo=testigo,
     )
-    # Se consume tanto si el testigo vino de ``durable`` como de ``payload``: en ambos casos
-    # esta corrida ya terminó con frescura probada, y dejar el registro vivo engañaría a una
-    # preparación futura (``conservado_por_build`` sobre un parche viejo). Si el veredicto
-    # falló (p. ej. ``NO_HABILITADO``), NO se consume para permitir habilitar y reintentar.
-    if veredicto.frescura_probada and almacen is not None and clave is not None:
+    # Consumo condicional (CAS): sólo se borra el registro durable si coincide con el
+    # ``(testigo, generacion)`` que acaba de probar frescura. Un replay con payload de una
+    # preparación anterior mantiene ``payload > durable`` para su veredicto, pero no borra
+    # el testigo durable de una preparación posterior. Si el veredicto falló (p. ej.
+    # ``NO_HABILITADO``), tampoco se consume para permitir habilitar y reintentar.
+    if veredicto.frescura_probada and testigo is not None and almacen is not None and clave is not None:
         try:
-            almacen.olvidar(clave)
+            almacen.olvidar_si_coincide(
+                clave,
+                testigo=testigo,
+                generacion=generacion_para_consumir,
+            )
         except OSError as exc:
             logger.warning(
                 "[FASE-6-asistida] El parche es válido y fresco, pero no se pudo limpiar el testigo durable (%s).",

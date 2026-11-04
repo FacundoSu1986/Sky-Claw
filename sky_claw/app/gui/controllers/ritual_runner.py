@@ -28,7 +28,11 @@ from sky_claw.local.discovery.registry import (
     build_ritual_tool_map,
 )
 from sky_claw.local.tools.tool_result import es_etapa_pendiente, normalize_tool_result
-from sky_claw.local.tools.wrye_bash_asistida import BASHED_PATCH_NAME, FASE_VERIFICAR, TestigoPrevio
+from sky_claw.local.tools.wrye_bash_asistida import (
+    BASHED_PATCH_NAME,
+    FASE_VERIFICAR,
+    parsear_testigo_de_payload,
+)
 from sky_claw.local.tools_installer import InstallVerification
 
 if TYPE_CHECKING:
@@ -1031,32 +1035,16 @@ def _accion_etapa6_asistida(result: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _testigo_utilizable(testigo: Any) -> dict[str, object] | None:
-    """Forma canónica ``{existia: bool, sha256: str | None}``, o ``None``.
+    """Forma canónica ``{existia: bool, sha256: str | None[, generacion: str]}``, o ``None``.
 
-    El contrato **no se re-implementa acá**: se le pregunta al dominio
-    (:class:`TestigoPrevio`), que es su única definición. La auditoría de este PR
-    encontró la versión anterior aceptando cuatro formas que el dominio rechaza
-    —digest vacío, de 63 caracteres o en mayúsculas, y el estado imposible
-    *ausencia CON identidad*—, así que el botón afirmaba en su payload un testigo
-    que ``_testigo_desde_resultado`` después descartaba en silencio: el operador
-    veía ``frescura_probada=False`` justo después de que el panel le prometió
-    frescura. Fail-closed en el resultado, pero dos validadores con reglas
-    distintas es el defecto que este repo paga siempre.
-
-    Los ``isinstance`` van primero porque la dataclass no valida tipos en runtime
-    (un ``sha256`` entero haría explotar el ``re.fullmatch`` de adentro).
+    El contrato **no se re-implementa acá**: delega en
+    :func:`~sky_claw.local.tools.wrye_bash_asistida.parsear_testigo_de_payload`, la misma
+    definición exacta que consume ``wrye_bash_service._testigo_desde_resultado`` (S-10).
+    Así la GUI y el servicio aceptan y rechazan exactamente el mismo conjunto de payloads,
+    preservando ``generacion`` para el consumo condicional CAS de la fase 2.
     """
-    if not isinstance(testigo, dict):
-        return None
-    existia = testigo.get("existia")
-    sha256 = testigo.get("sha256")
-    if not isinstance(existia, bool) or (sha256 is not None and not isinstance(sha256, str)):
-        return None
-    try:
-        canonico = TestigoPrevio(existia=existia, sha256=sha256)
-    except ValueError:
-        return None
-    return {"existia": canonico.existia, "sha256": canonico.sha256}
+    parseado = parsear_testigo_de_payload(testigo)
+    return None if parseado is None else parseado.como_dict()
 
 
 #: Tabla ÚNICA de acciones de resume. Cerrarla por igualdad es el ancla: una tool

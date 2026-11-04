@@ -396,18 +396,41 @@ prohíben copiar `DeploymentHandoff`:
    desde `cwd` distintos comparten el testigo y la fixture autouse de `tests/conftest.py` lo aísla
    por test sin ensuciar el árbol de trabajo.
 
-**Qué pasa al reabrir la GUI en frío.** `ReactiveStore` vive en RAM: al reabrir la GUI el toast ya
-no existe, así que el operador vuelve a pulsar la etapa 6 (`preparar`) para obtener el CTA de
-verificación. Si esa segunda `preparar` sobrescribiera el testigo con el parche recién construido,
-la fase 2 compararía el archivo contra sí mismo y fallaría con `SIN_CAMBIO`. La función pura
+**Qué pasa al reabrir la GUI en frío, en multi-pestaña y bajo concurrencia (Review #5770094299,
+P1 + P2).** `ReactiveStore` vive en RAM: al reabrir la GUI el toast ya no existe, así que el
+operador vuelve a pulsar la etapa 6 (`preparar`) para obtener el CTA de verificación. Si esa
+segunda `preparar` sobrescribiera el testigo con el parche recién construido, la fase 2 compararía
+el archivo contra sí mismo y fallaría con `SIN_CAMBIO`. La función pura
 `decidir_testigo_de_preparacion` separa los casos y el servicio declara una partición total en
 `EstadoDelTestigoDurable` (`guardado`, `conservado_por_build`, `conservado_sin_observacion`,
 `sin_observacion`, `no_disponible`, `error_de_almacen`): ante un build intermedio conserva el
-testigo anterior y lo devuelve en `testigo_previo` (`construido_despues_de_la_preparacion=True`). En
-la fase 2 la precedencia es `payload` > `durable` > `ninguno` (`testigo_origen`), sin sustituir un
-payload explícito malformado por estado de disco; el testigo durable **no** se consume si la
-verificación falla (p. ej. `NO_HABILITADO` antes de tildar el plugin en MO2) y **sí** se consume al
-demostrar frescura tanto por `durable` como por `payload`.
+testigo anterior y lo devuelve en `testigo_previo` (`construido_despues_de_la_preparacion=True`).
+
+Dos invariantes cierran las carreras de estado entre sesiones, pestañas o procesos sin introducir
+locks globales del pipeline ni bloquear otras etapas:
+
+1. **Transacción atómica por almacén (`sincronizar_preparacion`, P2).** `AlmacenEnMemoria` y
+   `AlmacenJSON` ejecutan la secuencia completa `cargar → observar → decidir → escribir` dentro de
+   una sola sección crítica del almacén (`RLock` intraproceso + `flock`/`msvcrt.locking`
+   cross-process sobre `.etapa6_testigos.json.lock`). Ninguna preparación concurrente sobre el mismo
+   slot puede leer entre la decisión y la escritura de otra, ni resucitar un testigo consumido en
+   paralelo. Si el archivo JSON está corrupto, `_cargar_objeto` lanza
+   `AlmacenDeTestigosIlegibleError` antes de decidir —incluso cuando el artefacto tampoco tiene
+   identidad— para que la fase 1 declare siempre `error_de_almacen` sin pisar la evidencia.
+2. **Época de preparación (`generacion`) y consumo condicional CAS (`olvidar_si_coincide`, P1).**
+   Cada época de preparación emite un identificador opaco de 128 bits (`generacion`, 32 hex en
+   minúsculas) que viaja dentro de `testigo_previo` y se valida con un único parser en esquema
+   cerrado (`parsear_testigo_de_payload`, compartido por `ritual_runner._testigo_utilizable` y
+   `wrye_bash_service._testigo_desde_resultado` para impedir divergencia S-10). Un refresco
+   idempotente sobre la misma huella conserva `generacion` (evitando testigos zombis si el cliente
+   verifica con el primer payload), mientras que un ciclo nuevo tras consumo o cambio de huella base
+   rota `generacion`. En la fase 2 sigue rigiendo `payload` > `durable` > `ninguno`
+   (`testigo_origen`) para evaluar el veredicto, pero la limpieza usa `olvidar_si_coincide(clave,
+   testigo=..., generacion=...)`: un replay con payload viejo de una preparación A anterior (p. ej.
+   CTA obsoleto en otra pestaña de la GUI) evalúa su propia evidencia sin borrar el testigo durable
+   de una preparación B posterior. Anclado por AST en `tests/test_etapa6_testigo_durable.py` (ningún
+   módulo de producción fuera de `etapa6_testigos.py` puede llamar `.guardar(` ni `.olvidar(`
+   incondicional).
 
 **Efecto sobre la superficie del agente LLM.** `GenerateBashedPatchParams` sigue exponiendo sólo
 `fase` (`extra="forbid"`, A-4 intacto: el modelo jamás puede inyectar un hash), pero como

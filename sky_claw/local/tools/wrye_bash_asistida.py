@@ -67,7 +67,7 @@ import pathlib
 import re
 import stat
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
 
 from sky_claw.local.loot.outcome import parse_load_order_bytes
 from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
@@ -106,6 +106,18 @@ _BOM_UTF8 = b"\xef\xbb\xbf"
 #: ``fase`` inventado tiene que fallar cerrado y no caer en un default silencioso.
 FASE_PREPARAR = "preparar"
 FASE_VERIFICAR = "verificar"
+
+#: Patrón canónico de ``generacion`` (128 bits en hex minúscula) para identificar de forma
+#: inequívoca qué época de preparación emitió un ``testigo_previo`` (ADR 0016 §7.2, P1).
+_PATRON_GENERACION = re.compile(r"[0-9a-f]{32}")
+_CLAVES_OBLIGATORIAS_TESTIGO_PAYLOAD: frozenset[str] = frozenset({"existia", "sha256"})
+_CLAVES_TESTIGO_PAYLOAD: frozenset[str] = frozenset({"existia", "sha256", "generacion"})
+
+
+def es_generacion_valida(valor: object) -> TypeGuard[str]:
+    """True si *valor* es un identificador de generación válido (32 hex en minúsculas)."""
+    return isinstance(valor, str) and _PATRON_GENERACION.fullmatch(valor) is not None
+
 
 #: Vocabulario cerrado de fases. Un valor nuevo rompe
 #: ``tests/test_wrye_bash_cableado_asistido.py`` hasta que se clasifique.
@@ -218,6 +230,67 @@ class TestigoPrevio:
         if huella.sha256 is None:
             return None
         return cls(existia=True, sha256=huella.sha256)
+
+
+@dataclass(frozen=True, slots=True)
+class TestigoDePayload:
+    """``TestigoPrevio`` transportado por el payload de tool-result junto con su ``generacion``.
+
+    Única definición de forma para las superficies que serializan o reconstruyen
+    ``testigo_previo`` (``preparacion_como_resultado``, ``ritual_runner._testigo_utilizable``
+    y ``wrye_bash_service._testigo_desde_resultado``): evita que GUI y servicio acepten
+    subconjuntos distintos de diccionarios (lección S-10 de ADR 0016 §9).
+    """
+
+    __test__ = False
+
+    testigo: TestigoPrevio
+    generacion: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.testigo, TestigoPrevio):
+            raise ValueError(f"testigo debe ser TestigoPrevio, no {type(self.testigo).__name__}")
+        if self.generacion is not None and not es_generacion_valida(self.generacion):
+            raise ValueError(f"generacion debe ser un hex de 32 caracteres en minúsculas: {self.generacion!r}")
+
+    def como_dict(self) -> dict[str, object]:
+        datos: dict[str, object] = {
+            "existia": self.testigo.existia,
+            "sha256": self.testigo.sha256,
+        }
+        if self.generacion is not None:
+            datos["generacion"] = self.generacion
+        return datos
+
+
+def parsear_testigo_de_payload(crudo: object) -> TestigoDePayload | None:
+    """Valida en esquema cerrado un ``testigo_previo`` crudo de payload, o devuelve ``None``.
+
+    Exige ``{"existia", "sha256"}`` presentes y rechaza cualquier clave fuera de
+    ``{"existia", "sha256", "generacion"}`` (p. ej. el typo ``"generation"`` o ``"generacion": None``),
+    de modo que ningún llamador pueda degradar en silencio un identificador corrupto a un
+    payload legado sin generación.
+    """
+    if not isinstance(crudo, dict):
+        return None
+    claves = set(crudo.keys())
+    if not (_CLAVES_OBLIGATORIAS_TESTIGO_PAYLOAD <= claves <= _CLAVES_TESTIGO_PAYLOAD):
+        return None
+    existia = crudo["existia"]
+    sha256 = crudo["sha256"]
+    if not isinstance(existia, bool) or not (sha256 is None or isinstance(sha256, str)):
+        return None
+    generacion_cruda: str | None = None
+    if "generacion" in crudo:
+        valor_gen = crudo["generacion"]
+        if not es_generacion_valida(valor_gen):
+            return None
+        generacion_cruda = valor_gen
+    try:
+        testigo = TestigoPrevio(existia=existia, sha256=sha256)
+    except ValueError:
+        return None
+    return TestigoDePayload(testigo=testigo, generacion=generacion_cruda)
 
 
 class OrigenDelTestigo(enum.StrEnum):
@@ -346,6 +419,16 @@ class PreparacionAsistida:
     testigo_previo: TestigoPrevio | None
     estado_plugins: EstadoEnPlugins
     instrucciones: tuple[str, ...]
+    #: Identificador de la época durable a la que pertenece ``testigo_previo``, o ``None``
+    #: cuando la preparación corrió sin almacén o en degradación de almacén.
+    generacion: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.generacion is not None:
+            if self.testigo_previo is None:
+                raise ValueError("generacion no puede acompañar a testigo_previo=None")
+            if not es_generacion_valida(self.generacion):
+                raise ValueError(f"generacion inválida en PreparacionAsistida: {self.generacion!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -654,10 +737,10 @@ def preparacion_como_resultado(preparacion: PreparacionAsistida) -> dict[str, ob
         "testigo_previo": (
             None
             if preparacion.testigo_previo is None
-            else {
-                "existia": preparacion.testigo_previo.existia,
-                "sha256": preparacion.testigo_previo.sha256,
-            }
+            else TestigoDePayload(
+                testigo=preparacion.testigo_previo,
+                generacion=preparacion.generacion,
+            ).como_dict()
         ),
         "estado_en_plugins": preparacion.estado_plugins.value,
         "instrucciones": list(preparacion.instrucciones),

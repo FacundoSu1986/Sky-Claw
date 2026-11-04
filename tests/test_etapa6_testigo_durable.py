@@ -143,6 +143,10 @@ def test_la_clave_canoniza_rutas_y_es_inyectiva_con_separadores_raros(tmp_path: 
         {"existia": False, "sha256": SHA_A, "observado_en": "2026-11-04T10:00:00Z"},
         {"existia": True, "sha256": "A" * 64, "observado_en": "2026-11-04T10:00:00Z"},
         {"existia": False, "sha256": None, "observado_en": ""},
+        {"existia": False, "sha256": None, "observado_en": "2026-11-04T10:00:00Z", "generacion": ""},
+        {"existia": False, "sha256": None, "observado_en": "2026-11-04T10:00:00Z", "generacion": "A" * 32},
+        {"existia": False, "sha256": None, "observado_en": "2026-11-04T10:00:00Z", "generacion": "a" * 31},
+        {"existia": False, "sha256": None, "observado_en": "2026-11-04T10:00:00Z", "generacion": 123},
     ],
 )
 def test_testigo_durable_rechaza_formas_que_el_dominio_no_admite(kwargs: dict[str, object]) -> None:
@@ -375,11 +379,28 @@ def test_una_entrada_con_forma_invalida_se_descarta_sin_tumbar_las_demas(tmp_pat
     ruta = tmp_path / NOMBRE_DEL_ARCHIVO
     buena = _clave(tmp_path)
     mala = ClaveDeTestigo(plugins_txt="otra", destino_data="clave")
+    mala_gen = ClaveDeTestigo(plugins_txt="tercera", destino_data="clave")
     ruta.write_text(
         json.dumps(
             {
-                buena.como_texto(): {"existia": True, "sha256": SHA_A, "observado_en": "2026-01-01T00:00:00Z"},
-                mala.como_texto(): {"existia": True, "sha256": None, "observado_en": "2026-01-01T00:00:00Z"},
+                buena.como_texto(): {
+                    "existia": True,
+                    "sha256": SHA_A,
+                    "observado_en": "2026-01-01T00:00:00Z",
+                    "generacion": "1" * 32,
+                },
+                mala.como_texto(): {
+                    "existia": True,
+                    "sha256": None,
+                    "observado_en": "2026-01-01T00:00:00Z",
+                    "generacion": "2" * 32,
+                },
+                mala_gen.como_texto(): {
+                    "existia": False,
+                    "sha256": None,
+                    "observado_en": "2026-01-01T00:00:00Z",
+                    "generacion": "GENERACION_INVALIDA",
+                },
             }
         ),
         encoding="utf-8",
@@ -387,6 +408,7 @@ def test_una_entrada_con_forma_invalida_se_descarta_sin_tumbar_las_demas(tmp_pat
 
     assert AlmacenJSON(ruta).leer(buena) is not None
     assert AlmacenJSON(ruta).leer(mala) is None
+    assert AlmacenJSON(ruta).leer(mala_gen) is None
 
 
 def test_el_almacen_por_defecto_vive_en_runtime_state_dir_y_no_depende_del_cwd(
@@ -590,13 +612,16 @@ async def test_artefacto_sin_identidad_distingue_sin_observacion_y_conservado(tm
     (overwrite / BASHED_PATCH_NAME).rmdir()
     (overwrite / BASHED_PATCH_NAME).write_bytes(b"viejo")
     sha_viejo = _sha256_de(overwrite / BASHED_PATCH_NAME)
-    assert (await servicio.preparar_etapa_asistida(profile="Default"))["testigo_durable"] == "guardado"
+    guardado = await servicio.preparar_etapa_asistida(profile="Default")
+    assert guardado["testigo_durable"] == "guardado"
+    gen_original = guardado["testigo_previo"]["generacion"]
+    assert isinstance(gen_original, str) and len(gen_original) == 32
 
     (overwrite / BASHED_PATCH_NAME).unlink()
     (overwrite / BASHED_PATCH_NAME).mkdir()
     conservado = await servicio.preparar_etapa_asistida(profile="Default")
     assert conservado["testigo_durable"] == "conservado_sin_observacion"
-    assert conservado["testigo_previo"] == {"existia": True, "sha256": sha_viejo}
+    assert conservado["testigo_previo"] == {"existia": True, "sha256": sha_viejo, "generacion": gen_original}
 
 
 async def test_fallo_del_almacen_en_fase_1_no_bloquea_al_operador_y_se_declara(tmp_path: pathlib.Path) -> None:
@@ -617,11 +642,35 @@ async def test_fallo_del_almacen_en_fase_1_no_bloquea_al_operador_y_se_declara(t
     assert ruta_corrupta.read_text(encoding="utf-8") == "{corrupto"
 
 
+async def test_fallo_del_almacen_en_fase_1_con_artefacto_sin_identidad_declara_error_de_almacen(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Si el almacén JSON está corrupto, la fase 1 declara ``error_de_almacen`` incluso cuando
+    el artefacto tampoco tiene identidad (directorio): no puede enmascararse como ``sin_observacion``."""
+    ruta_corrupta = tmp_path / NOMBRE_DEL_ARCHIVO
+    ruta_corrupta.write_text("{corrupto", encoding="utf-8")
+    servicio, _game, _perfil, overwrite, _ = _escenario(tmp_path, con_almacen=False)
+    (overwrite / BASHED_PATCH_NAME).mkdir()
+    svc = WryeBashPipelineService(
+        path_resolver=servicio._path_resolver,  # noqa: SLF001
+        preflight=_preflight_verde(),
+        testigo_store=AlmacenJSON(ruta_corrupta),
+    )
+
+    resultado = await svc.preparar_etapa_asistida(profile="Default")
+
+    assert resultado["pendiente"] is True
+    assert resultado["testigo_previo"] is None
+    assert resultado["testigo_durable"] == "error_de_almacen"
+    assert ruta_corrupta.read_text(encoding="utf-8") == "{corrupto"
+
+
 async def test_reapertura_en_frio_de_la_gui_conserva_el_testigo_y_verifica_frescura(
     tmp_path: pathlib.Path,
 ) -> None:
     """Flujo real de GUI cerrada entre fases: preparar → cerrar → construir → preparar en
-    frío → CTA ``resume_action_from_result`` → verificar ⇒ ``frescura_probada=True``."""
+    frío → CTA ``resume_action_from_result`` → verificar ⇒ ``frescura_probada=True`` y
+    consumo limpio de esa generación."""
     ruta_store = tmp_path / NOMBRE_DEL_ARCHIVO
     game = tmp_path / "Skyrim"
     (game / "Data").mkdir(parents=True)
@@ -630,6 +679,10 @@ async def test_reapertura_en_frio_de_la_gui_conserva_el_testigo_y_verifica_fresc
     perfil.joinpath("plugins.txt").write_text(f"*{BASHED_PATCH_NAME}\n", encoding="utf-8")
     overwrite = tmp_path / "overwrite"
     overwrite.mkdir()
+    clave = clave_de_testigo(
+        plugins_txt=perfil / "plugins.txt",
+        destino_data=game / "Data" / BASHED_PATCH_NAME,
+    )
 
     # Proceso 1: el operador pide preparar y cierra la GUI.
     svc_1 = WryeBashPipelineService(
@@ -637,7 +690,8 @@ async def test_reapertura_en_frio_de_la_gui_conserva_el_testigo_y_verifica_fresc
         preflight=_preflight_verde(),
         testigo_store=AlmacenJSON(ruta_store),
     )
-    await svc_1.preparar_etapa_asistida(profile="Default")
+    primera_prep = await svc_1.preparar_etapa_asistida(profile="Default")
+    gen_a = primera_prep["testigo_previo"]["generacion"]
 
     # Con la GUI cerrada, el operador construye el Bashed Patch en Wrye Bash dentro de MO2.
     (overwrite / BASHED_PATCH_NAME).write_bytes(b"TES4" + b"\x01" * 60)
@@ -651,40 +705,618 @@ async def test_reapertura_en_frio_de_la_gui_conserva_el_testigo_y_verifica_fresc
     segunda_prep = await svc_2.preparar_etapa_asistida(profile="Default")
     assert segunda_prep["testigo_durable"] == "conservado_por_build"
     assert segunda_prep["construido_despues_de_la_preparacion"] is True
-    assert segunda_prep["testigo_previo"] == {"existia": False, "sha256": None}
+    assert segunda_prep["testigo_previo"] == {"existia": False, "sha256": None, "generacion": gen_a}
 
     accion = resume_action_from_result("wrye_bash", segunda_prep)
     assert accion is not None
     veredicto = await svc_2.ejecutar_fase_asistida(profile="Default", **accion["payload"])
     assert veredicto["success"] is True
     assert veredicto["frescura_probada"] is True
+    assert AlmacenJSON(ruta_store).leer(clave) is None
 
 
-async def test_el_testigo_del_payload_gana_sobre_el_durable_y_igual_lo_consume(tmp_path: pathlib.Path) -> None:
-    """Dos invariantes juntos:
-    1. El payload confirmado en pantalla gana sobre el almacén (acá el durable tiene el
-       mismo sha256 del parche nuevo, así que si se usara el durable daría ``SIN_CAMBIO``).
-    2. Cuando el veredicto prueba frescura por ``payload``, el testigo durable TAMBIÉN se
-       consume: dejarlo vivo haría que la próxima corrida viera un testigo obsoleto."""
+async def test_verificar_por_payload_consume_el_testigo_durable_de_su_misma_generacion(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Cuando la verificación por ``payload`` corresponde a la preparación vigente, el
+    testigo durable de esa misma generación se consume para no dejar evidencia huérfana."""
     servicio, game, perfil, overwrite, almacen = _escenario(tmp_path)
     assert almacen is not None
-    await servicio.preparar_etapa_asistida(profile="Default")
+    prep = await servicio.preparar_etapa_asistida(profile="Default")
     parche = overwrite / BASHED_PATCH_NAME
     parche.write_bytes(b"TES4" + b"\x02" * 60)
     clave = clave_de_testigo(
         plugins_txt=perfil / "plugins.txt",
         destino_data=game / "Data" / BASHED_PATCH_NAME,
     )
-    almacen.guardar(clave, TestigoPrevio(existia=True, sha256=_sha256_de(parche)))
 
     veredicto = await servicio.verificar_etapa_asistida(
-        profile="Default", testigo_previo={"existia": False, "sha256": None}
+        profile="Default",
+        testigo_previo=prep["testigo_previo"],
     )
 
     assert veredicto["success"] is True
     assert veredicto["testigo_origen"] == "payload"
     assert veredicto["frescura_probada"] is True
-    assert almacen.leer(clave) is None, "el testigo durable quedó huérfano tras probar frescura por payload"
+    assert almacen.leer(clave) is None, "la misma generación debía consumirse al probar frescura"
+
+
+async def test_payload_viejo_no_borra_el_testigo_durable_de_una_preparacion_posterior(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Review #5770094299 (P1): repetir la verificación A con su payload viejo (con o sin
+    ``generacion``) NO puede borrar el testigo durable creado por una preparación B posterior.
+
+    Secuencia AAA determinista:
+    1. Preparar A cuando el Bashed Patch no existe.
+    2. Crear el parche v1 y verificar A con su payload (consume A).
+    3. Preparar B sobre el parche v1 existente, guardando ``sha_v1`` bajo una generación nueva.
+    4. Repetir la verificación A con su payload antiguo (y también con dict crudo sin generación):
+       ``payload > durable`` rige para evaluar la llamada explícita, pero NO borra el registro de B.
+    5. Verificar que B conserva su testigo: sin nuevo build devuelve ``SIN_CAMBIO`` (fail-closed)
+       y tras construir v2 prueba ``frescura_probada=True`` y recién ahí consume B."""
+    servicio, game, perfil, overwrite, almacen = _escenario(tmp_path)
+    assert almacen is not None
+    clave = clave_de_testigo(
+        plugins_txt=perfil / "plugins.txt",
+        destino_data=game / "Data" / BASHED_PATCH_NAME,
+    )
+
+    # 1. Preparar A sin parche.
+    prep_a = await servicio.preparar_etapa_asistida(profile="Default")
+    payload_a = prep_a["testigo_previo"]
+
+    # 2. Construir v1 y verificar A con su payload -> consume A.
+    parche = overwrite / BASHED_PATCH_NAME
+    parche.write_bytes(b"TES4_V1_" + b"\x11" * 56)
+    sha_v1 = _sha256_de(parche)
+    ver_a1 = await servicio.verificar_etapa_asistida(profile="Default", testigo_previo=payload_a)
+    assert ver_a1["success"] is True and ver_a1["frescura_probada"] is True
+    assert almacen.leer(clave) is None
+
+    # 3. Preparar B sobre el parche v1 actual -> almacena sha_v1 con nueva generación.
+    prep_b = await servicio.preparar_etapa_asistida(profile="Default")
+    assert prep_b["testigo_durable"] == "guardado"
+    durable_b = almacen.leer(clave)
+    assert durable_b is not None and durable_b.sha256 == sha_v1
+    assert durable_b.generacion != payload_a["generacion"]
+
+    # 4. Replay con payload viejo de A (con generación vieja y también sin generación).
+    ver_replay_con_gen = await servicio.verificar_etapa_asistida(profile="Default", testigo_previo=payload_a)
+    assert ver_replay_con_gen["testigo_origen"] == "payload"
+    ver_replay_sin_gen = await servicio.verificar_etapa_asistida(
+        profile="Default",
+        testigo_previo={"existia": False, "sha256": None},
+    )
+    assert ver_replay_sin_gen["testigo_origen"] == "payload"
+
+    # 5. El testigo durable de B permanece intacto y protege el ciclo B.
+    assert almacen.leer(clave) == durable_b
+    sin_rebuild = await servicio.verificar_etapa_asistida(profile="Default")
+    assert sin_rebuild["success"] is False
+    assert sin_rebuild["motivo"] == "SIN_CAMBIO"
+
+    parche.write_bytes(b"TES4_V2_" + b"\x22" * 56)
+    con_rebuild = await servicio.verificar_etapa_asistida(profile="Default")
+    assert con_rebuild["success"] is True
+    assert con_rebuild["testigo_origen"] == "durable"
+    assert con_rebuild["frescura_probada"] is True
+    assert almacen.leer(clave) is None
+
+
+async def test_payload_viejo_no_borra_nueva_generacion_aunque_coincida_la_huella_previa(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Mata el mutante que solo compara ``(existia, sha256)`` sin mirar ``generacion``:
+    A y B observaron ambos ausencia (``existia=False, sha256=None``), pero son generaciones
+    distintas y el replay de A no puede consumir el registro de B."""
+    servicio, game, perfil, overwrite, almacen = _escenario(tmp_path)
+    assert almacen is not None
+    clave = clave_de_testigo(
+        plugins_txt=perfil / "plugins.txt",
+        destino_data=game / "Data" / BASHED_PATCH_NAME,
+    )
+    parche = overwrite / BASHED_PATCH_NAME
+
+    prep_a = await servicio.preparar_etapa_asistida(profile="Default")
+    payload_a = prep_a["testigo_previo"]
+    parche.write_bytes(b"TES4_V1_" + b"\x31" * 56)
+    assert (await servicio.verificar_etapa_asistida(profile="Default", testigo_previo=payload_a))[
+        "frescura_probada"
+    ] is True
+    assert almacen.leer(clave) is None
+
+    # El operador borra v1 y arranca una nueva preparación B: misma observación (ausente), otra generación.
+    parche.unlink()
+    prep_b = await servicio.preparar_etapa_asistida(profile="Default")
+    durable_b = almacen.leer(clave)
+    assert durable_b is not None and durable_b.existia is False
+    assert prep_b["testigo_previo"]["generacion"] != payload_a["generacion"]
+
+    # El operador construye v2; antes de que B verifique, llega un replay con payload_a.
+    parche.write_bytes(b"TES4_V2_" + b"\x32" * 56)
+    await servicio.verificar_etapa_asistida(profile="Default", testigo_previo=payload_a)
+
+    # El testigo de B NO fue consumido por el replay de A: B verifica sin payload y prueba frescura.
+    assert almacen.leer(clave) == durable_b
+    ver_b = await servicio.verificar_etapa_asistida(profile="Default")
+    assert ver_b["success"] is True
+    assert ver_b["testigo_origen"] == "durable"
+    assert ver_b["frescura_probada"] is True
+
+
+async def test_multi_pestana_gui_cta_obsoleto_no_borra_preparacion_posterior(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Superficie GUI real (PATCH 0010): la pestaña 1 conserva en RAM el CTA derivado de A
+    por ``resume_action_from_result``; si B ya preparó otro ciclo, accionar el CTA viejo de la
+    pestaña 1 no borra el testigo durable de B."""
+    servicio, game, perfil, overwrite, almacen = _escenario(tmp_path)
+    assert almacen is not None
+    clave = clave_de_testigo(
+        plugins_txt=perfil / "plugins.txt",
+        destino_data=game / "Data" / BASHED_PATCH_NAME,
+    )
+    parche = overwrite / BASHED_PATCH_NAME
+
+    prep_pestana_1 = await servicio.preparar_etapa_asistida(profile="Default")
+    accion_pestana_1 = resume_action_from_result("wrye_bash", prep_pestana_1)
+    assert accion_pestana_1 is not None
+
+    parche.write_bytes(b"TES4_V1_" + b"\x41" * 56)
+    # Otra superficie (p. ej. agente LLM) verifica A y arranca preparación B.
+    assert (await servicio.verificar_etapa_asistida(profile="Default"))["frescura_probada"] is True
+    await servicio.preparar_etapa_asistida(profile="Default")
+    durable_b = almacen.leer(clave)
+    assert durable_b is not None
+
+    # El usuario hace clic en el botón obsoleto que quedó abierto en la pestaña 1.
+    await servicio.ejecutar_fase_asistida(profile="Default", **accion_pestana_1["payload"])
+    assert almacen.leer(clave) == durable_b
+
+
+def test_olvidar_si_coincide_en_origen_durable_no_borra_si_otra_preparacion_avanza_en_paralelo(
+    tmp_path: pathlib.Path,
+) -> None:
+    """En ``origen == 'durable'``, si entre ``leer`` y ``olvidar_si_coincide`` otra preparación
+    ya reemplazó el slot con una generación nueva, el consumo condicional respeta la nueva."""
+    from sky_claw.local.tools.wrye_bash_service import _verificar_con_almacen
+
+    ruta = tmp_path / NOMBRE_DEL_ARCHIVO
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    destino_data = game / "Data" / BASHED_PATCH_NAME
+    plugins_txt = tmp_path / "profiles" / "Default" / "plugins.txt"
+    plugins_txt.parent.mkdir(parents=True)
+    plugins_txt.write_text(f"*{BASHED_PATCH_NAME}\n", encoding="utf-8")
+    parche = tmp_path / "overwrite" / BASHED_PATCH_NAME
+    parche.parent.mkdir(parents=True)
+    parche.write_bytes(b"TES4_V1_" + b"\x51" * 56)
+
+    clave = clave_de_testigo(plugins_txt=plugins_txt, destino_data=destino_data)
+    almacen = AlmacenJSON(ruta)
+    almacen.guardar(clave, TestigoPrevio(existia=False, sha256=None))
+
+    leer_real = almacen.leer
+    reemplazado: list[TestigoDurable] = []
+
+    def _leer_y_avanzar(c: ClaveDeTestigo) -> TestigoDurable | None:
+        leido = leer_real(c)
+        nuevo = AlmacenJSON(ruta).guardar(c, TestigoPrevio(existia=True, sha256=_sha256_de(parche)))
+        reemplazado.append(nuevo)
+        return leido
+
+    almacen.leer = _leer_y_avanzar  # type: ignore[method-assign]
+    veredicto, origen = _verificar_con_almacen(
+        artefacto=parche,
+        plugins_txt=plugins_txt,
+        destino_data=destino_data,
+        testigo_previo=None,
+        almacen=almacen,
+    )
+    assert veredicto.frescura_probada is True
+    assert origen is OrigenDelTestigo.DURABLE
+    assert AlmacenJSON(ruta).leer(clave) == reemplazado[0]
+
+
+@pytest.mark.parametrize(
+    ("crudo", "es_valido"),
+    [
+        ({"existia": False, "sha256": None}, True),
+        ({"existia": True, "sha256": SHA_A}, True),
+        ({"existia": False, "sha256": None, "generacion": "0123456789abcdef" * 2}, True),
+        ({"existia": True, "sha256": SHA_A, "generacion": "f" * 32}, True),
+        ({"existia": False}, False),
+        ({"existia": False, "sha256": None, "generacion": None}, False),
+        ({"existia": False, "sha256": None, "generacion": ""}, False),
+        ({"existia": False, "sha256": None, "generacion": "A" * 32}, False),
+        ({"existia": False, "sha256": None, "generacion": "a" * 31}, False),
+        ({"existia": False, "sha256": None, "generacion": 42}, False),
+        ({"existia": False, "sha256": None, "generation": "a" * 32}, False),
+        ({"existia": True, "sha256": None}, False),
+        ({"existia": False, "sha256": SHA_A}, False),
+    ],
+)
+def test_gui_y_servicio_comparten_el_mismo_parser_de_testigo_de_payload(
+    crudo: dict[str, object],
+    es_valido: bool,
+) -> None:
+    """S-10 / AGENTS.md (hermanos): ``ritual_runner._testigo_utilizable`` y
+    ``wrye_bash_service._testigo_desde_resultado`` aceptan y rechazan exactamente las mismas formas."""
+    from sky_claw.app.gui.controllers.ritual_runner import _testigo_utilizable
+    from sky_claw.local.tools.wrye_bash_service import _testigo_desde_resultado
+
+    desde_gui = _testigo_utilizable(crudo)
+    desde_svc = _testigo_desde_resultado(crudo)
+    assert (desde_gui is not None) is es_valido
+    assert (desde_svc is not None) is es_valido
+    if es_valido:
+        assert desde_gui == crudo
+
+
+@pytest.mark.parametrize(
+    "fabrica_almacen",
+    [
+        pytest.param(lambda _p: AlmacenEnMemoria(), id="memoria"),
+        pytest.param(lambda p: AlmacenJSON(p / NOMBRE_DEL_ARCHIVO), id="json"),
+    ],
+)
+def test_dos_preparaciones_concurrentes_desde_almacen_vacio_detectan_aparicion_intermedia(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fabrica_almacen: object,
+) -> None:
+    """Review #5770094299 (P2, variante almacén vacío + paridad memoria/JSON): si ``f1`` entra con
+    almacén vacío y sin parche, y mientras decide aparece ``v1`` y entra ``f2``, ``f2`` debe
+    esperar a que ``f1`` cierre su transacción y entonces detectar ``construido_desde_testigo_durable=True``
+    (estado ``CONSERVADO``) en **ambos** hermanos (``AlmacenEnMemoria`` y ``AlmacenJSON``)."""
+    import concurrent.futures
+    import threading
+
+    import sky_claw.local.tools.etapa6_testigos as mod_testigos
+    import sky_claw.local.tools.wrye_bash_service as mod_servicio
+    from sky_claw.local.tools.wrye_bash_asistida import decidir_testigo_de_preparacion as decidir_real
+    from sky_claw.local.tools.wrye_bash_service import _preparar_con_almacen
+
+    almacen = fabrica_almacen(tmp_path)  # type: ignore[operator]
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    destino_data = game / "Data" / BASHED_PATCH_NAME
+    plugins_txt = tmp_path / "profiles" / "Default" / "plugins.txt"
+    plugins_txt.parent.mkdir(parents=True)
+    plugins_txt.write_text(f"*{BASHED_PATCH_NAME}\n", encoding="utf-8")
+    parche = tmp_path / "overwrite" / BASHED_PATCH_NAME
+    parche.parent.mkdir(parents=True)
+
+    clave = clave_de_testigo(plugins_txt=plugins_txt, destino_data=destino_data)
+    en_decision_1 = threading.Event()
+    competidor_termino = threading.Event()
+    primera_vez = True
+    lock_flag = threading.Lock()
+
+    def _decidir_espiado(*, observado_ahora: TestigoPrevio | None, durable: object) -> DecisionDeTestigo:
+        nonlocal primera_vez
+        decision = decidir_real(observado_ahora=observado_ahora, durable=durable)  # type: ignore[arg-type]
+        es_primera = False
+        with lock_flag:
+            if primera_vez:
+                primera_vez = False
+                es_primera = True
+        if es_primera:
+            en_decision_1.set()
+            competidor_termino.wait(timeout=0.15)
+        return decision
+
+    monkeypatch.setattr(mod_servicio, "decidir_testigo_de_preparacion", _decidir_espiado, raising=False)
+    monkeypatch.setattr(mod_testigos, "decidir_testigo_de_preparacion", _decidir_espiado, raising=False)
+
+    def _correr_f2() -> tuple[object, object, bool]:
+        try:
+            return _preparar_con_almacen(
+                artefacto=parche,
+                plugins_txt=plugins_txt,
+                destino_data=destino_data,
+                almacen=almacen,
+            )
+        finally:
+            competidor_termino.set()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(
+            _preparar_con_almacen,
+            artefacto=destino_data,
+            plugins_txt=plugins_txt,
+            destino_data=destino_data,
+            almacen=almacen,
+        )
+        assert en_decision_1.wait(timeout=5.0)
+        parche.write_bytes(b"TES4_V1_" + b"\x65" * 56)
+        f2 = pool.submit(_correr_f2)
+        f1.result(timeout=5.0)
+        prep_2, estado_2, construido_2 = f2.result(timeout=5.0)
+
+    final = almacen.leer(clave)
+    assert construido_2 is True
+    assert getattr(estado_2, "value", None) == "conservado_por_build"
+    assert getattr(prep_2, "testigo_previo", None) == TestigoPrevio(existia=False, sha256=None)
+    assert final is not None and final.existia is False
+
+
+@pytest.mark.parametrize(
+    "fabrica_almacen",
+    [
+        pytest.param(lambda _p: AlmacenEnMemoria(), id="memoria"),
+        pytest.param(lambda p: AlmacenJSON(p / NOMBRE_DEL_ARCHIVO), id="json"),
+    ],
+)
+def test_refresco_idempotente_conserva_generacion_pero_nuevo_ciclo_rota_generacion(
+    tmp_path: pathlib.Path,
+    fabrica_almacen: object,
+) -> None:
+    """Paridad ``AlmacenEnMemoria`` / ``AlmacenJSON``: refrescar el mismo testigo sin cambios
+    conserva la época (``generacion``) para no dejar testigos zombis si el cliente usa el primer
+    payload; consumir o cambiar de huella base rota ``generacion``."""
+    almacen = fabrica_almacen(tmp_path)  # type: ignore[operator]
+    clave = clave_de_testigo(
+        plugins_txt=tmp_path / "Default" / "plugins.txt",
+        destino_data=tmp_path / "Data" / BASHED_PATCH_NAME,
+    )
+
+    r1 = almacen.sincronizar_preparacion(
+        clave,
+        lambda: TestigoPrevio(existia=False, sha256=None),
+        observado_en="2026-11-04T10:00:00Z",
+    )
+    r2 = almacen.sincronizar_preparacion(
+        clave,
+        lambda: TestigoPrevio(existia=False, sha256=None),
+        observado_en="2026-11-04T10:05:00Z",
+    )
+    assert r1.durable is not None and r2.durable is not None
+    assert r2.durable.generacion == r1.durable.generacion
+    assert r2.durable.observado_en == "2026-11-04T10:05:00Z"
+
+    # Cuando el parche aparece sin haberse verificado aún, CONSERVADO también preserva la época.
+    r3 = almacen.sincronizar_preparacion(
+        clave,
+        lambda: TestigoPrevio(existia=True, sha256="a" * 64),
+        observado_en="2026-11-04T10:10:00Z",
+    )
+    assert r3.decision.construido_despues is True
+    assert r3.durable == r2.durable
+
+    # Consumir con la generación de r1 vacía el slot; la siguiente preparación rota generación.
+    assert (
+        almacen.olvidar_si_coincide(
+            clave,
+            testigo=TestigoPrevio(existia=False, sha256=None),
+            generacion=r1.durable.generacion,
+        )
+        is True
+    )
+    assert almacen.leer(clave) is None
+
+    r4 = almacen.sincronizar_preparacion(
+        clave,
+        lambda: TestigoPrevio(existia=False, sha256=None),
+        observado_en="2026-11-04T10:15:00Z",
+    )
+    assert r4.durable is not None
+    assert r4.durable.generacion != r1.durable.generacion
+
+
+def test_dos_preparaciones_concurrentes_del_mismo_slot_son_atomicas_y_no_invierten_decisiones(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review #5770094299 (P2): ``observar → leer → decidir → guardar`` sobre el mismo slot es
+    atómico. Una preparación que ya decidió sobre ``v0`` no puede quedar sin lock antes de
+    persistir, dejando que otra preparación posterior escriba ``existia=False`` y luego sea
+    pisada en orden inverso por el ``v0`` viejo."""
+    import concurrent.futures
+    import threading
+
+    import sky_claw.local.tools.etapa6_testigos as mod_testigos
+    import sky_claw.local.tools.wrye_bash_service as mod_servicio
+    from sky_claw.local.tools.wrye_bash_asistida import decidir_testigo_de_preparacion as decidir_real
+    from sky_claw.local.tools.wrye_bash_service import _preparar_con_almacen
+
+    ruta = tmp_path / NOMBRE_DEL_ARCHIVO
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    destino_data = game / "Data" / BASHED_PATCH_NAME
+    plugins_txt = tmp_path / "profiles" / "Default" / "plugins.txt"
+    plugins_txt.parent.mkdir(parents=True)
+    plugins_txt.write_text(f"*{BASHED_PATCH_NAME}\n", encoding="utf-8")
+    parche = tmp_path / "overwrite" / BASHED_PATCH_NAME
+    parche.parent.mkdir(parents=True)
+    parche.write_bytes(b"TES4_V0_" + b"\x60" * 56)
+    sha_v0 = _sha256_de(parche)
+
+    clave = clave_de_testigo(plugins_txt=plugins_txt, destino_data=destino_data)
+    AlmacenJSON(ruta).guardar(clave, TestigoPrevio(existia=True, sha256=sha_v0))
+
+    en_decision_1 = threading.Event()
+    competidor_termino = threading.Event()
+    primera_vez = True
+    lock_flag = threading.Lock()
+
+    def _decidir_espiado(*, observado_ahora: TestigoPrevio | None, durable: object) -> DecisionDeTestigo:
+        nonlocal primera_vez
+        decision = decidir_real(observado_ahora=observado_ahora, durable=durable)  # type: ignore[arg-type]
+        es_primera = False
+        with lock_flag:
+            if primera_vez:
+                primera_vez = False
+                es_primera = True
+        if es_primera:
+            en_decision_1.set()
+            # Sin atomicidad de transacción, f2 entra sin bloqueo, persiste existia=False y
+            # despierta a f1 en <5 ms para que pise existia=False con sha_v0. Con transacción
+            # atómica, f2 queda bloqueada esperando el lock hasta que este timeout vence.
+            competidor_termino.wait(timeout=0.15)
+        return decision
+
+    monkeypatch.setattr(mod_servicio, "decidir_testigo_de_preparacion", _decidir_espiado, raising=False)
+    monkeypatch.setattr(mod_testigos, "decidir_testigo_de_preparacion", _decidir_espiado, raising=False)
+
+    def _correr_f2() -> tuple[object, object, bool]:
+        try:
+            return _preparar_con_almacen(
+                artefacto=destino_data,
+                plugins_txt=plugins_txt,
+                destino_data=destino_data,
+                almacen=AlmacenJSON(ruta),
+            )
+        finally:
+            competidor_termino.set()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(
+            _preparar_con_almacen,
+            artefacto=parche,
+            plugins_txt=plugins_txt,
+            destino_data=destino_data,
+            almacen=AlmacenJSON(ruta),
+        )
+        assert en_decision_1.wait(timeout=5.0)
+        parche.unlink()
+        f2 = pool.submit(_correr_f2)
+        f1.result(timeout=5.0)
+        prep_2, estado_2, _ = f2.result(timeout=5.0)
+
+    final = AlmacenJSON(ruta).leer(clave)
+    assert getattr(estado_2, "value", None) == "guardado"
+    assert getattr(prep_2, "testigo_previo", None) == TestigoPrevio(existia=False, sha256=None)
+    assert final is not None and final.existia is False and final.sha256 is None
+
+
+def test_preparar_y_verificar_concurrentes_del_mismo_slot_no_resucitan_un_testigo_consumido(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review #5770094299 (P2): ``_preparar_con_almacen`` y ``_verificar_con_almacen`` no pueden
+    intercalarse entre ``leer`` y ``guardar`` dejando resucitado un testigo ya consumido (que
+    daría ``frescura_probada=True`` falso en una corrida posterior sin nuevo build)."""
+    import concurrent.futures
+    import threading
+
+    import sky_claw.local.tools.etapa6_testigos as mod_testigos
+    import sky_claw.local.tools.wrye_bash_service as mod_servicio
+    from sky_claw.local.tools.wrye_bash_asistida import decidir_testigo_de_preparacion as decidir_real
+    from sky_claw.local.tools.wrye_bash_service import _preparar_con_almacen, _verificar_con_almacen
+
+    ruta = tmp_path / NOMBRE_DEL_ARCHIVO
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    destino_data = game / "Data" / BASHED_PATCH_NAME
+    plugins_txt = tmp_path / "profiles" / "Default" / "plugins.txt"
+    plugins_txt.parent.mkdir(parents=True)
+    plugins_txt.write_text(f"*{BASHED_PATCH_NAME}\n", encoding="utf-8")
+    parche = tmp_path / "overwrite" / BASHED_PATCH_NAME
+    parche.parent.mkdir(parents=True)
+
+    clave = clave_de_testigo(plugins_txt=plugins_txt, destino_data=destino_data)
+    AlmacenJSON(ruta).guardar(clave, TestigoPrevio(existia=False, sha256=None))
+
+    en_decision = threading.Event()
+    verificacion_termino = threading.Event()
+
+    def _decidir_pausado(*, observado_ahora: TestigoPrevio | None, durable: object) -> DecisionDeTestigo:
+        decision = decidir_real(observado_ahora=observado_ahora, durable=durable)  # type: ignore[arg-type]
+        en_decision.set()
+        verificacion_termino.wait(timeout=0.15)
+        return decision
+
+    monkeypatch.setattr(mod_servicio, "decidir_testigo_de_preparacion", _decidir_pausado, raising=False)
+    monkeypatch.setattr(mod_testigos, "decidir_testigo_de_preparacion", _decidir_pausado, raising=False)
+
+    def _correr_verificar() -> tuple[object, object]:
+        try:
+            return _verificar_con_almacen(
+                artefacto=parche,
+                plugins_txt=plugins_txt,
+                destino_data=destino_data,
+                testigo_previo=None,
+                almacen=AlmacenJSON(ruta),
+            )
+        finally:
+            verificacion_termino.set()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        fut_prep = pool.submit(
+            _preparar_con_almacen,
+            artefacto=destino_data,
+            plugins_txt=plugins_txt,
+            destino_data=destino_data,
+            almacen=AlmacenJSON(ruta),
+        )
+        assert en_decision.wait(timeout=5.0)
+        parche.write_bytes(b"TES4_V1_" + b"\x70" * 56)
+        fut_ver = pool.submit(_correr_verificar)
+        fut_prep.result(timeout=5.0)
+        ver_1, _ = fut_ver.result(timeout=5.0)
+
+    assert getattr(ver_1, "frescura_probada", None) is True
+    assert AlmacenJSON(ruta).leer(clave) is None
+
+    # Una verificación posterior SIN nuevo build ya NO puede ver un testigo zombi ni probar frescura.
+    ver_2, _ = _verificar_con_almacen(
+        artefacto=parche,
+        plugins_txt=plugins_txt,
+        destino_data=destino_data,
+        testigo_previo=None,
+        almacen=AlmacenJSON(ruta),
+    )
+    assert ver_2.frescura_probada is False
+
+
+def test_dos_procesos_concurrentes_en_el_mismo_slot_no_corrompen_el_almacen(tmp_path: pathlib.Path) -> None:
+    """Exclusión cross-process sobre el MISMO slot usando ``sincronizar_preparacion`` y
+    ``olvidar_si_coincide`` simultáneamente desde dos procesos Python independientes."""
+    import subprocess
+    import sys
+
+    ruta = tmp_path / NOMBRE_DEL_ARCHIVO
+    script = (
+        "import pathlib, sys, time; "
+        "from sky_claw.local.tools.etapa6_testigos import AlmacenJSON, clave_de_testigo; "
+        "from sky_claw.local.tools.wrye_bash_asistida import TestigoPrevio; "
+        "ruta = pathlib.Path(sys.argv[1]); rol = sys.argv[2]; otro = sys.argv[3]; "
+        "clave = clave_de_testigo(plugins_txt=ruta.parent / 'Default' / 'plugins.txt', "
+        "destino_data=ruta.parent / 'Data' / 'p.esp'); "
+        "(ruta.parent / f'.ready_slot_{rol}').write_text('ok'); "
+        "deadline = time.monotonic() + 5.0; "
+        "exec('while not (ruta.parent / f\".ready_slot_{otro}\").exists() and time.monotonic() < deadline: time.sleep(0.002)'); "
+        "almacen = AlmacenJSON(ruta); "
+        "exec("
+        "'for i in range(25):\\n"
+        '  res = almacen.sincronizar_preparacion(clave, lambda i=i: TestigoPrevio(existia=True, sha256=(f"{i:02x}" * 32)))\\n'
+        '  if rol == "CONSUMIDOR" and res.durable is not None:\\n'
+        "    almacen.olvidar_si_coincide(clave, testigo=res.durable.como_testigo_previo(), generacion=res.durable.generacion)\\n'"
+        ")"
+    )
+    p1 = subprocess.Popen([sys.executable, "-c", script, str(ruta), "PRODUCTOR", "CONSUMIDOR"], cwd=RAIZ)
+    p2 = subprocess.Popen([sys.executable, "-c", script, str(ruta), "CONSUMIDOR", "PRODUCTOR"], cwd=RAIZ)
+    try:
+        rc1 = p1.wait(timeout=15)
+        rc2 = p2.wait(timeout=15)
+    finally:
+        for proc in (p1, p2):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    assert rc1 == 0 and rc2 == 0
+
+    # El archivo resultante debe seguir siendo JSON íntegro (nunca truncado ni corrupto) y legible.
+    crudo = json.loads(ruta.read_text(encoding="utf-8"))
+    assert isinstance(crudo, dict)
+    clave = clave_de_testigo(
+        plugins_txt=tmp_path / "Default" / "plugins.txt",
+        destino_data=tmp_path / "Data" / "p.esp",
+    )
+    leido = AlmacenJSON(ruta).leer(clave)
+    assert leido is None or len(leido.generacion) == 32
 
 
 async def test_payload_explicito_malformado_no_usa_el_durable_ni_lo_consume(tmp_path: pathlib.Path) -> None:
@@ -729,11 +1361,21 @@ async def test_una_verificacion_fallida_no_consume_el_testigo_durable(tmp_path: 
     assert reintento["frescura_probada"] is True
 
 
-async def test_un_fallo_al_consumir_el_testigo_no_tumba_un_veredicto_valido(tmp_path: pathlib.Path) -> None:
-    """La limpieza del almacén no es parte de la validez del parche."""
+async def test_un_fallo_al_consumir_el_testigo_no_tumba_un_veredicto_valido(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """La limpieza del almacén no es parte de la validez del parche, y su fallo registra stage 6."""
+    import logging
 
     class _AlmacenQueFallaAlOlvidar(AlmacenEnMemoria):
-        def olvidar(self, clave: ClaveDeTestigo) -> None:
+        def olvidar_si_coincide(
+            self,
+            clave: ClaveDeTestigo,
+            *,
+            testigo: TestigoPrevio,
+            generacion: str | None = None,
+        ) -> bool:
             raise OSError("disco lleno justo al limpiar")
 
     servicio, _game, _perfil, overwrite, _ = _escenario(tmp_path, con_almacen=False)
@@ -745,9 +1387,79 @@ async def test_un_fallo_al_consumir_el_testigo_no_tumba_un_veredicto_valido(tmp_
     await svc.preparar_etapa_asistida(profile="Default")
     (overwrite / BASHED_PATCH_NAME).write_bytes(b"TES4" + b"\x05" * 60)
 
-    veredicto = await svc.verificar_etapa_asistida(profile="Default")
+    with caplog.at_level(logging.WARNING, logger="sky_claw.local.tools.wrye_bash_service"):
+        veredicto = await svc.verificar_etapa_asistida(profile="Default")
     assert veredicto["success"] is True
     assert veredicto["frescura_probada"] is True
+    registros = [r for r in caplog.records if "limpiar el testigo durable" in r.getMessage()]
+    assert len(registros) == 1
+    assert getattr(registros[0], "pipeline_stage", None) == 6
+    assert getattr(registros[0], "tx_id", "ausente") is None
+
+
+def test_produccion_solo_muta_el_almacen_con_operaciones_atomicas_y_condicionales() -> None:
+    """Ancla AST (sin acoplamiento a números de línea): ningún caller de producción fuera de
+    ``etapa6_testigos.py`` puede invocar ``.guardar(`` ni ``.olvidar(`` incondicional sobre el
+    almacén; ``wrye_bash_service.py`` sólo muta por ``sincronizar_preparacion`` y
+    ``olvidar_si_coincide``."""
+    almacen_rel = "sky_claw/local/tools/etapa6_testigos.py"
+    servicio_rel = "sky_claw/local/tools/wrye_bash_service.py"
+    prohibidas: list[str] = []
+    mutaciones_en_servicio: dict[str, set[str]] = {}
+
+    for py in sorted(RAIZ.joinpath("sky_claw").rglob("*.py")):
+        rel = py.relative_to(RAIZ).as_posix()
+        if rel == almacen_rel:
+            continue
+        arbol = ast.parse(py.read_text(encoding="utf-8"))
+        for cont in ast.walk(arbol):
+            if not isinstance(cont, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for nodo in ast.walk(cont):
+                if not isinstance(nodo, ast.Call) or not isinstance(nodo.func, ast.Attribute):
+                    continue
+                metodo = nodo.func.attr
+                receptor = getattr(nodo.func.value, "id", None) or getattr(nodo.func.value, "attr", None)
+                if receptor in {"almacen", "_testigo_store", "testigo_store"} and metodo in {"guardar", "olvidar"}:
+                    prohibidas.append(f"{rel}:{cont.name}:{nodo.lineno} llama .{metodo}()")
+                if rel == servicio_rel and metodo in {
+                    "sincronizar_preparacion",
+                    "olvidar_si_coincide",
+                    "guardar",
+                    "olvidar",
+                }:
+                    mutaciones_en_servicio.setdefault(cont.name, set()).add(metodo)
+
+    assert prohibidas == [], (
+        "producción volvió a usar primitivas no atómicas/incondicionales del almacén:\n" + "\n".join(prohibidas)
+    )
+    assert mutaciones_en_servicio == {
+        "_preparar_con_almacen": {"sincronizar_preparacion"},
+        "_verificar_con_almacen": {"olvidar_si_coincide"},
+    }
+
+
+def test_gui_y_servicio_delegan_en_parsear_testigo_de_payload() -> None:
+    """Ancla AST contra S-10: ni ``ritual_runner._testigo_utilizable`` ni
+    ``wrye_bash_service._testigo_desde_resultado`` pueden reimplementar la validación por
+    separado; ambos deben delegar en ``parsear_testigo_de_payload``."""
+    objetivos = {
+        "sky_claw/app/gui/controllers/ritual_runner.py": "_testigo_utilizable",
+        "sky_claw/local/tools/wrye_bash_service.py": "_testigo_desde_resultado",
+    }
+    for rel, nombre_fn in objetivos.items():
+        arbol = ast.parse((RAIZ / rel).read_text(encoding="utf-8"))
+        fn = next(
+            (n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef) and n.name == nombre_fn),
+            None,
+        )
+        assert fn is not None, f"desapareció {nombre_fn} en {rel}"
+        llamadas = {
+            nodo.func.id for nodo in ast.walk(fn) if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name)
+        }
+        assert "parsear_testigo_de_payload" in llamadas, (
+            f"{rel}:{nombre_fn} dejó de delegar en parsear_testigo_de_payload (riesgo S-10)"
+        )
 
 
 # =============================================================================

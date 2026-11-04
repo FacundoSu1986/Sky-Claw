@@ -43,18 +43,24 @@ import json
 import logging
 import os
 import pathlib
+import secrets
 import sys
 import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.config import SystemPaths
-from sky_claw.local.tools.wrye_bash_asistida import TestigoPrevio
+from sky_claw.local.tools.wrye_bash_asistida import (
+    DecisionDeTestigo,
+    TestigoPrevio,
+    decidir_testigo_de_preparacion,
+    es_generacion_valida,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +128,14 @@ def _ahora() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def nueva_generacion() -> str:
+    """Identificador opaco de 128 bits (32 hex en minúsculas) para una época de preparación."""
+    return secrets.token_hex(16)
+
+
+_CLAVES_TESTIGO_DURABLE: frozenset[str] = frozenset({"existia", "sha256", "observado_en", "generacion"})
+
+
 def _canonizar_ruta(ruta: pathlib.Path) -> str:
     """``resolve(strict=False)`` + ``normpath`` + ``normcase``, igual que ``handoffs.clave_de_artifact``."""
     return os.path.normcase(os.path.normpath(str(pathlib.Path(ruta).resolve(strict=False))))
@@ -171,10 +185,10 @@ def clave_de_testigo(*, plugins_txt: pathlib.Path, destino_data: pathlib.Path) -
 
 @dataclass(frozen=True, slots=True)
 class TestigoDurable:
-    """Un :class:`TestigoPrevio` con la marca de cuándo se observó.
+    """Un :class:`TestigoPrevio` con la marca de cuándo se observó y su ``generacion``.
 
-    Delega el invariante de dominio en :class:`TestigoPrevio` para que no existan dos
-    validadores que puedan divergir (lección S-10 de ADR 0016 §9).
+    Delega el invariante de dominio en :class:`TestigoPrevio` y :func:`es_generacion_valida`
+    para que no existan dos validadores que puedan divergir (lección S-10 de ADR 0016 §9).
     """
 
     __test__ = False
@@ -182,6 +196,7 @@ class TestigoDurable:
     existia: bool
     sha256: str | None
     observado_en: str
+    generacion: str = field(default_factory=nueva_generacion)
 
     def __post_init__(self) -> None:
         if not isinstance(self.existia, bool):
@@ -191,38 +206,107 @@ class TestigoDurable:
         TestigoPrevio(existia=self.existia, sha256=self.sha256)
         if not isinstance(self.observado_en, str) or not self.observado_en:
             raise ValueError("un testigo durable necesita marca de tiempo no vacía")
+        if not es_generacion_valida(self.generacion):
+            raise ValueError(f"generacion debe ser 32 hex en minúsculas: {self.generacion!r}")
 
     @classmethod
-    def desde(cls, testigo: TestigoPrevio, *, observado_en: str | None = None) -> TestigoDurable:
-        return cls(existia=testigo.existia, sha256=testigo.sha256, observado_en=observado_en or _ahora())
+    def desde(
+        cls,
+        testigo: TestigoPrevio,
+        *,
+        observado_en: str | None = None,
+        generacion: str | None = None,
+    ) -> TestigoDurable:
+        return cls(
+            existia=testigo.existia,
+            sha256=testigo.sha256,
+            observado_en=observado_en or _ahora(),
+            generacion=nueva_generacion() if generacion is None else generacion,
+        )
 
     def como_testigo_previo(self) -> TestigoPrevio:
         return TestigoPrevio(existia=self.existia, sha256=self.sha256)
 
+    def coincide_con(self, *, testigo: TestigoPrevio, generacion: str | None = None) -> bool:
+        """True sólo si ``testigo`` y (cuando se informa) ``generacion`` describen esta época."""
+        if self.como_testigo_previo() != testigo:
+            return False
+        return generacion is None or self.generacion == generacion
+
     def como_dict(self) -> dict[str, object]:
-        return {"existia": self.existia, "sha256": self.sha256, "observado_en": self.observado_en}
+        return {
+            "existia": self.existia,
+            "sha256": self.sha256,
+            "observado_en": self.observado_en,
+            "generacion": self.generacion,
+        }
 
     @classmethod
     def desde_dict(cls, crudo: object) -> TestigoDurable | None:
         """Forma canónica o ``None``. Nunca lanza sobre datos leídos de disco."""
-        if not isinstance(crudo, dict):
+        if not isinstance(crudo, dict) or set(crudo.keys()) != _CLAVES_TESTIGO_DURABLE:
             return None
         existia = crudo.get("existia")
         sha256 = crudo.get("sha256")
         observado_en = crudo.get("observado_en")
+        generacion = crudo.get("generacion")
         if not isinstance(existia, bool) or not (sha256 is None or isinstance(sha256, str)):
             return None
-        if not isinstance(observado_en, str) or not observado_en:
+        if not isinstance(observado_en, str) or not observado_en or not es_generacion_valida(generacion):
             return None
         try:
-            return cls(existia=existia, sha256=sha256, observado_en=observado_en)
+            return cls(
+                existia=existia,
+                sha256=sha256,
+                observado_en=observado_en,
+                generacion=generacion,
+            )
         except ValueError:
             return None
 
 
+@dataclass(frozen=True, slots=True)
+class ResultadoDePreparacionDurable:
+    """Resultado atómico de observar + decidir + persistir bajo la exclusión del almacén."""
+
+    __test__ = False
+
+    decision: DecisionDeTestigo
+    durable: TestigoDurable | None
+
+
+def _resolver_preparacion_durable(
+    *,
+    actual: TestigoDurable | None,
+    observado_ahora: TestigoPrevio | None,
+    observado_en: str | None,
+) -> tuple[DecisionDeTestigo, TestigoDurable | None, bool]:
+    """Única implementación de la transición de época para memoria y JSON."""
+    decision = decidir_testigo_de_preparacion(
+        observado_ahora=observado_ahora,
+        durable=None if actual is None else actual.como_testigo_previo(),
+    )
+    if decision.persistir and decision.testigo is not None:
+        misma_epoca = actual is not None and actual.como_testigo_previo() == decision.testigo
+        generacion = actual.generacion if misma_epoca and actual is not None else nueva_generacion()
+        vigente = TestigoDurable.desde(
+            decision.testigo,
+            observado_en=observado_en,
+            generacion=generacion,
+        )
+        return decision, vigente, True
+    return decision, actual, False
+
+
 @runtime_checkable
 class AlmacenDeTestigos(Protocol):
-    """Superficie mínima que consume ``WryeBashPipelineService``."""
+    """Superficie que consume ``WryeBashPipelineService``.
+
+    Las mutaciones de producción pasan exclusivamente por :meth:`sincronizar_preparacion`
+    (transacción atómica ``cargar → observar → decidir → escribir``) y
+    :meth:`olvidar_si_coincide` (compare-and-delete sobre ``(testigo, generacion)``).
+    :meth:`guardar` y :meth:`olvidar` quedan para configuración/limpieza directa en tests.
+    """
 
     def leer(self, clave: ClaveDeTestigo) -> TestigoDurable | None: ...
 
@@ -231,6 +315,22 @@ class AlmacenDeTestigos(Protocol):
     ) -> TestigoDurable: ...
 
     def olvidar(self, clave: ClaveDeTestigo) -> None: ...
+
+    def sincronizar_preparacion(
+        self,
+        clave: ClaveDeTestigo,
+        observar: Callable[[], TestigoPrevio | None],
+        *,
+        observado_en: str | None = None,
+    ) -> ResultadoDePreparacionDurable: ...
+
+    def olvidar_si_coincide(
+        self,
+        clave: ClaveDeTestigo,
+        *,
+        testigo: TestigoPrevio,
+        generacion: str | None = None,
+    ) -> bool: ...
 
 
 class AlmacenEnMemoria:
@@ -255,6 +355,39 @@ class AlmacenEnMemoria:
     def olvidar(self, clave: ClaveDeTestigo) -> None:
         with self._lock:
             self._datos.pop(clave.como_texto(), None)
+
+    def sincronizar_preparacion(
+        self,
+        clave: ClaveDeTestigo,
+        observar: Callable[[], TestigoPrevio | None],
+        *,
+        observado_en: str | None = None,
+    ) -> ResultadoDePreparacionDurable:
+        with self._lock:
+            actual = self._datos.get(clave.como_texto())
+            observado_ahora = observar()
+            decision, vigente, persistir = _resolver_preparacion_durable(
+                actual=actual,
+                observado_ahora=observado_ahora,
+                observado_en=observado_en,
+            )
+            if persistir and vigente is not None:
+                self._datos[clave.como_texto()] = vigente
+            return ResultadoDePreparacionDurable(decision=decision, durable=vigente)
+
+    def olvidar_si_coincide(
+        self,
+        clave: ClaveDeTestigo,
+        *,
+        testigo: TestigoPrevio,
+        generacion: str | None = None,
+    ) -> bool:
+        with self._lock:
+            actual = self._datos.get(clave.como_texto())
+            if actual is None or not actual.coincide_con(testigo=testigo, generacion=generacion):
+                return False
+            del self._datos[clave.como_texto()]
+            return True
 
 
 class AlmacenJSON:
@@ -300,6 +433,14 @@ class AlmacenJSON:
             )
             return None
 
+        return self._interpretar_entrada(ruta, clave, datos)
+
+    def _interpretar_entrada(
+        self,
+        ruta: pathlib.Path,
+        clave: ClaveDeTestigo,
+        datos: dict[str, object],
+    ) -> TestigoDurable | None:
         crudo = datos.get(clave.como_texto())
         durable = TestigoDurable.desde_dict(crudo)
         if durable is None and crudo is not None:
@@ -328,6 +469,47 @@ class AlmacenJSON:
             datos = self._cargar_objeto(ruta)
             if datos.pop(clave.como_texto(), None) is not None:
                 self._escribir_atomico(ruta, datos)
+
+    def sincronizar_preparacion(
+        self,
+        clave: ClaveDeTestigo,
+        observar: Callable[[], TestigoPrevio | None],
+        *,
+        observado_en: str | None = None,
+    ) -> ResultadoDePreparacionDurable:
+        """Ejecuta ``cargar → observar → decidir → escribir`` bajo un único lock del almacén."""
+        ruta = self.ruta
+        with self._seccion_critica(ruta, escritura=True):
+            datos = self._cargar_objeto(ruta)
+            actual = self._interpretar_entrada(ruta, clave, datos)
+            observado_ahora = observar()
+            decision, vigente, persistir = _resolver_preparacion_durable(
+                actual=actual,
+                observado_ahora=observado_ahora,
+                observado_en=observado_en,
+            )
+            if persistir and vigente is not None:
+                datos[clave.como_texto()] = vigente.como_dict()
+                self._escribir_atomico(ruta, datos)
+            return ResultadoDePreparacionDurable(decision=decision, durable=vigente)
+
+    def olvidar_si_coincide(
+        self,
+        clave: ClaveDeTestigo,
+        *,
+        testigo: TestigoPrevio,
+        generacion: str | None = None,
+    ) -> bool:
+        """Borra ``clave`` sólo si el registro actual coincide con ``(testigo, generacion)``."""
+        ruta = self.ruta
+        with self._seccion_critica(ruta, escritura=True):
+            datos = self._cargar_objeto(ruta)
+            actual = self._interpretar_entrada(ruta, clave, datos)
+            if actual is None or not actual.coincide_con(testigo=testigo, generacion=generacion):
+                return False
+            datos.pop(clave.como_texto(), None)
+            self._escribir_atomico(ruta, datos)
+            return True
 
     @contextlib.contextmanager
     def _seccion_critica(self, ruta: pathlib.Path, *, escritura: bool) -> Iterator[None]:
@@ -471,7 +653,9 @@ __all__ = [
     "AlmacenEnMemoria",
     "AlmacenJSON",
     "ClaveDeTestigo",
+    "ResultadoDePreparacionDurable",
     "TestigoDurable",
     "almacen_por_defecto",
     "clave_de_testigo",
+    "nueva_generacion",
 ]
