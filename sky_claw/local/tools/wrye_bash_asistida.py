@@ -243,7 +243,7 @@ class VeredictoAsistido:
 PASOS_ASISTIDOS: tuple[str, ...] = (
     "1. Abrí MO2 y lanzá 'Wrye Bash' desde el ejecutable del perfil (no desde el explorador): "
     "así hereda la vista virtual del perfil.",
-    "2. En la pestaña 'Mods', elegí 'Bashed Patch, 0.esp' y pulsá 'Rebuild Patch'.",
+    f"2. En la pestaña 'Mods', elegí '{BASHED_PATCH_NAME}' y pulsá 'Rebuild Patch'.",
     f"3. Dejá SOLO 'Leveled Lists' habilitado: la etapa 6 no fusiona magia, clima ni "
     f"parámetros acústicos (SOP §2.6). El artefacto destino es '{BASHED_PATCH_NAME}'.",
     "4. Confirmá el rebuild, esperá a que termine y cerrá Wrye Bash.",

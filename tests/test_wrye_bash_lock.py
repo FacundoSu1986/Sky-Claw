@@ -7,29 +7,28 @@ abría una TX… para que el runner fallara cerrado siempre (``bash.py`` no expo
 Ese camino dejó de existir en esta superficie: la etapa 6 es **asistida** y la construye
 el operador en la GUI de Wrye Bash lanzado desde MO2.
 
-Lo que este módulo ancla ahora es el contrato NUEVO de la delegación, que es el inverso
-del anterior y por eso tiene dientes propios:
+Lo que este módulo ancla es el contrato NUEVO de la delegación, que es el inverso del
+anterior y por eso tiene dientes propios:
 
 1. **Una sola salida**: el handler delega en ``ejecutar_fase_asistida`` (el punto ÚNICO
-   de enrutado, compartido con la GUI y el supervisor). Nunca en ``execute_pipeline``.
-2. **No toma lock, no snapshotea y no emite caja negra**: ninguna de las dos fases muta,
-   así que un lock ajeno —de Wrye Bash o de un sort de LOOT en curso— NO la bloquea, y
-   una invocación no deja una TX ``rolled_back`` por ritual. La caja negra existe para lo
-   que puede mutar (ADR 0016 §2).
-3. **No hay subproceso**: el runner inyectado no se invoca y su ausencia deja de ser un
-   error estructural (``runner=None`` es el caso normal).
+   de enrutado, compartido con la GUI y el supervisor). ``execute_pipeline`` **no
+   existe más** (PR C de ADR 0016 §7), así que no hay a dónde volver.
+2. **No toma lock, no snapshotea y no emite caja negra**: ninguna de las dos fases muta.
+   Un lock ajeno —de Wrye Bash o de un sort de LOOT en curso— NO la bloquea, y una
+   invocación no deja una TX ``rolled_back`` por ritual.
+3. **No hay subproceso NI se le puede pasar uno**: el runner dejó de ser un parámetro del
+   handler. ``runner=None`` como "caso normal" era una promesa; que la firma no lo admita
+   es la garantía.
 4. **El contrato JSON de la tool se preserva** (T11): dict serializable, nunca excepción.
 
-La lógica del lock, del rollback y del manifiesto **no se perdió**: sigue viva en
-``test_wrye_bash_service.py``, que es donde vive el código que la implementa
-(``execute_pipeline``, el camino headless que el PR C de ADR 0016 §7 retira o declara
-compat documentada). Duplicarla acá contra un handler que ya no la ejecuta era el falso
-verde que este módulo tenía tras el cableado: ``test_handler_bloqueado_si_loot_tiene_el_
-load_order`` seguía pasando por un motivo distinto del que su nombre afirma.
+La lógica del lock, del rollback y del manifiesto **se retiró con el código que la
+implementaba** (``execute_pipeline`` y sus helpers de caja negra: cero callers de
+producción, ver ADR 0016 §7). Acá sólo sobrevive su negación: lo que la tool NO hace.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -37,15 +36,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sky_claw.app.agent.tools.system_tools import generate_bashed_patch
+from sky_claw.app.db.journal import OperationJournal
 from sky_claw.app.db.locks import DistributedLockManager
-from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.tools.wrye_bash_asistida import BASHED_PATCH_NAME
-from sky_claw.local.tools.wrye_bash_runner import WryeBashResult
-from sky_claw.local.tools.wrye_bash_service import (
-    BASHED_PATCH_RESOURCE_ID,
-    WryeBashPipelineService,
-)
+from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
 from sky_claw.local.xedit.patch_orchestrator import DelegateToBashedPatch
 
 if TYPE_CHECKING:
@@ -53,7 +48,7 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-async def lock_manager(tmp_path: pathlib.Path) -> DistributedLockManager:
+async def lock_manager(tmp_path: pathlib.Path) -> Any:
     mgr = DistributedLockManager(
         tmp_path / "test_locks.db",
         default_ttl=5.0,
@@ -62,33 +57,8 @@ async def lock_manager(tmp_path: pathlib.Path) -> DistributedLockManager:
         backoff_max=0.2,
     )
     await mgr.initialize()
-    yield mgr  # type: ignore[misc]
+    yield mgr
     await mgr.close()
-
-
-@pytest.fixture
-async def snapshot_manager(tmp_path: pathlib.Path) -> FileSnapshotManager:
-    d = tmp_path / "snapshots"
-    d.mkdir()
-    mgr = FileSnapshotManager(snapshot_dir=d)
-    await mgr.initialize()
-    return mgr
-
-
-def _resultado(success: bool = True, stdout: str = "ok") -> WryeBashResult:
-    return WryeBashResult(
-        success=success,
-        return_code=0 if success else 1,
-        stdout=stdout if success else "",
-        stderr="" if success else "boom",
-        duration_seconds=1.0,
-    )
-
-
-def _runner() -> MagicMock:
-    runner = MagicMock()
-    runner.generate_bashed_patch = AsyncMock(return_value=_resultado())
-    return runner
 
 
 def _resolver(tmp_path: pathlib.Path, *, perfil: str = "Requiem") -> MagicMock:
@@ -111,8 +81,8 @@ def sin_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(WryeBashPipelineService, "_ensure_preflight", lambda self, **kwargs: None)
 
 
-async def _handler(runner: Any = None, **kwargs: Any) -> dict[str, Any]:
-    return json.loads(await generate_bashed_patch(runner, **kwargs))
+async def _handler(**kwargs: Any) -> dict[str, Any]:
+    return json.loads(await generate_bashed_patch(**kwargs))
 
 
 # ==============================================================================
@@ -121,29 +91,18 @@ async def _handler(runner: Any = None, **kwargs: Any) -> dict[str, Any]:
 
 
 async def test_el_handler_delega_en_el_enrutado_unico(
-    lock_manager: DistributedLockManager,
-    snapshot_manager: FileSnapshotManager,
     tmp_path: pathlib.Path,
     sin_preflight: None,
 ) -> None:
     """La superficie del agente comparte el punto de decisión con GUI y supervisor.
 
-    Se espía ``ejecutar_fase_asistida`` y se afirma que ``execute_pipeline`` —el camino
-    headless— no se toca: si alguien volviera a llamarlo, la tool reabriría el ritual
-    muerto que el PR B cierra y este test lo vería en la primera llamada.
+    Se espía ``ejecutar_fase_asistida`` y se afirma que el camino headless **no existe**:
+    después del PR C ya no alcanza con que no se llame, la clase no tiene el método. Es
+    el ancla más barata contra una reintroducción por copiar y pegar del ritual muerto.
     """
     espia = AsyncMock(return_value={"success": False, "pendiente": True})
-    with (
-        patch.object(WryeBashPipelineService, "ejecutar_fase_asistida", espia),
-        patch.object(WryeBashPipelineService, "execute_pipeline", AsyncMock()) as headless,
-    ):
-        out = await _handler(
-            _runner(),
-            lock_manager=lock_manager,
-            snapshot_manager=snapshot_manager,
-            path_resolver=_resolver(tmp_path),
-            profile="Requiem",
-        )
+    with patch.object(WryeBashPipelineService, "ejecutar_fase_asistida", espia):
+        out = await _handler(path_resolver=_resolver(tmp_path), profile="Requiem")
 
     assert out == {"success": False, "pendiente": True}
     espia.assert_awaited_once()
@@ -152,21 +111,31 @@ async def test_el_handler_delega_en_el_enrutado_unico(
     assert argumentos["fase"] == "preparar"
     # M-04 se valida a nivel Supervisor para este path, como antes del PR B.
     assert argumentos["validate_limit"] is False
-    headless.assert_not_awaited()
+    assert not hasattr(WryeBashPipelineService, "execute_pipeline"), (
+        "el camino headless retirado volvió a existir: la tool podría reabrirlo"
+    )
 
 
-async def test_el_handler_no_invoca_el_runner(tmp_path: pathlib.Path, sin_preflight: None) -> None:
-    """Las fases asistidas no spawnnean: el runner inyectado queda sin usar."""
-    runner = _runner()
+async def test_el_handler_no_admite_un_runner(tmp_path: pathlib.Path, sin_preflight: None) -> None:
+    """Las fases asistidas no spawnnean: el runner no es un parámetro, es un TypeError.
 
-    await _handler(runner, path_resolver=_resolver(tmp_path), profile="Requiem")
+    Antes del PR C el runner se inyectaba y se afirmaba que no se invocaba. Con el retiro
+    la garantía sube de nivel: si alguien vuelve a abrir la puerta al subproceso, esta
+    llamada deja de fallar y el test lo dice.
+    """
+    runner = MagicMock()
 
-    runner.generate_bashed_patch.assert_not_awaited()
+    with pytest.raises(TypeError):
+        await generate_bashed_patch(runner)  # type: ignore[call-arg]
+
+    out = await _handler(path_resolver=_resolver(tmp_path), profile="Requiem")
+    assert out["pendiente"] is True
+    runner.generate_bashed_patch.assert_not_called()
 
 
-async def test_runner_none_ya_no_es_un_error_estructural(tmp_path: pathlib.Path, sin_preflight: None) -> None:
+async def test_sin_runner_la_etapa_sigue_su_curso(tmp_path: pathlib.Path, sin_preflight: None) -> None:
     """Sin build headless el runner no es una precondición: la etapa sigue su curso."""
-    out = await _handler(None, path_resolver=_resolver(tmp_path), profile="Requiem")
+    out = await _handler(path_resolver=_resolver(tmp_path), profile="Requiem")
 
     assert out["pendiente"] is True
     assert "error" not in out
@@ -174,7 +143,7 @@ async def test_runner_none_ya_no_es_un_error_estructural(tmp_path: pathlib.Path,
 
 async def test_sin_resolver_falla_cerrado(tmp_path: pathlib.Path) -> None:
     """Sin ``path_resolver`` no se inventa un verde: ``SinRutasResolubles``."""
-    out = await _handler(_runner(), profile="Requiem")
+    out = await _handler(profile="Requiem")
 
     assert out["success"] is False
     assert out["reason"] == "SinRutasResolubles"
@@ -186,61 +155,49 @@ async def test_sin_resolver_falla_cerrado(tmp_path: pathlib.Path) -> None:
 
 
 async def test_el_handler_no_toma_ningun_lock(
-    lock_manager: DistributedLockManager,
-    snapshot_manager: FileSnapshotManager,
     tmp_path: pathlib.Path,
     sin_preflight: None,
 ) -> None:
-    with patch.object(lock_manager, "acquire_lock", AsyncMock(wraps=lock_manager.acquire_lock)) as espia:
-        out = await _handler(
-            _runner(),
-            lock_manager=lock_manager,
-            snapshot_manager=snapshot_manager,
-            path_resolver=_resolver(tmp_path),
-            profile="Requiem",
-        )
+    """Si alguien reconstruye un lock manager por dentro, este test lo caza.
+
+    El handler ya no recibe el manager, así que espiar la instancia no probaría nada: se
+    envenena el método de la CLASE. Una toma de lock —de cualquier instancia— explota.
+    """
+    with patch.object(
+        DistributedLockManager,
+        "acquire_lock",
+        AsyncMock(side_effect=AssertionError("la etapa asistida no toma locks")),
+    ):
+        out = await _handler(path_resolver=_resolver(tmp_path), profile="Requiem")
 
     assert out["pendiente"] is True
-    espia.assert_not_awaited()
 
 
 async def test_el_handler_no_emite_caja_negra(
-    lock_manager: DistributedLockManager,
-    snapshot_manager: FileSnapshotManager,
     tmp_path: pathlib.Path,
     sin_preflight: None,
 ) -> None:
     """Una etapa que sólo lee y describe no abre TX: no hay nada que revertir.
 
     Era el defecto que el PR A documentó y el PR B cierra: cada invocación del agente
-    dejaba una TX ``rolled_back`` por un ritual que nunca iba a mutar.
+    dejaba una TX ``rolled_back`` por un ritual que nunca iba a mutar. El journal ya no
+    viaja al handler, así que se envenena la clase: cualquier apertura de TX explota.
     """
-    journal = MagicMock()
-    journal.begin_transaction = AsyncMock(return_value=88)
-    journal.commit_transaction = AsyncMock()
-    journal.mark_transaction_rolled_back = AsyncMock()
-    journal.persist_action_manifest = AsyncMock()
-    journal.persist_flight_report = AsyncMock()
-
-    out = await _handler(
-        _runner(),
-        lock_manager=lock_manager,
-        snapshot_manager=snapshot_manager,
-        journal=journal,
-        path_resolver=_resolver(tmp_path),
-        profile="Requiem",
-    )
+    with patch.object(
+        OperationJournal,
+        "begin_transaction",
+        AsyncMock(side_effect=AssertionError("la etapa asistida no abre transacciones")),
+    ):
+        out = await _handler(path_resolver=_resolver(tmp_path), profile="Requiem")
 
     assert out["pendiente"] is True
-    journal.begin_transaction.assert_not_awaited()
-    journal.persist_action_manifest.assert_not_awaited()
-    journal.persist_flight_report.assert_not_awaited()
-    journal.mark_transaction_rolled_back.assert_not_awaited()
+    # Ni siquiera se le puede inyectar un journal: la firma no lo admite.
+    parametros = set(inspect.signature(generate_bashed_patch).parameters)
+    assert parametros == {"path_resolver", "profile", "fase", "testigo_previo"}, parametros
 
 
 async def test_un_lock_ajeno_ya_no_bloquea_la_etapa(
     lock_manager: DistributedLockManager,
-    snapshot_manager: FileSnapshotManager,
     tmp_path: pathlib.Path,
     sin_preflight: None,
 ) -> None:
@@ -251,17 +208,14 @@ async def test_un_lock_ajeno_ya_no_bloquea_la_etapa(
     llamada devolvía ``success=False`` por contención de lock — y, tras el cableado,
     devolvía ``success=False`` por otra razón (``SinRutasResolubles``), que es la clase de
     verde/rojo que miente que este repo ya pagó varias veces.
+
+    Los ids de lock son literales de OTROS servicios a propósito: el ancla de PR C prohíbe
+    ``Bashed Patch, 0.esp`` en producción, no en un test que simula un lock ajeno.
     """
-    await lock_manager.acquire_lock(BASHED_PATCH_RESOURCE_ID, "other-runner", ttl=30.0)
+    await lock_manager.acquire_lock(BASHED_PATCH_NAME, "other-runner", ttl=30.0)
     await lock_manager.acquire_lock(LOAD_ORDER_RESOURCE_ID, "loot-service", ttl=30.0)
 
-    out = await _handler(
-        _runner(),
-        lock_manager=lock_manager,
-        snapshot_manager=snapshot_manager,
-        path_resolver=_resolver(tmp_path),
-        profile="Requiem",
-    )
+    out = await _handler(path_resolver=_resolver(tmp_path), profile="Requiem")
 
     assert out["pendiente"] is True
     assert out["success"] is False
@@ -275,14 +229,17 @@ async def test_un_lock_ajeno_ya_no_bloquea_la_etapa(
 
 async def test_el_handler_devuelve_json_serializable_aun_sin_dependencias() -> None:
     """Ninguna combinación de dependencias ausentes puede escapar como excepción."""
-    salida = await generate_bashed_patch(None)
+    salida = await generate_bashed_patch()
 
     assert isinstance(salida, str)
     assert isinstance(json.loads(salida), dict)
 
 
 def test_nombre_canonico_del_bashed_patch_sincronizado() -> None:
-    """El runner, el servicio (#315) y la estrategia de delegación (ADR 0001) nombran
-    el mismo .esp — un drift acá rompería el snapshot/lock de alguno."""
+    """El runner y la estrategia de delegación (ADR 0001) nombran el mismo .esp.
+
+    La tercera pata de esta igualdad era ``BASHED_PATCH_RESOURCE_ID`` —el id de lock del
+    camino headless—, que se retiró con él (ADR 0016 §7): sin tomador, un id de lock
+    "canónico" sólo serviría para que el próximo lector creyera que algo lo usa.
+    """
     assert BASHED_PATCH_NAME == DelegateToBashedPatch.BASHED_PATCH_NAME
-    assert BASHED_PATCH_NAME == BASHED_PATCH_RESOURCE_ID

@@ -56,7 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preflight del dominio correspondiente: bajo USVFS se omite el sensor de visibilidad
   (U-01), que mide el `Data` físico y daba rojo sobre un perfil cuyos mods viven en
   `mods/`, y el sensor de permisos sondea el `overwrite` del perfil en vez del `Data`
-  —la VFS redirige la escritura, no hereda sus permisos—. `TestigoPrevio` gana el tercer estado *no sé* (`None`) y rechaza la forma
+  —la VFS redirige la escritura, no hereda sus permisos—. Ese sensor es un **write-probe**
+  real: crea y borra `.skyclaw_probe_<uuid>.tmp` en el destino. La fase 1 no muta el
+  artefacto, el perfil ni el load order, y las docstrings lo dicen así —«no muta» no es «no
+  escribe un solo byte»—; si el borrado falla, el residuo se **reporta** en el preflight
+  como `probe_residue` en amarillo (no bloquea) y dos tests de contrato del servicio fijan
+  ambas mitades. `TestigoPrevio` gana el tercer estado *no sé* (`None`) y rechaza la forma
   imposible `{existia: True, sha256: None}`.
 - **La etapa 6 ASISTIDA queda cableada a las TRES superficies de producción (PR B de ADR 0016 §7).**
   El PR #839 dejó el contrato y el servicio, pero las tres superficies seguían llamando a
@@ -107,6 +112,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   irresolubles— sigue siendo `FAILED`: no trae `pendiente`. El marcador provisional
   `pendiente_no_ratificado` del PR A **se retiró**: dos campos para una sola decisión vuelven
   a divergir.
+
+### Removed
+- **Se retira el camino headless de la etapa 6 (`WryeBashPipelineService.execute_pipeline`)
+  — ADR 0016 §7.1.** Tras el cableado asistido del PR B no quedaba **ningún** caller de
+  producción: `bash.py` no expone build, así que cada invocación tomaba los locks
+  (`Bashed Patch, 0.esp` + `load-order`), emitía `ActionManifest`, abría una TX y fallaba
+  cerrado. Con él se van 8 helpers (`ensure_runner` incluido), 3 clases module-level, **570
+  líneas netas** (el módulo pasa de 1231 a 661) y las dependencias `lock_manager`,
+  `snapshot_manager`, `journal` y `wrye_bash_runner` de la firma del servicio (8 → 4
+  parámetros). El hueco de saneo de `stdout`/`stderr` que el PR B había asignado a este PR
+  **se cierra por retiro**: sin subproceso no hay texto de terceros que sanear, y la tool del
+  agente ya no admite un runner. El id de lock `Bashed Patch, 0.esp` se retira con el camino
+  —sin tomador sería una mentira sobre la etapa 6— y el literal del artefacto se consolida en
+  `BASHED_PATCH_NAME` en los 5 módulos donde estaba suelto. Los 36 tests de
+  `tests/test_wrye_bash_service.py` se retiran con el código que probaban: **8 de sus contratos
+  siguen vivos** (4 se portaron a la suite asistida) y el mapeo test por test está en el ADR.
+  Anclas nuevas: `tests/test_wrye_bash_retiro_headless.py` (8 funciones, 12 ítems; **12/12**
+  mutaciones muertas sobre el retiro —incluido el registry del agente, que había quedado con
+  un parámetro muerto— y **7/7** sobre el nombre del artefacto, contadas por **AST** como
+  pares `(nombre, valor)` y no por número de línea: un comentario o un import ya no rompen el
+  ancla, y una segunda definición o un literal suelto sí).
+  Tres censos (raíces MO2, mecanismos de rollback, productores de evidencia orphan) detectaron
+  el retiro por igualdad literal y se actualizaron sin relajarlos.
 
 ### Fixed
 - **`add_mod_to_modlist` veía el mismo mod como dos si cambiaba una mayúscula (#838).**

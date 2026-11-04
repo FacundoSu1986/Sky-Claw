@@ -51,10 +51,14 @@ class TestSystemToolsSanitization:
         los textos literales del contrato de la etapa. Si alguien volviera a exponer
         salida de un subproceso por acá, este test la ve antes que el prompt.
         """
+        # PR C: el handler ya no ADMITE un runner. La garantía dejó de ser "lo ignora"
+        # y pasó a ser estructural: un subproceso no puede entrar por la firma.
         runner = MagicMock()
         runner.generate_bashed_patch = AsyncMock(side_effect=AssertionError("no debe correr el runner"))
+        with pytest.raises(TypeError):
+            await generate_bashed_patch(runner)  # type: ignore[call-arg]
 
-        result = json.loads(await generate_bashed_patch(runner))
+        result = json.loads(await generate_bashed_patch())
 
         assert "stdout" not in result
         assert "stderr" not in result
@@ -404,8 +408,10 @@ class TestSystemToolsSanitization:
                 duration_seconds=1.0,
             )
         )
+        with pytest.raises(TypeError):
+            await generate_bashed_patch(runner)  # type: ignore[call-arg]
 
-        salida = await generate_bashed_patch(runner)
+        salida = await generate_bashed_patch()
 
         assert "<|im_end|>" not in salida
         assert "<tool_call>" not in salida
