@@ -443,9 +443,13 @@ locks globales del pipeline ni bloquear otras etapas:
 `fase` (`extra="forbid"`, A-4 intacto: el modelo jamás puede inyectar un hash), pero como
 `system_tools.generate_bashed_patch` inyecta `almacen_por_defecto()`, una sesión que llamó
 `fase="preparar"` deja el testigo en disco y otra sesión posterior que llame `fase="verificar"`
-**tras construir o regenerar el parche** demuestra `frescura_probada=True` sin confiar en el modelo
-(si el artefacto no apareció o conserva la misma huella que el testigo, el veredicto falla con
-`SIN_CAMBIO` y `frescura_probada=False`).
+demuestra `frescura_probada=True` sin confiar en el modelo **cuando el artefacto supera el
+veredicto completo**: existe, es regular, no vacío y legible, **está habilitado en `plugins.txt`**
+y apareció o cambió respecto del testigo durable. Si el plugin no está habilitado en `plugins.txt`,
+el veredicto falla con `NO_HABILITADO` y `frescura_probada=False` (preservando el testigo durable
+para habilitar y reintentar); si el artefacto sigue ausente devuelve `ARTEFACTO_AUSENTE` con
+`frescura_probada=False`; y si conserva la misma huella que el testigo falla con `SIN_CAMBIO` y
+`frescura_probada=False`.
 
 ## 8. Revisión adversarial del propio PR (2026-10-30)
 

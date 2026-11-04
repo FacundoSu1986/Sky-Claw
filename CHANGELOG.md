@@ -42,8 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `system_tools.generate_bashed_patch` (el agente LLM gana frescura demostrada entre sesiones sin
   exponer `testigo_previo` al modelo).
   Tests: `tests/test_etapa6_testigo_durable.py` (53 funciones / 79 casos + anclas AST y de firma
-  para construcción, mutación atómica/condicional sin comodín `None` y delegación de parser; matriz
-  de mutación verificada).
+  para construcción, mutación atómica/condicional sin comodín `None` y delegación de parser,
+  incorporada también a `test-posix-core` en `.github/workflows/ci.yml` y anclada en
+  `tests/test_ci_platform_policy.py` para ejecutar en Linux las defensas POSIX exclusivas de FIFO
+  `O_NONBLOCK` + `fstat(fd)`, `fsync` de directorio padre y `fcntl.flock`; matriz de mutación
+  verificada).
 
 - **El panel del ritual ofrece la fase 2 de la etapa 6 (`Ya construí el parche — verificar`).**
   Antes, el botón del ritual sólo podía *preparar*: despachaba `payload` vacío y la
