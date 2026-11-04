@@ -31,8 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `frescura_probada=True` lo consume tanto por `durable` como por `payload`. Cableado en
   `orchestration_composition` y en `system_tools.generate_bashed_patch` (el agente LLM gana frescura
   demostrada entre sesiones sin exponer `testigo_previo` al modelo).
-  Tests: `tests/test_etapa6_testigo_durable.py` (38 tests + ancla AST sobre todos los sitios de
-  construcción + oráculo conductual; matriz de mutación **18/18**).
+  Tests: `tests/test_etapa6_testigo_durable.py` (39 tests + ancla AST sobre todos los sitios de
+  construcción + oráculo conductual; matriz de mutación **19/19**).
 
 - **El panel del ritual ofrece la fase 2 de la etapa 6 (`Ya construí el parche — verificar`).**
   Antes, el botón del ritual sólo podía *preparar*: despachaba `payload` vacío y la

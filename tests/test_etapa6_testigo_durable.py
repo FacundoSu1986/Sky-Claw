@@ -168,6 +168,35 @@ def test_el_archivo_json_no_deja_residuos_temporales(tmp_path: pathlib.Path) -> 
     assert not any(n.endswith(".tmp") for n in nombres), f"quedaron temporales: {nombres}"
 
 
+@pytest.mark.skipif(
+    __import__("sys").platform == "win32",
+    reason="fsync sobre descriptor de directorio es contrato POSIX",
+)
+def test_guardar_sincroniza_tambien_el_directorio_padre_en_posix(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CodeRabbit: en POSIX ``os.replace`` necesita ``fsync`` del directorio contenedor tras
+    el rename para que la entrada nueva sea durable ante corte eléctrico."""
+    import os
+
+    sincronizados: list[tuple[int, int]] = []
+    fsync_real = os.fsync
+
+    def _espia_fsync(fd: int) -> None:
+        st = os.fstat(fd)
+        sincronizados.append((st.st_dev, st.st_ino))
+        fsync_real(fd)
+
+    monkeypatch.setattr(os, "fsync", _espia_fsync)
+    ruta = tmp_path / NOMBRE_DEL_ARCHIVO
+    AlmacenJSON(ruta).guardar(_clave(tmp_path), TestigoPrevio(existia=True, sha256=SHA_A))
+
+    st_padre = tmp_path.stat()
+    assert (st_padre.st_dev, st_padre.st_ino) in sincronizados, (
+        "guardar sincronizó el temporal pero no el directorio padre tras os.replace"
+    )
+
+
 def test_dos_instancias_concurrentes_no_pierden_el_testigo_del_otro_perfil(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

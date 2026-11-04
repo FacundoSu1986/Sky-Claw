@@ -434,6 +434,24 @@ class AlmacenJSON:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_name)
             raise
+        _fsync_directorio_padre(ruta.parent)
+
+
+def _fsync_directorio_padre(directorio: pathlib.Path) -> None:
+    """Hace durable la entrada de directorio tras ``os.replace`` en POSIX (best-effort)."""
+    if sys.platform == "win32":
+        return
+    banderas = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd_dir = os.open(directorio, banderas)
+    except OSError:
+        return
+    try:
+        with contextlib.suppress(OSError):
+            os.fsync(fd_dir)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd_dir)
 
 
 def almacen_por_defecto() -> AlmacenJSON:

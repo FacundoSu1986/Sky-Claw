@@ -594,21 +594,23 @@ el diseño inicial y las anclas propias contra el código real y con una matriz 
 | # | Hallazgo de auto-auditoría | Corrección verificada por mutación |
 |---|---|---|
 | D-01 | **Clavear por `artefacto.ruta` rompía el 100 % de las primeras corridas**: en fase 1 el archivo no existe y `bashed_patch_en_overlay` devuelve `Data`; en fase 2 aparece en `overwrite`. | `ClaveDeTestigo(plugins_txt, destino_data)` fija el slot virtual invariante respecto de la capa ganadora (M01 muere en `test_salto_de_capa_data_a_overwrite_prueba_frescura_sin_payload`). |
-| D-02 | **Delimitador `"|"` en la clave**: en POSIX `|` es un carácter legal de ruta; dos pares distintos podían colisionar. | `como_texto()` serializa `json.dumps([plugins_txt, destino_data])` sin ambigüedad (M02 muere). |
+| D-02 | **Delimitador de barra vertical en la clave**: en POSIX la barra vertical es un carácter legal de ruta; dos pares distintos podían colisionar. | `como_texto()` serializa `json.dumps([plugins_txt, destino_data])` sin ambigüedad (M02 muere). |
 | D-03 | **Ubicación `.skyclaw_backups/` dependía del `cwd` y ensuciaba el árbol en tests**, contradiciendo ADR 0011 P0.2 (`sky_claw/config.py:138`). | `almacen_por_defecto()` usa `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` de forma perezosa (M08 muere con `estado_durable_real`). |
 | D-04 | **`guardar` sobre JSON corrupto contradecía la promesa de no pisar archivos ilegibles.** | `_cargar_objeto` lanza `AlmacenDeTestigosIlegibleError` en escritura/borrado y rechaza enlaces en padre y archivo con `link_kind_or_raise`; `leer` degrada a `None` sin escribir (M05, M06, M07 mueren). |
 | D-05 | **Partición incompleta de `EstadoDelTestigoDurable`**: con almacén vacío y artefacto sin identidad (p. ej. directorio), ni se guardaba ni se conservaba nada. | Se agrega `SIN_OBSERVACION` y se unifica `ERROR_DE_ALMACEN` (lectura + escritura). |
 | D-06 | **Consumo del testigo durable**: consumir en fallo perdía la frescura al olvidar tildar el plugin (`NO_HABILITADO`); no consumir cuando `origen == payload` dejaba un testigo huérfano que engañaba a la corrida siguiente. | Sólo se consume con `veredicto.frescura_probada is True`, tanto por `durable` como por `payload`, y un `OSError` en `olvidar` no tumba un veredicto válido (M11 y M12 mueren). |
 | D-07 | **Punto ciego del ancla AST**: exigir `"testigo_store" in claves` dejaba pasar `testigo_store=None` en verde. | El ancla congela por igualdad los sitios productivos, rechaza `Constant(None)` y se acompaña de un oráculo conductual sobre `build_orchestration_composition` (M13 y M14 mueren; M15 con comentarios vive). |
 
-**Ronda 14 (revisión externa de Codex y PR-Agent sobre #863, 2026-11-04).** Dos hallazgos P1 reales
-sobre `ee40299`, reproducidos primero con tests en ROJO antes de tocar producción y sumados a la
-matriz de mutación (**18/18**):
+**Ronda 14 (revisión externa de Codex, PR-Agent y CodeRabbit sobre #863, 2026-11-04).** Dos
+hallazgos P1 de Codex/PR-Agent sobre `ee40299` y dos observaciones menores de CodeRabbit sobre
+`2d94e67`, reproducidos primero con tests en ROJO y sumados a la matriz de mutación (**19/19**):
 
 | # | Hallazgo | Reproducción | Corrección verificada por mutación |
 |---|---|---|---|
 | R14-01 | **Exclusión sólo de instancia en `AlmacenJSON`**: `orchestration_composition` y `system_tools` crean instancias distintas sobre el mismo archivo (y pueden coexistir dos procesos). Un `self._lock` local dejaba que dos `guardar` sobre perfiles distintos leyeran `{}` a la vez y el último `os.replace` borrara al otro perfil. | Reproducido en ROJO tanto entre dos instancias en el mismo proceso (`Barrier(2)`) como entre dos procesos Python separados (`subprocess.Popen` × 25 escrituras). | `_seccion_critica` serializa por **ruta canónica** en dos capas: `_LOCKS_POR_RUTA` intraproceso + lockfile hermano (`.etapa6_testigos.json.lock`, `fcntl.flock` en POSIX / `msvcrt.locking` en Windows, rechazando enlaces también sobre el lockfile y abriendo con `O_NOFOLLOW` donde existe). M16 y M17 mueren por separado. |
 | R14-02 | **`pipeline_stage="wrye_bash"` textual y sin `tx_id`**: los warnings de `etapa6_testigos.py` emitían una cadena en vez del entero `6` (SOP §5 regla 5) y omitían `tx_id=None`, desapareciendo de las consultas estructuradas por etapa. | Reproducido en ROJO con `caplog`. | `_ETAPA_WRYE_BASH = 6` anclada por igualdad contra `wrye_bash_service._ETAPA_WRYE_BASH`, `extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None}` en todos los warnings del almacén y registro en `conocidos` de `test_dyndolod_service.py` (M18 muere). |
+| R14-03 | **CodeRabbit: falta `fsync` del directorio contenedor tras `os.replace` en POSIX.** | Reproducido en ROJO espiando `os.fsync` por `(st_dev, st_ino)`. | `_fsync_directorio_padre` sincroniza el directorio contenedor tras `os.replace` en POSIX (`O_RDONLY` + `O_DIRECTORY` + `O_NOFOLLOW`, best-effort). M19 muere. |
+| R14-04 | **CodeRabbit: barra vertical sin escapar en la fila D-02 de la tabla GFM (`MD056`).** | Verificado: la fila tenía 5 celdas en vez de 3. | Reescrita sin carácter de separación de columna en prosa. |
 
 ## 10. Registro de adjudicación
 
