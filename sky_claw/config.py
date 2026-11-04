@@ -363,6 +363,14 @@ class Config:
             # es lo que hace que "no configurado" sea un estado leíble y no un
             # `AttributeError` en el primer consumidor que olvide el `getattr`.
             "external_work_root": "",
+            # E3-R3 — backend de spawn de TexGen/DynDOLOD. "standalone" (default) es el
+            # comportamiento histórico: subprocess local contra `<game>/Data`.
+            # "brokered" ejecuta bajo el MO2/USVFS del broker (perfil + overlay).
+            # Es una elección EXPLÍCITA del operador: ni la disponibilidad del
+            # broker ni un valor desconocido la cambian, y pedir "brokered" sin
+            # poder cumplirlo falla cerrado (nunca cae a standalone). Se lee en
+            # el arranque: cambiarla se aplica en el PRÓXIMO arranque.
+            "dyndolod_backend": "standalone",
             "llm_provider": "deepseek",
             "llm_model": "",  # legacy global model — migrated to {provider}_model on load
             "anthropic_model": "",
