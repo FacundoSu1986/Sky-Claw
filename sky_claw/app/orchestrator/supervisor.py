@@ -585,26 +585,41 @@ class SupervisorAgent:
         self,
         profile: str | None = None,
         validate_limit: bool = True,
+        # Literal y no `FASE_PREPARAR`: `SupervisorAgent` tiene prohibido importar
+        # dominio (`sky_claw.local.*`), guardrail de #553. Que el literal no derive se
+        # ancla en `test_wrye_bash_cableado_asistido.py`, contra la constante del módulo.
+        fase: str = "preparar",
+        testigo_previo: dict[str, object] | None = None,
     ) -> dict[str, Any]:
-        """FASE 6: Genera el Bashed Patch con Wrye Bash.
+        """FASE 6: etapa asistida del Bashed Patch (ADR 0016).
 
-        Delega en :class:`WryeBashPipelineService` (extracción Strangler-Fig, PR A):
-        el servicio corre la generación bajo :class:`SnapshotTransactionLock` — la
-        serialización que a este ritual le faltaba (era el único mutante sin lock). El
-        guard M-04 compartido se inyectó en construcción; el runner se construye
-        perezosamente desde el ``path_resolver``.
+        **Superficie 2 de 3 del cableado.** Delega en
+        :meth:`WryeBashPipelineService.ejecutar_fase_asistida` —el punto ÚNICO de
+        enrutado—, igual que el callable del dispatcher y que la tool del agente LLM.
+        Antes del PR B llamaba a ``execute_pipeline``: el camino headless que no puede
+        construir el parche, que tomaba los locks y abría una TX para fallar cerrado
+        siempre.
+
+        La etapa ya **no muta** desde este método: ``preparar`` deja instrucciones y un
+        testigo, ``verificar`` emite el veredicto por evidencia en disco. El lock y el
+        guard M-04 se consultan dentro de la fase 1 cuando corresponde.
 
         Args:
             profile: Perfil MO2 a usar (default: self.profile_name).
-            validate_limit: Si True, corre el guard M-04 antes de proceder.
+            validate_limit: Si True, la fase 1 corre el guard M-04 antes de proceder.
+            fase: ``preparar`` (default) o ``verificar``; cualquier otro valor falla
+                cerrado con ``FaseInvalida``.
+            testigo_previo: el campo homónimo que devolvió la fase 1, para probar
+                frescura en la fase 2.
 
         Returns:
-            dict con ``success``, ``return_code``, ``stdout``, ``stderr`` (o un dict de
-            error para los modos de fallo conocidos).
+            dict serializable del contrato de la etapa (nunca propaga excepciones).
         """
-        return await self._wrye_bash_service.execute_pipeline(
+        return await self._wrye_bash_service.ejecutar_fase_asistida(
             profile=profile or self.profile_name,
+            fase=fase,
             validate_limit=validate_limit,
+            testigo_previo=testigo_previo,
         )
 
     # =========================================================================

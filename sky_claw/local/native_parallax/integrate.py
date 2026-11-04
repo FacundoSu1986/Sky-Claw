@@ -21,7 +21,9 @@ Variantes de borde (``Bordes``):
   (equivale a la transformada coseno, sin dependencias nuevas). ASUME la hipótesis de borde: si la altura real
   tiene pendiente en el borde no la recupera, y este módulo no lo corrige ni lo adivina.
 
-La media de la altura NO es observable desde sus gradientes: la salida tiene media cero.
+La media de la altura NO es observable desde sus gradientes: la salida tiene media cero. Dónde queda esa media tras
+llevar la altura a [0, 1] lo decide la normalización (``normalizar_altura``): con ``MIN_MAX`` queda en ``-mínimo / (máximo -
+mínimo)``, que es 0,5 solo si la distribución es simétrica; ``Centrado.MEDIA`` (opt-in) la fija en 0,5.
 
 El piso de ``nz`` (``nz_piso``) es una guarda NUMÉRICA contra ``1/0``, no una política de confianza: los píxeles
 por debajo se CUENTAN y se devuelven (``nz_bajo_piso``), la singularidad no se esconde. Las políticas de
@@ -86,6 +88,7 @@ __all__ = [
     "AlturaIntegrada",
     "AlturaPlanaError",
     "Bordes",
+    "Centrado",
     "EntradaInvalidaError",
     "GradientesDeNormal",
     "IntegracionError",
@@ -154,6 +157,18 @@ class ModoNormalizacion(enum.Enum):
 
     MIN_MAX = "min_max"
     PERCENTILES = "percentiles"
+
+
+class Centrado(enum.Enum):
+    """Dónde queda la media de la altura exportada (#834 ítem 8). Opt-in: ``NINGUNO`` es el comportamiento de siempre.
+
+    ``MEDIA`` reescala de forma simétrica alrededor de la media: la media va a 0,5 y el valor más lejano de la media
+    toca 0 o 1. Es afín (conserva el orden) y no recorta nada, pero reduce la amplitud global por un factor entre 0,5 y 1
+    (1 si la altura ya era simétrica). No hay evidencia en el juego de cuál es mejor: se decide con una prueba A/B.
+    """
+
+    NINGUNO = "ninguno"
+    MEDIA = "media"
 
 
 @dataclass(frozen=True, slots=True)
@@ -529,12 +544,17 @@ def normalizar_altura(
     *,
     percentil_bajo: float | None = None,
     percentil_alto: float | None = None,
+    centrado: Centrado = Centrado.NINGUNO,
 ) -> NDArray[np.float64]:
     """Lleva ``altura`` a [0, 1] (float64, solo lectura). Una altura sin rango lanza ``AlturaPlanaError``.
 
     ``MIN_MAX`` usa el rango completo y rechaza los percentiles (no los ignora en silencio). ``PERCENTILES``
     recorta las colas fuera de ``[percentil_bajo, percentil_alto]``, que el que llama debe elegir.
+
+    ``centrado`` actúa DESPUÉS de normalizar: ``NINGUNO`` no toca un solo valor; ``MEDIA`` ver ``Centrado``.
     """
+    if not isinstance(centrado, Centrado):
+        raise EntradaInvalidaError(f"centrado debe ser un miembro de Centrado, no {centrado!r}")
     _np = importar_numpy()
     campo = _exigir_campo(_np, altura, "altura")
     if modo is ModoNormalizacion.MIN_MAX:
@@ -549,5 +569,9 @@ def normalizar_altura(
     if not alto > bajo:
         raise AlturaPlanaError(f"la altura no tiene rango para normalizar ([{bajo}, {alto}])")
     salida = cast("NDArray[np.float64]", _np.clip((campo - bajo) / (alto - bajo), 0.0, 1.0))
+    if centrado is Centrado.MEDIA:
+        media = float(salida.mean())
+        factor = 0.5 / max(media, 1.0 - media)  # en [0,5, 1]: el lado más largo de la media entra justo en [0, 1]
+        salida = cast("NDArray[np.float64]", _np.clip(0.5 + (salida - media) * factor, 0.0, 1.0))
     salida.setflags(write=False)
     return salida

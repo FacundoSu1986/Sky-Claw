@@ -337,7 +337,14 @@ async def _invocar_run_ritual_resume(store: ReactiveStore, tab_id: str | None, e
             await _ejecutar_espia(espia)  # acá corre el gate HITL, inline en esta misma task
             return {"success": True}
 
-    await run_ritual_resume("dyndolod", supervisor=_Supervisor(), store=store, tab_id=tab_id)
+    await run_ritual_resume(
+        "dyndolod",
+        # ADR 0016: el payload de la acción es obligatorio (ya no hay hardcode acá).
+        payload={"run_texgen": False},
+        supervisor=_Supervisor(),
+        store=store,
+        tab_id=tab_id,
+    )
 
 
 async def _invocar_run_diagnostico_parallax(store: ReactiveStore, tab_id: str | None, espia: Callable[[], Any]) -> None:

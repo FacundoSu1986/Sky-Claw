@@ -812,7 +812,11 @@ async def test_preparar_devuelve_instrucciones_y_huella_previa(tmp_path: pathlib
         "existia": True,
         "sha256": huella_de_artefacto(artefacto).sha256,
     }
-    assert resultado["pendiente_no_ratificado"] is True
+    # Contrato RATIFICADO en el PR B de ADR 0016 §7: el marcador provisional
+    # `pendiente_no_ratificado` se retiró porque `IdempotencyMiddleware` ya traduce
+    # `pendiente` al estado `AWAITING_OPERATOR` de `ToolStateMachine`. Que la clave NO
+    # esté es el invariante: dos campos para una sola decisión vuelven a divergir.
+    assert "pendiente_no_ratificado" not in resultado
     assert resultado["instrucciones"] == list(PASOS_ASISTIDOS)
 
 

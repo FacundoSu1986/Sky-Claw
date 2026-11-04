@@ -245,6 +245,34 @@ _SAFE_NAME_PATTERN = r"^[a-zA-Z0-9_.\- ]+$"
 _EXISTING_MOD_NAME_PATTERN = r"^[^/\\:*?\"<>|\x00-\x1f]+$"
 
 
+class GenerateBashedPatchParams(pydantic.BaseModel):
+    """Parámetros de la tool ``generate_bashed_patch`` (etapa 6 asistida, ADR 0016).
+
+    ``fase`` es el ÚNICO argumento que el LLM elige, y a propósito: las dos fases son de
+    sólo lectura (``preparar`` entrega instrucciones y un testigo; ``verificar`` emite el
+    veredicto por evidencia en disco), así que ninguna elección puede mutar nada. El
+    perfil NO se expone —lo fija el registry por sesión— y el ``testigo_previo`` tampoco:
+    hacerlo durable es el PR D de ADR 0016 §7, y hasta entonces la verificación desde
+    esta superficie declara ``frescura_probada=False`` en vez de aceptar un hash que el
+    modelo podría inventar.
+    """
+
+    # `extra="forbid"` y no `ignore`: si el modelo manda `profile` —o un `testigo_previo`
+    # que todavía no persiste nadie— tiene que recibir un rechazo, no un silencio. Un
+    # campo ignorado deja al LLM creyendo que eligió el perfil (spec de #454) o que probó
+    # frescura; es el mismo criterio que `DiagnosticarParallaxParams`.
+    model_config = pydantic.ConfigDict(strict=True, extra="forbid")
+
+    fase: Literal["preparar", "verificar"] = pydantic.Field(
+        default="preparar",
+        description=(
+            "preparar: devuelve los pasos que el operador debe hacer en la GUI de Wrye Bash "
+            "lanzado desde MO2, más el testigo previo del artefacto. "
+            "verificar: revisa el artefacto y el plugins.txt del perfil y emite el veredicto."
+        ),
+    )
+
+
 class AnalyzeConflictsParams(pydantic.BaseModel):
     """Parameters for the ``analyze_esp_conflicts`` tool."""
 
@@ -450,6 +478,7 @@ __all__ = [
     "AnalyzeConflictsParams",
     "BodySlideBatchParams",
     "DownloadModParams",
+    "GenerateBashedPatchParams",
     "InstallFromArchiveParams",
     "InstallModParams",
     "PreviewInstallerParams",
