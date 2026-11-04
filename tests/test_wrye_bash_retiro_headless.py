@@ -181,6 +181,25 @@ _MODULO_CANONICO = pathlib.Path("sky_claw/local/tools/wrye_bash_runner.py")
 _DEFINICIONES_TOLERADAS = frozenset({"sky_claw/local/xedit/patch_orchestrator.py"})
 
 
+def _definiciones_del_artefacto(arbol: ast.Module) -> list[tuple[str, str]]:
+    """`(nombre, valor)` de cada asignación de MÓDULO/CLASE cuyo valor sea el literal.
+
+    Es la unidad que el contrato necesita: "el nombre vive en una constante llamada
+    ``BASHED_PATCH_NAME``". Se resuelve por AST y **sin números de línea**, para que mover
+    la definición, insertar un import o agregar un comentario no cambie el veredicto: un
+    ancla que se rompe con un comentario es un falso positivo, no cobertura.
+    """
+    return [
+        (nodo.targets[0].id, nodo.value.value)
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Assign)
+        and len(nodo.targets) == 1
+        and isinstance(nodo.targets[0], ast.Name)
+        and isinstance(nodo.value, ast.Constant)
+        and nodo.value.value == _NOMBRE_DEL_ARTEFACTO
+    ]
+
+
 def _literales_del_artefacto(arbol: ast.Module) -> list[tuple[int, str]]:
     """`(línea, valor)` de CADA constante `str` que mencione el artefacto, por AST.
 
@@ -239,12 +258,15 @@ def test_el_registry_del_agente_ya_no_recibe_un_runner_de_wrye_bash() -> None:
 def test_el_nombre_del_artefacto_se_define_una_sola_vez() -> None:
     """Igualdad exacta: el literal vive en UNA definición, y su duplicado es uno declarado.
 
-    La versión anterior de este ancla eximía por archivo (``'"mods"' not in texto``) y esa
-    exención era un punto ciego medible: un literal suelto en ``output_targets.py`` —que
-    menciona ``"mods"``— pasaba el test. Acá la unidad de cuenta es la CONSTANTE, así que
-    no hay subcadena que pueda comprar una exención: cada aparición se enumera por archivo
-    y línea, y sólo se toleran las dos definiciones conocidas (la canónica y la del carril
-    de xEdit). Cualquier otra —en código o en prosa— rompe el ancla.
+    La exención vieja era por ARCHIVO (``'"mods"' not in texto``) y era un punto ciego
+    medible: un literal suelto en ``output_targets.py`` —que menciona ``"mods"``— pasaba el
+    test. Acá la unidad de cuenta es la CONSTANTE: se exige que el literal sea el valor de
+    una asignación llamada ``BASHED_PATCH_NAME``, una sola vez por archivo, y que no haya
+    ninguna otra aparición (ni en prosa) en ese archivo.
+
+    **El veredicto no depende de las líneas.** Un comentario o un import insertado arriba de
+    la definición no cambia el contrato y no puede romper este ancla (falso positivo medido
+    y cerrado en la ronda 12); el número de línea aparece sólo en el mensaje de diagnóstico.
     """
     apariciones: list[tuple[str, int, str]] = []
     for py, arbol in _arboles_del_paquete().items():
@@ -261,17 +283,42 @@ def test_el_nombre_del_artefacto_se_define_una_sola_vez() -> None:
         )
     )
 
-    del_canonico = [(n, v) for a, n, v in apariciones if a == _MODULO_CANONICO.as_posix()]
-    assert del_canonico == [(21, _NOMBRE_DEL_ARTEFACTO)], (
-        "el módulo canónico debe contener el literal UNA vez, en la asignación de "
-        f"``BASHED_PATCH_NAME``; encontré {del_canonico}. Fuera de ahí, se nombra la constante."
+    # La igualdad es sobre (nombre de la constante, valor) — NUNCA sobre el número de línea:
+    # la línea entra sólo en el mensaje, para que el diagnóstico diga dónde mirar.
+    def _definiciones_de(ruta: str) -> list[tuple[str, str]]:
+        return _definiciones_del_artefacto(_arboles_del_paquete()[RAIZ / ruta])
+
+    canonico = _definiciones_de(_MODULO_CANONICO.as_posix())
+    assert canonico == [("BASHED_PATCH_NAME", _NOMBRE_DEL_ARTEFACTO)], (
+        f"{_MODULO_CANONICO} debe definir el literal en UNA constante llamada "
+        f"``BASHED_PATCH_NAME``; encontré {canonico}"
     )
 
-    del_tolerado = [(n, v) for a, n, v in apariciones if a in _DEFINICIONES_TOLERADAS]
-    assert del_tolerado == [(384, _NOMBRE_DEL_ARTEFACTO)], (
+    tolerado = {ruta: _definiciones_de(ruta) for ruta in _DEFINICIONES_TOLERADAS}
+    assert tolerado == {ruta: [("BASHED_PATCH_NAME", _NOMBRE_DEL_ARTEFACTO)] for ruta in _DEFINICIONES_TOLERADAS}, (
         "el duplicado declarado del carril de xEdit cambió (o apareció otro): "
-        f"encontré {del_tolerado}. Si la duplicación se consolidó, sacá la excepción de "
+        f"encontré {tolerado}. Si la duplicación se consolidó, sacá la excepción de "
         "``_DEFINICIONES_TOLERADAS`` en el mismo commit."
+    )
+
+    # Y el literal no puede aparecer FUERA de esas definiciones — tampoco en el mismo
+    # archivo. La cuenta es por archivo: cada aparición del literal tiene que corresponder a
+    # una definición declarada. Es la única forma de que un literal suelto en una docstring
+    # del módulo canónico no pase, y de que un archivo no declarado no herede una exención.
+    declaradas = {**{ruta: len(defs) for ruta, defs in tolerado.items()}, _MODULO_CANONICO.as_posix(): len(canonico)}
+    por_archivo: dict[str, list[tuple[int, str]]] = {}
+    for archivo, linea, valor in apariciones:
+        por_archivo.setdefault(archivo, []).append((linea, valor))
+
+    sobrantes = [
+        f"{archivo}:{linea}: {valor[:80]}"
+        for archivo, items in sorted(por_archivo.items())
+        if len(items) != declaradas.get(archivo, 0)
+        for linea, valor in items
+    ]
+    assert sobrantes == [], (
+        "el literal aparece más veces que definiciones declaradas hay en el archivo "
+        "(una docstring o una expresión cuenta como aparición):\n" + "\n".join(sobrantes)
     )
 
 

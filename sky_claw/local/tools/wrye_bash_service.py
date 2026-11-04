@@ -9,7 +9,14 @@ cerrado. El ADR 0016 lo reemplazó por una etapa **asistida de dos fases**, y el
 retiró el camino headless entero (``execute_pipeline`` y sus helpers de caja negra):
 después del PR B no quedaba **ningún** caller de producción.
 
-Lo que queda es lo que el servicio hace hoy, y todo es de SÓLO LECTURA:
+Lo que queda es lo que el servicio hace hoy, y **no muta el artefacto, el perfil ni el
+load order**: no toma locks, no abre TX ni emite caja negra. Ojo con leer eso como "no
+escribe un solo byte": el sensor de **permisos** del preflight es un write-probe real
+—crea ``.skyclaw_probe_<uuid>.tmp`` en el destino y lo borra— y en el dominio USVFS el
+destino sondeado es el ``overwrite`` del perfil. Es la única escritura de la etapa, es
+transitoria, y si el borrado falla el servicio **reporta el residuo** (amarillo, no
+bloqueante) en vez de tragárselo (ver ``tests/test_wrye_bash_asistida.py``, contrato de
+escritura de la fase 1).
 
 1. ``preparar_etapa_asistida`` — instrucciones para el operador, huella previa del
    artefacto y estado del parche en el ``plugins.txt`` del perfil. No muta: no toma
@@ -143,10 +150,12 @@ class WryeBashPipelineService:
     el dominio); ``plugin_limit_guard`` (guard M-04 compartido) opcional — si no se inyecta,
     no se valida el límite de plugins, que es honesto: no hay gate que mienta verde.
 
-    **Sin locks, sin snapshot manager y sin journal, a propósito.** Las dos fases son de
-    sólo lectura, así que no hay nada que serializar ni transacción que abrir; el PR C
-    retiró esas dependencias junto con ``execute_pipeline`` (ver el docstring del módulo).
-    Aceptarlas "por compatibilidad" invitaría a reconstruir el camino headless por partes.
+    **Sin locks, sin snapshot manager y sin journal, a propósito.** Las dos fases no mutan
+    el artefacto ni el estado del juego, así que no hay nada que serializar ni transacción
+    que abrir; el PR C retiró esas dependencias junto con ``execute_pipeline`` (ver el
+    docstring del módulo). Aceptarlas "por compatibilidad" invitaría a reconstruir el camino
+    headless por partes. La excepción declarada es el write-probe del sensor de permisos,
+    que no toca el parche: ver ese mismo docstring.
     """
 
     def __init__(
@@ -466,10 +475,16 @@ class WryeBashPipelineService:
     async def preparar_etapa_asistida(self, *, profile: str, validate_limit: bool = True) -> dict[str, Any]:
         """Fase 1 de la etapa 6: instrucciones para el operador + testigo previo.
 
-        **No muta nada**: no toma locks, no snapshotea y no abre TX. Ese es el punto de
-        ADR 0016 — la caja negra se emite cuando algo puede mutar, y acá lo único que
-        se hace es leer y decirle al operador qué hacer. Una invocación que no puede
-        construir el parche no debe dejar una TX ``rolled_back`` por ritual.
+        **No muta el artefacto, el perfil ni el load order**: no toma locks, no snapshotea
+        y no abre TX. Ese es el punto de ADR 0016 — la caja negra se emite cuando algo
+        puede mutar, y acá lo único que se hace es leer y decirle al operador qué hacer.
+        Una invocación que no puede construir el parche no debe dejar una TX ``rolled_back``
+        por ritual.
+
+        **La única escritura es el write-probe de permisos**, y no es del parche: el sensor
+        crea y borra un ``.skyclaw_probe_<uuid>.tmp`` en el destino (``overwrite`` en este
+        dominio) para probar que se puede escribir ahí. Si el borrado falla, el reporte
+        viaja con ``probe_residue`` en amarillo — no bloquea, pero el operador se entera.
 
         El preflight SÍ corre y **bloquea** en rojo: mandar al operador a un paso manual
         que ya sabemos que va a fallar (``Data`` sin permisos, master faltante, límite de

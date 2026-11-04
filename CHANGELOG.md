@@ -56,7 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preflight del dominio correspondiente: bajo USVFS se omite el sensor de visibilidad
   (U-01), que mide el `Data` físico y daba rojo sobre un perfil cuyos mods viven en
   `mods/`, y el sensor de permisos sondea el `overwrite` del perfil en vez del `Data`
-  —la VFS redirige la escritura, no hereda sus permisos—. `TestigoPrevio` gana el tercer estado *no sé* (`None`) y rechaza la forma
+  —la VFS redirige la escritura, no hereda sus permisos—. Ese sensor es un **write-probe**
+  real: crea y borra `.skyclaw_probe_<uuid>.tmp` en el destino. La fase 1 no muta el
+  artefacto, el perfil ni el load order, y las docstrings lo dicen así —«no muta» no es «no
+  escribe un solo byte»—; si el borrado falla, el residuo se **reporta** en el preflight
+  como `probe_residue` en amarillo (no bloquea) y dos tests de contrato del servicio fijan
+  ambas mitades. `TestigoPrevio` gana el tercer estado *no sé* (`None`) y rechaza la forma
   imposible `{existia: True, sha256: None}`.
 - **La etapa 6 ASISTIDA queda cableada a las TRES superficies de producción (PR B de ADR 0016 §7).**
   El PR #839 dejó el contrato y el servicio, pero las tres superficies seguían llamando a
@@ -125,8 +130,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   siguen vivos** (4 se portaron a la suite asistida) y el mapeo test por test está en el ADR.
   Anclas nuevas: `tests/test_wrye_bash_retiro_headless.py` (8 funciones, 12 ítems; **12/12**
   mutaciones muertas sobre el retiro —incluido el registry del agente, que había quedado con
-  un parámetro muerto— y **4/4** sobre el nombre del artefacto, contadas por constante `str`
-  y no por texto).
+  un parámetro muerto— y **7/7** sobre el nombre del artefacto, contadas por **AST** como
+  pares `(nombre, valor)` y no por número de línea: un comentario o un import ya no rompen el
+  ancla, y una segunda definición o un literal suelto sí).
   Tres censos (raíces MO2, mecanismos de rollback, productores de evidencia orphan) detectaron
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 

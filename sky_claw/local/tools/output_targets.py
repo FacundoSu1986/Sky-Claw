@@ -17,9 +17,13 @@ Synthesis apuntando al ``overwrite``.
 
 De ahí sale la regla que este módulo materializa: **el ``overwrite`` solo se
 alcanza por (b), nunca por (a)**. Quien no lleva la ruta en su línea de comandos
-—Wrye Bash (``[bash, -b, <BASHED_PATCH_NAME>]`` con ``cwd=game_path``) y
-BodySlide (``-o`` relativo al ``cwd``)— escribe **físicamente** relativo a su
-``cwd``. Pandora usa (b): Sky-Claw le pasa una ruta explícita absoluta y
+—BodySlide (``-o`` relativo al ``cwd``), y **históricamente** Wrye Bash con
+``[bash, -b, <BASHED_PATCH_NAME>]`` y ``cwd=game_path``— escribe **físicamente**
+relativo a su ``cwd``. (Ese comando es histórico: el runner headless que lo
+intentaba se retiró en ADR 0016 §7.1 porque ``-b`` no construye nada. Se conserva
+acá porque sigue explicando por qué ``bashed_patch_target`` apunta al ``Data``
+físico, y porque hay un consumidor vivo de esa ruta: el sensor de permisos del
+dominio físico.) Pandora usa (b): Sky-Claw le pasa una ruta explícita absoluta y
 administrada bajo ``Pandora_Output``. Esta propiedad está verificada por código
 y tests; no afirma un rig real de Pandora/MO2.
 
@@ -48,11 +52,14 @@ USVFS?— para el único servicio donde la respuesta no es constante.
 operador, no por un runner.** La etapa 6 *asistida* (ADR 0016) no spawnea nada: el
 humano abre Wrye Bash **desde MO2**, así que ese proceso sí hereda la USVFS y su
 artefacto de la etapa 6 aterriza en ``overwrite/`` o en el mod de salida habilitado,
-no en el ``Data`` físico. ``bashed_patch_target`` sigue siendo correcto para la
-corrida spawneada —el único camino que este paquete lanza—; para *verificar* lo que
-construyó el operador el artefacto hay que buscarlo en la superposición del perfil,
+no en el ``Data`` físico. **El ejecutor que leía el ``Data`` físico ya no existe**
+(el runner headless se retiró en ADR 0016 §7.1), así que ``bashed_patch_target``
+quedó como la descripción de dónde escribiría un build físico — y como ruta del
+sensor de permisos de ese dominio; para *verificar* lo que construyó el operador,
+que es lo único que corre hoy, el artefacto se busca en la superposición del perfil
 y eso es :func:`bashed_patch_en_overlay`. Las dos funciones conviven a propósito:
-son las dos caras del mismo invariante, "quién ejecuta decide dónde escribe".
+son las dos caras del mismo invariante, "quién ejecuta decide dónde escribe", y
+borrar la primera exigiría un censo de consumidores que este módulo no hace solo.
 """
 
 from __future__ import annotations
@@ -190,9 +197,13 @@ def bashed_patch_target(game: pathlib.Path | None) -> pathlib.Path | None:
     """Ruta física del artefacto de la etapa 6, o ``None`` si el juego no resuelve.
 
     ``bash.py`` corre con ``cwd=game_path`` y **sin ruta de salida en el
-    comando** (caso (a) inalcanzable, caso (b) no aplicado): el plugin cae en el
-    ``Data`` del juego. Que el destino sea único y conocido es lo que habilita el
-    snapshot/rollback de U-04 y el post-check de artefacto de U-06.
+    comando** (caso (a) inalcanzable, caso (b) no aplicado): el plugin caería en el
+    ``Data`` del juego. Que el destino fuera único y conocido es lo que habilitaba
+    el snapshot/rollback de U-04 — **retirado con el camino headless** (ADR 0016
+    §7.1): hoy nada escribe acá, y esta ruta sobrevive como destino del sensor de
+    permisos del dominio físico. El post-check de artefacto de U-06 tampoco corre
+    por acá: el veredicto de la etapa asistida se deriva de
+    :func:`bashed_patch_en_overlay`, no de esta ruta.
     """
     if game is None:
         return None

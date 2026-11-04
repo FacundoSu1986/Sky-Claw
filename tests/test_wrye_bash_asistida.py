@@ -1563,6 +1563,96 @@ async def test_un_preflight_verde_no_ensucia_el_resultado(tmp_path: pathlib.Path
     assert "preflight" not in resultado
 
 
+# ==============================================================================
+# El contrato de escritura de la fase 1: "no muta" NO es "no escribe un solo byte"
+# ==============================================================================
+#
+# Hallazgo H-02 de la ronda 12 (auditoría externa). ``preparar_etapa_asistida`` declara no
+# mutar, y es cierto para el artefacto, el perfil y el load order — no abre TX ni toma
+# locks. Pero el preflight incluye el sensor de PERMISOS, que es un write-probe real:
+# crea ``.skyclaw_probe_<uuid>.tmp`` en el destino y lo borra, y si el borrado falla deja
+# el archivo y reporta ``probe_residue``. En el dominio USVFS el destino sondeado es el
+# ``overwrite`` del perfil. La prosa decía "sólo lectura" a secas; estos dos tests son el
+# contrato medido: se escribe un temporal, NO queda residuo, y cuando el borrado falla el
+# aviso viaja al operador en vez de tragárselo.
+
+
+async def test_la_fase_1_sondea_permisos_y_no_deja_residuos_en_el_overwrite(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El write-probe corre sobre ``overwrite`` y se limpia: la carpeta queda intacta.
+
+    Se usa el preflight REAL (sin inyectar) porque es el único camino donde el sensor de
+    permisos se construye con ``_permission_targets(dominio=USVFS)``. Si alguien cambiara
+    el destino sondeado a ``Data`` —el falso rojo que la etapa asistida ya pagó una vez—
+    o dejara de limpiar el probe, este test lo ve.
+    """
+    from sky_claw.local.validators.write_permissions import WritePermissionsChecker
+
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    perfil = tmp_path / "profiles" / "Default"
+    perfil.mkdir(parents=True)
+    perfil.joinpath("plugins.txt").write_text(f"*{BASHED_PATCH_NAME}\n", encoding="utf-8")
+    overwrite = tmp_path / "overwrite"
+    overwrite.mkdir()
+
+    sondeadas: list[pathlib.Path] = []
+    original = WritePermissionsChecker._probe_write
+
+    def espia(directory: pathlib.Path) -> object:
+        sondeadas.append(directory)
+        return original(directory)
+
+    monkeypatch.setattr(WritePermissionsChecker, "_probe_write", staticmethod(espia))
+
+    servicio = WryeBashPipelineService(path_resolver=_resolver_real(game, tmp_path))
+    resultado = await servicio.preparar_etapa_asistida(profile="Default")
+
+    assert resultado.get("reason") != "PreflightBlocked", (
+        f"el probe no puede bloquear un overwrite escribible: {resultado}"
+    )
+    assert resultado["pendiente"] is True
+    assert sondeadas == [overwrite], f"el sensor debe sondear el overwrite del perfil, no {sondeadas}"
+    assert list(overwrite.iterdir()) == [], "quedó un .skyclaw_probe_*.tmp en el overwrite"
+
+
+async def test_un_probe_que_no_se_puede_borrar_llega_al_operador_como_amarillo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Si el temporal no se puede borrar, la fase 1 sigue —pero AVISA, no lo esconde.
+
+    ``probe_residue`` es warning, no crítico: un archivo de prueba huérfano no impide que el
+    operador construya el parche. Lo que no puede pasar es que el residuo quede en disco y
+    el reporte lo omita: el panel y el journal tienen que poder mostrar la ruta a limpiar.
+    """
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    perfil = tmp_path / "profiles" / "Default"
+    perfil.mkdir(parents=True)
+    perfil.joinpath("plugins.txt").write_text(f"*{BASHED_PATCH_NAME}\n", encoding="utf-8")
+    (tmp_path / "overwrite").mkdir()
+
+    unlink_original = pathlib.Path.unlink
+
+    def unlink_que_falla(self: pathlib.Path, *args: object, **kwargs: object) -> None:
+        if ".skyclaw_probe_" in self.name:
+            raise PermissionError(13, "denegado")
+        unlink_original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink_que_falla)
+
+    servicio = WryeBashPipelineService(path_resolver=_resolver_real(game, tmp_path))
+    resultado = await servicio.preparar_etapa_asistida(profile="Default")
+
+    assert resultado["pendiente"] is True, f"un residuo no puede impedir preparar: {resultado}"
+    reporte = resultado["preflight"]
+    assert reporte["status"] == "yellow", reporte
+    permisos = next(c for c in reporte["checks"] if c["name"] == "write_permissions")
+    assert permisos["status"] == "yellow"
+    assert any(".skyclaw_probe_" in detalle for detalle in permisos["details"]), permisos["details"]
+
+
 def test_testigo_previo_rechaza_sha256_sintacticamente_invalido() -> None:
     """A-4: TestigoPrevio rechaza digests que no sean hex de 64 caracteres."""
     with pytest.raises(ValueError, match="digest hexadecimal"):
