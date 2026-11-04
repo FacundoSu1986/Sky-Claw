@@ -351,8 +351,6 @@ def _parametros_de(funcion: Any) -> tuple[str, ...]:
 
 def _servicio(**kwargs: Any) -> WryeBashPipelineService:
     return WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         **kwargs,
     )
 
@@ -631,7 +629,7 @@ async def test_sin_perfil_la_tool_falla_cerrado_en_vez_de_adivinar_un_default(tm
     """
     game, _ = _perfil(tmp_path, perfil="Requiem")
 
-    salida = json.loads(await generate_bashed_patch(None, path_resolver=_resolver(game, tmp_path)))
+    salida = json.loads(await generate_bashed_patch(path_resolver=_resolver(game, tmp_path)))
 
     assert salida["success"] is False
     assert salida["reason"] == "PerfilInvalido"
@@ -658,7 +656,6 @@ async def test_las_rutas_que_ve_el_llm_estan_saneadas(tmp_path: pathlib.Path, si
 
     salida = json.loads(
         await generate_bashed_patch(
-            None,
             path_resolver=_resolver(game, tmp_path),
             profile=perfil_con_veneno,
         )

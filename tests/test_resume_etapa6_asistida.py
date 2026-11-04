@@ -351,8 +351,6 @@ def _servicio(tmp_path: pathlib.Path) -> tuple[WryeBashPipelineService, pathlib.
     resolver.get_mo2_instance_data_root.return_value = tmp_path
     resolver.get_mo2_mods_path_best_effort.return_value = tmp_path / "mods"
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=resolver,
         preflight=MagicMock(),
     )

@@ -77,8 +77,11 @@ _LO_CONSTRUYEN_POR_ENCARGO: dict[str, str] = {
 #: ``"pendiente"``   — U-04 sigue ABIERTO acá, con el motivo nombrado. NO es un
 #:                     "ya lo miramos": es deuda declarada, y el test de abajo
 #:                     exige que el motivo esté escrito.
+#: PR C de ADR 0016 §7: ``wrye_bash_service.py`` salió de esta tabla porque dejó de
+#: construir ``SnapshotTransactionLock`` — sus dos fases asistidas son de sólo lectura,
+#: así que no hay salida propia que revertir. La familia se detecta por ese constructor:
+#: si el servicio volviera a mutar, reaparecería acá y el guard de completitud lo exige.
 MECANISMO_DE_ROLLBACK: dict[str, str] = {
-    "sky_claw/local/tools/wrye_bash_service.py": "snapshot",
     "sky_claw/local/tools/synthesis_service.py": "snapshot",
     "sky_claw/local/tools/xedit_service.py": "snapshot",
     "sky_claw/local/tools/loot_service.py": "snapshot",

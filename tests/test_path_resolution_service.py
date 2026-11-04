@@ -2163,8 +2163,9 @@ class TestAnclaSemanticaDeRaicesMo2:
     - dyndolod_service (runner): ``DynDOLODConfig.mo2_path`` no se usa en
       ejecución (solo ``mo2_mods_path``/outputs); INSTALL opaco.
     - loot_service: install_root para BrokeredLootRunner en lazy _ensure_loot_runner.
-    - wrye_bash_service (runner): ``WryeBashConfig.mo2_path`` sin uso en
-      ejecución headless; INSTALL opaco.
+    - (retirado, PR C de ADR 0016 §7) wrye_bash_service pedía ``get_mo2_path``
+      sólo para el ``WryeBashConfig.mo2_path`` del runner headless; ese camino
+      se retiró, así que el módulo ya no consume la raíz INSTALL.
     - xedit_service: capability gate del scan (no deriva paths de datos; el
       raw preserva la detección real de links sobre install).
 
@@ -2220,7 +2221,6 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/app/orchestrator/grass_runtime_deps.py": 1,
         "sky_claw/local/tools/dyndolod_service.py": 1,
         "sky_claw/local/tools/loot_service.py": 1,
-        "sky_claw/local/tools/wrye_bash_service.py": 1,
         "sky_claw/local/tools/xedit_service.py": 1,
     }
 
@@ -2928,8 +2928,6 @@ class TestRaizDeDatosDeInstanciaSeparada:
                 event_bus=MagicMock(),
             ),
             WryeBashPipelineService(
-                lock_manager=MagicMock(),
-                snapshot_manager=MagicMock(),
                 path_resolver=resolver,
             ),
             SynthesisPipelineService(
@@ -3143,8 +3141,6 @@ class TestModsDirSeparadoEnConsumidoresDeDatos:
                 event_bus=MagicMock(),
             ),
             WryeBashPipelineService(
-                lock_manager=MagicMock(),
-                snapshot_manager=MagicMock(),
                 path_resolver=resolver,
             ),
             SynthesisPipelineService(
@@ -3622,8 +3618,6 @@ class TestModsDeclaradoInvalidoSinFallbackADefault:
                 event_bus=MagicMock(),
             ),
             WryeBashPipelineService(
-                lock_manager=MagicMock(),
-                snapshot_manager=MagicMock(),
                 path_resolver=resolver,
             ),
             SynthesisPipelineService(

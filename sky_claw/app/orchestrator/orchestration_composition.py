@@ -306,19 +306,14 @@ def build_orchestration_composition(
         runtime_deps_provider=grass_runtime_deps_provider,
     )
 
-    # PR A (caja negra de Wrye Bash): extracción Strangler-Fig del pipeline que
-    # antes vivía inline en el supervisor. Era el ÚNICO ritual mutante sin
-    # SnapshotTransactionLock (hueco de concurrencia); el servicio lo corre bajo
-    # el lock distribuido. El guard M-04 (compartido, expuesto por
-    # validate_plugin_limit) se inyecta desde acá porque no es exclusivo de
-    # Wrye Bash. T-26/T-28 ("PR C" del #315): el journal cableado emite la caja
-    # negra de vuelo.
+    # Etapa 6 ASISTIDA (ADR 0016). El servicio sólo prepara y verifica: no muta, así
+    # que NO recibe lock, snapshot manager ni journal — el PR C retiró el camino
+    # headless (``execute_pipeline``) que los usaba, después de medir cero callers de
+    # producción. El guard M-04 (compartido, expuesto por ``validate_plugin_limit``) sí
+    # se inyecta desde acá porque no es exclusivo de Wrye Bash.
     wrye_bash_service = WryeBashPipelineService(
-        lock_manager=lock_manager,
-        snapshot_manager=snapshot_manager,
         path_resolver=path_resolver,
         plugin_limit_guard=plugin_limit_guard,
-        journal=journal,
     )
 
     # ------------------------------------------------------------------
