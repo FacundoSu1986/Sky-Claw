@@ -1,4 +1,4 @@
-"""Testigo durable de la fase 1 de la etapa 6 (ADR 0016 §6/§7, PR D).
+"""Testigo durable de la fase 1 de la etapa 6 (ADR 0016 §6/§7.2, PR D).
 
 **El problema que cierra.** La fase 1 toma un testigo del artefacto *antes* de que el
 operador construya; la fase 2 lo compara para demostrar que el parche se escribió en esta
@@ -18,11 +18,14 @@ del 100 % en el caso más importante. La identidad invariante del slot virtual e
 ``(plugins_txt canónico, destino Data canónico)``, que fija instancia de MO2, perfil y
 raíz del juego sin acoplarse a qué capa gana en cada instante.
 
-**Dónde vive.** En :meth:`~sky_claw.config.SystemPaths.runtime_state_dir`
+**Dónde vive y cómo se serializa.** En :meth:`~sky_claw.config.SystemPaths.runtime_state_dir`
 (``~/.sky_claw/state/etapa6_testigos.json``), resuelto al operar y **no** en
-``.skyclaw_backups/``: dos procesos lanzados desde directorios de trabajo distintos tienen
-que ver el mismo testigo (ADR 0011 P0.2), y en los tests la fixture autouse de
-``conftest.py`` lo aísla por caso sin ensuciar el árbol del repo.
+``.skyclaw_backups/``: dos procesos lanzados desde directorios de trabajo distintos ven el
+mismo testigo (ADR 0011 P0.2). Como el daemon y ``system_tools`` construyen instancias
+distintas de :class:`AlmacenJSON` sobre ese mismo archivo (y pueden coexistir dos procesos
+de Sky-Claw), toda operación leer-modificar-reemplazar se serializa **por ruta canónica**
+tanto dentro del proceso (``_LOCKS_POR_RUTA``) como entre procesos mediante un lockfile
+hermano (``fcntl.flock`` en POSIX / ``msvcrt.locking`` en Windows).
 
 **Regla de seguridad.** El testigo durable es una *observación previa*, nunca autoridad.
 Si el archivo es un enlace o está corrupto, :meth:`AlmacenJSON.leer` devuelve ``None`` y
@@ -35,13 +38,16 @@ y :meth:`AlmacenJSON.olvidar` tampoco pisan un archivo ilegible —levantan
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
 import pathlib
+import sys
 import tempfile
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
@@ -52,11 +58,58 @@ from sky_claw.local.tools.wrye_bash_asistida import TestigoPrevio
 
 logger = logging.getLogger(__name__)
 
+#: Índice canónico de la etapa 6 en el DAG (SOP §5 regla 5), anclado por igualdad contra
+#: ``wrye_bash_service._ETAPA_WRYE_BASH`` en ``tests/test_etapa6_testigo_durable.py``.
+_ETAPA_WRYE_BASH = 6
+
 NOMBRE_DEL_ARCHIVO = "etapa6_testigos.json"
+_TIMEOUT_LOCK_SEGUNDOS = 5.0
+_PASO_REINTENTO_SEGUNDOS = 0.01
+
+#: Locks reentrantes por ruta canónica para serializar múltiples instancias de
+#: ``AlmacenJSON`` dentro del mismo proceso antes de competir por el lock del SO.
+_GUARDIA_DE_LOCKS = threading.Lock()
+_LOCKS_POR_RUTA: dict[str, threading.RLock] = {}
+
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _intentar_lock_so(fd: int) -> bool:
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EDEADLK):
+                return False
+            raise
+
+    def _liberar_lock_so(fd: int) -> None:
+        with contextlib.suppress(OSError):
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+else:
+    import fcntl
+
+    def _intentar_lock_so(fd: int) -> bool:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as exc:
+            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+                return False
+            raise
+
+    def _liberar_lock_so(fd: int) -> None:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 class AlmacenDeTestigosIlegibleError(OSError):
-    """El archivo del almacén existe pero no es un objeto JSON regular y legible.
+    """El archivo del almacén existe pero no es un objeto JSON regular y legible, o no se
+    pudo tomar su exclusión cross-process.
 
     Hereda de :class:`OSError` para que el servicio pueda tratar en un solo borde los
     fallos de almacenamiento sin confundirlos con errores de programación. Se levanta en
@@ -72,6 +125,20 @@ def _ahora() -> str:
 def _canonizar_ruta(ruta: pathlib.Path) -> str:
     """``resolve(strict=False)`` + ``normpath`` + ``normcase``, igual que ``handoffs.clave_de_artifact``."""
     return os.path.normcase(os.path.normpath(str(pathlib.Path(ruta).resolve(strict=False))))
+
+
+def _lock_intraproceso(ruta: pathlib.Path) -> threading.RLock:
+    clave = _canonizar_ruta(ruta)
+    with _GUARDIA_DE_LOCKS:
+        existente = _LOCKS_POR_RUTA.get(clave)
+        if existente is None:
+            existente = threading.RLock()
+            _LOCKS_POR_RUTA[clave] = existente
+        return existente
+
+
+def _ruta_del_lockfile(ruta: pathlib.Path) -> pathlib.Path:
+    return ruta.parent / f".{ruta.name}.lock"
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,8 +184,6 @@ class TestigoDurable:
     observado_en: str
 
     def __post_init__(self) -> None:
-        # ``isinstance(1, int)`` es True pero ``isinstance(1, bool)`` es False: sin este
-        # guard ``TestigoPrevio`` aceptaría ``1`` como verdad booleana.
         if not isinstance(self.existia, bool):
             raise ValueError(f"existia debe ser bool, no {type(self.existia).__name__}")
         if self.sha256 is not None and not isinstance(self.sha256, str):
@@ -193,7 +258,8 @@ class AlmacenEnMemoria:
 
 
 class AlmacenJSON:
-    """Archivo JSON único por usuario con escritura atómica (``mkstemp`` + ``os.replace``).
+    """Archivo JSON único por usuario con exclusión por ruta canónica (intraproceso +
+    lockfile cross-process) y escritura atómica (``mkstemp`` + ``os.replace``).
 
     Acepta una ruta fija o un callable sin argumentos (como usa :func:`almacen_por_defecto`)
     para que construir el servicio no evalúe rutas ni toque el disco en frío.
@@ -201,7 +267,6 @@ class AlmacenJSON:
 
     def __init__(self, ruta: pathlib.Path | Callable[[], pathlib.Path]) -> None:
         self._origen_ruta = ruta
-        self._lock = threading.RLock()
 
     @property
     def ruta(self) -> pathlib.Path:
@@ -210,25 +275,39 @@ class AlmacenJSON:
 
     def leer(self, clave: ClaveDeTestigo) -> TestigoDurable | None:
         ruta = self.ruta
-        with self._lock:
+        try:
+            self._rechazar_enlaces(ruta)
             try:
-                datos = self._cargar_objeto(ruta)
-            except AlmacenDeTestigosIlegibleError as exc:
-                logger.warning(
-                    "Almacén de testigos de etapa 6 ilegible (%s): %s. La lectura degrada a None.",
-                    ruta,
-                    exc,
-                    extra={"pipeline_stage": "wrye_bash"},
-                )
+                ruta.lstat()
+            except FileNotFoundError:
                 return None
-            crudo = datos.get(clave.como_texto())
+            with self._seccion_critica(ruta, escritura=False):
+                datos = self._cargar_objeto(ruta)
+        except AlmacenDeTestigosIlegibleError as exc:
+            logger.warning(
+                "Almacén de testigos de etapa 6 ilegible (%s): %s. La lectura degrada a None.",
+                ruta,
+                exc,
+                extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+            )
+            return None
+        except OSError as exc:
+            logger.warning(
+                "No se pudo inspeccionar el almacén de testigos de etapa 6 (%s): %s. La lectura degrada a None.",
+                ruta,
+                exc,
+                extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+            )
+            return None
+
+        crudo = datos.get(clave.como_texto())
         durable = TestigoDurable.desde_dict(crudo)
         if durable is None and crudo is not None:
             logger.warning(
                 "Entrada inválida en %s para %s: se descarta sin afectar las demás.",
                 ruta,
                 clave.como_texto(),
-                extra={"pipeline_stage": "wrye_bash"},
+                extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
             )
         return durable
 
@@ -237,7 +316,7 @@ class AlmacenJSON:
     ) -> TestigoDurable:
         durable = TestigoDurable.desde(testigo, observado_en=observado_en)
         ruta = self.ruta
-        with self._lock:
+        with self._seccion_critica(ruta, escritura=True):
             datos = self._cargar_objeto(ruta)
             datos[clave.como_texto()] = durable.como_dict()
             self._escribir_atomico(ruta, datos)
@@ -245,14 +324,65 @@ class AlmacenJSON:
 
     def olvidar(self, clave: ClaveDeTestigo) -> None:
         ruta = self.ruta
-        with self._lock:
+        with self._seccion_critica(ruta, escritura=True):
             datos = self._cargar_objeto(ruta)
             if datos.pop(clave.como_texto(), None) is not None:
                 self._escribir_atomico(ruta, datos)
 
+    @contextlib.contextmanager
+    def _seccion_critica(self, ruta: pathlib.Path, *, escritura: bool) -> Iterator[None]:
+        """Serializa toda la operación sobre ``ruta`` entre hilos/instancias y entre procesos."""
+        with _lock_intraproceso(ruta):
+            try:
+                self._rechazar_enlaces(ruta)
+            except AlmacenDeTestigosIlegibleError:
+                raise
+            except OSError as exc:
+                raise AlmacenDeTestigosIlegibleError(f"no se pudo inspeccionar '{ruta}': {exc}") from exc
+
+            if escritura:
+                try:
+                    ruta.parent.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    raise AlmacenDeTestigosIlegibleError(f"no se pudo preparar '{ruta.parent}': {exc}") from exc
+                self._rechazar_enlaces(ruta)
+
+            ruta_lock = _ruta_del_lockfile(ruta)
+            banderas = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                fd_lock = os.open(ruta_lock, banderas, 0o600)
+            except OSError as exc:
+                if not escritura and exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+                    # Directorio de sólo lectura en ``leer``: el lock intraproceso ya nos cubre.
+                    yield
+                    return
+                raise AlmacenDeTestigosIlegibleError(f"no se pudo abrir el lockfile '{ruta_lock}': {exc}") from exc
+
+            adquirido = False
+            try:
+                limite = time.monotonic() + _TIMEOUT_LOCK_SEGUNDOS
+                while True:
+                    try:
+                        if _intentar_lock_so(fd_lock):
+                            adquirido = True
+                            break
+                    except OSError as exc:
+                        raise AlmacenDeTestigosIlegibleError(f"fallo al bloquear '{ruta_lock}': {exc}") from exc
+                    if time.monotonic() >= limite:
+                        raise AlmacenDeTestigosIlegibleError(
+                            f"timeout ({_TIMEOUT_LOCK_SEGUNDOS}s) esperando el lock de '{ruta}'"
+                        )
+                    time.sleep(_PASO_REINTENTO_SEGUNDOS)
+                yield
+            finally:
+                if adquirido:
+                    _liberar_lock_so(fd_lock)
+                with contextlib.suppress(OSError):
+                    os.close(fd_lock)
+
     @staticmethod
     def _rechazar_enlaces(ruta: pathlib.Path) -> None:
-        for candidato in (ruta.parent, ruta):
+        for candidato in (ruta.parent, ruta, _ruta_del_lockfile(ruta)):
             tipo = link_kind_or_raise(candidato)
             if tipo is not None:
                 raise AlmacenDeTestigosIlegibleError(
@@ -269,11 +399,17 @@ class AlmacenJSON:
         except OSError as exc:
             raise AlmacenDeTestigosIlegibleError(f"no se pudo inspeccionar '{ruta}': {exc}") from exc
 
+        banderas = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
-            with ruta.open("r", encoding="utf-8") as fh:
-                crudo = json.load(fh)
+            fd = os.open(ruta, banderas)
         except FileNotFoundError:
             return {}
+        except OSError as exc:
+            raise AlmacenDeTestigosIlegibleError(f"no se pudo abrir '{ruta}': {exc}") from exc
+
+        try:
+            with os.fdopen(fd, "r", encoding="utf-8") as fh:
+                crudo = json.load(fh)
         except (OSError, ValueError) as exc:
             raise AlmacenDeTestigosIlegibleError(f"no se pudo decodificar '{ruta}': {exc}") from exc
 

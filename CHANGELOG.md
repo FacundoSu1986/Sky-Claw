@@ -13,11 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   superficie del agente LLM ni siquiera podía viajar porque `GenerateBashedPatchParams` sólo expone
   `fase` (A-4): cerrar la GUI entre las dos fases o verificar desde el agente obligaba a declarar
   `frescura_probada=False`. `sky_claw/local/tools/etapa6_testigos.py` persiste los 32 bytes de
-  observación previa en `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` (escritura
-  atómica `mkstemp` + `os.replace`, rechazo de enlaces en padre y archivo con `link_kind_or_raise`,
-  y `AlmacenDeTestigosIlegibleError` para no pisar un archivo corrupto), claveados por el **slot
-  virtual** `(plugins_txt canónico, destino Data canónico)` — invariante cuando la primera corrida
-  pasa de `Data` ausente en la fase 1 a `overwrite` en la fase 2.
+  observación previa en `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` (exclusión por
+  ruta canónica intraproceso + lockfile cross-process `flock`/`msvcrt.locking`, escritura atómica
+  `mkstemp` + `os.replace`, rechazo de enlaces en padre/archivo/lockfile con `link_kind_or_raise`,
+  `AlmacenDeTestigosIlegibleError` para no pisar un archivo corrupto y warnings estructurados con
+  `pipeline_stage=6` + `tx_id=None`), claveados por el **slot virtual** `(plugins_txt canónico,
+  destino Data canónico)` — invariante cuando la primera corrida pasa de `Data` ausente en la fase 1
+  a `overwrite` en la fase 2.
   `decidir_testigo_de_preparacion` separa en el dominio los cuatro casos de reapertura y el servicio
   expone una partición total en `testigo_durable` (`guardado`, `conservado_por_build`,
   `conservado_sin_observacion`, `sin_observacion`, `no_disponible`, `error_de_almacen`): si el
@@ -29,8 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `frescura_probada=True` lo consume tanto por `durable` como por `payload`. Cableado en
   `orchestration_composition` y en `system_tools.generate_bashed_patch` (el agente LLM gana frescura
   demostrada entre sesiones sin exponer `testigo_previo` al modelo).
-  Tests: `tests/test_etapa6_testigo_durable.py` (35 tests + ancla AST sobre todos los sitios de
-  construcción + oráculo conductual; matriz de mutación **15/15**).
+  Tests: `tests/test_etapa6_testigo_durable.py` (38 tests + ancla AST sobre todos los sitios de
+  construcción + oráculo conductual; matriz de mutación **18/18**).
 
 - **El panel del ritual ofrece la fase 2 de la etapa 6 (`Ya construí el parche — verificar`).**
   Antes, el botón del ritual sólo podía *preparar*: despachaba `payload` vacío y la

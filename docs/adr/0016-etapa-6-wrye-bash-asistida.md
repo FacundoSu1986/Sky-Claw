@@ -601,6 +601,15 @@ el diseño inicial y las anclas propias contra el código real y con una matriz 
 | D-06 | **Consumo del testigo durable**: consumir en fallo perdía la frescura al olvidar tildar el plugin (`NO_HABILITADO`); no consumir cuando `origen == payload` dejaba un testigo huérfano que engañaba a la corrida siguiente. | Sólo se consume con `veredicto.frescura_probada is True`, tanto por `durable` como por `payload`, y un `OSError` en `olvidar` no tumba un veredicto válido (M11 y M12 mueren). |
 | D-07 | **Punto ciego del ancla AST**: exigir `"testigo_store" in claves` dejaba pasar `testigo_store=None` en verde. | El ancla congela por igualdad los sitios productivos, rechaza `Constant(None)` y se acompaña de un oráculo conductual sobre `build_orchestration_composition` (M13 y M14 mueren; M15 con comentarios vive). |
 
+**Ronda 14 (revisión externa de Codex y PR-Agent sobre #863, 2026-11-04).** Dos hallazgos P1 reales
+sobre `ee40299`, reproducidos primero con tests en ROJO antes de tocar producción y sumados a la
+matriz de mutación (**18/18**):
+
+| # | Hallazgo | Reproducción | Corrección verificada por mutación |
+|---|---|---|---|
+| R14-01 | **Exclusión sólo de instancia en `AlmacenJSON`**: `orchestration_composition` y `system_tools` crean instancias distintas sobre el mismo archivo (y pueden coexistir dos procesos). Un `self._lock` local dejaba que dos `guardar` sobre perfiles distintos leyeran `{}` a la vez y el último `os.replace` borrara al otro perfil. | Reproducido en ROJO tanto entre dos instancias en el mismo proceso (`Barrier(2)`) como entre dos procesos Python separados (`subprocess.Popen` × 25 escrituras). | `_seccion_critica` serializa por **ruta canónica** en dos capas: `_LOCKS_POR_RUTA` intraproceso + lockfile hermano (`.etapa6_testigos.json.lock`, `fcntl.flock` en POSIX / `msvcrt.locking` en Windows, rechazando enlaces también sobre el lockfile y abriendo con `O_NOFOLLOW` donde existe). M16 y M17 mueren por separado. |
+| R14-02 | **`pipeline_stage="wrye_bash"` textual y sin `tx_id`**: los warnings de `etapa6_testigos.py` emitían una cadena en vez del entero `6` (SOP §5 regla 5) y omitían `tx_id=None`, desapareciendo de las consultas estructuradas por etapa. | Reproducido en ROJO con `caplog`. | `_ETAPA_WRYE_BASH = 6` anclada por igualdad contra `wrye_bash_service._ETAPA_WRYE_BASH`, `extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None}` en todos los warnings del almacén y registro en `conocidos` de `test_dyndolod_service.py` (M18 muere). |
+
 ## 10. Registro de adjudicación
 
 - Alternativa *(b) retiro*: evaluada y descartada por §3. No se reabre sin evidencia nueva de que el

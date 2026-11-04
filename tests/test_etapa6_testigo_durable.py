@@ -163,7 +163,133 @@ def test_el_archivo_json_no_deja_residuos_temporales(tmp_path: pathlib.Path) -> 
     ruta = tmp_path / NOMBRE_DEL_ARCHIVO
     AlmacenJSON(ruta).guardar(_clave(tmp_path), TestigoPrevio(existia=True, sha256=SHA_A))
 
-    assert [p.name for p in tmp_path.iterdir()] == [NOMBRE_DEL_ARCHIVO]
+    nombres = {p.name for p in tmp_path.iterdir()}
+    assert NOMBRE_DEL_ARCHIVO in nombres
+    assert not any(n.endswith(".tmp") for n in nombres), f"quedaron temporales: {nombres}"
+
+
+def test_dos_instancias_concurrentes_no_pierden_el_testigo_del_otro_perfil(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P1: ``orchestration_composition`` y ``system_tools`` usan instancias DISTINTAS de
+    ``AlmacenJSON`` sobre el mismo archivo. Se aísla la capa intraproceso (incluso con rutas
+    equivalentes ``sub/..``) desactivando el lock del SO (cubierto aparte por dos procesos):
+    si el lock fuera de instancia en vez de por ruta canónica, ambas entrarían juntas a la
+    barrera con ``{}`` y el segundo ``os.replace`` borraría al primer perfil."""
+    import concurrent.futures
+    import threading
+
+    import sky_claw.local.tools.etapa6_testigos as mod_testigos
+
+    (tmp_path / "sub").mkdir()
+    ruta = tmp_path / NOMBRE_DEL_ARCHIVO
+    ruta_equivalente = tmp_path / "sub" / ".." / NOMBRE_DEL_ARCHIVO
+    instancia_gui = AlmacenJSON(ruta)
+    instancia_llm = AlmacenJSON(ruta_equivalente)
+
+    monkeypatch.setattr(mod_testigos, "_intentar_lock_so", lambda _fd: True)
+    monkeypatch.setattr(mod_testigos, "_liberar_lock_so", lambda _fd: None)
+
+    barrera = threading.Barrier(2, timeout=0.15)
+    cargar_real = AlmacenJSON._cargar_objeto
+
+    def _cargar_sincronizado(self: AlmacenJSON, r: pathlib.Path) -> dict[str, object]:
+        datos = cargar_real(self, r)
+        try:
+            barrera.wait()
+        except threading.BrokenBarrierError:
+            barrera.reset()
+        return datos
+
+    monkeypatch.setattr(AlmacenJSON, "_cargar_objeto", _cargar_sincronizado)
+
+    clave_a = _clave(tmp_path, perfil="Default")
+    clave_b = _clave(tmp_path, perfil="Survival")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(instancia_gui.guardar, clave_a, TestigoPrevio(existia=True, sha256=SHA_A))
+        f2 = pool.submit(instancia_llm.guardar, clave_b, TestigoPrevio(existia=True, sha256=SHA_B))
+        f1.result(timeout=5.0)
+        f2.result(timeout=5.0)
+
+    lector = AlmacenJSON(ruta)
+    leido_a = lector.leer(clave_a)
+    leido_b = lector.leer(clave_b)
+    assert leido_a is not None and leido_a.sha256 == SHA_A
+    assert leido_b is not None and leido_b.sha256 == SHA_B
+
+
+def test_dos_procesos_concurrentes_serializan_escrituras_sobre_el_mismo_archivo(tmp_path: pathlib.Path) -> None:
+    """Exclusión cross-process real y determinista con dos intérpretes Python separados."""
+    import subprocess
+    import sys
+
+    ruta = tmp_path / NOMBRE_DEL_ARCHIVO
+    script = (
+        "import pathlib, sys, time; "
+        "from sky_claw.local.tools.etapa6_testigos import AlmacenJSON, clave_de_testigo; "
+        "from sky_claw.local.tools.wrye_bash_asistida import TestigoPrevio; "
+        "ruta = pathlib.Path(sys.argv[1]); perfil = sys.argv[2]; letra = sys.argv[3]; "
+        "otro = sys.argv[4]; "
+        "(ruta.parent / f'.ready_{perfil}').write_text('ok'); "
+        "deadline = time.monotonic() + 5.0; "
+        "exec('while not (ruta.parent / f\".ready_{otro}\").exists() and time.monotonic() < deadline: time.sleep(0.002)'); "
+        "almacen = AlmacenJSON(ruta); "
+        "[almacen.guardar("
+        "clave_de_testigo(plugins_txt=ruta.parent / f'{perfil}_{i}' / 'plugins.txt', destino_data=ruta.parent / 'Data' / 'p.esp'), "
+        "TestigoPrevio(existia=True, sha256=letra * 64)"
+        ") for i in range(25)]"
+    )
+    p1 = subprocess.Popen([sys.executable, "-c", script, str(ruta), "GUI", "a", "LLM"], cwd=RAIZ)
+    p2 = subprocess.Popen([sys.executable, "-c", script, str(ruta), "LLM", "b", "GUI"], cwd=RAIZ)
+    assert p1.wait(timeout=15) == 0
+    assert p2.wait(timeout=15) == 0
+
+    lector = AlmacenJSON(ruta)
+    for i in range(25):
+        ca = clave_de_testigo(
+            plugins_txt=tmp_path / f"GUI_{i}" / "plugins.txt", destino_data=tmp_path / "Data" / "p.esp"
+        )
+        cb = clave_de_testigo(
+            plugins_txt=tmp_path / f"LLM_{i}" / "plugins.txt", destino_data=tmp_path / "Data" / "p.esp"
+        )
+        assert lector.leer(ca) is not None, f"se perdió GUI_{i} por carrera entre procesos"
+        assert lector.leer(cb) is not None, f"se perdió LLM_{i} por carrera entre procesos"
+
+
+def test_los_warnings_del_almacen_respetan_pipeline_stage_numerico_y_tx_id_none(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Codex P1 / SOP §5 regla 5: ``pipeline_stage`` es el entero ``6`` (acoplado al servicio)
+    y lleva ``tx_id=None`` para no desaparecer de las consultas estructuradas de la etapa 6."""
+    import logging
+
+    import sky_claw.local.tools.etapa6_testigos as mod_testigos
+    import sky_claw.local.tools.wrye_bash_service as mod_servicio
+
+    assert mod_testigos._ETAPA_WRYE_BASH == mod_servicio._ETAPA_WRYE_BASH == 6  # noqa: SLF001
+
+    # Warning 1: archivo JSON corrupto.
+    ruta_corrupta = tmp_path / "corrupto.json"
+    ruta_corrupta.write_text("{roto", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="sky_claw.local.tools.etapa6_testigos"):
+        assert AlmacenJSON(ruta_corrupta).leer(_clave(tmp_path)) is None
+
+    # Warning 2: entrada individual inválida dentro de un objeto JSON válido.
+    ruta_invalida = tmp_path / "invalida.json"
+    mala = _clave(tmp_path, perfil="Malo")
+    ruta_invalida.write_text(
+        json.dumps({mala.como_texto(): {"existia": True, "sha256": None, "observado_en": "2026-11-04T00:00:00Z"}}),
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING, logger="sky_claw.local.tools.etapa6_testigos"):
+        assert AlmacenJSON(ruta_invalida).leer(mala) is None
+
+    registros = [r for r in caplog.records if r.name == "sky_claw.local.tools.etapa6_testigos"]
+    assert len(registros) == 2
+    for rec in registros:
+        etapa = getattr(rec, "pipeline_stage", None)
+        assert etapa == 6 and type(etapa) is int
+        assert getattr(rec, "tx_id", "ausente") is None
 
 
 def test_el_archivo_json_corrupto_no_se_pisa_ni_al_leer_ni_al_guardar(tmp_path: pathlib.Path) -> None:
@@ -182,7 +308,14 @@ def test_el_archivo_json_corrupto_no_se_pisa_ni_al_leer_ni_al_guardar(tmp_path: 
 
 
 @symlink_guard
-def test_el_almacen_rechaza_un_enlace_en_la_ruta_del_archivo(tmp_path: pathlib.Path) -> None:
+def test_el_almacen_rechaza_un_enlace_en_la_ruta_del_archivo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    # Simula también Windows (donde ``os.O_NOFOLLOW`` no existe = 0) para que la defensa de
+    # ``_rechazar_enlaces`` sobre el archivo y el lockfile muerda sin depender de POSIX.
+    monkeypatch.setattr(os, "O_NOFOLLOW", 0, raising=False)
     destino_ajeno = tmp_path / "ajeno.json"
     destino_ajeno.write_text("{}", encoding="utf-8")
     enlace = tmp_path / NOMBRE_DEL_ARCHIVO
