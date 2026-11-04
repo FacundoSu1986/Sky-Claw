@@ -248,17 +248,16 @@ _EXISTING_MOD_NAME_PATTERN = r"^[^/\\:*?\"<>|\x00-\x1f]+$"
 class GenerateBashedPatchParams(pydantic.BaseModel):
     """Parámetros de la tool ``generate_bashed_patch`` (etapa 6 asistida, ADR 0016).
 
-    ``fase`` es el ÚNICO argumento que el LLM elige, y a propósito: las dos fases son de
-    sólo lectura (``preparar`` entrega instrucciones y un testigo; ``verificar`` emite el
-    veredicto por evidencia en disco), así que ninguna elección puede mutar nada. El
-    perfil NO se expone —lo fija el registry por sesión— y el ``testigo_previo`` tampoco:
-    hacerlo durable es el PR D de ADR 0016 §7, y hasta entonces la verificación desde
-    esta superficie declara ``frescura_probada=False`` en vez de aceptar un hash que el
-    modelo podría inventar.
+    ``fase`` es el ÚNICO argumento que el LLM elige, y a propósito: ninguna fase muta el
+    parche ni el perfil (``preparar`` entrega instrucciones y persiste el testigo previo en
+    el estado por usuario; ``verificar`` emite el veredicto por evidencia en disco). El
+    perfil NO se expone —lo fija el registry por sesión— y el ``testigo_previo`` tampoco
+    (A-4): el servicio lee el testigo durable guardado por la fase 1 en disco (PR D de ADR
+    0016 §7) en vez de aceptar un hash que el modelo podría inventar.
     """
 
-    # `extra="forbid"` y no `ignore`: si el modelo manda `profile` —o un `testigo_previo`
-    # que todavía no persiste nadie— tiene que recibir un rechazo, no un silencio. Un
+    # `extra="forbid"` y no `ignore`: si el modelo manda `profile` o un `testigo_previo`
+    # inventado tiene que recibir un rechazo, no un silencio. Un
     # campo ignorado deja al LLM creyendo que eligió el perfil (spec de #454) o que probó
     # frescura; es el mismo criterio que `DiagnosticarParallaxParams`.
     model_config = pydantic.ConfigDict(strict=True, extra="forbid")

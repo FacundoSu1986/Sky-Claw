@@ -1009,11 +1009,11 @@ def _accion_etapa6_asistida(result: dict[str, Any]) -> dict[str, Any] | None:
     fallar.
 
     El ``testigo_previo`` de la fase 1 viaja en el payload cuando es bien formado:
-    es lo que permite **probar** frescura comparando contra lo que había antes del
-    build. Si no lo es, no viaja — la fase 2 igual es útil (existencia, tamaño y
-    estado en ``plugins.txt``) y declara ``frescura_probada=False``, que es
-    honesto. Persistirlo entre sesiones es el PR D de ADR 0016 §7; acá el testigo
-    vive lo que vive el resultado en el panel.
+    es la observación confirmada en pantalla para comparar en la fase 2. Si la GUI
+    se cierra entre las dos fases, el almacén durable del servicio (PR D de ADR
+    0016 §7) conserva el testigo anterior al build y lo devuelve en la preparación
+    en frío (o lo aporta directo en ``verificar``); sólo cuando no hubo ninguna
+    observación previa la fase 2 declara ``frescura_probada=False``.
     """
     if not es_etapa_pendiente(result):
         return None

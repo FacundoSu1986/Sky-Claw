@@ -593,11 +593,11 @@ async def test_la_tool_del_agente_prepara_con_el_perfil_de_sesion(tmp_path: path
 async def test_la_tool_del_agente_verifica_sin_testigo_y_declara_frescura_no_probada(
     tmp_path: pathlib.Path, sin_preflight: None
 ) -> None:
-    """La fase 2 llega por la tool y es honesta: sin testigo no prueba frescura.
+    """La fase 2 llega por la tool y es honesta: sin fase 1 previa no prueba frescura.
 
-    El LLM no puede aportar ``testigo_previo`` (persistirlo es el PR D de ADR 0016 §7),
-    así que un artefacto correcto da verde con ``frescura_probada=False`` en vez de
-    aceptar un hash inventado.
+    El LLM no puede aportar ``testigo_previo`` (A-4), y si nadie corrió ``preparar`` antes
+    el almacén durable está vacío: un artefacto correcto da verde con
+    ``frescura_probada=False`` en vez de inventar un testigo.
     """
     registry = _registry(tmp_path, perfil="Requiem", parche=b"TES4" + b"\x00" * 60)
 

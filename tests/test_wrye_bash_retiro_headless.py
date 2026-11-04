@@ -119,7 +119,7 @@ def test_el_servicio_ya_no_expone_el_camino_headless() -> None:
     assert metodos == _METODOS_DEL_SERVICIO_ASISTIDO, (
         "la clase cambió de superficie: nuevos="
         f"{sorted(metodos - _METODOS_DEL_SERVICIO_ASISTIDO)}, faltantes="
-        f"{sorted(_METODOS_DEL_SERVICIO_ASISTIDO - metodos)}. La etapa 6 es de SÓLO LECTURA "
+        f"{sorted(_METODOS_DEL_SERVICIO_ASISTIDO - metodos)}. La etapa 6 no muta el parche ni el perfil "
         "(ADR 0016 §2): un método nuevo acá tiene que decidirse y documentarse en el ADR."
     )
 
@@ -149,7 +149,9 @@ def test_la_firma_no_pide_las_dependencias_del_camino_muerto() -> None:
     dep_muertas = parametros & _DEPENDENCIAS_DEL_CAMINO_MUERTO
 
     assert dep_muertas == set(), f"la firma todavía pide dependencias del camino headless: {sorted(dep_muertas)}"
-    assert parametros == {"path_resolver", "plugin_limit_guard", "preflight", "default_domain"}
+    # ``testigo_store`` entró en el PR D (ADR 0016 §6/§7): persiste los 32 bytes de
+    # observación de la fase 1 en el estado por usuario; no toma locks ni abre TX.
+    assert parametros == {"path_resolver", "plugin_limit_guard", "preflight", "default_domain", "testigo_store"}
 
 
 def test_ningun_modulo_de_produccion_construye_el_servicio_con_dependencias_muertas() -> None:
@@ -335,9 +337,9 @@ def test_el_nombre_del_artefacto_se_define_una_sola_vez() -> None:
 def test_el_modulo_ya_no_importa_la_maquinaria_del_camino_muerto(simbolo: str) -> None:
     """El ancla enumera los imports: reintroducir locks/TX en la etapa 6 obliga a decidirlo.
 
-    La etapa asistida es de SÓLO LECTURA por contrato (ADR 0016 §2): si el módulo vuelve a
-    importar el lock distribuido o la TX de snapshots, o alguien cambió el contrato o está
-    reconstruyendo el camino headless por partes.
+    La etapa asistida no muta el parche ni el perfil por contrato (ADR 0016 §2): si el módulo
+    vuelve a importar el lock distribuido o la TX de snapshots, o alguien cambió el contrato o
+    está reconstruyendo el camino headless por partes.
     """
     arbol = ast.parse(MODULO.read_text(encoding="utf-8"))
     importados: set[str] = set()

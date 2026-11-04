@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **El testigo de la fase 1 de la etapa 6 pasa a ser durable entre sesiones (PR D de [ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.2).**
+  Hasta el PR C el `testigo_previo` vivía lo que vivía el resultado en `ReactiveStore` (RAM) y en la
+  superficie del agente LLM ni siquiera podía viajar porque `GenerateBashedPatchParams` sólo expone
+  `fase` (A-4): cerrar la GUI entre las dos fases o verificar desde el agente obligaba a declarar
+  `frescura_probada=False`. `sky_claw/local/tools/etapa6_testigos.py` persiste los 32 bytes de
+  observación previa en `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` (escritura
+  atómica `mkstemp` + `os.replace`, rechazo de enlaces en padre y archivo con `link_kind_or_raise`,
+  y `AlmacenDeTestigosIlegibleError` para no pisar un archivo corrupto), claveados por el **slot
+  virtual** `(plugins_txt canónico, destino Data canónico)` — invariante cuando la primera corrida
+  pasa de `Data` ausente en la fase 1 a `overwrite` en la fase 2.
+  `decidir_testigo_de_preparacion` separa en el dominio los cuatro casos de reapertura y el servicio
+  expone una partición total en `testigo_durable` (`guardado`, `conservado_por_build`,
+  `conservado_sin_observacion`, `sin_observacion`, `no_disponible`, `error_de_almacen`): si el
+  operador reabre la GUI en frío después de construir y vuelve a pulsar la etapa 6, conserva el
+  testigo **previo al build** (`construido_despues_de_la_preparacion=True`) para que el nuevo CTA
+  demuestre frescura en vez de fallar con `SIN_CAMBIO`. En la fase 2 rige `payload` > `durable` >
+  `ninguno` (`testigo_origen`), sin sustituir un payload explícito malformado por estado de disco;
+  una verificación fallida (p. ej. `NO_HABILITADO`) preserva el testigo para el reintento y una con
+  `frescura_probada=True` lo consume tanto por `durable` como por `payload`. Cableado en
+  `orchestration_composition` y en `system_tools.generate_bashed_patch` (el agente LLM gana frescura
+  demostrada entre sesiones sin exponer `testigo_previo` al modelo).
+  Tests: `tests/test_etapa6_testigo_durable.py` (35 tests + ancla AST sobre todos los sitios de
+  construcción + oráculo conductual; matriz de mutación **15/15**).
+
 - **El panel del ritual ofrece la fase 2 de la etapa 6 (`Ya construí el parche — verificar`).**
   Antes, el botón del ritual sólo podía *preparar*: despachaba `payload` vacío y la
   verificación quedaba alcanzable únicamente por el agente o la API, así que la etapa 6 no se

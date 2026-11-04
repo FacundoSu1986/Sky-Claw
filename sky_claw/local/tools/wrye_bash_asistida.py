@@ -74,6 +74,15 @@ from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Protocol
+
+    class _ObservacionDeTestigo(Protocol):
+        @property
+        def existia(self) -> bool: ...
+
+        @property
+        def sha256(self) -> str | None: ...
+
 
 #: Chunk de lectura de la huella: el Bashed Patch puede llegar a decenas de MB en load
 #: orders grandes y no se carga entero en memoria (mismo criterio que ``artifact_digest``).
@@ -209,6 +218,119 @@ class TestigoPrevio:
         if huella.sha256 is None:
             return None
         return cls(existia=True, sha256=huella.sha256)
+
+
+class OrigenDelTestigo(enum.StrEnum):
+    """De dónde salió el testigo con el que la fase 2 comparó.
+
+    Se declara SIEMPRE, incluso cuando no hay testigo: ``frescura_probada=False`` puede
+    significar «no había con qué comparar» o «comparé y no cambió», y un consumidor (el
+    panel, el modelo, el journal) no puede distinguirlas mirando sólo el booleano.
+    """
+
+    PAYLOAD = "payload"
+    DURABLE = "durable"
+    NINGUNO = "ninguno"
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionDeTestigo:
+    """Qué testigo rige y qué hacer con el almacén durable (fase 1).
+
+    ``persistir`` es una ORDEN, no un efecto: la función que decide no toca disco. Y
+    ``construido_despues`` es una afirmación sobre lo que pasó entre dos preparaciones
+    —el operador construyó el parche—, no sobre si el artefacto existe ahora.
+    """
+
+    __test__ = False
+
+    testigo: TestigoPrevio | None
+    persistir: bool
+    construido_despues: bool
+    origen: OrigenDelTestigo
+
+
+def _como_testigo_previo(observacion: _ObservacionDeTestigo) -> TestigoPrevio:
+    """Normaliza un testigo duck-typed (``TestigoDurable``) al tipo del dominio.
+
+    ``DecisionDeTestigo`` no puede devolver un tipo que este módulo no conoce: el que lo
+    consume serializa ``existia``/``sha256``, y una dataclass distinta con los mismos
+    campos funciona por casualidad hasta que dejan de coincidir.
+    """
+    return TestigoPrevio(existia=observacion.existia, sha256=observacion.sha256)
+
+
+def _misma_identidad(a: _ObservacionDeTestigo, b: _ObservacionDeTestigo) -> bool:
+    """Igualdad de observación: la misma ausencia, o la misma presencia con el mismo digest."""
+    if a.existia is not b.existia:
+        return False
+    return (not a.existia) or a.sha256 == b.sha256
+
+
+def decidir_testigo_de_preparacion(
+    *,
+    observado_ahora: TestigoPrevio | None,
+    durable: _ObservacionDeTestigo | None,
+) -> DecisionDeTestigo:
+    """Elige el testigo vigente de una fase 1, comparando con lo que ya había observado.
+
+    Cuatro casos, y el tercero es el motivo de que esta función exista:
+
+    1. **No hay observación ahora** (artefacto presente sin identidad: enlace, directorio,
+       lectura fallida). No se persiste —una observación que no existe no puede pisar una
+       que sí— y, si había una durable, sigue rigiendo. Borrarla sería destruir la única
+       prueba que quedaba por un fallo transitorio de lectura.
+    2. **No hay durable.** Primera preparación: se persiste lo observado. No se afirma
+       nada sobre builds: no hay contra qué comparar.
+    3. **El artefacto cambió respecto del durable** (apareció, o cambió su digest): eso
+       sólo puede haberlo hecho el operador entre las dos preparaciones. Se **conserva** el
+       testigo viejo y se devuelve ESE —no el de ahora—, porque es el único que puede
+       demostrar frescura en la fase 2. Sobrescribirlo compararía el parche contra sí
+       mismo y daría ``SIN_CAMBIO`` para siempre: «no lo construiste» sobre un build real.
+    4. **No cambió** (o se borró): se persiste lo observado y no se afirma un build.
+       Presente→ausente es un cambio, pero no algo que el operador haya construido;
+       anunciarlo así mandaría a verificar un parche que ya no está.
+
+    ``durable`` es duck-typed (``existia``/``sha256``): acepta tanto un
+    :class:`~sky_claw.local.tools.etapa6_testigos.TestigoDurable` como un ``TestigoPrevio``.
+    Así este módulo —que es el dominio— no importa el almacén, que lo importa a él.
+    """
+    if observado_ahora is None:
+        if durable is None:
+            return DecisionDeTestigo(
+                testigo=None, persistir=False, construido_despues=False, origen=OrigenDelTestigo.NINGUNO
+            )
+        return DecisionDeTestigo(
+            testigo=_como_testigo_previo(durable),
+            persistir=False,
+            construido_despues=False,
+            origen=OrigenDelTestigo.DURABLE,
+        )
+
+    if durable is None:
+        return DecisionDeTestigo(
+            testigo=observado_ahora, persistir=True, construido_despues=False, origen=OrigenDelTestigo.NINGUNO
+        )
+
+    if _misma_identidad(observado_ahora, durable):
+        return DecisionDeTestigo(
+            testigo=observado_ahora, persistir=True, construido_despues=False, origen=OrigenDelTestigo.NINGUNO
+        )
+
+    construido = (not durable.existia and observado_ahora.existia) or (
+        durable.existia and observado_ahora.existia and durable.sha256 != observado_ahora.sha256
+    )
+    if construido:
+        return DecisionDeTestigo(
+            testigo=_como_testigo_previo(durable),
+            persistir=False,
+            construido_despues=True,
+            origen=OrigenDelTestigo.DURABLE,
+        )
+    # Presente → ausente: el testigo viejo ya no describe nada y no hubo build.
+    return DecisionDeTestigo(
+        testigo=observado_ahora, persistir=True, construido_despues=False, origen=OrigenDelTestigo.NINGUNO
+    )
 
 
 @dataclass(frozen=True, slots=True)
