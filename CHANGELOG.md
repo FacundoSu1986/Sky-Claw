@@ -12,18 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Hasta el PR C el `testigo_previo` vivía lo que vivía el resultado en `ReactiveStore` (RAM) y en la
   superficie del agente LLM ni siquiera podía viajar porque `GenerateBashedPatchParams` sólo expone
   `fase` (A-4): cerrar la GUI entre las dos fases o verificar desde el agente obligaba a declarar
-  `frescura_probada=False`. `sky_claw/local/tools/etapa6_testigos.py` persiste los 32 bytes de
-  observación previa en `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` (exclusión por
-  ruta canónica intraproceso + lockfile cross-process `flock`/`msvcrt.locking`, escritura atómica
-  `mkstemp` + `os.replace`, rechazo de enlaces en padre/archivo/lockfile con `link_kind_or_raise`,
-  `AlmacenDeTestigosIlegibleError` para no pisar un archivo corrupto y warnings estructurados con
-  `pipeline_stage=6` + `tx_id=None`), claveados por el **slot virtual** `(plugins_txt canónico,
-  destino Data canónico)` — invariante cuando la primera corrida pasa de `Data` ausente en la fase 1
-  a `overwrite` en la fase 2.
+  `frescura_probada=False`. `sky_claw/local/tools/etapa6_testigos.py` persiste la observación previa
+  (ausencia probada `existia=False, sha256=None` o presencia con digest SHA-256 cuando el artefacto
+  era regular y legible; sin entrada cuando la observación es indeterminada) en
+  `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` (exclusión por ruta canónica
+  intraproceso + lockfile cross-process `flock`/`msvcrt.locking`, escritura atómica `mkstemp` +
+  `os.replace`, rechazo de enlaces con `link_kind_or_raise` y de archivos especiales/directorios con
+  `S_ISREG` + `O_NONBLOCK` + `fstat(fd)` en archivo y lockfile, `AlmacenDeTestigosIlegibleError`
+  para no pisar un archivo corrupto y warnings estructurados con `pipeline_stage=6` + `tx_id=None`),
+  claveada por el **slot virtual** `(plugins_txt canónico, destino Data canónico)` — invariante
+  cuando la primera corrida pasa de `Data` ausente en la fase 1 a `overwrite` en la fase 2.
   `decidir_testigo_de_preparacion` separa en el dominio los cuatro casos de reapertura y el servicio
   expone una partición total en `testigo_durable` (`guardado`, `conservado_por_build`,
   `conservado_sin_observacion`, `sin_observacion`, `no_disponible`, `error_de_almacen`): si el
   operador reabre la GUI en frío después de construir y vuelve a pulsar la etapa 6, conserva el
+  testigo previo al build y lo reemite en `testigo_previo` (marcando
   `construido_despues_de_la_preparacion=True`) para que el nuevo CTA demuestre frescura en vez de
   fallar con `SIN_CAMBIO`. Toda sincronización de fase 1 ocurre dentro de una única transacción
   atómica del almacén (`sincronizar_preparacion`: `cargar → observar → decidir → escribir`, sin
@@ -32,12 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GUI y servicio). En la fase 2 rige `payload` > `durable` > `ninguno` (`testigo_origen`), sin
   sustituir un payload explícito malformado por estado de disco; una verificación fallida (p. ej.
   `NO_HABILITADO`) preserva el testigo para el reintento y una con `frescura_probada=True` ejecuta
-  consumo condicional CAS (`olvidar_si_coincide` por `(testigo, generacion)`), de modo que un replay
-  o CTA obsoleto de una preparación previa jamás borra el testigo durable de una preparación
-  posterior. Cableado en `orchestration_composition` y en `system_tools.generate_bashed_patch` (el
-  agente LLM gana frescura demostrada entre sesiones sin exponer `testigo_previo` al modelo).
-  Tests: `tests/test_etapa6_testigo_durable.py` (48 funciones / 70 casos + anclas AST de
-  construcción, mutación atómica/condicional y delegación de parser; matriz de mutación verificada).
+  consumo condicional CAS (`olvidar_si_coincide` exigiendo `generacion` explícita y válida) sólo
+  cuando el testigo verificado trae su época `generacion`, de modo que ni un replay obsoleto ni un
+  payload legítimo sin `generacion` (`no_disponible` / `error_de_almacen`) pueden borrar el testigo
+  durable de una preparación posterior. Cableado en `orchestration_composition` y en
+  `system_tools.generate_bashed_patch` (el agente LLM gana frescura demostrada entre sesiones sin
+  exponer `testigo_previo` al modelo).
+  Tests: `tests/test_etapa6_testigo_durable.py` (53 funciones / 79 casos + anclas AST y de firma
+  para construcción, mutación atómica/condicional sin comodín `None` y delegación de parser; matriz
+  de mutación verificada).
 
 - **El panel del ritual ofrece la fase 2 de la etapa 6 (`Ya construí el parche — verificar`).**
   Antes, el botón del ritual sólo podía *preparar*: despachaba `payload` vacío y la

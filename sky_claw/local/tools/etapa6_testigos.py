@@ -44,6 +44,7 @@ import logging
 import os
 import pathlib
 import secrets
+import stat
 import sys
 import tempfile
 import threading
@@ -134,6 +135,11 @@ def nueva_generacion() -> str:
 
 
 _CLAVES_TESTIGO_DURABLE: frozenset[str] = frozenset({"existia", "sha256", "observado_en", "generacion"})
+
+
+def _validar_generacion_explicita(generacion: str) -> None:
+    if not es_generacion_valida(generacion):
+        raise ValueError(f"generacion obligatoria de 32 hex en minúsculas para consumo CAS: {generacion!r}")
 
 
 def _canonizar_ruta(ruta: pathlib.Path) -> str:
@@ -227,11 +233,10 @@ class TestigoDurable:
     def como_testigo_previo(self) -> TestigoPrevio:
         return TestigoPrevio(existia=self.existia, sha256=self.sha256)
 
-    def coincide_con(self, *, testigo: TestigoPrevio, generacion: str | None = None) -> bool:
-        """True sólo si ``testigo`` y (cuando se informa) ``generacion`` describen esta época."""
-        if self.como_testigo_previo() != testigo:
-            return False
-        return generacion is None or self.generacion == generacion
+    def coincide_con(self, *, testigo: TestigoPrevio, generacion: str) -> bool:
+        """True sólo si ``testigo`` y ``generacion`` (obligatoria) describen exactamente esta época."""
+        _validar_generacion_explicita(generacion)
+        return self.como_testigo_previo() == testigo and self.generacion == generacion
 
     def como_dict(self) -> dict[str, object]:
         return {
@@ -329,7 +334,7 @@ class AlmacenDeTestigos(Protocol):
         clave: ClaveDeTestigo,
         *,
         testigo: TestigoPrevio,
-        generacion: str | None = None,
+        generacion: str,
     ) -> bool: ...
 
 
@@ -380,8 +385,9 @@ class AlmacenEnMemoria:
         clave: ClaveDeTestigo,
         *,
         testigo: TestigoPrevio,
-        generacion: str | None = None,
+        generacion: str,
     ) -> bool:
+        _validar_generacion_explicita(generacion)
         with self._lock:
             actual = self._datos.get(clave.como_texto())
             if actual is None or not actual.coincide_con(testigo=testigo, generacion=generacion):
@@ -410,6 +416,7 @@ class AlmacenJSON:
         ruta = self.ruta
         try:
             self._rechazar_enlaces(ruta)
+            self._rechazar_rutas_irregulares(ruta)
             try:
                 ruta.lstat()
             except FileNotFoundError:
@@ -498,9 +505,10 @@ class AlmacenJSON:
         clave: ClaveDeTestigo,
         *,
         testigo: TestigoPrevio,
-        generacion: str | None = None,
+        generacion: str,
     ) -> bool:
         """Borra ``clave`` sólo si el registro actual coincide con ``(testigo, generacion)``."""
+        _validar_generacion_explicita(generacion)
         ruta = self.ruta
         with self._seccion_critica(ruta, escritura=True):
             datos = self._cargar_objeto(ruta)
@@ -517,6 +525,7 @@ class AlmacenJSON:
         with _lock_intraproceso(ruta):
             try:
                 self._rechazar_enlaces(ruta)
+                self._rechazar_rutas_irregulares(ruta)
             except AlmacenDeTestigosIlegibleError:
                 raise
             except OSError as exc:
@@ -528,9 +537,10 @@ class AlmacenJSON:
                 except OSError as exc:
                     raise AlmacenDeTestigosIlegibleError(f"no se pudo preparar '{ruta.parent}': {exc}") from exc
                 self._rechazar_enlaces(ruta)
+                self._rechazar_rutas_irregulares(ruta)
 
             ruta_lock = _ruta_del_lockfile(ruta)
-            banderas = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+            banderas = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
             try:
                 fd_lock = os.open(ruta_lock, banderas, 0o600)
             except OSError as exc:
@@ -539,6 +549,8 @@ class AlmacenJSON:
                     yield
                     return
                 raise AlmacenDeTestigosIlegibleError(f"no se pudo abrir el lockfile '{ruta_lock}': {exc}") from exc
+
+            self._verificar_fd_regular(fd_lock, ruta_lock)
 
             adquirido = False
             try:
@@ -571,23 +583,65 @@ class AlmacenJSON:
                     f"'{candidato}' es un {tipo}: el almacén de testigos no atraviesa enlaces"
                 )
 
+    @staticmethod
+    def _rechazar_rutas_irregulares(ruta: pathlib.Path) -> None:
+        """Exige directorio en ``ruta.parent`` y archivo regular en ``ruta`` y su ``.lock``."""
+        try:
+            st_padre = os.lstat(ruta.parent)
+        except FileNotFoundError:
+            st_padre = None
+        if st_padre is not None and not stat.S_ISDIR(st_padre.st_mode):
+            raise AlmacenDeTestigosIlegibleError(f"'{ruta.parent}' existe pero no es un directorio regular")
+        for archivo in (ruta, _ruta_del_lockfile(ruta)):
+            try:
+                st = os.lstat(archivo)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                raise AlmacenDeTestigosIlegibleError(
+                    f"'{archivo}' no es un archivo regular: el almacén de testigos rechaza archivos especiales"
+                )
+
+    @staticmethod
+    def _verificar_fd_regular(fd: int, ruta: pathlib.Path) -> None:
+        """Cierra la ventana TOCTOU ``lstat → open`` verificando ``fstat(fd)``."""
+        try:
+            st_fd = os.fstat(fd)
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            raise AlmacenDeTestigosIlegibleError(f"no se pudo inspeccionar el descriptor de '{ruta}': {exc}") from exc
+        if not stat.S_ISREG(st_fd.st_mode):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            raise AlmacenDeTestigosIlegibleError(
+                f"'{ruta}' dejó de ser un archivo regular al abrirlo: se rechaza sin leer"
+            )
+
     def _cargar_objeto(self, ruta: pathlib.Path) -> dict[str, object]:
         """Devuelve ``{}`` si el archivo aún no existe; lanza :class:`AlmacenDeTestigosIlegibleError`
         si existe y no es un objeto JSON regular (para que ni lector ni escritor lo pisen)."""
         try:
             self._rechazar_enlaces(ruta)
+            self._rechazar_rutas_irregulares(ruta)
         except AlmacenDeTestigosIlegibleError:
             raise
         except OSError as exc:
             raise AlmacenDeTestigosIlegibleError(f"no se pudo inspeccionar '{ruta}': {exc}") from exc
 
-        banderas = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        banderas = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         try:
             fd = os.open(ruta, banderas)
         except FileNotFoundError:
             return {}
         except OSError as exc:
             raise AlmacenDeTestigosIlegibleError(f"no se pudo abrir '{ruta}': {exc}") from exc
+
+        self._verificar_fd_regular(fd, ruta)
+        if sys.platform != "win32" and hasattr(os, "O_NONBLOCK"):
+            with contextlib.suppress(OSError):
+                flags_actuales = fcntl.fcntl(fd, fcntl.F_GETFL)
+                fcntl.fcntl(fd, fcntl.F_SETFL, flags_actuales & ~os.O_NONBLOCK)
 
         try:
             with os.fdopen(fd, "r", encoding="utf-8") as fh:
@@ -602,6 +656,7 @@ class AlmacenJSON:
     def _escribir_atomico(self, ruta: pathlib.Path, datos: dict[str, object]) -> None:
         ruta.parent.mkdir(parents=True, exist_ok=True)
         self._rechazar_enlaces(ruta)
+        self._rechazar_rutas_irregulares(ruta)
         try:
             tmp_fd, tmp_name = tempfile.mkstemp(dir=str(ruta.parent), prefix=f".{ruta.stem}.", suffix=".tmp")
         except OSError as exc:

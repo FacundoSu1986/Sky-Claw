@@ -37,8 +37,11 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import inspect
 import json
+import os
 import pathlib
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -48,6 +51,7 @@ from sky_claw.app.gui.controllers.ritual_runner import resume_action_from_result
 from sky_claw.config import Config
 from sky_claw.local.tools.etapa6_testigos import (
     NOMBRE_DEL_ARCHIVO,
+    AlmacenDeTestigos,
     AlmacenDeTestigosIlegibleError,
     AlmacenEnMemoria,
     AlmacenJSON,
@@ -344,8 +348,6 @@ def test_el_archivo_json_corrupto_no_se_pisa_ni_al_leer_ni_al_guardar(tmp_path: 
 def test_el_almacen_rechaza_un_enlace_en_la_ruta_del_archivo(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
-
     # Simula también Windows (donde ``os.O_NOFOLLOW`` no existe = 0) para que la defensa de
     # ``_rechazar_enlaces`` sobre el archivo y el lockfile muerda sin depender de POSIX.
     monkeypatch.setattr(os, "O_NOFOLLOW", 0, raising=False)
@@ -373,6 +375,153 @@ def test_el_almacen_rechaza_un_enlace_en_el_directorio_padre(tmp_path: pathlib.P
     with pytest.raises(AlmacenDeTestigosIlegibleError):
         almacen.guardar(_clave(tmp_path), TestigoPrevio(existia=True, sha256=SHA_A))
     assert list(dir_ajeno.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="FIFO requiere POSIX")
+def test_el_almacen_rechaza_archivos_especiales_fifo_sin_bloquear_en_posix(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Auditoría PR #864 (P2): una FIFO en ``etapa6_testigos.json`` o en su ``.lock`` no puede
+    bloquear ``os.open`` ni dejar retenidos el lock intraproceso o ``flock``."""
+    if sys.platform == "win32":
+        pytest.skip("FIFO requiere POSIX")
+    import threading
+
+    clave = _clave(tmp_path)
+
+    # Caso 1: el propio archivo JSON fue sustituido por una FIFO sin escritor.
+    ruta_fifo = tmp_path / "caso_fifo" / NOMBRE_DEL_ARCHIVO
+    ruta_fifo.parent.mkdir(parents=True)
+    os.mkfifo(ruta_fifo)
+    resultado_lectura: list[object] = []
+    error_escritura: list[BaseException] = []
+    termino = threading.Event()
+
+    def _operar_sobre_fifo() -> None:
+        try:
+            almacen = AlmacenJSON(ruta_fifo)
+            resultado_lectura.append(almacen.leer(clave))
+            try:
+                almacen.sincronizar_preparacion(clave, lambda: TestigoPrevio(existia=False, sha256=None))
+            except BaseException as exc:
+                error_escritura.append(exc)
+        finally:
+            termino.set()
+
+    hilo = threading.Thread(target=_operar_sobre_fifo, daemon=True)
+    hilo.start()
+    try:
+        termino_a_tiempo = termino.wait(timeout=0.5)
+    finally:
+        if not termino.is_set():
+            try:
+                fd_desbloqueo = os.open(ruta_fifo, os.O_WRONLY | os.O_NONBLOCK)
+                os.close(fd_desbloqueo)
+            except OSError:
+                pass
+            termino.wait(timeout=1.0)
+
+    assert termino_a_tiempo, "AlmacenJSON se bloqueó al abrir una FIFO en la ruta del almacén"
+    assert resultado_lectura == [None]
+    assert len(error_escritura) == 1 and isinstance(error_escritura[0], AlmacenDeTestigosIlegibleError)
+    assert not (ruta_fifo.parent / f".{NOMBRE_DEL_ARCHIVO}.lock").exists()
+
+    # Caso 2: el archivo JSON contiene un testigo válido, pero el lockfile hermano fue sustituido por FIFO.
+    # Si ``leer`` no validara regularidad del ``.lock``, devolvería el testigo en vez de degradar a ``None``.
+    dir_lock_fifo = tmp_path / "caso_lock_fifo"
+    dir_lock_fifo.mkdir(parents=True)
+    ruta_normal = dir_lock_fifo / NOMBRE_DEL_ARCHIVO
+    AlmacenJSON(ruta_normal).guardar(clave, TestigoPrevio(existia=True, sha256=SHA_A))
+    lock_path = dir_lock_fifo / f".{NOMBRE_DEL_ARCHIVO}.lock"
+    lock_path.unlink(missing_ok=True)
+    os.mkfifo(lock_path)
+    almacen_lock_fifo = AlmacenJSON(ruta_normal)
+    assert almacen_lock_fifo.leer(clave) is None
+    with pytest.raises(AlmacenDeTestigosIlegibleError):
+        almacen_lock_fifo.sincronizar_preparacion(clave, lambda: TestigoPrevio(existia=False, sha256=None))
+
+    # Caso 3 (ventana TOCTOU entre lstat y open): aunque la pre-inspección pasara,
+    # (3a) sin escritor ``O_NONBLOCK`` impide bloqueo en ``os.open`` (< 0.5 s), y
+    # (3b) incluso CON escritor inyectando JSON válido ``"{}"`` en la FIFO, ``os.fstat(fd)``
+    #      rechaza el descriptor antes de leer un solo byte.
+    dir_toctou = tmp_path / "caso_toctou"
+    dir_toctou.mkdir(parents=True)
+    ruta_toctou = dir_toctou / NOMBRE_DEL_ARCHIVO
+    os.mkfifo(ruta_toctou)
+    almacen_toctou = AlmacenJSON(ruta_toctou)
+    monkeypatch.setattr(almacen_toctou, "_rechazar_rutas_irregulares", lambda _r: None)
+    err_toctou: list[BaseException] = []
+    fin_toctou = threading.Event()
+
+    def _cargar_toctou() -> None:
+        try:
+            almacen_toctou._cargar_objeto(ruta_toctou)
+        except BaseException as exc:
+            err_toctou.append(exc)
+        finally:
+            fin_toctou.set()
+
+    threading.Thread(target=_cargar_toctou, daemon=True).start()
+    try:
+        termino_toctou = fin_toctou.wait(timeout=0.5)
+    finally:
+        if not fin_toctou.is_set():
+            try:
+                fd_unblock = os.open(ruta_toctou, os.O_WRONLY | os.O_NONBLOCK)
+                os.close(fd_unblock)
+            except OSError:
+                pass
+            fin_toctou.wait(timeout=1.0)
+    assert termino_toctou, "_cargar_objeto se bloqueó sin O_NONBLOCK ante una sustitución TOCTOU por FIFO"
+    assert len(err_toctou) == 1 and isinstance(err_toctou[0], AlmacenDeTestigosIlegibleError)
+
+    # (3b) Escritor malicioso alimentando JSON válido ``"{}"`` por la FIFO: mata el mutante que
+    # elimine ``_verificar_fd_regular`` (sin ``fstat(fd)``, ``json.load`` devolvería ``{}``).
+    fd_lector_aux = os.open(ruta_toctou, os.O_RDONLY | os.O_NONBLOCK)
+    fd_escritor = os.open(ruta_toctou, os.O_WRONLY | os.O_NONBLOCK)
+    try:
+        os.write(fd_escritor, b"{}")
+        os.close(fd_escritor)
+        fd_escritor = -1
+        with pytest.raises(AlmacenDeTestigosIlegibleError):
+            almacen_toctou._cargar_objeto(ruta_toctou)
+    finally:
+        if fd_escritor != -1:
+            os.close(fd_escritor)
+        os.close(fd_lector_aux)
+
+
+def test_el_almacen_rechaza_directorios_en_ruta_o_lockfile_y_archivo_en_padre(tmp_path: pathlib.Path) -> None:
+    """Portabilidad Windows + POSIX: tanto ``ruta`` como ``.lock`` exigen archivo regular y
+    ``ruta.parent`` exige directorio."""
+    clave = _clave(tmp_path)
+
+    # Caso A: la ruta del JSON es un directorio.
+    ruta_dir = tmp_path / "como_dir" / NOMBRE_DEL_ARCHIVO
+    ruta_dir.mkdir(parents=True)
+    assert AlmacenJSON(ruta_dir).leer(clave) is None
+    with pytest.raises(AlmacenDeTestigosIlegibleError):
+        AlmacenJSON(ruta_dir).sincronizar_preparacion(clave, lambda: TestigoPrevio(existia=False, sha256=None))
+
+    # Caso B: el lockfile hermano es un directorio.
+    dir_b = tmp_path / "lock_dir"
+    dir_b.mkdir()
+    (dir_b / NOMBRE_DEL_ARCHIVO).write_text("{}", encoding="utf-8")
+    (dir_b / f".{NOMBRE_DEL_ARCHIVO}.lock").mkdir()
+    assert AlmacenJSON(dir_b / NOMBRE_DEL_ARCHIVO).leer(clave) is None
+    with pytest.raises(AlmacenDeTestigosIlegibleError):
+        AlmacenJSON(dir_b / NOMBRE_DEL_ARCHIVO).sincronizar_preparacion(
+            clave, lambda: TestigoPrevio(existia=False, sha256=None)
+        )
+
+    # Caso C: el padre es un archivo regular, no un directorio.
+    padre_archivo = tmp_path / "padre_es_archivo"
+    padre_archivo.write_text("no soy directorio", encoding="utf-8")
+    assert AlmacenJSON(padre_archivo / NOMBRE_DEL_ARCHIVO).leer(clave) is None
+    with pytest.raises(AlmacenDeTestigosIlegibleError):
+        AlmacenJSON(padre_archivo / NOMBRE_DEL_ARCHIVO).sincronizar_preparacion(
+            clave, lambda: TestigoPrevio(existia=False, sha256=None)
+        )
 
 
 def test_una_entrada_con_forma_invalida_se_descarta_sin_tumbar_las_demas(tmp_path: pathlib.Path) -> None:
@@ -845,6 +994,91 @@ async def test_payload_viejo_no_borra_nueva_generacion_aunque_coincida_la_huella
     assert ver_b["frescura_probada"] is True
 
 
+async def test_payload_sin_generacion_jamas_consume_el_testigo_durable_de_otra_preparacion(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Auditoría PR #864 (P1 / CodeRabbit #4470355912): cuando A corrió sin almacén disponible
+    o con ``error_de_almacen``, su ``testigo_previo`` legítimo no lleva ``generacion``. Si B
+    prepara después observando la **misma ausencia** (``existia=False, sha256=None``) y persiste
+    un registro durable, el replay del CTA antiguo de A jamás puede consumir el testigo de B."""
+    ruta_store = tmp_path / NOMBRE_DEL_ARCHIVO
+    ruta_store.write_text("{corrupto", encoding="utf-8")
+    game = tmp_path / "Skyrim"
+    (game / "Data").mkdir(parents=True)
+    perfil = tmp_path / "profiles" / "Default"
+    perfil.mkdir(parents=True)
+    perfil.joinpath("plugins.txt").write_text(f"*{BASHED_PATCH_NAME}\n", encoding="utf-8")
+    overwrite = tmp_path / "overwrite"
+    overwrite.mkdir()
+    parche = overwrite / BASHED_PATCH_NAME
+    clave = clave_de_testigo(
+        plugins_txt=perfil / "plugins.txt",
+        destino_data=game / "Data" / BASHED_PATCH_NAME,
+    )
+
+    servicio = WryeBashPipelineService(
+        path_resolver=_resolver_real(game, tmp_path),
+        preflight=_preflight_verde(),
+        testigo_store=AlmacenJSON(ruta_store),
+    )
+
+    # 1. Preparación A con almacén ilegible: emite testigo en memoria SIN ``generacion``.
+    prep_a = await servicio.preparar_etapa_asistida(profile="Default")
+    assert prep_a["testigo_durable"] == "error_de_almacen"
+    assert prep_a["testigo_previo"] == {"existia": False, "sha256": None}
+    accion_a = resume_action_from_result("wrye_bash", prep_a)
+    assert accion_a is not None
+
+    # 2. Se repara el almacén; Preparación B observa la MISMA ausencia y guarda con generación.
+    ruta_store.unlink()
+    prep_b = await servicio.preparar_etapa_asistida(profile="Default")
+    assert prep_b["testigo_durable"] == "guardado"
+    durable_b = AlmacenJSON(ruta_store).leer(clave)
+    assert durable_b is not None and durable_b.existia is False
+
+    # 3. El operador construye el Bashed Patch.
+    parche.write_bytes(b"TES4_V1_" + b"\x88" * 56)
+
+    # 4. Una pestaña antigua ejecuta el CTA de A (sin ``generacion``): evalúa su payload,
+    #    pero NO puede consumir el registro durable de B.
+    ver_a = await servicio.ejecutar_fase_asistida(profile="Default", **accion_a["payload"])
+    assert ver_a["success"] is True
+    assert ver_a["testigo_origen"] == "payload"
+    assert ver_a["frescura_probada"] is True
+    assert AlmacenJSON(ruta_store).leer(clave) == durable_b
+
+    # 5. B verifica sin payload (p. ej. reapertura o agente LLM) y sigue demostrando frescura.
+    ver_b = await servicio.verificar_etapa_asistida(profile="Default")
+    assert ver_b["success"] is True
+    assert ver_b["testigo_origen"] == "durable"
+    assert ver_b["frescura_probada"] is True
+    assert AlmacenJSON(ruta_store).leer(clave) is None
+
+
+@pytest.mark.parametrize("generacion_invalida", [None, "", "A" * 32, "a" * 31, 123])
+def test_api_cas_exige_generacion_valida_y_prohibe_comodin_nulo(
+    tmp_path: pathlib.Path,
+    generacion_invalida: object,
+) -> None:
+    """Cierre estructural en el borde del almacén: ni ``TestigoDurable.coincide_con`` ni
+    ``olvidar_si_coincide`` (en memoria o JSON, incluso con almacén vacío) aceptan ``None`` o
+    cadenas malformadas como comodín."""
+    testigo = TestigoPrevio(existia=False, sha256=None)
+    durable = TestigoDurable.desde(testigo, observado_en="2026-11-04T12:00:00Z")
+    clave = _clave(tmp_path)
+
+    with pytest.raises(ValueError):
+        durable.coincide_con(testigo=testigo, generacion=generacion_invalida)  # type: ignore[arg-type]
+
+    for almacen in (AlmacenEnMemoria(), AlmacenJSON(tmp_path / NOMBRE_DEL_ARCHIVO)):
+        with pytest.raises(ValueError):
+            almacen.olvidar_si_coincide(
+                clave,
+                testigo=testigo,
+                generacion=generacion_invalida,  # type: ignore[arg-type]
+            )
+
+
 async def test_multi_pestana_gui_cta_obsoleto_no_borra_preparacion_posterior(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -876,7 +1110,7 @@ async def test_multi_pestana_gui_cta_obsoleto_no_borra_preparacion_posterior(
 
 
 def test_olvidar_si_coincide_en_origen_durable_no_borra_si_otra_preparacion_avanza_en_paralelo(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """En ``origen == 'durable'``, si entre ``leer`` y ``olvidar_si_coincide`` otra preparación
     ya reemplazó el slot con una generación nueva, el consumo condicional respeta la nueva."""
@@ -906,7 +1140,7 @@ def test_olvidar_si_coincide_en_origen_durable_no_borra_si_otra_preparacion_avan
         reemplazado.append(nuevo)
         return leido
 
-    almacen.leer = _leer_y_avanzar  # type: ignore[method-assign]
+    monkeypatch.setattr(almacen, "leer", _leer_y_avanzar)
     veredicto, origen = _verificar_con_almacen(
         artefacto=parche,
         plugins_txt=plugins_txt,
@@ -1374,7 +1608,7 @@ async def test_un_fallo_al_consumir_el_testigo_no_tumba_un_veredicto_valido(
             clave: ClaveDeTestigo,
             *,
             testigo: TestigoPrevio,
-            generacion: str | None = None,
+            generacion: str,
         ) -> bool:
             raise OSError("disco lleno justo al limpiar")
 
@@ -1437,6 +1671,25 @@ def test_produccion_solo_muta_el_almacen_con_operaciones_atomicas_y_condicionale
         "_preparar_con_almacen": {"sincronizar_preparacion"},
         "_verificar_con_almacen": {"olvidar_si_coincide"},
     }
+
+
+def test_firmas_cas_prohiben_default_en_generacion() -> None:
+    """Ancla de firma (P1 / #4470355912): ninguna variante de comparación o consumo CAS puede
+    reintroducir un valor por defecto en ``generacion`` (como ``None``), evitando que un
+    llamador olvide pasar la época y reactive el comodín."""
+    objetivos = (
+        ("TestigoDurable.coincide_con", TestigoDurable.coincide_con),
+        ("AlmacenDeTestigos.olvidar_si_coincide", AlmacenDeTestigos.olvidar_si_coincide),
+        ("AlmacenEnMemoria.olvidar_si_coincide", AlmacenEnMemoria.olvidar_si_coincide),
+        ("AlmacenJSON.olvidar_si_coincide", AlmacenJSON.olvidar_si_coincide),
+    )
+    for etiqueta, metodo in objetivos:
+        param = inspect.signature(metodo).parameters.get("generacion")
+        assert param is not None, f"{etiqueta} perdió el parámetro 'generacion'"
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY, f"{etiqueta}: 'generacion' debe ser keyword-only"
+        assert param.default is inspect.Parameter.empty, (
+            f"{etiqueta} reintrodujo default={param.default!r} en 'generacion'"
+        )
 
 
 def test_gui_y_servicio_delegan_en_parsear_testigo_de_payload() -> None:

@@ -17,9 +17,12 @@ sobre el perfil:
 - el sensor de **permisos** del preflight es un write-probe real —crea
   ``.skyclaw_probe_<uuid>.tmp`` en el destino (``overwrite`` en USVFS) y lo borra—, y si
   el borrado falla reporta ``probe_residue`` en amarillo;
-- cuando se inyecta ``testigo_store`` (PR D de ADR 0016 §7), la fase 1 guarda los 32 bytes
-  de observación previa en ``SystemPaths.runtime_state_dir() / "etapa6_testigos.json"``
-  (estado por usuario de Sky-Claw) y la fase 2 los consume al demostrar frescura.
+- cuando se inyecta ``testigo_store`` (PR D de ADR 0016 §7), la fase 1 persiste el
+  registro del testigo previo (ausencia probada ``existia=False, sha256=None`` o presencia
+  con SHA-256 cuando el artefacto era regular y legible; sin entrada si la observación fue
+  indeterminada) en ``SystemPaths.runtime_state_dir() / "etapa6_testigos.json"`` (estado por
+  usuario de Sky-Claw) y la fase 2 lo consume condicionalmente al demostrar frescura con su
+  propia época ``generacion``.
 
 1. ``preparar_etapa_asistida`` — instrucciones para el operador, huella previa del
    artefacto (persistida cuando hay ``testigo_store``, conservando la anterior si el
@@ -276,12 +279,20 @@ def _verificar_con_almacen(
         plugins_txt=plugins_txt,
         testigo=testigo,
     )
-    # Consumo condicional (CAS): sólo se borra el registro durable si coincide con el
-    # ``(testigo, generacion)`` que acaba de probar frescura. Un replay con payload de una
-    # preparación anterior mantiene ``payload > durable`` para su veredicto, pero no borra
-    # el testigo durable de una preparación posterior. Si el veredicto falló (p. ej.
-    # ``NO_HABILITADO``), tampoco se consume para permitir habilitar y reintentar.
-    if veredicto.frescura_probada and testigo is not None and almacen is not None and clave is not None:
+    # Consumo condicional (CAS): sólo se borra el registro durable cuando hay una época
+    # ``generacion`` explícita (proveniente de ``durable`` o de un payload que sí fue
+    # emitido desde una preparación durable) y coincide con ``(testigo, generacion)``. Un
+    # payload sin ``generacion`` (``NO_DISPONIBLE``, ``ERROR_DE_ALMACEN`` o legado de 2
+    # claves) jamás provino de un registro persistido y por tanto nunca toca el almacén,
+    # evitando colisiones entre observaciones idénticas (p. ej. ``existia=False``). Si el
+    # veredicto falló (p. ej. ``NO_HABILITADO``), tampoco se consume para permitir reintentar.
+    if (
+        veredicto.frescura_probada
+        and testigo is not None
+        and generacion_para_consumir is not None
+        and almacen is not None
+        and clave is not None
+    ):
         try:
             almacen.olvidar_si_coincide(
                 clave,
@@ -310,7 +321,7 @@ class WryeBashPipelineService:
     el artefacto ni el estado del juego, así que no hay nada que serializar ni transacción
     que abrir; el PR C retiró esas dependencias junto con ``execute_pipeline``. Las dos
     únicas escrituras son ajenas al parche (el write-probe del sensor de permisos y el
-    registro de 32 bytes del testigo durable): ver el docstring del módulo.
+    registro JSON del testigo durable): ver el docstring del módulo.
     """
 
     def __init__(
@@ -342,7 +353,7 @@ class WryeBashPipelineService:
         # estado DECLARADO, no un default silencioso: sin almacén la fase 1 responde
         # ``testigo_durable="no_disponible"`` y todo se comporta como antes del PR D.
         # NO es una dependencia del camino headless: no toma locks, no snapshotea y no
-        # abre TX — guarda 32 bytes de digest en un archivo propio.
+        # abre TX — persiste la observación previa (ausencia o SHA-256) en un archivo propio.
         self._testigo_store = testigo_store
 
     def _ensure_preflight(self, *, dominio: str | None = None, profile: str | None = None) -> PreflightService | None:

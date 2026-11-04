@@ -149,8 +149,8 @@ def test_la_firma_no_pide_las_dependencias_del_camino_muerto() -> None:
     dep_muertas = parametros & _DEPENDENCIAS_DEL_CAMINO_MUERTO
 
     assert dep_muertas == set(), f"la firma todavía pide dependencias del camino headless: {sorted(dep_muertas)}"
-    # ``testigo_store`` entró en el PR D (ADR 0016 §6/§7): persiste los 32 bytes de
-    # observación de la fase 1 en el estado por usuario; no toma locks ni abre TX.
+    # ``testigo_store`` entró en el PR D (ADR 0016 §6/§7): persiste el testigo previo de
+    # la fase 1 (ausencia o SHA-256) en el estado por usuario; no toma locks ni abre TX.
     assert parametros == {"path_resolver", "plugin_limit_guard", "preflight", "default_domain", "testigo_store"}
 
 

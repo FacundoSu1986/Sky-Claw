@@ -131,9 +131,11 @@ El retiro era la opción barata de *código* y la cara de *producto*.
   declarada que `etapas_previas_lods`: un artefacto viejo pasa el guard. Cerrarlo exige un registro
   de corridas por etapa que el repo no tiene.
 - **Persiste sólo el testigo vigente por slot, no un historial de corridas ni el `.esp`.**
-  Desde el PR D (§7.2), la fase 1 guarda los 32 bytes de observación previa en
-  `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` y la fase 2 los consume al
-  demostrar frescura; no reemplaza un registro histórico de etapas.
+  Desde el PR D (§7.2), la fase 1 persiste la observación previa (ausencia probada
+  `existia=False, sha256=None` o presencia con digest SHA-256 cuando el artefacto era regular y
+  legible; sin entrada cuando la observación fue indeterminada `SIN_OBSERVACION`) en
+  `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` y la fase 2 la consume
+  condicionalmente al demostrar frescura; no reemplaza un registro histórico de etapas.
 - **No detecta enlaces de forma TOCTOU-fuerte**: la clasificación es por `lstat` y la lectura es
   best-effort, igual que `artifact_digest`.
 
@@ -181,8 +183,9 @@ Sin testigo, la fase 2 igual es útil (existencia, tamaño y activación en `plu
 veredicto declara `frescura_probada=False`: honesto, aunque no sea el contrato completo.
 
 **Cómo sobrevive al cierre del panel (PR D, §7.2).** `ReactiveStore` es un diccionario en RAM:
-cerrar la GUI entre las dos fases borra el toast y su payload. `etapa6_testigos` persiste los
-32 bytes de observación previa en `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"`,
+cerrar la GUI entre las dos fases borra el toast y su payload. `etapa6_testigos` persiste la
+observación previa (ausencia `existia=False, sha256=None` o digest SHA-256 del artefacto regular)
+en `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"`,
 claveados por el **slot virtual** `(plugins_txt canónico, destino Data canónico)` (invariante
 cuando el parche pasa de `Data` ausente en la fase 1 a `overwrite` en la fase 2). Si el
 operador reabre la GUI después de construir y vuelve a pulsar la etapa 6,
@@ -381,8 +384,8 @@ prohíben copiar `DeploymentHandoff`:
 1. **`DeploymentHandoff` exige `source_tx_id NOT NULL REFERENCES transactions(transaction_id)`.** Su
    razón de vivir en `journal.db` es cerrar atómicamente «TX + handoff de un árbol que Sky-Claw
    escribió». La fase 1 de la etapa 6 **no abre TX** por principio (§2) y no escribe ningún árbol:
-   registra una *observación previa* de 32 bytes para comparar después, nunca autoridad de
-   provenance.
+   registra una *observación previa* (ausencia probada o huella SHA-256) para comparar después,
+   nunca autoridad de provenance.
 2. **La ruta ganadora del overlay cambia entre fases.** En la primera corrida el parche no existe en
    ninguna capa y `bashed_patch_en_overlay` cae al fondo (`<game>/Data/...`); cuando el operador
    construye dentro de MO2 bajo la USVFS, el archivo aparece en `overwrite/` o en `mods/<mod>/`.
@@ -414,7 +417,10 @@ locks globales del pipeline ni bloquear otras etapas:
    una sola sección crítica del almacén (`RLock` intraproceso + `flock`/`msvcrt.locking`
    cross-process sobre `.etapa6_testigos.json.lock`). Ninguna preparación concurrente sobre el mismo
    slot puede leer entre la decisión y la escritura de otra, ni resucitar un testigo consumido en
-   paralelo. Si el archivo JSON está corrupto, `_cargar_objeto` lanza
+   paralelo. Tanto `etapa6_testigos.json` como su `.lock` rechazan enlaces simbólicos/junctions y
+   cualquier archivo no regular (FIFOs, sockets, dispositivos o directorios) antes de abrir y tras
+   `os.open(..., O_NONBLOCK)` mediante `os.fstat(fd)`, evitando bloqueos indefinidos bajo sección
+   crítica. Si el archivo JSON está corrupto o es ilegible, `_cargar_objeto` lanza
    `AlmacenDeTestigosIlegibleError` antes de decidir —incluso cuando el artefacto tampoco tiene
    identidad— para que la fase 1 declare siempre `error_de_almacen` sin pisar la evidencia.
 2. **Época de preparación (`generacion`) y consumo condicional CAS (`olvidar_si_coincide`, P1).**
@@ -425,18 +431,21 @@ locks globales del pipeline ni bloquear otras etapas:
    idempotente sobre la misma huella conserva `generacion` (evitando testigos zombis si el cliente
    verifica con el primer payload), mientras que un ciclo nuevo tras consumo o cambio de huella base
    rota `generacion`. En la fase 2 sigue rigiendo `payload` > `durable` > `ninguno`
-   (`testigo_origen`) para evaluar el veredicto, pero la limpieza usa `olvidar_si_coincide(clave,
-   testigo=..., generacion=...)`: un replay con payload viejo de una preparación A anterior (p. ej.
-   CTA obsoleto en otra pestaña de la GUI) evalúa su propia evidencia sin borrar el testigo durable
-   de una preparación B posterior. Anclado por AST en `tests/test_etapa6_testigo_durable.py` (ningún
-   módulo de producción fuera de `etapa6_testigos.py` puede llamar `.guardar(` ni `.olvidar(`
-   incondicional).
+   (`testigo_origen`) para evaluar el veredicto, pero la limpieza sólo se ejecuta cuando el testigo
+   verificado porta una `generacion` explícita y usa `olvidar_si_coincide(clave, testigo=...,
+   generacion=...)` (sin comodín `None` permitido en la firma ni en runtime): ni un replay con
+   payload viejo de una preparación A anterior ni un payload legítimo sin `generacion`
+   (`no_disponible` o `error_de_almacen`, p. ej. con `existia=False, sha256=None`) pueden borrar el
+   testigo durable de una preparación B posterior. Anclado por AST y por inspección de firma en
+   `tests/test_etapa6_testigo_durable.py`.
 
 **Efecto sobre la superficie del agente LLM.** `GenerateBashedPatchParams` sigue exponiendo sólo
 `fase` (`extra="forbid"`, A-4 intacto: el modelo jamás puede inyectar un hash), pero como
 `system_tools.generate_bashed_patch` inyecta `almacen_por_defecto()`, una sesión que llamó
 `fase="preparar"` deja el testigo en disco y otra sesión posterior que llame `fase="verificar"`
-ahora demuestra `frescura_probada=True` sin confiar en el modelo.
+**tras construir o regenerar el parche** demuestra `frescura_probada=True` sin confiar en el modelo
+(si el artefacto no apareció o conserva la misma huella que el testigo, el veredicto falla con
+`SIN_CAMBIO` y `frescura_probada=False`).
 
 ## 8. Revisión adversarial del propio PR (2026-10-30)
 
