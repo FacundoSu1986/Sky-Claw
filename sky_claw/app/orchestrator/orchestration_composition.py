@@ -55,6 +55,7 @@ from sky_claw.local.tools.dyndolod_uia_driver_ejecutor import EjecutorDePasoPorH
 from sky_claw.local.tools.dyndolod_uia_ejecutor import EjecutorGatePorHelper
 from sky_claw.local.tools.dyndolod_uia_gate import CapacidadDeReadinessUIA
 from sky_claw.local.tools.dyndolod_workspace import construir_coordinacion_de_etapa9
+from sky_claw.local.tools.etapa6_testigos import almacen_por_defecto
 from sky_claw.local.tools.grass_cache_service import GrassCacheService
 from sky_claw.local.tools.loot_service import LootSortingService
 from sky_claw.local.tools.pandora_service import PandoraPipelineService
@@ -306,14 +307,14 @@ def build_orchestration_composition(
         runtime_deps_provider=grass_runtime_deps_provider,
     )
 
-    # Etapa 6 ASISTIDA (ADR 0016). El servicio sólo prepara y verifica: no muta, así
-    # que NO recibe lock, snapshot manager ni journal — el PR C retiró el camino
-    # headless (``execute_pipeline``) que los usaba, después de medir cero callers de
-    # producción. El guard M-04 (compartido, expuesto por ``validate_plugin_limit``) sí
-    # se inyecta desde acá porque no es exclusivo de Wrye Bash.
+    # Etapa 6 ASISTIDA (ADR 0016). El servicio prepara y verifica sin mutar el parche ni
+    # el perfil, así que NO recibe lock, snapshot manager ni journal (retirados en el PR C).
+    # El guard M-04 compartido y el almacén por usuario del testigo previo (PR D: permite
+    # demostrar frescura aunque la GUI se cierre entre las dos fases) sí se inyectan acá.
     wrye_bash_service = WryeBashPipelineService(
         path_resolver=path_resolver,
         plugin_limit_guard=plugin_limit_guard,
+        testigo_store=almacen_por_defecto(),
     )
 
     # ------------------------------------------------------------------

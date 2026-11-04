@@ -11,20 +11,28 @@ después del PR B no quedaba **ningún** caller de producción.
 
 Lo que queda es lo que el servicio hace hoy, y **no muta el artefacto, el perfil ni el
 load order**: no toma locks, no abre TX ni emite caja negra. Ojo con leer eso como "no
-escribe un solo byte": el sensor de **permisos** del preflight es un write-probe real
-—crea ``.skyclaw_probe_<uuid>.tmp`` en el destino y lo borra— y en el dominio USVFS el
-destino sondeado es el ``overwrite`` del perfil. Es la única escritura de la etapa, es
-transitoria, y si el borrado falla el servicio **reporta el residuo** (amarillo, no
-bloqueante) en vez de tragárselo (ver ``tests/test_wrye_bash_asistida.py``, contrato de
-escritura de la fase 1).
+escribe un solo byte": hay exactamente **dos** escrituras, ninguna sobre el parche ni
+sobre el perfil:
+
+- el sensor de **permisos** del preflight es un write-probe real —crea
+  ``.skyclaw_probe_<uuid>.tmp`` en el destino (``overwrite`` en USVFS) y lo borra—, y si
+  el borrado falla reporta ``probe_residue`` en amarillo;
+- cuando se inyecta ``testigo_store`` (PR D de ADR 0016 §7), la fase 1 persiste el
+  registro del testigo previo (ausencia probada ``existia=False, sha256=None`` o presencia
+  con SHA-256 cuando el artefacto era regular y legible; sin entrada si la observación fue
+  indeterminada) en ``SystemPaths.runtime_state_dir() / "etapa6_testigos.json"`` (estado por
+  usuario de Sky-Claw) y la fase 2 lo consume condicionalmente al demostrar frescura con su
+  propia época ``generacion``.
 
 1. ``preparar_etapa_asistida`` — instrucciones para el operador, huella previa del
-   artefacto y estado del parche en el ``plugins.txt`` del perfil. No muta: no toma
-   locks, no abre TX, no emite caja negra, y declara ``success=False`` con
-   ``pendiente=True`` porque preparar no construye nada.
+   artefacto (persistida cuando hay ``testigo_store``, conservando la anterior si el
+   operador ya construyó entre dos preparaciones) y estado del parche en el
+   ``plugins.txt`` del perfil. Declara ``success=False`` con ``pendiente=True`` porque
+   preparar no construye nada.
 2. ``verificar_etapa_asistida`` — veredicto por evidencia en disco (existencia, regular,
-   no vacío, habilitado en el perfil) y frescura **sólo** si el llamador trae el testigo
-   de la fase 1. No se deriva de ningún exit code: no hay subproceso que consultar.
+   no vacío, habilitado en el perfil) y frescura comparando contra el testigo del payload
+   o, si el llamador no trajo uno (GUI cerrada o agente LLM), contra el testigo durable.
+   No se deriva de ningún exit code: no hay subproceso que consultar.
 3. ``ejecutar_fase_asistida`` — el punto ÚNICO de enrutado que eligen las tres
    superficies de producción (dispatcher de la GUI, ``SupervisorAgent`` y la tool del
    agente LLM).
@@ -40,20 +48,27 @@ el supervisor en vez de vivir acá.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import enum
 import logging
 import pathlib
-import re
 import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
+from sky_claw.local.tools.etapa6_testigos import AlmacenDeTestigos, clave_de_testigo
 from sky_claw.local.tools.output_targets import ArtefactoEnOverlay, bashed_patch_en_overlay, bashed_patch_target
 from sky_claw.local.tools.wrye_bash_asistida import (
     FASE_PREPARAR,
     FASE_VERIFICAR,
     FASES_ASISTIDAS,
+    OrigenDelTestigo,
+    PreparacionAsistida,
+    TestigoDePayload,
     TestigoPrevio,
+    VeredictoAsistido,
+    parsear_testigo_de_payload,
     preparacion_como_resultado,
     preparar_etapa_asistida,
     veredicto_como_resultado,
@@ -78,6 +93,31 @@ _ETAPA_WRYE_BASH = 6
 DOMINIO_FISICO = "physical"
 DOMINIO_USVFS = "usvfs"
 
+
+class EstadoDelTestigoDurable(enum.StrEnum):
+    """Partición total de qué hizo la fase 1 con el testigo durable (``testigo_durable``).
+
+    - ``guardado``: se persistió la observación de esta corrida.
+    - ``conservado_por_build``: el artefacto apareció o cambió de contenido respecto del
+      testigo durable; se conserva y devuelve el testigo de ANTES para no comparar el
+      parche contra sí mismo en la fase 2.
+    - ``conservado_sin_observacion``: esta corrida no pudo identificar el artefacto
+      (enlace, directorio, lectura fallida) y se conserva el testigo durable previo.
+    - ``sin_observacion``: almacén disponible sin testigo previo, y esta corrida tampoco
+      pudo identificar el artefacto — no hay observación honesta que guardar.
+    - ``no_disponible``: no se inyectó almacén; comportamiento previo al PR D.
+    - ``error_de_almacen``: leer o guardar en el almacén falló. La fase 1 sigue y el
+      testigo en memoria viaja igual en el payload; se pierde la durabilidad y se declara.
+    """
+
+    GUARDADO = "guardado"
+    CONSERVADO_POR_BUILD = "conservado_por_build"
+    CONSERVADO_SIN_OBSERVACION = "conservado_sin_observacion"
+    SIN_OBSERVACION = "sin_observacion"
+    NO_DISPONIBLE = "no_disponible"
+    ERROR_DE_ALMACEN = "error_de_almacen"
+
+
 #: Separadores de ruta que no pueden aparecer en un nombre de perfil: ``_plugins_txt_path`` une
 #: ``profiles/<perfil>/plugins.txt``, así que un separador o un componente ``.`` / ``..`` saldría del
 #: árbol de la instancia (ADR 0016, fase 2).
@@ -89,32 +129,22 @@ _SEPARADORES_DE_PERFIL = ("/", "\\", ":")
 _NOMBRE_MODLIST = "modlist.txt"
 
 
-def _testigo_desde_resultado(testigo_previo: dict[str, object] | None) -> TestigoPrevio | None:
-    """Reconstruye el ``TestigoPrevio`` que viajó por el tool-result, o ``None``.
+def _testigo_desde_resultado(testigo_previo: dict[str, object] | None) -> TestigoDePayload | None:
+    """Reconstruye el :class:`TestigoDePayload` que viajó por el tool-result, o ``None``.
 
-    Falla cerrado: una forma inesperada (falta una clave, tipo equivocado) devuelve
-    ``None`` — el veredicto sigue siendo válido pero declara la frescura no probada, en
-    vez de inventar un testigo que después daría un ``SIN_CAMBIO`` falso.
-
-    Eso incluye la combinación **imposible** ``{existia: True, sha256: None}``: "estaba,
-    pero no sé cuál". Los tipos por separado la aceptaban (``bool`` y ``None`` son
-    válidos cada uno) y el resultado era un testigo que hacía
-    ``frescura_demostrable() == True`` por la vía de ``sha256 != huella.sha256`` aunque
-    la fase 1 nunca hubiera podido identificar el archivo. El invariante vive en
-    ``TestigoPrevio.__post_init__``: acá se traduce su rechazo a ``None``.
+    Falla cerrado delegando en :func:`parsear_testigo_de_payload` (la misma definición que
+    consume ``ritual_runner._testigo_utilizable``): una clave faltante, extra o un tipo
+    inválido devuelve ``None`` y declara frescura no probada sin caer en silencio al estado
+    de disco.
     """
-    if not isinstance(testigo_previo, dict):
-        return None
-    existia, sha256 = testigo_previo.get("existia"), testigo_previo.get("sha256")
-    if not isinstance(existia, bool) or not (sha256 is None or isinstance(sha256, str)):
-        return None
-    if sha256 is not None and re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
-        return None
-    try:
-        return TestigoPrevio(existia=existia, sha256=sha256)
-    except ValueError:
-        logger.warning("[FASE-6-asistida] testigo_previo inconsistente descartado: %r", testigo_previo)
-        return None
+    parseado = parsear_testigo_de_payload(testigo_previo)
+    if parseado is None and testigo_previo is not None:
+        logger.warning(
+            "[FASE-6-asistida] testigo_previo inconsistente descartado: %r",
+            testigo_previo,
+            extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+        )
+    return parseado
 
 
 def _normalizar_dominio(dominio: str | None, *, default: str = DOMINIO_FISICO) -> str:
@@ -142,20 +172,156 @@ def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) ->
     return result
 
 
+def _preparar_con_almacen(
+    *,
+    artefacto: pathlib.Path,
+    plugins_txt: pathlib.Path,
+    destino_data: pathlib.Path | None,
+    almacen: AlmacenDeTestigos | None,
+) -> tuple[PreparacionAsistida, EstadoDelTestigoDurable, bool]:
+    """Ejecuta la observación de fase 1 y la sincroniza atómicamente con el almacén durable."""
+    if almacen is None or destino_data is None:
+        return (
+            preparar_etapa_asistida(artefacto=artefacto, plugins_txt=plugins_txt),
+            EstadoDelTestigoDurable.NO_DISPONIBLE,
+            False,
+        )
+
+    clave = clave_de_testigo(plugins_txt=plugins_txt, destino_data=destino_data)
+    observadas: list[PreparacionAsistida] = []
+
+    def _observar_en_transaccion() -> TestigoPrevio | None:
+        prep = preparar_etapa_asistida(artefacto=artefacto, plugins_txt=plugins_txt)
+        observadas.append(prep)
+        return prep.testigo_previo
+
+    try:
+        sincronizado = almacen.sincronizar_preparacion(clave, _observar_en_transaccion)
+    except OSError as exc:
+        logger.warning(
+            "[FASE-6-asistida] No se pudo sincronizar el almacén de testigos (%s): se continúa con el testigo en memoria.",
+            exc,
+            extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+        )
+        en_memoria = (
+            observadas[-1] if observadas else preparar_etapa_asistida(artefacto=artefacto, plugins_txt=plugins_txt)
+        )
+        return en_memoria, EstadoDelTestigoDurable.ERROR_DE_ALMACEN, False
+
+    preparacion = observadas[-1]
+    decision = sincronizado.decision
+    durable = sincronizado.durable
+    generacion = None if durable is None else durable.generacion
+    if decision.testigo != preparacion.testigo_previo or generacion is not None:
+        preparacion = dataclasses.replace(
+            preparacion,
+            testigo_previo=decision.testigo,
+            generacion=generacion if decision.testigo is not None else None,
+        )
+
+    if decision.persistir and decision.testigo is not None:
+        return preparacion, EstadoDelTestigoDurable.GUARDADO, False
+    if decision.construido_despues:
+        return preparacion, EstadoDelTestigoDurable.CONSERVADO_POR_BUILD, True
+    if decision.origen is OrigenDelTestigo.DURABLE:
+        return preparacion, EstadoDelTestigoDurable.CONSERVADO_SIN_OBSERVACION, False
+    return preparacion, EstadoDelTestigoDurable.SIN_OBSERVACION, False
+
+
+def _verificar_con_almacen(
+    *,
+    artefacto: pathlib.Path,
+    plugins_txt: pathlib.Path,
+    destino_data: pathlib.Path | None,
+    testigo_previo: dict[str, object] | None,
+    almacen: AlmacenDeTestigos | None,
+) -> tuple[VeredictoAsistido, OrigenDelTestigo]:
+    """Ejecuta el veredicto de fase 2 con precedencia payload > durable y consumo CAS."""
+    clave = (
+        clave_de_testigo(plugins_txt=plugins_txt, destino_data=destino_data)
+        if almacen is not None and destino_data is not None
+        else None
+    )
+    generacion_para_consumir: str | None = None
+    if testigo_previo is not None:
+        del_payload = _testigo_desde_resultado(testigo_previo)
+        if del_payload is not None:
+            testigo: TestigoPrevio | None = del_payload.testigo
+            generacion_para_consumir = del_payload.generacion
+            origen = OrigenDelTestigo.PAYLOAD
+        else:
+            # Un payload explícito malformado no se sustituye en silencio por estado de disco.
+            testigo = None
+            origen = OrigenDelTestigo.NINGUNO
+    elif almacen is not None and clave is not None:
+        try:
+            durable = almacen.leer(clave)
+        except OSError as exc:
+            logger.warning(
+                "[FASE-6-asistida] No se pudo leer el almacén de testigos al verificar (%s): frescura no probada.",
+                exc,
+                extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+            )
+            durable = None
+        if durable is not None:
+            testigo = durable.como_testigo_previo()
+            generacion_para_consumir = durable.generacion
+            origen = OrigenDelTestigo.DURABLE
+        else:
+            testigo = None
+            origen = OrigenDelTestigo.NINGUNO
+    else:
+        testigo = None
+        origen = OrigenDelTestigo.NINGUNO
+
+    veredicto = veredicto_etapa_asistida(
+        artefacto=artefacto,
+        plugins_txt=plugins_txt,
+        testigo=testigo,
+    )
+    # Consumo condicional (CAS): sólo se borra el registro durable cuando hay una época
+    # ``generacion`` explícita (proveniente de ``durable`` o de un payload que sí fue
+    # emitido desde una preparación durable) y coincide con ``(testigo, generacion)``. Un
+    # payload sin ``generacion`` (``NO_DISPONIBLE``, ``ERROR_DE_ALMACEN`` o legado de 2
+    # claves) jamás provino de un registro persistido y por tanto nunca toca el almacén,
+    # evitando colisiones entre observaciones idénticas (p. ej. ``existia=False``). Si el
+    # veredicto falló (p. ej. ``NO_HABILITADO``), tampoco se consume para permitir reintentar.
+    if (
+        veredicto.frescura_probada
+        and testigo is not None
+        and generacion_para_consumir is not None
+        and almacen is not None
+        and clave is not None
+    ):
+        try:
+            almacen.olvidar_si_coincide(
+                clave,
+                testigo=testigo,
+                generacion=generacion_para_consumir,
+            )
+        except OSError as exc:
+            logger.warning(
+                "[FASE-6-asistida] El parche es válido y fresco, pero no se pudo limpiar el testigo durable (%s).",
+                exc,
+                extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+            )
+    return veredicto, origen
+
+
 class WryeBashPipelineService:
     """Las dos fases asistidas de la etapa 6 (ADR 0016): preparar y verificar.
 
     Dependencias inyectadas (DI): ``path_resolver`` para ubicar el artefacto, el perfil y
     el ``plugins.txt``; ``preflight`` para los sensores (inyectado = el llamador ya eligió
-    el dominio); ``plugin_limit_guard`` (guard M-04 compartido) opcional — si no se inyecta,
-    no se valida el límite de plugins, que es honesto: no hay gate que mienta verde.
+    el dominio); ``plugin_limit_guard`` (guard M-04 compartido) opcional; y
+    ``testigo_store`` (PR D de ADR 0016 §7) para que el testigo de la fase 1 sobreviva al
+    cierre de la GUI y a las llamadas sin estado del agente LLM.
 
     **Sin locks, sin snapshot manager y sin journal, a propósito.** Las dos fases no mutan
     el artefacto ni el estado del juego, así que no hay nada que serializar ni transacción
-    que abrir; el PR C retiró esas dependencias junto con ``execute_pipeline`` (ver el
-    docstring del módulo). Aceptarlas "por compatibilidad" invitaría a reconstruir el camino
-    headless por partes. La excepción declarada es el write-probe del sensor de permisos,
-    que no toca el parche: ver ese mismo docstring.
+    que abrir; el PR C retiró esas dependencias junto con ``execute_pipeline``. Las dos
+    únicas escrituras son ajenas al parche (el write-probe del sensor de permisos y el
+    registro JSON del testigo durable): ver el docstring del módulo.
     """
 
     def __init__(
@@ -165,6 +331,7 @@ class WryeBashPipelineService:
         plugin_limit_guard: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
         preflight: PreflightService | None = None,
         default_domain: str = DOMINIO_FISICO,
+        testigo_store: AlmacenDeTestigos | None = None,
     ) -> None:
         self._path_resolver = path_resolver
         self._plugin_limit_guard = plugin_limit_guard
@@ -182,6 +349,12 @@ class WryeBashPipelineService:
         self._preflight_cache: dict[tuple[str, str | None], PreflightService] = {}
         self._preflight_lock = threading.Lock()
         self._default_domain = default_domain
+        # Almacén del testigo previo entre fases (PR D de ADR 0016 §7). ``None`` es un
+        # estado DECLARADO, no un default silencioso: sin almacén la fase 1 responde
+        # ``testigo_durable="no_disponible"`` y todo se comporta como antes del PR D.
+        # NO es una dependencia del camino headless: no toma locks, no snapshotea y no
+        # abre TX — persiste la observación previa (ausencia o SHA-256) en un archivo propio.
+        self._testigo_store = testigo_store
 
     def _ensure_preflight(self, *, dominio: str | None = None, profile: str | None = None) -> PreflightService | None:
         """Construye perezosamente el preflight de Wrye Bash (T-16c, PR B, FASE 6).
@@ -481,10 +654,11 @@ class WryeBashPipelineService:
         Una invocación que no puede construir el parche no debe dejar una TX ``rolled_back``
         por ritual.
 
-        **La única escritura es el write-probe de permisos**, y no es del parche: el sensor
-        crea y borra un ``.skyclaw_probe_<uuid>.tmp`` en el destino (``overwrite`` en este
-        dominio) para probar que se puede escribir ahí. Si el borrado falla, el reporte
-        viaja con ``probe_residue`` en amarillo — no bloquea, pero el operador se entera.
+        **Ninguna escritura toca el parche ni el perfil**: el sensor de permisos crea y
+        borra ``.skyclaw_probe_<uuid>.tmp`` en el destino (``overwrite`` en USVFS,
+        reportando ``probe_residue`` en amarillo si el borrado falla), y cuando hay
+        ``testigo_store`` se registra la observación previa en el estado por usuario de
+        Sky-Claw (conservando la anterior si el operador ya construyó entre dos llamadas).
 
         El preflight SÍ corre y **bloquea** en rojo: mandar al operador a un paso manual
         que ya sabemos que va a fallar (``Data`` sin permisos, master faltante, límite de
@@ -583,10 +757,18 @@ class WryeBashPipelineService:
                     preflight_report,
                 )
 
-            preparacion = await asyncio.to_thread(
-                preparar_etapa_asistida, artefacto=artefacto.ruta, plugins_txt=plugins_txt
+            destino_data = self._bashed_patch_path()
+            preparacion, estado_durable, construido_despues = await asyncio.to_thread(
+                _preparar_con_almacen,
+                artefacto=artefacto.ruta,
+                plugins_txt=plugins_txt,
+                destino_data=destino_data,
+                almacen=self._testigo_store,
             )
-            return _attach_preflight(preparacion_como_resultado(preparacion), preflight_report)
+            resultado = preparacion_como_resultado(preparacion)
+            resultado["testigo_durable"] = estado_durable.value
+            resultado["construido_despues_de_la_preparacion"] = construido_despues
+            return _attach_preflight(resultado, preflight_report)
         except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
             logger.error(
                 "[FASE-6-asistida] Error inesperado preparando la etapa: %s",
@@ -614,12 +796,14 @@ class WryeBashPipelineService:
         Patch de decenas de MB no puede bloquear el event loop del daemon.
 
         ``testigo_previo`` es el campo homónimo que devolvió :meth:`preparar_etapa_asistida`.
-        Sin él el veredicto puede ser verde pero declara ``frescura_probada=False``: no se
-        inventa un cambio por ``mtime``. Con él, un archivo idéntico es ``SIN_CAMBIO`` y
-        uno que no existía en la fase 1 prueba frescura por su sola aparición.
+        Cuando es ``None`` (GUI cerrada entre fases o llamada del agente LLM), se consulta
+        ``testigo_store``; el origen efectivo viaja en ``testigo_origen`` (``payload``,
+        ``durable`` o ``ninguno``). Si el veredicto demuestra frescura se consume el
+        testigo durable para que una preparación futura no lo reutilice.
 
-        Un diccionario malformado se descarta (``None``) en vez de adivinar: peor que no
-        tener testigo es tener uno inventado.
+        Un diccionario explícito malformado se descarta (``None``, ``testigo_origen="ninguno"``)
+        sin caer al almacén ni consumirlo: peor que no probar frescura es disfrazar un
+        payload corrupto.
         """
         try:
             if not _perfil_es_usable(profile):
@@ -655,13 +839,18 @@ class WryeBashPipelineService:
                     ),
                 }
 
-            veredicto = await asyncio.to_thread(
-                veredicto_etapa_asistida,
+            destino_data = self._bashed_patch_path()
+            veredicto, origen = await asyncio.to_thread(
+                _verificar_con_almacen,
                 artefacto=artefacto.ruta,
                 plugins_txt=plugins_txt,
-                testigo=_testigo_desde_resultado(testigo_previo),
+                destino_data=destino_data,
+                testigo_previo=testigo_previo,
+                almacen=self._testigo_store,
             )
-            return veredicto_como_resultado(veredicto)
+            resultado = veredicto_como_resultado(veredicto)
+            resultado["testigo_origen"] = origen.value
+            return resultado
         except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
             logger.error(
                 "[FASE-6-asistida] Error inesperado verificando la etapa: %s",

@@ -130,7 +130,12 @@ El retiro era la opción barata de *código* y la cara de *producto*.
 - **No prueba que se haya regenerado después del último cambio de load order.** Misma limitación
   declarada que `etapas_previas_lods`: un artefacto viejo pasa el guard. Cerrarlo exige un registro
   de corridas por etapa que el repo no tiene.
-- **No persiste la huella previa.** Hoy la transporta el caller entre fases (§7, PR D).
+- **Persiste sólo el testigo vigente por slot, no un historial de corridas ni el `.esp`.**
+  Desde el PR D (§7.2), la fase 1 persiste la observación previa (ausencia probada
+  `existia=False, sha256=None` o presencia con digest SHA-256 cuando el artefacto era regular y
+  legible; sin entrada cuando la observación fue indeterminada `SIN_OBSERVACION`) en
+  `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` y la fase 2 la consume
+  condicionalmente al demostrar frescura; no reemplaza un registro histórico de etapas.
 - **No detecta enlaces de forma TOCTOU-fuerte**: la clasificación es por `lstat` y la lectura es
   best-effort, igual que `artifact_digest`.
 
@@ -177,10 +182,18 @@ de ofrecer el botón — no en el servicio, porque el payload es lo que el opera
 Sin testigo, la fase 2 igual es útil (existencia, tamaño y activación en `plugins.txt`) y el
 veredicto declara `frescura_probada=False`: honesto, aunque no sea el contrato completo.
 
-**Lo que sigue faltando (PR D).** El testigo vive lo que vive el resultado en el panel. Si la
-GUI se cierra entre las dos fases, la verificación corre sin él. Persistirlo entre sesiones
-(patrón `texgen_handoff`) es lo que convierte «verificable» en «verificable siempre», y es la
-razón por la que el PR D no queda vacío.
+**Cómo sobrevive al cierre del panel (PR D, §7.2).** `ReactiveStore` es un diccionario en RAM:
+cerrar la GUI entre las dos fases borra el toast y su payload. `etapa6_testigos` persiste la
+observación previa (ausencia `existia=False, sha256=None` o digest SHA-256 del artefacto regular)
+en `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"`,
+claveados por el **slot virtual** `(plugins_txt canónico, destino Data canónico)` (invariante
+cuando el parche pasa de `Data` ausente en la fase 1 a `overwrite` en la fase 2). Si el
+operador reabre la GUI después de construir y vuelve a pulsar la etapa 6,
+`decidir_testigo_de_preparacion` detecta que el artefacto apareció o cambió respecto del
+testigo durable, **conserva** la observación previa al build (`conservado_por_build`) y la
+entrega en el payload del nuevo CTA para que la fase 2 demuestre frescura en vez de fallar con
+`SIN_CAMBIO`. Y en llamadas directas a `verificar` sin payload (agente LLM o API), el servicio
+lee el testigo durable del almacén y lo consume al probar frescura.
 
 ## 7. Secuencia de PRs — y por qué se parte
 
@@ -198,7 +211,7 @@ y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de
   ese campo (verificado por grep), así que una etapa *asistida* se habría visto como *fallida*.
   El marcador era explícitamente provisional: «El mapeo se decide y se congela junto con el
   cableado». Se retiró en el PR B junto con su consumidor (§9, ronda 8).
-- **PR B (este):** cablea **las tres** superficies en el mismo PR:
+- **PR B (mergeado, #853):** cablea **las tres** superficies en el mismo PR:
 
   | Superficie | Antes | Ahora |
   | --- | --- | --- |
@@ -225,16 +238,17 @@ y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de
   consumidores comparten el predicado (`tool_result.es_etapa_pendiente`) para que no puedan
   divergir. El estado `AWAITING_OPERATOR` **no tiene hoy ningún consumidor de UI** (verificado
   por grep): el que el humano ve es el toast, y ese era el que mentía.
-- **PR C (este): retira el camino headless `execute_pipeline` — sin compat.** La decisión, la
+- **PR C (mergeado, #862): retira el camino headless `execute_pipeline` — sin compat.** La decisión, la
   evidencia que la sostiene y el mapeo test-por-test están en **§7.1**. En una línea: cero callers
   de producción, un hueco de saneo que **se cierra por retiro** en vez de por parche, y 36 tests
   que sólo podían pasar contra código inalcanzable. Los 9 de `tests/test_wrye_bash_lock.py` **no**
-  se retiran: se reescribieron en el PR B al contrato nuevo y acá se actualizan otra vez al perder
+  se retiran: se reescribieron en el PR B al contrato nuevo y se actualizaron otra vez al perder
   el handler sus últimos parámetros (anclan la superficie del agente, no el servicio).
-- **PR D:** persistir el handoff de la fase 1 (huella previa durable, patrón `texgen_handoff`) para
-  que la frescura no dependa de que el resultado siga vivo en el panel. El affordance de la fase 2
-  **ya no** es deuda: entró en el PR B (§6) junto con el `payload` explícito de
-  `run_ritual_resume`; lo que falta es que el testigo sobreviva el cierre de la GUI, no el botón.
+- **PR D (este): testigo durable entre sesiones (`etapa6_testigos`).** El detalle de por qué no se
+  copia `DeploymentHandoff`, cómo se identifica el slot virtual y qué hace la preparación ante un
+  build intermedio está en **§7.2**. Cableado en **ambos** sitios productivos de construcción del
+  servicio (`orchestration_composition` y `system_tools.generate_bashed_patch`, anclados por AST y
+  oráculo conductual en `tests/test_etapa6_testigo_durable.py`).
 - **Deuda declarada (PR B): la compuerta HITL sigue sobre `generate_bashed_patch`.** El ítem 8 de §2
   dice que la fase 2 «no requiere HITL», pero `tool_dispatcher.py` registra la estrategia con
   `_destructive_middleware` y la tool sigue en `DESTRUCTIVE_TOOL_PATTERNS`. Efecto medido leyendo
@@ -360,6 +374,82 @@ ninguno, se declaró la desaparición y queda escrito por qué. (3) `test_wrye_b
 poder pasarle `lock_manager`, `snapshot_manager`, `journal` y un runner al handler: los 9 tests se
 adaptaron **sin perder ninguno** (el de "no invoca el runner" pasó a "no admite un runner", que es
 más fuerte).
+
+### 7.2 PR D — testigo durable entre sesiones: decisiones de diseño (2026-11-04)
+
+El borrador original de §6/§7 citaba el «patrón `texgen_handoff`» como referencia conceptual. Al
+contrastarlo contra `sky_claw/app/db/handoffs.py` aparecen tres diferencias estructurales que
+prohíben copiar `DeploymentHandoff`:
+
+1. **`DeploymentHandoff` exige `source_tx_id NOT NULL REFERENCES transactions(transaction_id)`.** Su
+   razón de vivir en `journal.db` es cerrar atómicamente «TX + handoff de un árbol que Sky-Claw
+   escribió». La fase 1 de la etapa 6 **no abre TX** por principio (§2) y no escribe ningún árbol:
+   registra una *observación previa* (ausencia probada o huella SHA-256) para comparar después,
+   nunca autoridad de provenance.
+2. **La ruta ganadora del overlay cambia entre fases.** En la primera corrida el parche no existe en
+   ninguna capa y `bashed_patch_en_overlay` cae al fondo (`<game>/Data/...`); cuando el operador
+   construye dentro de MO2 bajo la USVFS, el archivo aparece en `overwrite/` o en `mods/<mod>/`.
+   Clavear por `artefacto.ruta` fallaría el 100 % de las primeras corridas. `ClaveDeTestigo`
+   identifica el **slot virtual** con el par canónico `(plugins_txt, destino_data)` (serializado en
+   JSON como arreglo de dos elementos, inyectivo para cualquier carácter de ruta): fija instancia de
+   MO2, perfil e instalación del juego sin acoplarse a la capa ganadora.
+3. **Ubicación por usuario (`SystemPaths.runtime_state_dir()`), no `.skyclaw_backups/`.** Siguiendo
+   ADR 0011 P0.2 (`sky_claw/config.py:138`), el archivo vive en
+   `~/.sky_claw/state/etapa6_testigos.json`, resuelto perezosamente al operar: dos procesos lanzados
+   desde `cwd` distintos comparten el testigo y la fixture autouse de `tests/conftest.py` lo aísla
+   por test sin ensuciar el árbol de trabajo.
+
+**Qué pasa al reabrir la GUI en frío, en multi-pestaña y bajo concurrencia (Review #5770094299,
+P1 + P2).** `ReactiveStore` vive en RAM: al reabrir la GUI el toast ya no existe, así que el
+operador vuelve a pulsar la etapa 6 (`preparar`) para obtener el CTA de verificación. Si esa
+segunda `preparar` sobrescribiera el testigo con el parche recién construido, la fase 2 compararía
+el archivo contra sí mismo y fallaría con `SIN_CAMBIO`. La función pura
+`decidir_testigo_de_preparacion` separa los casos y el servicio declara una partición total en
+`EstadoDelTestigoDurable` (`guardado`, `conservado_por_build`, `conservado_sin_observacion`,
+`sin_observacion`, `no_disponible`, `error_de_almacen`): ante un build intermedio conserva el
+testigo anterior y lo devuelve en `testigo_previo` (`construido_despues_de_la_preparacion=True`).
+
+Dos invariantes cierran las carreras de estado entre sesiones, pestañas o procesos sin introducir
+locks globales del pipeline ni bloquear otras etapas:
+
+1. **Transacción atómica por almacén (`sincronizar_preparacion`, P2).** `AlmacenEnMemoria` y
+   `AlmacenJSON` ejecutan la secuencia completa `cargar → observar → decidir → escribir` dentro de
+   una sola sección crítica del almacén (`RLock` intraproceso + `flock`/`msvcrt.locking`
+   cross-process sobre `.etapa6_testigos.json.lock`). Ninguna preparación concurrente sobre el mismo
+   slot puede leer entre la decisión y la escritura de otra, ni resucitar un testigo consumido en
+   paralelo. Tanto `etapa6_testigos.json` como su `.lock` rechazan enlaces simbólicos/junctions y
+   cualquier archivo no regular (FIFOs, sockets, dispositivos o directorios) antes de abrir y tras
+   `os.open(..., O_NONBLOCK)` mediante `os.fstat(fd)`, evitando bloqueos indefinidos bajo sección
+   crítica. Si el archivo JSON está corrupto o es ilegible, `_cargar_objeto` lanza
+   `AlmacenDeTestigosIlegibleError` antes de decidir —incluso cuando el artefacto tampoco tiene
+   identidad— para que la fase 1 declare siempre `error_de_almacen` sin pisar la evidencia.
+2. **Época de preparación (`generacion`) y consumo condicional CAS (`olvidar_si_coincide`, P1).**
+   Cada época de preparación emite un identificador opaco de 128 bits (`generacion`, 32 hex en
+   minúsculas) que viaja dentro de `testigo_previo` y se valida con un único parser en esquema
+   cerrado (`parsear_testigo_de_payload`, compartido por `ritual_runner._testigo_utilizable` y
+   `wrye_bash_service._testigo_desde_resultado` para impedir divergencia S-10). Un refresco
+   idempotente sobre la misma huella conserva `generacion` (evitando testigos zombis si el cliente
+   verifica con el primer payload), mientras que un ciclo nuevo tras consumo o cambio de huella base
+   rota `generacion`. En la fase 2 sigue rigiendo `payload` > `durable` > `ninguno`
+   (`testigo_origen`) para evaluar el veredicto, pero la limpieza sólo se ejecuta cuando el testigo
+   verificado porta una `generacion` explícita y usa `olvidar_si_coincide(clave, testigo=...,
+   generacion=...)` (sin comodín `None` permitido en la firma ni en runtime): ni un replay con
+   payload viejo de una preparación A anterior ni un payload legítimo sin `generacion`
+   (`no_disponible` o `error_de_almacen`, p. ej. con `existia=False, sha256=None`) pueden borrar el
+   testigo durable de una preparación B posterior. Anclado por AST y por inspección de firma en
+   `tests/test_etapa6_testigo_durable.py`.
+
+**Efecto sobre la superficie del agente LLM.** `GenerateBashedPatchParams` sigue exponiendo sólo
+`fase` (`extra="forbid"`, A-4 intacto: el modelo jamás puede inyectar un hash), pero como
+`system_tools.generate_bashed_patch` inyecta `almacen_por_defecto()`, una sesión que llamó
+`fase="preparar"` deja el testigo en disco y otra sesión posterior que llame `fase="verificar"`
+demuestra `frescura_probada=True` sin confiar en el modelo **cuando el artefacto supera el
+veredicto completo**: existe, es regular, no vacío y legible, **está habilitado en `plugins.txt`**
+y apareció o cambió respecto del testigo durable. Si el plugin no está habilitado en `plugins.txt`,
+el veredicto falla con `NO_HABILITADO` y `frescura_probada=False` (preservando el testigo durable
+para habilitar y reintentar); si el artefacto sigue ausente devuelve `ARTEFACTO_AUSENTE` con
+`frescura_probada=False`; y si conserva la misma huella que el testigo falla con `SIN_CAMBIO` y
+`frescura_probada=False`.
 
 ## 8. Revisión adversarial del propio PR (2026-10-30)
 
@@ -532,6 +622,31 @@ del registry/handler (scan AST sobre `sky_claw/`, `tests/` y `scripts/`), 0 lín
 agregadas al servicio, las tres superficies enrutando por `ejecutar_fase_asistida`, HITL intacto
 (`generate_bashed_patch` sigue en `DESTRUCTIVE_TOOL_PATTERNS`), y las notas de `execute_pipeline`
 en `test_synthesis_service.py` son el método homónimo de **Synthesis**, servicio vivo.
+
+**Ronda 13 (auto-auditoría adversarial del PR D, 2026-11-04).** Antes de abrir el PR D se auditaron
+el diseño inicial y las anclas propias contra el código real y con una matriz de **15 mutaciones**
+(14 de contrato que mueren + 1 control benigno de comentarios que vive):
+
+| # | Hallazgo de auto-auditoría | Corrección verificada por mutación |
+|---|---|---|
+| D-01 | **Clavear por `artefacto.ruta` rompía el 100 % de las primeras corridas**: en fase 1 el archivo no existe y `bashed_patch_en_overlay` devuelve `Data`; en fase 2 aparece en `overwrite`. | `ClaveDeTestigo(plugins_txt, destino_data)` fija el slot virtual invariante respecto de la capa ganadora (M01 muere en `test_salto_de_capa_data_a_overwrite_prueba_frescura_sin_payload`). |
+| D-02 | **Delimitador de barra vertical en la clave**: en POSIX la barra vertical es un carácter legal de ruta; dos pares distintos podían colisionar. | `como_texto()` serializa `json.dumps([plugins_txt, destino_data])` sin ambigüedad (M02 muere). |
+| D-03 | **Ubicación `.skyclaw_backups/` dependía del `cwd` y ensuciaba el árbol en tests**, contradiciendo ADR 0011 P0.2 (`sky_claw/config.py:138`). | `almacen_por_defecto()` usa `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` de forma perezosa (M08 muere con `estado_durable_real`). |
+| D-04 | **`guardar` sobre JSON corrupto contradecía la promesa de no pisar archivos ilegibles.** | `_cargar_objeto` lanza `AlmacenDeTestigosIlegibleError` en escritura/borrado y rechaza enlaces en padre y archivo con `link_kind_or_raise`; `leer` degrada a `None` sin escribir (M05, M06, M07 mueren). |
+| D-05 | **Partición incompleta de `EstadoDelTestigoDurable`**: con almacén vacío y artefacto sin identidad (p. ej. directorio), ni se guardaba ni se conservaba nada. | Se agrega `SIN_OBSERVACION` y se unifica `ERROR_DE_ALMACEN` (lectura + escritura). |
+| D-06 | **Consumo del testigo durable**: consumir en fallo perdía la frescura al olvidar tildar el plugin (`NO_HABILITADO`); no consumir cuando `origen == payload` dejaba un testigo huérfano que engañaba a la corrida siguiente. | Sólo se consume con `veredicto.frescura_probada is True`, tanto por `durable` como por `payload`, y un `OSError` en `olvidar` no tumba un veredicto válido (M11 y M12 mueren). |
+| D-07 | **Punto ciego del ancla AST**: exigir `"testigo_store" in claves` dejaba pasar `testigo_store=None` en verde. | El ancla congela por igualdad los sitios productivos, rechaza `Constant(None)` y se acompaña de un oráculo conductual sobre `build_orchestration_composition` (M13 y M14 mueren; M15 con comentarios vive). |
+
+**Ronda 14 (revisión externa de Codex, PR-Agent y CodeRabbit sobre #863, 2026-11-04).** Dos
+hallazgos P1 de Codex/PR-Agent sobre `ee40299` y dos observaciones menores de CodeRabbit sobre
+`2d94e67`, reproducidos primero con tests en ROJO y sumados a la matriz de mutación (**19/19**):
+
+| # | Hallazgo | Reproducción | Corrección verificada por mutación |
+|---|---|---|---|
+| R14-01 | **Exclusión sólo de instancia en `AlmacenJSON`**: `orchestration_composition` y `system_tools` crean instancias distintas sobre el mismo archivo (y pueden coexistir dos procesos). Un `self._lock` local dejaba que dos `guardar` sobre perfiles distintos leyeran `{}` a la vez y el último `os.replace` borrara al otro perfil. | Reproducido en ROJO tanto entre dos instancias en el mismo proceso (`Barrier(2)`) como entre dos procesos Python separados (`subprocess.Popen` × 25 escrituras). | `_seccion_critica` serializa por **ruta canónica** en dos capas: `_LOCKS_POR_RUTA` intraproceso + lockfile hermano (`.etapa6_testigos.json.lock`, `fcntl.flock` en POSIX / `msvcrt.locking` en Windows, rechazando enlaces también sobre el lockfile y abriendo con `O_NOFOLLOW` donde existe). M16 y M17 mueren por separado. |
+| R14-02 | **`pipeline_stage="wrye_bash"` textual y sin `tx_id`**: los warnings de `etapa6_testigos.py` emitían una cadena en vez del entero `6` (SOP §5 regla 5) y omitían `tx_id=None`, desapareciendo de las consultas estructuradas por etapa. | Reproducido en ROJO con `caplog`. | `_ETAPA_WRYE_BASH = 6` anclada por igualdad contra `wrye_bash_service._ETAPA_WRYE_BASH`, `extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None}` en todos los warnings del almacén y registro en `conocidos` de `test_dyndolod_service.py` (M18 muere). |
+| R14-03 | **CodeRabbit: falta `fsync` del directorio contenedor tras `os.replace` en POSIX.** | Reproducido en ROJO espiando `os.fsync` por `(st_dev, st_ino)`. | `_fsync_directorio_padre` sincroniza el directorio contenedor tras `os.replace` en POSIX (`O_RDONLY` + `O_DIRECTORY` + `O_NOFOLLOW`, best-effort). M19 muere. |
+| R14-04 | **CodeRabbit: barra vertical sin escapar en la fila D-02 de la tabla GFM (`MD056`).** | Verificado: la fila tenía 5 celdas en vez de 3. | Reescrita sin carácter de separación de columna en prosa. |
 
 ## 10. Registro de adjudicación
 

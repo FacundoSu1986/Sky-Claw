@@ -600,12 +600,16 @@ async def generate_bashed_patch(
 
     Siempre devuelve JSON serializable (contrato T11).
     """
+    from sky_claw.local.tools.etapa6_testigos import almacen_por_defecto
     from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
 
-    # PR C (ADR 0016 §7): el servicio ya no pide lock/snapshot/journal/runner — el camino
-    # headless que los usaba se retiró. Pedirlos "por compatibilidad" invitaría a
-    # reconstruirlo por partes.
-    service = WryeBashPipelineService(path_resolver=path_resolver)
+    # PR C + PR D (ADR 0016 §7): sin lock/snapshot/journal/runner (retirados con el camino
+    # headless), pero CON el almacén por usuario de testigos para que ``fase="verificar"``
+    # demuestre frescura desde disco sin aceptar un digest del modelo (A-4).
+    service = WryeBashPipelineService(
+        path_resolver=path_resolver,
+        testigo_store=almacen_por_defecto(),
+    )
     resultado = await service.ejecutar_fase_asistida(
         profile=profile,
         fase=fase,

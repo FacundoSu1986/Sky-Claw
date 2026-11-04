@@ -67,13 +67,22 @@ import pathlib
 import re
 import stat
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
 
 from sky_claw.local.loot.outcome import parse_load_order_bytes
 from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Protocol
+
+    class _ObservacionDeTestigo(Protocol):
+        @property
+        def existia(self) -> bool: ...
+
+        @property
+        def sha256(self) -> str | None: ...
+
 
 #: Chunk de lectura de la huella: el Bashed Patch puede llegar a decenas de MB en load
 #: orders grandes y no se carga entero en memoria (mismo criterio que ``artifact_digest``).
@@ -97,6 +106,18 @@ _BOM_UTF8 = b"\xef\xbb\xbf"
 #: ``fase`` inventado tiene que fallar cerrado y no caer en un default silencioso.
 FASE_PREPARAR = "preparar"
 FASE_VERIFICAR = "verificar"
+
+#: Patrón canónico de ``generacion`` (128 bits en hex minúscula) para identificar de forma
+#: inequívoca qué época de preparación emitió un ``testigo_previo`` (ADR 0016 §7.2, P1).
+_PATRON_GENERACION = re.compile(r"[0-9a-f]{32}")
+_CLAVES_OBLIGATORIAS_TESTIGO_PAYLOAD: frozenset[str] = frozenset({"existia", "sha256"})
+_CLAVES_TESTIGO_PAYLOAD: frozenset[str] = frozenset({"existia", "sha256", "generacion"})
+
+
+def es_generacion_valida(valor: object) -> TypeGuard[str]:
+    """True si *valor* es un identificador de generación válido (32 hex en minúsculas)."""
+    return isinstance(valor, str) and _PATRON_GENERACION.fullmatch(valor) is not None
+
 
 #: Vocabulario cerrado de fases. Un valor nuevo rompe
 #: ``tests/test_wrye_bash_cableado_asistido.py`` hasta que se clasifique.
@@ -212,6 +233,180 @@ class TestigoPrevio:
 
 
 @dataclass(frozen=True, slots=True)
+class TestigoDePayload:
+    """``TestigoPrevio`` transportado por el payload de tool-result junto con su ``generacion``.
+
+    Única definición de forma para las superficies que serializan o reconstruyen
+    ``testigo_previo`` (``preparacion_como_resultado``, ``ritual_runner._testigo_utilizable``
+    y ``wrye_bash_service._testigo_desde_resultado``): evita que GUI y servicio acepten
+    subconjuntos distintos de diccionarios (lección S-10 de ADR 0016 §9).
+    """
+
+    __test__ = False
+
+    testigo: TestigoPrevio
+    generacion: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.testigo, TestigoPrevio):
+            raise ValueError(f"testigo debe ser TestigoPrevio, no {type(self.testigo).__name__}")
+        if self.generacion is not None and not es_generacion_valida(self.generacion):
+            raise ValueError(f"generacion debe ser un hex de 32 caracteres en minúsculas: {self.generacion!r}")
+
+    def como_dict(self) -> dict[str, object]:
+        datos: dict[str, object] = {
+            "existia": self.testigo.existia,
+            "sha256": self.testigo.sha256,
+        }
+        if self.generacion is not None:
+            datos["generacion"] = self.generacion
+        return datos
+
+
+def parsear_testigo_de_payload(crudo: object) -> TestigoDePayload | None:
+    """Valida en esquema cerrado un ``testigo_previo`` crudo de payload, o devuelve ``None``.
+
+    Exige ``{"existia", "sha256"}`` presentes y rechaza cualquier clave fuera de
+    ``{"existia", "sha256", "generacion"}`` (p. ej. el typo ``"generation"`` o ``"generacion": None``),
+    de modo que ningún llamador pueda degradar en silencio un identificador corrupto a un
+    payload legado sin generación.
+    """
+    if not isinstance(crudo, dict):
+        return None
+    claves = set(crudo.keys())
+    if not (_CLAVES_OBLIGATORIAS_TESTIGO_PAYLOAD <= claves <= _CLAVES_TESTIGO_PAYLOAD):
+        return None
+    existia = crudo["existia"]
+    sha256 = crudo["sha256"]
+    if not isinstance(existia, bool) or not (sha256 is None or isinstance(sha256, str)):
+        return None
+    generacion_cruda: str | None = None
+    if "generacion" in crudo:
+        valor_gen = crudo["generacion"]
+        if not es_generacion_valida(valor_gen):
+            return None
+        generacion_cruda = valor_gen
+    try:
+        testigo = TestigoPrevio(existia=existia, sha256=sha256)
+    except ValueError:
+        return None
+    return TestigoDePayload(testigo=testigo, generacion=generacion_cruda)
+
+
+class OrigenDelTestigo(enum.StrEnum):
+    """De dónde salió el testigo con el que la fase 2 comparó.
+
+    Se declara SIEMPRE, incluso cuando no hay testigo: ``frescura_probada=False`` puede
+    significar «no había con qué comparar» o «comparé y no cambió», y un consumidor (el
+    panel, el modelo, el journal) no puede distinguirlas mirando sólo el booleano.
+    """
+
+    PAYLOAD = "payload"
+    DURABLE = "durable"
+    NINGUNO = "ninguno"
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionDeTestigo:
+    """Qué testigo rige y qué hacer con el almacén durable (fase 1).
+
+    ``persistir`` es una ORDEN, no un efecto: la función que decide no toca disco. Y
+    ``construido_despues`` es una afirmación sobre lo que pasó entre dos preparaciones
+    —el operador construyó el parche—, no sobre si el artefacto existe ahora.
+    """
+
+    __test__ = False
+
+    testigo: TestigoPrevio | None
+    persistir: bool
+    construido_despues: bool
+    origen: OrigenDelTestigo
+
+
+def _como_testigo_previo(observacion: _ObservacionDeTestigo) -> TestigoPrevio:
+    """Normaliza un testigo duck-typed (``TestigoDurable``) al tipo del dominio.
+
+    ``DecisionDeTestigo`` no puede devolver un tipo que este módulo no conoce: el que lo
+    consume serializa ``existia``/``sha256``, y una dataclass distinta con los mismos
+    campos funciona por casualidad hasta que dejan de coincidir.
+    """
+    return TestigoPrevio(existia=observacion.existia, sha256=observacion.sha256)
+
+
+def _misma_identidad(a: _ObservacionDeTestigo, b: _ObservacionDeTestigo) -> bool:
+    """Igualdad de observación: la misma ausencia, o la misma presencia con el mismo digest."""
+    if a.existia is not b.existia:
+        return False
+    return (not a.existia) or a.sha256 == b.sha256
+
+
+def decidir_testigo_de_preparacion(
+    *,
+    observado_ahora: TestigoPrevio | None,
+    durable: _ObservacionDeTestigo | None,
+) -> DecisionDeTestigo:
+    """Elige el testigo vigente de una fase 1, comparando con lo que ya había observado.
+
+    Cuatro casos, y el tercero es el motivo de que esta función exista:
+
+    1. **No hay observación ahora** (artefacto presente sin identidad: enlace, directorio,
+       lectura fallida). No se persiste —una observación que no existe no puede pisar una
+       que sí— y, si había una durable, sigue rigiendo. Borrarla sería destruir la única
+       prueba que quedaba por un fallo transitorio de lectura.
+    2. **No hay durable.** Primera preparación: se persiste lo observado. No se afirma
+       nada sobre builds: no hay contra qué comparar.
+    3. **El artefacto cambió respecto del durable** (apareció, o cambió su digest): eso
+       sólo puede haberlo hecho el operador entre las dos preparaciones. Se **conserva** el
+       testigo viejo y se devuelve ESE —no el de ahora—, porque es el único que puede
+       demostrar frescura en la fase 2. Sobrescribirlo compararía el parche contra sí
+       mismo y daría ``SIN_CAMBIO`` para siempre: «no lo construiste» sobre un build real.
+    4. **No cambió** (o se borró): se persiste lo observado y no se afirma un build.
+       Presente→ausente es un cambio, pero no algo que el operador haya construido;
+       anunciarlo así mandaría a verificar un parche que ya no está.
+
+    ``durable`` es duck-typed (``existia``/``sha256``): acepta tanto un
+    :class:`~sky_claw.local.tools.etapa6_testigos.TestigoDurable` como un ``TestigoPrevio``.
+    Así este módulo —que es el dominio— no importa el almacén, que lo importa a él.
+    """
+    if observado_ahora is None:
+        if durable is None:
+            return DecisionDeTestigo(
+                testigo=None, persistir=False, construido_despues=False, origen=OrigenDelTestigo.NINGUNO
+            )
+        return DecisionDeTestigo(
+            testigo=_como_testigo_previo(durable),
+            persistir=False,
+            construido_despues=False,
+            origen=OrigenDelTestigo.DURABLE,
+        )
+
+    if durable is None:
+        return DecisionDeTestigo(
+            testigo=observado_ahora, persistir=True, construido_despues=False, origen=OrigenDelTestigo.NINGUNO
+        )
+
+    if _misma_identidad(observado_ahora, durable):
+        return DecisionDeTestigo(
+            testigo=observado_ahora, persistir=True, construido_despues=False, origen=OrigenDelTestigo.NINGUNO
+        )
+
+    construido = (not durable.existia and observado_ahora.existia) or (
+        durable.existia and observado_ahora.existia and durable.sha256 != observado_ahora.sha256
+    )
+    if construido:
+        return DecisionDeTestigo(
+            testigo=_como_testigo_previo(durable),
+            persistir=False,
+            construido_despues=True,
+            origen=OrigenDelTestigo.DURABLE,
+        )
+    # Presente → ausente: el testigo viejo ya no describe nada y no hubo build.
+    return DecisionDeTestigo(
+        testigo=observado_ahora, persistir=True, construido_despues=False, origen=OrigenDelTestigo.NINGUNO
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class PreparacionAsistida:
     """Fase 1: lo que el operador necesita para construir, más el testigo previo."""
 
@@ -224,6 +419,16 @@ class PreparacionAsistida:
     testigo_previo: TestigoPrevio | None
     estado_plugins: EstadoEnPlugins
     instrucciones: tuple[str, ...]
+    #: Identificador de la época durable a la que pertenece ``testigo_previo``, o ``None``
+    #: cuando la preparación corrió sin almacén o en degradación de almacén.
+    generacion: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.generacion is not None:
+            if self.testigo_previo is None:
+                raise ValueError("generacion no puede acompañar a testigo_previo=None")
+            if not es_generacion_valida(self.generacion):
+                raise ValueError(f"generacion inválida en PreparacionAsistida: {self.generacion!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,10 +737,10 @@ def preparacion_como_resultado(preparacion: PreparacionAsistida) -> dict[str, ob
         "testigo_previo": (
             None
             if preparacion.testigo_previo is None
-            else {
-                "existia": preparacion.testigo_previo.existia,
-                "sha256": preparacion.testigo_previo.sha256,
-            }
+            else TestigoDePayload(
+                testigo=preparacion.testigo_previo,
+                generacion=preparacion.generacion,
+            ).como_dict()
         ),
         "estado_en_plugins": preparacion.estado_plugins.value,
         "instrucciones": list(preparacion.instrucciones),
