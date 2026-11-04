@@ -734,6 +734,7 @@ def _coincide_con_lo_escrito(
     actuales: bytes,
     *,
     escritura_intentada: bool | None = None,
+    bytes_tras_escritura_ini: bytes | None = None,
 ) -> bool:
     """¿Estos bytes son los que ESTA transición escribió?
 
@@ -745,6 +746,12 @@ def _coincide_con_lo_escrito(
     escritura por handle no es atómica, y una muerte a mitad deja un estado que
     no es ni el snapshot ni la previsión completa pero SÍ es de esta transición.
     Ver :func:`_es_escritura_propia_interrumpida`.
+
+    ``bytes_tras_escritura_ini`` acota ese razonamiento al único momento en que
+    vale: mientras la transición retenía la exclusión. El rollback corre DESPUÉS
+    de ``cerrar()``, y a partir de ahí el archivo lo escribe cualquiera. Si el
+    contenido ya no es el que se leyó bajo la exclusión, no hay autoría que
+    atribuir: un prefijo deja de ser prueba y el estado es de un tercero.
     """
     esperado = registro.expected_effective_path
     if superficie.kind == _KIND_ACTIVE:
@@ -758,6 +765,11 @@ def _coincide_con_lo_escrito(
             return False
         return _config_difiere_solo_en_skyrim_path(previos, actuales, esperado)
     if superficie.kind == _KIND_MO2_INI:
+        # La huella tomada bajo exclusión manda sobre cualquier inferencia por
+        # forma. Si no coincide, alguien escribió cuando la transición ya no
+        # retenía el archivo y NADA de lo que hay se le puede atribuir.
+        if bytes_tras_escritura_ini is not None and actuales != bytes_tras_escritura_ini:
+            return False
         previos = superficie.bytes_previos()
         if previos is None:
             return False
@@ -794,6 +806,7 @@ def _escrita_por_tercero(
     registro: RegistroRecuperacion,
     *,
     escritura_intentada: bool | None = None,
+    bytes_tras_escritura_ini: bytes | None = None,
 ) -> tuple[bool, str]:
     r"""¿La superficie actual NO es ni el snapshot ni lo que escribió la transición?
 
@@ -828,7 +841,13 @@ def _escrita_por_tercero(
     if superficie.existed and _sha256(actuales) == superficie.sha256:
         # Sigue exactamente como en el snapshot: no hay nada que restaurar.
         return (False, "")
-    if _coincide_con_lo_escrito(superficie, registro, actuales, escritura_intentada=escritura_intentada):
+    if _coincide_con_lo_escrito(
+        superficie,
+        registro,
+        actuales,
+        escritura_intentada=escritura_intentada,
+        bytes_tras_escritura_ini=bytes_tras_escritura_ini,
+    ):
         return (False, "")
     return (
         True,
@@ -919,6 +938,7 @@ def _restaurar_persistida(
     *,
     raiz_evidencia: pathlib.Path | None = None,
     escritura_intentada: bool | None = None,
+    bytes_tras_escritura_ini: bytes | None = None,
 ) -> VerificacionSuperficie:
     """Devuelve la superficie a sus bytes previos y VERIFICA el resultado."""
     if superficie.path is None:
@@ -926,7 +946,12 @@ def _restaurar_persistida(
     ruta = pathlib.Path(superficie.path)
     previos = superficie.bytes_previos()
 
-    ajena, motivo = _escrita_por_tercero(superficie, registro, escritura_intentada=escritura_intentada)
+    ajena, motivo = _escrita_por_tercero(
+        superficie,
+        registro,
+        escritura_intentada=escritura_intentada,
+        bytes_tras_escritura_ini=bytes_tras_escritura_ini,
+    )
     if ajena:
         # La autoría no se pudo establecer: NO se restaura (pisaría una escritura
         # legítima de otro), pero tampoco se descarta. Se guarda una copia de los
@@ -1019,6 +1044,7 @@ def restaurar_registro_locked(
     *,
     solo_superficies: frozenset[str] | None = None,
     escritura_intentada: bool | None = None,
+    bytes_tras_escritura_ini: bytes | None = None,
 ) -> tuple[VerificacionSuperficie, ...]:
     """Restaura las superficies capturadas y devuelve la verificación de cada una.
 
@@ -1054,7 +1080,13 @@ def restaurar_registro_locked(
             verificaciones.append(_restaurar_environ(superficie, environ))
             continue
         verificaciones.append(
-            _restaurar_persistida(superficie, registro, raiz_evidencia=root, escritura_intentada=escritura_intentada)
+            _restaurar_persistida(
+                superficie,
+                registro,
+                raiz_evidencia=root,
+                escritura_intentada=escritura_intentada,
+                bytes_tras_escritura_ini=bytes_tras_escritura_ini,
+            )
         )
     return tuple(verificaciones)
 

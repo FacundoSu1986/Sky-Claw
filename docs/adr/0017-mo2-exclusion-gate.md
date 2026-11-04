@@ -297,6 +297,27 @@ intervención del propietario.** El rollback copia los bytes actuales a
 abstenerse, así que ni lo viejo (el snapshot) ni lo nuevo (la escritura ajena) se
 pierden.
 
+**La autoría caduca cuando se libera la exclusión.** ``_rollback`` corre
+después de ``exclusion.cerrar()``: el ``finally`` suelta el handle antes de
+CONFIG, ENTORNO, VERIFY, CAS y POST-VERIFY, y cualquiera de esos pasos puede
+fallar. A partir de ese instante el archivo es escribible por terceros, así que
+la forma del contenido dejó de ser prueba: un prefijo de la previsión ya no
+distingue una escritura propia interrumpida de la de otro. ``escritura_intentada``
+es un dato de PROCESO y sigue siendo ``True`` para siempre, de modo que autorizaba
+la atribución por prefijo sin preguntar si el archivo seguía siendo el nuestro.
+
+La prueba que sí vale se toma **bajo la exclusión**: inmediatamente después de
+escribir (o de fallar al escribir) y antes de ``cerrar()``, se lee el archivo por
+el handle retenido. Ese es el estado que la transición dejó, y mientras el handle
+se retiene nadie más puede cambiarlo. En el rollback, si el contenido actual ya no
+es exactamente eso, alguien escribió después y no hay nada que atribuir: se
+conserva la evidencia y decide el propietario. Si la lectura bajo exclusión no se
+pudo tomar, la autoría se degrada a DESCONOCIDA en vez de inferirse por forma.
+
+Es una pérdida deliberada de disponibilidad en el caso raro —una escritura
+interrumpida que además fue tocada por un tercero deja de auto-repararse— a cambio
+de no destruir bytes ajenos, que es la misma regla que rige el resto del módulo.
+
 **La evidencia existente se VERIFICA, y no se sobrescribe.** El nombre del
 archivo es el `sha256` del contenido, y de ahí se seguía que un archivo con ese
 nombre *contenía* ese contenido. Nada lo garantiza para un archivo escrito por

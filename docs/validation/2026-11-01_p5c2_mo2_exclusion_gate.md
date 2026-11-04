@@ -4,7 +4,8 @@
 **PR:** [#851](https://github.com/FacundoSu1986/Sky-Claw/pull/851) (Draft)
 **ADR:** [0017 — Exclusión de mutación de `modorganizer.ini`](../adr/0017-mo2-exclusion-gate.md)
 **Fecha:** 2026-11-01 (revisión 2, tras la auditoría adversarial); cierre
-2026-11-03 (sexta ronda: FIX 1 y FIX 2, §0.8)
+2026-11-03 (sexta ronda: FIX 1 y FIX 2, §0.8) y 2026-11-04 (séptima ronda:
+autoría acotada a la exclusión, §0.9)
 **Alcance:** `SYNTHETIC_ONLY`. Ninguna operación sobre Skyrim, Steam, MO2 ni SKSE productivos.
 
 ---
@@ -403,6 +404,80 @@ completa. No tocan ninguno de los dos módulos modificados.
 **Conclusión honesta:** 31 preexistentes medidos, 7 sensibles al orden,
 0 regresiones. La cifra «38 preexistentes» era incorrecta y se retira.
 
+## 0.9 Séptima ronda — la autoría caduca al liberar la exclusión
+
+Revisión focalizada sobre `6542aa80`. Un hallazgo: `_rollback` podía atribuir al
+binder un prefijo escrito por un tercero **después** de `exclusion.cerrar()`.
+
+### El defecto
+
+`_rollback` corre después de que el `finally` de la escritura del INI suelte la
+exclusión: `cerrar()` ocurre en la línea del `finally`, y CONFIG, ENTORNO,
+VERIFY, CAS y POST-VERIFY vienen después. Cualquiera de esos pasos puede fallar
+y disparar el rollback, que entonces lee el INI **sin** el handle retenido.
+
+`ini_escritura_intentada=True` es un dato de PROCESO: sigue siendo `True` para
+siempre y autorizaba `_es_escritura_propia_interrumpida`, un predicado que
+razona por FORMA («esto parece un prefijo de lo que habrías escrito»). Mientras
+la exclusión estaba tomada, la inferencia era válida porque nadie más podía
+escribir. Después, no: cualquier proceso puede dejar exactamente ese estado.
+
+**Reproducido con dos procesos Windows reales.** El test `test_21` levanta la
+transición completa, deja que el binder escriba el INI y libere la exclusión, y
+después un subproceso (`sys.executable -c`) escribe un prefijo de la previsión;
+acto seguido falla CONFIG y corre el rollback. Antes de la corrección, el
+rollback tomó ese prefijo por propio y restauró el snapshot: los bytes del
+tercero desaparecieron y el rollback declaró éxito. El test lo fija en el byte
+144 (`S` de la ruta del snapshot contra `C` de la del Clone).
+
+El estado que se reproduce es el que el rig `exp9_death_points` midió como
+«extiende» (`nuevo[:k]` con `len(previos) < k < len(nuevo)`), y el test lo
+verifica explícitamente con `_es_escritura_propia_interrumpida` **antes** de
+provocar la carrera: si el predicado no atribuyera ese estado, el test no
+estaría reproduciendo el defecto.
+
+### La corrección
+
+La prueba de autoría que sobrevive a `cerrar()` es la que se toma **mientras se
+retiene el handle**. Inmediatamente después de escribir —y también cuando la
+escritura falla, porque entonces el archivo puede haber quedado a medias por
+nuestra cuenta— se lee el INI por el handle exclusivo (`_bytes_bajo_exclusion`).
+Ese es el estado que la transición dejó, y nadie más pudo cambiarlo.
+
+En el rollback, `_coincide_con_lo_escrito` compara contra esa huella **antes** de
+cualquier razonamiento por forma: si el contenido actual no es exactamente eso,
+alguien escribió después y se devuelve «ajena» sin más análisis. La atribución por
+prefijo queda confinada al único momento en que es válida.
+
+Si la huella no se pudo tomar, la autoría se degrada a DESCONOCIDA en vez de
+inferirse: `ini_escritura_intentada` pasa a `None`, con lo que ni la coincidencia
+completa se atribuye. Es fail-closed y está anclado por `test_23`.
+
+### Lo que NO se rompe
+
+`test_22` es el control positivo: si nadie tocó el INI, el rollback legítimo
+restaura exactamente como antes. Además ancla el ORDEN con un espía sobre
+`ExclusionIni.cerrar`: la huella tiene que leerse antes de cerrar. Leerla después
+la convierte en el estado del tercero y el chequeo deja de discriminar.
+
+### Mutantes
+
+| Mutante | Test que lo mata |
+|---|---|
+| quitar el chequeo de huella en `_coincide_con_lo_escrito` | `test_21` |
+| quitar la degradación a autoría desconocida | `test_23` |
+| mover la lectura de la huella después de `cerrar()` | `test_22` (espía de orden) |
+
+3 mutantes, 3 muertes. Suites afectadas (8 archivos): **283 passed, 1 skipped**,
+incluido el censo de boundary. Ruff check/format y mypy limpios.
+
+### Riesgo residual que queda declarado
+
+La ventana entre `cerrar()` y la lectura del rollback sigue existiendo; lo que
+cambió es que ya **no se infiere autoría** dentro de ella. Un tercero que escriba
+en esa ventana deja el INI sin restaurar y con evidencia, que es el resultado
+correcto: pérdida de disponibilidad a cambio de no destruir bytes ajenos.
+
 ## 1. Rama, worktree y SHAs
 
 | Elemento | Valor |
@@ -414,6 +489,7 @@ completa. No tocan ninguno de los dos módulos modificados.
 | HEAD final (post-adversarial) | `3e62d399` |
 | HEAD final (fix censo boundary) | `15a2408b` |
 | HEAD auditado en la sexta ronda | `3a6040b5` |
+| HEAD auditado en la séptima ronda | `6542aa80` |
 | P5-C1 integrado | `ac19cb28f74e6495808d7606fdbc29ceab9f578d` |
 | Rig de experimentos | `E:\Skyclaw_Rig_MO2_Exclusion` (fuera del repo) |
 
@@ -541,7 +617,7 @@ Cada archivo con un directorio temporal propio y recién creado.
 | `p5c_binder_preflight` | 57 passed | 57 passed |
 | `p5c1_binder_integrity` | 38 passed | 40 passed |
 | `p5c1_ini_escritura` | 34 passed | 34 passed |
-| `p5c1_mo2_clone_binder` | 20 passed | 20 passed |
+| `p5c1_mo2_clone_binder` | 20 passed | 23 passed |
 | `p5c1_superficies` | 18 passed | 18 passed |
 | `p5c2_mo2_exclusion` | — | 77 passed, 1 skipped |
 | `p7_inspector_output` (nuevo) | — | 24 passed |
@@ -554,6 +630,9 @@ importan `binder_recovery` o el inspector): **214 passed, 1 skipped**. Incluye
 el censo de boundary `test_escritura_solo_en_modulos_permitidos`, que sigue
 exigiendo coincidencia EXACTA del conjunto de símbolos: las lecturas nuevas
 (`read_bytes`, `open("rb")`) no son mutadores y no entran al censo.
+
+**Corrida conjunta de los 8 archivos afectados por la séptima ronda: 283 passed,
+1 skipped**, también con el censo de boundary.
 
 **Cobertura del baseline de los 38 fallos locales.** Medida, no atribuida por
 categoría: 31 fallan idéntico en `origin/main` (`b0e30bbc`), 7 pasan en ambos
@@ -692,17 +771,21 @@ productiva deshabilitada. El inspector P7 **no tiene ninguna capacidad de
 escritura**: el TOCTOU del destino se cerró quitando la escritura, no
 parcheando la comprobación.
 
-**Dictamen `P5C2_SAFE_TO_MERGE_SYNTHETIC_ONLY`, con el CI del SHA de la sexta
-ronda verificado.** El run ``41711091624`` sobre ``e3660688`` pasó verde en
-todos los checks: ``Tests / windows-latest / py3.11`` (54m21s), ``py3.12``
-(40m43s), ``Tests (Pytest)``, ``Build``, ``POSIX Core``, ``Lint (Ruff)`` ×3,
-``Mypy`` ×3, ``Security Scan``, ``CodeQL``, ``Analyze`` ×3, ``Regression & Test
-Oracle`` y ``Auto-revisión en PR interno``. El verde anterior (run
-``41526294460`` sobre ``15a2408b``) **no se heredó**: se exigió uno nuevo porque
-la sexta ronda cambia dos módulos y sus tests.
+**Dictamen `P5C2_SAFE_TO_MERGE_SYNTHETIC_ONLY`, con el CI del HEAD final exigido
+y no heredado.** El run ``41711091624`` sobre ``e3660688`` (sexta ronda) pasó
+verde en todos los checks: ``Tests / windows-latest / py3.11`` (54m21s),
+``py3.12`` (40m43s), ``Tests (Pytest)``, ``Build``, ``POSIX Core``,
+``Lint (Ruff)`` ×3, ``Mypy`` ×3, ``Security Scan``, ``CodeQL``, ``Analyze`` ×3,
+``Regression & Test Oracle`` y ``Auto-revisión en PR interno``.
 
-``CodeRabbit`` figura como ``skipping`` en ese SHA: **no revisó este push y no
-se cuenta como aprobación**. Sus dos hallazgos están cerrados —uno con
+La séptima ronda cambia dos módulos y sus tests, así que ese verde **no se
+hereda**: el dictamen se sostiene sobre el CI del SHA que la contiene, y ese
+resultado se registra en el PR —no se infiere del anterior—. Lo que sí está
+medido localmente es lo acotado: 283 passed en los 8 archivos afectados, 3
+mutantes muertos y los gates de lint y tipos.
+
+``CodeRabbit`` figura como ``skipping`` en los últimos SHA: **no revisó esos
+push y no se cuenta como aprobación**. Sus hallazgos están cerrados —uno con
 divergencia declarada en §0.8— y el resto de su historial quedó verificado
 contra el árbol en §9bis.
 
@@ -710,9 +793,10 @@ Los cuatro frentes del gate final están cerrados con evidencia:
 TOCTOU (test RED + eliminación del camino), hardlinks (medición real + rechazo
 fail-closed + revalidación), `FlushFileBuffers` (inyección + verificación de que
 `FINALIZED` no se publica) y reconciliación de hilos (12 `FIX_VERIFIED`, 2
-`NOT_APPLICABLE`, 0 `STILL_REPRODUCIBLE`). La sexta ronda agrega dos:
-el inspector no afirma sobre lo que no leyó, y la evidencia recuperada no se
-declara preservada sin verificarla.
+`NOT_APPLICABLE`, 0 `STILL_REPRODUCIBLE`). Las rondas sexta y séptima agregan
+tres invariantes: el inspector no afirma sobre lo que no leyó, la evidencia
+recuperada no se declara preservada sin verificarla, y la autoría caduca cuando
+se libera la exclusión.
 
 Lo que **no** se declara: comportamiento de MO2 real ante la ventana (requisito de
 P7), `POWER_LOSS_GUARANTEE`, `QT_QSETTINGS_EQUIVALENCE`, ni que Steam permita

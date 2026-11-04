@@ -115,6 +115,7 @@ from sky_claw.local.frozen_runtime.mo2_ini_escritura import (
 )
 from sky_claw.local.frozen_runtime.mo2_ini_exclusion import (
     DiagnosticoExclusion,
+    ExclusionIni,
     Mo2IniExclusionError,
     adquirir_exclusion_ini,
 )
@@ -924,7 +925,13 @@ def ejecutar_transicion_binder(
         # adquisición de la exclusión y la verificación de huella, que pueden
         # abortar sin tocar el archivo. Este flag es la verdad de proceso y es lo
         # que impide atribuir a la transición un cambio de un tercero.
-        ini_escritura_intentada = False
+        ini_escritura_intentada: bool | None = False
+        # Lo que quedó en el INI, leído por el handle retenido ANTES de
+        # ``cerrar()``. Es la única prueba de autoría que sigue valiendo después
+        # de liberar la exclusión: mientras se retiene, nadie más puede escribir,
+        # así que lo leído es exactamente lo que dejó la transición. Una vez
+        # cerrada, cualquiera puede escribir y un prefijo deja de ser evidencia.
+        ini_bytes_tras_escritura: bytes | None = None
 
         def _marcar_escritura_iniciada() -> None:
             """Se invoca justo antes de mutar el INI, y sólo si se va a mutar."""
@@ -969,9 +976,21 @@ def ejecutar_transicion_binder(
                         exclusion, target_clone_root, al_escribir=_marcar_escritura_iniciada
                     )
                 except Mo2IniEscrituraError as exc:
+                    # Se captura la huella TAMBIÉN cuando la escritura falla: el
+                    # archivo puede haber quedado a medias por nuestra cuenta, y
+                    # es lo único que permite distinguirlo después de un tercero.
+                    ini_bytes_tras_escritura = _bytes_bajo_exclusion(exclusion)
                     raise BinderEscrituraIniError(f"no se pudo escribir modorganizer.ini: {exc}") from exc
+                ini_bytes_tras_escritura = _bytes_bajo_exclusion(exclusion)
             finally:
                 exclusion.cerrar()
+
+            # Sin huella no hay autoría demostrable una vez liberada la
+            # exclusión. Se degrada a DESCONOCIDA en vez de atribuir por la FORMA
+            # del contenido: un prefijo deja de ser prueba en cuanto el archivo
+            # queda escribible por cualquiera.
+            if ini_escritura_intentada and ini_bytes_tras_escritura is None:
+                ini_escritura_intentada = None
 
             if config_path is not None and config_path.exists():
                 recovery.marcar_fase_locked(
@@ -1192,6 +1211,7 @@ def ejecutar_transicion_binder(
                 mutadas,
                 t_id,
                 ini_escritura_intentada=ini_escritura_intentada,
+                ini_bytes_tras_escritura=ini_bytes_tras_escritura,
             )
             raise
 
@@ -1274,6 +1294,23 @@ def _retirar_registro_finalizado(handle: object, storage_path: pathlib.Path, tra
 # ---------------------------------------------------------------------------
 
 
+def _bytes_bajo_exclusion(exclusion: ExclusionIni) -> bytes | None:
+    """Bytes del INI leídos por el handle retenido, o ``None`` si no se pudo.
+
+    Se lee ANTES de ``cerrar()``: con la exclusión tomada, nadie más puede
+    escribir el archivo, así que lo leído es exactamente lo que dejó la
+    transición. Ese dato es el que permite, más tarde, distinguir «sigue como lo
+    dejamos» de «un tercero escribió después».
+
+    Es best-effort: si la lectura falla, el llamador degrada la autoría a
+    desconocida en vez de inventarla.
+    """
+    try:
+        return exclusion.leer_bytes()
+    except (Mo2IniExclusionError, OSError):
+        return None
+
+
 def _rollback(
     handle: object,
     storage_path: pathlib.Path,
@@ -1282,7 +1319,8 @@ def _rollback(
     mutadas: set[str],
     transition_id: str,
     *,
-    ini_escritura_intentada: bool = False,
+    ini_escritura_intentada: bool | None = False,
+    ini_bytes_tras_escritura: bytes | None = None,
 ) -> None:
     """Restaura las superficies REALMENTE mutadas y verifica cada una.
 
@@ -1290,6 +1328,11 @@ def _rollback(
     completaron. La fase del registro es la verdad de reinicio: se marca ANTES
     de cada mutación, así que sobre-restaura (idempotente) en vez de dejar una
     mutación suelta. Las dos alimentan la MISMA rutina de restauración.
+
+    ``ini_bytes_tras_escritura`` es la huella leída BAJO la exclusión. El
+    rollback corre después de ``cerrar()``, así que un prefijo que aparezca en
+    el archivo ya no prueba autoría: sólo se atribuye si el contenido sigue
+    siendo exactamente el que la transición dejó.
     """
     try:
         verificaciones = recovery.restaurar_registro_locked(
@@ -1302,6 +1345,7 @@ def _rollback(
             # llegó a llamar al escritor. Si no lo llamó, un contenido que
             # "parece" un prefijo nuestro es de un tercero y no se toca.
             escritura_intentada=ini_escritura_intentada,
+            bytes_tras_escritura_ini=ini_bytes_tras_escritura,
         )
         recovery.exigir_restauracion_completa(verificaciones)
     except Exception as rollback_exc:
