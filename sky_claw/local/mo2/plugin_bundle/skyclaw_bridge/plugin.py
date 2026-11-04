@@ -29,6 +29,7 @@ from .runtime import (
     BridgeLaunchController,
     ascii_safe_message,
     bridge_error_event,
+    verify_mo2_breakaway_allowed,
 )
 
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
@@ -279,6 +280,8 @@ class SkyClawBridgePlugin(mobase.IPlugin):
                         descriptor_path=descriptor,
                         jobs_root=jobs_root,
                         send_event=self._outgoing.put,
+                        breakaway_checker=verify_mo2_breakaway_allowed,
+                        log_info=lambda msg: qInfo(ascii_safe_message(msg)),
                     )
                 message_type = message.get("type")
                 if message_type == "launch_worker":

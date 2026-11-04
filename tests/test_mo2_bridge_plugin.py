@@ -497,3 +497,138 @@ def test_controller_cancel_termina_job_object_completo(tmp_path: pathlib.Path) -
     assert job_object.terminated is True
     organizer.release.set()
     controller.wait_for_monitors(timeout=1)
+
+
+def test_verify_mo2_breakaway_allowed_rechaza_job_sin_breakaway_y_acepta_con_breakaway_o_fuera_de_job() -> None:
+    verify = bridge_runtime.verify_mo2_breakaway_allowed
+    # Fuera de cualquier Job Object (None) -> permitido.
+    verify(query_flags=lambda: None)
+    # Dentro de un Job con JOB_OBJECT_LIMIT_BREAKAWAY_OK (0x0800) -> permitido.
+    verify(query_flags=lambda: 0x2000 | 0x0800)
+    # Dentro de un Job con JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK (0x1000) -> permitido.
+    verify(query_flags=lambda: 0x2000 | 0x1000)
+    # Dentro de un Job con solo KILL_ON_JOB_CLOSE (0x2000) sin breakaway -> falla cerrado antes de startApplication.
+    with pytest.raises(BridgeCommandError, match="breakaway"):
+        verify(query_flags=lambda: 0x2000)
+
+
+def test_query_current_process_job_limit_flags_distingue_fuera_de_job_y_error_win32(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bridge_runtime.sys, "platform", "win32")
+    ultimo_error = 5
+
+    class _Kernel32Falso:
+        class QueryInformationJobObject:
+            argtypes: list[object] = []
+            restype: object = None
+
+            def __call__(self, *_args: object) -> int:
+                return 0
+
+    kernel32 = _Kernel32Falso()
+    kernel32.QueryInformationJobObject = _Kernel32Falso.QueryInformationJobObject()  # type: ignore[assignment]
+    monkeypatch.setattr(bridge_runtime.ctypes, "WinDLL", lambda *_a, **_k: kernel32)
+    monkeypatch.setattr(bridge_runtime.ctypes, "get_last_error", lambda: ultimo_error)
+
+    # ERROR_ACCESS_DENIED (5) al consultar hJob=NULL indica que el proceso no pertenece a ningún Job.
+    assert bridge_runtime._query_current_process_job_limit_flags() is None
+
+    # Cualquier otro error de Win32 falla cerrado con BridgeCommandError.
+    ultimo_error = 87
+    with pytest.raises(BridgeCommandError, match="QueryInformationJobObject"):
+        bridge_runtime._query_current_process_job_limit_flags()
+
+
+def test_controller_ejecuta_breakaway_checker_antes_de_crear_job_ni_llamar_start_application(
+    tmp_path: pathlib.Path,
+) -> None:
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    manifest = jobs / "job-1.json"
+    manifest.write_text("{}", encoding="utf-8")
+    worker = tmp_path / "SkyClawApp.exe"
+    worker.write_bytes(b"exe")
+    descriptor = tmp_path / "descriptor.json"
+    descriptor.write_text("{}", encoding="utf-8")
+    organizer = _Organizer()
+    jobs_creados: list[str] = []
+    eventos: list[dict[str, object]] = []
+
+    def _rechazar_breakaway() -> None:
+        raise BridgeCommandError("ModOrganizer.exe corre dentro de un Job Object sin permiso de breakaway")
+
+    controller = BridgeLaunchController(
+        organizer=organizer,
+        worker_executable=worker,
+        worker_prefix=("--vfs-worker",),
+        descriptor_path=descriptor,
+        jobs_root=jobs,
+        send_event=eventos.append,
+        job_factory=lambda nombre: (jobs_creados.append(nombre), _JobObject(nombre))[1],
+        process_waiter=lambda handle: organizer.waitForApplication(handle, False),
+        breakaway_checker=_rechazar_breakaway,
+    )
+
+    with pytest.raises(BridgeCommandError, match="breakaway"):
+        controller.launch(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "type": "launch_worker",
+                "job_id": "job-1",
+                "profile": "Default",
+                "manifest_path": str(manifest),
+                "overwrite_mod": None,
+                "job_object": JOB_OBJECT,
+            }
+        )
+
+    assert jobs_creados == [], "no debe crear el Job si MO2 no puede hacer breakaway"
+    assert organizer.calls == [], "no debe llamar startApplication (evita colgar el hilo Qt de MO2)"
+    assert eventos == []
+
+
+def test_controller_registra_tiempos_de_launch_start_application_assign_y_ack(
+    tmp_path: pathlib.Path,
+) -> None:
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    manifest = jobs / "job-1.json"
+    manifest.write_text("{}", encoding="utf-8")
+    worker = tmp_path / "SkyClawApp.exe"
+    worker.write_bytes(b"exe")
+    descriptor = tmp_path / "descriptor.json"
+    descriptor.write_text("{}", encoding="utf-8")
+    organizer = _Organizer()
+    logs: list[str] = []
+    controller = BridgeLaunchController(
+        organizer=organizer,
+        worker_executable=worker,
+        worker_prefix=("--vfs-worker",),
+        descriptor_path=descriptor,
+        jobs_root=jobs,
+        send_event=lambda _event: None,
+        job_factory=_JobObject,
+        process_waiter=lambda handle: organizer.waitForApplication(handle, False),
+        log_info=logs.append,
+    )
+
+    controller.launch(
+        {
+            "protocol_version": PROTOCOL_VERSION,
+            "type": "launch_worker",
+            "job_id": "job-1",
+            "profile": "Default",
+            "manifest_path": str(manifest),
+            "overwrite_mod": None,
+            "job_object": JOB_OBJECT,
+        }
+    )
+    organizer.release.set()
+    controller.wait_for_monitors(timeout=1)
+
+    assert len(logs) == 1
+    assert "job_id=job-1" in logs[0]
+    assert "startApplication_ms=" in logs[0]
+    assert "assign_ms=" in logs[0]
+    assert "total_to_ack_ms=" in logs[0]
