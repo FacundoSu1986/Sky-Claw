@@ -365,8 +365,12 @@ def _reference_from_dict(payload: object) -> StockReference:
     directorios_brutos = membership["directories"]
     if not isinstance(directorios_brutos, list):
         raise StockReferenceInvalidError("directory_membership.directories debe ser lista")
+    if not all(isinstance(d, str) for d in directorios_brutos):
+        raise StockReferenceInvalidError(
+            "directory_membership.directories debe contener SÓLO strings (fail-closed, sin casts silenciosos)"
+        )
     try:
-        membership_evidencia = construir_evidencia_membership(tuple(str(d) for d in directorios_brutos))
+        membership_evidencia = construir_evidencia_membership(tuple(directorios_brutos))
     except (TypeError, ValueError) as exc:
         raise StockReferenceInvalidError(f"directory_membership inválida: {exc}") from exc
     if (

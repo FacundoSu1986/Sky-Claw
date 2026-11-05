@@ -149,6 +149,24 @@ class TestReferenciaStock:
         with pytest.raises(StockReferenceInvalidError, match="campos|membership"):
             cargar_referencia_stock(payload)
 
+    def test_rechaza_directorio_no_string_aunque_coaccione_igual(self, entorno) -> None:
+        """`directories` debe ser estrictamente list[str], sin casts silenciosos.
+
+        `str(123) == "123"`: si el loader coacciona, un entero que representa un
+        directorio real pasa la validación de membership/digest y la referencia
+        queda autorizada con un payload que no es el schema contratado."""
+        _storage, source, _clones, _referencia = entorno
+        (source / "123").mkdir()
+        referencia = construir_referencia_stock(source)
+        payload = referencia.como_dict()
+        directorios = payload["directory_membership"]["directories"]
+        assert isinstance(directorios, list) and "123" in directorios
+        payload["directory_membership"]["directories"] = [
+            123 if directorio == "123" else directorio for directorio in directorios
+        ]
+        with pytest.raises(StockReferenceInvalidError, match="strings|directorios"):
+            cargar_referencia_stock(payload)
+
     def test_rechaza_referencia_sin_skyrimse(self, tmp_path: pathlib.Path, parche_identidad: None) -> None:
         raiz = tmp_path / "sin-exe"
         (raiz / "Data").mkdir(parents=True)
