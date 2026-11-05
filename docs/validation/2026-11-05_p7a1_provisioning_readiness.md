@@ -146,5 +146,14 @@ Estado P7-A0 del disco: `G:` libre 256,3 GiB; `I:` libre 607,8 GiB; `E:` libre 4
 ## 12. Evidencia local complementaria
 
 - `E:\Skyclaw_A1_Evidence\mutation_results.json` — resultados de los 4 mutantes + restauración verde.
+- `E:\Skyclaw_A1_Evidence\ci_forensics.md` — forense del run 41933529936 y enlaces de sesión.
 - `E:\Skyclaw_A0_Evidence\` — informe/evidencia de P7-A0 (inspector, inventarios, backups, hardlinks).
 - CI: run `41933529936` (attempt 1 y 2), comparativas en §1.
+
+## 13. Anexo A — fallo Lint del PR #868: drift de dependencia (no defecto de P7)
+
+- Al abrir el PR #868, el gate `Lint (Ruff)` falló en `sky_claw/local/frozen_runtime/clones.py:355` y `:437` (`SIM102`), **código pre-existente que este PR no toca**.
+- Causa medida: el extra `dev` declara `ruff>=0.4` y CI instala con pip; el **2026-11-05T18:51Z** se publicó **ruff 0.17.4**, que activó la regla SIM102 para `elif` con `if` anidado. Reproducido en READ-ONLY sobre `main` `2b770818`: ruff 0.17.4 → 2 errores; ruff 0.15.11 (la que fija `uv.lock`) → TODO verde.
+- **Fix separado (no mezclado con P7):** PR Draft [#869](https://github.com/FacundoSu1986/Sky-Claw/pull/869) `ci/pin-ruff-version` — pin `ruff==0.15.11` en `pyproject.toml`. Tras su merge, el PR #868 debe sincronizar `origin/main` (`git merge origin/main --no-ff`) y re-ejecutar CI.
+- Sin cambios de producto en P7; los gates locales con la versión lockeada (ruff check/format, mypy, tests) están verdes.
+
