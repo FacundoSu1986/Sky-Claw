@@ -16,6 +16,7 @@ import secrets
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import psutil
@@ -1496,6 +1497,20 @@ class VfsExecutionBroker:
                 parsed_exit_code = exit_code if type(exit_code) is int else None
                 if exit_future is not None and not exit_future.done():
                     exit_future.set_result(parsed_exit_code)
+                    ts_utc = datetime.now(UTC).isoformat()
+                    logger.info(
+                        "VFS worker_exit confirmado ts=%s job_id=%s exit_code=%r",
+                        ts_utc,
+                        job_id,
+                        parsed_exit_code,
+                        extra={
+                            "event": "worker_exit_confirmed",
+                            "operation": "vfs_broker",
+                            "job_id": job_id,
+                            "exit_code": parsed_exit_code,
+                            "ts_utc": ts_utc,
+                        },
+                    )
                 future = self._pending.get(job_id) if isinstance(job_id, str) else None
                 if (
                     isinstance(job_id, str)
@@ -1563,6 +1578,20 @@ class VfsExecutionBroker:
             future.set_exception(exc)
             raise
         future.set_result(result)
+        ts_utc = datetime.now(UTC).isoformat()
+        logger.info(
+            "VFS job_result recibido ts=%s job_id=%s success=%s",
+            ts_utc,
+            expected_job_id,
+            result.success,
+            extra={
+                "event": "job_result_received",
+                "operation": "vfs_broker",
+                "job_id": expected_job_id,
+                "success": result.success,
+                "ts_utc": ts_utc,
+            },
+        )
         return True
 
     @staticmethod

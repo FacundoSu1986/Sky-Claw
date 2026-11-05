@@ -13,6 +13,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 
 PROTOCOL_VERSION = 1
@@ -320,7 +321,7 @@ class BridgeLaunchController:
         self._lock = threading.Lock()
 
     def launch(self, message: Mapping[str, object]) -> None:
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         request = validate_launch_request(message, jobs_root=self._jobs_root)
         with self._lock:
             if self._jobs:
@@ -337,7 +338,7 @@ class BridgeLaunchController:
         # El Job nace ANTES que el proceso y con el nombre que pidió el broker: si ya existía, la creación falla y no
         # nace nada. El worker efectivo (que puede ser un hijo del proceso asignado) lo abre por ese nombre.
         job_object = self._job_factory(request.job_object)
-        t_job = time.monotonic()
+        t_job = time.perf_counter()
         handle = 0
         try:
             handle = self._organizer.startApplication(
@@ -348,11 +349,11 @@ class BridgeLaunchController:
                 overwrite,
                 False,
             )
-            t_start = time.monotonic()
+            t_start = time.perf_counter()
             if type(handle) is not int or handle in (0, -1):
                 raise BridgeCommandError("MO2 no devolvió un HANDLE válido para el worker")
             job_object.assign(handle)
-            t_assign = time.monotonic()
+            t_assign = time.perf_counter()
         except Exception:
             if type(handle) is int and handle not in (0, -1):
                 with contextlib.suppress(Exception):
@@ -379,12 +380,13 @@ class BridgeLaunchController:
                 "job_object": request.job_object,
             }
         )
-        t_ack = time.monotonic()
+        t_ack = time.perf_counter()
         if self._log_info is not None:
+            ts_utc = datetime.now(UTC).isoformat()
             self._log_info(
-                f"Sky-Claw VFS Bridge launch timings job_id={request.job_id} job_object={request.job_object} "
-                f"create_job_ms={(t_job - t0) * 1000.0:.1f} startApplication_ms={(t_start - t_job) * 1000.0:.1f} "
-                f"assign_ms={(t_assign - t_start) * 1000.0:.1f} total_to_ack_ms={(t_ack - t0) * 1000.0:.1f}"
+                f"Sky-Claw VFS Bridge launch timings ts={ts_utc} job_id={request.job_id} job_object={request.job_object} "
+                f"create_job_ms={(t_job - t0) * 1000.0:.3f} startApplication_ms={(t_start - t_job) * 1000.0:.3f} "
+                f"assign_ms={(t_assign - t_start) * 1000.0:.3f} total_to_ack_ms={(t_ack - t0) * 1000.0:.3f}"
             )
         monitor = threading.Thread(
             target=self._monitor,
@@ -409,14 +411,22 @@ class BridgeLaunchController:
         wait_ok = False
         exit_code = -1
         wait_error: str | None = None
+        t_wait0 = time.perf_counter()
         try:
             wait_ok, exit_code = self._process_waiter(running.process_handle)
         except Exception as exc:
             wait_error = f"espera Win32 del worker falló: {exc}"
         finally:
+            t_exit = time.perf_counter()
             running.job_object.close()
             with self._lock:
                 self._jobs.pop(running.request.job_id, None)
+        if self._log_info is not None:
+            ts_utc = datetime.now(UTC).isoformat()
+            self._log_info(
+                f"Sky-Claw VFS Bridge worker_exit confirmed ts={ts_utc} job_id={running.request.job_id} "
+                f"wait_ok={wait_ok} exit_code={exit_code} wait_ms={(t_exit - t_wait0) * 1000.0:.3f}"
+            )
         event: dict[str, object] = {
             "protocol_version": PROTOCOL_VERSION,
             "type": "event",

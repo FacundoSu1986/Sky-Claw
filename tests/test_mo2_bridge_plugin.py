@@ -512,10 +512,18 @@ def test_verify_mo2_breakaway_allowed_rechaza_job_sin_breakaway_y_acepta_con_bre
         verify(query_flags=lambda: 0x2000)
 
 
+def test_query_current_process_job_limit_flags_en_no_windows_retorna_none() -> None:
+    if bridge_runtime.sys.platform != "win32":
+        assert bridge_runtime._query_current_process_job_limit_flags() is None
+
+
+@pytest.mark.skipif(
+    bridge_runtime.sys.platform != "win32",
+    reason="Win32 QueryInformationJobObject y sus estructuras ctypes solo existen en Windows",
+)
 def test_query_current_process_job_limit_flags_distingue_fuera_de_job_y_error_win32(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(bridge_runtime.sys, "platform", "win32")
     ultimo_error = 5
 
     class _Kernel32Falso:
@@ -528,8 +536,8 @@ def test_query_current_process_job_limit_flags_distingue_fuera_de_job_y_error_wi
 
     kernel32 = _Kernel32Falso()
     kernel32.QueryInformationJobObject = _Kernel32Falso.QueryInformationJobObject()  # type: ignore[assignment]
-    monkeypatch.setattr(bridge_runtime.ctypes, "WinDLL", lambda *_a, **_k: kernel32)
-    monkeypatch.setattr(bridge_runtime.ctypes, "get_last_error", lambda: ultimo_error)
+    monkeypatch.setattr(bridge_runtime.ctypes, "WinDLL", lambda *_a, **_k: kernel32, raising=False)
+    monkeypatch.setattr(bridge_runtime.ctypes, "get_last_error", lambda: ultimo_error, raising=False)
 
     # ERROR_ACCESS_DENIED (5) al consultar hJob=NULL indica que el proceso no pertenece a ningún Job.
     assert bridge_runtime._query_current_process_job_limit_flags() is None
@@ -590,6 +598,7 @@ def test_controller_ejecuta_breakaway_checker_antes_de_crear_job_ni_llamar_start
 
 def test_controller_registra_tiempos_de_launch_start_application_assign_y_ack(
     tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     jobs = tmp_path / "jobs"
     jobs.mkdir()
@@ -601,6 +610,15 @@ def test_controller_registra_tiempos_de_launch_start_application_assign_y_ack(
     descriptor.write_text("{}", encoding="utf-8")
     organizer = _Organizer()
     logs: list[str] = []
+    llamadas_perf_counter = 0
+    reloj_real = bridge_runtime.time.perf_counter
+
+    def _perf_counter_espia() -> float:
+        nonlocal llamadas_perf_counter
+        llamadas_perf_counter += 1
+        return reloj_real()
+
+    monkeypatch.setattr(bridge_runtime.time, "perf_counter", _perf_counter_espia)
     controller = BridgeLaunchController(
         organizer=organizer,
         worker_executable=worker,
@@ -627,8 +645,13 @@ def test_controller_registra_tiempos_de_launch_start_application_assign_y_ack(
     organizer.release.set()
     controller.wait_for_monitors(timeout=1)
 
-    assert len(logs) == 1
+    assert llamadas_perf_counter >= 7
+    assert len(logs) == 2
+    assert "Sky-Claw VFS Bridge launch timings ts=" in logs[0]
     assert "job_id=job-1" in logs[0]
     assert "startApplication_ms=" in logs[0]
     assert "assign_ms=" in logs[0]
     assert "total_to_ack_ms=" in logs[0]
+    assert "Sky-Claw VFS Bridge worker_exit confirmed ts=" in logs[1]
+    assert "job_id=job-1" in logs[1]
+    assert "wait_ok=True exit_code=7 wait_ms=" in logs[1]
