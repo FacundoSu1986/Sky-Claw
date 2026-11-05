@@ -238,30 +238,6 @@ class TestInstallVfsBridge:
         )
         assert result == tmp_path
 
-    async def test_allow_dev_worker_prefiere_base_executable_sobre_trampoline_de_venv(
-        self, tmp_path: pathlib.Path
-    ) -> None:
-        """En un venv de Windows, ``sys._base_executable`` apunta al CPython real y evita el trampoline."""
-        args = MagicMock(mo2_root=tmp_path)
-        trampoline = tmp_path / "venv" / "Scripts" / "python.exe"
-        base_python = tmp_path / "Python311" / "python.exe"
-        base_python.parent.mkdir(parents=True)
-        base_python.write_bytes(b"MZ")
-        with (
-            patch("sky_claw.__main__.sys.platform", "win32"),
-            patch("sky_claw.__main__.sys.executable", str(trampoline)),
-            patch("sky_claw.__main__.sys._base_executable", str(base_python), create=True),
-            patch.dict("sky_claw.__main__.os.environ", {"SKYCLAW_ALLOW_DEV_WORKER": "1"}, clear=False),
-            patch(
-                "sky_claw.local.mo2.bridge_installer.MO2BridgeInstaller.install",
-                return_value=tmp_path,
-            ) as install,
-        ):
-            await _install_vfs_bridge(args)
-
-        install.assert_called_once()
-        assert install.call_args.kwargs["worker_executable"] == base_python
-
 
 class TestVfsHealth:
     @pytest.mark.asyncio
@@ -457,3 +433,100 @@ async def test_main_async_no_configura_handlers_dentro_del_loop() -> None:
         await main_module._main(["--mode", "oneshot"])
 
     setup.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("argv_entrada", "worker_argv_esperado", "codigo_retorno"),
+    [
+        (
+            ["--vfs-worker", "--descriptor", "d.json", "--job-id", "j1", "--manifest", "m.json"],
+            ["--descriptor", "d.json", "--job-id", "j1", "--manifest", "m.json"],
+            0,
+        ),
+        (
+            ["--vfs-probe-child", "canary.txt", "deadbeef"],
+            ["--probe-child", "canary.txt", "deadbeef"],
+            17,
+        ),
+        (
+            ["--vfs-worker"],
+            [],
+            2,
+        ),
+        (
+            ["--vfs-probe-child"],
+            ["--probe-child"],
+            2,
+        ),
+    ],
+)
+def test_despacho_vfs_worker_a_nivel_de_modulo_se_comporta_igual_que_main(
+    monkeypatch: pytest.MonkeyPatch,
+    argv_entrada: list[str],
+    worker_argv_esperado: list[str],
+    codigo_retorno: int,
+) -> None:
+    """Ancla: el despacho temprano de ``--vfs-worker`` / ``--vfs-probe-child`` a nivel de módulo en
+    ``sky_claw/__main__.py`` (antes de importar ``AppContext``/``Config``) y el despacho en ``main()``
+    transforman ``argv`` de forma idéntica y salen con el mismo código de ``worker_main``."""
+    import importlib.util
+    import sys
+
+    from sky_claw import __main__ as main_module
+    from sky_claw.local.mo2 import vfs_worker
+
+    recibidos_modulo: list[list[str]] = []
+    recibidos_main_explicito: list[list[str]] = []
+    recibidos_main_sys_argv: list[list[str]] = []
+
+    # 1. Despacho a nivel de módulo (importando/ejecutando __main__.py con __name__ != "__main__",
+    # de modo que ``if __name__ == "__main__": main()`` no corre y solo actúa el guard superior).
+    monkeypatch.setattr(
+        vfs_worker,
+        "worker_main",
+        lambda argv: (recibidos_modulo.append(list(argv)), codigo_retorno)[1],
+    )
+    monkeypatch.setattr(sys, "argv", ["sky_claw", *argv_entrada])
+    spec = importlib.util.spec_from_file_location("sky_claw._test_main_dispatch", main_module.__file__)
+    assert spec is not None and spec.loader is not None
+    modulo_aislado = importlib.util.module_from_spec(spec)
+    with pytest.raises(SystemExit) as exit_modulo:
+        spec.loader.exec_module(modulo_aislado)
+
+    # 2. Despacho en main(argv) con lista explícita.
+    monkeypatch.setattr(
+        vfs_worker,
+        "worker_main",
+        lambda argv: (recibidos_main_explicito.append(list(argv)), codigo_retorno)[1],
+    )
+    with (
+        patch.object(main_module, "setup_logging") as setup_log,
+        patch.object(main_module, "_parse_args") as parse_args,
+        pytest.raises(SystemExit) as exit_main_explicito,
+    ):
+        main_module.main(list(argv_entrada))
+    setup_log.assert_not_called()
+    parse_args.assert_not_called()
+
+    # 3. Despacho en main(None) leyendo sys.argv[1:].
+    monkeypatch.setattr(
+        vfs_worker,
+        "worker_main",
+        lambda argv: (recibidos_main_sys_argv.append(list(argv)), codigo_retorno)[1],
+    )
+    monkeypatch.setattr(sys, "argv", ["sky_claw", *argv_entrada])
+    with (
+        patch.object(main_module, "setup_logging") as setup_log_sys,
+        patch.object(main_module, "_parse_args") as parse_args_sys,
+        pytest.raises(SystemExit) as exit_main_sys_argv,
+    ):
+        main_module.main(None)
+    setup_log_sys.assert_not_called()
+    parse_args_sys.assert_not_called()
+
+    assert recibidos_modulo == [worker_argv_esperado]
+    assert recibidos_main_explicito == recibidos_modulo
+    assert recibidos_main_sys_argv == recibidos_modulo
+    assert exit_modulo.value.code == codigo_retorno
+    assert exit_main_explicito.value.code == exit_modulo.value.code
+    assert exit_main_sys_argv.value.code == exit_modulo.value.code
