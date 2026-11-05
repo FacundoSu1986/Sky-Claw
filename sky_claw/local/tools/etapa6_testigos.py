@@ -755,9 +755,13 @@ class AlmacenJSON:
                 fh.flush()
                 os.fsync(fh.fileno())
             _reemplazar_con_reintento(tmp_name, ruta)
-        except BaseException:
+        except BaseException as exc:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_name)
+            # Un OSError de escritura / flush / fsync del temporal también sale como error del
+            # almacén (el de ``os.replace`` ya viene envuelto: no se vuelve a envolver).
+            if isinstance(exc, OSError) and not isinstance(exc, AlmacenDeTestigosIlegibleError):
+                raise AlmacenDeTestigosIlegibleError(f"no se pudo escribir '{ruta}': {exc}") from exc
             raise
         _fsync_directorio_padre(ruta.parent)
 

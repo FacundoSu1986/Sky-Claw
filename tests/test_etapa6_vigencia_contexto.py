@@ -674,6 +674,26 @@ def test_m9_un_fallo_al_crear_el_directorio_es_un_error_del_almacen(tmp_path: pa
     assert isinstance(info.value.__cause__, PermissionError)
 
 
+@pytest.mark.parametrize("fallo", ["fsync", "escritura"])
+def test_m9_un_fallo_de_escritura_o_fsync_del_temporal_es_un_error_del_almacen(
+    tmp_path: pathlib.Path, fallo: str
+) -> None:
+    """Review pr-agent (#870): ``json.dump`` / ``fsync`` del temporal también se envuelven (el
+    docstring promete que TODO fallo de E/S sale como ``AlmacenDeTestigosIlegibleError``) y no
+    queda el temporal."""
+    ruta = tmp_path / "state" / "etapa6_testigos.json"
+    almacen = AlmacenJSON(ruta)
+    error = OSError(28, "No space left on device")
+    objetivo = ("os.fsync", "json.dump")[fallo == "escritura"]
+
+    with patch(objetivo, side_effect=error), pytest.raises(AlmacenDeTestigosIlegibleError) as info:
+        almacen.guardar(_clave_de(tmp_path), TestigoPrevio(existia=False, sha256=None))
+
+    assert info.value.__cause__ is error
+    assert [p.name for p in ruta.parent.iterdir() if p.name.endswith(".tmp")] == []
+    assert not ruta.exists(), "un fallo a mitad de escritura no deja un JSON a medias"
+
+
 def test_m10_un_temporal_huerfano_de_un_proceso_muerto_se_barre_bajo_el_lock(tmp_path: pathlib.Path) -> None:
     ruta = tmp_path / "state" / "etapa6_testigos.json"
     ruta.parent.mkdir(parents=True)
