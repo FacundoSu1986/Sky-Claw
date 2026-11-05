@@ -25,10 +25,12 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import DESTRUCTIVE_TOO
 PENDIENTE = None
 
 #: Rutas relativas a ``tests/bdd/``.
+#: ``generate_bashed_patch`` salió de ``DESTRUCTIVE_TOOL_PATTERNS`` (ADR 0016 §7)
+#: tras retirar su camino headless (#862): las dos fases asistidas son de sólo
+#: lectura sobre parche/perfil/load order.
 MAPA_SOP_ACCEPTANCE: dict[str, str | None] = {
     "generate_grass_cache": "features/sop_modding/generacion_grass_cache.feature",
     "execute_loot_sorting": PENDIENTE,
-    "generate_bashed_patch": PENDIENTE,
     "generate_lods": PENDIENTE,
     "generate_animations": PENDIENTE,
     "quick_auto_clean": PENDIENTE,

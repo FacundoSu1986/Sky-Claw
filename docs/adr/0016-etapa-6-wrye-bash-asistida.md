@@ -244,22 +244,36 @@ y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de
   que sólo podían pasar contra código inalcanzable. Los 9 de `tests/test_wrye_bash_lock.py` **no**
   se retiran: se reescribieron en el PR B al contrato nuevo y se actualizaron otra vez al perder
   el handler sus últimos parámetros (anclan la superficie del agente, no el servicio).
-- **PR D (este): testigo durable entre sesiones (`etapa6_testigos`).** El detalle de por qué no se
+- **PR D (#864): testigo durable entre sesiones (`etapa6_testigos`).** El detalle de por qué no se
   copia `DeploymentHandoff`, cómo se identifica el slot virtual y qué hace la preparación ante un
   build intermedio está en **§7.2**. Cableado en **ambos** sitios productivos de construcción del
   servicio (`orchestration_composition` y `system_tools.generate_bashed_patch`, anclados por AST y
   oráculo conductual en `tests/test_etapa6_testigo_durable.py`).
-- **Deuda declarada (PR B): la compuerta HITL sigue sobre `generate_bashed_patch`.** El ítem 8 de §2
-  dice que la fase 2 «no requiere HITL», pero `tool_dispatcher.py` registra la estrategia con
-  `_destructive_middleware` y la tool sigue en `DESTRUCTIVE_TOOL_PATTERNS`. Efecto medido leyendo
-  `HitlGateMiddleware`: sin `HITLGuard` configurado **ambas** fases (de solo lectura) devuelven
-  `HITLGateUnavailable` antes de correr; con guard, el operador aprueba dos fases que no mutan. Se
-  deja así a propósito en este PR: quitar una compuerta es una decisión de seguridad aparte, no parte
-  de un cableado (hilo de revisión de CodeRabbit sobre `tool_dispatcher.py`, resuelto con esta nota).
-  Para cerrarla hay que decidir si las fases asistidas salen de `DESTRUCTIVE_TOOL_PATTERNS` (y el
-  dispatcher pasa a `ErrorWrappingMiddleware` + `DictResultGuardMiddleware`) y agregar un test del
-  dispatcher que alcance el enrutado asistido sin guard. No verificado: si en el entorno de producción
-  `AppContext.hitl` está siempre configurado (de ser así, el efecto es solo fricción, no bloqueo).
+- **PR E (este): retiro de la compuerta HITL sobre `generate_bashed_patch` (cierre de la deuda
+  declarada en PR B).** En el PR B (#853) se dejó deliberadamente `generate_bashed_patch` en
+  `DESTRUCTIVE_TOOL_PATTERNS` y registrada con `_destructive_middleware` para no mezclar una
+  decisión de seguridad con un cableado, dejando pendiente verificar también qué hacía
+  `AppContext.hitl` en producción. Verificación sobre el código (`app_context.py:1606`,
+  `orchestration_composition.py:388`, `ritual_runner.py:795-959` y `agent/tools/__init__.py:567-625`):
+  (a) tras el retiro de `execute_pipeline` (#862), **ninguna** de las dos fases muta el parche, el
+  perfil ni `plugins.txt` (las únicas escrituras son el write-probe efímero `.skyclaw_probe_*.tmp`
+  del sensor de permisos en `overwrite` y el testigo JSON bajo `SystemPaths.runtime_state_dir()`), y
+  la única mutación real de la etapa 6 la ejecuta manualmente el propio operador dentro de Wrye Bash
+  GUI; (b) `AppContext` sí construye e inyecta un `HITLGuard`, por lo que con «Modo local» apagado
+  (`auto_approve=False`) la GUI abría dos modales de aprobación humana para pasos que no mutan —y
+  sin canal de notificación configurado o en un dispatcher sin `HITLGuard` fallaba cerrado con
+  timeout `HITLApprovalDenied` o `HITLGateUnavailable`—; (c) existía además asimetría directa con
+  `AsyncToolRegistry`, donde el agente LLM ya invocaba `generate_bashed_patch` sin `HITLGuard`.
+  Decisión: `generate_bashed_patch` sale de `DESTRUCTIVE_TOOL_PATTERNS` (quedan las 6 herramientas
+  destructivas reales), `tool_dispatcher.py` pasa a registrarla con
+  `[ErrorWrappingMiddleware("WryeBashPipelineExecutionFailed"), DictResultGuardMiddleware("InvalidWryeBashPipelineResult")]`
+  (mismo patrón que `AnalyzeGrassPrerequisitesStrategy` y `PreviewChainStrategy`), y se retira
+  `GenerateBashedPatchStrategy.describe_for_approval` (sin llamadores fuera de `HitlGateMiddleware`,
+  evitando satisfacer falsamente `ApprovalPayloadDescriber`). Anclado sin relajar ninguno de los 4
+  censos (`test_hitl_destructive_gate.py`, `test_dispatcher_dependencies.py`,
+  `test_destructive_strategies_error_contract.py`, `tests/bdd/test_mapa_sop_features.py`) más
+  pruebas E2E del dispatcher sin guard y del flujo GUI con `auto_approve=False` en
+  `tests/test_wrye_bash_cableado_asistido.py`.
 
 ### 7.1 PR C — retiro del camino headless: decisión y evidencia (2026-11-03)
 
@@ -619,8 +633,9 @@ desincronizada. Todos corregidos acá y probados por mutación.
 
 **Lo que la auditoría confirmó sin hallazgos** (buscado a propósito): 0 callers con la firma vieja
 del registry/handler (scan AST sobre `sky_claw/`, `tests/` y `scripts/`), 0 líneas de código
-agregadas al servicio, las tres superficies enrutando por `ejecutar_fase_asistida`, HITL intacto
-(`generate_bashed_patch` sigue en `DESTRUCTIVE_TOOL_PATTERNS`), y las notas de `execute_pipeline`
+agregadas al servicio, las tres superficies enrutando por `ejecutar_fase_asistida`, HITL intacto en
+aquel corte previo al PR E (`generate_bashed_patch` seguía en `DESTRUCTIVE_TOOL_PATTERNS` hasta el
+cierre separado en §7), y las notas de `execute_pipeline`
 en `test_synthesis_service.py` son el método homónimo de **Synthesis**, servicio vivo.
 
 **Ronda 13 (auto-auditoría adversarial del PR D, 2026-11-04).** Antes de abrir el PR D se auditaron

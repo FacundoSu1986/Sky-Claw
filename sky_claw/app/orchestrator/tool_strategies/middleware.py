@@ -53,7 +53,6 @@ _SENSITIVE_KEY_PARTS = frozenset({"api_key", "auth", "credential", "password", "
 DESTRUCTIVE_TOOL_PATTERNS: frozenset[str] = frozenset(
     {
         "execute_loot_sorting",
-        "generate_bashed_patch",
         "generate_lods",
         # Follow-up A: Pandora reescribe los grafos de comportamiento del juego.
         "generate_animations",
@@ -66,6 +65,11 @@ DESTRUCTIVE_TOOL_PATTERNS: frozenset[str] = frozenset(
         # name="resolve_conflict_with_patch"); el alias viejo sin "_with"
         # nunca matcheó y dejaba la tool de xEdit SIN gate HITL.
         "resolve_conflict_with_patch",
+        # Nota (ADR 0016 §7): ``generate_bashed_patch`` salió de este conjunto tras
+        # retirar ``execute_pipeline`` (#862): tanto ``preparar`` como ``verificar``
+        # son no destructivas (capturan/contrastan testigo durable sin escribir sobre
+        # el parche, el perfil ni ``plugins.txt``) y la construcción manual en Wrye Bash
+        # GUI ya requiere acción explícita del operador.
     }
 )
 

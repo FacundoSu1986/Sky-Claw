@@ -154,6 +154,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a divergir.
 
 ### Removed
+- **Se retira la compuerta HITL (`HitlGateMiddleware`) sobre `generate_bashed_patch` — PR E de
+  [ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.** En el PR B (#853) la herramienta
+  se dejó deliberadamente en `DESTRUCTIVE_TOOL_PATTERNS` para separar el cableado de la decisión
+  de seguridad. Tras retirar `execute_pipeline` (#862), ni `preparar` ni `verificar` mutan el
+  parche, el perfil ni `plugins.txt` (sólo corren el write-probe efímero del sensor de permisos en
+  `overwrite` y sincronizan el testigo JSON bajo `SystemPaths.runtime_state_dir()`), mientras que
+  la construcción real del `Bashed Patch, 0.esp` ya exige acción explícita del operador dentro de
+  Wrye Bash GUI. Mantener el gate hacía que con «Modo local» apagado (`auto_approve=False`) la GUI
+  abriera dos modales de aprobación sobre lecturas, que sin canal de notificación o sin
+  `HITLGuard` fallara cerrado con `HITLApprovalDenied` / `HITLGateUnavailable`, y dejaba una
+  asimetría directa con `AsyncToolRegistry` (donde el agente LLM ya invocaba la tool sin gate).
+  `generate_bashed_patch` sale de `DESTRUCTIVE_TOOL_PATTERNS` (quedan las 6 herramientas
+  destructivas reales), `OrchestrationToolDispatcher` la registra con
+  `[ErrorWrappingMiddleware("WryeBashPipelineExecutionFailed"), DictResultGuardMiddleware("InvalidWryeBashPipelineResult")]`,
+  y `GenerateBashedPatchStrategy.describe_for_approval` se retira para no dejar código muerto ni
+  satisfacer falsamente `ApprovalPayloadDescriber`. Los 4 censos que enumeran las herramientas
+  destructivas (`test_hitl_destructive_gate.py`, `test_dispatcher_dependencies.py`,
+  `test_destructive_strategies_error_contract.py` y `tests/bdd/test_mapa_sop_features.py`) se
+  actualizan sin relajarlos, y `tests/test_wrye_bash_cableado_asistido.py` suma pruebas E2E del
+  dispatcher sin `HITLGuard` y del flujo completo de `run_ritual` + `run_ritual_resume` con
+  `auto_approve=False`.
 - **Se retira el camino headless de la etapa 6 (`WryeBashPipelineService.execute_pipeline`)
   — ADR 0016 §7.1.** Tras el cableado asistido del PR B no quedaba **ningún** caller de
   producción: `bash.py` no expone build, así que cada invocación tomaba los locks
