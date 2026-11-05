@@ -127,10 +127,12 @@ class EstadoDelContexto(enum.StrEnum):
       Bashed Patch + ``modlist.txt``) es el mismo con el que se guardó el testigo.
     - ``cambio``: cambió desde la preparación (LOOT reordenó, se agregó un mod…). El
       testigo no se usa y la frescura queda sin probar; hay que volver a preparar.
-    - ``no_verificable``: el registro durable no trae huella (lo escribió PR D) o el
-      contexto actual no se pudo leer. Misma consecuencia que ``cambio``.
-    - ``no_aplica``: no hay registro durable que gobierne (sin almacén, o payload sin
-      ``generacion``), así que no hay huella con qué comparar.
+    - ``no_verificable``: no hay base para validar el contexto: el registro durable no trae
+      huella (lo escribió PR D), el contexto actual no se pudo leer, o el payload declara una
+      ``generacion`` cuyo registro ya no se puede resolver (reemplazado por otra preparación,
+      ya consumido o almacén ilegible). Misma consecuencia que ``cambio``.
+    - ``no_aplica``: no hay registro durable que gobierne por construcción (sin almacén, o
+      payload sin ``generacion``, que jamás provino de un registro persistido).
     """
 
     COINCIDE = "coincide"
@@ -265,7 +267,9 @@ def _verificar_con_almacen(
     contexto de entrada del perfil. Si el contexto actual no coincide —o no se puede
     afirmar—, el testigo no se usa: el veredicto se emite SIN testigo
     (``frescura_probada=False``) y el registro no se consume. Un payload sin ``generacion``
-    o sin almacén no tiene registro que lo gobierne (``no_aplica``): su límite es el de PR D.
+    o sin almacén no tiene registro que lo gobierne por construcción (``no_aplica``): su límite
+    es el de PR D. Un payload CON ``generacion`` y almacén disponible cuyo registro no se puede
+    resolver falla cerrado (``no_verificable``): no hay huella con qué validar el contexto.
     """
     clave = (
         clave_de_testigo(plugins_txt=plugins_txt, destino_data=destino_data)
@@ -274,6 +278,7 @@ def _verificar_con_almacen(
     )
     generacion_para_consumir: str | None = None
     registro_gobernante: TestigoDurable | None = None
+    epoca_del_payload_sin_registro = False
     if testigo_previo is not None:
         del_payload = _testigo_desde_resultado(testigo_previo)
         if del_payload is not None:
@@ -282,6 +287,10 @@ def _verificar_con_almacen(
             origen = OrigenDelTestigo.PAYLOAD
             if del_payload.generacion is not None and almacen is not None and clave is not None:
                 registro_gobernante = _leer_registro_de_la_epoca(almacen, clave, del_payload.generacion)
+                # Un payload que declara una época y un almacén disponible: si el registro de ESA
+                # época no se puede resolver (reemplazado por otra preparación, ya consumido o
+                # almacén ilegible) no hay huella con qué validar el contexto. Se falla CERRADO.
+                epoca_del_payload_sin_registro = registro_gobernante is None
         else:
             # Un payload explícito malformado no se sustituye en silencio por estado de disco.
             testigo = None
@@ -311,14 +320,16 @@ def _verificar_con_almacen(
     contexto = EstadoDelContexto.NO_APLICA
     if registro_gobernante is not None:
         contexto = _evaluar_contexto(registro_gobernante, plugins_txt)
-        if contexto is not EstadoDelContexto.COINCIDE:
-            logger.warning(
-                "[FASE-6-asistida] El contexto de entrada del perfil no coincide con el de la preparación (%s): "
-                "no se usa el testigo; la frescura queda sin probar.",
-                contexto.value,
-                extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
-            )
-            testigo = None
+    elif epoca_del_payload_sin_registro:
+        contexto = EstadoDelContexto.NO_VERIFICABLE
+    if contexto in (EstadoDelContexto.CAMBIO, EstadoDelContexto.NO_VERIFICABLE):
+        logger.warning(
+            "[FASE-6-asistida] El contexto de entrada del perfil no se puede validar contra el de la preparación "
+            "(%s): no se usa el testigo; la frescura queda sin probar.",
+            contexto.value,
+            extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+        )
+        testigo = None
 
     veredicto = veredicto_etapa_asistida(
         artefacto=artefacto,

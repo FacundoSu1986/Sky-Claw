@@ -411,6 +411,74 @@ async def test_el_almacen_en_memoria_gobierna_el_contexto_igual_que_el_json(tmp_
     assert v["testigo_contexto"] == "cambio"
 
 
+async def test_un_payload_de_una_epoca_reemplazada_no_prueba_frescura(tmp_path: pathlib.Path) -> None:
+    """Review Codex P2 (#870): la GUI conserva el payload de la época A; el operador construye,
+    LOOT cambia el load order y OTRA preparación reemplaza la época por B. El registro de A ya no
+    existe, así que no hay huella con qué validar el contexto: el testigo del payload no puede
+    atestiguar nada (antes: ``success=True, frescura_probada=True, testigo_contexto=no_aplica``)."""
+    servicio, _game, perfil, overwrite = _hacer_servicio_json(tmp_path)
+    _escribir(perfil / "plugins.txt", LO1)
+    p1 = await servicio.preparar_etapa_asistida(profile="Default")
+
+    (overwrite / BASHED_PATCH_NAME).write_bytes(b"TES4_LO1" + b"\x01" * 56)
+    _escribir(perfil / "plugins.txt", (*LO2, f"*{BASHED_PATCH_NAME}"))
+    p2 = await servicio.preparar_etapa_asistida(profile="Default")
+    assert p2["testigo_previo"]["generacion"] != p1["testigo_previo"]["generacion"]
+
+    v = await servicio.verificar_etapa_asistida(profile="Default", testigo_previo=p1["testigo_previo"])
+    assert v["success"] is True
+    assert v["testigo_origen"] == "payload"
+    assert v["frescura_probada"] is False
+    assert v["testigo_contexto"] == "no_verificable"
+
+
+async def test_un_payload_ya_consumido_no_vuelve_a_probar_frescura(tmp_path: pathlib.Path) -> None:
+    """Repetir la verificación con el mismo payload tras el consumo: la época ya no existe."""
+    servicio, _game, perfil, overwrite = _hacer_servicio_json(tmp_path)
+    _escribir(perfil / "plugins.txt", LO1)
+    p1 = await servicio.preparar_etapa_asistida(profile="Default")
+    (overwrite / BASHED_PATCH_NAME).write_bytes(b"TES4_LO1" + b"\x01" * 56)
+    _escribir(perfil / "plugins.txt", (*LO1, f"*{BASHED_PATCH_NAME}"))
+
+    primera = await servicio.verificar_etapa_asistida(profile="Default", testigo_previo=p1["testigo_previo"])
+    assert primera["frescura_probada"] is True
+    assert primera["testigo_contexto"] == "coincide"
+
+    repetida = await servicio.verificar_etapa_asistida(profile="Default", testigo_previo=p1["testigo_previo"])
+    assert repetida["success"] is True
+    assert repetida["frescura_probada"] is False
+    assert repetida["testigo_contexto"] == "no_verificable"
+
+
+async def test_si_el_almacen_no_se_puede_leer_el_payload_con_generacion_falla_cerrado(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Review pr-agent (#870): un ``OSError`` al leer el registro de la época no puede apagar en
+    silencio la validación de contexto (fail-open)."""
+    servicio, _game, perfil, overwrite = _hacer_servicio_json(tmp_path)
+    _escribir(perfil / "plugins.txt", LO1)
+    p1 = await servicio.preparar_etapa_asistida(profile="Default")
+    (overwrite / BASHED_PATCH_NAME).write_bytes(b"TES4_LO1" + b"\x01" * 56)
+    _escribir(perfil / "plugins.txt", (*LO2, f"*{BASHED_PATCH_NAME}"))
+
+    with patch.object(servicio._testigo_store, "leer", side_effect=OSError("almacén no disponible")):  # noqa: SLF001
+        v = await servicio.verificar_etapa_asistida(profile="Default", testigo_previo=p1["testigo_previo"])
+
+    assert v["frescura_probada"] is False
+    assert v["testigo_contexto"] == "no_verificable"
+
+
+async def test_un_payload_sin_generacion_sigue_sin_registro_que_lo_gobierne(tmp_path: pathlib.Path) -> None:
+    """Contraste que acota el cambio: sin ``generacion`` el payload jamás provino de un registro
+    persistido (``no_disponible`` / ``error_de_almacen``), así que sigue siendo ``no_aplica``."""
+    servicio, _game, perfil, overwrite = _hacer_servicio_json(tmp_path)
+    _escribir(perfil / "plugins.txt", (*LO1, f"*{BASHED_PATCH_NAME}"))
+    (overwrite / BASHED_PATCH_NAME).write_bytes(b"TES4" + b"\x01" * 60)
+    v = await servicio.verificar_etapa_asistida(profile="Default", testigo_previo={"existia": False, "sha256": None})
+    assert v["frescura_probada"] is True
+    assert v["testigo_contexto"] == "no_aplica"
+
+
 # =============================================================================
 # 5. H-2: el guard M-04 en la superficie del agente LLM (M4)
 # =============================================================================

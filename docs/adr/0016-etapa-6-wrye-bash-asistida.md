@@ -486,8 +486,13 @@ cerraron aparte (una rama + un PR por cambio). Decisiones, con su ancla:
    - **Límites declarados.** (a) Crear un mod desde `overwrite` agrega una línea a `modlist.txt` y
      cambia la huella: la dirección del error es la segura (frescura no probada, se vuelve a
      preparar), nunca un falso verde. (b) Un payload sin `generacion`, o la verificación sin
-     almacén, no tiene registro que lo gobierne (`no_aplica`): su garantía es la de PR D. (c) Tras
-     consumir el registro (verificación exitosa) un replay del payload ya no encuentra registro.
+     almacén, no tiene registro que lo gobierne por construcción (`no_aplica`): su garantía es la de
+     PR D. (c) Un payload CON `generacion` y almacén disponible cuyo registro no se puede resolver
+     —la época fue reemplazada por otra preparación, ya se consumió o el almacén es ilegible— **falla
+     cerrado** (`no_verificable`, sin testigo): no hay huella con qué validar el contexto. Hallado en
+     la revisión de #870 (Codex P2): antes ese caso se saltaba la validación y un payload viejo probaba
+     frescura sobre un parche anterior al cambio de load order. Consecuencia aceptada: repetir la
+     verificación con un payload ya consumido deja de probar frescura.
 2. **H-2 — la tool del agente LLM no corría el guard M-04.** `system_tools.generate_bashed_patch`
    construía el servicio sin `plugin_limit_guard` y pasaba `validate_limit=False` con el comentario
    "se valida a nivel Supervisor", pero `AsyncToolRegistry` no pasa por el `SupervisorAgent`: con

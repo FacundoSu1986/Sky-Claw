@@ -186,6 +186,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     si no coincide, `preparar` abre una época nueva sin afirmar un build y `verificar` no usa el testigo
     (nuevo campo `testigo_contexto`: `coincide` / `cambio` / `no_verificable` / `no_aplica`). Los registros
     de PR D se leen como contexto desconocido. El payload `testigo_previo` no cambia. Sin TTL por reloj.
+    Un payload con `generacion` cuyo registro ya no existe (reemplazado, consumido o almacén ilegible)
+    falla cerrado (`no_verificable`): repetir una verificación con un payload ya consumido deja de probar frescura.
   - **H-2:** `generate_bashed_patch` del agente LLM ahora corre el guard M-04 como la GUI y el
     `SupervisorAgent` (antes pasaba `validate_limit=False` con >254 plugins). Ancla por enumeración de los
     sitios productivos del servicio.
