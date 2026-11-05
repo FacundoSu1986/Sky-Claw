@@ -158,8 +158,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — ADR 0016 §7.1.** Tras el cableado asistido del PR B no quedaba **ningún** caller de
   producción: `bash.py` no expone build, así que cada invocación tomaba los locks
   (`Bashed Patch, 0.esp` + `load-order`), emitía `ActionManifest`, abría una TX y fallaba
-  cerrado. Con él se van 8 helpers (`ensure_runner` incluido), 3 clases module-level, **570
-  líneas netas** (el módulo pasa de 1231 a 661) y las dependencias `lock_manager`,
+  cerrado. Con él se van 8 helpers (`ensure_runner` incluido), 3 clases module-level, **555
+  líneas netas** (el módulo pasa de 1231 a 676; la cifra original, 570/661, quedó vieja tras la ronda 12) y las dependencias `lock_manager`,
   `snapshot_manager`, `journal` y `wrye_bash_runner` de la firma del servicio (8 → 4
   parámetros). El hueco de saneo de `stdout`/`stderr` que el PR B había asignado a este PR
   **se cierra por retiro**: sin subproceso no hay texto de terceros que sanear, y la tool del
@@ -177,6 +177,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 
 ### Fixed
+- **Etapa 6 — vigencia contextual del testigo durable, simetría M-04 y robustez del almacén
+  ([ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.3, issue #866).**
+  - **H-1:** si LOOT (u otro cambio de load order o de `modlist.txt`) ocurría entre el build del
+    operador y la verificación, `preparar` y `verificar` seguían comparando contra el testigo viejo y
+    declaraban `frescura_probada=True` sobre un parche anterior al cambio. El registro durable guarda
+    ahora `huella_contexto` (SHA-256 de `plugins.txt` **sin** la entrada del propio Bashed Patch + `modlist.txt`);
+    si no coincide, `preparar` abre una época nueva sin afirmar un build y `verificar` no usa el testigo
+    (nuevo campo `testigo_contexto`: `coincide` / `cambio` / `no_verificable` / `no_aplica`). Los registros
+    de PR D se leen como contexto desconocido. El payload `testigo_previo` no cambia. Sin TTL por reloj.
+  - **H-2:** `generate_bashed_patch` del agente LLM ahora corre el guard M-04 como la GUI y el
+    `SupervisorAgent` (antes pasaba `validate_limit=False` con >254 plugins). Ancla por enumeración de los
+    sitios productivos del servicio.
+  - **H-3:** las anclas del retiro headless congelan también las funciones de módulo de
+    `wrye_bash_service.py` y prohíben `subprocess` / `create_subprocess_*` / `Popen` / `WryeBashRunner`.
+  - **H-4 / L-2 / L-3:** `os.replace` del almacén reintenta ante una violación de uso compartido
+    transitoria en Windows (`winerror` 5/32), todo fallo de E/S sale como `AlmacenDeTestigosIlegibleError`
+    y se barren los `.etapa6_testigos.*.tmp` huérfanos bajo el lock.
+  - **L-4:** corregida la cifra del retiro (1231 → 676, −555 netas).
 - **`add_mod_to_modlist` veía el mismo mod como dos si cambiaba una mayúscula (#838).**
   La primitiva comparaba los nombres del `modlist.txt` de forma exacta, mientras
   `ganadores._exigir_enabled` los compara con `lower()` porque MO2 resuelve

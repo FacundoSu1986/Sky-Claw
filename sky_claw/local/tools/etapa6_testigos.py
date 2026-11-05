@@ -43,6 +43,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import secrets
 import stat
 import sys
@@ -72,6 +73,18 @@ _ETAPA_WRYE_BASH = 6
 NOMBRE_DEL_ARCHIVO = "etapa6_testigos.json"
 _TIMEOUT_LOCK_SEGUNDOS = 5.0
 _PASO_REINTENTO_SEGUNDOS = 0.01
+
+#: Presupuesto de reintentos de ``os.replace`` ante una violación de uso compartido
+#: transitoria en Windows (Defender o el indexador con el JSON abierto sin
+#: ``FILE_SHARE_DELETE``): hasta ``_REINTENTOS_DE_REEMPLAZO`` reintentos con backoff
+#: exponencial desde ``_PASO_DE_REEMPLAZO_SEGUNDOS`` (≈ 0.02 + 0.04 + 0.08 + 0.16 + 0.32 s).
+_REINTENTOS_DE_REEMPLAZO = 5
+_PASO_DE_REEMPLAZO_SEGUNDOS = 0.02
+#: ``ERROR_ACCESS_DENIED`` (5) y ``ERROR_SHARING_VIOLATION`` (32): los únicos ``winerror`` que
+#: significan "otro proceso lo tiene abierto ahora", y por tanto los únicos que se reintentan.
+_WINERROR_TRANSITORIOS = frozenset({5, 32})
+
+_PATRON_HUELLA = re.compile(r"[0-9a-f]{64}")
 
 #: Locks reentrantes por ruta canónica para serializar múltiples instancias de
 #: ``AlmacenJSON`` dentro del mismo proceso antes de competir por el lock del SO.
@@ -135,6 +148,14 @@ def nueva_generacion() -> str:
 
 
 _CLAVES_TESTIGO_DURABLE: frozenset[str] = frozenset({"existia", "sha256", "observado_en", "generacion"})
+#: ``huella_contexto`` es opcional al LEER: los registros que escribió PR D no la traían, y se
+#: leen como "contexto desconocido" (``None``) en vez de descartarse.
+_CLAVES_TESTIGO_DURABLE_CON_CONTEXTO: frozenset[str] = _CLAVES_TESTIGO_DURABLE | {"huella_contexto"}
+
+
+def es_huella_valida(valor: object) -> bool:
+    """True si *valor* es un digest SHA-256 en hex minúscula (64 caracteres)."""
+    return isinstance(valor, str) and _PATRON_HUELLA.fullmatch(valor) is not None
 
 
 def _validar_generacion_explicita(generacion: str) -> None:
@@ -203,6 +224,11 @@ class TestigoDurable:
     sha256: str | None
     observado_en: str
     generacion: str = field(default_factory=nueva_generacion)
+    #: Digest del contexto de entrada del perfil con el que se tomó el testigo
+    #: (:func:`~sky_claw.local.tools.wrye_bash_asistida.huella_de_contexto`). ``None`` =
+    #: desconocido (registro de PR D, o ``plugins.txt`` ilegible al preparar): no puede
+    #: afirmar que el contexto no cambió.
+    huella_contexto: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.existia, bool):
@@ -214,6 +240,8 @@ class TestigoDurable:
             raise ValueError("un testigo durable necesita marca de tiempo no vacía")
         if not es_generacion_valida(self.generacion):
             raise ValueError(f"generacion debe ser 32 hex en minúsculas: {self.generacion!r}")
+        if self.huella_contexto is not None and not es_huella_valida(self.huella_contexto):
+            raise ValueError(f"huella_contexto debe ser SHA-256 hex en minúsculas o None: {self.huella_contexto!r}")
 
     @classmethod
     def desde(
@@ -222,12 +250,14 @@ class TestigoDurable:
         *,
         observado_en: str | None = None,
         generacion: str | None = None,
+        huella_contexto: str | None = None,
     ) -> TestigoDurable:
         return cls(
             existia=testigo.existia,
             sha256=testigo.sha256,
             observado_en=observado_en or _ahora(),
             generacion=nueva_generacion() if generacion is None else generacion,
+            huella_contexto=huella_contexto,
         )
 
     def como_testigo_previo(self) -> TestigoPrevio:
@@ -244,12 +274,19 @@ class TestigoDurable:
             "sha256": self.sha256,
             "observado_en": self.observado_en,
             "generacion": self.generacion,
+            "huella_contexto": self.huella_contexto,
         }
 
     @classmethod
     def desde_dict(cls, crudo: object) -> TestigoDurable | None:
         """Forma canónica o ``None``. Nunca lanza sobre datos leídos de disco."""
-        if not isinstance(crudo, dict) or set(crudo.keys()) != _CLAVES_TESTIGO_DURABLE:
+        if not isinstance(crudo, dict):
+            return None
+        claves = set(crudo.keys())
+        if not (_CLAVES_TESTIGO_DURABLE <= claves <= _CLAVES_TESTIGO_DURABLE_CON_CONTEXTO):
+            return None
+        huella_contexto = crudo.get("huella_contexto")
+        if huella_contexto is not None and not es_huella_valida(huella_contexto):
             return None
         existia = crudo.get("existia")
         sha256 = crudo.get("sha256")
@@ -265,6 +302,7 @@ class TestigoDurable:
                 sha256=sha256,
                 observado_en=observado_en,
                 generacion=generacion,
+                huella_contexto=huella_contexto,
             )
         except ValueError:
             return None
@@ -285,11 +323,20 @@ def _resolver_preparacion_durable(
     actual: TestigoDurable | None,
     observado_ahora: TestigoPrevio | None,
     observado_en: str | None,
+    verificar_contexto: bool = False,
+    contexto_ahora: str | None = None,
 ) -> tuple[DecisionDeTestigo, TestigoDurable | None, bool]:
-    """Única implementación de la transición de época para memoria y JSON."""
+    """Única implementación de la transición de época para memoria y JSON.
+
+    Con ``verificar_contexto`` la época nueva (o la misma, con el contexto al día) se
+    persiste con ``huella_contexto=contexto_ahora``; sin él, el registro queda sin huella.
+    """
     decision = decidir_testigo_de_preparacion(
         observado_ahora=observado_ahora,
         durable=None if actual is None else actual.como_testigo_previo(),
+        verificar_contexto=verificar_contexto,
+        contexto_ahora=contexto_ahora,
+        contexto_durable=None if actual is None else actual.huella_contexto,
     )
     if decision.persistir and decision.testigo is not None:
         misma_epoca = actual is not None and actual.como_testigo_previo() == decision.testigo
@@ -298,6 +345,7 @@ def _resolver_preparacion_durable(
             decision.testigo,
             observado_en=observado_en,
             generacion=generacion,
+            huella_contexto=contexto_ahora if verificar_contexto else None,
         )
         return decision, vigente, True
     return decision, actual, False
@@ -316,7 +364,12 @@ class AlmacenDeTestigos(Protocol):
     def leer(self, clave: ClaveDeTestigo) -> TestigoDurable | None: ...
 
     def guardar(
-        self, clave: ClaveDeTestigo, testigo: TestigoPrevio, *, observado_en: str | None = None
+        self,
+        clave: ClaveDeTestigo,
+        testigo: TestigoPrevio,
+        *,
+        observado_en: str | None = None,
+        huella_contexto: str | None = None,
     ) -> TestigoDurable: ...
 
     def olvidar(self, clave: ClaveDeTestigo) -> None: ...
@@ -327,6 +380,7 @@ class AlmacenDeTestigos(Protocol):
         observar: Callable[[], TestigoPrevio | None],
         *,
         observado_en: str | None = None,
+        contexto: Callable[[], str | None] | None = None,
     ) -> ResultadoDePreparacionDurable: ...
 
     def olvidar_si_coincide(
@@ -350,9 +404,14 @@ class AlmacenEnMemoria:
             return self._datos.get(clave.como_texto())
 
     def guardar(
-        self, clave: ClaveDeTestigo, testigo: TestigoPrevio, *, observado_en: str | None = None
+        self,
+        clave: ClaveDeTestigo,
+        testigo: TestigoPrevio,
+        *,
+        observado_en: str | None = None,
+        huella_contexto: str | None = None,
     ) -> TestigoDurable:
-        durable = TestigoDurable.desde(testigo, observado_en=observado_en)
+        durable = TestigoDurable.desde(testigo, observado_en=observado_en, huella_contexto=huella_contexto)
         with self._lock:
             self._datos[clave.como_texto()] = durable
         return durable
@@ -367,6 +426,7 @@ class AlmacenEnMemoria:
         observar: Callable[[], TestigoPrevio | None],
         *,
         observado_en: str | None = None,
+        contexto: Callable[[], str | None] | None = None,
     ) -> ResultadoDePreparacionDurable:
         with self._lock:
             actual = self._datos.get(clave.como_texto())
@@ -375,6 +435,8 @@ class AlmacenEnMemoria:
                 actual=actual,
                 observado_ahora=observado_ahora,
                 observado_en=observado_en,
+                verificar_contexto=contexto is not None,
+                contexto_ahora=None if contexto is None else contexto(),
             )
             if persistir and vigente is not None:
                 self._datos[clave.como_texto()] = vigente
@@ -460,9 +522,14 @@ class AlmacenJSON:
         return durable
 
     def guardar(
-        self, clave: ClaveDeTestigo, testigo: TestigoPrevio, *, observado_en: str | None = None
+        self,
+        clave: ClaveDeTestigo,
+        testigo: TestigoPrevio,
+        *,
+        observado_en: str | None = None,
+        huella_contexto: str | None = None,
     ) -> TestigoDurable:
-        durable = TestigoDurable.desde(testigo, observado_en=observado_en)
+        durable = TestigoDurable.desde(testigo, observado_en=observado_en, huella_contexto=huella_contexto)
         ruta = self.ruta
         with self._seccion_critica(ruta, escritura=True):
             datos = self._cargar_objeto(ruta)
@@ -483,8 +550,14 @@ class AlmacenJSON:
         observar: Callable[[], TestigoPrevio | None],
         *,
         observado_en: str | None = None,
+        contexto: Callable[[], str | None] | None = None,
     ) -> ResultadoDePreparacionDurable:
-        """Ejecuta ``cargar → observar → decidir → escribir`` bajo un único lock del almacén."""
+        """Ejecuta ``cargar → observar → decidir → escribir`` bajo un único lock del almacén.
+
+        ``contexto`` (opcional) observa la huella del contexto de entrada del perfil DENTRO del
+        lock, justo después de ``observar``: activa la vigencia contextual del testigo
+        (#866, H-1). Sin él la transición es la de PR D y el registro queda sin huella.
+        """
         ruta = self.ruta
         with self._seccion_critica(ruta, escritura=True):
             datos = self._cargar_objeto(ruta)
@@ -494,6 +567,8 @@ class AlmacenJSON:
                 actual=actual,
                 observado_ahora=observado_ahora,
                 observado_en=observado_en,
+                verificar_contexto=contexto is not None,
+                contexto_ahora=None if contexto is None else contexto(),
             )
             if persistir and vigente is not None:
                 datos[clave.como_texto()] = vigente.como_dict()
@@ -521,7 +596,14 @@ class AlmacenJSON:
 
     @contextlib.contextmanager
     def _seccion_critica(self, ruta: pathlib.Path, *, escritura: bool) -> Iterator[None]:
-        """Serializa toda la operación sobre ``ruta`` entre hilos/instancias y entre procesos."""
+        """Serializa toda la operación sobre ``ruta`` entre hilos/instancias y entre procesos.
+
+        **Invariante de la lectura (L-1).** ``leer`` (``escritura=False``) también toma el lock
+        del SO sobre ``.etapa6_testigos.json.lock``. Sólo lo omite —y queda cubierta por el lock
+        intraproceso— cuando el lockfile no se puede abrir por ``EACCES``/``EPERM``/``EROFS``:
+        un directorio de sólo lectura donde ningún escritor puede ejecutar ``os.replace``, así
+        que no hay escritura concurrente que excluir.
+        """
         with _lock_intraproceso(ruta):
             try:
                 self._rechazar_enlaces(ruta)
@@ -654,9 +736,15 @@ class AlmacenJSON:
         return crudo
 
     def _escribir_atomico(self, ruta: pathlib.Path, datos: dict[str, object]) -> None:
-        ruta.parent.mkdir(parents=True, exist_ok=True)
+        """Reemplazo atómico bajo la sección crítica. Todo fallo de E/S sale como
+        :class:`AlmacenDeTestigosIlegibleError` (``__cause__`` conserva el ``OSError``)."""
+        try:
+            ruta.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise AlmacenDeTestigosIlegibleError(f"no se pudo preparar '{ruta.parent}': {exc}") from exc
         self._rechazar_enlaces(ruta)
         self._rechazar_rutas_irregulares(ruta)
+        self._barrer_temporales_huerfanos(ruta)
         try:
             tmp_fd, tmp_name = tempfile.mkstemp(dir=str(ruta.parent), prefix=f".{ruta.stem}.", suffix=".tmp")
         except OSError as exc:
@@ -666,12 +754,71 @@ class AlmacenJSON:
                 json.dump(datos, fh, ensure_ascii=False, sort_keys=True)
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.replace(tmp_name, ruta)
+            _reemplazar_con_reintento(tmp_name, ruta)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_name)
             raise
         _fsync_directorio_padre(ruta.parent)
+
+    @staticmethod
+    def _barrer_temporales_huerfanos(ruta: pathlib.Path) -> None:
+        """Borra los ``.<stem>.*.tmp`` que dejó un proceso muerto entre ``mkstemp`` y ``os.replace``.
+
+        Sólo es seguro porque TODA escritura de este almacén ocurre bajo ``_seccion_critica``:
+        quien llega acá tiene el lock exclusivo, así que ningún temporal presente puede ser de
+        una escritura en vuelo. Sólo se tocan archivos **regulares** (``lstat``, sin seguir
+        enlaces); un enlace o un directorio con ese nombre se deja como está. Best-effort: un
+        fallo al barrer no impide escribir.
+        """
+        prefijo = f".{ruta.stem}."
+        try:
+            candidatos = [p for p in ruta.parent.iterdir() if p.name.startswith(prefijo) and p.name.endswith(".tmp")]
+        except OSError:
+            return
+        for candidato in candidatos:
+            try:
+                if stat.S_ISREG(os.lstat(candidato).st_mode):
+                    os.unlink(candidato)
+            except OSError:
+                logger.warning(
+                    "No se pudo barrer el temporal huérfano %s del almacén de testigos.",
+                    candidato,
+                    extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+                )
+
+
+def _es_windows() -> bool:
+    """Indirección de ``sys.platform`` para poder ejercitar el reintento de Windows en POSIX."""
+    return sys.platform == "win32"
+
+
+def _es_violacion_de_uso_compartido(exc: OSError) -> bool:
+    """True sólo para un ``PermissionError`` de Windows con ``winerror`` 5/32 (transitorio)."""
+    return (
+        _es_windows() and isinstance(exc, PermissionError) and getattr(exc, "winerror", None) in _WINERROR_TRANSITORIOS
+    )
+
+
+def _reemplazar_con_reintento(origen: str, destino: pathlib.Path) -> None:
+    """``os.replace`` con reintento acotado ante una violación de uso compartido en Windows.
+
+    Defender o el indexador pueden tener el JSON abierto unos milisegundos sin
+    ``FILE_SHARE_DELETE``; reintentar con backoff lo absorbe sin degradar la corrida a
+    ``error_de_almacen``. Fuera de Windows, o ante cualquier otro error, no hay reintento:
+    se levanta :class:`AlmacenDeTestigosIlegibleError` al primer fallo. Agotado el
+    presupuesto también (con el último ``OSError`` como ``__cause__``).
+    """
+    espera = _PASO_DE_REEMPLAZO_SEGUNDOS
+    for intento in range(_REINTENTOS_DE_REEMPLAZO + 1):
+        try:
+            os.replace(origen, destino)
+            return
+        except OSError as exc:
+            if intento == _REINTENTOS_DE_REEMPLAZO or not _es_violacion_de_uso_compartido(exc):
+                raise AlmacenDeTestigosIlegibleError(f"no se pudo reemplazar '{destino}': {exc}") from exc
+            time.sleep(espera)
+            espera *= 2
 
 
 def _fsync_directorio_padre(directorio: pathlib.Path) -> None:

@@ -271,7 +271,7 @@ opción que no agrega mentiras.
 |---|---|---|
 | ¿Quién llama `execute_pipeline` en producción? | **0** callers en `sky_claw/` | `grep` de `execute_pipeline` sobre el paquete: sólo la definición y 3 menciones en prosa (docstrings de `wrye_bash_service`, `system_tools` y un comentario de `__init__.py`). El dispatcher, el supervisor y la tool llaman a `ejecutar_fase_asistida` desde el PR B. |
 | ¿Cuánto código muerto hay? | **9 métodos** (`execute_pipeline` + 8 helpers de caja negra y rollback, incluido `ensure_runner`) y **3 clases module-level** (`_DesenlaceDelRollback`, `_ActionManifestError`, `_RunFallidoError`) | AST: alcanzabilidad desde los 3 métodos públicos. 8 de los 10 métodos privados no eran alcanzables desde ningún camino vivo; `ensure_runner` sólo lo llamaba `execute_pipeline`. |
-| ¿Cuánto pesa? | `wrye_bash_service.py`: **1231 → 661 líneas** (−570 netas) | `wc -l` sobre `b247aea` y sobre el HEAD del PR. |
+| ¿Cuánto pesa? | `wrye_bash_service.py`: **1231 → 676 líneas** (+72 / −627 = −555 netas) | `git diff --numstat 83cc126^1 83cc126` sobre el archivo (la cifra original, 661/−570, quedó vieja tras la ronda 12: #866 L-4). |
 | ¿Qué dependencias se van? | `lock_manager`, `snapshot_manager`, `journal`, `wrye_bash_runner`; `__init__` pasa de **8 a 4** parámetros | AST por método: sólo `execute_pipeline` y sus 6 helpers tocaban `_lock_manager`/`_snapshot_manager`/`_journal`; **ninguno** de los 9 métodos que quedan los toca. |
 | ¿Se pierde cobertura real? | De los 36 tests de `test_wrye_bash_service.py`, **8 contratos sobreviven** (4 se portaron a la suite asistida en este PR) y **28 se retiran con el código** | Mapeo test por test, abajo. |
 | ¿Y el hueco de saneo de `stdout`/`stderr` que el PR B dejó anotado? | **Se cierra por retiro**: sin camino que devuelva la salida de un subproceso no hay texto de terceros que sanear | `wrye_bash_service.py` ya no importa `sanitize_for_prompt` ni menciona `stdout`/`stderr`; el ancla nueva prohíbe que vuelva a existir un runner en la firma de la tool. |
@@ -279,7 +279,7 @@ opción que no agrega mentiras.
 
 **Por qué «retirar» y no «declarar compat documentada».** Conservar el método habría exigido:
 (a) agregarle el saneo de `stdout`/`stderr` que el PR B verificó ausente; (b) mantener 36 tests
-y ~570 líneas de un camino que ningún caller alcanza —y cada uno de esos tests es una invitación
+y ~555 líneas de un camino que ningún caller alcanza —y cada uno de esos tests es una invitación
 a creer que la etapa 6 todavía construye el parche—; (c) sostener cuatro dependencias
 (`lock_manager`, `snapshot_manager`, `journal`, `wrye_bash_runner`) en la firma del servicio, que
 es exactamente cómo se reconstruye un camino muerto por partes. El ADR §2 dice que la caja negra
@@ -450,6 +450,71 @@ el veredicto falla con `NO_HABILITADO` y `frescura_probada=False` (preservando e
 para habilitar y reintentar); si el artefacto sigue ausente devuelve `ARTEFACTO_AUSENTE` con
 `frescura_probada=False`; y si conserva la misma huella que el testigo falla con `SIN_CAMBIO` y
 `frescura_probada=False`.
+
+### 7.3 Vigencia contextual del testigo durable, simetría M-04 e I/O del almacén (2026-11-05, issue #866)
+
+La auditoría adversarial de #862/#864/#865 encontró defectos que no nacieron en #865 y se
+cerraron aparte (una rama + un PR por cambio). Decisiones, con su ancla:
+
+1. **H-1 — el testigo durable no tenía vigencia.** Con `preparar(LO1)` → build `S1` sin verificar →
+   LOOT pasa a `LO2`, `preparar` (`conservado_por_build`) y `verificar` seguían comparando contra
+   `S0` y declaraban `frescura_probada=True` sobre un parche anterior a `LO2`. La vigencia es una
+   **función determinista del contexto de entrada del perfil**, no del reloj (no se introduce un
+   TTL sobre `observado_en`: el operador puede tardar horas en Wrye Bash sin invalidar nada).
+   - `huella_de_contexto(plugins_txt)` (`wrye_bash_asistida.py`) es el SHA-256 canónico de
+     `plugins.txt` **excluyendo la entrada propia de `BASHED_PATCH_NAME`** más `modlist.txt`
+     hermano (orden, activación y prioridad). Ausente es una observación (marcador propio);
+     ilegible es `None` ("no sé"), nunca "no cambió".
+   - **Invariante de dominio:** al construir y tildar el parche (paso 5 de `PASOS_ASISTIDOS`)
+     `plugins.txt` gana `*<BASHED_PATCH_NAME>`. Si esa línea entrara al digest, el build legítimo
+     invalidaría su propio testigo. Anclado: `test_la_huella_excluye_la_entrada_propia_del_bashed_patch`
+     y el camino feliz `test_m3_build_y_activacion_legitimos_conservan_el_testigo`.
+   - El registro durable (`TestigoDurable.huella_contexto`) la persiste junto al testigo. Los registros
+     que escribió PR D (4 claves) se leen como contexto **desconocido** (`None`), no se descartan.
+     El payload de `testigo_previo` **no cambia** (esquema cerrado intacto): la `generacion` ya enlaza
+     payload y registro, y es el registro el que gobierna.
+   - **En `preparar`** (`decidir_testigo_de_preparacion(verificar_contexto=True)`): caso 3 (el
+     artefacto cambió) sólo conserva el testigo viejo si el contexto coincide; si no, **adopta lo
+     observado como nueva época sin afirmar un build** (`guardado`, `construido_despues=False`,
+     `generacion` nueva). Con el artefacto sin cambios (caso 4) la época se conserva y sólo se
+     actualiza la huella: LOOT **antes** del build no invalida. Contexto no observable ⇒ el
+     durable se conserva intacto (igual que el caso 1).
+   - **En `verificar`** (`_verificar_con_almacen`): si el registro gobernante (el leído, o el que el
+     payload identifica por `generacion`) no coincide, el veredicto se emite **sin testigo**
+     (`frescura_probada=False`) y el registro no se consume. Se declara en `testigo_contexto`
+     (`coincide` / `cambio` / `no_verificable` / `no_aplica`).
+   - **Límites declarados.** (a) Crear un mod desde `overwrite` agrega una línea a `modlist.txt` y
+     cambia la huella: la dirección del error es la segura (frescura no probada, se vuelve a
+     preparar), nunca un falso verde. (b) Un payload sin `generacion`, o la verificación sin
+     almacén, no tiene registro que lo gobierne (`no_aplica`): su garantía es la de PR D. (c) Tras
+     consumir el registro (verificación exitosa) un replay del payload ya no encuentra registro.
+2. **H-2 — la tool del agente LLM no corría el guard M-04.** `system_tools.generate_bashed_patch`
+   construía el servicio sin `plugin_limit_guard` y pasaba `validate_limit=False` con el comentario
+   "se valida a nivel Supervisor", pero `AsyncToolRegistry` no pasa por el `SupervisorAgent`: con
+   >254 plugins la GUI abortaba (`aborted_by="plugin_limit_guard"`) y Telegram / `/api/chat` no.
+   Ahora las **tres** superficies cablean el mismo `PluginLimitGuard`. Ancla que **enumera** los
+   sitios productivos (no muestrea): `test_m4_todo_sitio_productivo_del_servicio_pasa_el_guard_m04`.
+3. **H-3 — las anclas del retiro tenían un hueco.** Congelaban los métodos de la clase pero no las
+   funciones de módulo ni los símbolos de subproceso: agregar un `_reconstruir_headless()` suelto con
+   `subprocess` pasaba en verde (medido por mutación). Ahora la igualdad cubre las funciones de módulo
+   y se prohíbe `subprocess`, `create_subprocess_exec/shell`, `Popen` y `WryeBashRunner` por import,
+   nombre y atributo (`tests/test_wrye_bash_retiro_headless.py`).
+4. **H-4 / L-2 / L-3 — I/O del almacén.** `os.replace` reintenta (hasta 5 veces, backoff exponencial
+   desde 20 ms) sólo ante `PermissionError` de Windows con `winerror` 5/32; cualquier otro error, o
+   fuera de Windows, corta al primer intento. Todo fallo sale como `AlmacenDeTestigosIlegibleError`
+   (con el `OSError` como `__cause__`, también el `mkdir`). Un `.etapa6_testigos.*.tmp` huérfano de un
+   proceso muerto se barre bajo el lock exclusivo, sólo si es archivo regular (`lstat`, sin seguir
+   enlaces). L-1: `leer` sí toma el lock del SO; sólo lo omite en un directorio de sólo lectura
+   (`EACCES`/`EPERM`/`EROFS`), donde ningún escritor puede correr `os.replace`.
+5. **L-4 — cifras.** Las del §7.1 y el CHANGELOG quedaron viejas tras la ronda 12 de #862 (+15 líneas
+   de docstrings): el módulo pasó de 1231 a **676** líneas (+72 / −627 = **−555** netas), no 661/−570.
+
+**Verificación por mutación** (M1–M10 de la issue, cada una pone en rojo al menos un test de
+`tests/test_etapa6_vigencia_contexto.py` o de `tests/test_wrye_bash_retiro_headless.py`): ignorar el
+orden/activación de `plugins.txt`, omitir `modlist.txt`, no excluir la entrada del Bashed Patch, no pasar
+`contexto` desde el servicio, `validate_limit=False` o sin guard, función de módulo nueva, `import
+subprocess` / `asyncio.create_subprocess_exec`, sin reintentos, reintentar errores no transitorios, dejar
+escapar el `OSError` crudo (en `os.replace` y en `mkdir`), y omitir el barrido de temporales.
 
 ## 8. Revisión adversarial del propio PR (2026-10-30)
 
