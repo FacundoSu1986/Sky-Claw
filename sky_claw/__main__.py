@@ -25,18 +25,6 @@ from sky_claw.compat import setup_python_compat
 
 setup_python_compat()
 
-# #856: el worker VFS y su nieto de sonda se despachan ANTES de importar
-# ``AppContext``/``Config``/``keyring``. En Windows, importar ``keyring``
-# dispara ``platform.win32_ver()`` → ``cmd.exe /c ver`` en tiempo de import,
-# lo cual crearía subprocesos hijos antes del fence de supervisión del Job Object.
-if len(sys.argv) >= 2 and sys.argv[1] in ("--vfs-worker", "--vfs-probe-child"):
-    from sky_claw.local.mo2.vfs_worker import worker_main as _vfs_worker_main  # noqa: PLC0415
-
-    _vfs_argv = sys.argv[2:]
-    if sys.argv[1] == "--vfs-probe-child":
-        _vfs_argv = ["--probe-child", *_vfs_argv]
-    raise SystemExit(_vfs_worker_main(_vfs_argv))
-
 # T5-v2.1: modo worker del ejecutable congelado. El gate UIA productivo corre en
 # un proceso descartable (una llamada COM que nunca retorna no se puede matar
 # desde un hilo), y en modo congelado el helper ES este ejecutable re-invocado
