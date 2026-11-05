@@ -528,17 +528,45 @@ def test_m4_ancla_ast_la_tool_del_llm_cablea_el_guard_y_valida_el_limite() -> No
     assert "M-04 se valida a nivel Supervisor" not in ruta.read_text(encoding="utf-8")
 
 
+def _nombre_llamado(nodo: ast.Call) -> str | None:
+    return getattr(nodo.func, "id", None) or getattr(nodo.func, "attr", None)
+
+
+def _es_construccion_del_servicio(nodo: ast.Call) -> bool:
+    """Construcción directa (``WryeBashPipelineService(...)``), por atributo
+    (``mod.WryeBashPipelineService(...)``) o vía ``partial(WryeBashPipelineService, ...)``."""
+    if _nombre_llamado(nodo) == "WryeBashPipelineService":
+        return True
+    if _nombre_llamado(nodo) == "partial" and nodo.args:
+        primero = nodo.args[0]
+        return (getattr(primero, "id", None) or getattr(primero, "attr", None)) == "WryeBashPipelineService"
+    return False
+
+
 def test_m4_todo_sitio_productivo_del_servicio_pasa_el_guard_m04() -> None:
     """Enumera, no muestrea: TODA construcción de ``WryeBashPipelineService`` en ``sky_claw/``
     cablea ``plugin_limit_guard``. #866 arregló el hermano que faltaba (``system_tools``); un
-    cuarto sitio futuro sin guard rompe este ancla en vez de repetir la asimetría."""
+    cuarto sitio futuro sin guard rompe este ancla en vez de repetir la asimetría.
+
+    Cubre la construcción directa, por atributo y vía ``partial``; y prohíbe importar la clase con
+    un alias (``as``), que esconde el nombre al detector (review pr-agent, #870).
+    """
     sitios: dict[str, ast.Call] = {}
+    con_alias: list[str] = []
     for py in sorted(RAIZ.joinpath("sky_claw").rglob("*.py")):
+        rel = py.relative_to(RAIZ).as_posix()
         arbol = ast.parse(py.read_text(encoding="utf-8"))
         for nodo in ast.walk(arbol):
-            if isinstance(nodo, ast.Call) and getattr(nodo.func, "id", None) == "WryeBashPipelineService":
-                sitios[f"{py.relative_to(RAIZ).as_posix()}:{nodo.lineno}"] = nodo
+            if isinstance(nodo, ast.Call) and _es_construccion_del_servicio(nodo):
+                sitios[f"{rel}:{nodo.lineno}"] = nodo
+            elif isinstance(nodo, ast.ImportFrom):
+                con_alias += [
+                    f"{rel}:{nodo.lineno}"
+                    for a in nodo.names
+                    if a.name == "WryeBashPipelineService" and a.asname is not None
+                ]
 
+    assert con_alias == [], f"import con alias de WryeBashPipelineService (escapa al ancla): {con_alias}"
     modulos = {clave.split(":")[0] for clave in sitios}
     assert modulos == {
         "sky_claw/app/agent/tools/system_tools.py",
@@ -555,6 +583,22 @@ def test_m4_todo_sitio_productivo_del_servicio_pasa_el_guard_m04() -> None:
         )
     ]
     assert sin_guard == [], f"construcciones del servicio sin guard M-04: {sin_guard}"
+
+
+def test_el_detector_de_construcciones_cubre_atributo_y_partial() -> None:
+    """El detector del ancla no es ciego a las formas indirectas (se prueba sobre código sintético)."""
+    casos = {
+        "WryeBashPipelineService(a=1)": True,
+        "mod.WryeBashPipelineService(a=1)": True,
+        "partial(WryeBashPipelineService, a=1)": True,
+        "functools.partial(mod.WryeBashPipelineService, a=1)": True,
+        "OtraClase(a=1)": False,
+        "partial(OtraClase, a=1)": False,
+    }
+    for codigo, esperado in casos.items():
+        llamada = ast.parse(codigo, mode="eval").body
+        assert isinstance(llamada, ast.Call)
+        assert _es_construccion_del_servicio(llamada) is esperado, codigo
 
 
 # =============================================================================
@@ -692,6 +736,26 @@ def test_m9_un_fallo_de_escritura_o_fsync_del_temporal_es_un_error_del_almacen(
     assert info.value.__cause__ is error
     assert [p.name for p in ruta.parent.iterdir() if p.name.endswith(".tmp")] == []
     assert not ruta.exists(), "un fallo a mitad de escritura no deja un JSON a medias"
+
+
+def test_l1_leer_toma_el_lock_del_so_sobre_el_lockfile(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """L-1 / review pr-agent (#870): ``AlmacenJSON.leer`` coordina con los escritores de OTROS
+    procesos tomando el lock del SO; antes sólo lo afirmaba un docstring."""
+    ruta = tmp_path / "state" / "etapa6_testigos.json"
+    almacen = AlmacenJSON(ruta)
+    almacen.guardar(_clave_de(tmp_path), TestigoPrevio(existia=False, sha256=None))
+
+    tomados: list[int] = []
+    original = etapa6_testigos._intentar_lock_so  # noqa: SLF001
+
+    def espia(fd: int) -> bool:
+        tomados.append(fd)
+        return original(fd)
+
+    monkeypatch.setattr(etapa6_testigos, "_intentar_lock_so", espia)
+
+    assert almacen.leer(_clave_de(tmp_path)) is not None
+    assert len(tomados) == 1, "leer() debe tomar el lock del SO exactamente una vez"
 
 
 def test_m10_un_temporal_huerfano_de_un_proceso_muerto_se_barre_bajo_el_lock(tmp_path: pathlib.Path) -> None:
