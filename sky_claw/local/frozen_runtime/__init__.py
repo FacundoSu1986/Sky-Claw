@@ -136,6 +136,9 @@ from sky_claw.local.frozen_runtime.errors import (
     JournalStoreNoInicializadoError,
     MalformedVdfError,
     ProviderEvidenceError,
+    ProvisioningBlockedError,
+    ProvisioningError,
+    ProvisioningSpaceError,
     RuntimeCloneAdmissionError,
     RuntimeCloneCollisionError,
     RuntimeCloneCorruptError,
@@ -143,9 +146,12 @@ from sky_claw.local.frozen_runtime.errors import (
     RuntimeCloneLifecycleError,
     RuntimeCloneNotFoundError,
     RuntimeCloneSchemaError,
+    RuntimeSetupError,
     ScopeBindingError,
     StateCorruptError,
     StateSchemaError,
+    StockReferenceInvalidError,
+    StockSourceError,
 )
 from sky_claw.local.frozen_runtime.generation_id import construir_generation_id, validar_generation_id
 from sky_claw.local.frozen_runtime.generations import (
@@ -153,9 +159,11 @@ from sky_claw.local.frozen_runtime.generations import (
     generacion_id_desde_evidencia,
     leer_generation_metadata,
     registrar_generation_metadata,
+    registrar_generation_metadata_desde_identidad,
     verificar_generation,
 )
 from sky_claw.local.frozen_runtime.independence import (
+    verificar_sin_multilinks,
     verify_generation_independence,
     verify_generation_physical_integrity,
 )
@@ -234,6 +242,19 @@ from sky_claw.local.frozen_runtime.owner_consent import (
     verificar_identidad_telegram,
 )
 from sky_claw.local.frozen_runtime.provider_signals import evaluate_provider_observation
+from sky_claw.local.frozen_runtime.provisioning import (
+    PROVIDER_STOCK,
+    CopiaStockVerificada,
+    ProvisionamientoResult,
+    RuntimeSetupEvidence,
+    StockReference,
+    adoptar_copia_stock,
+    cargar_referencia_stock,
+    construir_referencia_stock,
+    crear_runtime_clone_desde_generation,
+    publicar_generation_desde_stock,
+    verificar_runtime_setup,
+)
 from sky_claw.local.frozen_runtime.root_lock import (
     LOCK_FILE_NAME,
     LOCK_SCHEMA_VERSION,
@@ -514,6 +535,7 @@ __all__ = [
     "verificar_identidad_telegram",
     "payload_dir",
     "registrar_generation_metadata",
+    "registrar_generation_metadata_desde_identidad",
     "same_volume",
     "save_frozen_runtime_state",
     "serializar_metadata_candidate",
@@ -523,4 +545,22 @@ __all__ = [
     "verify_generation_physical_integrity",
     "verificar_candidate",
     "verificar_generation",
+    "PROVIDER_STOCK",
+    "CopiaStockVerificada",
+    "ProvisionamientoResult",
+    "RuntimeSetupEvidence",
+    "StockReference",
+    "adoptar_copia_stock",
+    "cargar_referencia_stock",
+    "construir_referencia_stock",
+    "crear_runtime_clone_desde_generation",
+    "publicar_generation_desde_stock",
+    "verificar_runtime_setup",
+    "verificar_sin_multilinks",
+    "ProvisioningError",
+    "ProvisioningBlockedError",
+    "ProvisioningSpaceError",
+    "RuntimeSetupError",
+    "StockReferenceInvalidError",
+    "StockSourceError",
 ]

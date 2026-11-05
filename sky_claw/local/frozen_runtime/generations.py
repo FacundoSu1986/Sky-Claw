@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import time
 
 from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime.errors import (
@@ -63,6 +64,7 @@ __all__ = [
     "generacion_id_desde_evidencia",
     "leer_generation_metadata",
     "registrar_generation_metadata",
+    "registrar_generation_metadata_desde_identidad",
     "validar_generation_id",
     "verificar_generation",
 ]
@@ -209,6 +211,63 @@ def registrar_generation_metadata(root: pathlib.Path, evidence: SourceSnapshotEv
     """
     generation_id = validar_generation_id(generacion_id_desde_evidencia(evidence))
     metadata = _metadata_de_evidencia(evidence, generation_id)
+    return _registrar_metadata(root, metadata)
+
+
+def registrar_generation_metadata_desde_identidad(
+    root: pathlib.Path,
+    *,
+    runtime_identity: RuntimeIdentity,
+    tree_digest: TreeDigest,
+    critical_files: tuple[FileIdentity, ...],
+    provider: str,
+    provider_appid: str | None = None,
+    provider_buildid: str | None = None,
+    created_at_ns: int | None = None,
+) -> GenerationMetadata:
+    """Publica metadata de una Generation desde una fuente NO-Steam (P7-A1).
+
+    Existe para el camino "copia Stock verificada contra una referencia
+    independiente": esa fuente no es una ``ManagedSource`` de Steam y por lo
+    tanto no puede producir un ``SourceSnapshotEvidence`` honesto (el enum
+    ``ManagedSourceProvider`` no incluye Stock y el schema exige provider/appid
+    de proveedor). Acá el caller aporta la identidad YA verificada (digest,
+    runtime, críticos) y ``provider`` se persiste tal cual: un caller que mienta
+    sobre el proveedor queda registrado con su mentira, no se disfraza de Steam.
+
+    No crea ni copia árboles: la publicación del árbol ``versions/<id>/`` es
+    responsabilidad del provisionamiento, que la verifica fresca ANTES de llamar
+    acá. La idempotencia y la colisión se resuelven con las mismas reglas que
+    ``registrar_generation_metadata``.
+    """
+    if not isinstance(provider, str) or not provider.strip():
+        raise StateSchemaError("provider de Generation debe ser string no vacío")
+    if not isinstance(runtime_identity, RuntimeIdentity) or not runtime_identity.game_version.strip():
+        raise StateSchemaError("runtime_identity de Generation sin game_version observable")
+    if not isinstance(tree_digest, TreeDigest) or tree_digest.files <= 0:
+        raise StateSchemaError("tree_digest de Generation inválido: sin archivos")
+    generation_id = validar_generation_id(construir_generation_id(runtime_identity.game_version, tree_digest))
+    metadata = GenerationMetadata(
+        schema_version=METADATA_SCHEMA_VERSION,
+        generation_id=generation_id,
+        display_version=generation_id.split("__", 1)[0],
+        runtime_identity=runtime_identity,
+        tree_digest=tree_digest,
+        critical_files=tuple(critical_files),
+        provider=provider,
+        provider_appid=provider_appid,
+        provider_buildid=provider_buildid,
+        created_at_ns=time.time_ns() if created_at_ns is None else int(created_at_ns),
+    )
+    # Round-trip contra el lector real ANTES de escribir: si el payload no es un
+    # schema v1 válido, falla acá y no deja metadata que el lector vaya a rechazar.
+    _metadata_de_payload(_payload_de_metadata(metadata), source_label=f"metadata de '{generation_id}'")
+    return _registrar_metadata(root, metadata)
+
+
+def _registrar_metadata(root: pathlib.Path, metadata: GenerationMetadata) -> GenerationMetadata:
+    """Cuerpo compartido de registro de metadata (lock + idempotencia + escritura)."""
+    generation_id = metadata.generation_id
     destino = generations_state_dir(root) / f"{generation_id}.json"
     # Exclusión (P4-S2): publicar una Generation muta `state/generations/`. El
     # chequeo de idempotencia (leer→comparar→escribir) es un RMW que debe ser
