@@ -26,6 +26,7 @@ class GenerateBashedPatchStrategy:
         self.wrye_bash_pipeline = wrye_bash_pipeline
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
+        """Filtra las claves permitidas, descarta opcionales en None y delega en el pipeline asistido."""
         filtered = self._filter_payload(payload_dict)
         # `fase=None` (clave presente y vacía, típico del formulario de la GUI) llegaría
         # al servicio como fase inválida y devolvería `FaseInvalida`. Se descarta acá para
@@ -37,6 +38,7 @@ class GenerateBashedPatchStrategy:
         return await self.wrye_bash_pipeline(**filtered)
 
     def _filter_payload(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
+        """Conserva únicamente las claves declaradas en _VALID_BASHED_PATCH_KEYS y advierte sobre el resto."""
         filtered = {key: value for key, value in payload_dict.items() if key in _VALID_BASHED_PATCH_KEYS}
         unexpected = payload_dict.keys() - _VALID_BASHED_PATCH_KEYS
         if unexpected:

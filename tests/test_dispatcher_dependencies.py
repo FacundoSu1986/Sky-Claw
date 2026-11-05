@@ -86,6 +86,7 @@ def test_builder_registra_exactamente_las_dieciseis_tools() -> None:
 
 
 def test_gate_hitl_envuelve_exactamente_las_seis_tools_destructivas() -> None:
+    """Verifica que HitlGateMiddleware envuelva sólo las seis tools destructivas y no generate_bashed_patch."""
     from sky_claw.app.orchestrator.tool_strategies.middleware import (
         DictResultGuardMiddleware,
         ErrorWrappingMiddleware,

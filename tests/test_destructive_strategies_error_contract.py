@@ -1,14 +1,19 @@
-"""Contrato de errores del dispatcher para las estrategias destructivas restantes.
+"""Contrato de errores del dispatcher para las estrategias envueltas en #726.
 
 Origen: issue #726 (auditoría del orquestador), separado del PR #722 —que cerró
 este mismo defecto SOLO para ``generate_lods`` (Finding 6 de #592)— para no
 ampliar su blast radius.
 
-``generate_animations`` (Pandora), ``quick_auto_clean`` (xEdit: reescribe los
-DLC oficiales en disco) y ``generate_bashed_patch`` (Wrye Bash) viven en
-``DESTRUCTIVE_TOOL_PATTERNS`` y se registran con el gate HITL, pero SIN
-``ErrorWrappingMiddleware`` ni ``DictResultGuardMiddleware``. Dos huecos, ambos
-en el camino real de ejecución de la GUI y del agente:
+En #726, ``generate_animations`` (Pandora), ``quick_auto_clean`` (xEdit: reescribe
+los DLC oficiales en disco) y ``generate_bashed_patch`` (Wrye Bash) vivían en
+``DESTRUCTIVE_TOOL_PATTERNS`` con el gate HITL, pero SIN
+``ErrorWrappingMiddleware`` ni ``DictResultGuardMiddleware``. Tras retirar el
+camino headless de Wrye Bash (#862) y su compuerta HITL (ADR 0016 §7),
+``generate_animations`` y ``quick_auto_clean`` permanecen en
+``DESTRUCTIVE_TOOL_PATTERNS`` (``HERRAMIENTAS_DESTRUCTIVAS``) con la tripleta
+completa, mientras ``generate_bashed_patch`` conserva ``ErrorWrappingMiddleware``
++ ``DictResultGuardMiddleware`` sin ``HitlGateMiddleware``. Dos huecos cerrados
+por este contrato en el camino real de ejecución de la GUI y del agente:
 
 1. **Demostrado (rojo→verde):** el ``ValueError`` de ``validate_for_approval``
    —el rechazo de claves que la estrategia no honra, Codex #213— escapa del
@@ -46,13 +51,16 @@ Este módulo congela el contrato DESPUÉS del fix. Por cada herramienta:
    un error— con la clave de idempotencia liberada;
 6. resultado exitoso pasa intacto (red de regresión).
 
-Y dos invariantes de seguridad que el fix NO puede romper:
+Y tres invariantes estructurales y de seguridad que el fix NO puede romper:
 
-7. el wrapping no tapa la denegación HITL: sin aprobación no se ejecuta nada y
-   el caller recibe ``HITLApprovalDenied``;
+7. el wrapping no tapa la denegación HITL en ``HERRAMIENTAS_DESTRUCTIVAS``: sin
+   aprobación no se ejecuta nada y el caller recibe ``HITLApprovalDenied``,
+   mientras ``generate_bashed_patch`` corre sin pedir aprobación HITL;
 8. el ancla de familia (por introspección, no por muestreo): TODA herramienta
-   de ``DESTRUCTIVE_TOOL_PATTERNS`` registrada lleva wrapping + guard + gate.
-   Registrar una estrategia destructiva nueva sin la tripleta rompe este test.
+   de ``DESTRUCTIVE_TOOL_PATTERNS`` registrada lleva wrapping + guard + gate
+   (registrar una estrategia destructiva nueva sin la tripleta rompe este test),
+   y ``generate_bashed_patch`` conserva exactamente ``[ErrorWrappingMiddleware,
+   DictResultGuardMiddleware]`` sin ``HitlGateMiddleware``.
 """
 
 from __future__ import annotations
