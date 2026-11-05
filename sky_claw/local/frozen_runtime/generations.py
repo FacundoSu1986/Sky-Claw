@@ -214,8 +214,7 @@ def registrar_generation_metadata(root: pathlib.Path, evidence: SourceSnapshotEv
     return _registrar_metadata(root, metadata)
 
 
-def registrar_generation_metadata_desde_identidad(
-    root: pathlib.Path,
+def construir_generation_metadata_desde_identidad(
     *,
     runtime_identity: RuntimeIdentity,
     tree_digest: TreeDigest,
@@ -225,7 +224,7 @@ def registrar_generation_metadata_desde_identidad(
     provider_buildid: str | None = None,
     created_at_ns: int | None = None,
 ) -> GenerationMetadata:
-    """Publica metadata de una Generation desde una fuente NO-Steam (P7-A1).
+    """Construye y valida (round-trip) la metadata, SIN escribir ni adquirir lock.
 
     Existe para el camino "copia Stock verificada contra una referencia
     independiente": esa fuente no es una ``ManagedSource`` de Steam y por lo
@@ -262,38 +261,69 @@ def registrar_generation_metadata_desde_identidad(
     # Round-trip contra el lector real ANTES de escribir: si el payload no es un
     # schema v1 válido, falla acá y no deja metadata que el lector vaya a rechazar.
     _metadata_de_payload(_payload_de_metadata(metadata), source_label=f"metadata de '{generation_id}'")
+    return metadata
+
+
+def registrar_generation_metadata_desde_identidad(
+    root: pathlib.Path,
+    *,
+    runtime_identity: RuntimeIdentity,
+    tree_digest: TreeDigest,
+    critical_files: tuple[FileIdentity, ...],
+    provider: str,
+    provider_appid: str | None = None,
+    provider_buildid: str | None = None,
+    created_at_ns: int | None = None,
+) -> GenerationMetadata:
+    """Frontera pública: construye la metadata y la registra bajo el root lock."""
+    metadata = construir_generation_metadata_desde_identidad(
+        runtime_identity=runtime_identity,
+        tree_digest=tree_digest,
+        critical_files=critical_files,
+        provider=provider,
+        provider_appid=provider_appid,
+        provider_buildid=provider_buildid,
+        created_at_ns=created_at_ns,
+    )
     return _registrar_metadata(root, metadata)
 
 
 def _registrar_metadata(root: pathlib.Path, metadata: GenerationMetadata) -> GenerationMetadata:
-    """Cuerpo compartido de registro de metadata (lock + idempotencia + escritura)."""
-    generation_id = metadata.generation_id
-    destino = generations_state_dir(root) / f"{generation_id}.json"
-    # Exclusión (P4-S2): publicar una Generation muta `state/generations/`. El
-    # chequeo de idempotencia (leer→comparar→escribir) es un RMW que debe ser
-    # indivisible respecto de otro publicador del mismo root. Import diferido
-    # para no crear el ciclo generations → root_lock → storage → state.
+    """Frontera pública: adquiere el root lock y delega en ``*_bajo_lock``."""
     from sky_claw.local.frozen_runtime.root_lock import participant_lock
 
     with participant_lock(root, timeout=0.0) as handle:
         handle.assert_owned()
-        if destino.exists():
-            existente = _metadata_de_payload(_leer_json(destino), source_label=str(destino))
-            # Identidad COMPLETA (digest + files + bytes) y críticos comparados SIN
-            # dependencia de orden: inventory_tree no promete orden estable de
-            # archivos, así que la idempotencia no puede depender del orden.
-            if (
-                existente.tree_digest == metadata.tree_digest
-                and existente.runtime_identity == metadata.runtime_identity
-                and _mismos_criticos(existente.critical_files, metadata.critical_files)
-            ):
-                return existente
-            raise GenerationCollisionError(
-                f"generation-id '{generation_id}' ya existe con identidad completa distinta "
-                "(digest/identidad/evidencia crítica no coinciden): fail-closed, no se sobreescribe"
-            )
-        write_json_atomic(destino, _payload_de_metadata(metadata))
-        return metadata
+        return _registrar_metadata_bajo_lock(root, metadata)
+
+
+def _registrar_metadata_bajo_lock(root: pathlib.Path, metadata: GenerationMetadata) -> GenerationMetadata:
+    """Cuerpo de registro de metadata; el caller DEBE poseer el root lock.
+
+    No re-adquiere ``participant_lock`` (no reentrante por diseño). Lo usan los
+    públicos de este módulo y el provisionamiento P7-A1, que sostiene el lock a
+    través de copia + verificación + metadata + sidecar para que la publicación
+    sea lógicamente atómica.
+    """
+    generation_id = metadata.generation_id
+    destino = generations_state_dir(root) / f"{generation_id}.json"
+    if destino.exists():
+        existente = _metadata_de_payload(_leer_json(destino), source_label=str(destino))
+        # Identidad COMPLETA (digest + files + bytes) y críticos comparados SIN
+        # dependencia de orden: inventory_tree no promete orden estable de
+        # archivos, así que la idempotencia no puede depender del orden.
+        if (
+            existente.tree_digest == metadata.tree_digest
+            and existente.runtime_identity == metadata.runtime_identity
+            and _mismos_criticos(existente.critical_files, metadata.critical_files)
+        ):
+            return existente
+        raise GenerationCollisionError(
+            f"generation-id '{generation_id}' ya existe con identidad completa distinta "
+            "(digest/identidad/evidencia crítica no coinciden): fail-closed, no se sobreescribe"
+        )
+    write_json_atomic(destino, _payload_de_metadata(metadata))
+    return metadata
 
 
 def _mismos_criticos(a: tuple[FileIdentity, ...], b: tuple[FileIdentity, ...]) -> bool:

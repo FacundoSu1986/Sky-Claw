@@ -14,16 +14,19 @@ import json
 import os
 import pathlib
 import shutil
+import threading
 import types
 
 import pytest
 
 from sky_claw.local.frozen_runtime import (
     CandidateCopyError,
+    ProvisioningError,
     RuntimeCloneLifecycle,
     StockReferenceInvalidError,
     StockSourceError,
     adoptar_copia_stock,
+    capturar_membership_directorios,
     cargar_referencia_stock,
     construir_referencia_stock,
     crear_runtime_clone_desde_generation,
@@ -135,6 +138,17 @@ class TestReferenciaStock:
         with pytest.raises(StockReferenceInvalidError, match="campos"):
             cargar_referencia_stock(payload)
 
+    def test_referencia_sin_membership_es_incompatible(self, entorno) -> None:
+        """Una referencia previa (sin evidencia de directorios) NO puede cargarse.
+
+        Fail-closed: sin membership no se puede afirmar que el árbol sellado sea
+        el mismo (el TreeDigest es ciego a directorios vacíos)."""
+        _storage, _source, _clones, referencia = entorno
+        payload = referencia.como_dict()
+        payload.pop("directory_membership", None)
+        with pytest.raises(StockReferenceInvalidError, match="campos|membership"):
+            cargar_referencia_stock(payload)
+
     def test_rechaza_referencia_sin_skyrimse(self, tmp_path: pathlib.Path, parche_identidad: None) -> None:
         raiz = tmp_path / "sin-exe"
         (raiz / "Data").mkdir(parents=True)
@@ -154,6 +168,19 @@ class TestAdoptarCopiaStock:
         assert copia.reference_digest == referencia.reference_digest
         assert copia.runtime_identity.game_version == VERSION
         assert any(f.rel_path.casefold() == "skyrimse.exe" for f in copia.critical_files)
+
+    def test_rechaza_directorio_vacio_eliminado(self, entorno) -> None:
+        """TreeDigest no ve directorios vacíos: la membership de la referencia sí."""
+        _storage, source, _clones, referencia = entorno
+        (source / "Data" / "EmptyFolder").rmdir()
+        with pytest.raises(StockSourceError, match="estructura de directorios"):
+            adoptar_copia_stock(source, referencia)
+
+    def test_rechaza_directorio_vacio_agregado(self, entorno) -> None:
+        _storage, source, _clones, referencia = entorno
+        (source / "Data" / "DirectorioColado").mkdir()
+        with pytest.raises(StockSourceError, match="estructura de directorios"):
+            adoptar_copia_stock(source, referencia)
 
     def test_rechaza_byte_distinto(self, entorno) -> None:
         _storage, source, _clones, referencia = entorno
@@ -236,7 +263,7 @@ class TestPublicarGeneration:
         assert sidecar.is_file()
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
         assert payload["provider"] == "stock"
-        assert payload["reference_digest"] == copia.reference_digest
+        assert payload["reference"]["reference_digest"] == copia.reference_digest
 
     def test_no_publica_sin_storage_inicializado(self, tmp_path: pathlib.Path, parche_identidad: None) -> None:
         base = _escribir_arbol(tmp_path / "base")
@@ -284,6 +311,28 @@ class TestPublicarGeneration:
         assert "copia" in resultado.message
         assert not list((storage / "state" / "generations").glob("*.json"))
         assert _hash_arbol(source) == antes
+
+    def test_fallo_del_sidecar_no_publica_metadata(self, entorno, monkeypatch: pytest.MonkeyPatch) -> None:
+        """El sidecar se escribe ANTES que la metadata: si falla, no queda una
+        Generation 'válida' (metadata) sin procedencia recuperable."""
+        from sky_claw.local.frozen_runtime import provisioning as provisioning_module
+
+        storage, _source, _clones, _referencia = entorno
+        original = provisioning_module.write_json_atomic
+
+        def falla(ruta: pathlib.Path, payload: dict[str, object]) -> None:
+            if str(ruta).endswith(".source.json"):
+                raise OSError("fallo de sidecar simulado")
+            original(ruta, payload)
+
+        monkeypatch.setattr(provisioning_module, "write_json_atomic", falla)
+        resultado, _copia = _publicar(entorno)
+        assert resultado.success is False
+        assert "sidecar" in resultado.message
+        metadatas = [
+            p for p in (storage / "state" / "generations").glob("*.json") if not p.name.endswith(".source.json")
+        ]
+        assert metadatas == [], "se publicó metadata sin sidecar de procedencia"
 
     def test_no_publica_dos_veces_el_mismo_contenido(self, entorno) -> None:
         resultado1, _copia = _publicar(entorno)
@@ -388,7 +437,9 @@ class TestCrearRuntimeClone:
         (generation_dir(storage, publicado.generation_id) / "Data" / "EmptyFolder").rmdir()
         resultado = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-vacio")
         assert resultado.success is False
-        assert "Generation" in resultado.message and "sidecar" in resultado.message
+        assert "Generation" in resultado.message and (
+            "referencia" in resultado.message or "sidecar" in resultado.message
+        )
 
     def test_rechaza_con_journal_pendiente(self, entorno) -> None:
         storage, _source, clones, _referencia = entorno
@@ -436,3 +487,206 @@ def test_setup_es_content_bound(entorno) -> None:
     (source / "skse64_loader.exe").write_bytes(b"loader-distinto")
     tercero = verificar_runtime_setup(source)
     assert tercero.setup_id != primero.setup_id
+
+
+# ── sidecar de procedencia: integridad y autoridad ─────────────────────────
+
+
+def test_los_schemas_de_procedencia_estan_frozen() -> None:
+    """Cambiar el schema sin bump explícito rompe este ancla."""
+    from sky_claw.local.frozen_runtime import provisioning as provisioning_module
+
+    assert (provisioning_module.REFERENCE_SCHEMA_VERSION, provisioning_module.SIDECAR_SCHEMA_VERSION) == (2, 2)
+
+
+def _sidecar_path(storage: pathlib.Path, generation_id: str) -> pathlib.Path:
+    return storage / "state" / "generations" / f"{generation_id}.source.json"
+
+
+def _leer_sidecar(storage: pathlib.Path, generation_id: str) -> dict[str, object]:
+    return json.loads(_sidecar_path(storage, generation_id).read_text(encoding="utf-8"))
+
+
+def _escribir_sidecar(storage: pathlib.Path, generation_id: str, payload: dict[str, object]) -> None:
+    _sidecar_path(storage, generation_id).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+class TestSidecarProvenance:
+    def test_rechaza_reference_digest_adulterado(self, entorno) -> None:
+        """No alcanza con 64 caracteres: el digest debe recomputarse contra la referencia embebida."""
+        storage, _source, clones, _referencia = entorno
+        publicado, _copia = _publicar(entorno)
+        payload = _leer_sidecar(storage, publicado.generation_id)
+        if isinstance(payload.get("reference"), dict):
+            payload["reference"]["reference_digest"] = "Z" * 64
+        else:
+            payload["reference_digest"] = "Z" * 64
+        _escribir_sidecar(storage, publicado.generation_id, payload)
+
+        resultado = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-tamper")
+        assert resultado.success is False
+        assert "referencia" in resultado.message.lower() or "alterad" in resultado.message.lower()
+
+    def test_rechaza_critical_files_adulterados(self, entorno) -> None:
+        storage, _source, clones, _referencia = entorno
+        publicado, _copia = _publicar(entorno)
+        payload = _leer_sidecar(storage, publicado.generation_id)
+        criticos = payload["critical_files"]
+        assert isinstance(criticos, list) and criticos
+        criticos[0]["digest"] = "0" * 64
+        _escribir_sidecar(storage, publicado.generation_id, payload)
+
+        resultado = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-criticos")
+        assert resultado.success is False
+        assert "crític" in resultado.message.lower() or "critical" in resultado.message.lower()
+
+    def test_rechaza_membership_sincronizada_con_un_drift(self, entorno) -> None:
+        """Si se borra un directorio vacío de la Generation y se reescribe el sidecar
+        para que coincida con el árbol observado, la referencia original debe rechazarlo."""
+        storage, _source, clones, _referencia = entorno
+        publicado, _copia = _publicar(entorno)
+        gen_dir = generation_dir(storage, publicado.generation_id)
+        (gen_dir / "Data" / "EmptyFolder").rmdir()
+        evidencia = capturar_membership_directorios(gen_dir)
+        payload = _leer_sidecar(storage, publicado.generation_id)
+        payload["directory_membership"] = {
+            "digest": evidencia.digest,
+            "directory_count": evidencia.directory_count,
+            "directories": list(evidencia.directories),
+        }
+        _escribir_sidecar(storage, publicado.generation_id, payload)
+
+        resultado = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-membership")
+        assert resultado.success is False
+        assert "membership" in resultado.message.lower() or "directorios" in resultado.message.lower()
+
+    def test_rechaza_sidecar_v1_obsoleto(self, entorno) -> None:
+        storage, _source, clones, _referencia = entorno
+        publicado, _copia = _publicar(entorno)
+        payload = _leer_sidecar(storage, publicado.generation_id)
+        payload.pop("reference", None)
+        payload["schema_version"] = 1
+        _escribir_sidecar(storage, publicado.generation_id, payload)
+
+        resultado = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-v1")
+        assert resultado.success is False
+        assert "schema" in resultado.message.lower() or "obsolet" in resultado.message.lower()
+
+
+# ── atomicidad lógica del provisionamiento ────────────────────────────────
+
+
+def _sonda_lock(root: pathlib.Path) -> list[str]:
+    """Desde OTRO hilo: intenta adquirir el root lock y reporta el resultado."""
+    from sky_claw.local.frozen_runtime.errors import FrozenRuntimeLockError
+    from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+    resultado: list[str] = []
+
+    def intentar() -> None:
+        try:
+            with participant_lock(root, timeout=0.0) as handle:
+                handle.assert_owned()
+                resultado.append("adquirido")
+        except FrozenRuntimeLockError:
+            resultado.append("busy")
+
+    hilo = threading.Thread(target=intentar)
+    hilo.start()
+    hilo.join()
+    return resultado
+
+
+class TestAtomicidadProvisionamiento:
+    def test_publicar_mantiene_el_lock_hasta_publicar_metadata(self, entorno, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mientras se verifica/publica, otro participante NO puede entrar al root."""
+        from sky_claw.local.frozen_runtime import provisioning as provisioning_module
+
+        storage, _source, _clones, _referencia = entorno
+        original = provisioning_module._verificar_arbol_en_destino
+        sondas: list[list[str]] = []
+
+        def con_sonda(*args: object, **kwargs: object):
+            resultado = original(*args, **kwargs)
+            sondas.append(_sonda_lock(storage))
+            return resultado
+
+        monkeypatch.setattr(provisioning_module, "_verificar_arbol_en_destino", con_sonda)
+        resultado, _copia = _publicar(entorno)
+        assert resultado.success, resultado.message
+        assert sondas, "la verificación no corrió"
+        assert sondas[0] == ["busy"], f"otro participante adquirió el lock durante la publicación: {sondas}"
+
+    def test_clone_mantiene_el_lock_hasta_registrar_el_record(self, entorno, monkeypatch: pytest.MonkeyPatch) -> None:
+        from sky_claw.local.frozen_runtime import provisioning as provisioning_module
+
+        storage, _source, clones, _referencia = entorno
+        publicado, _copia = _publicar(entorno)
+        original = provisioning_module.verificar_runtime_setup
+        sondas: list[list[str]] = []
+
+        def con_sonda(*args: object, **kwargs: object):
+            resultado = original(*args, **kwargs)
+            sondas.append(_sonda_lock(storage))
+            return resultado
+
+        monkeypatch.setattr(provisioning_module, "verificar_runtime_setup", con_sonda)
+        resultado = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-lock")
+        assert resultado.success, resultado.message
+        assert sondas
+        assert sondas[0] == ["busy"], f"otro participante adquirió el lock durante la creación: {sondas}"
+
+    def test_el_lock_se_libera_ante_un_fallo(self, entorno, monkeypatch: pytest.MonkeyPatch) -> None:
+        from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+        storage, _source, _clones, _referencia = entorno
+
+        def falla(*_args: object, **_kwargs: object) -> None:
+            raise CandidateCopyError("fallo de copia simulado")
+
+        monkeypatch.setattr("sky_claw.local.frozen_runtime.provisioning.copiar_arbol_independiente", falla)
+        resultado, _copia = _publicar(entorno)
+        assert resultado.success is False
+        with participant_lock(storage, timeout=0.0) as handle:
+            handle.assert_owned()
+
+    def test_recupera_un_clone_que_quedo_en_provisioning(self, entorno, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Fallo entre registrar PROVISIONING y PROVISIONED: el reintento debe completar
+        el mismo Clone (mismo id/generation/setup), no pedir borrar el árbol a mano."""
+        from sky_claw.local.frozen_runtime import provisioning as provisioning_module
+
+        storage, _source, clones, _referencia = entorno
+        publicado, _copia = _publicar(entorno)
+        original = getattr(provisioning_module, "_actualizar_lifecycle_clone_bajo_lock", None)
+        usado: list[bool] = []
+
+        if original is None:
+            from sky_claw.local.frozen_runtime import clones as clones_module
+
+            original_public = clones_module.actualizar_lifecycle_clone
+
+            def falla_una_vez(root, clone_id, nuevo_lifecycle, **kwargs):  # type: ignore[no-untyped-def]
+                if nuevo_lifecycle is RuntimeCloneLifecycle.PROVISIONED and not usado:
+                    usado.append(True)
+                    raise ProvisioningError("fallo simulado antes de PROVISIONED")
+                return original_public(root, clone_id, nuevo_lifecycle, **kwargs)
+
+            monkeypatch.setattr(clones_module, "actualizar_lifecycle_clone", falla_una_vez)
+        else:
+
+            def falla_una_vez(root, clone_id, nuevo_lifecycle, **kwargs):  # type: ignore[no-untyped-def]
+                if nuevo_lifecycle is RuntimeCloneLifecycle.PROVISIONED and not usado:
+                    usado.append(True)
+                    raise ProvisioningError("fallo simulado antes de PROVISIONED")
+                return original(root, clone_id, nuevo_lifecycle, **kwargs)
+
+            monkeypatch.setattr(provisioning_module, "_actualizar_lifecycle_clone_bajo_lock", falla_una_vez)
+
+        primero = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-recuperable")
+        assert primero.success is False
+        assert usado, "el fallo simulado no llegó a la transición PROVISIONED"
+
+        segundo = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-recuperable")
+        assert segundo.success, segundo.message
+        assert segundo.clone_record is not None
+        assert segundo.clone_record.lifecycle is RuntimeCloneLifecycle.PROVISIONED

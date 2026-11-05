@@ -46,14 +46,15 @@ Auditoría read-only de `sky_claw/local/frozen_runtime/` (file:line en el inform
 
 **Agregado en este PR (sólo camino local, sin Steam):**
 
-1. `StockReference`: referencia **independiente** (TreeDigest + RuntimeIdentity + archivos críticos) con `reference_digest` recomputado al cargar (una referencia editada no autoriza un árbol distinto).
-2. `construir_referencia_stock` / `cargar_referencia_stock` (read-only sobre la fuente, schema cerrado).
-3. `adoptar_copia_stock`: verificación contra la referencia con **`runtime_vault.golden.verify_golden_master`** (no “hashear la carpeta y confiar”), re-medición fresca posterior, rechazo de reparse/junction/hardlinks, solape con storage/Managed Source y ubicación dentro de `steamapps`.
-4. `publicar_generation_desde_stock`: copia sellada a `versions/<generation-id>/` con `copiar_arbol_independiente` (contenido, nunca hardlinks), verificación fresca de digest/membership/links/identidad/independencia, metadata `provider="stock"` (`appid`/`buildid` nulos) y **sidecar de procedencia** con la referencia usada.
-5. `crear_runtime_clone_desde_generation`: árbol del Clone fuera del storage, copia independiente, verificación de `st_nlink==1`, sin inodos compartidos con Generation/source, membership sellada (incluye directorios vacíos), y registro `PROVISIONED` con `RuntimeSetupEvidence` mínimo content-bound (`SkyrimSE.exe` + loader + DLL de SKSE del build exacto).
+1. `StockReference`: referencia **independiente** (TreeDigest + RuntimeIdentity + archivos críticos + **`DirectoryMembershipEvidence`**) con `reference_digest` recomputado al cargar (una referencia editada no autoriza un árbol distinto). **Schema v2** (la versión v1 no incluía membership y es incompatible: fail-closed).
+2. `construir_referencia_stock` / `cargar_referencia_stock` (read-only sobre la fuente, schema cerrado). La captura sella también los directorios (incluidos los vacíos, que el TreeDigest no ve) y `adoptar_copia_stock` los compara contra la referencia.
+3. `adoptar_copia_stock`: verificación contra la referencia con **`runtime_vault.golden.verify_golden_master`** (no “hashear la carpeta y confiar”), re-medición fresca posterior, rechazo de reparse/junction/hardlinks, solape con storage/Managed Source y ubicación dentro de `steamapps`. **FIX 1 (auditoría)**: además compara la membership de directorios observada contra la de la referencia; borrar/agregar un directorio vacío ya no pasa inadvertido.
+4. `publicar_generation_desde_stock`: copia sellada a `versions/<generation-id>/` con `copiar_arbol_independiente` (contenido, nunca hardlinks), verificación fresca de digest/membership/links/identidad/independencia, **sidecar de procedencia v2** (embebe la referencia completa, no sólo 64 caracteres) y metadata `provider="stock"` (`appid`/`buildid` nulos). **FIX 2 (auditoría)**: toda la operación (copia → verificación → sidecar → metadata → verificación final) corre en **una sola** sección de `participant_lock`, con el sidecar **antes** que la metadata (la metadata es el punto de commit; una Generation “válida” sin procedencia deja de ser posible por crash). **FIX 3**: el loader del sidecar recomputa la referencia embebida y la cruza tres vías (referencia == sidecar == árbol observado) y contra la metadata de autoridad (provider/tree/runtime/críticos); v1 se rechaza con mensaje de re-publicación.
+5. `crear_runtime_clone_desde_generation`: árbol del Clone fuera del storage, copia independiente, verificación de `st_nlink==1`, sin inodos compartidos con Generation/source, membership sellada (incluye directorios vacíos), y registro `PROVISIONED` con `RuntimeSetupEvidence` mínimo content-bound (`SkyrimSE.exe` + loader + DLL de SKSE del build exacto). **FIX 2**: validación de Generation/sidecar, pre-chequeo de id ocupado, setup de la Generation **antes** de copiar y publicación del registro ocurren bajo el mismo lock; si el árbol ya existe, hay **recuperación explícita** `PROVISIONING → PROVISIONED` (reintento idempotente) o fail-closed con “reconciliación manual” (nunca borrado automático).
 6. `verificar_sin_multilinks` como primitive pública de independencia.
 7. Corrección de la especificación **P7-G/SFR-21** (ADR 0012 §SFR-21 y §29.7; matriz del inspector): una actualización legítima de Steam **puede** cambiar sus hashes; la invariante es que Sky-Claw **no escribe** superficies de Steam y el inventario/hashes del **Clone** no cambia.
 8. Runbook P7: `docs/operations/p7_golden_master_runbook.md`.
+9. **Auditoría posterior** de la hipótesis de membership, del alcance del lock y de la autoridad del sidecar (detalle y evidencia en §14): 3 hallazgos corregidos, 13 tests nuevos (RED→GREEN) y 3 mutantes nuevos muertos.
 
 **Sigue faltando (declarado, fuera de este PR):**
 
@@ -80,13 +81,13 @@ Auditoría read-only de `sky_claw/local/frozen_runtime/` (file:line en el inform
 | Evidencia | Resultado |
 |---|---|
 | **TDD RED inicial** (tests nuevos contra API inexistente) | `ImportError` de colección (1 error) — rojo registrado antes de implementar |
-| **TDD GREEN** `tests/test_frozen_runtime_p7_provisioning.py` | **31 passed** (30 + ancla de hardlink + drift de directorio vacío) |
-| Regresión suites relacionadas (P2 generations/independence/storage, P5-B, P3 contract/candidates) | **167 passed, 4 skipped** |
+| **TDD GREEN** `tests/test_frozen_runtime_p7_provisioning.py` | **44 passed** (31 base + FIX 1: 3 RED→GREEN + FIX 2/3: 10) |
+| Regresión suites relacionadas (P4-S2 participant wiring, P2 generations/independence/storage, P5-B, P3 contract/candidates) | **172 passed, 4 skipped** (anclas P4-S2 actualizadas con las primitivas `*_bajo_lock` nuevas) |
 | Inspector P7 tras corrección de P7-G (`test_p7_inspector_output.py`) | **24 passed** |
-| Mutantes discriminantes | **4/4 muertos**: (M1) chequeo `st_nlink` eliminado → falla ancla de hardlink; (M2) `reference_digest` del loader eliminado → falla test de referencia alterada; (M2b) chequeo de digest en adopción eliminado → falla su test; (M3) chequeo de membership del sidecar eliminado → falla drift de directorio vacío. Restaurado y **31 passed** |
-| Ruff (`ruff check` + `ruff format --check` sobre `sky_claw/`, `scripts/`, `tests/`) | **verde** (gate CI) |
+| Mutantes discriminantes | **7/7 muertos**: (M1) `st_nlink` eliminado → hardlink; (M2/M2b) `reference_digest` del loader y digest de adopción eliminados → referencia alterada; (M3) membership del sidecar eliminada → drift de directorio vacío; **(M5)** comparación de membership de referencia en adopción eliminada → tests de directorio vacío agregado/eliminado; **(M6)** recomputo de `reference_digest` desactivado → referencia/sidecar alterados; **(M7)** recuperación `PROVISIONING` deshabilitada → reintento del Clone varado. Restaurado y **44 passed** |
+| Ruff (`ruff check` + `ruff format --check` sobre `sky_claw/`, `scripts/`, `tests/`) | **verde** (gate CI, ruff 0.15.11 lockeada) |
 | Mypy (`mypy sky_claw/ scripts/`) | **verde**, 430 archivos |
-| Evidencia de mutantes | `E:\Skyclaw_A1_Evidence\mutation_results.json` |
+| Evidencia de mutantes | `E:\Skyclaw_A1_Evidence\mutation_results.json` (4 base) + `mutation_results_fixes.json` (M5–M7) |
 
 CI del PR: pendiente de correr al abrir el PR Draft (ramo `feat/p7-a1-provisioning-readiness`). El CI del `main` sigue con el fallo de infraestructura del §1 (attempt 2 en curso).
 
@@ -94,9 +95,15 @@ CI del PR: pendiente de correr al abrir el PR Draft (ramo `feat/p7-a1-provisioni
 
 | Riesgo | Mitigación / estado |
 |---|---|
-| La referencia Stock es un ancla del operador (no prueba Steam por sí sola) | schema + `reference_digest` + aprobación A1; cross-check con Managed Source IDLE pendiente (P3b/P7-A2) |
-| La fuente candidata se prepara fuera del código (Stock + SKSE/root files) | referencia content-bound verifica exactamente lo preparado; `RuntimeSetupManifest` completo sigue faltando (SFR-22) |
-| Copia parcial si hay crash/ENOSPC | comprobación de espacio previa; árbol parcial sin metadata (UNKNOWN) y **sin borrado destructivo**; decisión manual del propietario |
+| La referencia Stock es un ancla del operador (no prueba Steam por sí sola) | schema v2 + `reference_digest` + aprobación A1; cross-check con Managed Source IDLE pendiente (P3b/P7-A2) |
+| La fuente candidata se prepara fuera del código (Stock + SKSE/root files) | referencia content-bound (árbol + directorios + críticos) verifica exactamente lo preparado; `RuntimeSetupManifest` completo sigue faltando (SFR-22) |
+| Copia parcial si hay crash/ENOSPC | comprobación de espacio previa; el sidecar se escribe antes que la metadata y toda la publicación corre bajo un solo lock; artefactos parciales quedan **sin metadata** (no descubribles/UNKNOWN) y **sin borrado destructivo**; no hay GC/recovery automático de árboles parciales: decisión manual del propietario |
+| Fallo entre registrar `PROVISIONING` y publicar `PROVISIONED` | el reintento con el mismo id/Generation/parent **recupera** el Clone (verifica y completa); no se pide borrar. Árbol sin registro o registro PROVISIONED sin árbol ⇒ fail-closed “reconciliación manual” |
+| Drift de directorios vacíos | `DirectoryMembershipEvidence` en referencia v2; verificación a tres vías referencia == sidecar == árbol observado (tests + mutantes M5/M7 de la auditoría) |
+| Tamper del sidecar/referencia | el loader recomputa `reference_digest` desde la referencia embebida, valida sha256/schema cerrado y cruza contra metadata de autoridad; **residual declarado**: un actor con escritura en el storage puede reescribir referencia+sidecar de forma *consistente*; no hay ancla externa firmada (la aprobación A1 es humana) ni MAC. Anti-forgery queda para una fase con aprobación durable |
+| Linaje de procedencia en el registro del Clone | `RuntimeCloneRecord` no persiste `reference_digest` (schema actual); el sidecar es la autoridad de procedencia y se re-valida al crear. Persistirlo requiere bump de schema del registro (declarado, no en P7-A1) |
+| Exclusión del lock en la publicación completa | probada en proceso (sonda desde otro hilo: BUSY) y el primitivo ya tiene anclas multiproceso P4-S2; **no** se agregó una sonda multiproceso específica de toda la publicación (declarado: el lock de SO no se re-adquiere en el mismo proceso) |
+| Referencias/sidecars v1 previos | incompatibles a propósito: recapturar la referencia (schema v2) y re-publicar la Generation; no se migra procedencia a ciegas |
 | Paths largos de Windows en árboles de 17k archivos | no se habilita `\\?\`; usar roots cortos (p. ej. `G:\FR`, `G:\FC`) y verificar en rig |
 | Steam ACTIVE impide binding | documentado; provisioning local no lo necesita; A5 requiere IDLE + aprobación |
 | Hardlinks/reparse en la fuente | rechazo fail-closed (tests + mutante) |
@@ -145,7 +152,8 @@ Estado P7-A0 del disco: `G:` libre 256,3 GiB; `I:` libre 607,8 GiB; `E:` libre 4
 
 ## 12. Evidencia local complementaria
 
-- `E:\Skyclaw_A1_Evidence\mutation_results.json` — resultados de los 4 mutantes + restauración verde.
+- `E:\Skyclaw_A1_Evidence\mutation_results.json` — resultados de los 4 mutantes base + restauración verde.
+- `E:\Skyclaw_A1_Evidence\mutation_results_fixes.json` — resultados de los mutantes M5–M7 de la auditoría (3/3 KILLED) + script `mutate_fixes.py`.
 - `E:\Skyclaw_A1_Evidence\ci_forensics.md` — forense del run 41933529936 y enlaces de sesión.
 - `E:\Skyclaw_A0_Evidence\` — informe/evidencia de P7-A0 (inspector, inventarios, backups, hardlinks).
 - CI: run `41933529936` (attempt 1 y 2), comparativas en §1.
@@ -156,4 +164,35 @@ Estado P7-A0 del disco: `G:` libre 256,3 GiB; `I:` libre 607,8 GiB; `E:` libre 4
 - Causa medida: el extra `dev` declara `ruff>=0.4` y CI instala con pip; el **2026-11-05T18:51Z** se publicó **ruff 0.17.4**, que activó la regla SIM102 para `elif` con `if` anidado. Reproducido en READ-ONLY sobre `main` `2b770818`: ruff 0.17.4 → 2 errores; ruff 0.15.11 (la que fija `uv.lock`) → TODO verde.
 - **Fix separado (no mezclado con P7):** PR Draft [#869](https://github.com/FacundoSu1986/Sky-Claw/pull/869) `ci/pin-ruff-version` — pin `ruff==0.15.11` en `pyproject.toml`. Tras su merge, el PR #868 debe sincronizar `origin/main` (`git merge origin/main --no-ff`) y re-ejecutar CI.
 - Sin cambios de producto en P7; los gates locales con la versión lockeada (ruff check/format, mypy, tests) están verdes.
+- **Actualización de la auditoría (§14):** los fixes se publican en el mismo PR #868 (nuevo HEAD, sin force-push). El gate Lint seguirá rojo hasta que se mergee #869 (`ruff==0.15.11`) y #868 sincronice `origin/main`; no es un defecto de P7.
+
+## 14. Anexo B — auditoría del PR #868 (HEAD `8bf00d66`) y fixes
+
+**Alcance:** auditar tres hipótesis sobre el candidato P7-A1 sin tocar instalaciones reales: (1) la referencia Stock no cubre membership de directorios; (2) el `participant_lock` no cubre toda la publicación lógica; (3) el sidecar no valida suficientemente `reference_digest`/`critical_files` contra la referencia y la metadata de autoridad. Dos sub-auditorías read-only (procedencia del sidecar y atomicidad lógica) + reproducción manual RED, todas en el worktree de auditoría.
+
+### FIX 1 — membership ausente de la referencia Stock (confirmado)
+
+- **Reproducción RED (manual, sintética):** Stock con `Data/EmptyFolder` vacío → `construir_referencia_stock` (digest `fe0450aa…`, `tiene_membership=False`) → borrar el directorio vacío (ningún byte de archivo cambia) → `adoptar_copia_stock` devolvía `ADOPTADA_SIN_RECHAZO`. El `TreeDigest` sólo inventaría archivos: los directorios vacíos son invisibles para la referencia v1.
+- **Fix:** `StockReference` v2 incluye `DirectoryMembershipEvidence` (digest + count + lista de directorios) y participa de `reference_digest`; `adoptar_copia_stock` compara membership observada contra la de la referencia; el loader exige el campo y recomputa membership/digest (closed schema). Una referencia v1 es incompatible (fail-closed; recapturar).
+- **Tests RED→GREEN:** `test_rechaza_directorio_vacio_eliminado`, `test_rechaza_directorio_vacio_agregado`, `test_referencia_sin_membership_es_incompatible`. **Mutante M5** (quitar la comparación) → KILLED.
+
+### FIX 2 — alcance del `participant_lock` (confirmado)
+
+- **Hecho de partida:** `participant_lock` es **no reentrante por diseño** (`root_lock.py:969-994`: `threading.Lock` + byte-range lock; una segunda adquisición da BUSY acotado). Por eso los registradores públicos no pueden llamarse dentro de una sección del mismo root.
+- **Ventana reproducida:** `publicar_generation_desde_stock` y `crear_runtime_clone_desde_generation` mantenían el lock sólo durante la copia; verificación, sidecar, metadata y publicación del registro corrían **fuera** del lock (y en secciones separadas), dejando interleavings y estados parciales: metadata escrita desde evidencia que podía cambiar antes de commitear; metadata sin sidecar; `PROVISIONED` sobre un árbol no re-verificado bajo el mismo lock; `PROVISIONING` varado sin recuperación.
+- **Fix (mínimo, sin doble lock):** se agregaron variantes internas `*_bajo_lock` (`generations._registrar_metadata_bajo_lock`; `clones._registrar_runtime_clone_record_bajo_lock`, `_actualizar_lifecycle_clone_bajo_lock`) siguiendo la convención del paquete (`journal.py`, `binder_recovery.py`, `state.py`). Cada operación pública corre en **una sola** sección y usa sólo esas variantes (llamar a las públicas produciría BUSY, no deadlock: mutante conceptual descartado). Orden de commit: **sidecar antes que metadata** (la metadata es el punto de commit visible a `verificar_generation`); pre-chequeo de `clone_id` ocupado y setup de la Generation **antes** de copiar (elimina huérfanos deterministas); recuperación explícita si el árbol ya existe (`PROVISIONING → PROVISIONED` idempotente; `PROVISIONED` sin árbol ⇒ reconciliación manual).
+- **Tests:** sonda desde otro hilo demuestra **BUSY** exactamente en el punto vulnerable (verificación de Generation / setup del Clone) — rojo en HEAD (`[['adquirido']]`), verde con el fix; el lock se libera ante fallo; la recuperación `PROVISIONING` completa el mismo Clone; el fallo de sidecar **no** deja metadata. **Mutante M7** (deshabilitar recuperación) → KILLED. Anclas P4-S2 actualizadas por enumeración con las primitivas nuevas (`_registrar_metadata_bajo_lock`, `_registrar_runtime_clone_record_bajo_lock`, `_actualizar_lifecycle_clone_bajo_lock`, `_recuperar_clone_existente`, `_marcar_clone_invalid_bajo_lock`).
+
+### FIX 3 — autoridad del sidecar (confirmado)
+
+- **Hallazgos:** v1 sólo guardaba `reference_kind` + 64 caracteres de `reference_digest`; sin payload completo no se puede recomputar, y bastaba cualquier string de 64 chars (incluido `"Z"*64`) para pasar. `critical_files`, `observed_at_ns` y `reference_kind` no se validaban estrictamente; una membership sincronizada con un drift pasaba; no había cruce contra la metadata de autoridad; un sidecar v1 obsoleto cargaba.
+- **Fix:** sidecar **v2** embebe la referencia completa (misma función `_payload_referencia`, mismo parser `_reference_from_dict`), y el loader valida schema cerrado, sha256 hex, tipos no-bool, críticos no vacíos/únicos/con schema cerrado, membership autoconsistente, `observed_at_ns >= 0`, reparse del archivo, y cruza tres vías: **referencia == sidecar == árbol observado**, más **sidecar == metadata** (provider `stock`, tree, runtime, críticos, `generation_id` derivado). v1 se rechaza con mensaje de re-publicación. `(REFERENCE_SCHEMA_VERSION, SIDECAR_SCHEMA_VERSION) == (2, 2)` congelado por test.
+- **Tests:** `reference_digest` alterado, `critical_files` adulterados, membership sincronizada con drift, sidecar v1 obsoleto, sidecar-first y schema frozen. **Mutante M6** (desactivar recomputo de `reference_digest`) → KILLED.
+
+### Resultado y dictamen
+
+- **Tests:** `tests/test_frozen_runtime_p7_provisioning.py` **44 passed** (13 nuevos RED→GREEN); regresión P4-S2 + P2/P3/P5-B **172 passed, 4 skipped**; inspector P7 **24 passed**; ruff check/format y mypy **verdes** (430 archivos).
+- **Mutantes:** 7/7 muertos (4 base + M5/M6/M7), artefactos restaurados y suite verde.
+- **Riesgos residuales** (detalle en §7): no hay ancla externa firmada contra un actor con escritura consistente en storage/sidecar; `RuntimeCloneRecord` no persiste el linaje (`reference_digest`); no hay GC/recovery automático de árboles parciales; la sonda de lock es in-process (la exclusión multiproceso del primitivo ya está anclada en P4-S2).
+- **Dictamen:** `P7_A1_READY_FOR_FINAL_MERGE_AUDIT` — condicionado a: CI del HEAD nuevo (Windows py3.11/py3.12, Ruff/Mypy/security, tests discriminantes), merge de #869 + sync sin force-push, y **sin** provisioning real ni tocar Steam/MO2/Skyrim/runtime/Stock. PR #868 permanece **Draft**, sin merge.
 

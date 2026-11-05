@@ -16,16 +16,24 @@ preparación (operador, aprobada)                provisionamiento (código P7-A1
 Stock (intacto, sólo lectura)                   adoptar_copia_stock()
   + copia NUEVA "fuente candidata"  ──hash──►   verifica contra una REFERENCIA
     (copia de contenido, sin                   independiente (TreeDigest +
-     hardlinks/reparse; + SKSE                  RuntimeIdentity + críticos)
-     del build exacto, etc.)                    publicar_generation_desde_stock()
+     hardlinks/reparse; + SKSE                  RuntimeIdentity + críticos +
+     del build exacto, etc.)                    membership de directorios)
+                                                publicar_generation_desde_stock()
                                                 └─► versions/<generation-id>/
+                                                    + sidecar v2 (referencia
+                                                      completa embebida)
                                                     + metadata provider="stock"
-                                                    + sidecar de procedencia
                                                 crear_runtime_clone_desde_generation()
                                                 └─► Clone en <clone-parent>/<id>/
                                                     PROVISIONED (setup SKSE
                                                     content-bound)
 ```
+
+La referencia y el sidecar son **schema v2**: el sidecar embebe la referencia
+completa y el loader recomputa `reference_digest`, así que un sidecar con sólo
+64 caracteres (v1) no se acepta: hay que **re-publicar la Generation** con el
+código actual. La `directory_membership` (incluye directorios vacíos) se
+verifica a tres vías: referencia == sidecar == árbol observado.
 
 **Qué NO implementa P7-A1 (gaps declarados, no disimulados):**
 
@@ -133,14 +141,18 @@ ref = construir_referencia_stock(fuente, reference_kind='p7-a1-owner-approved')
 salida.write_text(json.dumps(ref.como_dict(), indent=2), encoding='utf-8')
 print('reference_digest=', ref.reference_digest)
 print('tree_digest=', ref.expected_tree.digest, 'files=', ref.expected_tree.files, 'bytes=', ref.expected_tree.bytes)
+print('membership_digest=', ref.directory_membership.digest, 'dirs=', ref.directory_membership.directory_count)
 print('runtime=', ref.expected_runtime)
 "@
 Get-FileHash '<RUTA_EVIDENCIA>\stock_reference.json' -Algorithm SHA256
 ```
 
-El propietario revisa `reference_digest`, árbol/identidad y **aprueba A1**. Sin esa
-aprobación no se sigue. La referencia se guarda fuera de la fuente; si la fuente
-cambia un solo byte, `adoptar_copia_stock` la rechaza.
+El propietario revisa `reference_digest`, árbol/identidad, **membership de
+directorios** y **aprueba A1**. Sin esa aprobación no se sigue. La referencia se
+guarda fuera de la fuente; si la fuente cambia un solo byte **o un directorio
+vacío** (que el TreeDigest no ve), `adoptar_copia_stock` la rechaza. Una
+referencia capturada con schema v1 es incompatible: recapturarla con el código
+actual (schema v2) y volver a aprobar A1.
 
 ## 7. Provisionamiento (A2–A4, comandos separados)
 
@@ -216,18 +228,32 @@ print(verificar_runtime_setup(pathlib.Path(r'<CLONE_PARENT>\clone-golden-1.6.117
 sin inodos compartidos con la Generation ni con la Managed Source; el árbol de la
 fuente y de la Generation no cambió (hashes).
 
+**Atomicidad y procedencia (P7-A1):** publicación y creación corren dentro de
+**una sola** sección de `participant_lock` (copy → verificación → sidecar →
+metadata → verificación final). El **sidecar se escribe antes que la metadata**:
+si el sidecar falla, no queda una Generation “válida” sin procedencia. El sidecar
+v2 embebe la referencia completa y se cruza contra la metadata de autoridad
+(provider `stock`, tree, runtime, críticos) y contra la membership observada.
+Qué revisar en el mensaje si falla: “sidecar … obsoleto” ⇒ re-publicar con el
+código actual; “no coincide con la referencia/metadata” ⇒ drift o tamper,
+detenerse y restaurar desde backup, **no** editar el JSON a mano.
+
 ## 8. Cierre/aborto y recuperación
 
 - **Abortar antes de A2/A4** si falla cualquier precondición, la referencia no
   está aprobada, el espacio es insuficiente, hay journal/recovery pendiente o un
   proceso MO2/Skyrim/SKSE está vivo.
-- **Fallo al publicar Generation:** el árbol parcial queda sin metadata
-  (`UNKNOWN`); no se borra automáticamente. Decidir con el propietario si se
-  retira manualmente tras verificar que no hay metadata asociada. `state/` no
-  queda con journal: el provisionamiento no escribe journal.
-- **Fallo al crear Clone:** puede quedar un árbol parcial en `clone-parent` sin
-  registro `PROVISIONED`; no se borra solo. Un registro en `PROVISIONING` puede
-  reintentarse (misma Generation/setup) sin pisar ids ocupados.
+- **Fallo al publicar Generation:** el sidecar se escribe antes que la metadata;
+  un fallo previo deja árbol y/o sidecar sin metadata (`UNKNOWN`/no
+  descubrible), sin borrado automático. Decidir con el propietario si se retira
+  manualmente tras verificar que no hay metadata asociada. `state/` no queda con
+  journal: el provisionamiento no escribe journal.
+- **Fallo al crear Clone:** si el árbol quedó copiado y el registro quedó en
+  `PROVISIONING` (fallo entre registrar y publicar `PROVISIONED`), **reintentar
+  con el mismo id/Generation/parent completa el mismo Clone** (recupera y
+  re-verifica; no lo pide borrar). Si quedó un árbol **sin registro**, o un
+  registro `PROVISIONED` **sin árbol**, el reintento falla cerrado con
+  “reconciliación manual requerida”: no se borra ni se adopta nada solo.
 - **Nunca** borrar/reemplazar archivos de Steam, MO2, Stock o del runtime manual
   como parte de este runbook.
 - **Crash/kill testing:** SÓLO en entorno desechable (storage y árboles sintéticos
