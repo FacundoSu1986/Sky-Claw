@@ -48,6 +48,10 @@ La política clean-room, `docs/design/research/native-parallax/` y
   receta en `CONSUMIDORES_DE_ESPECTRAL`. `amplitud` (NP-V0) declara en el informe del lote los percentiles 2/98 y la
   desviación de la altura que se exporta (`lote.PERCENTILES_DE_LA_AMPLITUD`): describe, sin umbral ni objetivo, y no
   cambia el default `min_max` (ese default se decide con más de una textura juzgada en el juego).
+  `centrado` (#834 ítem 8, `integrate.Centrado`, `--centrado`) es **opt-in** y por defecto `ninguno`: apagado, la altura y la procedencia (y con ella la clave de caché de toda salida
+  ya escrita) son exactamente las de antes (ausente de la procedencia = `ninguno`); `media` lleva la media a 0,5 con un reescalado afín y simétrico (factor entre 0,5 y 1, sin recortar). Las métricas
+  del gate se calculan sobre la altura integrada, no sobre la exportada, así que no cambian; la `amplitud` del informe sí. Ancla: `test_los_llamadores_de_produccion_del_centrado_estan_enumerados`
+  (`tests/test_native_parallax_lote.py`, por AST) y la enumeración de `Centrado` en los tests de `integrate` y `lote`. El default se decide después del A/B en el rig, no antes.
 - `gates.py` (NP-Q0b) es el gate de calidad y es **fail-closed**: sin un registro de umbrales validado contra un
   corpus REAL, todo va a `REVIEW` (`UMBRALES_VIGENTES is None`, congelado por igualdad). `AUTO_ACCEPT` exige
   evidencia calculada (conteos → cota binomial), no un booleano; el corpus sintético no puede validar; la evidencia
@@ -187,7 +191,9 @@ La política clean-room, `docs/design/research/native-parallax/` y
   overlay (`SKSE/Plugins/AutoParallax.ini`, resuelto por `diagnostico_perfil.cargar_plugin_del_perfil`, el tercer uso del resolutor de ganadores). Solo un INI legible con
   `bAutoEnableParallax` apagado baja un `SI` a `NO`; ausente o sin determinar (valor no booleano, clave o sección repetidas, ilegible, mayor que `MAXIMO_DEL_INI`) avisa y no cambia el
   veredicto. La DLL se comprueba por presencia (solo aviso). Ancla: `tests/test_native_parallax_elegibilidad_plugin.py` (enumera los estados de `AjusteDelIni` y su decisión sobre un
-  `SI`). **NO verificado:** que la versión instalada lea el INI con estas reglas, la versión de la DLL y la matriz DLL × INI × tipo de objeto (rig).
+  `SI`). **Visto en el rig una vez** (02/11, **reportado**, `docs/design/research/native-parallax/np-prueba-rig-v32-resultados.md` §11): con la DLL 1.0.6.0, una textura y una celda de prueba, INI activo ⇒
+  relieve en Static, Movable Static y Container y no en Door ni Activator (la elegibilidad da `SI` igual: no ve el tipo base); INI apagado ⇒ ninguno. **NO verificado:** otras versiones de la DLL, el INI
+  ausente o indeterminado en el juego y la versión de la DLL como dato de la herramienta (no la lee).
   NP-A0j parte 2: `elegibilidad.py` (`evaluar_elegibilidad`) cruza esas dos piezas con el perfil de MO2 y contesta, por cada `*_p.dds` que el generador publicaría,
   `EFECTO_POSIBLE = SI | NO | NO_VERIFICADO` (`EfectoPosible`, vocabulario cerrado). Tres propiedades, con su ancla en `tests/test_native_parallax_elegibilidad.py` y
   `tests/test_native_parallax_cli_elegibilidad.py`: `SI` solo si una forma elegible terminaría USANDO esa salida siguiendo el orden de búsqueda del plugin (si antes

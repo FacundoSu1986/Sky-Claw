@@ -127,7 +127,10 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
    INI que **gana en tu perfil de MO2**: si está **apagado**, un `SI` pasa a `NO` (con el mod que entrega ese INI) y la salida imprime el aviso; si no hay INI en ningún mod del perfil,
    o no se puede interpretar (valor que no es `true/false/1/0`, clave repetida, archivo ilegible), **no cambia ningún veredicto** y se avisa que no se pudo comprobar. Tampoco ve un INI que viva
    solo en la carpeta del juego, fuera de MO2. La DLL (`AutoParallax.dll`) solo se comprueba por **presencia** suelta en el perfil (su ausencia avisa, no cambia nada: puede estar instalada
-   fuera de MO2); su versión y la combinación DLL × INI × tipo de objeto **no están verificadas** y necesitan el rig.
+   fuera de MO2); la herramienta **no lee su versión**. Una prueba en el rig (02/11, **reportada**: una persona, una máquina, la DLL 1.0.6.0, una textura, una celda de prueba) vio relieve con el
+   INI activo solo en objetos base Static, Movable Static y Container, **no** en puertas ni en activadores (la herramienta no ve el tipo base y da `SI` igual: es la limitación ya declarada), y con el INI
+   apagado no lo vio en ninguno de los cinco tipos. **No están verificadas** otras versiones de la DLL, el INI ausente o indeterminado, ni otras texturas o mallas (ver la sección 11 de
+   `docs/design/research/native-parallax/np-prueba-rig-v32-resultados.md`).
 3. Comparalo con el mod desactivado, en el mismo lugar y con la misma luz, y sacá capturas. **Si ya tenés otro mod con relieve para esa textura**, no compares relieve
    contra relieve: dos mapas con relieve parecido (en la prueba del 30/10, desvíos de 48 y 32 sobre 255) no se distinguen a ojo. Compará contra un mapa **plano**.
    Dos cosas que la prueba del 30/10 vio y que **no demuestran por sí solas un defecto de la salida** según la lectura del operador (observación suya): una **banda oscura** en el borde
@@ -156,6 +159,7 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
 | Detalle raro en texturas que vienen de otro programa | `--convencion opengl` | algunos programas exportan el canal verde al revés; Skyrim usa DirectX. La herramienta no lo adivina: lo fija el origen del archivo |
 | Costura visible al repetir la textura | `--bordes neumann` | otra hipótesis de borde (más lenta) |
 | Relieve muy plano o con puntos extremos | `--normalizacion percentiles --percentil-bajo 2 --percentil-alto 98` | recorta los extremos antes de normalizar |
+| Prueba A/B de la altura (**experimental**) | `--centrado media` | lleva la **media** de la altura exportada a 0,5 (hoy queda donde caiga) sin recortar nada; la amplitud baja entre 0,5 y 1 veces. Apagado (por defecto) la salida no cambia ni un byte. No hay evidencia en el juego de cuál es mejor: compará contra la salida sin centrar, en el mismo lugar y con la misma luz |
 
 Cada cambio de parámetro cambia la clave de caché: la salida anterior de esa textura se reemplaza sola (solo si no la
 editaste a mano). Con `--retirar-no-incluidas` también se borran las salidas de texturas que ya no están en la carpeta de
@@ -176,7 +180,7 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
   daría normales equivocadas sin ningún error. En la tanda del 30/10 dos texturas de un mod (normales DXT5) quedaron `NO_PROCESADA` con `FormatoNoSoportadoError: … DXT5 no verificado`. **Todavía no hay
   un camino soportado** para esas texturas (reconvertirlas a mano sin respetar ese canal sería peor que no usarlas); soportarlas es trabajo de código aparte y, por decisión del operador (30/10), **no es prioridad por ahora**.
 - No hay un control de «altura» o «intensidad» en el generador: la salida siempre se normaliza a [0, 1] y qué tan fuerte se ve lo decide el juego. Un control así queda como idea
-  pendiente (ver el issue de la auditoría), no como funcionalidad.
+  pendiente (ver el issue de la auditoría), no como funcionalidad. `--centrado media` (experimental, #834 ítem 8) **no** es ese control: mueve la media de la altura y, como efecto secundario, reduce la amplitud (entre 0,5 y 1 veces; ver la tabla de arriba).
 - Un mapa casi plano era sobre todo un defecto de la integración (unos pocos píxeles bajo el horizonte lo arruinaban) y ya está corregido; si igual lo ves en el informe (`amplitud` con
   desviación cercana a 0), mandame la textura de entrada.
 - La generación solo existe como línea de comandos (sin interfaz gráfica ni agente). El diagnóstico del perfil (`diagnosticar_parallax_perfil`) sí está en la GUI y en el agente. La integración con MO2 (habilitar el mod solo) viene después.

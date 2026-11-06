@@ -36,9 +36,9 @@ class WryeBashHeadlessUnsupportedError(WryeBashExecutionError):
     ``--no-uac``, entre otros. **Ninguno reconstruye el parche**, y el parser no
     declara ningún argumento posicional.
 
-    Este runner pasaba ``-b "Bashed Patch, 0.esp"`` creyendo que construía. Lo que
+    Este runner pasaba ``-b <BASHED_PATCH_NAME>`` creyendo que construía. Lo que
     hacía en realidad no era ni siquiera el backup: ``-b`` no toma valor, así que
-    ``"Bashed Patch, 0.esp"`` llegaba como posicional suelto y ``parse_args()``
+    ``BASHED_PATCH_NAME`` llegaba como posicional suelto y ``parse_args()``
     abortaba con *unrecognized arguments*; y aun sin el posicional, el propio
     ``barg.parse()`` corta con *"You must specify a filename for use with
     backup/restore"* porque falta ``-f``. O sea: la etapa 6 nunca corrió, fallaba
@@ -118,7 +118,7 @@ class WryeBashRunner:
         el parser oficial y la decisión de arquitectura pendiente.
 
         No se lanza el proceso a propósito. La implementación anterior ejecutaba
-        ``bash.py -b "Bashed Patch, 0.esp"``, que en el parser real de Wrye Bash
+        ``bash.py -b <BASHED_PATCH_NAME>``, que en el parser real de Wrye Bash
         no construye nada: ``-b`` es el switch de *backup de settings* (sin valor,
         y con el destino en ``-f``), así que la invocación moría en ``argparse``
         y la etapa 6 devolvía un fallo sin causa legible.

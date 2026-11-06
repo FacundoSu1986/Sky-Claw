@@ -110,7 +110,14 @@ from sky_claw.local.frozen_runtime.journal import (
 from sky_claw.local.frozen_runtime.mo2_ini_escritura import (
     Mo2IniEscrituraError,
     actualizar_game_path_en_ini,
+    actualizar_game_path_por_handle,
     codificar_qt_byte_array,
+)
+from sky_claw.local.frozen_runtime.mo2_ini_exclusion import (
+    DiagnosticoExclusion,
+    ExclusionIni,
+    Mo2IniExclusionError,
+    adquirir_exclusion_ini,
 )
 from sky_claw.local.frozen_runtime.root_lock import (
     LockDisposition,
@@ -141,6 +148,7 @@ __all__ = [
     "BinderCasError",
     "BinderError",
     "BinderEscrituraIniError",
+    "BinderExclusionError",
     "BinderLockUnavailableError",
     "BinderPreflightFailedError",
     "BinderQuiescenceError",
@@ -217,6 +225,17 @@ class BinderLockUnavailableError(BinderError):
     """
 
 
+class BinderExclusionError(BinderError):
+    """No se pudo establecer la exclusión de mutación sobre ``modorganizer.ini``.
+
+    Es la ventana TOCTOU que P5-C1 dejó abierta: sin exclusión, otro proceso
+    puede escribir el INI entre la revalidación y el reemplazo. La transición se
+    detiene ANTES de mutar cualquier superficie. El diagnóstico viaja en el
+    mensaje con el estado medido, para que el operador distinga «MO2 tiene el
+    archivo abierto» de «no se pudo determinar».
+    """
+
+
 # ---------------------------------------------------------------------------
 # Modelos y Estructuras de Datos
 # ---------------------------------------------------------------------------
@@ -236,6 +255,9 @@ class BinderResult:
     new_effective_path: str
     post_verify_evidence: PostVerifyEvidence | None = None
     finalized_record: FinalizedTransitionRecord | None = None
+    #: Diagnóstico de la exclusión de mutación (P5-C2). ``None`` sólo en los
+    #: caminos que no mutan el INI (por ejemplo el no-op idempotente).
+    exclusion: DiagnosticoExclusion | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -896,6 +918,26 @@ def ejecutar_transicion_binder(
         recovery.escribir_registro_locked(handle, storage_path, registro)
 
         mutadas: set[str] = set()
+        diagnostico_exclusion: DiagnosticoExclusion | None = None
+        # ``mutadas`` marca la superficie ANTES de escribirla (para que el
+        # rollback la cubra si el proceso muere en el medio). Eso no dice si la
+        # escritura llegó a intentarse: entre la marca y el escritor están la
+        # adquisición de la exclusión y la verificación de huella, que pueden
+        # abortar sin tocar el archivo. Este flag es la verdad de proceso y es lo
+        # que impide atribuir a la transición un cambio de un tercero.
+        ini_escritura_intentada: bool | None = False
+        # Lo que quedó en el INI, leído por el handle retenido ANTES de
+        # ``cerrar()``. Es la única prueba de autoría que sigue valiendo después
+        # de liberar la exclusión: mientras se retiene, nadie más puede escribir,
+        # así que lo leído es exactamente lo que dejó la transición. Una vez
+        # cerrada, cualquiera puede escribir y un prefijo deja de ser evidencia.
+        ini_bytes_tras_escritura: bytes | None = None
+
+        def _marcar_escritura_iniciada() -> None:
+            """Se invoca justo antes de mutar el INI, y sólo si se va a mutar."""
+            nonlocal ini_escritura_intentada
+            ini_escritura_intentada = True
+
         try:
             # -----------------------------------------------------------------
             # 5.4 — BIND EFFECTIVE (mutación de superficies)
@@ -904,10 +946,51 @@ def ejecutar_transicion_binder(
                 handle, storage_path, transition_id=t_id, fase=recovery.FaseRecuperacion.INI_ESCRITO
             )
             mutadas.add(recovery.SUPERFICIE_MO2_INI)
+            # P5-C2: la exclusión de mutación se toma ACÁ, después del snapshot
+            # (que lee por ruta) y antes de la primera escritura. Con el handle
+            # retenido, ningún otro proceso puede escribir, borrar ni renombrar
+            # el INI; la comparación de huella y la escritura usan ESE handle, así
+            # que no queda ventana entre comprobar y mutar.
+            exclusion = adquirir_exclusion_ini(ini_path)
+            diagnostico_exclusion = exclusion.diagnostico
             try:
-                actualizar_game_path_en_ini(ini_path, target_clone_root)
-            except Mo2IniEscrituraError as exc:
-                raise BinderEscrituraIniError(f"no se pudo escribir modorganizer.ini: {exc}") from exc
+                if not exclusion.autoriza:
+                    raise BinderExclusionError(
+                        "no se pudo establecer la exclusión de mutación sobre modorganizer.ini: "
+                        f"estado={exclusion.estado.value} motivo={exclusion.diagnostico.motivo} "
+                        f"intentos={exclusion.diagnostico.intentos}"
+                    )
+                # La huella contra la que se compara es la del SNAPSHOT durable:
+                # es el estado al que el rollback volvería. Si el INI cambió
+                # entre el snapshot y la exclusión, no hay nada que autorice
+                # mutarlo y se falla ANTES de escribir.
+                try:
+                    exclusion.verificar_huella(superficie_ini.sha256)
+                except Mo2IniExclusionError as exc:
+                    raise BinderVerificationError(
+                        "modorganizer.ini cambió entre el snapshot durable y la exclusión: "
+                        f"no se muta una superficie cuya identidad no liga ({exc})"
+                    ) from exc
+                try:
+                    actualizar_game_path_por_handle(
+                        exclusion, target_clone_root, al_escribir=_marcar_escritura_iniciada
+                    )
+                except Mo2IniEscrituraError as exc:
+                    # Se captura la huella TAMBIÉN cuando la escritura falla: el
+                    # archivo puede haber quedado a medias por nuestra cuenta, y
+                    # es lo único que permite distinguirlo después de un tercero.
+                    ini_bytes_tras_escritura = _bytes_bajo_exclusion(exclusion)
+                    raise BinderEscrituraIniError(f"no se pudo escribir modorganizer.ini: {exc}") from exc
+                ini_bytes_tras_escritura = _bytes_bajo_exclusion(exclusion)
+            finally:
+                exclusion.cerrar()
+
+            # Sin huella no hay autoría demostrable una vez liberada la
+            # exclusión. Se degrada a DESCONOCIDA en vez de atribuir por la FORMA
+            # del contenido: un prefijo deja de ser prueba en cuanto el archivo
+            # queda escribible por cualquiera.
+            if ini_escritura_intentada and ini_bytes_tras_escritura is None:
+                ini_escritura_intentada = None
 
             if config_path is not None and config_path.exists():
                 recovery.marcar_fase_locked(
@@ -1071,6 +1154,7 @@ def ejecutar_transicion_binder(
                 new_effective_path=str(target_clone_root),
                 post_verify_evidence=post_evidence,
                 finalized_record=record_final,
+                exclusion=diagnostico_exclusion,
             )
 
         except BaseException as exc:
@@ -1119,7 +1203,16 @@ def ejecutar_transicion_binder(
                 t_id,
                 exc,
             )
-            _rollback(handle, storage_path, registro, env_actual if environ is not None else None, mutadas, t_id)
+            _rollback(
+                handle,
+                storage_path,
+                registro,
+                env_actual if environ is not None else None,
+                mutadas,
+                t_id,
+                ini_escritura_intentada=ini_escritura_intentada,
+                ini_bytes_tras_escritura=ini_bytes_tras_escritura,
+            )
             raise
 
         # FUERA de la transacción, a propósito. El journal ya finalizó y el
@@ -1201,6 +1294,23 @@ def _retirar_registro_finalizado(handle: object, storage_path: pathlib.Path, tra
 # ---------------------------------------------------------------------------
 
 
+def _bytes_bajo_exclusion(exclusion: ExclusionIni) -> bytes | None:
+    """Bytes del INI leídos por el handle retenido, o ``None`` si no se pudo.
+
+    Se lee ANTES de ``cerrar()``: con la exclusión tomada, nadie más puede
+    escribir el archivo, así que lo leído es exactamente lo que dejó la
+    transición. Ese dato es el que permite, más tarde, distinguir «sigue como lo
+    dejamos» de «un tercero escribió después».
+
+    Es best-effort: si la lectura falla, el llamador degrada la autoría a
+    desconocida en vez de inventarla.
+    """
+    try:
+        return exclusion.leer_bytes()
+    except (Mo2IniExclusionError, OSError):
+        return None
+
+
 def _rollback(
     handle: object,
     storage_path: pathlib.Path,
@@ -1208,6 +1318,9 @@ def _rollback(
     environ: MutableMapping[str, str] | None,
     mutadas: set[str],
     transition_id: str,
+    *,
+    ini_escritura_intentada: bool | None = False,
+    ini_bytes_tras_escritura: bytes | None = None,
 ) -> None:
     """Restaura las superficies REALMENTE mutadas y verifica cada una.
 
@@ -1215,6 +1328,11 @@ def _rollback(
     completaron. La fase del registro es la verdad de reinicio: se marca ANTES
     de cada mutación, así que sobre-restaura (idempotente) en vez de dejar una
     mutación suelta. Las dos alimentan la MISMA rutina de restauración.
+
+    ``ini_bytes_tras_escritura`` es la huella leída BAJO la exclusión. El
+    rollback corre después de ``cerrar()``, así que un prefijo que aparezca en
+    el archivo ya no prueba autoría: sólo se atribuye si el contenido sigue
+    siendo exactamente el que la transición dejó.
     """
     try:
         verificaciones = recovery.restaurar_registro_locked(
@@ -1223,6 +1341,11 @@ def _rollback(
             registro,
             environ,
             solo_superficies=frozenset(mutadas),
+            # Sólo el INI tiene estado intermedio atribuible: el binder sabe si
+            # llegó a llamar al escritor. Si no lo llamó, un contenido que
+            # "parece" un prefijo nuestro es de un tercero y no se toca.
+            escritura_intentada=ini_escritura_intentada,
+            bytes_tras_escritura_ini=ini_bytes_tras_escritura,
         )
         recovery.exigir_restauracion_completa(verificaciones)
     except Exception as rollback_exc:

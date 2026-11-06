@@ -51,6 +51,7 @@ _ITEMS = frozenset(
         "Contrato de argumentos CLI",
         "Contrato de veredicto de éxito",
         "Etapa 6 (Wrye Bash) sin build headless",
+        "Etapa 6 (Wrye Bash) — vigencia del testigo durable y simetría M-04 (#866)",
         "Orden de masters sin validar",
         "Segundo parser TES4 sin gate",
         # PR-0 (fix/mo2-resolve-instance-mods-dir): la instalación del programa

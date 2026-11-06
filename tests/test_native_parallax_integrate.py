@@ -42,6 +42,7 @@ from sky_claw.local.native_parallax.integrate import (
     AlturaIntegrada,
     AlturaPlanaError,
     Bordes,
+    Centrado,
     EntradaInvalidaError,
     IntegracionError,
     ModoNormalizacion,
@@ -792,3 +793,115 @@ def test_las_dos_normalizaciones_difieren_donde_hay_picos() -> None:
     robusta = normalizar_altura(altura, ModoNormalizacion.PERCENTILES, percentil_bajo=2.0, percentil_alto=98.0)
 
     assert float(np.std(robusta)) > float(np.std(completa))
+
+
+# ---------------------------------------------------------------------------
+# Centrado de la altura exportada (#834 ítem 8): opt-in; la media va a 0,5 y el valor más lejano de la media toca 0 o 1
+# ---------------------------------------------------------------------------
+
+
+def _campo(forma: str) -> np.ndarray:
+    """Alturas de media cero con la asimetría que se nombra: hacia arriba, hacia abajo o simétrica."""
+    campo = np.zeros((32, 32))
+    if forma == "simetrica":
+        x = np.arange(32) / 32.0
+        campo = 0.05 * np.outer(np.sin(2 * np.pi * 4 * x), np.sin(2 * np.pi * 4 * x))
+    elif forma == "bultos_arriba":
+        campo[5, 5], campo[20, 9], campo[12, 27] = 3.0, 2.0, 4.0
+    elif forma == "pozos_abajo":
+        campo[5, 5], campo[20, 9], campo[12, 27] = -3.0, -2.0, -4.0
+    else:  # pragma: no cover - el parámetro de los tests lo agota
+        raise AssertionError(forma)
+    return campo - campo.mean()
+
+
+_FORMAS = ("simetrica", "bultos_arriba", "pozos_abajo")
+
+
+@pytest.mark.parametrize("forma", _FORMAS)
+def test_el_centrado_lleva_la_media_a_un_medio_sin_salirse_de_cero_uno(forma: str) -> None:
+    salida = normalizar_altura(_campo(forma), ModoNormalizacion.MIN_MAX, centrado=Centrado.MEDIA)
+
+    assert float(salida.mean()) == pytest.approx(0.5, abs=1e-12)
+    assert float(salida.min()) >= 0.0 and float(salida.max()) <= 1.0
+    # El valor más lejano de la media toca un extremo: no se desperdicia rango por centrar.
+    assert max(float(salida.max()) - 0.5, 0.5 - float(salida.min())) == pytest.approx(0.5, abs=1e-12)
+    assert not salida.flags.writeable
+    assert salida.dtype == np.float64
+
+
+@pytest.mark.parametrize("forma", ("bultos_arriba", "pozos_abajo"))
+def test_el_centrado_es_afin_conserva_el_orden_y_solo_reduce_la_amplitud(forma: str) -> None:
+    # Sin centrar, la media de una altura asimétrica queda lejos de 0,5 (eso es lo que el ítem 8 señala).
+    base = normalizar_altura(_campo(forma), ModoNormalizacion.MIN_MAX)
+    media = float(base.mean())
+    assert abs(media - 0.5) > 0.3
+
+    centrada = normalizar_altura(_campo(forma), ModoNormalizacion.MIN_MAX, centrado=Centrado.MEDIA)
+
+    factor = 0.5 / max(media, 1.0 - media)
+    assert 0.5 <= factor <= 1.0
+    np.testing.assert_allclose(centrada, 0.5 + (base - media) * factor, atol=1e-12)
+    assert float(np.std(centrada)) == pytest.approx(float(np.std(base)) * factor, rel=1e-9)
+    orden = np.argsort(base.ravel(), kind="stable")
+    assert bool(np.all(np.diff(centrada.ravel()[orden]) >= -1e-15))
+
+
+def test_en_una_altura_simetrica_el_centrado_no_cambia_nada() -> None:
+    sin = normalizar_altura(_campo("simetrica"), ModoNormalizacion.MIN_MAX)
+    con = normalizar_altura(_campo("simetrica"), ModoNormalizacion.MIN_MAX, centrado=Centrado.MEDIA)
+
+    np.testing.assert_allclose(con, sin, atol=1e-12)
+
+
+def test_centrado_ninguno_es_el_valor_por_defecto_y_no_cambia_un_solo_valor() -> None:
+    # La promesa del interruptor: apagado, la salida es EXACTAMENTE la de antes (la fórmula de siempre, sin tocar).
+    altura = _altura_con_picos()
+    de_siempre = np.clip((altura - altura.min()) / (altura.max() - altura.min()), 0.0, 1.0)
+
+    por_defecto = normalizar_altura(altura, ModoNormalizacion.MIN_MAX)
+    explicito = normalizar_altura(altura, ModoNormalizacion.MIN_MAX, centrado=Centrado.NINGUNO)
+
+    assert np.array_equal(por_defecto, de_siempre)
+    assert np.array_equal(explicito, de_siempre)
+
+
+def test_el_centrado_funciona_sobre_la_corpus_con_picos_y_con_percentiles() -> None:
+    altura = _altura_con_picos()
+    for salida in (
+        normalizar_altura(altura, ModoNormalizacion.MIN_MAX, centrado=Centrado.MEDIA),
+        normalizar_altura(
+            altura, ModoNormalizacion.PERCENTILES, percentil_bajo=2.0, percentil_alto=98.0, centrado=Centrado.MEDIA
+        ),
+    ):
+        assert float(salida.mean()) == pytest.approx(0.5, abs=1e-12)
+        assert float(salida.min()) >= 0.0 and float(salida.max()) <= 1.0
+
+
+def test_el_centrado_conserva_los_errores_de_la_normalizacion() -> None:
+    with pytest.raises(AlturaPlanaError):
+        normalizar_altura(np.full((8, 8), 3.0), ModoNormalizacion.MIN_MAX, centrado=Centrado.MEDIA)
+    with pytest.raises(EntradaInvalidaError, match="percentiles"):
+        normalizar_altura(
+            _campo("bultos_arriba"), ModoNormalizacion.MIN_MAX, percentil_bajo=2.0, centrado=Centrado.MEDIA
+        )
+
+
+@pytest.mark.parametrize("malo", ["media", None, 1, True])
+def test_el_centrado_exige_un_miembro_de_centrado(malo: object) -> None:
+    with pytest.raises(EntradaInvalidaError, match="Centrado"):
+        normalizar_altura(_campo("bultos_arriba"), ModoNormalizacion.MIN_MAX, centrado=malo)  # type: ignore[arg-type]
+
+
+def test_el_vocabulario_de_centrado_esta_congelado() -> None:
+    # Un miembro nuevo rompe este ancla hasta que se decide qué hace (y se cubre abajo, parametrizado sobre TODOS).
+    assert {c.name: c.value for c in Centrado} == {"NINGUNO": "ninguno", "MEDIA": "media"}
+
+
+@pytest.mark.parametrize("centrado", list(Centrado), ids=lambda c: c.name)
+def test_todo_miembro_de_centrado_produce_una_altura_valida(centrado: Centrado) -> None:
+    salida = normalizar_altura(_campo("bultos_arriba"), ModoNormalizacion.MIN_MAX, centrado=centrado)
+
+    assert salida.shape == (32, 32) and salida.dtype == np.float64
+    assert float(salida.min()) >= 0.0 and float(salida.max()) <= 1.0
+    assert bool(np.all(np.isfinite(salida)))
