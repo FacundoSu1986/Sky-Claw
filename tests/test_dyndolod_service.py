@@ -4603,6 +4603,7 @@ def test_los_modulos_que_emiten_el_stage_index_no_dejan_de_hacerlo() -> None:
         "loot/cli.py",
         "tools/dyndolod_runner.py",
         "tools/dyndolod_service.py",
+        "tools/etapa6_testigos.py",
         "tools/grass_cache_service.py",
         "tools/wrye_bash_service.py",
         "xedit/runner.py",

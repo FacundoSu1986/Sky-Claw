@@ -351,8 +351,6 @@ def _parametros_de(funcion: Any) -> tuple[str, ...]:
 
 def _servicio(**kwargs: Any) -> WryeBashPipelineService:
     return WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         **kwargs,
     )
 
@@ -595,11 +593,11 @@ async def test_la_tool_del_agente_prepara_con_el_perfil_de_sesion(tmp_path: path
 async def test_la_tool_del_agente_verifica_sin_testigo_y_declara_frescura_no_probada(
     tmp_path: pathlib.Path, sin_preflight: None
 ) -> None:
-    """La fase 2 llega por la tool y es honesta: sin testigo no prueba frescura.
+    """La fase 2 llega por la tool y es honesta: sin fase 1 previa no prueba frescura.
 
-    El LLM no puede aportar ``testigo_previo`` (persistirlo es el PR D de ADR 0016 §7),
-    así que un artefacto correcto da verde con ``frescura_probada=False`` en vez de
-    aceptar un hash inventado.
+    El LLM no puede aportar ``testigo_previo`` (A-4), y si nadie corrió ``preparar`` antes
+    el almacén durable está vacío: un artefacto correcto da verde con
+    ``frescura_probada=False`` en vez de inventar un testigo.
     """
     registry = _registry(tmp_path, perfil="Requiem", parche=b"TES4" + b"\x00" * 60)
 
@@ -631,7 +629,7 @@ async def test_sin_perfil_la_tool_falla_cerrado_en_vez_de_adivinar_un_default(tm
     """
     game, _ = _perfil(tmp_path, perfil="Requiem")
 
-    salida = json.loads(await generate_bashed_patch(None, path_resolver=_resolver(game, tmp_path)))
+    salida = json.loads(await generate_bashed_patch(path_resolver=_resolver(game, tmp_path)))
 
     assert salida["success"] is False
     assert salida["reason"] == "PerfilInvalido"
@@ -658,7 +656,6 @@ async def test_las_rutas_que_ve_el_llm_estan_saneadas(tmp_path: pathlib.Path, si
 
     salida = json.loads(
         await generate_bashed_patch(
-            None,
             path_resolver=_resolver(game, tmp_path),
             profile=perfil_con_veneno,
         )

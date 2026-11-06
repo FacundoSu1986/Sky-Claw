@@ -116,7 +116,8 @@ class AsyncToolRegistry:
         install_dir: pathlib.Path | None = None,
         local_cfg: Any | None = None,
         config_path: pathlib.Path | None = None,
-        wrye_bash_runner: Any | None = None,
+        # PR C (ADR 0016 §7): sin `wrye_bash_runner`. El camino headless que lo consumía
+        # se retiró y ningún caller lo pasaba: dejarlo sería un asa para reconstruirlo.
         pandora_runner: Any | None = None,
         bodyslide_runner: Any | None = None,
         # PR #171 review (Codex P1 / Copilot): sandbox guard for tool exe paths
@@ -170,7 +171,6 @@ class AsyncToolRegistry:
         self._install_dir = install_dir or SystemPaths.modding_root()
         self._local_cfg = local_cfg
         self._config_path = config_path
-        self._wrye_bash_runner = wrye_bash_runner
         self._pandora_runner = pandora_runner
         self._bodyslide_runner = bodyslide_runner
         self._path_validator = path_validator
@@ -620,11 +620,8 @@ class AsyncToolRegistry:
             # #315 → ADR 0016 (PR B): mismo servicio que el Ritual de la GUI y el
             # SupervisorAgent, y la MISMA ruta de enrutado (`ejecutar_fase_asistida`).
             # Las fases asistidas no toman lock ni emiten caja negra: no mutan.
+            # PR C (ADR 0016 §7): sin las dependencias del camino headless retirado.
             fn=lambda fase="preparar": generate_bashed_patch(
-                self._wrye_bash_runner,
-                lock_manager=self._lock_manager,
-                snapshot_manager=self._snapshot_manager,
-                journal=self._journal,
                 path_resolver=self._path_resolver,
                 profile=self._mo2_profile,
                 fase=fase,

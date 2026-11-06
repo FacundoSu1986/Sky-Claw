@@ -138,15 +138,18 @@ class TestValidateInsideSandbox:
 
 class TestValidateOutsideSandbox:
     def test_absolute_path_outside_root_raises(self, tmp_path: pathlib.Path) -> None:
-        v = _make_validator(tmp_path)
-        # /tmp or C:\Windows always exists but is outside tmp_path.
-        outside: pathlib.Path
-        if sys.platform == "win32":
-            outside = pathlib.Path("C:/Windows/System32/cmd.exe")
-        else:
-            outside = pathlib.Path("/etc/passwd")
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        outside_file = outside_dir / "externo.txt"
+        outside_file.write_text("contenido fuera del sandbox\n", encoding="utf-8")
+        v = _make_validator(sandbox)
+        # Ruta absoluta a un archivo regular propio en árbol disjunto: no depende
+        # de la distro (antes usaba /etc/passwd, symlink en NixOS → red espuria).
+        assert outside_file.is_absolute()
         with pytest.raises(PathViolationError, match="outside all sandbox roots"):
-            v.validate(outside)
+            v.validate(outside_file)
 
     def test_sibling_directory_outside_root_raises(self, tmp_path: pathlib.Path) -> None:
         sandbox = tmp_path / "sandbox"
@@ -170,15 +173,20 @@ class TestValidateOutsideSandbox:
             v.validate(f)
 
     def test_violation_message_contains_path(self, tmp_path: pathlib.Path) -> None:
-        v = _make_validator(tmp_path)
-        outside: pathlib.Path
-        if sys.platform == "win32":
-            outside = pathlib.Path("C:/Windows/notepad.exe")
-        else:
-            outside = pathlib.Path("/usr/bin/env")
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        outside_file = outside_dir / "archivo_externo.txt"
+        outside_file.write_text("contenido fuera del sandbox\n", encoding="utf-8")
+        v = _make_validator(sandbox)
+        # Archivo regular propio, estrictamente fuera del sandbox y en árbol
+        # disjunto: no depende de la distro (antes usaba /usr/bin/env, que puede
+        # ser symlink o no existir según el entorno POSIX).
         with pytest.raises(PathViolationError) as exc_info:
-            v.validate(outside)
+            v.validate(outside_file)
         assert "outside all sandbox roots" in str(exc_info.value)
+        assert str(outside_file.resolve()) in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
