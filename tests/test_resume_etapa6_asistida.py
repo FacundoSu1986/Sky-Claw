@@ -105,6 +105,22 @@ def test_la_fase_1_ofrece_verificar_con_el_testigo() -> None:
     assert BASHED_PATCH_NAME in accion["detail"]
 
 
+def test_la_fase_1_conserva_generacion_en_el_testigo_del_cta() -> None:
+    """PR D / Review #5770094299 (P1): el CTA de la GUI preserva ``generacion`` dentro de
+    ``testigo_previo`` para que la fase 2 consuma condicionalmente sólo su propia época."""
+    payload = _payload_de_preparar()
+    generacion = "0123456789abcdef" * 2
+    payload["testigo_previo"] = {"existia": True, "sha256": "a" * 64, "generacion": generacion}
+
+    accion = rr_mod.resume_action_from_result("wrye_bash", payload)
+
+    assert accion is not None
+    assert accion["payload"] == {
+        "fase": "verificar",
+        "testigo_previo": {"existia": True, "sha256": "a" * 64, "generacion": generacion},
+    }
+
+
 def test_sin_testigo_la_accion_igual_se_ofrece_sin_inventarlo() -> None:
     """Verificar existencia y estado en `plugins.txt` sigue siendo útil sin testigo."""
     payload = _payload_de_preparar()
@@ -137,6 +153,14 @@ def test_un_testigo_malformado_no_viaja() -> None:
         ({"existia": False, "sha256": "a" * 64}, "estado IMPOSIBLE: ausencia con identidad"),
         ({"existia": 1, "sha256": "a" * 64}, "bool que no es bool"),
         ({"existia": True, "sha256": 123}, "identidad que no es texto"),
+        (
+            {"existia": False, "sha256": None, "generacion": "NO_ES_HEX_32"},
+            "generacion con formato inválido",
+        ),
+        (
+            {"existia": False, "sha256": None, "generation": "a" * 32},
+            "clave extra desconocida (typo generation)",
+        ),
     ],
 )
 def test_un_testigo_que_el_dominio_rechaza_no_viaja(testigo: dict[str, Any], por_que: str) -> None:
@@ -351,8 +375,6 @@ def _servicio(tmp_path: pathlib.Path) -> tuple[WryeBashPipelineService, pathlib.
     resolver.get_mo2_instance_data_root.return_value = tmp_path
     resolver.get_mo2_mods_path_best_effort.return_value = tmp_path / "mods"
     servicio = WryeBashPipelineService(
-        lock_manager=MagicMock(),
-        snapshot_manager=MagicMock(),
         path_resolver=resolver,
         preflight=MagicMock(),
     )

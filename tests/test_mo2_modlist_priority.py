@@ -376,6 +376,10 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         # canónica) sólo como CONJUNTO de habilitados para buscar el grass cache
         # (etapa 8); no interpreta prioridad, así que no es Family A.
         "sky_claw/local/validators/etapas_previas_lods.py",
+        # #866 (H-1): `huella_de_contexto` lee `modlist.txt` como BYTES opacos para el digest de vigencia del
+        # testigo durable de la etapa 6. Detecta que el archivo CAMBIÓ, pero no parsea ni interpreta la prioridad
+        # (no usa `read_enabled_mods`); por eso es Family C y no A. Es solo lectura.
+        "sky_claw/local/tools/wrye_bash_asistida.py",
     },
     # Family D: Documentación, payloads o referencias estáticas de nombre
     "FAMILY_D_DOC_OR_REFERENCE": {

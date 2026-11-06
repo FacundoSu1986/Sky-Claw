@@ -554,11 +554,7 @@ async def close_game(mo2: Any) -> str:
 
 
 async def generate_bashed_patch(
-    wrye_bash_runner: Any,
     *,
-    lock_manager: Any | None = None,
-    snapshot_manager: Any | None = None,
-    journal: Any | None = None,
     path_resolver: Any | None = None,
     # Sin default: un perfil inventado ("Default") prepararía instrucciones para una
     # instancia que puede no existir. Vacío ⇒ `PerfilInvalido`, que es lo que el
@@ -575,7 +571,7 @@ async def generate_bashed_patch(
     enrutado que comparte con el dispatcher de la GUI y con el ``SupervisorAgent``.
 
     Antes del PR B este handler llamaba a ``execute_pipeline``: tomaba el lock anidado
-    (``Bashed Patch, 0.esp`` + ``load-order``), emitía el ``ActionManifest`` y abría una
+    (el del Bashed Patch + ``load-order``), emitía el ``ActionManifest`` y abría una
     TX para que el runner fallara cerrado —``bash.py`` no expone build headless—. Ahora
     **no toma lock, no abre TX y no emite caja negra**, porque ninguna de las dos fases
     muta: la caja negra existe para lo que puede mutar (ADR 0016 §2) y una etapa que
@@ -588,9 +584,10 @@ async def generate_bashed_patch(
     ``SinRutasResolubles``; el perfil real lo aporta el registry (``mo2_profile``, fijo
     por sesión).
 
-    ``wrye_bash_runner`` se conserva en la firma porque el descriptor del registry lo
-    sigue pasando; las fases asistidas **no lo usan** (no hay subproceso que lanzar). El
-    parámetro y el camino headless se retiran juntos en el PR C.
+    **No admite un runner**: el PR C retiró el parámetro junto con el camino headless
+    (``execute_pipeline``), porque las fases asistidas no lanzan ningún subproceso. Un
+    llamador que todavía pase uno recibe ``TypeError`` en vez de un runner ignorado — la
+    garantía deja de depender de que el cuerpo no lo use.
 
     Las dos claves con ruta (``artefacto``, ``plugins_txt``) atraviesan
     :func:`sanitize_for_prompt` antes de viajar al modelo: se componen con nombres de
@@ -603,20 +600,28 @@ async def generate_bashed_patch(
 
     Siempre devuelve JSON serializable (contrato T11).
     """
+    # Import perezoso: ``app.agent`` no depende de ``app.orchestrator`` a nivel de módulo.
+    from sky_claw.app.orchestrator.plugin_limit_guard import PluginLimitGuard
+    from sky_claw.local.tools.etapa6_testigos import almacen_por_defecto
     from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
 
+    # PR C + PR D (ADR 0016 §7): sin lock/snapshot/journal/runner (retirados con el camino
+    # headless), pero CON el almacén por usuario de testigos para que ``fase="verificar"``
+    # demuestre frescura desde disco sin aceptar un digest del modelo (A-4).
+    #
+    # M-04 (#866, H-2): el MISMO guard que cablean la GUI (``dispatcher_dependencies``) y el
+    # ``SupervisorAgent``. Antes esta superficie pasaba ``validate_limit=False`` con el
+    # comentario "se valida a nivel Supervisor", pero el agente LLM no pasa por el
+    # Supervisor: con >254 plugins la GUI abortaba y Telegram / ``/api/chat`` no.
     service = WryeBashPipelineService(
-        lock_manager=lock_manager,
-        snapshot_manager=snapshot_manager,
-        wrye_bash_runner=wrye_bash_runner,
-        journal=journal,
         path_resolver=path_resolver,
+        plugin_limit_guard=None if path_resolver is None else PluginLimitGuard(path_resolver=path_resolver).run,
+        testigo_store=almacen_por_defecto(),
     )
     resultado = await service.ejecutar_fase_asistida(
         profile=profile,
         fase=fase,
-        # M-04 se valida a nivel Supervisor para este path (igual que antes del PR B).
-        validate_limit=False,
+        validate_limit=True,
         testigo_previo=testigo_previo,
     )
     return json.dumps(_sanear_rutas(resultado))
@@ -754,8 +759,8 @@ class _BodySlideRunFallidoError(Exception):
     """Interno (U-04): un resultado con ``success=False`` se convierte en excepción
     DENTRO del lock para disparar el rollback real de la salida.
 
-    Mismo patrón que ``wrye_bash_service._RunFallidoError`` / ``pandora_service.
-    _RunFallidoError``: tanto ``SnapshotTransactionLock`` como
+    Mismo patrón que ``pandora_service._RunFallidoError`` (el hermano vivo que
+    ``synthesis_service`` ya usaba en producción): tanto ``SnapshotTransactionLock`` como
     ``DirectoryRollback`` sólo restauran en la rama de excepción de su
     ``__aexit__``; un resultado ``success=False`` (exit non-zero) sale "limpio"
     del ``async with`` si no se puentea, y el backup se descartaría con el

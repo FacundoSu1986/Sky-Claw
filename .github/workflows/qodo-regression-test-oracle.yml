@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: "Ejecutar segunda revisión Qodo"
-        uses: Codium-ai/pr-agent@981344be2755e303df501e18e3f60b848a188a80 # v0.48.0
+        uses: Codium-ai/pr-agent@efdde4afe14aa401a3889012c7f3e9ef3081a430 # v0.49.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Data policy: .github/AI_REVIEW_DATA_POLICY.md — solo datos públicos; revisar proveedores antes de cambiar modelos.

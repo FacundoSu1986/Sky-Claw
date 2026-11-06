@@ -600,9 +600,10 @@ class SupervisorAgent:
         construir el parche, que tomaba los locks y abría una TX para fallar cerrado
         siempre.
 
-        La etapa ya **no muta** desde este método: ``preparar`` deja instrucciones y un
-        testigo, ``verificar`` emite el veredicto por evidencia en disco. El lock y el
-        guard M-04 se consultan dentro de la fase 1 cuando corresponde.
+        La etapa **no muta el parche ni el perfil** desde este método: ``preparar`` deja
+        instrucciones y registra el testigo previo en el almacén por usuario (PR D), y
+        ``verificar`` emite el veredicto por evidencia en disco. El preflight y el guard
+        M-04 corren dentro de la fase 1 cuando corresponde (sin locks ni TX).
 
         Args:
             profile: Perfil MO2 a usar (default: self.profile_name).
