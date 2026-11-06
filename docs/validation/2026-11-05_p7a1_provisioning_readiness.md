@@ -81,15 +81,15 @@ Auditoría read-only de `sky_claw/local/frozen_runtime/` (file:line en el inform
 | Evidencia | Resultado |
 |---|---|
 | **TDD RED inicial** (tests nuevos contra API inexistente) | `ImportError` de colección (1 error) — rojo registrado antes de implementar |
-| **TDD GREEN** `tests/test_frozen_runtime_p7_provisioning.py` | **45 passed** (31 base + FIX 1: 4 RED→GREEN + FIX 2/3: 10) |
+| **TDD GREEN** `tests/test_frozen_runtime_p7_provisioning.py` | **50 passed** (31 base + FIX 1: 4 + FIX 2/3: 10 + ronda CodeRabbit: 5) |
 | Regresión suites relacionadas (P4-S2 participant wiring, P2 generations/independence/storage, P5-B, P3 contract/candidates) | **172 passed, 4 skipped** (anclas P4-S2 actualizadas con las primitivas `*_bajo_lock` nuevas) |
-| Inspector P7 tras corrección de P7-G (`test_p7_inspector_output.py`) | **24 passed** |
-| Mutantes discriminantes | **8/8 muertos**: (M1) `st_nlink` eliminado → hardlink; (M2/M2b) `reference_digest` del loader y digest de adopción eliminados → referencia alterada; (M3) membership del sidecar eliminada → drift de directorio vacío; **(M5)** comparación de membership de referencia en adopción eliminada → tests de directorio vacío agregado/eliminado; **(M6)** recomputo de `reference_digest` desactivado → referencia/sidecar alterados; **(M7)** recuperación `PROVISIONING` deshabilitada → reintento del Clone varado; **(M8)** cast silencioso `str(d)` restaurado en el loader de referencia → entero que coacciona a un directorio real. Restaurado y **45 passed** |
+| Inspector P7 tras corrección de P7-G (`test_p7_inspector_output.py`) | **25 passed** (incluye ancla de `steamapps/temp/**`) |
+| Mutantes discriminantes | **12/12 muertos**: (M1) `st_nlink` eliminado → hardlink; (M2/M2b) `reference_digest` del loader y digest de adopción eliminados → referencia alterada; (M3) membership del sidecar eliminada → drift de directorio vacío; **(M5)** comparación de membership de referencia en adopción eliminada; **(M6)** recomputo de `reference_digest` desactivado; **(M7)** recuperación `PROVISIONING` deshabilitada; **(M8)** cast silencioso `str(d)` restaurado; **(M9)** `DirectoryMembershipError` fuera del `except` del loader de referencia; **(M10)** `UnicodeDecodeError` fuera del `except` del sidecar; **(M11)** `DirectoryMembershipError` fuera del `except` de `_parsear_membership`; **(M12)** `steamapps/temp/**` eliminado de la matriz P7-G. Restaurado y suites verdes |
 | Ruff (`ruff check` + `ruff format --check` sobre `sky_claw/`, `scripts/`, `tests/`) | **verde** (gate CI, ruff 0.15.11 lockeada) |
 | Mypy (`mypy sky_claw/ scripts/`) | **verde**, 430 archivos |
-| Evidencia de mutantes | `E:\Skyclaw_A1_Evidence\mutation_results.json` (4 base) + `mutation_results_fixes.json` (M5–M7) |
+| Evidencia de mutantes | `E:\Skyclaw_A1_Evidence\mutation_results.json` (4 base) + `mutation_results_fixes.json` (M5–M12) |
 
-CI del PR: pendiente de correr al abrir el PR Draft (ramo `feat/p7-a1-provisioning-readiness`). El CI del `main` sigue con el fallo de infraestructura del §1 (attempt 2 en curso).
+CI del PR: run [42123648897](https://github.com/FacundoSu1986/Sky-Claw/actions/runs/42123648897) — **SUCCESS** para el HEAD revisado `77f9d067` (**16/16 checks**): Windows py3.11 (55m11) y py3.12 (40m51), Lint Ruff (con el pin de #869), Mypy, Security Scan, POSIX Core, Build, Tests (Pytest) y CodeQL. El fallo histórico del run `41933529936` (§1) queda como análisis de infraestructura separado; el gate actual está **verde**.
 
 ## 7. Riesgos residuales
 
@@ -153,18 +153,18 @@ Estado P7-A0 del disco: `G:` libre 256,3 GiB; `I:` libre 607,8 GiB; `E:` libre 4
 ## 12. Evidencia local complementaria
 
 - `E:\Skyclaw_A1_Evidence\mutation_results.json` — resultados de los 4 mutantes base + restauración verde.
-- `E:\Skyclaw_A1_Evidence\mutation_results_fixes.json` — resultados de los mutantes M5–M7 de la auditoría (3/3 KILLED) + script `mutate_fixes.py`.
+- `E:\Skyclaw_A1_Evidence\mutation_results_fixes.json` — resultados de los mutantes M5–M12 (8/8 KILLED) + script `mutate_fixes.py`.
 - `E:\Skyclaw_A1_Evidence\ci_forensics.md` — forense del run 41933529936 y enlaces de sesión.
 - `E:\Skyclaw_A0_Evidence\` — informe/evidencia de P7-A0 (inspector, inventarios, backups, hardlinks).
-- CI: run `41933529936` (attempt 1 y 2), comparativas en §1.
+- CI: run `41933529936` (attempt 1 y 2, análisis histórico en §1) y run `42123648897` (**verde** sobre `77f9d067`; §6).
 
 ## 13. Anexo A — fallo Lint del PR #868: drift de dependencia (no defecto de P7)
 
 - Al abrir el PR #868, el gate `Lint (Ruff)` falló en `sky_claw/local/frozen_runtime/clones.py:355` y `:437` (`SIM102`), **código pre-existente que este PR no toca**.
 - Causa medida: el extra `dev` declara `ruff>=0.4` y CI instala con pip; el **2026-11-05T18:51Z** se publicó **ruff 0.17.4**, que activó la regla SIM102 para `elif` con `if` anidado. Reproducido en READ-ONLY sobre `main` `2b770818`: ruff 0.17.4 → 2 errores; ruff 0.15.11 (la que fija `uv.lock`) → TODO verde.
-- **Fix separado (no mezclado con P7):** PR Draft [#869](https://github.com/FacundoSu1986/Sky-Claw/pull/869) `ci/pin-ruff-version` — pin `ruff==0.15.11` en `pyproject.toml`. Tras su merge, el PR #868 debe sincronizar `origin/main` (`git merge origin/main --no-ff`) y re-ejecutar CI.
+- **Fix separado (no mezclado con P7):** PR [#869](https://github.com/FacundoSu1986/Sky-Claw/pull/869) `ci/pin-ruff-version` — pin `ruff==0.15.11` en `pyproject.toml`. **Mergeado** (squash `32764aec`, un solo padre `2b770818`); #868 sincronizó `origin/main` con `git merge --no-ff` (HEAD `77f9d067`), sin rebase ni force-push.
 - Sin cambios de producto en P7; los gates locales con la versión lockeada (ruff check/format, mypy, tests) están verdes.
-- **Actualización de la auditoría (§14):** los fixes se publican en el mismo PR #868 (nuevo HEAD, sin force-push). El gate Lint seguirá rojo hasta que se mergee #869 (`ruff==0.15.11`) y #868 sincronice `origin/main`; no es un defecto de P7.
+- **Estado actual del gate (histórico + verificación):** el Lint rojo del run `42117967665` fue el drift de 0.17.4; con el pin y la sincronización, el run [42123648897](https://github.com/FacundoSu1986/Sky-Claw/actions/runs/42123648897) pasó Lint/Mypy/Security/tests Windows en `77f9d067`. Los fixes de la ronda CodeRabbit (§15) se validarán en un run nuevo.
 
 ## 14. Anexo B — auditoría del PR #868 (HEAD `8bf00d66`) y fixes
 
@@ -192,8 +192,36 @@ Estado P7-A0 del disco: `G:` libre 256,3 GiB; `I:` libre 607,8 GiB; `E:` libre 4
 
 ### Resultado y dictamen
 
-- **Tests:** `tests/test_frozen_runtime_p7_provisioning.py` **45 passed** (14 nuevos RED→GREEN); regresión P4-S2 + P2/P3/P5-B **172 passed, 4 skipped**; inspector P7 **24 passed**; ruff check/format y mypy **verdes** (430 archivos).
-- **Mutantes:** 8/8 muertos (4 base + M5/M6/M7/M8), artefactos restaurados y suite verde.
+- **Tests:** `tests/test_frozen_runtime_p7_provisioning.py` **50 passed** (19 nuevos RED→GREEN acumulados); regresión P4-S2 + P2/P3/P5-B **172 passed, 4 skipped**; inspector P7 **25 passed**; ruff check/format y mypy **verdes** (430 archivos).
+- **Mutantes:** 12/12 muertos (4 base + M5–M12), artefactos restaurados y suite verde.
 - **Riesgos residuales** (detalle en §7): no hay ancla externa firmada contra un actor con escritura consistente en storage/sidecar; `RuntimeCloneRecord` no persiste el linaje (`reference_digest`); no hay GC/recovery automático de árboles parciales; la sonda de lock es in-process (la exclusión multiproceso del primitivo ya está anclada en P4-S2).
-- **Dictamen:** `P7_A1_READY_FOR_FINAL_MERGE_AUDIT` — condicionado a: CI del HEAD nuevo (Windows py3.11/py3.12, Ruff/Mypy/security, tests discriminantes), merge de #869 + sync sin force-push, y **sin** provisioning real ni tocar Steam/MO2/Skyrim/runtime/Stock. PR #868 permanece **Draft**, sin merge.
+- **Dictamen:** `P7_A1_READY_FOR_FINAL_MERGE` — CI requerido completo en verde sobre el HEAD sincronizado `77f9d067` (run 42123648897: Windows py3.11/3.12, Lint/Mypy/Security/POSIX/Build/Pytest/CodeQL), sin conflictos ni aprobaciones obligatorias pendientes. Los fixes de la ronda CodeRabbit (§15) agregan tests/mutantes y requieren el CI del HEAD final; **no** se ejecutó provisioning real ni se tocaron Steam/MO2/Skyrim/runtime/Stock. PR #868 sigue abierto, sin merge.
+
+## 15. Anexo C — ronda de revisión CodeRabbit (HEAD `77f9d067`)
+
+Revisión automática del **2026-11-05T23:55Z** sobre `77f9d067`: 5 hallazgos verificados como válidos y corregidos con TDD donde aplica. Sin refactors cosméticos.
+
+### P1 — errores tipados en el loader de referencia
+- **RED:** `cargar_referencia_stock(b"\xff…")` levantaba `UnicodeDecodeError` (no es `JSONDecodeError`); una membership con duplicados (`["Data","Data"]`) o traversal (`["../escape"]`) levantaba `DirectoryMembershipError`, que no era `ValueError` y escapaba del `except (TypeError, ValueError)`.
+- **GREEN:** `json.loads` atrapa `(JSONDecodeError, UnicodeDecodeError)` → `StockReferenceInvalidError`; `_reference_from_dict` y `_parsear_membership` incluyen `DirectoryMembershipError` → `StockReferenceInvalidError`/`ProvisioningError`, respectivamente.
+- **Tests:** `test_rechaza_referencia_bytes_no_utf8_con_error_tipado`, `test_rechaza_membership_invalida_con_error_tipado[duplicado|traversal]`, `test_sidecar_membership_invalida_es_provisioning_error`. **Mutantes M9/M11** → KILLED.
+
+### P1 — sidecar con UTF-8 corrupto
+- **RED:** `ruta.read_text(encoding="utf-8")` levantaba `UnicodeDecodeError` (ValueError, no OSError); escapaba de `crear_runtime_clone_desde_generation`, que sólo atrapa `ProvisioningError`/`FrozenRuntimeError`/`OSError`.
+- **GREEN:** handler explícito → `ProvisioningError`; el Clone devuelve `success=False` con mensaje UTF-8, nunca una excepción cruda.
+- **Test:** `test_sidecar_no_utf8_devuelve_resultado_tipado`. **Mutante M10** → KILLED.
+
+### P2 — runbook: crear/admitir el padre del Clone antes de A4b
+- El layout decía “no crear todavía” y el procedimiento no tenía paso de creación; `crear_runtime_clone_desde_generation` exige que `<clone-parent>` ya exista: A4b fallaba **después** de publicar la Generation.
+- **Fix:** paso **A4-prep** antes de A4a: crear el padre bajo aprobación A4 (`mkdir(parents=True, exist_ok=False)` sólo si falta), validar directorio/contenido ajeno, y `admitir_clone_root_path(...)` READ-ONLY sobre `padre/<clone-id>`; el layout aclara que el provisionador no lo crea.
+
+### P2 — inspector: `steamapps/temp/**` en la matriz P7-G
+- La matriz emitida nombraba sólo `staging/downloading`; el ADR (SFR-21) también prohíbe escribir `steamapps/temp/**`.
+- **Fix:** criterio P7-G ahora enumera `appmanifest`, `staging/downloading`, `steamapps/temp/**` y config de Steam. **Test ancla** `test_la_matriz_p7_g_nombra_steamapps_temp` (RED antes del cambio); **mutante M12** → KILLED.
+
+### P3 — informe: estado real del CI
+- §6 registra el run [42123648897](https://github.com/FacundoSu1986/Sky-Claw/actions/runs/42123648897) **SUCCESS** sobre `77f9d067` (16/16 checks) como estado actual, separado del análisis histórico de infraestructura del §1; §13 refleja que #869 se mergeó (`32764aec`) y que el Lint quedó verde tras la sincronización.
+
+### Verificación de la ronda
+- `tests/test_frozen_runtime_p7_provisioning.py`: **50 passed**; `test_p7_inspector_output.py`: **25 passed**; mutantes **12/12 KILLED**; ruff check/format y mypy verdes. El CI del HEAD con estos fixes se valida en el run posterior a este anexo.
 

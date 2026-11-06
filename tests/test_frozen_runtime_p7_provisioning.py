@@ -167,6 +167,32 @@ class TestReferenciaStock:
         with pytest.raises(StockReferenceInvalidError, match="strings|directorios"):
             cargar_referencia_stock(payload)
 
+    def test_rechaza_referencia_bytes_no_utf8_con_error_tipado(self) -> None:
+        """`json.loads(bytes)` puede fallar con UnicodeDecodeError, no sólo JSONDecodeError.
+
+        El contrato de `cargar_referencia_stock` es StockReferenceInvalidError:
+        un archivo binario corrupto no puede escapar como excepción sin tipo."""
+        with pytest.raises(StockReferenceInvalidError, match="JSON|UTF|decode"):
+            cargar_referencia_stock(b'\xff\xfe{"schema_version": 2}')
+
+    @pytest.mark.parametrize(
+        "directorios_invalidos",
+        [
+            lambda originales: [originales[0], originales[0]],
+            lambda originales: ["../escape"],
+        ],
+        ids=["duplicado", "traversal"],
+    )
+    def test_rechaza_membership_invalida_con_error_tipado(self, entorno, directorios_invalidos) -> None:
+        """Duplicados/traversal lanzan DirectoryMembershipError: debe mapearse al error tipado del loader."""
+        _storage, _source, _clones, referencia = entorno
+        payload = referencia.como_dict()
+        originales = payload["directory_membership"]["directories"]
+        assert isinstance(originales, list) and originales
+        payload["directory_membership"]["directories"] = directorios_invalidos(originales)
+        with pytest.raises(StockReferenceInvalidError, match="directory_membership|membership|inválida"):
+            cargar_referencia_stock(payload)
+
     def test_rechaza_referencia_sin_skyrimse(self, tmp_path: pathlib.Path, parche_identidad: None) -> None:
         raiz = tmp_path / "sin-exe"
         (raiz / "Data").mkdir(parents=True)
@@ -589,6 +615,32 @@ class TestSidecarProvenance:
         resultado = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-v1")
         assert resultado.success is False
         assert "schema" in resultado.message.lower() or "obsolet" in resultado.message.lower()
+
+    def test_sidecar_no_utf8_devuelve_resultado_tipado(self, entorno) -> None:
+        """Un sidecar con bytes no-UTF8 debe fallar con ProvisionamientoResult, no con excepción cruda."""
+        storage, _source, clones, _referencia = entorno
+        publicado, _copia = _publicar(entorno)
+        _sidecar_path(storage, publicado.generation_id).write_bytes(b"\xff\xfe\x00no-utf8")
+
+        resultado = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-binario")
+        assert resultado.success is False
+        assert "utf" in resultado.message.lower()
+
+    def test_sidecar_membership_invalida_es_provisioning_error(self, entorno) -> None:
+        """DirectoryMembershipError del sidecar también debe mapearse a ProvisioningError."""
+        from sky_claw.local.frozen_runtime import provisioning as provisioning_module
+
+        storage, _source, _clones, _referencia = entorno
+        publicado, _copia = _publicar(entorno)
+        payload = _leer_sidecar(storage, publicado.generation_id)
+        membership = payload["directory_membership"]
+        directorios = membership["directories"]
+        assert isinstance(directorios, list) and directorios
+        membership["directories"] = [directorios[0], directorios[0]]
+        _escribir_sidecar(storage, publicado.generation_id, payload)
+
+        with pytest.raises(ProvisioningError, match="directory_membership|membership|inválida"):
+            provisioning_module._cargar_sidecar(storage, publicado.generation_id)
 
 
 # ── atomicidad lógica del provisionamiento ────────────────────────────────

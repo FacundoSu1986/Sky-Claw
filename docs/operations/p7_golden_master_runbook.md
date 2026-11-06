@@ -82,6 +82,11 @@ Sugerencias de layout (una vez aprobado; **no crear todavía**):
   <clone-id>\
 ```
 
+`<clone-parent>` **no** lo crea el provisionador: se crea y se admite en la
+**preparación de A4** (§7, paso A4-prep), antes de publicar la Generation. El
+código exige que exista, sea directorio y no esté redirigido; sin ese paso A4b
+fallaría después de haber publicado la Generation.
+
 **Estimación conservadora (árbol Stock = 16,96 GiB / 16.207 archivos):**
 
 | Operación | Espacio requerido | Nota |
@@ -165,6 +170,7 @@ sys.path.insert(0, r'$wt')
 from sky_claw.local.frozen_runtime import (
     initialize_frozen_runtime_storage, cargar_referencia_stock,
     adoptar_copia_stock, publicar_generation_desde_stock,
+    admitir_clone_root_path,
 )
 
 storage = pathlib.Path(r'<STORAGE_ROOT>')
@@ -180,7 +186,19 @@ print(initialize_frozen_runtime_storage(storage))
 copia = adoptar_copia_stock(fuente, ref)
 print('ADOPTADA', copia.reference_digest, copia.tree_digest)
 
-# A4a publicar Generation
+# A4-prep (aprobación A4): crear y admitir el padre del Clone ANTES de publicar.
+# `crear_runtime_clone_desde_generation` exige que ya exista: NO lo crea.
+padre = pathlib.Path(r'<CLONE_PARENT>')
+if not padre.exists():
+    padre.mkdir(parents=True, exist_ok=False)
+assert padre.is_dir(), f'el padre del Clone no es directorio: {padre!r}'
+contenido = {p.name for p in padre.iterdir()}
+assert contenido <= {'<CLONE_ID>'}, f'el padre del Clone tiene contenido ajeno al Clone: {sorted(contenido)}'
+# Admisión READ-ONLY de la ruta del Clone: fuera de storage/versions, steamapps, etc.
+admitido = admitir_clone_root_path(padre / '<CLONE_ID>', storage_root=storage)
+print('clone_parent_admitido=', admitido.parent)
+
+# A4a publicar Generation (sólo si A4-prep pasó)
 res = publicar_generation_desde_stock(storage, copia)
 print(res.success, res.message)
 assert res.success, res.message

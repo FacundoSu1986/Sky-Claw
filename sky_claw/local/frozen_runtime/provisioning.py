@@ -371,7 +371,7 @@ def _reference_from_dict(payload: object) -> StockReference:
         )
     try:
         membership_evidencia = construir_evidencia_membership(tuple(directorios_brutos))
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, DirectoryMembershipError) as exc:
         raise StockReferenceInvalidError(f"directory_membership inválida: {exc}") from exc
     if (
         membership_evidencia.digest != membership["digest"]
@@ -426,12 +426,18 @@ def _reference_from_dict(payload: object) -> StockReference:
 
 
 def cargar_referencia_stock(payload: dict[str, object] | str | bytes) -> StockReference:
-    """Carga una referencia desde dict/JSON y valida digest + schema cerrado."""
+    """Carga una referencia desde dict/JSON y valida digest + schema cerrado.
+
+    Contrato tipado: CUALQUIER contenido inválido (JSON malformado, bytes que no
+    son UTF-8, schema/membership inválidos) sale como ``StockReferenceInvalidError``.
+    ``json.loads`` sólo atrapa ``JSONDecodeError``; un ``bytes`` con encoding
+    corrupto levanta ``UnicodeDecodeError`` (ValueError, no JSONDecodeError).
+    """
     if isinstance(payload, (str, bytes)):
         try:
             crudo = json.loads(payload)
-        except json.JSONDecodeError as exc:
-            raise StockReferenceInvalidError(f"referencia Stock no es JSON válido: {exc}") from exc
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise StockReferenceInvalidError(f"referencia Stock no es JSON válido (UTF-8): {exc}") from exc
     else:
         crudo = payload
     return _reference_from_dict(crudo)
@@ -889,7 +895,7 @@ def _parsear_membership(raw: object) -> DirectoryMembershipEvidence:
     _exigir_entero_no_negativo(raw["directory_count"], campo="directory_membership.directory_count")
     try:
         evidencia = construir_evidencia_membership(tuple(directorios_brutos))
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, DirectoryMembershipError) as exc:
         raise ProvisioningError(f"sidecar de procedencia: directory_membership inválida: {exc}") from exc
     if evidencia.digest != raw["digest"] or evidencia.directory_count != raw["directory_count"]:
         raise ProvisioningError("sidecar de procedencia: directory_membership no coincide con su digest/conteo")
@@ -953,6 +959,8 @@ def _cargar_sidecar(root: pathlib.Path, generation_id: str) -> _ProcedenciaGener
         raise ProvisioningError(f"sidecar de procedencia redirigido por enlace/reparse: {motivo}")
     try:
         crudo = ruta.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProvisioningError(f"sidecar de procedencia no es UTF-8 válido: {exc}") from exc
     except OSError as exc:
         raise ProvisioningError(f"no se pudo leer el sidecar de procedencia '{ruta}': {exc}") from exc
     try:
