@@ -71,6 +71,7 @@ def perfil(tmp_path: pathlib.Path) -> Perfil:
 
 
 def _enlace_a_directorio(enlace: pathlib.Path, destino: pathlib.Path) -> None:
+    """Crea un symlink a directorio; si el SO no lo permite sin privilegios, saltea el test en vez de fallar."""
     try:
         enlace.symlink_to(destino, target_is_directory=True)
     except (OSError, NotImplementedError):
