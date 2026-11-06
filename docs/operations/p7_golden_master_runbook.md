@@ -72,6 +72,13 @@ Windows; **fuera** de `steamapps` / `steamapps\common`; sin solape con la Manage
 Source. El **Clone no puede vivir dentro del storage root** (ni el storage dentro
 del Clone). Tampoco puede estar dentro de `steamapps`.
 
+El operador debe verificar **antes de A2** que `<storage-root>` no esté contenido
+en ni contenga la fuente Stock ni la Managed Source. `admitir_storage_root`
+rechaza `steamapps/common` (y el root/ancestros `steamapps`), pero **no todos los
+subdirectorios de `steamapps`**: una ruta dentro de `steamapps/staging`,
+`steamapps/downloading` o `steamapps/temp` es área administrada por Steam y debe
+rechazarse manualmente (§7, gates previos a A2).
+
 Sugerencias de layout (una vez aprobado; **no crear todavía**):
 
 ```text
@@ -159,6 +166,12 @@ vacío** (que el TreeDigest no ve), `adoptar_copia_stock` la rechaza. Una
 referencia capturada con schema v1 es incompatible: recapturarla con el código
 actual (schema v2) y volver a aprobar A1.
 
+**Registro de la aprobación:** el propietario guarda el `reference_digest`
+aprobado en un archivo aparte (`<RUTA_EVIDENCIA>\stock_reference.approved_digest.txt`)
+y hashea también ese archivo. `cargar_referencia_stock` sólo prueba la
+integridad interna de la referencia; **no** puede probar que sea la aprobada en
+A1, así que A2/A3 comparan explícitamente contra ese registro (§7).
+
 ## 7. Provisionamiento (A2–A4, comandos separados)
 
 ```powershell
@@ -175,27 +188,43 @@ from sky_claw.local.frozen_runtime import (
 
 storage = pathlib.Path(r'<STORAGE_ROOT>')
 fuente  = pathlib.Path(r'<RUTA_FUENTE_CANDIDATA>')
+managed_source = pathlib.Path(r'<MANAGED_SOURCE_ROOT>')
+padre = pathlib.Path(r'<CLONE_PARENT>')
+
+# Gate A1: comparar contra el digest aprobado por separado (el loader sólo prueba
+# integridad interna). Si no coincide, abortar sin tocar storage.
+aprobado = pathlib.Path(r'<RUTA_EVIDENCIA>\stock_reference.approved_digest.txt').read_text(encoding='utf-8').strip()
 ref = cargar_referencia_stock(
     json.loads(pathlib.Path(r'<RUTA_EVIDENCIA>\stock_reference.json').read_text(encoding='utf-8'))
 )
+assert ref.reference_digest == aprobado, 'reference_digest no coincide con el aprobado en A1: ABORTAR'
+assert managed_source.is_dir(), f'Managed Source no es directorio: {managed_source!r}'
+
+# Gates previos a A2: storage no solapa fuente/Managed Source ni queda en steamapps.
+for otro in (fuente, managed_source):
+    assert not (storage == otro or otro in storage.parents or storage in otro.parents), f'solape storage/otro: {storage} vs {otro}'
+assert all(p.casefold() != 'steamapps' for p in storage.parts), 'storage dentro de steamapps: área administrada por Steam'
 
 # A2 (sólo si el propietario aprobó la inicialización; idempotente y no destructivo)
 print(initialize_frozen_runtime_storage(storage))
 
-# A3 verificación de la fuente contra la referencia (READ-ONLY)
-copia = adoptar_copia_stock(fuente, ref)
+# A3 verificación de la fuente contra la referencia (READ-ONLY; rechaza solapes)
+copia = adoptar_copia_stock(fuente, ref, storage_root=storage, managed_source_root=managed_source)
 print('ADOPTADA', copia.reference_digest, copia.tree_digest)
 
-# A4-prep (aprobación A4): crear y admitir el padre del Clone ANTES de publicar.
-# `crear_runtime_clone_desde_generation` exige que ya exista: NO lo crea.
-padre = pathlib.Path(r'<CLONE_PARENT>')
+# A4-prep (aprobación A4): ADMITIR la ruta ANTES de crear nada (no crear dentro de
+# steamapps ni bajo un ancestro junction); luego crear el padre si falta y RE-ADMITIR.
+admitido = admitir_clone_root_path(
+    padre / '<CLONE_ID>', storage_root=storage, managed_source_root=managed_source
+)
 if not padre.exists():
     padre.mkdir(parents=True, exist_ok=False)
 assert padre.is_dir(), f'el padre del Clone no es directorio: {padre!r}'
+admitido = admitir_clone_root_path(
+    padre / '<CLONE_ID>', storage_root=storage, managed_source_root=managed_source
+)
 contenido = {p.name for p in padre.iterdir()}
 assert contenido <= {'<CLONE_ID>'}, f'el padre del Clone tiene contenido ajeno al Clone: {sorted(contenido)}'
-# Admisión READ-ONLY de la ruta del Clone: fuera de storage/versions, steamapps, etc.
-admitido = admitir_clone_root_path(padre / '<CLONE_ID>', storage_root=storage)
 print('clone_parent_admitido=', admitido.parent)
 
 # A4a publicar Generation (sólo si A4-prep pasó)
@@ -213,11 +242,14 @@ Luego (A4b, en una invocación separada):
 import pathlib, sys
 sys.path.insert(0, r'$wt')
 from sky_claw.local.frozen_runtime import crear_runtime_clone_desde_generation
+managed_source = pathlib.Path(r'<MANAGED_SOURCE_ROOT>')
+assert managed_source.is_dir(), f'Managed Source no es directorio: {managed_source!r}'
 res = crear_runtime_clone_desde_generation(
     pathlib.Path(r'<STORAGE_ROOT>'),
     '<GENERATION_ID>',
     pathlib.Path(r'<CLONE_PARENT>'),
     'clone-golden-1.6.1170',
+    managed_source_root=managed_source,
 )
 print(res.success, res.message)
 assert res.success, res.message
@@ -231,12 +263,25 @@ Verificaciones posteriores (READ-ONLY):
 
 ```powershell
 & $py -c @"
-import pathlib, sys
+import json, pathlib, sys
 sys.path.insert(0, r'$wt')
-from sky_claw.local.frozen_runtime import verificar_generation, verificar_runtime_clone, verificar_runtime_setup
+from sky_claw.local.frozen_runtime import (
+    StockSourceError, adoptar_copia_stock, cargar_referencia_stock,
+    verificar_generation, verificar_runtime_clone, verificar_runtime_setup,
+)
 storage = pathlib.Path(r'<STORAGE_ROOT>')
+fuente = pathlib.Path(r'<RUTA_FUENTE_CANDIDATA>')
+managed_source = pathlib.Path(r'<MANAGED_SOURCE_ROOT>')
+ref = cargar_referencia_stock(
+    json.loads(pathlib.Path(r'<RUTA_EVIDENCIA>\stock_reference.json').read_text(encoding='utf-8'))
+)
+# Re-verificar la fuente tras A4: si cambió (bytes O membership), adoptar falla.
+try:
+    adoptar_copia_stock(fuente, ref, storage_root=storage, managed_source_root=managed_source)
+except StockSourceError as exc:
+    raise SystemExit(f'FUENTE CAMBIÓ tras A4: {exc}')
 print(verificar_generation(storage, '<GENERATION_ID>').state)
-print(verificar_runtime_clone(storage, 'clone-golden-1.6.1170').state)
+print(verificar_runtime_clone(storage, 'clone-golden-1.6.1170', managed_source_root=managed_source).state)
 print(verificar_runtime_setup(pathlib.Path(r'<CLONE_PARENT>\clone-golden-1.6.1170')).setup_id)
 "@
 ```
@@ -244,7 +289,8 @@ print(verificar_runtime_setup(pathlib.Path(r'<CLONE_PARENT>\clone-golden-1.6.117
 **Criterio de éxito de A4:** Generation `VALID`; Clone `PROVISIONED` y
 `verificar_runtime_clone` `VALID`; `st_nlink==1` en todo el Clone; sin reparse;
 sin inodos compartidos con la Generation ni con la Managed Source; el árbol de la
-fuente y de la Generation no cambió (hashes).
+fuente **y su membership** no cambiaron (la re-adopción post-A4 lo demuestra);
+`reference_digest` aprobado == cargado.
 
 **Atomicidad y procedencia (P7-A1):** publicación y creación corren dentro de
 **una sola** sección de `participant_lock` (copy → verificación → sidecar →
@@ -296,7 +342,7 @@ detenerse y restaurar desde backup, **no** editar el JSON a mano.
 | P7-D | arranques repetidos sin pasos manuales | N arranques consecutivos; logs/PIDs; estado Steam; sin interacción manual | **N≥5** arranques OK (umbral propuesto; requiere aprobación) | prompt de Steam, downgrade manual, falla un arranque |
 | P7-E | update de Steam no toca el Clone | inventario + hashes del Clone antes/después; appmanifest/manifest sólo lectura; hash del appmanifest antes/después | inventario/hashes del Clone idénticos; **Steam puede cambiar sus propios hashes** sin contar como fallo | cambia un archivo del Clone o Sky-Claw escribió una superficie de Steam |
 | P7-F | recuperación/rollback reales | journal/transiciones/recovery; hashes de las 4 superficies; pruebas de kill en entorno **desechable** | journal restaura runtime operativo y superficies | journal corrupto/UNKNOWN, superficies divergentes |
-| P7-G | SFR-21 sin manipular Steam | hashes del appmanifest/config Steam antes/después; sin solo-lectura ni restauración; inventario del Clone igual | Sky-Claw no escribió superficies de Steam y SFR-21 se cumple | cualquier escritura de Sky-Claw a Steam o dependencia de downgrade manual |
+| P7-G | SFR-21 sin manipular Steam | **atribución de escrituras por proceso** (p. ej. handles/ETW) sobre `appmanifest_*.acf`, `steamapps/staging/**`, `steamapps/downloading/**`, `steamapps/temp/**` y config del cliente; inventario del Clone antes/después; sin solo-lectura ni restauración. Hashes antes/después **NO** alcanzan: si Steam escribe durante la prueba no identifican al autor | Sky-Claw no escribió ninguna superficie de Steam (atribuido por proceso) y SFR-21 se cumple | cualquier escritura de Sky-Claw a Steam o dependencia de downgrade manual |
 
 **Umbral D:** N no está definido por el repo; la propuesta `N≥5` (al menos 2 con
 update pendiente y 3 después de la actualización real, o secuencia equivalente

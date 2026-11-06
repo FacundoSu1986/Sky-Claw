@@ -120,6 +120,8 @@ from sky_claw.local.frozen_runtime.storage import (
 )
 from sky_claw.local.frozen_runtime.storage_models import (
     GenerationMetadata,
+    GenerationVerificationResult,
+    GenerationVerificationState,
     RuntimeCloneLifecycle,
     RuntimeCloneRecord,
 )
@@ -359,6 +361,8 @@ def _reference_from_dict(payload: object) -> StockReference:
         raise StockReferenceInvalidError("expected_tree con schema inválido")
     if not isinstance(runtime, dict) or set(runtime) != {"game_key", "game_version"}:
         raise StockReferenceInvalidError("expected_runtime con schema inválido")
+    if not all(isinstance(runtime[campo], str) and runtime[campo].strip() for campo in ("game_key", "game_version")):
+        raise StockReferenceInvalidError("expected_runtime debe contener game_key/game_version strings no vacíos")
     membership = payload["directory_membership"]
     if not isinstance(membership, dict) or set(membership) != {"digest", "directory_count", "directories"}:
         raise StockReferenceInvalidError("directory_membership con schema inválido")
@@ -577,17 +581,25 @@ def adoptar_copia_stock(
         raise StockSourceError(f"la copia Stock está redirigida por enlace: {motivo}")
     if not raiz.is_dir():
         raise StockSourceError(f"la copia Stock no existe o no es un directorio: '{raiz}'")
-    area_steam = _dentro_de_area_steam(raiz)
+    # Un alias 8.3 (p. ej. STEAMA~1) puede ocultar `steamapps` en la forma cruda.
+    # Resolver estrictamente y evaluar AMBAS formas: si la resolución falla, fail-closed.
+    try:
+        raiz_canonica = raiz.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise StockSourceError(f"no se pudo resolver canónicamente la copia Stock: {exc}") from exc
+    area_steam = _dentro_de_area_steam(raiz) or _dentro_de_area_steam(raiz_canonica)
     if area_steam is not None:
         raise StockSourceError(f"la copia Stock está dentro de un área administrada por Steam: '{area_steam}'")
     if storage_root is not None:
         storage = pathlib.Path(storage_root)
-        if _contenida(raiz, storage) or _contenida(storage, raiz):
-            raise StockSourceError("la copia Stock y el storage no pueden contener uno al otro")
+        for candidata in (raiz, raiz_canonica):
+            if _contenida(candidata, storage) or _contenida(storage, candidata):
+                raise StockSourceError("la copia Stock y el storage no pueden contener uno al otro")
     if managed_source_root is not None:
         fuente = pathlib.Path(managed_source_root)
-        if _contenida(raiz, fuente) or _contenida(fuente, raiz):
-            raise StockSourceError("la copia Stock y la Managed Source no pueden contener una a la otra")
+        for candidata in (raiz, raiz_canonica):
+            if _contenida(candidata, fuente) or _contenida(fuente, candidata):
+                raise StockSourceError("la copia Stock y la Managed Source no pueden contener una a la otra")
 
     try:
         files = inventory_tree(raiz)
@@ -1139,6 +1151,31 @@ def _marcar_clone_invalid_bajo_lock(raiz: pathlib.Path, cid: str) -> None:
         _actualizar_lifecycle_clone_bajo_lock(raiz, cid, RuntimeCloneLifecycle.INVALID)
 
 
+def _resultado_post_verificacion_clone(
+    raiz: pathlib.Path,
+    cid: str,
+    verificacion: GenerationVerificationResult,
+    *,
+    etiqueta: str,
+) -> ProvisionamientoResult | None:
+    """Clasifica la re-verificación del Clone tras publicar el registro.
+
+    ``INDETERMINATE`` es transitorio (p. ej. un OSError de lectura de un crítico):
+    NO degrada el registro a INVALID (estado terminal que quema el clone_id);
+    devuelve error reintentable y deja el registro PROVISIONED. Sólo una
+    verificación NO exitosa y NO indeterminada degrada a INVALID.
+    """
+    if verificacion.state is GenerationVerificationState.INDETERMINATE:
+        return _error(
+            f"{etiqueta}: verificación INDETERMINATE ({verificacion.message}); "
+            "el registro queda PROVISIONED y se puede reintentar (no se degrada a INVALID)"
+        )
+    if not verificacion.success:
+        _marcar_clone_invalid_bajo_lock(raiz, cid)
+        return _error(f"{etiqueta}: el Clone no re-verifica como VALID: {verificacion.message}")
+    return None
+
+
 def _recuperar_clone_existente(
     raiz: pathlib.Path,
     destino: pathlib.Path,
@@ -1182,6 +1219,17 @@ def _recuperar_clone_existente(
     if existente.lifecycle is RuntimeCloneLifecycle.PROVISIONED:
         if existente.verified_runtime_setup_id != setup.setup_id:
             return _error(f"registro PROVISIONED de '{cid}' con setup verificado distinto al observado: fail-closed")
+        # La idempotencia exige VERIFICAR el Clone completo: dejar el registro
+        # PROVISIONED no es evidencia de que los críticos sigan intactos.
+        verificacion_clone = verificar_runtime_clone(raiz, cid, managed_source_root=managed_source_root)
+        fallo = _resultado_post_verificacion_clone(
+            raiz,
+            cid,
+            verificacion_clone,
+            etiqueta=f"el Clone PROVISIONED existente '{cid}'",
+        )
+        if fallo is not None:
+            return fallo
         return ProvisionamientoResult(
             success=True,
             message=f"Runtime Clone '{cid}' ya estaba PROVISIONED y verifica (idempotente)",
@@ -1202,9 +1250,14 @@ def _recuperar_clone_existente(
             verified_runtime_setup_id=setup.setup_id,
         )
         verificacion_clone = verificar_runtime_clone(raiz, cid, managed_source_root=managed_source_root)
-        if not verificacion_clone.success:
-            _marcar_clone_invalid_bajo_lock(raiz, cid)
-            return _error(f"el Clone recuperado no re-verifica como VALID: {verificacion_clone.message}")
+        fallo = _resultado_post_verificacion_clone(
+            raiz,
+            cid,
+            verificacion_clone,
+            etiqueta=f"el Clone recuperado '{cid}'",
+        )
+        if fallo is not None:
+            return fallo
         return ProvisionamientoResult(
             success=True,
             message=f"Runtime Clone '{cid}' recuperado de PROVISIONING y PROVISIONED (setup={setup.setup_id})",
@@ -1373,9 +1426,14 @@ def crear_runtime_clone_desde_generation(
                 verified_runtime_setup_id=setup.setup_id,
             )
             verificacion_clone = verificar_runtime_clone(raiz, cid, managed_source_root=managed_source_root)
-            if not verificacion_clone.success:
-                _marcar_clone_invalid_bajo_lock(raiz, cid)
-                return _error(f"el Clone registrado no re-verifica como VALID: {verificacion_clone.message}")
+            fallo = _resultado_post_verificacion_clone(
+                raiz,
+                cid,
+                verificacion_clone,
+                etiqueta=f"el Clone registrado '{cid}'",
+            )
+            if fallo is not None:
+                return fallo
             final = leer_runtime_clone_record(raiz, cid)
             return ProvisionamientoResult(
                 success=True,

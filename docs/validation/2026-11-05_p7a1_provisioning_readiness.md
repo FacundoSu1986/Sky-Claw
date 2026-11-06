@@ -81,15 +81,18 @@ Auditoría read-only de `sky_claw/local/frozen_runtime/` (file:line en el inform
 | Evidencia | Resultado |
 |---|---|
 | **TDD RED inicial** (tests nuevos contra API inexistente) | `ImportError` de colección (1 error) — rojo registrado antes de implementar |
-| **TDD GREEN** `tests/test_frozen_runtime_p7_provisioning.py` | **50 passed** (31 base + FIX 1: 4 + FIX 2/3: 10 + ronda CodeRabbit: 5) |
+| **TDD GREEN** `tests/test_frozen_runtime_p7_provisioning.py` | **53 passed** (31 base + FIX 1: 4 + FIX 2/3: 10 + CodeRabbit ronda 1: 5 + ronda 2: 3) |
 | Regresión suites relacionadas (P4-S2 participant wiring, P2 generations/independence/storage, P5-B, P3 contract/candidates) | **172 passed, 4 skipped** (anclas P4-S2 actualizadas con las primitivas `*_bajo_lock` nuevas) |
 | Inspector P7 tras corrección de P7-G (`test_p7_inspector_output.py`) | **25 passed** (incluye ancla de `steamapps/temp/**`) |
-| Mutantes discriminantes | **12/12 muertos**: (M1) `st_nlink` eliminado → hardlink; (M2/M2b) `reference_digest` del loader y digest de adopción eliminados → referencia alterada; (M3) membership del sidecar eliminada → drift de directorio vacío; **(M5)** comparación de membership de referencia en adopción eliminada; **(M6)** recomputo de `reference_digest` desactivado; **(M7)** recuperación `PROVISIONING` deshabilitada; **(M8)** cast silencioso `str(d)` restaurado; **(M9)** `DirectoryMembershipError` fuera del `except` del loader de referencia; **(M10)** `UnicodeDecodeError` fuera del `except` del sidecar; **(M11)** `DirectoryMembershipError` fuera del `except` de `_parsear_membership`; **(M12)** `steamapps/temp/**` eliminado de la matriz P7-G. Restaurado y suites verdes |
+| Mutantes discriminantes | **16/16 muertos**: (M1) `st_nlink`; (M2/M2b) `reference_digest` del loader y digest de adopción; (M3) membership del sidecar; **(M5)** comparación de membership de referencia; **(M6)** recomputo de `reference_digest`; **(M7)** recuperación `PROVISIONING`; **(M8)** cast silencioso `str(d)`; **(M9)** `DirectoryMembershipError` fuera del loader; **(M10)** `UnicodeDecodeError` fuera del sidecar; **(M11)** `DirectoryMembershipError` fuera de `_parsear_membership`; **(M12)** `steamapps/temp/**` fuera de P7-G; **(M13)** sólo forma cruda de la ruta Stock (alias 8.3); **(M14)** `expected_runtime` sin validación de tipos; **(M15)** `INDETERMINATE` degradado a INVALID; **(M16)** idempotencia PROVISIONED sin re-verificar. Restaurado y suites verdes |
 | Ruff (`ruff check` + `ruff format --check` sobre `sky_claw/`, `scripts/`, `tests/`) | **verde** (gate CI, ruff 0.15.11 lockeada) |
 | Mypy (`mypy sky_claw/ scripts/`) | **verde**, 430 archivos |
-| Evidencia de mutantes | `E:\Skyclaw_A1_Evidence\mutation_results.json` (4 base) + `mutation_results_fixes.json` (M5–M12) |
+| Evidencia de mutantes | `E:\Skyclaw_A1_Evidence\mutation_results.json` (4 base) + `mutation_results_fixes.json` (M5–M16) |
 
-CI del PR: run [42123648897](https://github.com/FacundoSu1986/Sky-Claw/actions/runs/42123648897) — **SUCCESS** para el HEAD revisado `77f9d067` (**16/16 checks**): Windows py3.11 (55m11) y py3.12 (40m51), Lint Ruff (con el pin de #869), Mypy, Security Scan, POSIX Core, Build, Tests (Pytest) y CodeQL. El fallo histórico del run `41933529936` (§1) queda como análisis de infraestructura separado; el gate actual está **verde**.
+CI del PR (calificado por revisión):
+- `77f9d067` → run [42123648897](https://github.com/FacundoSu1986/Sky-Claw/actions/runs/42123648897) **SUCCESS** (16/16 checks: Windows py3.11 55m11 / py3.12 40m51, Lint/Mypy/Security/POSIX/Build/Pytest/CodeQL).
+- `4f840575` → run [42298246743](https://github.com/FacundoSu1986/Sky-Claw/actions/runs/42298246743) **SUCCESS** (20/20 checks, incluidos CodeRabbit y Regression Oracle).
+- HEAD con las correcciones de la segunda ronda: run pendiente; se registra en el PR. El fallo histórico del run `41933529936` (§1) queda como análisis de infraestructura separado.
 
 ## 7. Riesgos residuales
 
@@ -222,6 +225,20 @@ Revisión automática del **2026-11-05T23:55Z** sobre `77f9d067`: 5 hallazgos ve
 ### P3 — informe: estado real del CI
 - §6 registra el run [42123648897](https://github.com/FacundoSu1986/Sky-Claw/actions/runs/42123648897) **SUCCESS** sobre `77f9d067` (16/16 checks) como estado actual, separado del análisis histórico de infraestructura del §1; §13 refleja que #869 se mergeó (`32764aec`) y que el Lint quedó verde tras la sincronización.
 
+### Segunda ronda CodeRabbit (HEAD `4f840575`)
+La revisión posterior marcó 10 hallazgos nuevos; los válidos se corrigieron con TDD donde aplica:
+
+- **P1 (Major) aprobación A1:** el loader prueba integridad interna, no que la referencia sea la aprobada. Runbook §6/§7 ahora registra el digest aprobado en `stock_reference.approved_digest.txt` y A2/A3 lo comparan antes de mutar.
+- **P2 storage solapado:** §3/§7 agregan gates manuales: storage no solapa Stock/Managed Source y no está bajo `steamapps` (la admisión de código sólo rechaza `steamapps/common` y ancestros `steamapps`).
+- **P2 admitir antes de crear:** A4-prep calcula `admitir_clone_root_path` **antes** del `mkdir`, crea, y **re-admite** después; no se crea nada en una ruta que la admisión rechazaría.
+- **P2 Managed Source:** A3/A4b/verificaciones pasan `managed_source_root` observado a `adoptar_copia_stock`/`crear_runtime_clone_desde_generation`/`verificar_runtime_clone`.
+- **P2 re-verificar la fuente tras A4:** el bloque post-A4 re-ejecuta `adoptar_copia_stock` (READ-ONLY, árbol + membership) y aborta si cambió.
+- **P2 evidencia P7-G:** la matriz exige **atribución de escrituras por proceso** sobre appmanifest/staging/downloading/temp/config; hashes antes/después no identifican autor si Steam escribe concurrentemente.
+- **P2 ruta canónica Stock:** `adoptar_copia_stock` resuelve `strict=True` y evalúa la forma cruda **y** la canónica contra `steamapps` y solapes (cierra alias 8.3). Test `test_rechaza_area_steam_por_forma_canonica`; **mutante M13** → KILLED.
+- **P2 runtime types:** el loader exige `expected_runtime` strings no vacíos; antes un payload con enteros y digest consistente cargaba y la adopción reventaba con `AttributeError`. Test `test_rechaza_runtime_no_string_aunque_el_digest_coincida`; **mutante M14** → KILLED.
+- **P2 INDETERMINATE:** una re-verificación INDETERMINATE ya **no** degrada el registro a INVALID (terminal); deja PROVISIONED y devuelve error reintentable. La idempotencia PROVISIONED ahora **siempre** re-verifica el Clone completo antes de devolver éxito. Test `test_verificacion_indeterminada_no_marca_invalid_y_el_reintento_reverifica`; **mutantes M15/M16** → KILLED.
+- **P3 CI calificado por revisión:** §6 separa los runs verdes de `77f9d067` (42123648897) y `4f840575` (42298246743); el HEAD final se registra en el PR.
+
 ### Verificación de la ronda
-- `tests/test_frozen_runtime_p7_provisioning.py`: **50 passed**; `test_p7_inspector_output.py`: **25 passed**; mutantes **12/12 KILLED**; ruff check/format y mypy verdes. El CI del HEAD con estos fixes se valida en el run posterior a este anexo.
+- `tests/test_frozen_runtime_p7_provisioning.py`: **53 passed**; `test_p7_inspector_output.py`: **25 passed**; mutantes **16/16 KILLED**; ruff check/format y mypy verdes. El CI del HEAD con estos fixes se valida en el run posterior a este anexo.
 

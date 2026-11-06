@@ -21,6 +21,7 @@ import pytest
 
 from sky_claw.local.frozen_runtime import (
     CandidateCopyError,
+    GenerationVerificationState,
     ProvisioningError,
     RuntimeCloneLifecycle,
     StockReferenceInvalidError,
@@ -31,6 +32,7 @@ from sky_claw.local.frozen_runtime import (
     construir_referencia_stock,
     crear_runtime_clone_desde_generation,
     initialize_frozen_runtime_storage,
+    leer_runtime_clone_record,
     publicar_generation_desde_stock,
     verificar_generation,
     verificar_runtime_clone,
@@ -167,6 +169,19 @@ class TestReferenciaStock:
         with pytest.raises(StockReferenceInvalidError, match="strings|directorios"):
             cargar_referencia_stock(payload)
 
+    def test_rechaza_runtime_no_string_aunque_el_digest_coincida(self, entorno) -> None:
+        """`game_key`/`game_version` deben ser strings; si no, la adopción revienta
+        con AttributeError fuera del contrato tipado del loader."""
+        from sky_claw.local.frozen_runtime import provisioning as provisioning_module
+
+        _storage, _source, _clones, referencia = entorno
+        payload = referencia.como_dict()
+        payload["expected_runtime"] = {"game_key": 123, "game_version": 456}
+        sin_digest = {clave: valor for clave, valor in payload.items() if clave != "reference_digest"}
+        payload["reference_digest"] = provisioning_module._sha256_bytes(provisioning_module._canonical_json(sin_digest))
+        with pytest.raises(StockReferenceInvalidError, match="runtime|strings"):
+            cargar_referencia_stock(payload)
+
     def test_rechaza_referencia_bytes_no_utf8_con_error_tipado(self) -> None:
         """`json.loads(bytes)` puede fallar con UnicodeDecodeError, no sólo JSONDecodeError.
 
@@ -225,6 +240,28 @@ class TestAdoptarCopiaStock:
         (source / "Data" / "DirectorioColado").mkdir()
         with pytest.raises(StockSourceError, match="estructura de directorios"):
             adoptar_copia_stock(source, referencia)
+
+    def test_rechaza_area_steam_por_forma_canonica(self, entorno, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Un alias 8.3 puede ocultar `steamapps` en la ruta cruda.
+
+        La adopción debe comprobar también la ruta canónica (`resolve(strict=True)`),
+        no sólo la forma recibida."""
+        from sky_claw.local.frozen_runtime import provisioning as provisioning_module
+
+        _storage, source, _clones, referencia = entorno
+        original = provisioning_module._dentro_de_area_steam
+        llamadas: list[pathlib.Path] = []
+
+        def falso(ruta: pathlib.Path):
+            llamadas.append(ruta)
+            if len(llamadas) == 1:
+                return None
+            return original(ruta) or "G:/Steam/steamapps/common"
+
+        monkeypatch.setattr(provisioning_module, "_dentro_de_area_steam", falso)
+        with pytest.raises(StockSourceError, match="Steam"):
+            adoptar_copia_stock(source, referencia)
+        assert len(llamadas) >= 2, "no se verificó la ruta canónica además de la cruda"
 
     def test_rechaza_byte_distinto(self, entorno) -> None:
         _storage, source, _clones, referencia = entorno
@@ -760,3 +797,39 @@ class TestAtomicidadProvisionamiento:
         assert segundo.success, segundo.message
         assert segundo.clone_record is not None
         assert segundo.clone_record.lifecycle is RuntimeCloneLifecycle.PROVISIONED
+
+    def test_verificacion_indeterminada_no_marca_invalid_y_el_reintento_reverifica(
+        self, entorno, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un fallo transitorio de verificación no puede degradar a INVALID un Clone
+        PROVISIONED: INVALID es terminal y quemaría el id. El reintento debe correr
+        la verificación completa antes de devolver éxito."""
+        from types import SimpleNamespace
+
+        from sky_claw.local.frozen_runtime import provisioning as provisioning_module
+
+        storage, _source, clones, _referencia = entorno
+        publicado, _copia = _publicar(entorno)
+        original = provisioning_module.verificar_runtime_clone
+        llamadas: list[int] = []
+
+        def indeterminada_una_vez(*args: object, **kwargs: object):
+            llamadas.append(1)
+            if len(llamadas) == 1:
+                return SimpleNamespace(
+                    state=GenerationVerificationState.INDETERMINATE,
+                    success=False,
+                    message="lectura transitoria de un crítico",
+                )
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(provisioning_module, "verificar_runtime_clone", indeterminada_una_vez)
+        primero = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-indet")
+        assert primero.success is False
+        assert "indetermin" in primero.message.lower() or "concluyente" in primero.message.lower()
+        registro = leer_runtime_clone_record(storage, "clone-indet")
+        assert registro.lifecycle is RuntimeCloneLifecycle.PROVISIONED, "un INDETERMINATE degradó el registro a INVALID"
+
+        segundo = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-indet")
+        assert segundo.success, segundo.message
+        assert len(llamadas) >= 2, "el reintento no re-ejecutó la verificación completa del Clone"

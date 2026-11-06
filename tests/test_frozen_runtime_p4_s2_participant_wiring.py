@@ -462,6 +462,7 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         ("clones.py", "_actualizar_lifecycle_clone_bajo_lock"),
         ("provisioning.py", "_recuperar_clone_existente"),
         ("provisioning.py", "_marcar_clone_invalid_bajo_lock"),
+        ("provisioning.py", "_resultado_post_verificacion_clone"),
     }
 )
 
