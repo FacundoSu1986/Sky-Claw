@@ -600,21 +600,28 @@ async def generate_bashed_patch(
 
     Siempre devuelve JSON serializable (contrato T11).
     """
+    # Import perezoso: ``app.agent`` no depende de ``app.orchestrator`` a nivel de módulo.
+    from sky_claw.app.orchestrator.plugin_limit_guard import PluginLimitGuard
     from sky_claw.local.tools.etapa6_testigos import almacen_por_defecto
     from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
 
     # PR C + PR D (ADR 0016 §7): sin lock/snapshot/journal/runner (retirados con el camino
     # headless), pero CON el almacén por usuario de testigos para que ``fase="verificar"``
     # demuestre frescura desde disco sin aceptar un digest del modelo (A-4).
+    #
+    # M-04 (#866, H-2): el MISMO guard que cablean la GUI (``dispatcher_dependencies``) y el
+    # ``SupervisorAgent``. Antes esta superficie pasaba ``validate_limit=False`` con el
+    # comentario "se valida a nivel Supervisor", pero el agente LLM no pasa por el
+    # Supervisor: con >254 plugins la GUI abortaba y Telegram / ``/api/chat`` no.
     service = WryeBashPipelineService(
         path_resolver=path_resolver,
+        plugin_limit_guard=None if path_resolver is None else PluginLimitGuard(path_resolver=path_resolver).run,
         testigo_store=almacen_por_defecto(),
     )
     resultado = await service.ejecutar_fase_asistida(
         profile=profile,
         fase=fase,
-        # M-04 se valida a nivel Supervisor para este path (igual que antes del PR B).
-        validate_limit=False,
+        validate_limit=True,
         testigo_previo=testigo_previo,
     )
     return json.dumps(_sanear_rutas(resultado))
