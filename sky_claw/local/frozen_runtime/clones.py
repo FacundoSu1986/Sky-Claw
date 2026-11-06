@@ -691,7 +691,19 @@ def verificar_runtime_clone(
     """Verifica físicamente el Runtime Clone contra su Generation registrada."""
     try:
         record = leer_runtime_clone_record(root, clone_id)
-    except (FrozenRuntimeError, OSError) as exc:
+    except OSError as exc:
+        return GenerationVerificationResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=f"no se pudo leer el registro del clone '{clone_id}' (transitorio): {exc}",
+        )
+    except FrozenRuntimeError as exc:
+        # _leer_record_de_ruta envuelve OSError de lectura como corrupto; el
+        # cause distingue un fallo transitorio de un registro realmente inválido.
+        if isinstance(exc.__cause__, OSError):
+            return GenerationVerificationResult(
+                state=GenerationVerificationState.INDETERMINATE,
+                message=f"no se pudo leer el registro del clone '{clone_id}' (transitorio): {exc}",
+            )
         return GenerationVerificationResult(
             state=GenerationVerificationState.INVALID,
             message=f"no se pudo cargar el registro del clone '{clone_id}': {exc}",
@@ -708,6 +720,15 @@ def verificar_runtime_clone(
     from sky_claw.local.frozen_runtime.generations import verificar_generation
 
     gen_verif = verificar_generation(root, record.source_generation_id)
+    if gen_verif.state is GenerationVerificationState.INDETERMINATE:
+        return GenerationVerificationResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=(
+                f"Generation de origen no verificable de forma concluyente "
+                f"({record.source_generation_id}, {gen_verif.state.value}): {gen_verif.message}"
+            ),
+            recorded=gen_verif.recorded,
+        )
     if gen_verif.state is not GenerationVerificationState.VALID:
         return GenerationVerificationResult(
             state=GenerationVerificationState.INVALID,

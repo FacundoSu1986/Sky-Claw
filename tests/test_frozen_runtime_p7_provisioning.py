@@ -263,6 +263,17 @@ class TestAdoptarCopiaStock:
             adoptar_copia_stock(source, referencia)
         assert len(llamadas) >= 2, "no se verificó la ruta canónica además de la cruda"
 
+    @junction_guard
+    def test_rechaza_solape_con_storage_por_forma_canonica(self, entorno, tmp_path: pathlib.Path) -> None:
+        """Un alias/junction del storage puede ocultar un solape con la copia Stock."""
+        _storage, source, _clones, referencia = entorno
+        alias = tmp_path / "storage-alias"
+        motivo = crear_junction(alias, tmp_path)
+        if motivo is not None:
+            pytest.skip(f"junctions no disponibles: {motivo}")
+        with pytest.raises(StockSourceError, match="storage|solape"):
+            adoptar_copia_stock(source, referencia, storage_root=alias)
+
     def test_rechaza_byte_distinto(self, entorno) -> None:
         _storage, source, _clones, referencia = entorno
         (source / "Data" / "Skyrim.esm").write_bytes(b"esm-manipulado")
@@ -833,3 +844,43 @@ class TestAtomicidadProvisionamiento:
         segundo = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-indet")
         assert segundo.success, segundo.message
         assert len(llamadas) >= 2, "el reintento no re-ejecutó la verificación completa del Clone"
+
+
+class TestVerificacionRuntimeClone:
+    def test_generation_indeterminate_se_propaga_como_indeterminate(
+        self, entorno, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un INDETERMINATE de la Generation no puede convertirse en INVALID terminal del Clone."""
+        from types import SimpleNamespace
+
+        import sky_claw.local.frozen_runtime.generations as generations_module
+
+        storage, _source, clones, _referencia = entorno
+        publicado, _copia = _publicar(entorno)
+        creado = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-gen-indet")
+        assert creado.success, creado.message
+
+        monkeypatch.setattr(
+            generations_module,
+            "verificar_generation",
+            lambda *_a, **_k: SimpleNamespace(
+                state=GenerationVerificationState.INDETERMINATE,
+                message="lectura transitoria de la Generation",
+                recorded=None,
+            ),
+        )
+        verificacion = verificar_runtime_clone(storage, "clone-gen-indet")
+        assert verificacion.state is GenerationVerificationState.INDETERMINATE
+
+    def test_oserror_de_lectura_del_registro_es_indeterminate(self, entorno, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Un fallo transitorio de lectura del registro no es un registro inválido."""
+        from sky_claw.local.frozen_runtime import clones as clones_module
+
+        storage, _source, _clones, _referencia = entorno
+
+        def falla(*_args: object, **_kwargs: object) -> None:
+            raise OSError("lectura transitoria del registro")
+
+        monkeypatch.setattr(clones_module, "leer_runtime_clone_record", falla)
+        verificacion = verificar_runtime_clone(storage, "clone-cualquiera")
+        assert verificacion.state is GenerationVerificationState.INDETERMINATE

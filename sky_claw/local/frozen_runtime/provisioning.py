@@ -551,6 +551,19 @@ def _exigir_espacio(destino: pathlib.Path, bytes_requeridos: int, margen_bytes: 
 # ── adopción de la copia Stock ─────────────────────────────────────────────
 
 
+def _ruta_canonica_para_comparar(ruta: pathlib.Path | str, *, etiqueta: str) -> pathlib.Path:
+    """Forma canónica para comparar solapes sin exigir que el root exista.
+
+    ``resolve(strict=False)`` expande alias 8.3 y junctions de los ancestros
+    existentes; un fallo de resolución es fail-closed (no se compara a ciegas).
+    """
+    bruta = pathlib.Path(os.path.abspath(os.fspath(ruta)))
+    try:
+        return bruta.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise StockSourceError(f"no se pudo resolver {etiqueta} para comparar solapes: {exc}") from exc
+
+
 def adoptar_copia_stock(
     source_root: pathlib.Path,
     reference: StockReference,
@@ -591,12 +604,12 @@ def adoptar_copia_stock(
     if area_steam is not None:
         raise StockSourceError(f"la copia Stock está dentro de un área administrada por Steam: '{area_steam}'")
     if storage_root is not None:
-        storage = pathlib.Path(storage_root)
+        storage = _ruta_canonica_para_comparar(storage_root, etiqueta="el storage root")
         for candidata in (raiz, raiz_canonica):
             if _contenida(candidata, storage) or _contenida(storage, candidata):
                 raise StockSourceError("la copia Stock y el storage no pueden contener uno al otro")
     if managed_source_root is not None:
-        fuente = pathlib.Path(managed_source_root)
+        fuente = _ruta_canonica_para_comparar(managed_source_root, etiqueta="la Managed Source")
         for candidata in (raiz, raiz_canonica):
             if _contenida(candidata, fuente) or _contenida(fuente, candidata):
                 raise StockSourceError("la copia Stock y la Managed Source no pueden contener una a la otra")

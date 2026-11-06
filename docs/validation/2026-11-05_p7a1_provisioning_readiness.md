@@ -81,13 +81,13 @@ Auditoría read-only de `sky_claw/local/frozen_runtime/` (file:line en el inform
 | Evidencia | Resultado |
 |---|---|
 | **TDD RED inicial** (tests nuevos contra API inexistente) | `ImportError` de colección (1 error) — rojo registrado antes de implementar |
-| **TDD GREEN** `tests/test_frozen_runtime_p7_provisioning.py` | **53 passed** (31 base + FIX 1: 4 + FIX 2/3: 10 + CodeRabbit ronda 1: 5 + ronda 2: 3) |
+| **TDD GREEN** `tests/test_frozen_runtime_p7_provisioning.py` | **56 passed** (31 base + FIX 1: 4 + FIX 2/3: 10 + CodeRabbit ronda 1: 5 + ronda 2: 3 + ronda 3: 3) |
 | Regresión suites relacionadas (P4-S2 participant wiring, P2 generations/independence/storage, P5-B, P3 contract/candidates) | **172 passed, 4 skipped** (anclas P4-S2 actualizadas con las primitivas `*_bajo_lock` nuevas) |
 | Inspector P7 tras corrección de P7-G (`test_p7_inspector_output.py`) | **25 passed** (incluye ancla de `steamapps/temp/**`) |
-| Mutantes discriminantes | **16/16 muertos**: (M1) `st_nlink`; (M2/M2b) `reference_digest` del loader y digest de adopción; (M3) membership del sidecar; **(M5)** comparación de membership de referencia; **(M6)** recomputo de `reference_digest`; **(M7)** recuperación `PROVISIONING`; **(M8)** cast silencioso `str(d)`; **(M9)** `DirectoryMembershipError` fuera del loader; **(M10)** `UnicodeDecodeError` fuera del sidecar; **(M11)** `DirectoryMembershipError` fuera de `_parsear_membership`; **(M12)** `steamapps/temp/**` fuera de P7-G; **(M13)** sólo forma cruda de la ruta Stock (alias 8.3); **(M14)** `expected_runtime` sin validación de tipos; **(M15)** `INDETERMINATE` degradado a INVALID; **(M16)** idempotencia PROVISIONED sin re-verificar. Restaurado y suites verdes |
+| Mutantes discriminantes | **19/19 muertos**: base 4 + M5–M19: membership/digest, lock/recuperación, sidecar, cast `str(d)`, errores tipados, `steamapps/temp/**`, forma canónica Stock, tipos de runtime, `INDETERMINATE`, re-verificación idempotente, solape canónico storage y propagación de indeterminados en `verificar_runtime_clone`. Restaurado y suites verdes |
 | Ruff (`ruff check` + `ruff format --check` sobre `sky_claw/`, `scripts/`, `tests/`) | **verde** (gate CI, ruff 0.15.11 lockeada) |
 | Mypy (`mypy sky_claw/ scripts/`) | **verde**, 430 archivos |
-| Evidencia de mutantes | `E:\Skyclaw_A1_Evidence\mutation_results.json` (4 base) + `mutation_results_fixes.json` (M5–M16) |
+| Evidencia de mutantes | `E:\Skyclaw_A1_Evidence\mutation_results.json` (4 base) + `mutation_results_fixes.json` (M5–M19) |
 
 CI del PR (calificado por revisión):
 - `77f9d067` → run [42123648897](https://github.com/FacundoSu1986/Sky-Claw/actions/runs/42123648897) **SUCCESS** (16/16 checks: Windows py3.11 55m11 / py3.12 40m51, Lint/Mypy/Security/POSIX/Build/Pytest/CodeQL).
@@ -239,6 +239,12 @@ La revisión posterior marcó 10 hallazgos nuevos; los válidos se corrigieron c
 - **P2 INDETERMINATE:** una re-verificación INDETERMINATE ya **no** degrada el registro a INVALID (terminal); deja PROVISIONED y devuelve error reintentable. La idempotencia PROVISIONED ahora **siempre** re-verifica el Clone completo antes de devolver éxito. Test `test_verificacion_indeterminada_no_marca_invalid_y_el_reintento_reverifica`; **mutantes M15/M16** → KILLED.
 - **P3 CI calificado por revisión:** §6 separa los runs verdes de `77f9d067` (42123648897) y `4f840575` (42298246743); el HEAD final se registra en el PR.
 
+### Tercera ronda CodeRabbit (HEAD `e14e7c04`)
+- **Major — asserts desactivables:** los `assert` de los gates del runbook desaparecen con `PYTHONOPTIMIZE`. Reemplazados por `if ...: raise SystemExit(...)` en A2/A3/A4-prep/A4a/A4b.
+- **Minor — mismo Clone ID:** A4b y las verificaciones posteriores usan `<CLONE_ID>` (antes hardcodeaban `clone-golden-1.6.1170`, pudiendo crear un Clone distinto del preparado).
+- **Minor — solapes canónicos:** `adoptar_copia_stock` resuelve también `storage_root`/`managed_source_root` (`resolve(strict=False)`, fail-closed) antes de comparar contención; un alias/junction del storage ya no oculta el solape. Test con junction `test_rechaza_solape_con_storage_por_forma_canonica`; **mutante M17** → KILLED.
+- **Major — indeterminados reales del verificador:** `verificar_runtime_clone` degradaba a INVALID un `INDETERMINATE` de la Generation y un `OSError` de lectura del registro; ahora propaga `INDETERMINATE` (incluido el `OSError` envuelto como corrupto, vía `__cause__`), y el provisionamiento lo trata como reintentable. Tests `test_generation_indeterminate_se_propaga_como_indeterminate` y `test_oserror_de_lectura_del_registro_es_indeterminate`; **mutantes M18/M19** → KILLED.
+
 ### Verificación de la ronda
-- `tests/test_frozen_runtime_p7_provisioning.py`: **53 passed**; `test_p7_inspector_output.py`: **25 passed**; mutantes **16/16 KILLED**; ruff check/format y mypy verdes. El CI del HEAD con estos fixes se valida en el run posterior a este anexo.
+- `tests/test_frozen_runtime_p7_provisioning.py`: **56 passed**; `test_p7_inspector_output.py`: **25 passed**; mutantes **19/19 KILLED**; ruff check/format y mypy verdes. El CI del HEAD final se registra en el PR.
 

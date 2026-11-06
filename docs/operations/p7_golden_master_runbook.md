@@ -197,13 +197,17 @@ aprobado = pathlib.Path(r'<RUTA_EVIDENCIA>\stock_reference.approved_digest.txt')
 ref = cargar_referencia_stock(
     json.loads(pathlib.Path(r'<RUTA_EVIDENCIA>\stock_reference.json').read_text(encoding='utf-8'))
 )
-assert ref.reference_digest == aprobado, 'reference_digest no coincide con el aprobado en A1: ABORTAR'
-assert managed_source.is_dir(), f'Managed Source no es directorio: {managed_source!r}'
+if ref.reference_digest != aprobado:
+    raise SystemExit('reference_digest no coincide con el aprobado en A1: ABORTAR')
+if not managed_source.is_dir():
+    raise SystemExit(f'Managed Source no es directorio: {managed_source!r}')
 
 # Gates previos a A2: storage no solapa fuente/Managed Source ni queda en steamapps.
 for otro in (fuente, managed_source):
-    assert not (storage == otro or otro in storage.parents or storage in otro.parents), f'solape storage/otro: {storage} vs {otro}'
-assert all(p.casefold() != 'steamapps' for p in storage.parts), 'storage dentro de steamapps: área administrada por Steam'
+    if storage == otro or otro in storage.parents or storage in otro.parents:
+        raise SystemExit(f'solape storage/otro: {storage} vs {otro}')
+if any(p.casefold() == 'steamapps' for p in storage.parts):
+    raise SystemExit('storage dentro de steamapps: área administrada por Steam')
 
 # A2 (sólo si el propietario aprobó la inicialización; idempotente y no destructivo)
 print(initialize_frozen_runtime_storage(storage))
@@ -219,18 +223,21 @@ admitido = admitir_clone_root_path(
 )
 if not padre.exists():
     padre.mkdir(parents=True, exist_ok=False)
-assert padre.is_dir(), f'el padre del Clone no es directorio: {padre!r}'
+if not padre.is_dir():
+    raise SystemExit(f'el padre del Clone no es directorio: {padre!r}')
 admitido = admitir_clone_root_path(
     padre / '<CLONE_ID>', storage_root=storage, managed_source_root=managed_source
 )
 contenido = {p.name for p in padre.iterdir()}
-assert contenido <= {'<CLONE_ID>'}, f'el padre del Clone tiene contenido ajeno al Clone: {sorted(contenido)}'
+if not contenido <= {'<CLONE_ID>'}:
+    raise SystemExit(f'el padre del Clone tiene contenido ajeno al Clone: {sorted(contenido)}')
 print('clone_parent_admitido=', admitido.parent)
 
 # A4a publicar Generation (sólo si A4-prep pasó)
 res = publicar_generation_desde_stock(storage, copia)
 print(res.success, res.message)
-assert res.success, res.message
+if not res.success:
+    raise SystemExit(res.message)
 print('generation_id=', res.generation_id)
 "@
 ```
@@ -243,16 +250,18 @@ import pathlib, sys
 sys.path.insert(0, r'$wt')
 from sky_claw.local.frozen_runtime import crear_runtime_clone_desde_generation
 managed_source = pathlib.Path(r'<MANAGED_SOURCE_ROOT>')
-assert managed_source.is_dir(), f'Managed Source no es directorio: {managed_source!r}'
+if not managed_source.is_dir():
+    raise SystemExit(f'Managed Source no es directorio: {managed_source!r}')
 res = crear_runtime_clone_desde_generation(
     pathlib.Path(r'<STORAGE_ROOT>'),
     '<GENERATION_ID>',
     pathlib.Path(r'<CLONE_PARENT>'),
-    'clone-golden-1.6.1170',
+    '<CLONE_ID>',
     managed_source_root=managed_source,
 )
 print(res.success, res.message)
-assert res.success, res.message
+if not res.success:
+    raise SystemExit(res.message)
 print('clone_root=', res.clone_root)
 print('runtime_setup_id=', res.runtime_setup_id)
 print('lifecycle=', res.clone_record.lifecycle)
@@ -281,8 +290,8 @@ try:
 except StockSourceError as exc:
     raise SystemExit(f'FUENTE CAMBIÓ tras A4: {exc}')
 print(verificar_generation(storage, '<GENERATION_ID>').state)
-print(verificar_runtime_clone(storage, 'clone-golden-1.6.1170', managed_source_root=managed_source).state)
-print(verificar_runtime_setup(pathlib.Path(r'<CLONE_PARENT>\clone-golden-1.6.1170')).setup_id)
+print(verificar_runtime_clone(storage, '<CLONE_ID>', managed_source_root=managed_source).state)
+print(verificar_runtime_setup((pathlib.Path(r'<CLONE_PARENT>') / '<CLONE_ID>')).setup_id)
 "@
 ```
 
