@@ -65,6 +65,7 @@ from sky_claw.local.tools.wrye_bash_asistida import (
     OrigenDelTestigo,
     TestigoPrevio,
     decidir_testigo_de_preparacion,
+    huella_de_contexto,
 )
 from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
 from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
@@ -1129,7 +1130,9 @@ def test_olvidar_si_coincide_en_origen_durable_no_borra_si_otra_preparacion_avan
 
     clave = clave_de_testigo(plugins_txt=plugins_txt, destino_data=destino_data)
     almacen = AlmacenJSON(ruta)
-    almacen.guardar(clave, TestigoPrevio(existia=False, sha256=None))
+    # Registro con la huella del contexto actual (#866): un registro sin huella —como los de PR D—
+    # no puede probar frescura, y este test ejercita el consumo CAS, no la vigencia.
+    almacen.guardar(clave, TestigoPrevio(existia=False, sha256=None), huella_contexto=huella_de_contexto(plugins_txt))
 
     leer_real = almacen.leer
     reemplazado: list[TestigoDurable] = []
@@ -1141,7 +1144,7 @@ def test_olvidar_si_coincide_en_origen_durable_no_borra_si_otra_preparacion_avan
         return leido
 
     monkeypatch.setattr(almacen, "leer", _leer_y_avanzar)
-    veredicto, origen = _verificar_con_almacen(
+    veredicto, origen, _contexto = _verificar_con_almacen(
         artefacto=parche,
         plugins_txt=plugins_txt,
         destino_data=destino_data,
@@ -1228,9 +1231,11 @@ def test_dos_preparaciones_concurrentes_desde_almacen_vacio_detectan_aparicion_i
     primera_vez = True
     lock_flag = threading.Lock()
 
-    def _decidir_espiado(*, observado_ahora: TestigoPrevio | None, durable: object) -> DecisionDeTestigo:
+    def _decidir_espiado(
+        *, observado_ahora: TestigoPrevio | None, durable: object, **contexto: object
+    ) -> DecisionDeTestigo:
         nonlocal primera_vez
-        decision = decidir_real(observado_ahora=observado_ahora, durable=durable)  # type: ignore[arg-type]
+        decision = decidir_real(observado_ahora=observado_ahora, durable=durable, **contexto)  # type: ignore[arg-type]
         es_primera = False
         with lock_flag:
             if primera_vez:
@@ -1375,9 +1380,11 @@ def test_dos_preparaciones_concurrentes_del_mismo_slot_son_atomicas_y_no_inviert
     primera_vez = True
     lock_flag = threading.Lock()
 
-    def _decidir_espiado(*, observado_ahora: TestigoPrevio | None, durable: object) -> DecisionDeTestigo:
+    def _decidir_espiado(
+        *, observado_ahora: TestigoPrevio | None, durable: object, **contexto: object
+    ) -> DecisionDeTestigo:
         nonlocal primera_vez
-        decision = decidir_real(observado_ahora=observado_ahora, durable=durable)  # type: ignore[arg-type]
+        decision = decidir_real(observado_ahora=observado_ahora, durable=durable, **contexto)  # type: ignore[arg-type]
         es_primera = False
         with lock_flag:
             if primera_vez:
@@ -1456,8 +1463,10 @@ def test_preparar_y_verificar_concurrentes_del_mismo_slot_no_resucitan_un_testig
     en_decision = threading.Event()
     verificacion_termino = threading.Event()
 
-    def _decidir_pausado(*, observado_ahora: TestigoPrevio | None, durable: object) -> DecisionDeTestigo:
-        decision = decidir_real(observado_ahora=observado_ahora, durable=durable)  # type: ignore[arg-type]
+    def _decidir_pausado(
+        *, observado_ahora: TestigoPrevio | None, durable: object, **contexto: object
+    ) -> DecisionDeTestigo:
+        decision = decidir_real(observado_ahora=observado_ahora, durable=durable, **contexto)  # type: ignore[arg-type]
         en_decision.set()
         verificacion_termino.wait(timeout=0.15)
         return decision
@@ -1465,7 +1474,7 @@ def test_preparar_y_verificar_concurrentes_del_mismo_slot_no_resucitan_un_testig
     monkeypatch.setattr(mod_servicio, "decidir_testigo_de_preparacion", _decidir_pausado, raising=False)
     monkeypatch.setattr(mod_testigos, "decidir_testigo_de_preparacion", _decidir_pausado, raising=False)
 
-    def _correr_verificar() -> tuple[object, object]:
+    def _correr_verificar() -> tuple[object, object, object]:
         try:
             return _verificar_con_almacen(
                 artefacto=parche,
@@ -1489,13 +1498,13 @@ def test_preparar_y_verificar_concurrentes_del_mismo_slot_no_resucitan_un_testig
         parche.write_bytes(b"TES4_V1_" + b"\x70" * 56)
         fut_ver = pool.submit(_correr_verificar)
         fut_prep.result(timeout=5.0)
-        ver_1, _ = fut_ver.result(timeout=5.0)
+        ver_1, _, _ = fut_ver.result(timeout=5.0)
 
     assert getattr(ver_1, "frescura_probada", None) is True
     assert AlmacenJSON(ruta).leer(clave) is None
 
     # Una verificación posterior SIN nuevo build ya NO puede ver un testigo zombi ni probar frescura.
-    ver_2, _ = _verificar_con_almacen(
+    ver_2, _, _ = _verificar_con_almacen(
         artefacto=parche,
         plugins_txt=plugins_txt,
         destino_data=destino_data,

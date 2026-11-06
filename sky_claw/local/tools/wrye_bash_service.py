@@ -57,17 +57,19 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
-from sky_claw.local.tools.etapa6_testigos import AlmacenDeTestigos, clave_de_testigo
+from sky_claw.local.tools.etapa6_testigos import AlmacenDeTestigos, ClaveDeTestigo, TestigoDurable, clave_de_testigo
 from sky_claw.local.tools.output_targets import ArtefactoEnOverlay, bashed_patch_en_overlay, bashed_patch_target
 from sky_claw.local.tools.wrye_bash_asistida import (
     FASE_PREPARAR,
     FASE_VERIFICAR,
     FASES_ASISTIDAS,
+    NOMBRE_MODLIST,
     OrigenDelTestigo,
     PreparacionAsistida,
     TestigoDePayload,
     TestigoPrevio,
     VeredictoAsistido,
+    huella_de_contexto,
     parsear_testigo_de_payload,
     preparacion_como_resultado,
     preparar_etapa_asistida,
@@ -118,15 +120,31 @@ class EstadoDelTestigoDurable(enum.StrEnum):
     ERROR_DE_ALMACEN = "error_de_almacen"
 
 
+class EstadoDelContexto(enum.StrEnum):
+    """Qué dijo la vigencia contextual (#866, H-1) en la fase 2 (``testigo_contexto``).
+
+    - ``coincide``: el contexto de entrada del perfil (``plugins.txt`` sin la entrada del
+      Bashed Patch + ``modlist.txt``) es el mismo con el que se guardó el testigo.
+    - ``cambio``: cambió desde la preparación (LOOT reordenó, se agregó un mod…). El
+      testigo no se usa y la frescura queda sin probar; hay que volver a preparar.
+    - ``no_verificable``: no hay base para validar el contexto: el registro durable no trae
+      huella (lo escribió PR D), el contexto actual no se pudo leer, o el payload declara una
+      ``generacion`` cuyo registro ya no se puede resolver (reemplazado por otra preparación,
+      ya consumido o almacén ilegible). Misma consecuencia que ``cambio``.
+    - ``no_aplica``: no hay registro durable que gobierne por construcción (sin almacén, o
+      payload sin ``generacion``, que jamás provino de un registro persistido).
+    """
+
+    COINCIDE = "coincide"
+    CAMBIO = "cambio"
+    NO_VERIFICABLE = "no_verificable"
+    NO_APLICA = "no_aplica"
+
+
 #: Separadores de ruta que no pueden aparecer en un nombre de perfil: ``_plugins_txt_path`` une
 #: ``profiles/<perfil>/plugins.txt``, así que un separador o un componente ``.`` / ``..`` saldría del
 #: árbol de la instancia (ADR 0016, fase 2).
 _SEPARADORES_DE_PERFIL = ("/", "\\", ":")
-
-#: Archivo de prioridad del perfil, hermano del ``plugins.txt``. Se nombra acá —y no se
-#: reconstruye a mano— porque es el contrato que ``vfs_attestation.read_enabled_mods``
-#: parsea; este servicio lo ubica, no lo interpreta.
-_NOMBRE_MODLIST = "modlist.txt"
 
 
 def _testigo_desde_resultado(testigo_previo: dict[str, object] | None) -> TestigoDePayload | None:
@@ -196,7 +214,13 @@ def _preparar_con_almacen(
         return prep.testigo_previo
 
     try:
-        sincronizado = almacen.sincronizar_preparacion(clave, _observar_en_transaccion)
+        sincronizado = almacen.sincronizar_preparacion(
+            clave,
+            _observar_en_transaccion,
+            # La huella se observa DENTRO del lock del almacén, junto con el artefacto: el
+            # contexto y el testigo describen el mismo instante (#866, H-1).
+            contexto=lambda: huella_de_contexto(plugins_txt),
+        )
     except OSError as exc:
         logger.warning(
             "[FASE-6-asistida] No se pudo sincronizar el almacén de testigos (%s): se continúa con el testigo en memoria.",
@@ -235,20 +259,38 @@ def _verificar_con_almacen(
     destino_data: pathlib.Path | None,
     testigo_previo: dict[str, object] | None,
     almacen: AlmacenDeTestigos | None,
-) -> tuple[VeredictoAsistido, OrigenDelTestigo]:
-    """Ejecuta el veredicto de fase 2 con precedencia payload > durable y consumo CAS."""
+) -> tuple[VeredictoAsistido, OrigenDelTestigo, EstadoDelContexto]:
+    """Ejecuta el veredicto de fase 2 con precedencia payload > durable y consumo CAS.
+
+    **Vigencia contextual (#866, H-1).** El registro durable de la época del testigo (el
+    leído, o el que el payload identifica por su ``generacion``) lleva la huella del
+    contexto de entrada del perfil. Si el contexto actual no coincide —o no se puede
+    afirmar—, el testigo no se usa: el veredicto se emite SIN testigo
+    (``frescura_probada=False``) y el registro no se consume. Un payload sin ``generacion``
+    o sin almacén no tiene registro que lo gobierne por construcción (``no_aplica``): su límite
+    es el de PR D. Un payload CON ``generacion`` y almacén disponible cuyo registro no se puede
+    resolver falla cerrado (``no_verificable``): no hay huella con qué validar el contexto.
+    """
     clave = (
         clave_de_testigo(plugins_txt=plugins_txt, destino_data=destino_data)
         if almacen is not None and destino_data is not None
         else None
     )
     generacion_para_consumir: str | None = None
+    registro_gobernante: TestigoDurable | None = None
+    epoca_del_payload_sin_registro = False
     if testigo_previo is not None:
         del_payload = _testigo_desde_resultado(testigo_previo)
         if del_payload is not None:
             testigo: TestigoPrevio | None = del_payload.testigo
             generacion_para_consumir = del_payload.generacion
             origen = OrigenDelTestigo.PAYLOAD
+            if del_payload.generacion is not None and almacen is not None and clave is not None:
+                registro_gobernante = _leer_registro_de_la_epoca(almacen, clave, del_payload.generacion)
+                # Un payload que declara una época y un almacén disponible: si el registro de ESA
+                # época no se puede resolver (reemplazado por otra preparación, ya consumido o
+                # almacén ilegible) no hay huella con qué validar el contexto. Se falla CERRADO.
+                epoca_del_payload_sin_registro = registro_gobernante is None
         else:
             # Un payload explícito malformado no se sustituye en silencio por estado de disco.
             testigo = None
@@ -266,6 +308,7 @@ def _verificar_con_almacen(
         if durable is not None:
             testigo = durable.como_testigo_previo()
             generacion_para_consumir = durable.generacion
+            registro_gobernante = durable
             origen = OrigenDelTestigo.DURABLE
         else:
             testigo = None
@@ -273,6 +316,20 @@ def _verificar_con_almacen(
     else:
         testigo = None
         origen = OrigenDelTestigo.NINGUNO
+
+    contexto = EstadoDelContexto.NO_APLICA
+    if registro_gobernante is not None:
+        contexto = _evaluar_contexto(registro_gobernante, plugins_txt)
+    elif epoca_del_payload_sin_registro:
+        contexto = EstadoDelContexto.NO_VERIFICABLE
+    if contexto in (EstadoDelContexto.CAMBIO, EstadoDelContexto.NO_VERIFICABLE):
+        logger.warning(
+            "[FASE-6-asistida] El contexto de entrada del perfil no se puede validar contra el de la preparación "
+            "(%s): no se usa el testigo; la frescura queda sin probar.",
+            contexto.value,
+            extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+        )
+        testigo = None
 
     veredicto = veredicto_etapa_asistida(
         artefacto=artefacto,
@@ -305,7 +362,33 @@ def _verificar_con_almacen(
                 exc,
                 extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
             )
-    return veredicto, origen
+    return veredicto, origen, contexto
+
+
+def _leer_registro_de_la_epoca(
+    almacen: AlmacenDeTestigos, clave: ClaveDeTestigo, generacion: str
+) -> TestigoDurable | None:
+    """El registro durable vigente SÓLO si es de la época ``generacion`` (la del payload)."""
+    try:
+        durable = almacen.leer(clave)
+    except OSError as exc:
+        logger.warning(
+            "[FASE-6-asistida] No se pudo leer el almacén para validar el contexto del payload (%s).",
+            exc,
+            extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None},
+        )
+        return None
+    return durable if durable is not None and durable.generacion == generacion else None
+
+
+def _evaluar_contexto(registro: TestigoDurable, plugins_txt: pathlib.Path) -> EstadoDelContexto:
+    """Compara la huella del registro con la del contexto actual del perfil."""
+    if registro.huella_contexto is None:
+        return EstadoDelContexto.NO_VERIFICABLE
+    actual = huella_de_contexto(plugins_txt)
+    if actual is None:
+        return EstadoDelContexto.NO_VERIFICABLE
+    return EstadoDelContexto.COINCIDE if actual == registro.huella_contexto else EstadoDelContexto.CAMBIO
 
 
 class WryeBashPipelineService:
@@ -535,7 +618,7 @@ class WryeBashPipelineService:
         plugins_txt = self._plugins_txt_path(profile)
         if plugins_txt is None:
             return None
-        modlist = plugins_txt.parent / _NOMBRE_MODLIST
+        modlist = plugins_txt.parent / NOMBRE_MODLIST
         # ``is_file()`` NO sirve para esta pregunta: devuelve ``False`` también cuando la
         # ruta es un directorio o cuando ``stat`` falla (traga el ``OSError``), y las dos
         # cosas significan lo contrario de "no hay mods". Sólo ``FileNotFoundError``
@@ -840,7 +923,7 @@ class WryeBashPipelineService:
                 }
 
             destino_data = self._bashed_patch_path()
-            veredicto, origen = await asyncio.to_thread(
+            veredicto, origen, contexto = await asyncio.to_thread(
                 _verificar_con_almacen,
                 artefacto=artefacto.ruta,
                 plugins_txt=plugins_txt,
@@ -850,6 +933,7 @@ class WryeBashPipelineService:
             )
             resultado = veredicto_como_resultado(veredicto)
             resultado["testigo_origen"] = origen.value
+            resultado["testigo_contexto"] = contexto.value
             return resultado
         except Exception as exc:  # noqa: BLE001 — T11: SIEMPRE devolver dict serializable
             logger.error(

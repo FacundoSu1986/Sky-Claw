@@ -348,3 +348,72 @@ def test_el_modulo_ya_no_importa_la_maquinaria_del_camino_muerto(simbolo: str) -
             importados |= {alias.name for alias in nodo.names}
 
     assert simbolo not in importados, f"el módulo volvió a importar {simbolo} con la etapa 6 de sólo lectura"
+
+
+#: Funciones de MÓDULO exactas de ``wrye_bash_service.py`` (#866, H-3). Las anclas de arriba
+#: congelan los métodos de la CLASE; una función suelta de módulo —p. ej. un
+#: ``_reconstruir_headless`` que llame a ``subprocess``— pasaba todas en verde (medido por
+#: mutación sobre ``900e086``). Igualdad, no subconjunto: una función nueva obliga a decidir
+#: su contrato acá.
+_FUNCIONES_DE_MODULO_DEL_SERVICIO = frozenset(
+    {
+        "_testigo_desde_resultado",
+        "_normalizar_dominio",
+        "_perfil_es_usable",
+        "_attach_preflight",
+        "_preparar_con_almacen",
+        "_verificar_con_almacen",
+        # #866, H-1: vigencia contextual del testigo durable en la fase 2.
+        "_leer_registro_de_la_epoca",
+        "_evaluar_contexto",
+    }
+)
+
+#: Módulos y símbolos que sólo el camino headless retirado necesitaba para spawnear.
+_MODULOS_DE_SUBPROCESO_PROHIBIDOS = frozenset({"subprocess"})
+_SIMBOLOS_DE_SUBPROCESO_PROHIBIDOS = frozenset(
+    {"create_subprocess_exec", "create_subprocess_shell", "Popen", "WryeBashRunner"}
+)
+
+
+def test_las_funciones_de_modulo_del_servicio_estan_congeladas() -> None:
+    """M5: agregar una función de módulo a ``wrye_bash_service.py`` rompe esta igualdad."""
+    arbol = ast.parse(MODULO.read_text(encoding="utf-8"))
+    funciones = {n.name for n in arbol.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+    assert funciones == _FUNCIONES_DE_MODULO_DEL_SERVICIO, (
+        f"cambió la superficie de módulo: nuevas={sorted(funciones - _FUNCIONES_DE_MODULO_DEL_SERVICIO)}, "
+        f"faltantes={sorted(_FUNCIONES_DE_MODULO_DEL_SERVICIO - funciones)}. La etapa 6 no spawnea "
+        "(ADR 0016 §2): una función nueva acá tiene que decidirse y documentarse en el ADR."
+    )
+
+
+def test_el_servicio_no_importa_ni_referencia_nada_de_subprocesos() -> None:
+    """M6: ``import subprocess``, ``from asyncio import create_subprocess_exec`` o
+    ``WryeBashRunner`` —por import, por nombre o por atributo— reabren el camino retirado."""
+    arbol = ast.parse(MODULO.read_text(encoding="utf-8"))
+    hallazgos: list[str] = []
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            hallazgos += [
+                f"import {a.name} (línea {nodo.lineno})"
+                for a in nodo.names
+                if a.name.split(".")[0] in _MODULOS_DE_SUBPROCESO_PROHIBIDOS
+            ]
+        elif isinstance(nodo, ast.ImportFrom):
+            if (nodo.module or "").split(".")[0] in _MODULOS_DE_SUBPROCESO_PROHIBIDOS:
+                hallazgos.append(f"from {nodo.module} import ... (línea {nodo.lineno})")
+            hallazgos += [
+                f"from {nodo.module} import {a.name} (línea {nodo.lineno})"
+                for a in nodo.names
+                if a.name in _SIMBOLOS_DE_SUBPROCESO_PROHIBIDOS
+            ]
+        elif (
+            isinstance(nodo, ast.Name)
+            and nodo.id in _SIMBOLOS_DE_SUBPROCESO_PROHIBIDOS | _MODULOS_DE_SUBPROCESO_PROHIBIDOS
+        ):
+            hallazgos.append(f"nombre {nodo.id} (línea {nodo.lineno})")
+        elif isinstance(nodo, ast.Attribute) and nodo.attr in _SIMBOLOS_DE_SUBPROCESO_PROHIBIDOS:
+            hallazgos.append(f"atributo .{nodo.attr} (línea {nodo.lineno})")
+
+    assert hallazgos == [], "el servicio de la etapa 6 referencia subprocesos:\n" + "\n".join(hallazgos)
