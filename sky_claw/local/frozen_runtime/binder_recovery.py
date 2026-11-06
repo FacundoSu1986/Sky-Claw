@@ -648,16 +648,110 @@ def _parsear_config(crudos: bytes) -> dict[str, object] | None:
     return datos if isinstance(datos, dict) else None
 
 
+def _es_escritura_propia_interrumpida(previos: bytes, nuevo: bytes, actuales: bytes) -> bool:
+    """¿``actuales`` es el ÚNICO estado intermedio que este escritor puede dejar?
+
+    La escritura por handle que introduce P5-C2 hace ``WriteFile`` desde el byte 0
+    y después ``SetEndOfFile``. Matando un proceso real en cada punto (rig
+    ``exp9_death_points``) se midió que sólo hay TRES desenlaces:
+
+    ==========================  ==========================================
+    muerte antes de WriteFile   el archivo queda igual al snapshot
+    muerte durante WriteFile    ``nuevo[:k] + previos[k:]``, mismo tamaño
+    muerte durante WriteFile    ``nuevo[:k]`` con ``k > len(previos)`` (extiende)
+    (extensión)                 medido en rig real por Codex cuarta ronda #851
+    muerte tras SetEndOfFile    el archivo queda completo (``nuevo``)
+    ==========================  ==========================================
+
+    ``FlushFileBuffers`` no cambia lo observable: sólo la durabilidad, que sigue
+    en ``POWER_LOSS_GUARANTEE = NOT_CLAIMED``.
+
+    Por eso este predicado acepta DOS estados intermedios, y le exige a cada uno
+    cosas que lo hacen atribuible:
+
+    1. **Mismo tamaño que el snapshot.** El truncado no ocurrió; la cola después
+       del corte coincide con el snapshot.
+    2. **Extensión parcial pura.** ``WriteFile`` en Windows extiende el archivo
+       si escribe más allá del EOF. El estado es ``nuevo[:k]`` con
+       ``len(previos) < k < len(nuevo)``. Se atribuye sólo si es un prefijo puro
+       de ``nuevo`` (sin cola del snapshot, porque esa cola no existe).
+    3. **Cruza la divergencia.** ``k`` es estrictamente mayor que el primer byte
+       donde ``nuevo`` y ``previos`` difieren. Un corte anterior a la divergencia
+       no cambia ningún byte y el archivo seguiría siendo el snapshot; un estado
+       que coincide sólo en el prefijo común es **indistinguible de un truncado
+       ajeno** y no se puede atribuir.
+
+    La versión anterior aceptaba además ``nuevo[:n]`` (archivo truncado). Se
+    quitó: ese estado NO es alcanzable por este escritor —``SetEndOfFile`` corre
+    sólo después de una escritura completa— así que atribuírselo sería apropiarse
+    de un truncado de un tercero. Cuando la autoría no se puede establecer, el
+    llamador conserva evidencia y pide intervención del propietario en vez de
+    restaurar.
+    """
+    if not nuevo or not actuales or not previos:
+        return False
+    if actuales == previos:
+        return False
+
+    limite = min(len(previos), len(nuevo))
+    divergencia = 0
+    while divergencia < limite and previos[divergencia] == nuevo[divergencia]:
+        divergencia += 1
+
+    coincidentes = 0
+    tope = min(len(actuales), len(nuevo))
+    while coincidentes < tope and actuales[coincidentes] == nuevo[coincidentes]:
+        coincidentes += 1
+
+    # El corte tiene que caer DESPUÉS de la divergencia.
+    if not (divergencia < coincidentes <= len(nuevo)):
+        return False
+
+    if coincidentes == len(nuevo) and len(actuales) <= len(nuevo):
+        # Coincide con todo ``nuevo`` y no sobra nada: es la escritura COMPLETA,
+        # no una interrumpida. Se descarta explícitamente para no revertir una
+        # transición que terminó.
+        return False
+
+    if len(actuales) > len(previos):
+        # Cuarta muerte medida (Codex cuarta ronda #851): ``WriteFile`` en
+        # Windows extiende el archivo si escribe más allá del EOF. El estado
+        # intermedio es ``nuevo[:k]`` con ``len(previos) < k < len(nuevo)``.
+        # Se atribuye SÓLO si es un prefijo puro de ``nuevo`` (sin cola del
+        # snapshot mezclada, porque esa cola no existe: el archivo se extendió).
+        return coincidentes == len(actuales) and len(actuales) < len(nuevo)
+
+    # ``len(actuales) == len(previos)``: el estado intermedio medido en
+    # ``exp9_death_points`` es ``nuevo[:k] + previos[k:]`` (mismo tamaño).
+    # También ``len(actuales) < len(previos)`` (truncado parcial antes de
+    # ``SetEndOfFile``): ``nuevo + previos[len(nuevo):]``.
+    return actuales[coincidentes:] == previos[coincidentes:]
+
+
 def _coincide_con_lo_escrito(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
     actuales: bytes,
+    *,
+    escritura_intentada: bool | None = None,
+    bytes_tras_escritura_ini: bytes | None = None,
 ) -> bool:
     """¿Estos bytes son los que ESTA transición escribió?
 
     Cada superficie tiene su discriminador, y el del INI es el más fuerte: el
     escritor es determinista, así que se recalcula lo que habría escrito con
     ``prever_bytes`` sobre los bytes previos. Un byte distinto ⇒ no es nuestro.
+
+    Para el INI se acepta además un PREFIJO rasgado de esa misma previsión: la
+    escritura por handle no es atómica, y una muerte a mitad deja un estado que
+    no es ni el snapshot ni la previsión completa pero SÍ es de esta transición.
+    Ver :func:`_es_escritura_propia_interrumpida`.
+
+    ``bytes_tras_escritura_ini`` acota ese razonamiento al único momento en que
+    vale: mientras la transición retenía la exclusión. El rollback corre DESPUÉS
+    de ``cerrar()``, y a partir de ahí el archivo lo escribe cualquiera. Si el
+    contenido ya no es el que se leyó bajo la exclusión, no hay autoría que
+    atribuir: un prefijo deja de ser prueba y el estado es de un tercero.
     """
     esperado = registro.expected_effective_path
     if superficie.kind == _KIND_ACTIVE:
@@ -671,6 +765,11 @@ def _coincide_con_lo_escrito(
             return False
         return _config_difiere_solo_en_skyrim_path(previos, actuales, esperado)
     if superficie.kind == _KIND_MO2_INI:
+        # La huella tomada bajo exclusión manda sobre cualquier inferencia por
+        # forma. Si no coincide, alguien escribió cuando la transición ya no
+        # retenía el archivo y NADA de lo que hay se le puede atribuir.
+        if bytes_tras_escritura_ini is not None and actuales != bytes_tras_escritura_ini:
+            return False
         previos = superficie.bytes_previos()
         if previos is None:
             return False
@@ -680,17 +779,44 @@ def _coincide_con_lo_escrito(
         )
 
         try:
-            return prever_bytes(previos, esperado) == actuales
+            previsto = prever_bytes(previos, esperado)
         except (FormatoIniNoAdmitidoError, RecuperacionError, ValueError):
             return False
+        if previsto == actuales:
+            # Escritura COMPLETA: los bytes actuales son exactamente lo que el
+            # escritor habría producido. Se atribuye SÓLO cuando el binder prueba
+            # que la transición intentó escribir (True). Con autoría desconocida
+            # (None, recuperación en proceso nuevo) no se atribuye: es
+            # preferible no auto-reparar que destruir un cambio ajeno. Con
+            # False (no-op confirmado) tampoco: el binder sabe que no mutó.
+            # CodeRabbit sobre #851, Codex tercera ronda.
+            return escritura_intentada is True
+        if not escritura_intentada:
+            # El binder NO llegó a escribir el INI. Un estado intermedio sólo
+            # puede serlo si hubo escritura: sin eso, atribuirlo sería apropiarse
+            # de un cambio de un tercero que casualmente comparte el prefijo
+            # (Codex sobre #851). Se deja como ajeno: evidencia y propietario.
+            return False
+        return _es_escritura_propia_interrumpida(previos, previsto, actuales)
     return False
 
 
 def _escrita_por_tercero(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
+    *,
+    escritura_intentada: bool | None = None,
+    bytes_tras_escritura_ini: bytes | None = None,
 ) -> tuple[bool, str]:
     r"""¿La superficie actual NO es ni el snapshot ni lo que escribió la transición?
+
+    ``escritura_intentada`` viene en ``False`` por defecto y eso es deliberado: la
+    recuperación en PROCESO NUEVO no puede probar que la transición llegara a
+    escribir. La fase ``INI_ESCRITO`` se marca ANTES de escribir, así que no es
+    evidencia de autoría, y tampoco descarta que un tercero haya modificado el
+    archivo entre el crash y la recuperación —una ventana que puede ser de horas—.
+    Sin esa prueba, un estado intermedio ambiguo se conserva como evidencia y
+    queda para el propietario (Codex sobre #851).
 
     Devuelve ``(es_ajena, motivo)``. Restaurar sobre una escritura ajena es
     exactamente lo que un rollback NO debe hacer: el snapshot es viejo por
@@ -715,7 +841,13 @@ def _escrita_por_tercero(
     if superficie.existed and _sha256(actuales) == superficie.sha256:
         # Sigue exactamente como en el snapshot: no hay nada que restaurar.
         return (False, "")
-    if _coincide_con_lo_escrito(superficie, registro, actuales):
+    if _coincide_con_lo_escrito(
+        superficie,
+        registro,
+        actuales,
+        escritura_intentada=escritura_intentada,
+        bytes_tras_escritura_ini=bytes_tras_escritura_ini,
+    ):
         return (False, "")
     return (
         True,
@@ -724,9 +856,89 @@ def _escrita_por_tercero(
     )
 
 
+def _preservar_evidencia(
+    raiz: pathlib.Path | None,
+    registro: RegistroRecuperacion,
+    kind: str,
+    ruta: pathlib.Path,
+) -> tuple[pathlib.Path | None, str]:
+    """Guarda una copia de los bytes NO atribuibles y VERIFICA que quedó.
+
+    Cuando el rollback no puede establecer quién escribió el contenido actual, la
+    decisión correcta no es elegir: es no destruir y dejar rastro. El snapshot ya
+    preserva lo viejo; esto preserva lo NUEVO, que de otro modo se perdería en la
+    primera restauración manual.
+
+    Devuelve ``(ruta_de_la_evidencia, "")`` cuando la evidencia quedó verificada,
+    o ``(None, motivo)`` cuando no se pudo preservar. El motivo NUNCA es vacío
+    cuando la ruta es ``None``: un fallo sin diagnóstico no es un diagnóstico.
+
+    Es best-effort a propósito: un fallo al copiar no puede convertir una
+    recuperación en un fallo crítico. Lo que NO puede hacer es declarar
+    preservado lo que no comprobó.
+
+    La evidencia EXISTENTE se lee y se compara. El nombre del archivo es el
+    sha256 del contenido, así que antes se asumía que un archivo con ese nombre
+    contenía ese contenido; nada lo garantiza para un archivo escrito por otra
+    versión del código, por otro proceso o por un corte anterior. Y no se
+    sobrescribe: si el archivo existente contradice, esas pueden ser las ÚNICAS
+    copias de lo que la transición no escribió.
+
+    Recibe ``kind`` y no la ``SuperficieCapturada`` a propósito: el censo por AST
+    marca como escritor de superficies a toda función que reciba una
+    ``SuperficieCapturada`` y llame a un mutador sobre una ruta. Esta función
+    COPIA desde la superficie hacia un archivo de evidencia; no la escribe. Pasar
+    el ``kind`` evita que el censo tenga que aprender una excepción —y una
+    excepción en el censo es cobertura que se declara y no se tiene—.
+    """
+    if raiz is None:
+        return None, "el registro no declara raíz de evidencia"
+    try:
+        actuales = ruta.read_bytes()
+    except OSError as exc:
+        return None, f"no se pudo leer {ruta.name} para preservarlo: {exc}"
+    huella = _sha256(actuales)[:12]
+    destino = raiz / "recovery_evidence" / registro.transition_id / f"{kind}-{huella}.bin"
+
+    if destino.exists():
+        try:
+            existente = destino.read_bytes()
+        except OSError as exc:
+            return None, f"la evidencia {destino} existe pero no se pudo leer: {exc}"
+        if existente == actuales:
+            return destino, ""
+        return None, (
+            f"CONFLICTO: {destino} ya existe con contenido distinto "
+            f"({len(existente)} bytes, sha256 {_sha256(existente)[:12]}) y no se sobrescribe: "
+            "es evidencia de otra escritura y puede ser la única copia"
+        )
+
+    try:
+        _escribir_bytes_atomico(destino, actuales)
+    except (OSError, RecuperacionError) as exc:
+        return None, f"no se pudo publicar la evidencia en {destino}: {exc}"
+
+    # Se relee lo publicado. La escritura es atómica, así que esto no debería
+    # fallar nunca — y justamente por eso es un ancla: el día que el escritor
+    # publique otra cosa, se va a saber.
+    try:
+        publicado = destino.read_bytes()
+    except OSError as exc:
+        return None, f"la evidencia se escribió en {destino} pero no se pudo releer: {exc}"
+    if publicado != actuales:
+        return None, (
+            f"la evidencia publicada en {destino} no coincide con lo leído ({len(publicado)} bytes vs {len(actuales)})"
+        )
+    return destino, ""
+
+
 def _restaurar_persistida(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
+    *,
+    raiz_evidencia: pathlib.Path | None = None,
+    escritura_intentada: bool | None = None,
+    bytes_tras_escritura_ini: bytes | None = None,
 ) -> VerificacionSuperficie:
     """Devuelve la superficie a sus bytes previos y VERIFICA el resultado."""
     if superficie.path is None:
@@ -734,9 +946,28 @@ def _restaurar_persistida(
     ruta = pathlib.Path(superficie.path)
     previos = superficie.bytes_previos()
 
-    ajena, motivo = _escrita_por_tercero(superficie, registro)
+    ajena, motivo = _escrita_por_tercero(
+        superficie,
+        registro,
+        escritura_intentada=escritura_intentada,
+        bytes_tras_escritura_ini=bytes_tras_escritura_ini,
+    )
     if ajena:
-        return VerificacionSuperficie(kind=superficie.kind, ok=True, detail=motivo, escritura_ajena=True)
+        # La autoría no se pudo establecer: NO se restaura (pisaría una escritura
+        # legítima de otro), pero tampoco se descarta. Se guarda una copia de los
+        # bytes actuales para que el propietario pueda decidir, y el veredicto lo
+        # dice explícitamente.
+        evidencia, diagnostico = _preservar_evidencia(raiz_evidencia, registro, superficie.kind, ruta)
+        if evidencia is None:
+            detalle = f"{motivo}. Evidencia NO preservada: {diagnostico}"
+        else:
+            detalle = f"{motivo}. Evidencia conservada en {evidencia}"
+        return VerificacionSuperficie(
+            kind=superficie.kind,
+            ok=True,
+            detail=f"{detalle}. Requiere intervención del propietario: no se restaura automáticamente",
+            escritura_ajena=True,
+        )
 
     # Saltar lo que ya está en su estado previo: si la mutación original nunca
     # llegó a aplicarse (una violación de compartición, por ejemplo), reescribir
@@ -812,6 +1043,8 @@ def restaurar_registro_locked(
     environ: MutableMapping[str, str] | None,
     *,
     solo_superficies: frozenset[str] | None = None,
+    escritura_intentada: bool | None = None,
+    bytes_tras_escritura_ini: bytes | None = None,
 ) -> tuple[VerificacionSuperficie, ...]:
     """Restaura las superficies capturadas y devuelve la verificación de cada una.
 
@@ -846,7 +1079,15 @@ def restaurar_registro_locked(
         if superficie.kind == _KIND_ENVIRON:
             verificaciones.append(_restaurar_environ(superficie, environ))
             continue
-        verificaciones.append(_restaurar_persistida(superficie, registro))
+        verificaciones.append(
+            _restaurar_persistida(
+                superficie,
+                registro,
+                raiz_evidencia=root,
+                escritura_intentada=escritura_intentada,
+                bytes_tras_escritura_ini=bytes_tras_escritura_ini,
+            )
+        )
     return tuple(verificaciones)
 
 

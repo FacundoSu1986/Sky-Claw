@@ -130,7 +130,12 @@ El retiro era la opción barata de *código* y la cara de *producto*.
 - **No prueba que se haya regenerado después del último cambio de load order.** Misma limitación
   declarada que `etapas_previas_lods`: un artefacto viejo pasa el guard. Cerrarlo exige un registro
   de corridas por etapa que el repo no tiene.
-- **No persiste la huella previa.** Hoy la transporta el caller entre fases (§7, PR D).
+- **Persiste sólo el testigo vigente por slot, no un historial de corridas ni el `.esp`.**
+  Desde el PR D (§7.2), la fase 1 persiste la observación previa (ausencia probada
+  `existia=False, sha256=None` o presencia con digest SHA-256 cuando el artefacto era regular y
+  legible; sin entrada cuando la observación fue indeterminada `SIN_OBSERVACION`) en
+  `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` y la fase 2 la consume
+  condicionalmente al demostrar frescura; no reemplaza un registro histórico de etapas.
 - **No detecta enlaces de forma TOCTOU-fuerte**: la clasificación es por `lstat` y la lectura es
   best-effort, igual que `artifact_digest`.
 
@@ -177,10 +182,18 @@ de ofrecer el botón — no en el servicio, porque el payload es lo que el opera
 Sin testigo, la fase 2 igual es útil (existencia, tamaño y activación en `plugins.txt`) y el
 veredicto declara `frescura_probada=False`: honesto, aunque no sea el contrato completo.
 
-**Lo que sigue faltando (PR D).** El testigo vive lo que vive el resultado en el panel. Si la
-GUI se cierra entre las dos fases, la verificación corre sin él. Persistirlo entre sesiones
-(patrón `texgen_handoff`) es lo que convierte «verificable» en «verificable siempre», y es la
-razón por la que el PR D no queda vacío.
+**Cómo sobrevive al cierre del panel (PR D, §7.2).** `ReactiveStore` es un diccionario en RAM:
+cerrar la GUI entre las dos fases borra el toast y su payload. `etapa6_testigos` persiste la
+observación previa (ausencia `existia=False, sha256=None` o digest SHA-256 del artefacto regular)
+en `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"`,
+claveados por el **slot virtual** `(plugins_txt canónico, destino Data canónico)` (invariante
+cuando el parche pasa de `Data` ausente en la fase 1 a `overwrite` en la fase 2). Si el
+operador reabre la GUI después de construir y vuelve a pulsar la etapa 6,
+`decidir_testigo_de_preparacion` detecta que el artefacto apareció o cambió respecto del
+testigo durable, **conserva** la observación previa al build (`conservado_por_build`) y la
+entrega en el payload del nuevo CTA para que la fase 2 demuestre frescura en vez de fallar con
+`SIN_CAMBIO`. Y en llamadas directas a `verificar` sin payload (agente LLM o API), el servicio
+lee el testigo durable del almacén y lo consume al probar frescura.
 
 ## 7. Secuencia de PRs — y por qué se parte
 
@@ -198,7 +211,7 @@ y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de
   ese campo (verificado por grep), así que una etapa *asistida* se habría visto como *fallida*.
   El marcador era explícitamente provisional: «El mapeo se decide y se congela junto con el
   cableado». Se retiró en el PR B junto con su consumidor (§9, ronda 8).
-- **PR B (este):** cablea **las tres** superficies en el mismo PR:
+- **PR B (mergeado, #853):** cablea **las tres** superficies en el mismo PR:
 
   | Superficie | Antes | Ahora |
   | --- | --- | --- |
@@ -225,20 +238,17 @@ y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de
   consumidores comparten el predicado (`tool_result.es_etapa_pendiente`) para que no puedan
   divergir. El estado `AWAITING_OPERATOR` **no tiene hoy ningún consumidor de UI** (verificado
   por grep): el que el humano ve es el toast, y ese era el que mentía.
-- **PR C:** retirar `execute_pipeline` (el camino headless) o declararlo compat documentada.
-  Decidir con la evidencia de PR B, que ya está disponible: tras el cableado **no queda ningún
-  caller de producción** de `execute_pipeline` en `sky_claw/` (verificado por grep sobre `ast`:
-  sólo la definición y la prosa). Sus 36 tests de servicio siguen verdes y siguen siendo la
-  cobertura del lock/rollback/caja negra; los 9 de `tests/test_wrye_bash_lock.py` **no** eran
-  duplicados del servicio, eran el contrato del handler, y en el PR B se reescribieron al
-  contrato nuevo (no muta ⇒ ni lock ni TX) en vez de borrarse.
-  Queda declarado un hueco que el PR C debe cerrar: el saneo de `stdout`/`stderr` con
-  `sanitize_for_prompt` vivía en el handler. `execute_pipeline` devuelve texto crudo del
-  subproceso y hoy no tiene callers; si se conserva como compat, necesita su propio saneo.
-- **PR D:** persistir el handoff de la fase 1 (huella previa durable, patrón `texgen_handoff`) para
-  que la frescura no dependa de que el resultado siga vivo en el panel. El affordance de la fase 2
-  **ya no** es deuda: entró en el PR B (§6) junto con el `payload` explícito de
-  `run_ritual_resume`; lo que falta es que el testigo sobreviva el cierre de la GUI, no el botón.
+- **PR C (mergeado, #862): retira el camino headless `execute_pipeline` — sin compat.** La decisión, la
+  evidencia que la sostiene y el mapeo test-por-test están en **§7.1**. En una línea: cero callers
+  de producción, un hueco de saneo que **se cierra por retiro** en vez de por parche, y 36 tests
+  que sólo podían pasar contra código inalcanzable. Los 9 de `tests/test_wrye_bash_lock.py` **no**
+  se retiran: se reescribieron en el PR B al contrato nuevo y se actualizaron otra vez al perder
+  el handler sus últimos parámetros (anclan la superficie del agente, no el servicio).
+- **PR D (este): testigo durable entre sesiones (`etapa6_testigos`).** El detalle de por qué no se
+  copia `DeploymentHandoff`, cómo se identifica el slot virtual y qué hace la preparación ante un
+  build intermedio está en **§7.2**. Cableado en **ambos** sitios productivos de construcción del
+  servicio (`orchestration_composition` y `system_tools.generate_bashed_patch`, anclados por AST y
+  oráculo conductual en `tests/test_etapa6_testigo_durable.py`).
 - **Deuda declarada (PR B): la compuerta HITL sigue sobre `generate_bashed_patch`.** El ítem 8 de §2
   dice que la fase 2 «no requiere HITL», pero `tool_dispatcher.py` registra la estrategia con
   `_destructive_middleware` y la tool sigue en `DESTRUCTIVE_TOOL_PATTERNS`. Efecto medido leyendo
@@ -250,6 +260,266 @@ y la tool del agente LLM (`system_tools`). Por eso el cableado **no** se hace de
   dispatcher pasa a `ErrorWrappingMiddleware` + `DictResultGuardMiddleware`) y agregar un test del
   dispatcher que alcance el enrutado asistido sin guard. No verificado: si en el entorno de producción
   `AppContext.hitl` está siempre configurado (de ser así, el efecto es solo fricción, no bloqueo).
+
+### 7.1 PR C — retiro del camino headless: decisión y evidencia (2026-11-03)
+
+**Decisión: se retira `execute_pipeline` y todo su andamiaje. No se conserva como compat
+documentada.** No es una preferencia de estilo; es lo que la evidencia medida deja como única
+opción que no agrega mentiras.
+
+| Pregunta | Medición | Cómo se midió |
+|---|---|---|
+| ¿Quién llama `execute_pipeline` en producción? | **0** callers en `sky_claw/` | `grep` de `execute_pipeline` sobre el paquete: sólo la definición y 3 menciones en prosa (docstrings de `wrye_bash_service`, `system_tools` y un comentario de `__init__.py`). El dispatcher, el supervisor y la tool llaman a `ejecutar_fase_asistida` desde el PR B. |
+| ¿Cuánto código muerto hay? | **9 métodos** (`execute_pipeline` + 8 helpers de caja negra y rollback, incluido `ensure_runner`) y **3 clases module-level** (`_DesenlaceDelRollback`, `_ActionManifestError`, `_RunFallidoError`) | AST: alcanzabilidad desde los 3 métodos públicos. 8 de los 10 métodos privados no eran alcanzables desde ningún camino vivo; `ensure_runner` sólo lo llamaba `execute_pipeline`. |
+| ¿Cuánto pesa? | `wrye_bash_service.py`: **1231 → 676 líneas** (+72 / −627 = −555 netas) | `git diff --numstat 83cc126^1 83cc126` sobre el archivo (la cifra original, 661/−570, quedó vieja tras la ronda 12: #866 L-4). |
+| ¿Qué dependencias se van? | `lock_manager`, `snapshot_manager`, `journal`, `wrye_bash_runner`; `__init__` pasa de **8 a 4** parámetros | AST por método: sólo `execute_pipeline` y sus 6 helpers tocaban `_lock_manager`/`_snapshot_manager`/`_journal`; **ninguno** de los 9 métodos que quedan los toca. |
+| ¿Se pierde cobertura real? | De los 36 tests de `test_wrye_bash_service.py`, **8 contratos sobreviven** (4 se portaron a la suite asistida en este PR) y **28 se retiran con el código** | Mapeo test por test, abajo. |
+| ¿Y el hueco de saneo de `stdout`/`stderr` que el PR B dejó anotado? | **Se cierra por retiro**: sin camino que devuelva la salida de un subproceso no hay texto de terceros que sanear | `wrye_bash_service.py` ya no importa `sanitize_for_prompt` ni menciona `stdout`/`stderr`; el ancla nueva prohíbe que vuelva a existir un runner en la firma de la tool. |
+| ¿Y el lock `Bashed Patch, 0.esp`? | **Se retira con el camino**: era el id que tomaba `execute_pipeline` | Sin tomador, un id de lock canónico es una mentira sobre la etapa 6: el próximo lector creería que sigue serializada. El nombre del artefacto sobrevive **sólo** como `BASHED_PATCH_NAME`. |
+
+**Por qué «retirar» y no «declarar compat documentada».** Conservar el método habría exigido:
+(a) agregarle el saneo de `stdout`/`stderr` que el PR B verificó ausente; (b) mantener 36 tests
+y ~555 líneas de un camino que ningún caller alcanza —y cada uno de esos tests es una invitación
+a creer que la etapa 6 todavía construye el parche—; (c) sostener cuatro dependencias
+(`lock_manager`, `snapshot_manager`, `journal`, `wrye_bash_runner`) en la firma del servicio, que
+es exactamente cómo se reconstruye un camino muerto por partes. El ADR §2 dice que la caja negra
+existe para lo que puede mutar: la etapa asistida no muta, así que no hay nada que la compat
+documentada pudiera proteger.
+
+**El ancla.** `tests/test_wrye_bash_retiro_headless.py` (8 funciones, 12 ítems) congela el retiro
+por AST en tres direcciones: (1) los 9 helpers **no están** (intersección sobre nombres
+literales, para que el mensaje nombre al que volvió); (2) el conjunto de métodos de la clase es
+**cerrado e igual** a los 10 que quedan —un helper nuevo con otro nombre no tiene hueco—; (3) la
+superficie pública es exactamente
+`{ejecutar_fase_asistida, preparar_etapa_asistida, verificar_etapa_asistida}` y
+`__init__(path_resolver, plugin_limit_guard, preflight, default_domain)`. Además enumera
+**todo** `sky_claw/` para que ninguna construcción de producción vuelva a pasar las 4
+dependencias muertas, prohíbe el literal `Bashed Patch, 0.esp` fuera de una línea que nombre
+`BASHED_PATCH_NAME`, y enumera los 5 símbolos de lock/TX que el módulo ya no puede importar.
+
+**Prueba por mutación (12/12).** Cada mutación reintroduce un trozo de lo retirado (o algo
+equivalente) y se corre el test que debería verlo:
+
+| Mutación | Test que la mata |
+|---|---|
+| `__init__` vuelve a pedir `lock_manager` | `test_la_firma_no_pide_las_dependencias_del_camino_muerto` |
+| vuelve el método `execute_pipeline` | ancla de superficie pública (`retiro_headless`) |
+| literal `"Bashed Patch, 0.esp"` suelto en producción | `test_el_lock_del_bashed_patch_ya_no_existe` |
+| un constructor de producción vuelve a pasar `lock_manager` | `test_ningun_modulo_de_produccion_construye_el_servicio_con_dependencias_muertas` |
+| la tool vuelve a admitir un `runner` posicional | `test_wrye_bash_lock::test_el_handler_no_admite_un_runner` |
+| el guard M-04 aborta también cuando `valid=True` | `test_la_fase_1_sigue_si_el_guard_m04_valida` |
+| el preflight rojo consulta el guard | `test_un_preflight_en_rojo_no_consulta_el_guard_m04` |
+| el preflight verde ensucia el `result` | `test_un_preflight_verde_no_ensucia_el_resultado` |
+| `validate_limit=False` consulta el guard igual | `test_validate_limit_false_no_consulta_el_guard` |
+| entra un helper privado con un nombre **nuevo** (no está en la lista de retirados) | `test_el_servicio_ya_no_expone_el_camino_headless` (segunda aserción: conjunto **cerrado** de métodos) |
+| el módulo vuelve a importar `LockError` | `test_el_modulo_ya_no_importa_la_maquinaria_del_camino_muerto` |
+| `AsyncToolRegistry` vuelve a aceptar `wrye_bash_runner` | `test_el_registry_del_agente_ya_no_recibe_un_runner_de_wrye_bash` |
+| una construcción del registry vuelve a pasar `wrye_bash_runner=` | idem (segunda aserción, por AST) |
+
+**Mapeo test por test de `tests/test_wrye_bash_service.py` (36 retirados, 8 contratos vivos).**
+«Vive» significa que el contrato se sigue midiendo; entre paréntesis, dónde.
+
+| Test retirado | Qué congelaba | Disposición |
+|---|---|---|
+| `test_genera_bashed_patch_exitoso` | el pipeline headless podía reportar éxito | se retira: no hay pipeline que tenga éxito. El veredicto por evidencia vive en `test_wrye_bash_asistida` (`verificar_*`) |
+| `test_toma_el_lock_durante_la_corrida` | lock tomado mientras corre el runner | se retira con el lock. La negación (la etapa asistida no toma locks) la ancla `test_wrye_bash_lock::test_el_handler_no_toma_ningun_lock` |
+| `test_serializa_cuando_el_lock_ya_esta_tomado` | serialización entre corridas | se retira: no hay recurso compartido que serializar |
+| `test_libera_lock_ante_fallo_del_runner` | sin leak de lock ante excepción | se retira: no hay lock que liberar |
+| `test_guard_m04_falla_aborta_sin_correr` | M-04 rojo aborta antes de correr | **vive**: `test_wrye_bash_asistida::test_la_fase_1_aborta_si_el_guard_m04_falla` |
+| `test_guard_m04_valido_corre` | M-04 verde no aborta | **vive**: portado como `test_la_fase_1_sigue_si_el_guard_m04_valida` (no existía el camino feliz del guard en la suite asistida) |
+| `test_validate_limit_false_saltea_el_guard` | el interruptor `validate_limit` | **vive**: portado como `test_validate_limit_false_no_consulta_el_guard` |
+| `test_runner_no_disponible_devuelve_error` | `ensure_runner` falla cerrado | se retira con `ensure_runner`; la firma ya no admite un runner |
+| `test_lock_contention_devuelve_error` | contención de lock devuelve dict | se retira con el lock |
+| `test_ensure_runner_construye_desde_el_resolver` | construcción perezosa del runner | se retira: `ensure_runner` no tiene caller vivo |
+| `test_toma_tambien_el_lock_de_load_order` | lock anidado `load-order` | se retira con el lock |
+| `test_serializa_contra_sort_de_loot` | un sort de LOOT bloquea la corrida | se retira: la etapa asistida no compite por el load order |
+| `test_lease_perdido_al_cerrar_devuelve_error` | lease perdida en el `__aexit__` | se retira: no hay lease |
+| `test_fallo_non_zero_emite_message_canonico` | `message` canónico desde el stderr | se retira: ningún veredicto se deriva de un exit code (ADR §2) |
+| `test_exito_message_vacio` | `message` vacío en éxito | se retira: idem |
+| `test_preflight_red_bloquea_sin_correr` | preflight rojo frena | **vive**: `test_preparar_bloquea_si_el_preflight_esta_en_rojo` |
+| `test_preflight_red_no_llama_al_guard_m04` | el rojo corta antes del guard | **vive**: portado como `test_un_preflight_en_rojo_no_consulta_el_guard_m04` |
+| `test_preflight_yellow_no_bloquea_pero_surface` | amarillo no bloquea y viaja | **vive**: ya cubierto en `test_wrye_bash_asistida` (amarillo adjunto al `result`) |
+| `test_preflight_green_no_ensucia_el_result` | verde no adjunta la clave | **vive**: portado como `test_un_preflight_verde_no_ensucia_el_resultado` |
+| `test_sin_fuentes_resolubles_no_gatea` | sin rutas no hay gate | **vive**: extremo a extremo en `test_preparar_sin_data_resoluble_falla_cerrado` |
+| `test_cn_emite_manifest_antes_de_correr_y_flight_report_tras_commit` | caja negra T-26/T-28 | se retira: la etapa no abre TX (ADR §2) |
+| `test_cn_manifest_fail_closed_aborta_sin_correr` | manifiesto fail-closed | se retira: no hay manifiesto |
+| `test_cn_sin_journal_no_emite_pero_corre` | journal opcional | se retira: el servicio ya no recibe journal |
+| `test_cn_flight_report_best_effort_no_rompe_exito` | informe best-effort | se retira: no hay informe |
+| `test_cn_fallo_de_ejecucion_marca_rolled_back` | TX rolled-back por excepción | se retira: no hay TX |
+| `test_cn_resultado_non_zero_marca_rolled_back` | TX rolled-back por exit non-zero | se retira: no hay TX ni exit code |
+| `test_cn_lock_contention_no_abre_transaccion` | el manifiesto va dentro del lock | se retira con ambos |
+| `test_cn_lease_perdida_marca_rolled_back` | lease perdida cierra la TX | se retira con ambos |
+| `test_cn_cancelacion_marca_rolled_back_y_propaga` | cancelación cierra la TX y propaga | se retira: no hay TX que cerrar |
+| `test_target_files_incluye_la_ruta_resuelta_del_bashed_patch` | el lock externo recibe `target_files` | se retira con el lock. Los destinos de permisos siguen vivos y cubiertos en `test_output_targets` |
+| `test_fallo_non_zero_restaura_el_bashed_patch_previo` | rollback U-04 del artefacto | se retira: la etapa no escribe el artefacto |
+| `test_timeout_tambien_restaura_el_bashed_patch_previo` | rollback ante timeout | se retira: no hay subproceso |
+| `test_rolled_back_distingue_el_revertido_del_que_dejo_basura` | el matiz del rollback | se retira con el rollback |
+| `test_fallo_sin_patch_previo_no_crashea` | primer run sin artefacto previo | se retira: no hay snapshot |
+| `test_rollback_fallido_deja_la_tx_pendiente` | TX pendiente si el restore falla | se retira: no hay TX |
+| `test_cn_fallo_non_zero_con_rollback_marca_rolled_back` | rollback + cierre de TX | se retira con ambos |
+
+**Efectos colaterales del retiro, corregidos en el mismo PR.** (1) El literal `Bashed Patch,
+0.esp` aparecía suelto en 5 módulos (`wrye_bash_asistida`, `wrye_bash_runner`,
+`wrye_bash_service`, `system_tools`, `validators/etapas_previas_lods`): se consolidó en
+`BASHED_PATCH_NAME` —`etapas_previas_lods` ahora importa la constante en vez de repetir el
+string—. (2) **Tres censos vivos detectaron el retiro por sí solos** y se actualizaron sin
+debilitarlos: el de raíces de MO2 (`test_cada_consumer_declara_que_raiz_necesita`) perdía la
+entrada de `wrye_bash_service` en `get_mo2_path` —se actualizó con el racional escrito en el
+docstring, que es el procedimiento que ese censo pide para un consumer que cambia de accessor—;
+el de mecanismos de rollback (`test_rollback_salida`) perdía su entrada `"snapshot"` porque el
+módulo ya no construye `SnapshotTransactionLock`; y el de productores de evidencia orphan
+(`test_orphan_evidence_producer_contract`) perdía sus dos call sites de
+`persist_action_manifest`/`persist_flight_report`. Los tres son igualdad literal: no se relajó
+ninguno, se declaró la desaparición y queda escrito por qué. (3) `test_wrye_bash_lock.py` dejó de
+poder pasarle `lock_manager`, `snapshot_manager`, `journal` y un runner al handler: los 9 tests se
+adaptaron **sin perder ninguno** (el de "no invoca el runner" pasó a "no admite un runner", que es
+más fuerte).
+
+### 7.2 PR D — testigo durable entre sesiones: decisiones de diseño (2026-11-04)
+
+El borrador original de §6/§7 citaba el «patrón `texgen_handoff`» como referencia conceptual. Al
+contrastarlo contra `sky_claw/app/db/handoffs.py` aparecen tres diferencias estructurales que
+prohíben copiar `DeploymentHandoff`:
+
+1. **`DeploymentHandoff` exige `source_tx_id NOT NULL REFERENCES transactions(transaction_id)`.** Su
+   razón de vivir en `journal.db` es cerrar atómicamente «TX + handoff de un árbol que Sky-Claw
+   escribió». La fase 1 de la etapa 6 **no abre TX** por principio (§2) y no escribe ningún árbol:
+   registra una *observación previa* (ausencia probada o huella SHA-256) para comparar después,
+   nunca autoridad de provenance.
+2. **La ruta ganadora del overlay cambia entre fases.** En la primera corrida el parche no existe en
+   ninguna capa y `bashed_patch_en_overlay` cae al fondo (`<game>/Data/...`); cuando el operador
+   construye dentro de MO2 bajo la USVFS, el archivo aparece en `overwrite/` o en `mods/<mod>/`.
+   Clavear por `artefacto.ruta` fallaría el 100 % de las primeras corridas. `ClaveDeTestigo`
+   identifica el **slot virtual** con el par canónico `(plugins_txt, destino_data)` (serializado en
+   JSON como arreglo de dos elementos, inyectivo para cualquier carácter de ruta): fija instancia de
+   MO2, perfil e instalación del juego sin acoplarse a la capa ganadora.
+3. **Ubicación por usuario (`SystemPaths.runtime_state_dir()`), no `.skyclaw_backups/`.** Siguiendo
+   ADR 0011 P0.2 (`sky_claw/config.py:138`), el archivo vive en
+   `~/.sky_claw/state/etapa6_testigos.json`, resuelto perezosamente al operar: dos procesos lanzados
+   desde `cwd` distintos comparten el testigo y la fixture autouse de `tests/conftest.py` lo aísla
+   por test sin ensuciar el árbol de trabajo.
+
+**Qué pasa al reabrir la GUI en frío, en multi-pestaña y bajo concurrencia (Review #5770094299,
+P1 + P2).** `ReactiveStore` vive en RAM: al reabrir la GUI el toast ya no existe, así que el
+operador vuelve a pulsar la etapa 6 (`preparar`) para obtener el CTA de verificación. Si esa
+segunda `preparar` sobrescribiera el testigo con el parche recién construido, la fase 2 compararía
+el archivo contra sí mismo y fallaría con `SIN_CAMBIO`. La función pura
+`decidir_testigo_de_preparacion` separa los casos y el servicio declara una partición total en
+`EstadoDelTestigoDurable` (`guardado`, `conservado_por_build`, `conservado_sin_observacion`,
+`sin_observacion`, `no_disponible`, `error_de_almacen`): ante un build intermedio conserva el
+testigo anterior y lo devuelve en `testigo_previo` (`construido_despues_de_la_preparacion=True`).
+
+Dos invariantes cierran las carreras de estado entre sesiones, pestañas o procesos sin introducir
+locks globales del pipeline ni bloquear otras etapas:
+
+1. **Transacción atómica por almacén (`sincronizar_preparacion`, P2).** `AlmacenEnMemoria` y
+   `AlmacenJSON` ejecutan la secuencia completa `cargar → observar → decidir → escribir` dentro de
+   una sola sección crítica del almacén (`RLock` intraproceso + `flock`/`msvcrt.locking`
+   cross-process sobre `.etapa6_testigos.json.lock`). Ninguna preparación concurrente sobre el mismo
+   slot puede leer entre la decisión y la escritura de otra, ni resucitar un testigo consumido en
+   paralelo. Tanto `etapa6_testigos.json` como su `.lock` rechazan enlaces simbólicos/junctions y
+   cualquier archivo no regular (FIFOs, sockets, dispositivos o directorios) antes de abrir y tras
+   `os.open(..., O_NONBLOCK)` mediante `os.fstat(fd)`, evitando bloqueos indefinidos bajo sección
+   crítica. Si el archivo JSON está corrupto o es ilegible, `_cargar_objeto` lanza
+   `AlmacenDeTestigosIlegibleError` antes de decidir —incluso cuando el artefacto tampoco tiene
+   identidad— para que la fase 1 declare siempre `error_de_almacen` sin pisar la evidencia.
+2. **Época de preparación (`generacion`) y consumo condicional CAS (`olvidar_si_coincide`, P1).**
+   Cada época de preparación emite un identificador opaco de 128 bits (`generacion`, 32 hex en
+   minúsculas) que viaja dentro de `testigo_previo` y se valida con un único parser en esquema
+   cerrado (`parsear_testigo_de_payload`, compartido por `ritual_runner._testigo_utilizable` y
+   `wrye_bash_service._testigo_desde_resultado` para impedir divergencia S-10). Un refresco
+   idempotente sobre la misma huella conserva `generacion` (evitando testigos zombis si el cliente
+   verifica con el primer payload), mientras que un ciclo nuevo tras consumo o cambio de huella base
+   rota `generacion`. En la fase 2 sigue rigiendo `payload` > `durable` > `ninguno`
+   (`testigo_origen`) para evaluar el veredicto, pero la limpieza sólo se ejecuta cuando el testigo
+   verificado porta una `generacion` explícita y usa `olvidar_si_coincide(clave, testigo=...,
+   generacion=...)` (sin comodín `None` permitido en la firma ni en runtime): ni un replay con
+   payload viejo de una preparación A anterior ni un payload legítimo sin `generacion`
+   (`no_disponible` o `error_de_almacen`, p. ej. con `existia=False, sha256=None`) pueden borrar el
+   testigo durable de una preparación B posterior. Anclado por AST y por inspección de firma en
+   `tests/test_etapa6_testigo_durable.py`.
+
+**Efecto sobre la superficie del agente LLM.** `GenerateBashedPatchParams` sigue exponiendo sólo
+`fase` (`extra="forbid"`, A-4 intacto: el modelo jamás puede inyectar un hash), pero como
+`system_tools.generate_bashed_patch` inyecta `almacen_por_defecto()`, una sesión que llamó
+`fase="preparar"` deja el testigo en disco y otra sesión posterior que llame `fase="verificar"`
+demuestra `frescura_probada=True` sin confiar en el modelo **cuando el artefacto supera el
+veredicto completo**: existe, es regular, no vacío y legible, **está habilitado en `plugins.txt`**
+y apareció o cambió respecto del testigo durable. Si el plugin no está habilitado en `plugins.txt`,
+el veredicto falla con `NO_HABILITADO` y `frescura_probada=False` (preservando el testigo durable
+para habilitar y reintentar); si el artefacto sigue ausente devuelve `ARTEFACTO_AUSENTE` con
+`frescura_probada=False`; y si conserva la misma huella que el testigo falla con `SIN_CAMBIO` y
+`frescura_probada=False`.
+
+### 7.3 Vigencia contextual del testigo durable, simetría M-04 e I/O del almacén (2026-11-05, issue #866)
+
+La auditoría adversarial de #862/#864/#865 encontró defectos que no nacieron en #865 y se
+cerraron aparte (una rama + un PR por cambio). Decisiones, con su ancla:
+
+1. **H-1 — el testigo durable no tenía vigencia.** Con `preparar(LO1)` → build `S1` sin verificar →
+   LOOT pasa a `LO2`, `preparar` (`conservado_por_build`) y `verificar` seguían comparando contra
+   `S0` y declaraban `frescura_probada=True` sobre un parche anterior a `LO2`. La vigencia es una
+   **función determinista del contexto de entrada del perfil**, no del reloj (no se introduce un
+   TTL sobre `observado_en`: el operador puede tardar horas en Wrye Bash sin invalidar nada).
+   - `huella_de_contexto(plugins_txt)` (`wrye_bash_asistida.py`) es el SHA-256 canónico de
+     `plugins.txt` **excluyendo la entrada propia de `BASHED_PATCH_NAME`** más `modlist.txt`
+     hermano (orden, activación y prioridad). Ausente es una observación (marcador propio);
+     ilegible es `None` ("no sé"), nunca "no cambió".
+   - **Invariante de dominio:** al construir y tildar el parche (paso 5 de `PASOS_ASISTIDOS`)
+     `plugins.txt` gana `*<BASHED_PATCH_NAME>`. Si esa línea entrara al digest, el build legítimo
+     invalidaría su propio testigo. Anclado: `test_la_huella_excluye_la_entrada_propia_del_bashed_patch`
+     y el camino feliz `test_m3_build_y_activacion_legitimos_conservan_el_testigo`.
+   - El registro durable (`TestigoDurable.huella_contexto`) la persiste junto al testigo. Los registros
+     que escribió PR D (4 claves) se leen como contexto **desconocido** (`None`), no se descartan.
+     El payload de `testigo_previo` **no cambia** (esquema cerrado intacto): la `generacion` ya enlaza
+     payload y registro, y es el registro el que gobierna.
+   - **En `preparar`** (`decidir_testigo_de_preparacion(verificar_contexto=True)`): caso 3 (el
+     artefacto cambió) sólo conserva el testigo viejo si el contexto coincide; si no, **adopta lo
+     observado como nueva época sin afirmar un build** (`guardado`, `construido_despues=False`,
+     `generacion` nueva). Con el artefacto sin cambios (caso 4) la época se conserva y sólo se
+     actualiza la huella: LOOT **antes** del build no invalida. Contexto no observable ⇒ el
+     durable se conserva intacto (igual que el caso 1).
+   - **En `verificar`** (`_verificar_con_almacen`): si el registro gobernante (el leído, o el que el
+     payload identifica por `generacion`) no coincide, el veredicto se emite **sin testigo**
+     (`frescura_probada=False`) y el registro no se consume. Se declara en `testigo_contexto`
+     (`coincide` / `cambio` / `no_verificable` / `no_aplica`).
+   - **Límites declarados.** (a) Crear un mod desde `overwrite` agrega una línea a `modlist.txt` y
+     cambia la huella: la dirección del error es la segura (frescura no probada, se vuelve a
+     preparar), nunca un falso verde. (b) Un payload sin `generacion`, o la verificación sin
+     almacén, no tiene registro que lo gobierne por construcción (`no_aplica`): su garantía es la de
+     PR D. (c) Un payload CON `generacion` y almacén disponible cuyo registro no se puede resolver
+     —la época fue reemplazada por otra preparación, ya se consumió o el almacén es ilegible— **falla
+     cerrado** (`no_verificable`, sin testigo): no hay huella con qué validar el contexto. Hallado en
+     la revisión de #870 (Codex P2): antes ese caso se saltaba la validación y un payload viejo probaba
+     frescura sobre un parche anterior al cambio de load order. Consecuencia aceptada: repetir la
+     verificación con un payload ya consumido deja de probar frescura.
+2. **H-2 — la tool del agente LLM no corría el guard M-04.** `system_tools.generate_bashed_patch`
+   construía el servicio sin `plugin_limit_guard` y pasaba `validate_limit=False` con el comentario
+   "se valida a nivel Supervisor", pero `AsyncToolRegistry` no pasa por el `SupervisorAgent`: con
+   >254 plugins la GUI abortaba (`aborted_by="plugin_limit_guard"`) y Telegram / `/api/chat` no.
+   Ahora las **tres** superficies cablean el mismo `PluginLimitGuard`. Ancla que **enumera** los
+   sitios productivos (no muestrea): `test_m4_todo_sitio_productivo_del_servicio_pasa_el_guard_m04`.
+3. **H-3 — las anclas del retiro tenían un hueco.** Congelaban los métodos de la clase pero no las
+   funciones de módulo ni los símbolos de subproceso: agregar un `_reconstruir_headless()` suelto con
+   `subprocess` pasaba en verde (medido por mutación). Ahora la igualdad cubre las funciones de módulo
+   y se prohíbe `subprocess`, `create_subprocess_exec/shell`, `Popen` y `WryeBashRunner` por import,
+   nombre y atributo (`tests/test_wrye_bash_retiro_headless.py`).
+4. **H-4 / L-2 / L-3 — I/O del almacén.** `os.replace` reintenta (hasta 5 veces, backoff exponencial
+   desde 20 ms) sólo ante `PermissionError` de Windows con `winerror` 5/32; cualquier otro error, o
+   fuera de Windows, corta al primer intento. Todo fallo sale como `AlmacenDeTestigosIlegibleError`
+   (con el `OSError` como `__cause__`, también el `mkdir`). Un `.etapa6_testigos.*.tmp` huérfano de un
+   proceso muerto se barre bajo el lock exclusivo, sólo si es archivo regular (`lstat`, sin seguir
+   enlaces). L-1: `leer` sí toma el lock del SO; sólo lo omite en un directorio de sólo lectura
+   (`EACCES`/`EPERM`/`EROFS`), donde ningún escritor puede correr `os.replace`.
+5. **L-4 — cifras.** Las del §7.1 y el CHANGELOG quedaron viejas tras la ronda 12 de #862 (+15 líneas
+   de docstrings): el módulo pasó de 1231 a **676** líneas (+72 / −627 = **−555** netas), no 661/−570.
+
+**Verificación por mutación** (M1–M10 de la issue, cada una pone en rojo al menos un test de
+`tests/test_etapa6_vigencia_contexto.py` o de `tests/test_wrye_bash_retiro_headless.py`): ignorar el
+orden/activación de `plugins.txt`, omitir `modlist.txt`, no excluir la entrada del Bashed Patch, no pasar
+`contexto` desde el servicio, `validate_limit=False` o sin guard, función de módulo nueva, `import
+subprocess` / `asyncio.create_subprocess_exec`, sin reintentos, reintentar errores no transitorios, dejar
+escapar el `OSError` crudo (en `os.replace` y en `mkdir`), y omitir el barrido de temporales.
 
 ## 8. Revisión adversarial del propio PR (2026-10-30)
 
@@ -355,20 +625,22 @@ criterio de siempre: cada afirmación verificada contra el código o contra una 
 | B-1 | El filtro de `GenerateBashedPatchStrategy` descartaba `fase`: toda invocación —GUI, supervisor y agente— caía en la preparación. La fase 2 del ritual era **inalcanzable**, no por diseño sino por un `set` de dos claves. | **Confirmado por conducta**: con `fase="verificar"` en el payload, el pipeline recibía sólo `profile`/`validate_limit`. | `fase` y `testigo_previo` entran a `_VALID_BASHED_PATCH_KEYS`; `fase=None` (clave presente y vacía del formulario) se descarta para que aplique el default en vez de fallar con `FaseInvalida`. |
 | B-2 | Mi primer filtro usaba `filtered.get("fase") is None` y después `pop("fase")`: `get` devuelve `None` también cuando la clave **no está**, así que toda invocación sin `fase` elevaba `KeyError: 'fase'`. | Lo atajó `test_destructive_strategies_error_contract.py` (7 rojos) antes del commit: el `error_message` de la tarea era literalmente `"'fase'"`. | `in` + `del`, no `get` + `pop`; el contrato de errores destructivos vuelve a verde sin tocarlo. |
 | B-3 | `tests/_orchestration_dispatcher_dependencies.crear_dependencias_desde_doble` —el gemelo de test del cableado— seguía con la firma vieja de dos argumentos: reenviaba `profile`/`validate_limit` y **descartaba** `fase`. El test que dice probar la fase 2 la habría visto llegar como preparación. | Confirmado: el mock registraba `mock(profile='MyProfile', validate_limit=False)`. Es el defecto dominante del repo, mudado a un helper. | El doble honra la firma completa del Protocol (`fase`, `testigo_previo`) y la reenvía. |
-| B-4 | 7 de los 9 tests de `tests/test_wrye_bash_lock.py` pineaban el contrato viejo del handler (lock anidado, caja negra, lease perdido, saneo del runner). Uno de los dos que «pasaban», `test_handler_bloqueado_si_loot_tiene_el_load_order`, lo hacía **por otro motivo**: ahora fallaba con `SinRutasResolubles`, no por contención de lock. | Confirmado por corrida: 7 rojos y un falso verde detectable leyendo el `reason` del payload. | El módulo se reescribe a su contrato nuevo (delega en el enrutado, **no** toma lock, **no** emite caja negra, **no** invoca el runner), con el mismo número de tests. La cobertura de lock/rollback/manifiesto sigue donde vive el código: `test_wrye_bash_service.py` (36 tests, verdes). |
+| B-4 | 7 de los 9 tests de `tests/test_wrye_bash_lock.py` pineaban el contrato viejo del handler (lock anidado, caja negra, lease perdido, saneo del runner). Uno de los dos que «pasaban», `test_handler_bloqueado_si_loot_tiene_el_load_order`, lo hacía **por otro motivo**: ahora fallaba con `SinRutasResolubles`, no por contención de lock. | Confirmado por corrida: 7 rojos y un falso verde detectable leyendo el `reason` del payload. | El módulo se reescribe a su contrato nuevo (delega en el enrutado, **no** toma lock, **no** emite caja negra, **no** invoca el runner), con el mismo número de tests. La cobertura de lock/rollback/manifiesto sigue donde vive el código: `test_wrye_bash_service.py` (36 tests, verdes) — hasta el PR C, que retiró ese código y esos tests junto con él (§7.1). |
 | B-5 | Dos tests de `test_system_tools_medio001.py` pineaban la sanitización del `stdout`/`stderr` del runner en el handler. Esa rama ya no existe, pero el saneo **tampoco vive en el servicio**: `execute_pipeline` devuelve texto crudo. | Confirmado por grep: `sanitize_for_prompt` no aparece en `wrye_bash_service.py`; y `execute_pipeline` no tiene callers de producción tras el cableado. | Los dos tests se reescriben al contrato nuevo (ninguna salida de subproceso llega al LLM). El hueco queda **declarado en §7 (PR C)**: si `execute_pipeline` se conserva como compat, necesita su propio saneo. |
 | B-6 | El censo `test_perfil_sesion_invariante` se rompe por partida doble: desaparece el único literal exento (`profile="agent-tool"`) y `generate_bashed_patch` entra a la familia `FAMILIA_DEL_PERFIL` por introspección. | Confirmado: `{} == {'sky_claw/app/agent/tools/system_tools.py': 1}` y la familia medida incluía el handler nuevo. | `LITERALES_ESPERADOS = {}` (se deja el censo **vacío**, no se borra el test) y el handler entra a la familia con receta propia. El oráculo de comportamiento no quedaba vacío: para esta tool el perfil no viaja a MO2 ni vuelve en el payload, así que se observa espiando `ejecutar_fase_asistida`. **Probado por mutación**: con `profile="Default"` el test rojo, con `self._mo2_profile` verde. |
 | B-7 | `AWAITING_APPROVAL` no es alcanzable desde `RUNNING` en `ToolStateMachine`, así que no podía mapear `pendiente`. | Confirmado leyendo `_VALID_TRANSITIONS`. | Estado nuevo `AWAITING_OPERATOR` (terminal, sin salidas), con `_TERMINAL_STATES` consumido por los tres lugares que antes repetían la tupla a mano (`transition`, `active_task_count`, `cleanup_terminal`). Ancla doble: estado esperado y clave de idempotencia liberada. |
 | B-9 | `GenerateBashedPatchParams` nació con el default de pydantic (`extra="ignore"`): un `profile` mandado por el modelo se descartaba **en silencio** y el LLM creería haber elegido el perfil. | Verificado contra el `execute()` del registry: con `ignore` no hay error ni aviso; con `forbid` el `ValidationError` es explícito y el router lo puede devolver al modelo. | `extra="forbid"`, igual que `DiagnosticarParallaxParams` y por el mismo motivo (spec de #454), con test de que `profile` y `testigo_previo` se rechazan. |
 | B-8 | `tests/test_wrye_bash_asistida.py` exigía `pendiente_no_ratificado is True`, el marcador provisional del PR A. | Al retirarlo, el test quedaba rojo a propósito. | El test ahora exige la **ausencia** de la clave: dos campos para una sola decisión vuelven a divergir. Es el contrato ratificado, no la desaparición de una aserción. |
 
-**Censo de tests que el cableado mueve, para el PR C.** Medido con `--collect-only` en esta
-rama: `test_wrye_bash_asistida.py` **129**, `test_wrye_bash_service.py` **36**,
-`test_wrye_bash_cableado_asistido.py` **24** (nuevos), `test_wrye_bash_lock.py` **9**
-(reescritos, mismos 9 que antes). `execute_pipeline` conserva sus 36 tests de servicio y **ya
-no tiene callers de producción**; los 9 del lock dejaron de ser suyos y ahora anclan la
-superficie del agente. Con eso, «retirar `execute_pipeline` y sus 45 tests (36 + 9)» ya no es
-un número correcto: quedan **36** tests que dependen del camino headless.
+**Censo de tests que el cableado movió (medido en PR B; resuelto en PR C).** Con
+`--collect-only` en la rama del PR B: `test_wrye_bash_asistida.py` **129**,
+`test_wrye_bash_service.py` **36**, `test_wrye_bash_cableado_asistido.py` **24** (nuevos),
+`test_wrye_bash_lock.py` **9** (reescritos, mismos 9 que antes). Los 9 del lock dejaron de ser
+del servicio y anclan la superficie del agente; los **36** de servicio eran los que dependían del
+camino headless. El PR C los retiró con el código: de sus **8 contratos que siguen vivos**,
+**4 se portaron** a la suite asistida en ese PR (el camino feliz de M-04, el interruptor
+`validate_limit` y los dos cortes del preflight) y los otros 4 ya estaban cubiertos por la
+suite asistida o por `test_output_targets`; el mapeo test por test está en la tabla de §5.
 
 **Ronda 9 (revisión adversarial del PR B, 2026-11-01).** Code review nivel senior sobre el
 propio cableado: se buscaron huecos en las anclas, afirmaciones del PR que el código no
@@ -391,6 +663,60 @@ sostiene, y superficies nuevas sin cubrir. Todos verificados por conducta o por 
 presente (ninguna otra tool emite esa clave, grep), colisiones de idempotencia entre fase 1 y
 fase 2 (claves distintas: el payload difiere), y regresiones en las anclas de censo (`24` tools,
 `FAMILIA_DEL_PERFIL`, `LITERALES_ESPERADOS` vacío) — las tres verificadas por corrida.
+
+**Ronda 11 (auditoría externa del PR C, 2026-11-03).** Auditoría adversarial del retiro, con
+worktree propio sobre el HEAD del PR y ~1.750 tests ejecutados. Cuatro hallazgos, todos
+corregidos acá y probados por mutación.
+
+| # | Hallazgo | Verificación | Corrección |
+|---|---|---|---|
+| C-1 | **El ancla del nombre del artefacto tenía un punto ciego medible.** `test_el_lock_del_bashed_patch_ya_no_existe` eximía archivos por contener la subcadena `"mods"` (un truco para no tocar `output_targets.py`); el auditor agregó `X_LITERAL_MUERTO = "Bashed Patch, 0.esp"` en ese archivo —código vivo— y **el ancla pasó**. | **Confirmado por mutación** (reproducida acá): la versión por texto no veía un literal vivo en un archivo que menciona `"mods"`. | El ancla se parte en dos: el id de lock (sobre el módulo) y `test_el_nombre_del_artefacto_se_define_una_sola_vez`, que cuenta **constantes `str` por AST** y exige igualdad exacta en dos listas: el literal UNA vez en `wrye_bash_runner.py` (línea de la asignación) y UNA vez en el único módulo declarado como excepción. Las 3 docstrings de `output_targets.py` que lo nombraban pasaron a prosa sin el literal. **4/4 mutaciones nuevas mueren**, incluida la del auditor. Y al re-correr el set completo de mutaciones apareció un segundo hueco, no señalado por la auditoría: **re-agregar `wrye_bash_runner` a `AsyncToolRegistry` no rompía ningún test**. Se agregó `test_el_registry_del_agente_ya_no_recibe_un_runner_de_wrye_bash` (firma + construcciones por AST) y ahora **12/12 + 4/4** mueren. |
+| C-2 | **Prosa que citaba una clase eliminada**: `system_tools._BodySlideRunFallidoError` y `pandora_service._PandoraRunFallidoError` decían «mismo patrón que `wrye_bash_service._RunFallidoError`», que el PR C borró. Un lector que fuera a buscar el ejemplo no lo encontraría. | Confirmado por grep: dos referencias, ambas en docstrings. | Ambos apuntan al ejemplo **vivo** (`pandora_service._RunFallidoError` y el `raise` de `synthesis_service`), y `pandora_service` deja escrito que el ejemplo anterior se retiró en §7.1. |
+| C-3 | **Cifras del propio PR desalineadas con el archivo**: decía 1231 → 658 líneas cuando el módulo quedó en 661 (creció con dos docstrings posteriores), y el CHANGELOG decía «9/9 mutaciones» mientras el cuerpo decía 11/11. | `wc -l` sobre `b247aea` y el HEAD: 1231 → **661** (−570). `pytest --collect-only` del ancla: **11 ítems**. | Cifras corregidas en este ADR, en `CHANGELOG.md`, en el tablero y en el cuerpo del PR. Regla que se aplica: toda cifra se vuelve a medir **después** del último edit, no antes. |
+| C-4 | **Duplicado de la constante fuera de este carril**: `sky_claw/local/xedit/patch_orchestrator.py` define su propia `DelegateToBashedPatch.BASHED_PATCH_NAME` con el mismo literal. | Confirmado por grep. **No se toca**: `sky_claw/local/xedit/**` pertenece a otro carril (constraint 5) y no es un cambio que este PR fuerce. El drift ya está anclado por comportamiento en `test_wrye_bash_lock.py::test_nombre_canonico_del_bashed_patch_sincronizado` (igualdad entre las dos definiciones). | Se **declara** como excepción enumerada en `_DEFINICIONES_TOLERADAS` del ancla, con archivo y línea exactos: una tercera definición, o mover ésta de archivo, rompe el test. Si el carril de xEdit la consolida, la excepción caduca y el ancla exige quitarla en el mismo commit. |
+
+**Ronda 12 (segunda auditoría externa del PR C, 2026-11-04).** Auditoría adversarial sobre el
+HEAD `6186ff3`, con el PR ya en verde (19/19). Cuatro hallazgos, ninguno P0/P1: dos anclas que
+prometían más de lo que median, una prosa que describía un contrato inexacto y una cifra
+desincronizada. Todos corregidos acá y probados por mutación.
+
+| # | Hallazgo | Verificación | Corrección |
+|---|---|---|---|
+| H-01 | **El ancla del nombre del artefacto seguía acoplada a números de línea.** `test_el_nombre_del_artefacto_se_define_una_sola_vez` comparaba `(ruta, línea, valor)`; agregar un comentario o un import arriba de `BASHED_PATCH_NAME` la ponía en rojo **sin que cambiara ningún contrato** —un falso positivo, que es el modo de falla inverso al de la ronda 11. | **Reproducido** (`/tmp/falso_positivo.py`): un `# comentario` arriba de la asignación en `wrye_bash_runner.py` ⇒ el ancla fallaba. | El ancla compara ahora `(nombre, valor)` por **AST** y cuenta apariciones **por archivo** (`_definiciones_del_artefacto()`); la línea aparece **sólo en el mensaje de diagnóstico**. Siete casos nuevos: literal suelto, docstring, segunda definición, duplicado con otro valor y constante renombrada **mueren**; comentario e imports **viven** (7/7). |
+| H-02 | **«No muta nada» era inexacto.** `preparar_etapa_asistida` no abre TX ni toma locks, pero el preflight corre el sensor de **permisos**, que es un write-probe real: crea y borra `.skyclaw_probe_<uuid>.tmp` en el destino, y en el dominio USVFS ese destino es el `overwrite` del perfil. La prosa prometía "sólo lectura" a secas y ningún test del **servicio** fijaba el contrato. | Confirmado leyendo `write_permissions._probe_write` y `_permission_targets(dominio=USVFS)`. El sensor **sí** estaba cubierto (`test_write_permissions.py::test_unlink_fallido_es_probe_residue`); lo que faltaba era el contrato en el borde del servicio. | Tres docstrings (módulo, clase y `preparar_etapa_asistida`) distinguen "no muta el artefacto, el perfil ni el load order" de "no escribe un solo byte", y nombran el probe. Dos tests de contrato nuevos: la fase 1 **sondea el `overwrite`** y la carpeta **queda vacía** al terminar; un unlink que falla deja el residuo **reportado** en el preflight como `yellow`, con la ruta, y **no** bloquea la preparación. **4/4 mutaciones mueren** (sondear `Data`, no borrar el probe, volver el residuo `critical`, tragarse el error). |
+| H-03 | **`output_targets.py` seguía documentando el ejecutor retirado como ruta viva**: el comando `[bash, -b, <BASHED_PATCH_NAME>]` aparecía como el caso normal de Wrye Bash, y el docstring de `bashed_patch_target` afirmaba que el destino habilitaba "el snapshot/rollback de U-04 y el post-check de artefacto de U-06", ambos retirados con el camino headless. | Confirmado por lectura; el censo de consumidores da `surface_census.py:485`, `wrye_bash_service.py:338/380` y `tests/test_output_targets.py` — **el helper tiene consumidor vivo y no se borra**. | Los tres pasajes quedan **históricos y fechados** (ADR 0016 §7.1) en vez de presentes: `-b` como "históricamente", `bashed_patch_target` como "dónde escribiría un build físico" y destino del sensor de permisos, y la verificación apuntando a `bashed_patch_en_overlay`, que es el único camino que corre hoy. El helper se conserva y el texto dice por qué: borrarlo exige el censo, no lo decide un docstring. |
+| H-04 | **El ADR se contradecía sobre los contratos portados**: §5 decía «8 contratos sobreviven (4 se portaron)» y §7.1 decía «8 siguen vivos y uno se portó» —el borrador previo al puerto de los dos cortes del preflight. | `grep` de los nombres: los **4** puertos declarados en la tabla de §5 existen y corren en `test_wrye_bash_asistida.py`. | §7.1 sincronizada con §5: **8 vivos, 4 portados**, enumerados (M-04 feliz, `validate_limit`, preflight rojo y preflight verde); la remisión apunta a la tabla de §5. |
+
+**Lo que la auditoría confirmó sin hallazgos** (buscado a propósito): 0 callers con la firma vieja
+del registry/handler (scan AST sobre `sky_claw/`, `tests/` y `scripts/`), 0 líneas de código
+agregadas al servicio, las tres superficies enrutando por `ejecutar_fase_asistida`, HITL intacto
+(`generate_bashed_patch` sigue en `DESTRUCTIVE_TOOL_PATTERNS`), y las notas de `execute_pipeline`
+en `test_synthesis_service.py` son el método homónimo de **Synthesis**, servicio vivo.
+
+**Ronda 13 (auto-auditoría adversarial del PR D, 2026-11-04).** Antes de abrir el PR D se auditaron
+el diseño inicial y las anclas propias contra el código real y con una matriz de **15 mutaciones**
+(14 de contrato que mueren + 1 control benigno de comentarios que vive):
+
+| # | Hallazgo de auto-auditoría | Corrección verificada por mutación |
+|---|---|---|
+| D-01 | **Clavear por `artefacto.ruta` rompía el 100 % de las primeras corridas**: en fase 1 el archivo no existe y `bashed_patch_en_overlay` devuelve `Data`; en fase 2 aparece en `overwrite`. | `ClaveDeTestigo(plugins_txt, destino_data)` fija el slot virtual invariante respecto de la capa ganadora (M01 muere en `test_salto_de_capa_data_a_overwrite_prueba_frescura_sin_payload`). |
+| D-02 | **Delimitador de barra vertical en la clave**: en POSIX la barra vertical es un carácter legal de ruta; dos pares distintos podían colisionar. | `como_texto()` serializa `json.dumps([plugins_txt, destino_data])` sin ambigüedad (M02 muere). |
+| D-03 | **Ubicación `.skyclaw_backups/` dependía del `cwd` y ensuciaba el árbol en tests**, contradiciendo ADR 0011 P0.2 (`sky_claw/config.py:138`). | `almacen_por_defecto()` usa `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` de forma perezosa (M08 muere con `estado_durable_real`). |
+| D-04 | **`guardar` sobre JSON corrupto contradecía la promesa de no pisar archivos ilegibles.** | `_cargar_objeto` lanza `AlmacenDeTestigosIlegibleError` en escritura/borrado y rechaza enlaces en padre y archivo con `link_kind_or_raise`; `leer` degrada a `None` sin escribir (M05, M06, M07 mueren). |
+| D-05 | **Partición incompleta de `EstadoDelTestigoDurable`**: con almacén vacío y artefacto sin identidad (p. ej. directorio), ni se guardaba ni se conservaba nada. | Se agrega `SIN_OBSERVACION` y se unifica `ERROR_DE_ALMACEN` (lectura + escritura). |
+| D-06 | **Consumo del testigo durable**: consumir en fallo perdía la frescura al olvidar tildar el plugin (`NO_HABILITADO`); no consumir cuando `origen == payload` dejaba un testigo huérfano que engañaba a la corrida siguiente. | Sólo se consume con `veredicto.frescura_probada is True`, tanto por `durable` como por `payload`, y un `OSError` en `olvidar` no tumba un veredicto válido (M11 y M12 mueren). |
+| D-07 | **Punto ciego del ancla AST**: exigir `"testigo_store" in claves` dejaba pasar `testigo_store=None` en verde. | El ancla congela por igualdad los sitios productivos, rechaza `Constant(None)` y se acompaña de un oráculo conductual sobre `build_orchestration_composition` (M13 y M14 mueren; M15 con comentarios vive). |
+
+**Ronda 14 (revisión externa de Codex, PR-Agent y CodeRabbit sobre #863, 2026-11-04).** Dos
+hallazgos P1 de Codex/PR-Agent sobre `ee40299` y dos observaciones menores de CodeRabbit sobre
+`2d94e67`, reproducidos primero con tests en ROJO y sumados a la matriz de mutación (**19/19**):
+
+| # | Hallazgo | Reproducción | Corrección verificada por mutación |
+|---|---|---|---|
+| R14-01 | **Exclusión sólo de instancia en `AlmacenJSON`**: `orchestration_composition` y `system_tools` crean instancias distintas sobre el mismo archivo (y pueden coexistir dos procesos). Un `self._lock` local dejaba que dos `guardar` sobre perfiles distintos leyeran `{}` a la vez y el último `os.replace` borrara al otro perfil. | Reproducido en ROJO tanto entre dos instancias en el mismo proceso (`Barrier(2)`) como entre dos procesos Python separados (`subprocess.Popen` × 25 escrituras). | `_seccion_critica` serializa por **ruta canónica** en dos capas: `_LOCKS_POR_RUTA` intraproceso + lockfile hermano (`.etapa6_testigos.json.lock`, `fcntl.flock` en POSIX / `msvcrt.locking` en Windows, rechazando enlaces también sobre el lockfile y abriendo con `O_NOFOLLOW` donde existe). M16 y M17 mueren por separado. |
+| R14-02 | **`pipeline_stage="wrye_bash"` textual y sin `tx_id`**: los warnings de `etapa6_testigos.py` emitían una cadena en vez del entero `6` (SOP §5 regla 5) y omitían `tx_id=None`, desapareciendo de las consultas estructuradas por etapa. | Reproducido en ROJO con `caplog`. | `_ETAPA_WRYE_BASH = 6` anclada por igualdad contra `wrye_bash_service._ETAPA_WRYE_BASH`, `extra={"pipeline_stage": _ETAPA_WRYE_BASH, "tx_id": None}` en todos los warnings del almacén y registro en `conocidos` de `test_dyndolod_service.py` (M18 muere). |
+| R14-03 | **CodeRabbit: falta `fsync` del directorio contenedor tras `os.replace` en POSIX.** | Reproducido en ROJO espiando `os.fsync` por `(st_dev, st_ino)`. | `_fsync_directorio_padre` sincroniza el directorio contenedor tras `os.replace` en POSIX (`O_RDONLY` + `O_DIRECTORY` + `O_NOFOLLOW`, best-effort). M19 muere. |
+| R14-04 | **CodeRabbit: barra vertical sin escapar en la fila D-02 de la tabla GFM (`MD056`).** | Verificado: la fila tenía 5 celdas en vez de 3. | Reescrita sin carácter de separación de columna en prosa. |
 
 ## 10. Registro de adjudicación
 

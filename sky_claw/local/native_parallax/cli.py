@@ -76,7 +76,7 @@ from sky_claw.local.native_parallax.export import (
     ExportError,
     inspeccionar_dds_bc4,
 )
-from sky_claw.local.native_parallax.integrate import Bordes, ModoNormalizacion
+from sky_claw.local.native_parallax.integrate import Bordes, Centrado, ModoNormalizacion
 from sky_claw.local.native_parallax.lote import (
     MOTIVO_SIN_CONTENIDO,
     EstadoDeArchivo,
@@ -383,6 +383,13 @@ def construir_parser() -> argparse.ArgumentParser:
     )
     gen.add_argument("--percentil-bajo", type=float, default=None)
     gen.add_argument("--percentil-alto", type=float, default=None)
+    gen.add_argument(
+        "--centrado",
+        choices=[c.value for c in Centrado],
+        default=Centrado.NINGUNO.value,
+        help="experimental: 'media' lleva la media de la altura a 0,5 (reduce la amplitud entre 0,5 y 1 veces); "
+        "'ninguno' (por defecto) deja la salida exactamente como siempre",
+    )
     gen.add_argument("--incluir-revision", action="store_true", help="escribe también lo que el gate manda a revisión")
     gen.add_argument(
         "--retirar-no-incluidas",
@@ -677,6 +684,7 @@ async def _generar(
         normalizacion=ModoNormalizacion(args.normalizacion),
         percentil_bajo=args.percentil_bajo,
         percentil_alto=args.percentil_alto,
+        centrado=Centrado(args.centrado),
         escribir_revision=args.incluir_revision,
         retirar_no_incluidas=args.retirar_no_incluidas,
     )

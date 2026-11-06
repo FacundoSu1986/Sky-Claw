@@ -123,6 +123,7 @@
 - [0014 — Generador nativo de parallax: design brief, layout de producto y dependencias](0014-native-parallax-producto-brief-y-dependencias.md)
 - [0015 — Oráculo de Effective Runtime de solo lectura (P5-A)](0015-effective-runtime-oracle.md)
 - [0016 — Etapa 6 (Wrye Bash) como etapa ASISTIDA de dos fases](0016-etapa-6-wrye-bash-asistida.md)
+- [0017 — Exclusión de mutación de `modorganizer.ini` (P5-C2)](0017-mo2-exclusion-gate.md)
 
 Un ADR explica una decisión. Para saber cuánto está implementado, contrastarlo
 con código, tests y la sección de alcance del propio ADR.

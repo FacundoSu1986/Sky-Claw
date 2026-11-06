@@ -30,8 +30,8 @@
 
 **Lo que este dictamen NO es:** una demostración matemática ni «seguro en producción». Las mediciones son de un runner compartido;
 la garantía se argumenta **por construcción** (§6) y se contrasta con el sistema operativo real. La **latencia real de MO2** entre
-`startApplication` y `assign` **no se midió** (no hay MO2 en el sandbox): P2 convierte la carrera de seguridad en una de
-**disponibilidad** y su impacto depende de ese número (§6, §9).
+`startApplication` y `assign` **no se midió en el sandbox de CI** (no hay MO2 allí): la midió después **otra sesión** en un MO2 sandbox, con decenas de milisegundos (§11.1; no reproducido aquí, y
+no con el MO2 productivo ni bajo carga). P2 convierte la carrera de seguridad en una de **disponibilidad** y su impacto depende de ese número (§6, §9, §11).
 
 ## 1. El problema que deja abierto #856
 
@@ -99,7 +99,8 @@ Imágenes del árbol, sobre las 12 corridas: `skyclawapp.exe` ×24, `cmd.exe` ×
 Lectura (lo medido, no lo deseado):
 
 1. El arranque del `.exe` congelado crea **seis** procesos antes de llegar al código de verificación. Con `assign` ≤ 1 s los seis entran al
-   Job y `TotalProcesses` coincide con el IOCP en 12/12 corridas de los dos runs completos del censo.
+   Job y `TotalProcesses` coincide con el IOCP en 12/12 corridas de los dos runs completos del censo. (Corridas posteriores de CI, §11.3, mostraron casos mixtos
+   ya a 1 s: el umbral depende del runner y del árbol; «≤ 1 s» describe estos dos runs, no una garantía.)
 2. Con `assign` a 2 s, **el hijo Python y sus cuatro auxiliares escapan juntos** (5 fuera, 1 dentro: el bootloader). La carrera existe en el
    `.exe` real, no solo en el ejecutable mínimo. Con el laboratorio de #856 (misma geometría, otra métrica) el resultado a 2 s **varía entre
    runs** (3/3, 2/3, 1/3, 0/3 con el hijo Python dentro): no hay un umbral determinista, depende de la carga del runner.
@@ -184,8 +185,10 @@ efímeros que (§5) no dejan residuos: no justifica el cambio de empaquetado. Se
 
 **Límites y riesgos abiertos (declarados, no ocultos):**
 
-* **Disponibilidad, no seguridad.** Si `startApplication`→`assign` tarda más que la extracción del onefile, el hijo Python nace fuera y el launch **falla cerrado** (72). En el runner el margen es de ~1–2 s;
-  **la latencia real de MO2/USVFS no se midió** `[NO VERIFICADO]`. Si fuera mayor, el launch fallaría siempre (seguro, pero inutilizable) y habría que pasar al stub de §9.
+* **Disponibilidad, no seguridad.** Si `startApplication`→`assign` tarda más que la extracción del onefile, el hijo Python nace fuera y el launch **falla cerrado** (72). En el runner el umbral de esa carrera ronda 0,5–2 s y **varía entre corridas** (§11.3).
+  La latencia real la midió **otra sesión** en un MO2 sandbox (24 corridas, §11.1): decenas de milisegundos (`startApplication` ≤ 94 ms, `assign` ≤ 16 ms)
+  `[MEDIDO POR OTRA SESIÓN, NO REPRODUCIDO AQUÍ]`; **no se midió con el MO2 productivo ni bajo carga** `[NO VERIFICADO]`. Si fuera mayor que el umbral, el launch fallaría siempre
+  (seguro, pero inutilizable) y habría que pasar al stub de §9.
 * **Huérfanos** (§6.3-d).
 * **Doble fallo: identidad y limpieza.** Si el worker no prueba su contención **y** `terminar_descendientes_vivos` tampoco logra terminar a un descendiente (agota los intentos; p. ej. `TerminateProcess` denegado
   sobre un proceso de mayor integridad), `_abortar_por_identidad` registra `CRITICAL` (`vfs_worker_cleanup_failed`) y **sale igual con 72**, dejando vivo a ese descendiente (queda huérfano al morir el worker).
@@ -225,7 +228,7 @@ nombrando el invariante de cada lado. No se resolvió ningún conflicto de #854 
 
 ## 9. Propuesta de seguimiento (decisiones aparte)
 
-1. **Medir la latencia real `startApplication`→`assign` de MO2/USVFS** (sin ejecutar herramientas reales) antes de cualquier uso real. Es el dato que decide si P2 es usable.
+1. **Medir la latencia real `startApplication`→`assign` de MO2/USVFS** (sin ejecutar herramientas reales) antes de cualquier uso real. Es el dato que decide si P2 es usable. *Respuesta parcial en §11.1 (sandbox, otra sesión); falta la instalación productiva y bajo carga.*
 2. Si esa latencia no tiene margen: un **stub lanzador** (un ejecutable mínimo que MO2 inicia y que no crea nada hasta que `IsProcessInJob(self, <Job>)` sea verdadero) vuelve la carrera de seguridad **y** de disponibilidad inexistente.
    Requiere cambiar lo que MO2 ejecuta; es una decisión de empaquetado.
 3. Agregar el SID del usuario actual a la DACL (más explícito que `OW`) y probarlo con un token no elevado.
@@ -247,3 +250,45 @@ pyinstaller sky_claw.spec --clean
 # SKYCLAW_FROZEN_EXE=dist\SkyClawApp.exe  →  el e2e corre también contra el ejecutable congelado
 .venv/Scripts/python -m scripts.windows_onefile_census --exe dist\SkyClawApp.exe '--arg=--vfs-probe-child' '--arg={probe_file}' '--arg={probe_sha}' --retardos 0,0.5,1,2 --repeticiones 3 --json censo.json
 ```
+
+Los tests de Windows deben correrse con el **Python base**, no con el `.venv\Scripts\python.exe` de `uv` (ver §11.4).
+
+## 11. Evidencia posterior de otra sesión (2026-11-05/06) `[EJECUTADO POR OTRA SESIÓN; NO REPRODUCIDO AQUÍ]`
+
+Esta sección recoge lo que midió **otro agente** en una PC con Windows, con un MO2 **sandbox** (no el productivo), y lo que mostró el CI de sus PR apilados (#871, #872). La sesión que escribió este
+informe **no ejecutó nada de esto**: lee los cuerpos de esos PR y los logs de CI. Cada cifra conserva su fuente; donde la fuente no alcanza, se dice.
+
+### 11.1 Serie en vivo: 24 corridas de `vfs-health` con MO2 sandbox lanzado desde el Explorador
+
+* **Resultado:** 23 completadas (`rc=0`), 1 en cuarentena (corrida 8), **0 salidas con código 72**; el `hello` llegó en 24/24, es decir, la verificación de identidad del Job pasó en las 24.
+* **Qué binario:** el `.exe` se compiló desde `0ea075ca` (SHA-256 `FBD26B41B9072C078D9DEFE48827DA0E4204A5D42C131FCB80258DBAE562D274`), no desde `1eafe1c5`. Los commits intermedios `3b02dd11` y `0ea075ca` **no tocan**
+  `vfs_worker.py` ni `vfs_job_identity.py` (solo `__main__.py`, el bundle del bridge y tests, según el detalle de cada commit), así que el código del worker es el de este PR.
+* **Latencia del bridge** (`mo_interface.log`). Corridas 19–24, con `time.perf_counter()`: `create_job` 0,87–2,35 ms; `startApplication` 14,8–55,9 ms; **`assign` 0,018–0,032 ms**; `total_to_ack` 15,8–58,3 ms.
+  Corridas 1–18, con resolución de 15,6 ms: `startApplication` ≤ 94 ms y `assign` ≤ 16 ms. **Excluida la corrida 1**, cuyo `startApplication_ms=46094.0` es un dato no explicado (los timestamps del log dan ~46 ms entre
+  «MO2 is starting» y la línea de tiempos, y el `hello` llegó 4,5 s después: incompatible con 46 s reales).
+* **Margen, con cuenta conservadora** (mía, a partir de esos datos): sumar los máximos de `startApplication` y `assign` da ~110 ms. El menor retardo de `assign` para el que todos los censos del `.exe` real dejaron todo dentro del Job fue de **500 ms** ⇒ margen
+  ≥ ~4,5× (≥ ~9× si se toma 1 s, donde algunos runners ya mostraron casos mixtos). El margen afecta a la **disponibilidad** (un `assign` tardío hace que el worker falle cerrado con 72), no a la contención.
+  Son 24 observaciones en una máquina y un MO2 sandbox.
+
+### 11.2 Cola lenta de la salida del bootloader (afecta al teardown del broker, no a la contención)
+
+* Entre `job_result` y `worker_exit` lo normal fue 0,23–0,75 s. Excepciones: corrida 8, **43,454 s** (el broker venció su plazo de 30 s y puso el job en **cuarentena aunque el resultado ya había llegado**); corrida 9, ~22 s; corrida 21,
+  ~+4,9 s no localizados (sin `job_result` de broker en esa corrida). 1 de 24 corridas terminó en cuarentena por esta causa.
+* No se cambió ningún plazo ni la cuarentena del broker: es una **decisión de diseño aparte** (por ejemplo, pedir terminar el Job tras el plazo cuando el resultado ya llegó y poner en cuarentena solo si eso también falla).
+
+### 11.3 El umbral de la carrera varía entre runners
+
+Censos del `.exe` **real** (`SkyClawApp.exe`) en CI posteriores a los de §4: con retardo de `assign` de 500 ms todo quedó dentro del Job en todos los casos observados; a 1 s hubo corridas con el hijo Python o auxiliares fuera en uno de los
+árboles (`dentro 1–4 / fuera 0–3`); a 2 s el hijo Python quedó fuera. Por eso §4 y §6 no deben leerse como «siempre dentro hasta 1 s». El umbral depende del tiempo de extracción del ejecutable: en el **ejecutable mínimo** del laboratorio
+(`minimoonefile.exe`, que extrae menos) el hijo Python ya quedó fuera desde 200 ms en ambos runs de CI, así que ese ejecutable no sirve para estimar el margen del real.
+
+### 11.4 Los tests de Windows y el `venv` de `uv`
+
+Con el `.venv\Scripts\python.exe` de `uv` (un *trampoline* que lanza el `python.exe` real como hijo antes de que el test pueda asignarlo) 4 de los 17 tests de `tests/test_vfs_job_identity_windows.py` fallan en un checkout limpio de `1eafe1c5`;
+con el Python base pasan los 17, y con el `.exe` congelado los 6 e2e (23/23 en total). El PR apilado #871 hace que los tests de laboratorio usen `sys._base_executable`. En CI (sin `venv`) no ocurre.
+
+### 11.5 Lo que sigue sin verificarse
+
+* El `.exe` de `1eafe1c5` usado en el censo y en los 23 tests no tiene SHA-256 registrado (se sobrescribió antes de hashearlo).
+* MO2 productivo y bajo carga; token no elevado (el agente informó haber corrido con un token filtrado, pero no quedó un registro verificable; §6 sigue marcándolo `[NO VERIFICADO]`).
+* Una prueba con un proceso real que se niegue a morir (doble fallo de §6).
