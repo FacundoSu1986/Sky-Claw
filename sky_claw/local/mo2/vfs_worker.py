@@ -44,6 +44,12 @@ from sky_claw.local.mo2.vfs_contracts import (
     VfsToolStartedEvent,
 )
 from sky_claw.local.mo2.vfs_ipc import VfsFrameError, read_authenticated_message, write_authenticated_message
+from sky_claw.local.mo2.vfs_job_identity import (
+    JobIdentityError,
+    PruebaDeJob,
+    terminar_descendientes_vivos,
+    verificar_identidad_del_job,
+)
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest, read_worker_manifest
 from sky_claw.local.tools._process import kill_and_reap
 from sky_claw.logging_config import (
@@ -62,6 +68,8 @@ _RESULT_ACK_TIMEOUT_SECONDS = 5.0
 #: no un sustituto de la garantía: vencido el plazo el worker ABORTA sin haber creado el nieto de
 #: la attestation ni despachado la herramienta; jamás prosigue "por las dudas". La confirmación real llega en milisegundos.
 _SUPERVISION_TIMEOUT_SECONDS = 30.0
+#: Código de salida del worker que no pudo demostrar su contención en el Job (distinto de 64/70: el bridge lo ve en `worker_exit`).
+_EXIT_IDENTIDAD_DEL_JOB = 72
 #: Captura por stream de un proceso de sesión: COLA acotada, no buffer completo.
 #: Un tool charlatán no puede inflar el ``VfsJobResult`` (frame IPC de 1 MiB) ni
 #: la memoria del worker; el diagnóstico conserva los últimos bytes.
@@ -987,12 +995,17 @@ async def run_worker_session(
     manifest_path: pathlib.Path,
     descriptor_path: pathlib.Path,
     expected_job_id: str,
+    job_identity: PruebaDeJob,
     handlers: Mapping[str, VfsToolHandler] | None = None,
     session_handlers: Mapping[str, VfsSessionToolHandler] | None = None,
     grandchild_probe: GrandchildProbe | None = None,
     supervision_timeout: float = _SUPERVISION_TIMEOUT_SECONDS,
 ) -> VfsJobResult | None:
-    """Ejecuta el worker y reporta al daemon; ``None`` significa cancelación."""
+    """Ejecuta el worker y reporta al daemon; ``None`` significa cancelación.
+
+    ``job_identity`` es obligatoria y solo la produce ``verificar_identidad_del_job``: sin una prueba de que
+    este proceso vive en el Job que el bridge creó para este launch no hay forma de armar el ``hello``.
+    """
     descriptor = await asyncio.to_thread(load_broker_descriptor, descriptor_path)
     manifest = await asyncio.to_thread(
         read_worker_manifest,
@@ -1020,6 +1033,9 @@ async def run_worker_session(
                 # Declara que este worker espera la supervisión antes de despachar: el
                 # broker rechaza a los que no lo declaran (sin fallback silencioso).
                 "supervision_fence": True,
+                # El Job (por nombre) dentro del cual ESTE proceso demostró estar antes de conectar. El broker
+                # lo compara con el que pidió para este launch: otro nombre, o ninguno, no se autoriza.
+                "job_object": job_identity.nombre,
             },
             descriptor.secret,
         )
@@ -1119,9 +1135,36 @@ def _parse_worker_args(argv: list[str] | None) -> argparse.Namespace:
     group.add_argument("--probe-child", action="store_true")
     parser.add_argument("--descriptor", type=pathlib.Path)
     parser.add_argument("--job-id")
+    parser.add_argument("--job-object")
     parser.add_argument("probe_path", nargs="?", type=pathlib.Path)
     parser.add_argument("probe_sha256", nargs="?")
     return parser.parse_args(argv)
+
+
+def _abortar_por_identidad(job_id: str, causa: JobIdentityError) -> int:
+    """El worker no pudo probar su contención: intenta no dejar procesos propios corriendo y sale con un código propio.
+
+    La terminación es un intento: si algún descendiente no muere se registra ``CRITICAL`` y se sale igual con 72
+    (sin abrir un socket ni autorizar nada); ese proceso puede quedar vivo.
+    """
+    logger.error(
+        "VFS worker sin identidad de Job verificada: %s",
+        causa,
+        extra={"event": "vfs_worker_job_identity_failed", "operation": "vfs_worker", "job_id": job_id},
+    )
+    try:
+        terminados = terminar_descendientes_vivos()
+    except JobIdentityError as exc:
+        logger.critical(
+            "VFS worker no pudo terminar a sus descendientes tras fallar la identidad del Job: %s",
+            exc,
+            extra={"event": "vfs_worker_cleanup_failed", "operation": "vfs_worker", "job_id": job_id},
+        )
+    else:
+        if terminados:
+            logger.warning("VFS worker terminó descendientes propios sin contención: %s", list(terminados))
+    shutdown_logging()
+    return _EXIT_IDENTIDAD_DEL_JOB
 
 
 def worker_main(argv: list[str] | None = None) -> int:
@@ -1131,7 +1174,7 @@ def worker_main(argv: list[str] | None = None) -> int:
         if args.probe_path is None or args.probe_sha256 is None:
             return 64
         return run_probe_child(args.probe_path, args.probe_sha256)
-    if args.descriptor is None or not args.job_id:
+    if args.descriptor is None or not args.job_id or not args.job_object:
         return 64
     setup_logging(
         log_dir=default_log_dir() / "workers",
@@ -1139,12 +1182,20 @@ def worker_main(argv: list[str] | None = None) -> int:
         process_role="vfs_worker",
         console_stream=None,
     )
+    # IDENTIDAD DEL JOB, antes de abrir ningún socket: el proceso que ejecuta Python puede ser un HIJO del que
+    # el bridge asignó (PyInstaller onefile) y haber nacido antes del assign. Si no puede demostrar que vive en
+    # el Job de ESTE launch, no habla con el broker, no crea nietos y no despacha nada.
+    try:
+        prueba = verificar_identidad_del_job(args.job_object)
+    except JobIdentityError as exc:
+        return _abortar_por_identidad(args.job_id, exc)
     try:
         result = asyncio.run(
             run_worker_session(
                 manifest_path=args.manifest,
                 descriptor_path=args.descriptor,
                 expected_job_id=args.job_id,
+                job_identity=prueba,
             )
         )
     except (OSError, RuntimeError, ValueError) as exc:

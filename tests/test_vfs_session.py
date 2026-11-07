@@ -35,6 +35,7 @@ from sky_claw.local.mo2.vfs_contracts import (
     VfsToolStartedEvent,
 )
 from sky_claw.local.mo2.vfs_ipc import read_authenticated_message, write_authenticated_message
+from sky_claw.local.mo2.vfs_job_identity import PruebaDeJob
 from sky_claw.local.mo2.vfs_session import (
     VfsJobCancelledError,
     VfsProcessSession,
@@ -132,10 +133,13 @@ def _resultado(
 class _BridgeFalso:
     """Bridge autenticado mínimo: recibe launches/cancels y emite worker_exit."""
 
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, secret: bytes) -> None:
+    def __init__(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, secret: bytes, broker: VfsExecutionBroker
+    ) -> None:
         self.reader = reader
         self.writer = writer
         self.secret = secret
+        self.broker = broker
 
     @classmethod
     async def conectar(cls, broker: VfsExecutionBroker) -> _BridgeFalso:
@@ -156,7 +160,7 @@ class _BridgeFalso:
         ack = await read_authenticated_message(reader, secret)
         assert ack["type"] == "hello_ack"
         await broker.wait_until_ready(timeout=1)
-        return cls(reader, writer, secret)
+        return cls(reader, writer, secret, broker)
 
     async def recv(self, *, timeout: float = 3.0) -> dict[str, object]:
         return await asyncio.wait_for(read_authenticated_message(self.reader, self.secret), timeout=timeout)
@@ -165,7 +169,12 @@ class _BridgeFalso:
         """Lo que el bridge real emite tras asignar el worker al Job Object: autoriza al worker a despachar."""
         await write_authenticated_message(
             self.writer,
-            {"protocol_version": VFS_PROTOCOL_VERSION, "type": "launch_ack", "job_id": job_id},
+            {
+                "protocol_version": VFS_PROTOCOL_VERSION,
+                "type": "launch_ack",
+                "job_id": job_id,
+                "job_object": self.broker._job_objects[job_id],
+            },
             self.secret,
         )
 
@@ -216,6 +225,7 @@ class _WorkerFalso:
                 "type": "hello",
                 "role": "worker",
                 "supervision_fence": True,  # un worker nuevo declara que espera la supervisión
+                "job_object": broker._job_objects[job_id],  # y que se verificó dentro del Job que se pidió
                 "instance_id": "portable-main",
                 "session_id": descriptor["session_id"],
                 "job_id": job_id,
@@ -997,6 +1007,7 @@ async def _lanzar_worker_end_to_end(
             manifest_path=manifest_path,
             descriptor_path=broker.descriptor_path,
             expected_job_id=job_id,
+            job_identity=PruebaDeJob(nombre=broker._job_objects[job_id], pid=1, procesos_totales=1, procesos_activos=1),
             session_handlers={"health": handler_sesion},  # type: ignore[dict-item]
             grandchild_probe=probar,
         )

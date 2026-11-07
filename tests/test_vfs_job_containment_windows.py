@@ -34,6 +34,7 @@ import psutil
 import pytest
 
 from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import PROTOCOL_VERSION, BridgeLaunchController
+from sky_claw.local.mo2.vfs_job_identity import generar_nombre_de_job
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32",
@@ -370,6 +371,8 @@ def _controlador_real(tmp_path: pathlib.Path, organizer: _OrganizerQueLanzaProce
         "profile": "Default",
         "manifest_path": str(manifiesto),
         "overwrite_mod": None,
+        # Un nombre nuevo por launch (como el broker): un Job nombrado que alguien dejó abierto no puede colisionar.
+        "job_object": generar_nombre_de_job(),
     }
     cancelar = {"protocol_version": PROTOCOL_VERSION, "type": "cancel", "job_id": "job-1"}
     return controlador, mensaje, cancelar

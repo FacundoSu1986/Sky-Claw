@@ -6,6 +6,7 @@ import contextlib
 import ctypes
 import pathlib
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -15,7 +16,13 @@ from dataclasses import dataclass
 from typing import Protocol
 
 PROTOCOL_VERSION = 1
-_LAUNCH_FIELDS = frozenset({"protocol_version", "type", "job_id", "profile", "manifest_path", "overwrite_mod"})
+_LAUNCH_FIELDS = frozenset(
+    {"protocol_version", "type", "job_id", "profile", "manifest_path", "overwrite_mod", "job_object"}
+)
+#: Formato CERRADO del nombre del Job que el broker pide por launch. El plugin no puede importar ``sky_claw``, así que
+#: lleva su copia; un test ancla que sea IGUAL a ``vfs_job_identity.PATRON_DEL_NOMBRE_DE_JOB``. ``fullmatch`` (no ``$``).
+JOB_OBJECT_NAME_PATTERN = r"Local\\SkyClawVfs-[0-9a-f]{32}"
+_JOB_OBJECT_NAME = re.compile(JOB_OBJECT_NAME_PATTERN)
 
 
 def ascii_safe_message(message: object) -> str:
@@ -137,6 +144,7 @@ class LaunchRequest:
     profile: str
     manifest_path: pathlib.Path
     overwrite_mod: str | None
+    job_object: str
 
 
 def validate_launch_request(
@@ -171,11 +179,16 @@ def validate_launch_request(
     overwrite: str | None = None
     if raw_overwrite is not None:
         overwrite = _safe_component(raw_overwrite, field="overwrite_mod")
+    job_object = message.get("job_object")
+    if not isinstance(job_object, str) or _JOB_OBJECT_NAME.fullmatch(job_object) is None:
+        # Sin un nombre de Job válido no hay identidad que verificar: no se lanza nada (y al SO no llega un string libre).
+        raise BridgeCommandError("job_object ausente o con un formato no permitido")
     return LaunchRequest(
         job_id=job_id,
         profile=profile,
         manifest_path=resolved_manifest,
         overwrite_mod=overwrite,
+        job_object=job_object,
     )
 
 
@@ -197,6 +210,8 @@ def build_worker_arguments(
         str(request.manifest_path),
         "--descriptor",
         str(descriptor),
+        "--job-object",
+        request.job_object,
         "--job-id",
         request.job_id,
     ]
@@ -278,7 +293,7 @@ class BridgeLaunchController:
         descriptor_path: pathlib.Path,
         jobs_root: pathlib.Path,
         send_event: Callable[[dict[str, object]], None],
-        job_factory: Callable[[], JobObject] | None = None,
+        job_factory: Callable[[str], JobObject] | None = None,
         process_waiter: Callable[[int], tuple[bool, int]] | None = None,
     ) -> None:
         worker = worker_executable.resolve()
@@ -308,7 +323,9 @@ class BridgeLaunchController:
         # Frontera de transporte: MO2 une con espacios y no cita (spawn.cpp).
         transport_arguments = encode_mo2_arguments(arguments)
         overwrite = "" if request.overwrite_mod is None else request.overwrite_mod
-        job_object = self._job_factory()
+        # El Job nace ANTES que el proceso y con el nombre que pidió el broker: si ya existía, la creación falla y no
+        # nace nada. El worker efectivo (que puede ser un hijo del proceso asignado) lo abre por ese nombre.
+        job_object = self._job_factory(request.job_object)
         handle = 0
         try:
             handle = self._organizer.startApplication(
@@ -344,6 +361,8 @@ class BridgeLaunchController:
                 "protocol_version": PROTOCOL_VERSION,
                 "type": "launch_ack",
                 "job_id": request.job_id,
+                # El broker compara este nombre con el que pidió: sin él (o con otro) no autoriza al worker.
+                "job_object": request.job_object,
             }
         )
         monitor = threading.Thread(
@@ -441,6 +460,13 @@ if sys.platform == "win32":
             ("SchedulingClass", wintypes.DWORD),
         ]
 
+    class _SecurityAttributes(ctypes.Structure):
+        _fields_ = [
+            ("nLength", wintypes.DWORD),
+            ("lpSecurityDescriptor", ctypes.c_void_p),
+            ("bInheritHandle", wintypes.BOOL),
+        ]
+
     class _ExtendedLimitInformation(ctypes.Structure):
         _fields_ = [
             ("BasicLimitInformation", _BasicLimitInformation),
@@ -453,14 +479,31 @@ if sys.platform == "win32":
 
 
 class Win32JobObject:
-    """Job Object kill-on-close que contiene al worker y todos sus descendientes."""
+    """Job Object kill-on-close con NOMBRE que contiene al worker y todos sus descendientes.
+
+    El nombre lo elige el broker (inadivinable, un launch = un nombre) y el worker efectivo lo abre para
+    comprobar que vive dentro (``vfs_job_identity``). Por eso la creación es **fail-closed**:
+
+    * si el nombre ya existía (squatting, reutilización) NO se adopta ese Job: se cierra el handle y se falla;
+    * la DACL es de SOLO CONSULTA para el propietario y los administradores: ningún otro proceso puede
+      terminar el Job, cambiarle los límites (quitar ``KILL_ON_JOB_CLOSE``) ni asignarle procesos ajenos para
+      aparentar pertenencia. El creador conserva su handle con acceso total (se otorga al crear). Es defensa en
+      profundidad, no una frontera de confianza frente a un proceso del mismo usuario con inyección de código.
+    """
 
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+    _ERROR_ALREADY_EXISTS = 183
+    _ERROR_ACCESS_DENIED = 5
+    _SDDL_REVISION_1 = 1
+    #: DACL protegida (sin herencia): solo ``JOB_OBJECT_QUERY`` (0x4) para el propietario y los administradores.
+    _SDDL_SOLO_CONSULTA = "D:P(A;;0x4;;;OW)(A;;0x4;;;BA)"
 
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
         if sys.platform != "win32":
             raise BridgeCommandError("Win32 Job Objects solo están disponibles en Windows")
+        if _JOB_OBJECT_NAME.fullmatch(name) is None:
+            raise BridgeCommandError("job_object ausente o con un formato no permitido")
         self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self._kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
         self._kernel32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -479,10 +522,9 @@ class Win32JobObject:
         self._kernel32.TerminateProcess.restype = wintypes.BOOL
         self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         self._kernel32.CloseHandle.restype = wintypes.BOOL
-        handle = self._kernel32.CreateJobObjectW(None, None)
-        if not handle:
-            raise BridgeCommandError(f"CreateJobObjectW falló: {ctypes.get_last_error()}")
-        self._handle = handle
+        self._kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        self._kernel32.LocalFree.restype = ctypes.c_void_p
+        self._handle: int | None = self._crear_con_nombre_y_dacl(name)
         info = _ExtendedLimitInformation()
         info.BasicLimitInformation.LimitFlags = self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         ok = self._kernel32.SetInformationJobObject(
@@ -495,6 +537,43 @@ class Win32JobObject:
             error = ctypes.get_last_error()
             self.close()
             raise BridgeCommandError(f"SetInformationJobObject falló: {error}")
+
+    def _crear_con_nombre_y_dacl(self, name: str) -> int:
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        convertir = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+        convertir.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        convertir.restype = wintypes.BOOL
+        descriptor = ctypes.c_void_p()
+        if not convertir(self._SDDL_SOLO_CONSULTA, self._SDDL_REVISION_1, ctypes.byref(descriptor), None):
+            # Sin la DACL restrictiva NO se crea con la por defecto: más permisiva = menos contención.
+            raise BridgeCommandError(f"no se pudo construir la DACL del Job: {ctypes.get_last_error()}")
+        try:
+            atributos = _SecurityAttributes(ctypes.sizeof(_SecurityAttributes), descriptor, False)
+            ctypes.set_last_error(0)
+            handle = self._kernel32.CreateJobObjectW(ctypes.byref(atributos), name)
+            error = ctypes.get_last_error()
+        finally:
+            self._kernel32.LocalFree(descriptor)
+        if not handle:
+            if error == self._ERROR_ACCESS_DENIED:
+                # Medido en Windows: si el nombre existe y OTRO Job (p. ej. uno nuestro con esta misma DACL de solo
+                # consulta) lo tiene, CreateJobObjectW no puede abrirlo con acceso total y falla con ACCESS_DENIED en
+                # lugar de ERROR_ALREADY_EXISTS. Sigue siendo un rechazo; solo se nombra con claridad.
+                raise BridgeCommandError(
+                    f"el Job {name} ya existe y no es accesible (ACCESS_DENIED): no se adopta (squatting o nombre reutilizado)"
+                )
+            raise BridgeCommandError(f"CreateJobObjectW falló: {error}")
+        if error == self._ERROR_ALREADY_EXISTS:
+            # CreateJobObjectW devuelve un handle al Job EXISTENTE: asignarle el worker sería meterlo en un
+            # contenedor que no controlamos (quien lo creó puede quitarle KILL_ON_JOB_CLOSE o dejarlo vivir).
+            self._kernel32.CloseHandle(handle)
+            raise BridgeCommandError(f"el Job {name} ya existía: no se adopta (squatting o nombre reutilizado)")
+        return int(handle)
 
     def assign(self, process_handle: int) -> None:
         if self._handle is None:

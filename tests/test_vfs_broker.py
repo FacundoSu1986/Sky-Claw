@@ -206,6 +206,7 @@ async def _reportar_como_worker(
                 "type": "hello",
                 "role": "worker",
                 "supervision_fence": True,  # un worker nuevo declara que espera la supervisión
+                "job_object": broker._job_objects.get(job_id),  # y el Job (pedido por el broker) donde se verificó
                 "instance_id": "portable-main",
                 "session_id": descriptor["session_id"],
                 "job_id": job_id,

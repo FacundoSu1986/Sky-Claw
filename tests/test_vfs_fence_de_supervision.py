@@ -41,6 +41,7 @@ from sky_claw.local.mo2.vfs_contracts import (
     VfsJob,
 )
 from sky_claw.local.mo2.vfs_ipc import VfsFrameError, read_authenticated_message, write_authenticated_message
+from sky_claw.local.mo2.vfs_job_identity import PruebaDeJob
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest
 from sky_claw.local.mo2.vfs_worker import (
     VfsToolExecution,
@@ -51,8 +52,16 @@ from sky_claw.local.mo2.vfs_worker import (
 
 _VENTANA_DE_ESPERA = 0.4  # un worker que despacha lo hace en milisegundos: 0.4 s sobra para detectarlo
 
+#: «Usar la identidad que el broker eligió para este job»: distinto de ``None`` (= omitir el campo a propósito).
+_DEL_JOB = object()
 
-def _manifiesto(tmp_path: pathlib.Path, *, tool_id: str = "health") -> VfsWorkerManifest:
+
+def _prueba_de_job(nombre: str) -> PruebaDeJob:
+    """Lo que devolvería ``verificar_identidad_del_job`` para un worker REAL ya verificado (doble de la prueba)."""
+    return PruebaDeJob(nombre=nombre, pid=1234, procesos_totales=2, procesos_activos=2)
+
+
+def _manifiesto(tmp_path: pathlib.Path, *, tool_id: str = "health", timeout_seconds: int = 15) -> VfsWorkerManifest:
     """Perfil MO2 mínimo con un canary visible bajo el Data virtual (como ``test_vfs_worker``)."""
     mo2 = tmp_path / "MO2"
     perfil = mo2 / "profiles" / "Default"
@@ -74,7 +83,7 @@ def _manifiesto(tmp_path: pathlib.Path, *, tool_id: str = "health") -> VfsWorker
         profile="Default",
         tool_id=tool_id,
         payload=payload,
-        timeout_seconds=15,
+        timeout_seconds=timeout_seconds,
         expected_fingerprint=desafio.profile_fingerprint,
         mutation_targets=(),
     )
@@ -214,16 +223,24 @@ class _Arnes:
         self.tarea = asyncio.create_task(coro)
         lanzamiento = await read_authenticated_message(self.lector_bridge, self.secreto)
         assert lanzamiento["type"] == "launch_worker"
+        self.job_object: str = lanzamiento["job_object"]
         return dict(lanzamiento)
 
     async def enviar_bridge(self, mensaje: dict[str, Any]) -> None:
         await write_authenticated_message(self.escritor_bridge, mensaje, self.secreto)
 
-    async def launch_ack(self, job_id: str | None = None, *, veces: int = 1) -> None:
+    async def launch_ack(self, job_id: str | None = None, *, veces: int = 1, job_object: object = _DEL_JOB) -> None:
+        """``job_object``: ``_DEL_JOB`` (el pedido), un nombre ajeno, o ``None`` para omitir el campo (bridge viejo)."""
         for _ in range(veces):
-            await self.enviar_bridge(
-                {"protocol_version": VFS_PROTOCOL_VERSION, "type": "launch_ack", "job_id": job_id or self.job_id}
-            )
+            mensaje: dict[str, Any] = {
+                "protocol_version": VFS_PROTOCOL_VERSION,
+                "type": "launch_ack",
+                "job_id": job_id or self.job_id,
+            }
+            identidad = self.job_object if job_object is _DEL_JOB else job_object
+            if identidad is not None:
+                mensaje["job_object"] = identidad
+            await self.enviar_bridge(mensaje)
 
     async def error_de_asignacion(self) -> None:
         """Lo que el bridge real emite si ``AssignProcessToJobObject`` falla (ver ``bridge_error_event``)."""
@@ -273,12 +290,14 @@ class _Arnes:
                 handlers={"health": handler},
                 grandchild_probe=probe,
                 supervision_timeout=supervision_timeout,
+                job_identity=_prueba_de_job(self.job_object),
             )
         )
         self._auxiliares.append(tarea)
         return tarea
 
-    async def worker_crudo(self, *, con_capacidad: bool = True) -> _WorkerCrudo:
+    async def worker_crudo(self, *, con_capacidad: bool = True, job_object: object = _DEL_JOB) -> _WorkerCrudo:
+        """``job_object``: ``_DEL_JOB`` (el pedido), un nombre ajeno, o ``None`` para omitir el campo."""
         lector, escritor = await asyncio.open_connection(self.descriptor["host"], self.descriptor["port"])
         self._conexiones.append(escritor)
         hola: dict[str, Any] = {
@@ -291,6 +310,9 @@ class _Arnes:
         }
         if con_capacidad:
             hola["supervision_fence"] = True
+        identidad = self.job_object if job_object is _DEL_JOB else job_object
+        if identidad is not None:
+            hola["job_object"] = identidad
         await write_authenticated_message(escritor, hola, self.secreto)
         return _WorkerCrudo(lector, escritor, self.secreto)
 

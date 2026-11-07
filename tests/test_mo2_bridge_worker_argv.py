@@ -53,6 +53,8 @@ JOB_ID_DE_REFERENCIA = "c0ee146e-159f-49f0-95c2-5bfd58e8018f"
 # Modelo del transporte de MO2 2.5.2
 # ---------------------------------------------------------------------------
 
+JOB_OBJECT = "Local\\SkyClawVfs-" + "0123456789abcdef" * 2
+
 
 def _linea_de_comandos_de_mo2(executable: pathlib.Path, fragmentos: Sequence[str]) -> str:
     """Reproduce ``spawn::spawn`` de MO2 2.5.2 sobre una lista de fragmentos.
@@ -148,6 +150,8 @@ def _vector_semantico(rig: dict[str, pathlib.Path], *, job_id: str = JOB_ID_DE_R
         str(rig["manifest"].resolve()),
         "--descriptor",
         str(rig["descriptor"].resolve()),
+        "--job-object",
+        JOB_OBJECT,
         "--job-id",
         job_id,
     ]
@@ -177,7 +181,8 @@ class _Organizer:
 
 
 class _JobObject:
-    def __init__(self) -> None:
+    def __init__(self, nombre: str | None = None) -> None:
+        self.nombre = nombre
         self.assigned: list[int] = []
         self.terminated = False
         self.closed = False
@@ -208,7 +213,7 @@ def _lanzar(
         descriptor_path=rig["descriptor"],
         jobs_root=rig["jobs"],
         send_event=eventos.append,
-        job_factory=lambda: job_object,
+        job_factory=lambda _nombre: job_object,
         process_waiter=lambda handle: organizer.waitForApplication(handle, False),
     )
     controlador.launch(
@@ -219,6 +224,7 @@ def _lanzar(
             "profile": "A209RigStandalone",
             "manifest_path": str(rig["manifest"]),
             "overwrite_mod": overwrite_mod,
+            "job_object": JOB_OBJECT,
         }
     )
     return controlador
@@ -333,6 +339,7 @@ def test_d1_04_la_funcion_semantica_sigue_siendo_pura(tmp_path: pathlib.Path) ->
             "profile": "A209RigStandalone",
             "manifest_path": str(rig["manifest"]),
             "overwrite_mod": None,
+            "job_object": JOB_OBJECT,
         },
         jobs_root=rig["jobs"],
     )
@@ -466,6 +473,7 @@ def test_d1_07_el_controlador_lanza_una_sola_vez_y_conserva_el_lifecycle(tmp_pat
         "protocol_version": bridge.PROTOCOL_VERSION,
         "type": "launch_ack",
         "job_id": JOB_ID_DE_REFERENCIA,
+        "job_object": JOB_OBJECT,
     }
 
     organizer.release.set()

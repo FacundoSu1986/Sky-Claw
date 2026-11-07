@@ -23,6 +23,7 @@ from sky_claw.local.mo2.vfs_contracts import (
     VfsToolStartedEvent,
 )
 from sky_claw.local.mo2.vfs_ipc import read_authenticated_message, write_authenticated_message
+from sky_claw.local.mo2.vfs_job_identity import PruebaDeJob
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest
 from sky_claw.local.mo2.vfs_worker import (
     VfsProcessSpec,
@@ -254,7 +255,12 @@ async def test_worker_reporta_resultado_por_su_canal_autenticado(tmp_path: pathl
         # Lo que el bridge real emite tras asignar el worker al Job Object: sin esto el worker no despacha.
         await write_authenticated_message(
             bridge_writer,
-            {"protocol_version": VFS_PROTOCOL_VERSION, "type": "launch_ack", "job_id": manifest.job.job_id},
+            {
+                "protocol_version": VFS_PROTOCOL_VERSION,
+                "type": "launch_ack",
+                "job_id": manifest.job.job_id,
+                "job_object": launch["job_object"],
+            },
             secret,
         )
         worker = asyncio.create_task(
@@ -262,6 +268,7 @@ async def test_worker_reporta_resultado_por_su_canal_autenticado(tmp_path: pathl
                 manifest_path=pathlib.Path(str(launch["manifest_path"])),
                 descriptor_path=broker.descriptor_path,
                 expected_job_id=manifest.job.job_id,
+                job_identity=PruebaDeJob(nombre=launch["job_object"], pid=1, procesos_totales=1, procesos_activos=1),
                 grandchild_probe=lambda _path, sha, _timeout: _return_sha(sha),
             )
         )
