@@ -30,12 +30,11 @@ setup_python_compat()
 # dispara ``platform.win32_ver()`` → ``cmd.exe /c ver`` en tiempo de import,
 # lo cual crearía subprocesos hijos antes del fence de supervisión del Job Object.
 if len(sys.argv) >= 2 and sys.argv[1] in ("--vfs-worker", "--vfs-probe-child"):
-    from sky_claw.local.mo2.vfs_worker import worker_main as _vfs_worker_main  # noqa: PLC0415
+    # Auditoría independiente H-02: ``arrancar_worker`` PRUEBA el Job antes de importar ``vfs_worker`` (cuyo árbol
+    # de imports llega a ``platform`` → ``cmd.exe``). Este despacho y el de ``main()`` pasan por la misma función.
+    from sky_claw.local.mo2.vfs_arranque import arrancar_worker  # noqa: PLC0415
 
-    _vfs_argv = sys.argv[2:]
-    if sys.argv[1] == "--vfs-probe-child":
-        _vfs_argv = ["--probe-child", *_vfs_argv]
-    raise SystemExit(_vfs_worker_main(_vfs_argv))
+    raise SystemExit(arrancar_worker(sys.argv[1], sys.argv[2:]))
 
 # T5-v2.1: modo worker del ejecutable congelado. El gate UIA productivo corre en
 # un proceso descartable (una llamada COM que nunca retorna no se puede matar
@@ -415,12 +414,9 @@ def main(argv: list[str] | None = None) -> None:
     """Unified entry point controller."""
     effective_argv = list(sys.argv[1:] if argv is None else argv)
     if effective_argv and effective_argv[0] in ("--vfs-worker", "--vfs-probe-child"):
-        from sky_claw.local.mo2.vfs_worker import worker_main
+        from sky_claw.local.mo2.vfs_arranque import arrancar_worker
 
-        worker_argv = effective_argv[1:]
-        if effective_argv[0] == "--vfs-probe-child":
-            worker_argv = ["--probe-child", *worker_argv]
-        raise SystemExit(worker_main(worker_argv))
+        raise SystemExit(arrancar_worker(effective_argv[0], effective_argv[1:]))
     log_level = logging.DEBUG if "--verbose" in effective_argv or "-v" in effective_argv else logging.INFO
     setup_logging(level=log_level)
 

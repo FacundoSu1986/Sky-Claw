@@ -123,7 +123,7 @@ lanza el worker real y un `Win32JobObject` real. Los procesos son inocuos (el wo
 | Adopción de descendientes previos (prototipo `adoptar_descendientes`) los deja contenidos | `test_la_adopcion_de_descendientes_previos_los_deja_contenidos` |
 | Con Job anidado, la consulta `QueryInformationJobObject(NULL)` ve `KILL_ON_JOB_CLOSE` si **algún** Job lo tiene | `test_en_jobs_anidados_el_proceso_ve_el_limite_de_su_job` → `{"solo_job_sin_kill_on_close": false, "solo_job_con_kill_on_close": true, "anidado_externo_sin_kill__interno_con_kill": true}` |
 | Bridge real: worker + `--probe-child` dentro del Job correcto | `test_el_bridge_real_contiene_al_worker_y_a_sus_descendientes_en_el_job_correcto` |
-| Bridge real con `assign` tardío: un descendiente queda **fuera** (caracterización del riesgo) | `test_con_una_asignacion_tardia_el_bridge_real_deja_un_descendiente_fuera_del_job` |
+| Bridge real con `assign` tardío: el descendiente previo queda **fuera** (caracterización original; desde la auditoría independiente, H-01, el bridge lo **adopta** y la aserción cambió de signo) | `test_con_una_asignacion_tardia_el_bridge_real_adopta_al_descendiente_previo_y_lo_termina` |
 
 Resultado del último run (`55711087`): `35 passed in 26.63s`, **0 skipped** (los skips cuentan como
 "no verificado", no como PASS). Incluye los 11 tests de Windows (9 de semántica/bridge real y 2 de higiene del

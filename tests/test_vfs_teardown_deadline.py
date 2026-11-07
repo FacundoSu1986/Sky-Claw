@@ -512,6 +512,12 @@ class _JobObjectFake:
     def terminate(self) -> None:
         self.terminated = True
 
+    def adopt_descendants(self, process_handle: int) -> int:
+        return 0
+
+    def active_processes(self) -> int:
+        return 0
+
     def close(self) -> None:
         self.closed = True
 

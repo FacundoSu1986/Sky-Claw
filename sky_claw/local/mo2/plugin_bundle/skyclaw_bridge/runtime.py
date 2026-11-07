@@ -17,6 +17,10 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 PROTOCOL_VERSION = 1
+#: Plazo para confirmar que el Job quedó VACÍO tras terminarlo, y cada cuánto se consulta. Los procesos terminados
+#: mueren en milisegundos; el plazo es una cota de fallo cerrado, no una espera esperada.
+_JOB_EMPTY_TIMEOUT_S = 10.0
+_JOB_EMPTY_POLL_S = 0.02
 _LAUNCH_FIELDS = frozenset(
     {"protocol_version", "type", "job_id", "profile", "manifest_path", "overwrite_mod", "job_object"}
 )
@@ -106,9 +110,129 @@ class OrganizerApi(Protocol):
 class JobObject(Protocol):
     def assign(self, process_handle: int) -> None: ...
 
+    def adopt_descendants(self, process_handle: int) -> int:
+        """Asigna al Job a los descendientes VIVOS del proceso lanzado que no estén en él; devuelve cuántos adoptó.
+
+        Lanza ``BridgeCommandError`` si alguno no se pudo contener (auditoría independiente, H-01).
+        """
+        ...
+
     def terminate(self) -> None: ...
 
+    def active_processes(self) -> int:
+        """Procesos activos hoy en el Job (``ActiveProcesses``): lo que decide si el worker terminó DE VERDAD."""
+        ...
+
     def close(self) -> None: ...
+
+
+class AdoptionApi(Protocol):
+    """Lo que la adopción necesita del sistema operativo; un doble permite probar la lógica sin Windows."""
+
+    def processes(self) -> Sequence[tuple[int, int]]:
+        """``(pid, ppid)`` de los procesos vivos."""
+        ...
+
+    def process_id(self, handle: int) -> int: ...
+
+    def open_process(self, pid: int) -> int | None:
+        """Handle del proceso, ``None`` si ya no existe; ``BridgeCommandError`` si existe y no se pudo abrir."""
+        ...
+
+    def creation_time(self, handle: int) -> int: ...
+
+    def has_exited(self, handle: int) -> bool: ...
+
+    def in_job(self, handle: int) -> bool:
+        """Pertenencia contra el handle del Job PROPIO. Nunca contra NULL: ``IsProcessInJob(p, NULL)`` responde por
+        cualquier Job y no prueba nada."""
+        ...
+
+    def assign(self, handle: int) -> None: ...
+
+    def terminate(self, handle: int) -> None: ...
+
+    def close(self, handle: int) -> None: ...
+
+
+#: Pasadas máximas de la adopción. Un descendiente adoptado ya hereda el Job en lo que cree después, así que el
+#: punto fijo llega rápido; agotarlas es una señal (algo crea procesos más rápido de lo que se adoptan), no un caso normal.
+_ADOPTION_MAX_PASSES = 8
+
+
+def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _ADOPTION_MAX_PASSES) -> int:
+    """Contiene a TODO el árbol del proceso lanzado (auditoría independiente, H-01).
+
+    En un ejecutable PyInstaller onefile el handle que devuelve ``startApplication`` es el del bootloader; el
+    intérprete es su hijo y puede haber nacido ANTES de la asignación al Job, que no adopta a quien ya existía.
+    Se recorre el árbol hasta un punto fijo y se asigna al Job a cada descendiente vivo que no esté en él.
+
+    Un proceso es hijo de otro solo si su PPID es el de uno ya RETENIDO y nació después que él. Los handles de los
+    procesos ya vistos quedan ABIERTOS hasta el final: mientras uno esté abierto su PID no puede reutilizarse, así que
+    un PPID numéricamente igual al de un proceso viejo no se confunde con un hijo. Eso también permite seguir a un
+    nieto cuyo padre ya murió.
+
+    El error es por PID (como la limpieza de H-03): el fallo de uno no corta la ronda. Un descendiente vivo que no se
+    pudo adoptar se intenta terminar (no puede quedar suelto fuera del Job) y al final se lanza ``BridgeCommandError``
+    que los nombra a todos: el bridge no emite ``launch_ack``. Devuelve cuántos adoptó.
+    """
+    root_pid = api.process_id(root_handle)
+    retenidos: dict[int, int] = {root_pid: api.creation_time(root_handle)}  # pid -> creación
+    abiertos: list[int] = []  # handles que abrió ESTA función (el de la raíz es del bridge: no se cierra)
+    ajenos: set[int] = set()
+    fallos: dict[int, str] = {}
+    adoptados = 0
+    try:
+        for _ in range(max_passes):
+            hubo_nuevos = False
+            for pid, ppid in api.processes():
+                if pid in retenidos or pid in ajenos or pid in fallos or ppid not in retenidos:
+                    continue
+                handle: int | None = None
+                try:
+                    handle = api.open_process(pid)
+                    if handle is None:
+                        continue  # murió entre la enumeración y la apertura
+                    abiertos.append(handle)
+                    creacion = api.creation_time(handle)
+                    if creacion < retenidos[ppid]:
+                        ajenos.add(pid)  # PPID coincidente de un proceso viejo: no es hijo
+                        abiertos.remove(handle)
+                        api.close(handle)
+                        continue
+                    retenidos[pid] = creacion
+                    hubo_nuevos = True
+                    if api.has_exited(handle) or api.in_job(handle):
+                        continue
+                    try:
+                        api.assign(handle)
+                    except BridgeCommandError:
+                        if api.has_exited(handle):
+                            continue  # asignar a un proceso que ya salió falla con ACCESS_DENIED: no hay qué contener
+                        raise
+                    adoptados += 1
+                except BridgeCommandError as exc:
+                    detalle = str(exc)
+                    if handle is not None and pid in retenidos:
+                        try:
+                            api.terminate(handle)
+                        except BridgeCommandError as term_exc:
+                            detalle += f"; no se pudo terminarlo: {term_exc}"
+                    fallos[pid] = detalle
+            if not hubo_nuevos:
+                break
+        else:
+            raise BridgeCommandError(
+                f"la adopción de descendientes no convergió en {max_passes} pasadas: algo sigue creando procesos"
+            )
+    finally:
+        for handle_abierto in abiertos:
+            with contextlib.suppress(BridgeCommandError):
+                api.close(handle_abierto)
+    if fallos:
+        detalle_total = "; ".join(f"pid {pid}: {motivo}" for pid, motivo in sorted(fallos.items()))
+        raise BridgeCommandError(f"no se pudo contener a los descendientes del worker: {detalle_total}")
+    return adoptados
 
 
 class CommandQueue(Protocol):
@@ -298,6 +422,8 @@ class BridgeLaunchController:
         process_waiter: Callable[[int], tuple[bool, int]] | None = None,
         breakaway_checker: Callable[[], None] | None = None,
         log_info: Callable[[str], None] | None = None,
+        job_empty_timeout_s: float = _JOB_EMPTY_TIMEOUT_S,
+        job_empty_poll_s: float = _JOB_EMPTY_POLL_S,
     ) -> None:
         worker = worker_executable.resolve()
         if not worker.is_file() or worker.is_symlink():
@@ -317,6 +443,8 @@ class BridgeLaunchController:
         else:
             self._breakaway_checker = lambda: None
         self._log_info = log_info
+        self._job_empty_timeout_s = job_empty_timeout_s
+        self._job_empty_poll_s = job_empty_poll_s
         self._jobs: dict[str, _RunningJob] = {}
         self._lock = threading.Lock()
 
@@ -354,6 +482,10 @@ class BridgeLaunchController:
                 raise BridgeCommandError("MO2 no devolvió un HANDLE válido para el worker")
             job_object.assign(handle)
             t_assign = time.perf_counter()
+            # El handle es el del proceso que lanzó MO2 (en onefile, el bootloader): su hijo puede haber nacido antes
+            # de la asignación y quedar fuera. Se contiene a todo el árbol ANTES de confirmar nada al broker.
+            adopted = job_object.adopt_descendants(handle)
+            t_adopt = time.perf_counter()
         except Exception:
             if type(handle) is int and handle not in (0, -1):
                 with contextlib.suppress(Exception):
@@ -386,7 +518,8 @@ class BridgeLaunchController:
             self._log_info(
                 f"Sky-Claw VFS Bridge launch timings ts={ts_utc} job_id={request.job_id} job_object={request.job_object} "
                 f"create_job_ms={(t_job - t0) * 1000.0:.3f} startApplication_ms={(t_start - t_job) * 1000.0:.3f} "
-                f"assign_ms={(t_assign - t_start) * 1000.0:.3f} total_to_ack_ms={(t_ack - t0) * 1000.0:.3f}"
+                f"assign_ms={(t_assign - t_start) * 1000.0:.3f} adopt_ms={(t_adopt - t_assign) * 1000.0:.3f} "
+                f"adopted={adopted} total_to_ack_ms={(t_ack - t0) * 1000.0:.3f}"
             )
         monitor = threading.Thread(
             target=self._monitor,
@@ -418,15 +551,28 @@ class BridgeLaunchController:
             wait_error = f"espera Win32 del worker falló: {exc}"
         finally:
             t_exit = time.perf_counter()
-            running.job_object.close()
+            # Que el proceso lanzado salga NO es que el worker terminó: el broker toma ``worker_exit`` como
+            # terminalidad confirmada (y con él libera la cuarentena). Solo se emite con el Job VACÍO confirmado.
+            survivors = self._terminate_and_confirm_empty(running.job_object)
             with self._lock:
                 self._jobs.pop(running.request.job_id, None)
         if self._log_info is not None:
             ts_utc = datetime.now(UTC).isoformat()
             self._log_info(
                 f"Sky-Claw VFS Bridge worker_exit confirmed ts={ts_utc} job_id={running.request.job_id} "
-                f"wait_ok={wait_ok} exit_code={exit_code} wait_ms={(t_exit - t_wait0) * 1000.0:.3f}"
+                f"wait_ok={wait_ok} exit_code={exit_code} wait_ms={(t_exit - t_wait0) * 1000.0:.3f} "
+                f"job_empty={survivors is None}"
             )
+        if survivors is not None:
+            self._send_event(
+                bridge_error_event(
+                    command="terminate",
+                    job_id=running.request.job_id,
+                    exc=BridgeTerminationError(survivors),
+                    kind="termination_failed",
+                )
+            )
+            return
         event: dict[str, object] = {
             "protocol_version": PROTOCOL_VERSION,
             "type": "event",
@@ -438,6 +584,47 @@ class BridgeLaunchController:
         if wait_error is not None:
             event["message"] = wait_error
         self._send_event(event)
+
+    def _terminate_and_confirm_empty(self, job_object: JobObject) -> str | None:
+        """Confirma que el Job quedó VACÍO (terminándolo si hace falta) y lo cierra. ``None`` = vacío; texto = por qué no.
+
+        Si el Job ya está vacío no se termina nada (ciclo de vida de siempre: salida natural → cerrar). Si conserva
+        procesos —o no se puede consultar— se intenta terminarlo y se vuelve a confirmar. Lo que decide es lo que sigue
+        vivo: que ``TerminateJobObject`` falle no importa si el Job ya está vacío. El handle se cierra siempre
+        (``KILL_ON_JOB_CLOSE`` es la última red).
+        """
+        problems: list[str] = []
+        active: int | None
+        try:
+            active = job_object.active_processes()
+        except Exception as exc:  # sin poder consultar no se puede afirmar que no queda nada
+            active = None
+            problems.append(f"no se pudo consultar el Job: {exc}")
+        if active != 0:
+            try:
+                job_object.terminate()
+            except Exception as exc:  # se intenta confirmar igual
+                problems.append(f"terminate: {exc}")
+            try:
+                active = self._wait_for_empty_job(job_object)
+            except Exception as exc:
+                active = None
+                problems.append(f"no se pudo consultar el Job tras terminarlo: {exc}")
+        try:
+            job_object.close()
+        except Exception as exc:
+            problems.append(f"close: {exc}")
+        if active == 0:
+            return None
+        return f"el Job no quedó vacío (activos={active}): " + "; ".join(problems or ["sin más detalle"])
+
+    def _wait_for_empty_job(self, job_object: JobObject) -> int:
+        deadline = time.monotonic() + self._job_empty_timeout_s
+        while True:
+            active = job_object.active_processes()
+            if active == 0 or time.monotonic() >= deadline:
+                return active
+            time.sleep(self._job_empty_poll_s)
 
     def cancel(self, message: Mapping[str, object]) -> None:
         allowed = {"protocol_version", "type", "job_id"}
@@ -508,6 +695,161 @@ if sys.platform == "win32":
             ("PeakJobMemoryUsed", ctypes.c_size_t),
         ]
 
+    class _BasicAccountingInformation(ctypes.Structure):
+        """``JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`` (misma disposición que usa el worker en ``vfs_job_identity``)."""
+
+        _fields_ = [
+            ("TotalUserTime", ctypes.c_longlong),
+            ("TotalKernelTime", ctypes.c_longlong),
+            ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+            ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+            ("TotalPageFaultCount", wintypes.DWORD),
+            ("TotalProcesses", wintypes.DWORD),
+            ("ActiveProcesses", wintypes.DWORD),
+            ("TotalTerminatedProcesses", wintypes.DWORD),
+        ]
+
+    class _ProcessEntry32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    class _Win32AdoptionApi:
+        """``kernel32`` real para :func:`adopt_descendants`. Cada fallo es un ``BridgeCommandError`` con su ``GetLastError``.
+
+        El plugin corre dentro de MO2 y no tiene ``psutil``: el árbol de procesos se lee con ToolHelp32.
+        """
+
+        _PROCESS_TERMINATE = 0x0001
+        _PROCESS_SET_QUOTA = 0x0100  # AssignProcessToJobObject lo exige sobre el proceso
+        _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        _SYNCHRONIZE = 0x00100000
+        _TH32CS_SNAPPROCESS = 0x00000002
+        _ERROR_INVALID_PARAMETER = 87
+        _ERROR_NO_MORE_FILES = 18
+        _WAIT_OBJECT_0 = 0
+        _WAIT_TIMEOUT = 0x102
+        _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+        def __init__(self, kernel32: ctypes.WinDLL, job_handle: int) -> None:
+            k32 = kernel32
+            k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+            k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+            k32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ProcessEntry32W)]
+            k32.Process32FirstW.restype = wintypes.BOOL
+            k32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ProcessEntry32W)]
+            k32.Process32NextW.restype = wintypes.BOOL
+            k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.GetProcessId.argtypes = [wintypes.HANDLE]
+            k32.GetProcessId.restype = wintypes.DWORD
+            k32.GetProcessTimes.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME),
+            ]
+            k32.GetProcessTimes.restype = wintypes.BOOL
+            k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            k32.WaitForSingleObject.restype = wintypes.DWORD
+            k32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+            k32.IsProcessInJob.restype = wintypes.BOOL
+            k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            k32.AssignProcessToJobObject.restype = wintypes.BOOL
+            k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            k32.TerminateProcess.restype = wintypes.BOOL
+            k32.CloseHandle.argtypes = [wintypes.HANDLE]
+            k32.CloseHandle.restype = wintypes.BOOL
+            self._k32 = k32
+            self._job = job_handle
+
+        @staticmethod
+        def _error(call: str) -> BridgeCommandError:
+            return BridgeCommandError(f"{call} falló (GetLastError={ctypes.get_last_error()})")
+
+        def processes(self) -> list[tuple[int, int]]:
+            snapshot = self._k32.CreateToolhelp32Snapshot(self._TH32CS_SNAPPROCESS, 0)
+            if not snapshot or snapshot == self._INVALID_HANDLE_VALUE:
+                raise self._error("CreateToolhelp32Snapshot")
+            try:
+                entry = _ProcessEntry32W()
+                entry.dwSize = ctypes.sizeof(entry)
+                found: list[tuple[int, int]] = []
+                ok = self._k32.Process32FirstW(snapshot, ctypes.byref(entry))
+                while ok:
+                    found.append((int(entry.th32ProcessID), int(entry.th32ParentProcessID)))
+                    ok = self._k32.Process32NextW(snapshot, ctypes.byref(entry))
+                if ctypes.get_last_error() != self._ERROR_NO_MORE_FILES:
+                    raise self._error("Process32NextW")
+                return found
+            finally:
+                self._k32.CloseHandle(snapshot)
+
+        def process_id(self, handle: int) -> int:
+            pid = int(self._k32.GetProcessId(handle))
+            if pid == 0:
+                raise self._error("GetProcessId")
+            return pid
+
+        def open_process(self, pid: int) -> int | None:
+            rights = (
+                self._PROCESS_TERMINATE
+                | self._PROCESS_SET_QUOTA
+                | self._PROCESS_QUERY_LIMITED_INFORMATION
+                | self._SYNCHRONIZE
+            )
+            handle = self._k32.OpenProcess(rights, False, pid)
+            if not handle:
+                if ctypes.get_last_error() == self._ERROR_INVALID_PARAMETER:
+                    return None  # el proceso ya no existe
+                raise self._error(f"OpenProcess({pid})")
+            return int(handle)
+
+        def creation_time(self, handle: int) -> int:
+            creation, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+            if not self._k32.GetProcessTimes(
+                handle, ctypes.byref(creation), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
+            ):
+                raise self._error("GetProcessTimes")
+            return (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
+
+        def has_exited(self, handle: int) -> bool:
+            result = self._k32.WaitForSingleObject(handle, 0)
+            if result == self._WAIT_OBJECT_0:
+                return True
+            if result == self._WAIT_TIMEOUT:
+                return False
+            raise self._error("WaitForSingleObject")
+
+        def in_job(self, handle: int) -> bool:
+            result = wintypes.BOOL(0)
+            # Contra el handle del Job PROPIO: con NULL respondería por CUALQUIER Job (un test lo prohíbe en producción).
+            if not self._k32.IsProcessInJob(handle, self._job, ctypes.byref(result)):
+                raise self._error("IsProcessInJob")
+            return bool(result.value)
+
+        def assign(self, handle: int) -> None:
+            if not self._k32.AssignProcessToJobObject(self._job, handle):
+                raise self._error("AssignProcessToJobObject")
+
+        def terminate(self, handle: int) -> None:
+            if not self._k32.TerminateProcess(handle, 1):
+                raise self._error("TerminateProcess")
+
+        def close(self, handle: int) -> None:
+            if not self._k32.CloseHandle(handle):
+                raise self._error("CloseHandle")
+
 
 class Win32JobObject:
     """Job Object kill-on-close con NOMBRE que contiene al worker y todos sus descendientes.
@@ -524,6 +866,7 @@ class Win32JobObject:
 
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+    _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
     _ERROR_ALREADY_EXISTS = 183
     _ERROR_ACCESS_DENIED = 5
     _SDDL_REVISION_1 = 1
@@ -547,6 +890,14 @@ class Win32JobObject:
         self._kernel32.SetInformationJobObject.restype = wintypes.BOOL
         self._kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
         self._kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        self._kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._kernel32.QueryInformationJobObject.restype = wintypes.BOOL
         self._kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
         self._kernel32.TerminateJobObject.restype = wintypes.BOOL
         self._kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
@@ -614,9 +965,33 @@ class Win32JobObject:
             self._kernel32.TerminateProcess(process_handle, 1)
             raise BridgeCommandError(f"AssignProcessToJobObject falló: {error}")
 
+    def adopt_descendants(self, process_handle: int) -> int:
+        if sys.platform != "win32":
+            raise BridgeCommandError("Win32 Job Objects solo están disponibles en Windows")
+        if self._handle is None:
+            raise BridgeCommandError("Job Object ya cerrado")
+        return adopt_descendants(_Win32AdoptionApi(self._kernel32, self._handle), process_handle)
+
     def terminate(self) -> None:
         if self._handle is not None and not self._kernel32.TerminateJobObject(self._handle, 1):
             raise BridgeTerminationError(f"TerminateJobObject falló: {ctypes.get_last_error()}")
+
+    def active_processes(self) -> int:
+        if self._handle is None:
+            raise BridgeCommandError("Job Object ya cerrado")
+        info = _BasicAccountingInformation()
+        returned = wintypes.DWORD(0)
+        if not self._kernel32.QueryInformationJobObject(
+            self._handle,
+            self._JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+            ctypes.byref(returned),
+        ):
+            raise BridgeCommandError(
+                f"QueryInformationJobObject(BasicAccountingInformation) falló: {ctypes.get_last_error()}"
+            )
+        return int(info.ActiveProcesses)
 
     def close(self) -> None:
         handle = getattr(self, "_handle", None)
