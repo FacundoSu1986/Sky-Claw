@@ -577,3 +577,15 @@ def test_el_informe_no_queda_listo_si_un_candidato_no_se_pudo_leer(tmp_path: pat
         f"un candidato ilegible se reportó como {hallazgo['veredicto']}: {hallazgo['detalle']}"
     )
     assert informe["listo_para_p7"] is False
+
+
+def test_la_matriz_p7_g_nombra_steamapps_temp() -> None:
+    """SFR-21 prohíbe escribir en ``steamapps/temp/**`` además de staging/downloading.
+
+    Si la matriz que consume el operador omite esa superficie, el chequeo de
+    no-escritura de P7-G puede declararse completo sin haberla mirado."""
+    filas = {fila["id"]: fila for fila in inspector._matriz_p7()}
+    criterio = filas["P7-G"]["prueba"]
+    assert "steamapps/temp/**" in criterio
+    assert "staging/downloading" in criterio
+    assert "appmanifest" in criterio

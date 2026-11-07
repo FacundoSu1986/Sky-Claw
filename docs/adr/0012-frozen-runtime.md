@@ -205,8 +205,13 @@ para no migrar IDs ya documentados (`SFR-01..23`) en docs, tests e issues.
 21. `SFR-21` (requisito de producto) Tras la captura inicial, ni arrancar el juego
     ni que Steam actualice su propia copia exigen una **acción manual repetida**
     del usuario (sin solo-lectura sobre el manifest, sin restaurar nada, sin
-    desconectar red, sin bloqueos). Criterio de aceptación de P7, **no demostrado
-    todavía** (§29.7).
+    desconectar red, sin bloqueos). Una actualización legítima de Steam **puede**
+    cambiar los hashes de los archivos que Steam administra; la invariante es que
+    Sky-Claw **no escribe** en superficies administradas por Steam
+    (`appmanifest_*.acf`, `steamapps/downloading/**`, `steamapps/temp/**`,
+    configuración del cliente) y que el inventario/hashes del Clone **no cambian**
+    por esa actualización. Criterio de aceptación de P7, **no demostrado todavía**
+    (§29.7).
 22. `SFR-22` **`RuntimeSetupManifest`** es la autoridad del **setup operativo**:
     qué necesita una versión de Skyrim (una Generation) para convertirse en
     *nuestro* runtime jugable — SKSE (loader + DLLs del build exacto), archivos de
@@ -1904,11 +1909,20 @@ no inferido; v1 sigue leyéndose fail-closed.
   `steam://run/489830//` en la corrida con launcher; la corrida con `SkyrimSE.exe`
   directo arrancó desde el árbol externo. La causalidad del prompt de Steam **no está
   probada** y el audit no cubre el loader de SKSE.
-- **Sky-Claw no toca el manifest** (SFR-11): no fija ni limpia solo-lectura. Sí puede
-  **observarlo** (lectura) e informarlo en P6.
-- **SFR-21** se formaliza como criterio de aceptación de P7: arrancar N veces por MO2
-  con la Managed Source en actualización pendiente y luego ya actualizada, **sin
-  ninguna acción manual** sobre Steam entre arranques. **No está demostrado.**
+- **Sky-Claw no escribe superficies de Steam** (SFR-11): no toca
+  `appmanifest_489830.acf`, `steamapps/downloading/489830/**`,
+  `steamapps/temp/489830/**` ni la configuración del cliente; tampoco fija ni
+  limpia solo-lectura. Sí puede **observarlas** (lectura) e informarlas en P6.
+  Que una actualización legítima de Steam cambie su contenido/hashes **NO** es
+  violación de SFR-21.
+- **SFR-21** se formaliza como criterio de aceptación de P7: arrancar N veces por
+  MO2 desde el Clone con la Managed Source en actualización pendiente y después
+  ya actualizada, **sin ninguna acción manual** sobre Steam entre arranques,
+  verificando (i) que Sky-Claw no escribió ninguna superficie de Steam y (ii) que
+  el inventario/hashes del Clone son idénticos antes y después. **No está
+  demostrado.** (Corrección P7-A1, 2026-11-05: la versión anterior de este bullet
+  exigía "hashes de Steam idénticos", falso bajo una actualización legítima; la
+  invariante correcta es la no-escritura de Sky-Claw + invariancia del Clone.)
 
 ### 29.8 Requisitos registrados (el diseño se hace en cada slice)
 

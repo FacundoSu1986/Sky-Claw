@@ -629,8 +629,13 @@ def _matriz_p7() -> list[dict[str, str]]:
         },
         {
             "id": "P7-G",
-            "prueba": "garantías de SFR-21 sin manipular el estado de actualización de Steam",
-            "demuestra": "SFR-21 no depende de tocar el manifest",
+            "prueba": (
+                "SFR-21 sin manipular el estado de actualización de Steam: una actualización legítima "
+                "puede cambiar los hashes de los archivos de Steam; la invariante es que Sky-Claw no "
+                "escribe appmanifest, staging/downloading, steamapps/temp/** ni config de Steam, "
+                "y el inventario/hashes del Clone no cambian"
+            ),
+            "demuestra": "SFR-11 (no-escritura sobre Steam) + SFR-21 (no depende de tocar el manifest)",
         },
     ]
 
