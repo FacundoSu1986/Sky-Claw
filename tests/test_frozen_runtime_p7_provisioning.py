@@ -866,7 +866,7 @@ class TestVerificacionRuntimeClone:
             lambda *_a, **_k: SimpleNamespace(
                 state=GenerationVerificationState.INDETERMINATE,
                 message="lectura transitoria de la Generation",
-                recorded=None,
+                recorded=object(),
             ),
         )
         verificacion = verificar_runtime_clone(storage, "clone-gen-indet")

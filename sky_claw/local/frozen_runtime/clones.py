@@ -721,6 +721,18 @@ def verificar_runtime_clone(
 
     gen_verif = verificar_generation(root, record.source_generation_id)
     if gen_verif.state is GenerationVerificationState.INDETERMINATE:
+        # Sin evidencia registrada (metadata ausente/corrupta) el linaje NO es
+        # verificable: es un huérfano, no un fallo transitorio. Con evidencia
+        # registrada, un INDETERMINATE (lectura/integridad/identidad) sí es
+        # reintentable y se propaga como tal.
+        if gen_verif.recorded is None:
+            return GenerationVerificationResult(
+                state=GenerationVerificationState.INVALID,
+                message=(
+                    f"Generation de origen no existe o no es VALID "
+                    f"({record.source_generation_id}, {gen_verif.state.value}): {gen_verif.message}"
+                ),
+            )
         return GenerationVerificationResult(
             state=GenerationVerificationState.INDETERMINATE,
             message=(
