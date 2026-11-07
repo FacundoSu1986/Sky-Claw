@@ -13,6 +13,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 
 PROTOCOL_VERSION = 1
@@ -295,6 +296,8 @@ class BridgeLaunchController:
         send_event: Callable[[dict[str, object]], None],
         job_factory: Callable[[str], JobObject] | None = None,
         process_waiter: Callable[[int], tuple[bool, int]] | None = None,
+        breakaway_checker: Callable[[], None] | None = None,
+        log_info: Callable[[str], None] | None = None,
     ) -> None:
         worker = worker_executable.resolve()
         if not worker.is_file() or worker.is_symlink():
@@ -307,14 +310,23 @@ class BridgeLaunchController:
         self._send_event = send_event
         self._job_factory = job_factory or Win32JobObject
         self._process_waiter = process_waiter or wait_for_process_handle
+        if breakaway_checker is not None:
+            self._breakaway_checker = breakaway_checker
+        elif job_factory is None and process_waiter is None and sys.platform == "win32":
+            self._breakaway_checker = verify_mo2_breakaway_allowed
+        else:
+            self._breakaway_checker = lambda: None
+        self._log_info = log_info
         self._jobs: dict[str, _RunningJob] = {}
         self._lock = threading.Lock()
 
     def launch(self, message: Mapping[str, object]) -> None:
+        t0 = time.perf_counter()
         request = validate_launch_request(message, jobs_root=self._jobs_root)
         with self._lock:
             if self._jobs:
                 raise BridgeCommandError("la instancia MO2 ya tiene un worker activo")
+        self._breakaway_checker()
         arguments = build_worker_arguments(
             fixed_prefix=self._prefix,
             request=request,
@@ -326,6 +338,7 @@ class BridgeLaunchController:
         # El Job nace ANTES que el proceso y con el nombre que pidió el broker: si ya existía, la creación falla y no
         # nace nada. El worker efectivo (que puede ser un hijo del proceso asignado) lo abre por ese nombre.
         job_object = self._job_factory(request.job_object)
+        t_job = time.perf_counter()
         handle = 0
         try:
             handle = self._organizer.startApplication(
@@ -336,9 +349,11 @@ class BridgeLaunchController:
                 overwrite,
                 False,
             )
+            t_start = time.perf_counter()
             if type(handle) is not int or handle in (0, -1):
                 raise BridgeCommandError("MO2 no devolvió un HANDLE válido para el worker")
             job_object.assign(handle)
+            t_assign = time.perf_counter()
         except Exception:
             if type(handle) is int and handle not in (0, -1):
                 with contextlib.suppress(Exception):
@@ -365,6 +380,17 @@ class BridgeLaunchController:
                 "job_object": request.job_object,
             }
         )
+        t_ack = time.perf_counter()
+        if self._log_info is not None:
+            # La telemetría nunca altera el flujo del protocolo: si ``log_info`` falla, el monitor igual arranca.
+            with contextlib.suppress(Exception):
+                ts_utc = datetime.now(UTC).isoformat()
+                self._log_info(
+                    f"Sky-Claw VFS Bridge launch timings ts={ts_utc} job_id={request.job_id} "
+                    f"job_object={request.job_object} "
+                    f"create_job_ms={(t_job - t0) * 1000.0:.3f} startApplication_ms={(t_start - t_job) * 1000.0:.3f} "
+                    f"assign_ms={(t_assign - t_start) * 1000.0:.3f} total_to_ack_ms={(t_ack - t0) * 1000.0:.3f}"
+                )
         monitor = threading.Thread(
             target=self._monitor,
             args=(running,),
@@ -388,14 +414,24 @@ class BridgeLaunchController:
         wait_ok = False
         exit_code = -1
         wait_error: str | None = None
+        t_wait0 = time.perf_counter()
         try:
             wait_ok, exit_code = self._process_waiter(running.process_handle)
         except Exception as exc:
             wait_error = f"espera Win32 del worker falló: {exc}"
         finally:
+            t_exit = time.perf_counter()
             running.job_object.close()
             with self._lock:
                 self._jobs.pop(running.request.job_id, None)
+        if self._log_info is not None:
+            # El ``worker_exit`` que sigue habilita rollback y libera locks en el broker: el log no puede impedirlo.
+            with contextlib.suppress(Exception):
+                ts_utc = datetime.now(UTC).isoformat()
+                self._log_info(
+                    f"Sky-Claw VFS Bridge worker_exit confirmed ts={ts_utc} job_id={running.request.job_id} "
+                    f"wait_ok={wait_ok} exit_code={exit_code} wait_ms={(t_exit - t_wait0) * 1000.0:.3f}"
+                )
         event: dict[str, object] = {
             "protocol_version": PROTOCOL_VERSION,
             "type": "event",
@@ -592,3 +628,62 @@ class Win32JobObject:
         if handle is not None:
             self._kernel32.CloseHandle(handle)
             self._handle = None
+
+
+_JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
+_JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK = 0x00001000
+_ERROR_ACCESS_DENIED = 5
+
+
+def _query_current_process_job_limit_flags() -> int | None:
+    """Devuelve ``LimitFlags`` del Job Object actual, o ``None`` si el proceso no pertenece a ningún Job.
+
+    Según la documentación de Win32 para ``QueryInformationJobObject``, cuando ``hJob`` es ``NULL`` y el
+    proceso llamador no está asociado a ningún Job Object, la llamada falla con ``ERROR_ACCESS_DENIED (5)``.
+    """
+    if sys.platform != "win32":
+        return None
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.QueryInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+    info = _ExtendedLimitInformation()
+    returned = wintypes.DWORD(0)
+    ok = kernel32.QueryInformationJobObject(
+        None,
+        Win32JobObject._JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+        ctypes.byref(returned),
+    )
+    if not ok:
+        err = ctypes.get_last_error()
+        if err == _ERROR_ACCESS_DENIED:
+            return None
+        raise BridgeCommandError(f"QueryInformationJobObject falló en preflight de breakaway: {err}")
+    return int(info.BasicLimitInformation.LimitFlags)
+
+
+def verify_mo2_breakaway_allowed(*, query_flags: Callable[[], int | None] | None = None) -> None:
+    """Falla cerrado antes de ``organizer.startApplication`` si MO2 no puede usar ``CREATE_BREAKAWAY_FROM_JOB``.
+
+    En MO2 2.5.2 (``spawn.cpp``), ``startApplication`` llama a ``usvfsCreateProcessHooked`` con
+    ``dwCreationFlags = CREATE_BREAKAWAY_FROM_JOB (0x01000000)``. Si ``ModOrganizer.exe`` corre dentro
+    de un Job Object cuyo ``LimitFlags`` no incluye ``JOB_OBJECT_LIMIT_BREAKAWAY_OK (0x0800)`` ni
+    ``JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK (0x1000)``, ``CreateProcessW`` falla con ``ERROR_ACCESS_DENIED (5)``
+    y MO2 abre un diálogo modal de error en el hilo Qt que bloquea ``startApplication`` e induce una
+    cuarentena espuria en el broker aunque jamás existió ningún proceso worker.
+    """
+    flags = (query_flags or _query_current_process_job_limit_flags)()
+    if flags is None:
+        return
+    if not (flags & (_JOB_OBJECT_LIMIT_BREAKAWAY_OK | _JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK)):
+        raise BridgeCommandError(
+            f"ModOrganizer.exe corre dentro de un Job Object sin permiso de breakaway (LimitFlags={flags:#x}); "
+            "MO2/USVFS pasa CREATE_BREAKAWAY_FROM_JOB y requiere JOB_OBJECT_LIMIT_BREAKAWAY_OK"
+        )

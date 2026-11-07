@@ -9,8 +9,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.__main__ import AppContext, _install_vfs_bridge, _main, _parse_args
+from sky_claw.__main__ import AppContext, _build_parser, _install_vfs_bridge, _main, _parse_args
 from sky_claw.config import Config
+
+#: Qué hace cada ``--mode`` con el posicional ``command``: ``True`` si ``_main`` lo consume (``oneshot`` lo ejecuta,
+#: ``security`` lo despacha a ``_run_security``), ``False`` si lo ignoraría en silencio. Se congela por igualdad
+#: literal contra los ``choices`` reales del parser: agregar un modo sin clasificarlo rompe el test.
+_MODOS_Y_SU_POSICIONAL: dict[str, bool] = {
+    "cli": False,
+    "telegram": False,
+    "oneshot": True,
+    "gui": False,
+    "security": True,
+    "install-vfs-bridge": False,
+    "vfs-health": False,
+}
 
 # ------------------------------------------------------------------
 # Argument parsing
@@ -70,6 +83,53 @@ class TestParseArgs:
         loot = tmp_path / "loot.exe"
         args = _parse_args(["--loot-exe", str(loot)])
         assert args.loot_exe == loot
+
+    @pytest.mark.parametrize(
+        "modo_posicional",
+        ["cli", "telegram", "oneshot", "gui", "security", "install-vfs-bridge", "vfs-health"],
+    )
+    def test_rechaza_modo_pasado_como_argumento_posicional_sin_flag_mode(self, modo_posicional: str) -> None:
+        """Pasar p. ej. ``python -m sky_claw vfs-health`` sin ``--mode`` no debe caer en silencio al REPL."""
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_args([modo_posicional])
+        assert exc_info.value.code == 2
+
+    def test_mode_security_acepta_su_comando_posicional(self) -> None:
+        """``--mode security "scan <ruta>"`` es el uso documentado (DEPLOYMENT.md, docs/user/cli.md)."""
+        args = _parse_args(["--mode", "security", "scan ."])
+        assert args.mode == "security"
+        assert args.command == "scan ."
+
+    def test_el_error_sugiere_oneshot_para_un_comando_corriente(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit):
+            _parse_args(["install Requiem"])
+        err = capsys.readouterr().err
+        assert "ejecutarlo con `--mode oneshot`" in err
+        assert "quisiste pasar" not in err
+
+    def test_el_error_sugiere_el_modo_cuando_el_posicional_es_un_nombre_de_modo(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit):
+            _parse_args(["vfs-health"])
+        err = capsys.readouterr().err
+        assert "quisiste pasar `--mode vfs-health`" in err
+        assert "ejecutarlo" not in err
+
+    def test_los_modos_clasificados_son_exactamente_los_choices_del_parser(self) -> None:
+        accion_mode = next(a for a in _build_parser()._actions if "--mode" in a.option_strings)
+        assert set(accion_mode.choices) == set(_MODOS_Y_SU_POSICIONAL)
+
+    @pytest.mark.parametrize(("modo", "consume_el_posicional"), sorted(_MODOS_Y_SU_POSICIONAL.items()))
+    def test_el_posicional_solo_se_admite_en_los_modos_que_lo_consumen(
+        self, modo: str, consume_el_posicional: bool
+    ) -> None:
+        if consume_el_posicional:
+            assert _parse_args(["--mode", modo, "x"]).command == "x"
+        else:
+            with pytest.raises(SystemExit) as exc_info:
+                _parse_args(["--mode", modo, "x"])
+            assert exc_info.value.code == 2
 
 
 # ------------------------------------------------------------------
@@ -160,6 +220,25 @@ class TestOneshot:
 
             mock_instance.start.assert_awaited_once()
             mock_router.chat.assert_awaited_once_with("search Requiem", mock_instance.session, chat_id="oneshot")
+            mock_instance.stop.assert_awaited_once()
+
+
+class TestSecurity:
+    """El modo ``security`` recibe su comando como posicional y lo despacha a ``_run_security``."""
+
+    @pytest.mark.asyncio
+    async def test_security_despacha_el_comando_posicional_a_run_security(self) -> None:
+        with (
+            patch("sky_claw.__main__.AppContext") as mock_app_context,
+            patch("sky_claw.__main__._run_security", new_callable=AsyncMock) as run_security,
+        ):
+            mock_instance = mock_app_context.return_value
+            mock_instance.start = AsyncMock()
+            mock_instance.stop = AsyncMock()
+
+            await _main(["--mode", "security", "scan ."])
+
+            run_security.assert_awaited_once_with(mock_instance, "scan .")
             mock_instance.stop.assert_awaited_once()
 
 
