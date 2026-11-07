@@ -451,15 +451,29 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         # `escribir_estado_activo_cas` adquiere el lock; éste recibe la sección
         # crítica ya tomada por el binder o por el público.
         ("state.py", "_escribir_estado_activo_cas_locked"),
+        # P7-A1: publicación lógica atómica del provisionamiento. El lock se
+        # adquiere UNA vez en `publicar_generation_desde_stock` /
+        # `crear_runtime_clone_desde_generation`; estos cuerpos reciben la
+        # sección crítica ya tomada (el lock NO es reentrante, así que llamar a
+        # los registradores públicos desde adentro sería un BusyError). Se
+        # declaran para que el ancla de call site obligue a invocarlos bajo lock.
+        ("generations.py", "_registrar_metadata_bajo_lock"),
+        ("clones.py", "_registrar_runtime_clone_record_bajo_lock"),
+        ("clones.py", "_actualizar_lifecycle_clone_bajo_lock"),
+        ("provisioning.py", "_recuperar_clone_existente"),
+        ("provisioning.py", "_marcar_clone_invalid_bajo_lock"),
+        ("provisioning.py", "_resultado_post_verificacion_clone"),
     }
 )
 
 #: Participantes publicos del slice: deben adquirir SIEMPRE. Es una enumeracion
 #: CURADA y el limite esta declarado: `generations.py` escribe por DELEGACION
 #: (`state.write_json_atomic`), asi que no aparece en el censo derivado por
-#: mutadores directos y necesita su propia fila.
+#: mutadores directos y necesita su propia fila. P7-A1: el wrapper público
+#: `registrar_generation_metadata` delega en `_registrar_metadata`, que es quien
+#: adquiere el lock (misma frontera, un nivel adentro).
 _PARTICIPANTES_PUBLICOS: dict[str, str] = {
-    "generations.py": "registrar_generation_metadata",
+    "generations.py": "_registrar_metadata",
     "candidates.py": "crear_candidate",
     "storage.py": "initialize_frozen_runtime_storage",
     "state.py": "save_frozen_runtime_state",
