@@ -31,14 +31,16 @@ materializar nada, ni ejecutar probes runtime. Mide y falla cerrado.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
 import pathlib
 import stat
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 from sky_claw.app.security.links import iter_archivos_propios, link_kind_and_identity_or_raise
+from sky_claw.local.mo2.ganadores import GanadoresError, _es_carpeta_propia, _exigir_nombre_de_mod
 
 logger = logging.getLogger("SkyClaw.ModEffectivity")
 
@@ -88,6 +90,25 @@ def _mismos_bytes(
     return _sha256_file(origen) == _sha256_file(espejo)
 
 
+@contextlib.contextmanager
+def _como_error_de_efectividad() -> Iterator[None]:
+    """Traduce el error de ``ganadores`` al de este gate: los callers capturan ``ModEffectivityError``, no ``GanadoresError``."""
+    try:
+        yield
+    except GanadoresError as exc:
+        raise ModEffectivityError(str(exc)) from exc
+
+
+def _capa_propia(raiz: pathlib.Path, *, etiqueta: str) -> bool:
+    """``True`` si *raiz* es una carpeta propia, ``False`` si no existe; un enlace o un no-directorio falla cerrado.
+
+    Es la validación de ``ganadores`` (misma fuente): ``is_dir()`` sigue enlaces y haría que el veredicto saliera de un árbol que
+    el overlay no entrega.
+    """
+    with _como_error_de_efectividad():
+        return _es_carpeta_propia(raiz, etiqueta=etiqueta)
+
+
 def _roots_eclipsantes(
     *,
     mod_name: str,
@@ -99,7 +120,9 @@ def _roots_eclipsantes(
 
     Sólo roots con prioridad estrictamente MAYOR que ``mod_name``. Un mod listado
     habilitado pero sin directorio es un perfil corrupto: falla cerrado en vez
-    de fingir que no eclipsa nada.
+    de fingir que no eclipsa nada. Cada capa es UNA carpeta propia de ``mods_dir``
+    (``overwrite``, de ``data_root``): un nombre que se escapa o un enlace
+    también es un perfil que no se puede afirmar, no una capa más (#807).
     """
     if enabled.count(mod_name) > 1:
         raise ModEffectivityError(
@@ -110,11 +133,13 @@ def _roots_eclipsantes(
     indice = enabled.index(mod_name)
     roots: list[tuple[str, pathlib.Path]] = []
     overwrite = data_root / "overwrite"
-    if overwrite.is_dir():
+    if _capa_propia(overwrite, etiqueta="overwrite"):
         roots.append(("overwrite", overwrite))
     for superior in reversed(enabled[indice + 1 :]):
+        with _como_error_de_efectividad():
+            _exigir_nombre_de_mod(superior)
         root_superior = mods_dir / superior
-        if not root_superior.is_dir():
+        if not _capa_propia(root_superior, etiqueta=f"el mod {superior!r}"):
             raise ModEffectivityError(f"el mod habilitado {superior!r} no existe en {mods_dir}")
         roots.append((f"mod {superior!r}", root_superior))
     return roots
