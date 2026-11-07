@@ -759,20 +759,86 @@ def _nombre_llamado(llamada: ast.Call) -> str | None:
     return None
 
 
+class _BuscadorDeLlamadas(ast.NodeVisitor):
+    """Recorre un árbol una sola vez y anota el ámbito MÁS INTERNO de cada llamada a ``nombre``.
+
+    Sin función que la encierre (módulo, ``if __name__ == "__main__":``, cuerpo de clase) el ámbito es ``<module>``:
+    una llamada ahí también salta el fence si nadie la ve.
+    """
+
+    def __init__(self, nombre: str) -> None:
+        self._nombre = nombre
+        self._ambitos = ["<module>"]
+        self.encontradas: list[tuple[str, int]] = []
+
+    def _en_funcion(self, nodo: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self._ambitos.append(nodo.name)
+        self.generic_visit(nodo)
+        self._ambitos.pop()
+
+    def visit_FunctionDef(self, nodo: ast.FunctionDef) -> None:  # noqa: N802 - API de ast.NodeVisitor
+        self._en_funcion(nodo)
+
+    def visit_AsyncFunctionDef(self, nodo: ast.AsyncFunctionDef) -> None:  # noqa: N802 - API de ast.NodeVisitor
+        self._en_funcion(nodo)
+
+    def visit_Call(self, nodo: ast.Call) -> None:  # noqa: N802 - API de ast.NodeVisitor
+        if _nombre_llamado(nodo) == self._nombre:
+            self.encontradas.append((self._ambitos[-1], nodo.lineno))
+        self.generic_visit(nodo)
+
+
+def _llamadas_en_arbol(arbol: ast.AST, nombre: str) -> list[tuple[str, int]]:
+    """``(ámbito más interno, línea)`` de cada llamada a ``nombre`` en ``arbol``, cada una una sola vez."""
+    buscador = _BuscadorDeLlamadas(nombre)
+    buscador.visit(arbol)
+    return buscador.encontradas
+
+
 def _llamadas_a(nombre: str) -> list[tuple[str, str, int]]:
-    """``(archivo relativo, función contenedora, línea)`` de cada llamada a ``nombre`` en ``sky_claw/``."""
+    """``(archivo relativo, ámbito contenedor, línea)`` de cada llamada a ``nombre`` en ``sky_claw/``."""
     encontradas: list[tuple[str, str, int]] = []
     for ruta in sorted(_RAIZ_DEL_PAQUETE.rglob("*.py")):
-        arbol = ast.parse(ruta.read_text(encoding="utf-8"))
-        for funcion in ast.walk(arbol):
-            if not isinstance(funcion, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            for nodo in ast.walk(funcion):
-                if isinstance(nodo, ast.Call) and _nombre_llamado(nodo) == nombre:
-                    encontradas.append(
-                        (ruta.relative_to(_RAIZ_DEL_PAQUETE.parent).as_posix(), funcion.name, nodo.lineno)
-                    )
+        relativa = ruta.relative_to(_RAIZ_DEL_PAQUETE.parent).as_posix()
+        for ambito, linea in _llamadas_en_arbol(ast.parse(ruta.read_text(encoding="utf-8")), nombre):
+            encontradas.append((relativa, ambito, linea))
     return encontradas
+
+
+def test_el_enumerador_de_llamadas_ve_las_de_nivel_de_modulo_y_cuenta_cada_una_una_sola_vez() -> None:
+    """El ancla promete enumerar TODOS los llamadores: una llamada fuera de toda función no puede escaparle.
+
+    Y una llamada dentro de una función anidada es de la función MÁS INTERNA (una sola vez), no de la externa
+    también: contarla doble rompería la igualdad con una lista engañosa.
+    """
+    # Arrange
+    fuente = (
+        "execute_worker_manifest(a)\n"  # nivel de módulo: antes invisible
+        "def externa():\n"
+        "    def interna():\n"
+        "        execute_worker_manifest(b)\n"
+        "    execute_worker_manifest(c)\n"
+        "class K:\n"
+        "    execute_worker_manifest(d)\n"  # cuerpo de clase: no es una función
+        "    def metodo(self):\n"
+        "        self.execute_worker_manifest(e)\n"
+        "async def asincrona():\n"
+        "    await execute_worker_manifest(f)\n"
+        "otra_funcion(g)\n"
+    )
+
+    # Act
+    llamadas = _llamadas_en_arbol(ast.parse(fuente), "execute_worker_manifest")
+
+    # Assert: (ámbito más interno, línea); ni una de más ni una de menos.
+    assert llamadas == [
+        ("<module>", 1),
+        ("interna", 4),
+        ("externa", 5),
+        ("<module>", 7),
+        ("metodo", 9),
+        ("asincrona", 11),
+    ]
 
 
 def test_el_unico_camino_al_despacho_del_worker_pasa_por_la_espera_de_supervision() -> None:
