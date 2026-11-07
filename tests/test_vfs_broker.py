@@ -205,6 +205,7 @@ async def _reportar_como_worker(
                 "protocol_version": VFS_PROTOCOL_VERSION,
                 "type": "hello",
                 "role": "worker",
+                "supervision_fence": True,  # un worker nuevo declara que espera la supervisión
                 "instance_id": "portable-main",
                 "session_id": descriptor["session_id"],
                 "job_id": job_id,

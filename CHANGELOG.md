@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Fence de supervisión del worker del broker MO2/USVFS.** El bridge hace `startApplication` (el worker nace corriendo) y recién después `AssignProcessToJobObject`; un descendiente creado antes queda fuera del Job y sobrevive a su terminación, y nada ordenaba el despacho del worker después del `launch_ack`: medido, el worker creaba el nieto de la attestation y despachaba la herramienta sin confirmación. Ahora el worker espera un mensaje `supervised` (autenticado, ligado a su `job_id`) antes de crear el nieto de la attestation y de despachar la herramienta (lo que el intérprete crea al arrancar queda fuera del fence); el broker lo envía una sola vez, solo tras el `launch_ack` del bridge para ese job y mientras el job no esté en cancelación. Cubre LOOT, `vfs-health`, TexGen y DynDOLOD por igual. El bridge instalado no cambia; **actualización coordinada**: daemon y worker son el mismo ejecutable (un worker sin la capacidad es rechazado). Límites y propuesta para la contención del proceso Python bajo PyInstaller onefile en `docs/audits/2026-11-02_fence_de_supervision_del_broker.md`.
 - **El testigo de la fase 1 de la etapa 6 pasa a ser durable entre sesiones (PR D de [ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.2).**
   Hasta el PR C el `testigo_previo` vivía lo que vivía el resultado en `ReactiveStore` (RAM) y en la
   superficie del agente LLM ni siquiera podía viajar porque `GenerateBashedPatchParams` sólo expone

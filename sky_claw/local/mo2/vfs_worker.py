@@ -43,7 +43,7 @@ from sky_claw.local.mo2.vfs_contracts import (
     VfsToolExitEvent,
     VfsToolStartedEvent,
 )
-from sky_claw.local.mo2.vfs_ipc import read_authenticated_message, write_authenticated_message
+from sky_claw.local.mo2.vfs_ipc import VfsFrameError, read_authenticated_message, write_authenticated_message
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest, read_worker_manifest
 from sky_claw.local.tools._process import kill_and_reap
 from sky_claw.logging_config import (
@@ -58,6 +58,10 @@ logger = logging.getLogger(__name__)
 _GRANDCHILD_TIMEOUT_SECONDS = 10.0
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
 _RESULT_ACK_TIMEOUT_SECONDS = 5.0
+#: Plazo MÁXIMO para que el bridge confirme la supervisión. Es una cota de FALLO CERRADO,
+#: no un sustituto de la garantía: vencido el plazo el worker ABORTA sin haber creado el nieto de
+#: la attestation ni despachado la herramienta; jamás prosigue "por las dudas". La confirmación real llega en milisegundos.
+_SUPERVISION_TIMEOUT_SECONDS = 30.0
 #: Captura por stream de un proceso de sesión: COLA acotada, no buffer completo.
 #: Un tool charlatán no puede inflar el ``VfsJobResult`` (frame IPC de 1 MiB) ni
 #: la memoria del worker; el diagnóstico conserva los últimos bytes.
@@ -927,6 +931,42 @@ def run_probe_child(path: pathlib.Path, expected_sha256: str) -> int:
     return 0
 
 
+async def _esperar_supervision(
+    reader: asyncio.StreamReader,
+    *,
+    secret: bytes,
+    job_id: str,
+    timeout: float,
+) -> str:
+    """Espera la confirmación de supervisión del broker ANTES del nieto de la attestation y de la herramienta.
+
+    Devuelve ``"supervised"`` (el bridge asignó este worker al Job Object) o
+    ``"cancelled"`` (el job se canceló mientras esperaba; no se despacha nada). Todo
+    lo demás —plazo vencido, EOF, mensaje de otro job, tipo inesperado, versión
+    incompatible— es un fallo CERRADO: ``VfsWorkerBootstrapError`` sin nieto ni herramienta.
+    """
+    try:
+        mensaje = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=timeout)
+    except TimeoutError as exc:
+        raise VfsWorkerBootstrapError(
+            f"supervisión no confirmada por el bridge en {timeout:g}s: el worker aborta sin crear el nieto de la attestation ni despachar la herramienta"
+        ) from exc
+    except (asyncio.IncompleteReadError, ConnectionError, OSError, VfsFrameError) as exc:
+        raise VfsWorkerBootstrapError(
+            f"se cortó el canal con el broker antes de confirmarse la supervisión: {exc}"
+        ) from exc
+    if mensaje.get("protocol_version") != VFS_PROTOCOL_VERSION:
+        raise VfsWorkerBootstrapError("mensaje incompatible mientras se esperaba la supervisión")
+    if mensaje.get("job_id") != job_id:
+        raise VfsWorkerBootstrapError("la confirmación de supervisión corresponde a otro job: se rechaza")
+    tipo = mensaje.get("type")
+    if tipo == "supervised":
+        return "supervised"
+    if tipo == "cancel":
+        return "cancelled"
+    raise VfsWorkerBootstrapError(f"mensaje no permitido mientras se esperaba la supervisión: {tipo!r}")
+
+
 async def _wait_for_cancel(
     reader: asyncio.StreamReader,
     *,
@@ -950,6 +990,7 @@ async def run_worker_session(
     handlers: Mapping[str, VfsToolHandler] | None = None,
     session_handlers: Mapping[str, VfsSessionToolHandler] | None = None,
     grandchild_probe: GrandchildProbe | None = None,
+    supervision_timeout: float = _SUPERVISION_TIMEOUT_SECONDS,
 ) -> VfsJobResult | None:
     """Ejecuta el worker y reporta al daemon; ``None`` significa cancelación."""
     descriptor = await asyncio.to_thread(load_broker_descriptor, descriptor_path)
@@ -976,12 +1017,28 @@ async def run_worker_session(
                 "instance_id": descriptor.instance_id,
                 "session_id": descriptor.session_id,
                 "job_id": manifest.job.job_id,
+                # Declara que este worker espera la supervisión antes de despachar: el
+                # broker rechaza a los que no lo declaran (sin fallback silencioso).
+                "supervision_fence": True,
             },
             descriptor.secret,
         )
         ack = await read_authenticated_message(reader, descriptor.secret)
         if ack.get("protocol_version") != VFS_PROTOCOL_VERSION or ack.get("type") != "hello_ack":
             raise VfsWorkerBootstrapError("el broker rechazó el hello del worker")
+
+        # FENCE DE SUPERVISIÓN. Hasta acá este proceso pudo haber nacido antes de que el
+        # bridge lo asignara al Job Object; `execute_worker_manifest` crea el proceso
+        # NIETO de la attestation y después la herramienta, así que nada de eso ocurre
+        # sin la confirmación (autenticada y ligada a este job_id) del broker.
+        supervision = await _esperar_supervision(
+            reader,
+            secret=descriptor.secret,
+            job_id=manifest.job.job_id,
+            timeout=supervision_timeout,
+        )
+        if supervision == "cancelled":
+            return None
 
         # Los eventos mid-job y el job_result comparten el socket: el write lock
         # serializa ambos emisores (hoy secuenciales, mañana no necesariamente).

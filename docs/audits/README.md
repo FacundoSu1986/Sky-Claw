@@ -23,6 +23,7 @@ ejecución. Un hallazgo puede haber sido corregido después. Antes de actuar:
 
 Archivos actuales:
 
+- `2026-11-02_fence_de_supervision_del_broker.md` (fence `supervised` del broker MO2/USVFS; dictamen `SUPERVISION_FENCE_SECURITY_HOLD`: la identidad del proceso Python efectivo en onefile no está probada)
 - `2026-10-07_b1_permisos_r_suite.md` (+ `data/` con el registro y su hash)
 - `2026-10-07_native_parallax_math_architecture_audit.md` (histórica: genera hipótesis; la adjudicación vigente de H1–H5 está en el PR #700; ver la cabecera del documento)
 - `2026-08-22_runtime_vault_mo2_stock_launch_audit.md`

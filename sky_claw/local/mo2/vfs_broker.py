@@ -207,6 +207,16 @@ class VfsExecutionBroker:
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_MAX_BUFFERED_EVENTS)
         self._closing = False
         self._owns_instance_file_lock = False
+        # Fence de supervisión. El bridge hace `startApplication` (el worker nace
+        # CORRIENDO) y recién después `AssignProcessToJobObject`; su `launch_ack`
+        # sólo se emite si esa asignación tuvo éxito. Un descendiente creado antes
+        # de la asignación queda fuera del Job y sobrevive a su terminación, así que
+        # el worker no puede crear nada (ni el nieto de la attestation ni la
+        # herramienta) hasta que el broker le envíe `supervised`. El broker lo envía
+        # UNA vez, sólo tras un `launch_ack` del bridge para ESE job, mientras el job
+        # siga vivo y no esté siendo cancelado. Claves = job_id (se limpian con el job).
+        self._launch_acked: set[str] = set()
+        self._supervised_sent: set[str] = set()
 
     @property
     def descriptor_path(self) -> pathlib.Path:
@@ -652,6 +662,8 @@ class VfsExecutionBroker:
         self._worker_exit.pop(job_id, None)
         self._termination_tasks.pop(job_id, None)
         self._job_replay_deadlines.pop(job_id, None)
+        self._launch_acked.discard(job_id)
+        self._supervised_sent.discard(job_id)
         if session is not None:
             await session._detener_recolector()
             self._job_event_queues.pop(job_id, None)
@@ -1248,8 +1260,13 @@ class VfsExecutionBroker:
                 while not self._closing:
                     message = await read_authenticated_message(reader, self._secret)
                     self._handle_bridge_message(message)
+                    if message.get("type") == "launch_ack":
+                        await self._registrar_launch_ack(message.get("job_id"))
             else:
                 assert worker_job_id is not None
+                # El ack pudo llegar ANTES que el hello del worker (el bridge asigna
+                # y confirma en el mismo callback que lanza): se autoriza ahora.
+                await self._autorizar_worker_si_corresponde(worker_job_id)
                 while not self._closing:
                     message = await read_authenticated_message(reader, self._secret)
                     if self._handle_worker_message(message, expected_job_id=worker_job_id):
@@ -1289,6 +1306,71 @@ class VfsExecutionBroker:
             with contextlib.suppress(ConnectionError, OSError):
                 await writer.wait_closed()
 
+    async def _registrar_launch_ack(self, job_id: object) -> None:
+        """Registra la confirmación de supervisión del bridge y autoriza al worker de ESE job.
+
+        Ignora —sin autorizar nada— un ack de un job desconocido o de otro job, de un
+        job ya resuelto (p. ej. un launch que falló) o en cancelación. Es idempotente:
+        un ack duplicado (el bridge reencola eventos tras reconectar) no reenvía nada.
+        """
+        if not isinstance(job_id, str) or not job_id:
+            logger.warning("launch_ack sin job_id válido: se ignora")
+            return
+        future = self._pending.get(job_id)
+        if future is None or future.done():
+            logger.warning("launch_ack ignorado: el job %s no está pendiente", job_id)
+            return
+        if job_id in self._termination_tasks:
+            logger.warning("launch_ack tardío ignorado: el job %s está siendo cancelado", job_id)
+            return
+        self._launch_acked.add(job_id)
+        await self._autorizar_worker_si_corresponde(job_id)
+
+    def _supervision_vigente(self, job_id: str, writer: asyncio.StreamWriter | None) -> bool:
+        """El job sigue pendiente, NO se está cancelando y ``writer`` sigue siendo su worker conectado."""
+        future = self._pending.get(job_id)
+        if future is None or future.done() or job_id in self._termination_tasks:
+            return False
+        return writer is not None and writer is self._worker_by_job.get(job_id) and not writer.is_closing()
+
+    async def _autorizar_worker_si_corresponde(self, job_id: str) -> None:
+        """Envía `supervised` al worker del job si, y sólo si, se dan TODAS las condiciones."""
+        if job_id not in self._launch_acked or job_id in self._supervised_sent:
+            return
+        writer = self._worker_by_job.get(job_id)
+        if not self._supervision_vigente(job_id, writer):
+            return
+        assert writer is not None  # lo garantiza _supervision_vigente
+        # Se marca ANTES del await: el hello del worker y el ack del bridge corren en
+        # tareas distintas y ambos intentan autorizar; sólo uno debe enviar. La reserva se
+        # conserva si el job se cancela mientras se espera el lock: un job en cancelación
+        # no se autoriza nunca.
+        self._supervised_sent.add(job_id)
+        try:
+            async with self._write_lock:
+                # Re-chequeo DENTRO del lock: si estaba tomado, esta tarea se suspendió acá y la
+                # cancelación pudo registrarse durante la espera. Su `cancel` quedó detrás de este
+                # `supervised` en la cola FIFO del lock; sin este chequeo el worker sería
+                # autorizado con el job ya cancelándose.
+                if not self._supervision_vigente(job_id, writer):
+                    logger.warning("supervised no enviado: el job %s dejó de estar vigente esperando el lock", job_id)
+                    return
+                await write_authenticated_message(
+                    writer,
+                    {"protocol_version": VFS_PROTOCOL_VERSION, "type": "supervised", "job_id": job_id},
+                    self._secret,
+                )
+        except (ConnectionError, OSError, VfsFrameError):
+            self._supervised_sent.discard(job_id)
+            logger.warning("No se pudo entregar supervised al worker %s", job_id, exc_info=True)
+
+    def _denegar_supervision(self, job_id: str) -> None:
+        """El launch falló: jamás se autoriza y el worker (si ya conectó) se corta al instante."""
+        self._launch_acked.discard(job_id)
+        writer = self._worker_by_job.get(job_id)
+        if writer is not None and not writer.is_closing():
+            writer.close()
+
     def _validate_hello(self, message: Mapping[str, object]) -> tuple[str, str | None]:
         if message.get("protocol_version") != VFS_PROTOCOL_VERSION:
             raise VfsBrokerError("versión incompatible en hello")
@@ -1301,6 +1383,13 @@ class VfsExecutionBroker:
         role = str(message["role"])
         if role == "bridge":
             return role, None
+        if message.get("supervision_fence") is not True:
+            # Un worker sin el fence despacharía sin esperar la supervisión: el
+            # broker no ejecuta ningún job con él. Actualización coordinada: daemon
+            # y worker son el mismo ejecutable (el bridge instalado no cambia).
+            raise VfsBrokerError(
+                "worker sin la capacidad supervision_fence: se rechaza (actualizá worker y daemon juntos)"
+            )
         job_id = message.get("job_id")
         if not isinstance(job_id, str) or job_id not in self._pending:
             raise VfsBrokerError("worker conectado para un job desconocido")
@@ -1331,6 +1420,7 @@ class VfsExecutionBroker:
                     future.set_exception(VfsBridgeLaunchError(detail))
                     if not exit_future.done():
                         exit_future.set_result(None)
+                    self._denegar_supervision(job_id)
                 elif message.get("command") in ("cancel", "terminate") or job_id in self._termination_tasks:
                     detail = message.get("message")
                     detail_str = detail if isinstance(detail, str) and detail else "error no especificado del bridge"
