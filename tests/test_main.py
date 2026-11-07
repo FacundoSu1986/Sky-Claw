@@ -100,6 +100,22 @@ class TestParseArgs:
         assert args.mode == "security"
         assert args.command == "scan ."
 
+    def test_el_error_sugiere_oneshot_para_un_comando_corriente(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit):
+            _parse_args(["install Requiem"])
+        err = capsys.readouterr().err
+        assert "ejecutarlo con `--mode oneshot`" in err
+        assert "quisiste pasar" not in err
+
+    def test_el_error_sugiere_el_modo_cuando_el_posicional_es_un_nombre_de_modo(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit):
+            _parse_args(["vfs-health"])
+        err = capsys.readouterr().err
+        assert "quisiste pasar `--mode vfs-health`" in err
+        assert "ejecutarlo" not in err
+
     def test_los_modos_clasificados_son_exactamente_los_choices_del_parser(self) -> None:
         accion_mode = next(a for a in _build_parser()._actions if "--mode" in a.option_strings)
         assert set(accion_mode.choices) == set(_MODOS_Y_SU_POSICIONAL)

@@ -382,12 +382,15 @@ class BridgeLaunchController:
         )
         t_ack = time.perf_counter()
         if self._log_info is not None:
-            ts_utc = datetime.now(UTC).isoformat()
-            self._log_info(
-                f"Sky-Claw VFS Bridge launch timings ts={ts_utc} job_id={request.job_id} job_object={request.job_object} "
-                f"create_job_ms={(t_job - t0) * 1000.0:.3f} startApplication_ms={(t_start - t_job) * 1000.0:.3f} "
-                f"assign_ms={(t_assign - t_start) * 1000.0:.3f} total_to_ack_ms={(t_ack - t0) * 1000.0:.3f}"
-            )
+            # La telemetría nunca altera el flujo del protocolo: si ``log_info`` falla, el monitor igual arranca.
+            with contextlib.suppress(Exception):
+                ts_utc = datetime.now(UTC).isoformat()
+                self._log_info(
+                    f"Sky-Claw VFS Bridge launch timings ts={ts_utc} job_id={request.job_id} "
+                    f"job_object={request.job_object} "
+                    f"create_job_ms={(t_job - t0) * 1000.0:.3f} startApplication_ms={(t_start - t_job) * 1000.0:.3f} "
+                    f"assign_ms={(t_assign - t_start) * 1000.0:.3f} total_to_ack_ms={(t_ack - t0) * 1000.0:.3f}"
+                )
         monitor = threading.Thread(
             target=self._monitor,
             args=(running,),
@@ -422,11 +425,13 @@ class BridgeLaunchController:
             with self._lock:
                 self._jobs.pop(running.request.job_id, None)
         if self._log_info is not None:
-            ts_utc = datetime.now(UTC).isoformat()
-            self._log_info(
-                f"Sky-Claw VFS Bridge worker_exit confirmed ts={ts_utc} job_id={running.request.job_id} "
-                f"wait_ok={wait_ok} exit_code={exit_code} wait_ms={(t_exit - t_wait0) * 1000.0:.3f}"
-            )
+            # El ``worker_exit`` que sigue habilita rollback y libera locks en el broker: el log no puede impedirlo.
+            with contextlib.suppress(Exception):
+                ts_utc = datetime.now(UTC).isoformat()
+                self._log_info(
+                    f"Sky-Claw VFS Bridge worker_exit confirmed ts={ts_utc} job_id={running.request.job_id} "
+                    f"wait_ok={wait_ok} exit_code={exit_code} wait_ms={(t_exit - t_wait0) * 1000.0:.3f}"
+                )
         event: dict[str, object] = {
             "protocol_version": PROTOCOL_VERSION,
             "type": "event",

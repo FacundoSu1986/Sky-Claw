@@ -64,6 +64,10 @@ from sky_claw.logging_config import (  # noqa: E402
 logger = logging.getLogger("sky_claw")
 
 
+#: Los valores válidos de ``--mode``: una sola fuente para los ``choices`` del parser y para la sugerencia del error.
+_MODOS = ("cli", "telegram", "oneshot", "gui", "security", "install-vfs-bridge", "vfs-health")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     config = Config()
     _chat_id_str = config.telegram_chat_id or ""
@@ -80,15 +84,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=[
-            "cli",
-            "telegram",
-            "oneshot",
-            "gui",
-            "security",
-            "install-vfs-bridge",
-            "vfs-health",
-        ],
+        choices=_MODOS,
         default=modo_por_defecto,
         help="Operation mode (default: %(default)s)",
     )
@@ -198,9 +194,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.mode not in _MODOS_CON_COMANDO and args.command is not None:
+        # Solo se sugiere ``--mode <valor>`` si el valor ES un modo; un comando corriente va con ``--mode oneshot``.
+        sugerencia = (
+            f"¿quisiste pasar `--mode {args.command}`?"
+            if args.command in _MODOS
+            else "¿quisiste ejecutarlo con `--mode oneshot`?"
+        )
         parser.error(
             f"el argumento posicional {args.command!r} solo se admite con `--mode oneshot` o `--mode security` "
-            f"(¿quisiste pasar `--mode {args.command}`?)"
+            f"({sugerencia})"
         )
     return args
 
