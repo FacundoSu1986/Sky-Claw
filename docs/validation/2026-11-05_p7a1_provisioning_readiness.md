@@ -81,18 +81,19 @@ Auditoría read-only de `sky_claw/local/frozen_runtime/` (file:line en el inform
 | Evidencia | Resultado |
 |---|---|
 | **TDD RED inicial** (tests nuevos contra API inexistente) | `ImportError` de colección (1 error) — rojo registrado antes de implementar |
-| **TDD GREEN** `tests/test_frozen_runtime_p7_provisioning.py` | **56 passed** (31 base + FIX 1: 4 + FIX 2/3: 10 + CodeRabbit ronda 1: 5 + ronda 2: 3 + ronda 3: 3) |
+| **TDD GREEN** `tests/test_frozen_runtime_p7_provisioning.py` | **57 passed** (31 base + FIX 1: 4 + FIX 2/3: 10 + CodeRabbit ronda 1: 5 + ronda 2: 3 + ronda 3: 3 + ronda 4: 1) |
 | Regresión suites relacionadas (P4-S2 participant wiring, P2 generations/independence/storage, P5-B, P3 contract/candidates) | **172 passed, 4 skipped** (anclas P4-S2 actualizadas con las primitivas `*_bajo_lock` nuevas) |
 | Inspector P7 tras corrección de P7-G (`test_p7_inspector_output.py`) | **25 passed** (incluye ancla de `steamapps/temp/**`) |
-| Mutantes discriminantes | **19/19 muertos**: base 4 + M5–M19: membership/digest, lock/recuperación, sidecar, cast `str(d)`, errores tipados, `steamapps/temp/**`, forma canónica Stock, tipos de runtime, `INDETERMINATE`, re-verificación idempotente, solape canónico storage y propagación de indeterminados en `verificar_runtime_clone`. Restaurado y suites verdes |
+| Mutantes discriminantes | **20/20 muertos**: base 4 + M5–M20 (membership/digest, lock/recuperación, sidecar, cast `str(d)`, errores tipados, `steamapps/temp/**`, rutas canónicas Stock/storage, tipos de runtime, `INDETERMINATE`/huérfano), re-verificación idempotente y distinción metadata ilegible/ausente. Restaurado y suites verdes |
 | Ruff (`ruff check` + `ruff format --check` sobre `sky_claw/`, `scripts/`, `tests/`) | **verde** (gate CI, ruff 0.15.11 lockeada) |
 | Mypy (`mypy sky_claw/ scripts/`) | **verde**, 430 archivos |
-| Evidencia de mutantes | `E:\Skyclaw_A1_Evidence\mutation_results.json` (4 base) + `mutation_results_fixes.json` (M5–M19) |
+| Evidencia de mutantes | `E:\Skyclaw_A1_Evidence\mutation_results.json` (4 base) + `mutation_results_fixes.json` (M5–M20) |
 
 CI del PR (calificado por revisión):
 - `77f9d067` → run [42123648897](https://github.com/FacundoSu1986/Sky-Claw/actions/runs/42123648897) **SUCCESS** (16/16 checks: Windows py3.11 55m11 / py3.12 40m51, Lint/Mypy/Security/POSIX/Build/Pytest/CodeQL).
 - `4f840575` → run [42298246743](https://github.com/FacundoSu1986/Sky-Claw/actions/runs/42298246743) **SUCCESS** (20/20 checks, incluidos CodeRabbit y Regression Oracle).
-- HEAD con las correcciones de la segunda ronda: run pendiente; se registra en el PR. El fallo histórico del run `41933529936` (§1) queda como análisis de infraestructura separado.
+- `73fcc032` → run [42315709984](https://github.com/FacundoSu1986/Sky-Claw/actions/runs/42315709984) **SUCCESS** (20/20 checks: Windows py3.11 45m47 / py3.12 40m25, Lint/Mypy/Security/POSIX/Build/Pytest/CodeQL/CodeRabbit/Regression Oracle).
+- HEAD con las correcciones de la cuarta ronda: run pendiente; se registra en el PR. El fallo histórico del run `41933529936` (§1) queda como análisis de infraestructura separado.
 
 ## 7. Riesgos residuales
 
@@ -245,6 +246,10 @@ La revisión posterior marcó 10 hallazgos nuevos; los válidos se corrigieron c
 - **Minor — solapes canónicos:** `adoptar_copia_stock` resuelve también `storage_root`/`managed_source_root` (`resolve(strict=False)`, fail-closed) antes de comparar contención; un alias/junction del storage ya no oculta el solape. Test con junction `test_rechaza_solape_con_storage_por_forma_canonica`; **mutante M17** → KILLED.
 - **Major — indeterminados reales del verificador:** `verificar_runtime_clone` degradaba a INVALID un `INDETERMINATE` de la Generation y un `OSError` de lectura del registro; ahora propaga `INDETERMINATE` (incluido el `OSError` envuelto como corrupto, vía `__cause__`), y el provisionamiento lo trata como reintentable. **Distinción de linaje:** un INDETERMINATE **sin evidencia registrada** (`recorded is None`: metadata ausente/corrupta) sigue siendo INVALID/huérfano —lo ancla `test_frozen_runtime_p5b_durable_authority::test_04`—; sólo se propaga el indeterminado con evidencia (lectura/integridad/identidad). Tests `test_generation_indeterminate_se_propaga_como_indeterminate` y `test_oserror_de_lectura_del_registro_es_indeterminate`; **mutantes M18/M19** → KILLED.
 
+### Cuarta ronda CodeRabbit (HEAD `73fcc032`)
+- **Major — metadata ilegible vs ausente:** nuestro chequeo `recorded is None` convertía en INVALID tanto la metadata ausente (huérfano confirmado) como la metadata presente pero ilegible (fallo transitorio). Ahora se comprueba la existencia del archivo: ausente ⇒ INVALID (preserva P5-B), presente pero ilegible/corrupta ⇒ INDETERMINATE (reintentable, no degrada el Clone). Test `test_metadata_ilegible_mantiene_indeterminate`; **mutante M20** (metadata ausente tratada como indeterminada) → KILLED.
+- **Minor — setup ID observado vs registrado:** las verificaciones post-A4 ahora leen el `RuntimeCloneRecord`, re-derivan `setup_id` desde `root_path` y abortan si no coincide con `verified_runtime_setup_id` (un cambio de SKSE compatible-pero-distinto ya no pasa inadvertido).
+
 ### Verificación de la ronda
-- `tests/test_frozen_runtime_p7_provisioning.py`: **56 passed**; `test_p7_inspector_output.py`: **25 passed**; mutantes **19/19 KILLED**; ruff check/format y mypy verdes. El CI del HEAD final se registra en el PR.
+- `tests/test_frozen_runtime_p7_provisioning.py`: **57 passed**; `test_p7_inspector_output.py`: **25 passed**; suite frozen-runtime amplia: **1355 passed, 12 skipped**; mutantes **20/20 KILLED**; ruff check/format y mypy verdes. El CI del HEAD final se registra en el PR.
 

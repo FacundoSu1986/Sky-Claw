@@ -721,18 +721,21 @@ def verificar_runtime_clone(
 
     gen_verif = verificar_generation(root, record.source_generation_id)
     if gen_verif.state is GenerationVerificationState.INDETERMINATE:
-        # Sin evidencia registrada (metadata ausente/corrupta) el linaje NO es
-        # verificable: es un huérfano, no un fallo transitorio. Con evidencia
-        # registrada, un INDETERMINATE (lectura/integridad/identidad) sí es
-        # reintentable y se propaga como tal.
         if gen_verif.recorded is None:
-            return GenerationVerificationResult(
-                state=GenerationVerificationState.INVALID,
-                message=(
-                    f"Generation de origen no existe o no es VALID "
-                    f"({record.source_generation_id}, {gen_verif.state.value}): {gen_verif.message}"
-                ),
-            )
+            from sky_claw.local.frozen_runtime.storage import generations_state_dir
+
+            metadata_path = generations_state_dir(root) / f"{record.source_generation_id}.json"
+            if not metadata_path.exists():
+                # Metadata AUSENTE: linaje huérfano confirmado => INVALID.
+                return GenerationVerificationResult(
+                    state=GenerationVerificationState.INVALID,
+                    message=(
+                        f"Generation de origen no existe o no es VALID "
+                        f"({record.source_generation_id}, {gen_verif.state.value}): {gen_verif.message}"
+                    ),
+                )
+            # Metadata PRESENTE pero ilegible/corrupta: fallo transitorio/indeterminado,
+            # no se degrada el Clone a INVALID (terminal).
         return GenerationVerificationResult(
             state=GenerationVerificationState.INDETERMINATE,
             message=(

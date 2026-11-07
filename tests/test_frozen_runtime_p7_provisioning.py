@@ -872,6 +872,23 @@ class TestVerificacionRuntimeClone:
         verificacion = verificar_runtime_clone(storage, "clone-gen-indet")
         assert verificacion.state is GenerationVerificationState.INDETERMINATE
 
+    def test_metadata_ilegible_mantiene_indeterminate(self, entorno, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Metadata presente pero ilegible es transitorio; metadata ausente es huérfano."""
+        import sky_claw.local.frozen_runtime.generations as generations_module
+        from sky_claw.local.frozen_runtime.errors import FrozenRuntimeStorageError
+
+        storage, _source, clones, _referencia = entorno
+        publicado, _copia = _publicar(entorno)
+        creado = crear_runtime_clone_desde_generation(storage, publicado.generation_id, clones, "clone-meta-ilegible")
+        assert creado.success, creado.message
+
+        def falla(*_args: object, **_kwargs: object) -> None:
+            raise FrozenRuntimeStorageError("lectura transitoria de metadata")
+
+        monkeypatch.setattr(generations_module, "_leer_json", falla)
+        verificacion = verificar_runtime_clone(storage, "clone-meta-ilegible")
+        assert verificacion.state is GenerationVerificationState.INDETERMINATE, verificacion.message
+
     def test_oserror_de_lectura_del_registro_es_indeterminate(self, entorno, monkeypatch: pytest.MonkeyPatch) -> None:
         """Un fallo transitorio de lectura del registro no es un registro inválido."""
         from sky_claw.local.frozen_runtime import clones as clones_module

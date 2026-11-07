@@ -275,7 +275,7 @@ Verificaciones posteriores (READ-ONLY):
 import json, pathlib, sys
 sys.path.insert(0, r'$wt')
 from sky_claw.local.frozen_runtime import (
-    StockSourceError, adoptar_copia_stock, cargar_referencia_stock,
+    StockSourceError, adoptar_copia_stock, cargar_referencia_stock, leer_runtime_clone_record,
     verificar_generation, verificar_runtime_clone, verificar_runtime_setup,
 )
 storage = pathlib.Path(r'<STORAGE_ROOT>')
@@ -291,7 +291,13 @@ except StockSourceError as exc:
     raise SystemExit(f'FUENTE CAMBIÓ tras A4: {exc}')
 print(verificar_generation(storage, '<GENERATION_ID>').state)
 print(verificar_runtime_clone(storage, '<CLONE_ID>', managed_source_root=managed_source).state)
-print(verificar_runtime_setup((pathlib.Path(r'<CLONE_PARENT>') / '<CLONE_ID>')).setup_id)
+# El setup observado debe coincidir con el verificado al publicar el registro:
+# un cambio de SKSE compatible-pero-distinto dejaría VALID sin este chequeo.
+registro = leer_runtime_clone_record(storage, '<CLONE_ID>')
+setup_id = verificar_runtime_setup(pathlib.Path(registro.root_path)).setup_id
+if setup_id != registro.verified_runtime_setup_id:
+    raise SystemExit('setup ID observado no coincide con el registro: ABORTAR')
+print(setup_id)
 "@
 ```
 
