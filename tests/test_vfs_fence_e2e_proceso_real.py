@@ -72,6 +72,12 @@ class _JobFalso:
     def terminate(self) -> None:
         self.terminado = True
 
+    def adopt_descendants(self, process_handle: int) -> int:
+        return 0
+
+    def active_processes(self) -> int:
+        return 0
+
     def close(self) -> None:
         self.cerrado = True
 

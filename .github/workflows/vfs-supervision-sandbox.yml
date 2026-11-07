@@ -20,6 +20,7 @@ on:
       - "tests/test_windows_onefile_census.py"
       - "tests/test_vfs_job_identity*.py"
       - "tests/test_vfs_arranque.py"
+      - "tests/test_mo2_bridge_adopcion*.py"
       - "tests/test_vfs_job_containment_windows.py"
       - "tests/test_mo2_bridge_breakaway_job_real_windows.py"
       - "tests/test_vfs_fence_de_supervision.py"
@@ -69,6 +70,8 @@ jobs:
           tests/test_vfs_job_identity_bridge.py
           tests/test_vfs_job_identity_anclas.py
           tests/test_vfs_arranque.py
+          tests/test_mo2_bridge_adopcion.py
+          tests/test_mo2_bridge_adopcion_windows.py
           tests/test_mo2_bridge_worker_argv.py
           tests/test_vfs_job_containment_windows.py
           tests/test_mo2_bridge_breakaway_job_real_windows.py
