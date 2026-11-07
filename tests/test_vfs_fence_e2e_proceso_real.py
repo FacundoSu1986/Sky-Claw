@@ -202,7 +202,15 @@ async def test_el_worker_real_no_crea_descendientes_antes_del_ack_y_todos_quedan
     secreto = base64.urlsafe_b64decode(descriptor["token"])
     home = tmp_path / "home"
     home.mkdir()
-    entorno = {**os.environ, "HOME": str(home), "USERPROFILE": str(home), "PYTHONUNBUFFERED": "1"}
+    python_directo = getattr(sys, "_base_executable", sys.executable)
+    rutas_python = os.pathsep.join([str(REPO), *(p for p in sys.path if p)])
+    entorno = {
+        **os.environ,
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONPATH": rutas_python,
+    }
     manifiesto_path = broker._jobs_dir / f"{job_id}.json"
 
     def armar_argv(nombre_del_job: str) -> list[str]:
@@ -218,10 +226,10 @@ async def test_el_worker_real_no_crea_descendientes_antes_del_ack_y_todos_quedan
         ]
         if ES_WINDOWS:
             # Worker de producción tal cual: la verificación de identidad contra el Job REAL del bridge.
-            return [sys.executable, "-m", "sky_claw.local.mo2.vfs_worker", *base]
+            return [python_directo, "-m", "sky_claw", "--vfs-worker", *base]
         # Sin Windows no hay Job Object que verificar y la verificación real falla cerrado (a propósito). El subproceso
         # sustituye SOLO esa función por una prueba; el resto del worker (hello, fence, attestation, herramienta) es real.
-        return [sys.executable, "-c", _LANZADOR_SIN_WINDOWS, *base]
+        return [python_directo, "-c", _LANZADOR_SIN_WINDOWS, *base]
 
     organizer = _OrganizerQueLanzaElWorkerReal(armar_argv, entorno)
     bucle = asyncio.get_running_loop()
@@ -327,8 +335,9 @@ async def test_el_worker_real_no_crea_descendientes_antes_del_ack_y_todos_quedan
             assert not sin_medir, (
                 f"nietos que terminaron antes de poder medirse ({sin_medir}): el test no mediría su pertenencia al Job"
             )
-        # HALLAZGO (informativo, no asertado): procesos que el propio ARRANQUE del worker crea antes de
-        # llegar al fence, p. ej. por el import de librerías de terceros. Se reporta para la auditoría.
+        # Assert 4: el propio ARRANQUE del worker no crea subprocesos antes de llegar al fence
+        # (antes `sky_claw/__init__.py` y `sky_claw/app/security/__init__.py` importaban ansiosamente
+        # `config` → `keyring` → `platform.win32_ver()`, disparando `cmd.exe /c ver` antes del fence).
         previos = {
             pid: ficha
             for pid, ficha in observador.descendientes.items()
@@ -340,6 +349,10 @@ async def test_el_worker_real_no_crea_descendientes_antes_del_ack_y_todos_quedan
                 {str(pid): {"cmdline": f["cmdline"], "en_job": f["en_job"]} for pid, f in previos.items()},
                 ensure_ascii=False,
             )
+        )
+        assert not previos, (
+            f"el worker creó subprocesos durante el arranque antes del launch_ack: "
+            f"{json.dumps(previos, ensure_ascii=False)}"
         )
     finally:
         observador.detener()
@@ -413,3 +426,131 @@ def test_el_observador_sobrevive_a_un_hijo_que_termino_antes_de_poder_abrirse(mo
 def test_el_protocolo_del_bridge_que_usa_este_e2e_es_el_de_produccion() -> None:
     """Ancla: este e2e usa el MISMO PROTOCOL_VERSION del bridge y del broker (si divergen, no mide nada)."""
     assert PROTOCOL_VERSION == VFS_PROTOCOL_VERSION
+
+
+@pytest.mark.parametrize("flag_entrada", [None, "--vfs-worker", "--vfs-probe-child"])
+def test_importar_vfs_worker_no_carga_config_ni_keyring_ni_lanza_subprocesos(
+    flag_entrada: str | None,
+) -> None:
+    """Tanto ``vfs_worker`` directo como ``sky_claw.__main__`` con flags VFS evitan ``config``/``keyring``."""
+    python_directo = getattr(sys, "_base_executable", sys.executable)
+    rutas_python = os.pathsep.join([str(REPO), *(p for p in sys.path if p)])
+    accion = (
+        "import sky_claw.local.mo2.vfs_worker"
+        if flag_entrada is None
+        else (
+            "import sky_claw.local.mo2.vfs_worker as _vw\n"
+            "_vw.worker_main = lambda argv: 0\n"
+            f"sys.argv = ['sky_claw', {flag_entrada!r}, '--help']\n"
+            "try:\n"
+            "    import sky_claw.__main__\n"
+            "except SystemExit:\n"
+            "    pass"
+        )
+    )
+    codigo = "\n".join(
+        [
+            "import json, subprocess, sys",
+            "lanzados = []",
+            "orig = subprocess.Popen",
+            "class Espia(orig):",
+            "    def __init__(self, *a, **kw):",
+            "        lanzados.append(a[0] if a else kw.get('args'))",
+            "        super().__init__(*a, **kw)",
+            "subprocess.Popen = Espia",
+            accion,
+            "print(json.dumps({",
+            "    'lanzados': lanzados,",
+            "    'keyring_cargado': 'keyring' in sys.modules,",
+            "    'config_cargado': 'sky_claw.config' in sys.modules,",
+            "    'app_context_cargado': 'sky_claw.app_context' in sys.modules,",
+            "}))",
+        ]
+    )
+    completado = subprocess.run(  # noqa: S603 - subproceso de prueba con código fijo
+        [python_directo, "-c", codigo],
+        cwd=REPO,
+        env={**os.environ, "PYTHONPATH": rutas_python},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    datos = json.loads(completado.stdout.strip())
+    assert datos == {
+        "lanzados": [],
+        "keyring_cargado": False,
+        "config_cargado": False,
+        "app_context_cargado": False,
+    }
+
+
+def test_la_superficie_publica_de_sky_claw_y_app_security_se_conserva_intacta() -> None:
+    """Ancla de compatibilidad: ``from sky_claw import ...`` y ``from sky_claw.app.security import ...``
+    funcionan para TODOS los símbolos que ambos paquetes exportaban antes de PEP 562 ``__getattr__``."""
+    import sky_claw
+    import sky_claw.app.security as security_pkg
+
+    esperados_raiz = {
+        "AssetConflictDetector",
+        "AssetConflictReport",
+        "AssetInfo",
+        "AssetType",
+    }
+    esperados_security = {
+        "AgentGuardrail",
+        "AgentGuardrailConfig",
+        "AgenticLoopGuardrail",
+        "GovernanceManager",
+        "HITLGuard",
+        "NetworkGateway",
+        "PathValidator",
+        "PromptArmor",
+        "PromptArmorConfig",
+        "PurpleScanner",
+        "SecurityMetacognition",
+        "TextInspector",
+        "audit_resource",
+        "build_system_header",
+        "encapsulate_external_data",
+        "run_scan",
+        "safe_json_loads",
+        "sandboxed_io",
+        "sanitize_for_prompt",
+        "scan_text",
+        "secure_llm_call",
+        "validate_prompt_integrity",
+    }
+    assert set(sky_claw.__all__) == esperados_raiz
+    assert set(security_pkg.__all__) == esperados_security
+    assert isinstance(sky_claw.__version__, str) and sky_claw.__version__
+
+    # Verificar `from sky_claw import ...` y `from sky_claw.app.security import ...` en un intérprete limpio
+    python_directo = getattr(sys, "_base_executable", sys.executable)
+    rutas_python = os.pathsep.join([str(REPO), *(p for p in sys.path if p)])
+    lista_raiz = ", ".join(sorted(esperados_raiz))
+    lista_sec = ", ".join(sorted(esperados_security))
+    script = "\n".join(
+        [
+            f"from sky_claw import __version__, {lista_raiz}",
+            f"from sky_claw.app.security import {lista_sec}",
+            "import sky_claw, sky_claw.app.security",
+            f"assert all( getattr(sky_claw, n) is not None for n in {sorted(esperados_raiz)!r} )",
+            f"assert all( getattr(sky_claw.app.security, n) is not None for n in {sorted(esperados_security)!r} )",
+            "print('OK')",
+        ]
+    )
+    res = subprocess.run(  # noqa: S603 - subproceso de prueba con código fijo
+        [python_directo, "-c", script],
+        cwd=REPO,
+        env={**os.environ, "PYTHONPATH": rutas_python},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    assert res.stdout.strip() == "OK"
+    with pytest.raises(AttributeError):
+        _ = sky_claw.simbolo_inexistente_xyz  # type: ignore[attr-defined]
+    with pytest.raises(AttributeError):
+        _ = security_pkg.simbolo_inexistente_xyz  # type: ignore[attr-defined]
