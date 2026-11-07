@@ -227,7 +227,7 @@ completo y los JSON crudos están en la máquina del operador
 | E3 cierre de GUI | PASS: `frescura_probada=True`, `testigo_origen=durable`, registro consumido |
 | E4 sin construir | PASS: `SIN_CAMBIO` |
 | E5 deshabilitado | PASS: `NO_HABILITADO` |
-| E6 Defender | PASS: 20/20 |
+| E6 Defender | PASS: 20/20 sin fallos, **pero** el informe no registra el valor de `testigo_durable` de cada preparación: no prueba que las 20 hayan escrito el JSON. Repetir con el criterio de E6 (`guardado` en cada iteración) |
 | E7 corte | PASS con límite (ventana no alcanzada) |
 | Bridge USVFS | **No validado**: cuarentena heredada y desajuste plugin/broker (`VfsBridgeLaunchError: job_object…`) |
 
