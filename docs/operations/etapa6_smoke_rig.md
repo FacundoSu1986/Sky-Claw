@@ -46,6 +46,16 @@ Por eso el smoke valida cuatro propiedades que los tests con mocks no pueden pro
   donde el juego real no sea detectable (sin él, Wrye Bash muestra «could not find a game» y
   termina, que es el fallo seguro); mover o renombrar temporalmente la carpeta del juego real; o
   denegar la escritura sobre ella a nivel de permisos del sistema de archivos. Restaurá al final.
+- **Aislá también el estado propio de Wrye Bash.** Si el juego sandbox y el real comparten carpeta
+  padre, Wrye Bash puede usar el mismo `Skyrim Special Edition Mods\Bash Mod Data` para ambos y
+  sobrescribir ahí datos del juego real (afirmación de la revisión sobre `initialization.py` y
+  `basher/__init__.py` de v315, **no verificada por nosotros**). Tres controles, los dos primeros
+  observados en la corrida del 2026-11-07: (1) poné el juego sandbox en una carpeta padre **distinta**
+  de la del juego real; (2) configurá el `bash.ini` de Wrye Bash para que sus rutas de datos queden
+  dentro del sandbox (en el rig terminaron en `overwrite/` bajo USVFS; las claves exactas no están
+  verificadas acá: tomalas del `bash.ini` usado en el rig, en su paquete de evidencia); (3) antes de
+  empezar, comprobá si ya existe `<padre del juego real>\Skyrim Special Edition Mods` y, si existe,
+  respaldalo y restauralo al final.
 - **Abrí MO2 a mano desde el Explorador.** Un MO2 lanzado por un proceso no interactivo no
   inyecta USVFS (`ERROR_ACCESS_DENIED` para cualquier exe; hallazgo F3, reconfirmado).
 - Python 3.11 o 3.12 y `uv`.
