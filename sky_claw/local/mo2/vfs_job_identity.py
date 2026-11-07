@@ -216,18 +216,27 @@ def terminar_descendientes_vivos(
     Cumple el mismo contrato que la verificación: toda falla de la API (``psutil.Error`` al enumerar, un error de
     ``ctypes`` al terminar) es un ``JobIdentityError``. ``worker_main`` solo captura ese tipo: un error crudo se saldría
     de ahí sin el código 72 y sin cerrar el logging.
+
+    **La terminación es por PID** (auditoría independiente, H-03): que un proceso se niegue a morir
+    (``ACCESS_DENIED`` sobre uno de mayor integridad, una espera vencida) NO impide intentar con sus hermanos. El
+    error de cada PID se guarda y viaja en el mensaje final; lo único que decide si hay residuo es lo que sigue vivo
+    después de las rondas. Solo una falla al ENUMERAR aborta la limpieza: sin lista no hay a quién terminar.
     """
     motor = _abrir_motor(api)
-    terminados: list[int] = []
+    intentados: list[int] = []
+    errores: dict[int, Exception] = {}
     try:
         for _ in range(intentos):
             vivos = list(motor.descendientes_vivos())
             if not vivos:
-                return tuple(terminados)
+                return tuple(intentados)
             for pid in vivos:
-                motor.terminar_proceso(pid)
-                if pid not in terminados:
-                    terminados.append(pid)
+                if pid not in intentados:
+                    intentados.append(pid)
+                try:
+                    motor.terminar_proceso(pid)
+                except Exception as exc:  # aislar por PID: el error de uno no salva a los demás
+                    errores[pid] = exc
             time.sleep(pausa_s)
         restantes = sorted(motor.descendientes_vivos())
     except JobIdentityError:
@@ -235,8 +244,10 @@ def terminar_descendientes_vivos(
     except Exception as exc:  # frontera de limpieza: toda falla se vuelve un error de identidad
         raise JobIdentityError(f"falló la limpieza de los descendientes: {exc}") from exc
     if restantes:
-        raise JobIdentityError(f"no se pudo terminar a los descendientes: {restantes}")
-    return tuple(terminados)
+        detalle = "; ".join(f"pid {pid}: {errores[pid]}" for pid in restantes if pid in errores)
+        sufijo = f" ({detalle})" if detalle else ""
+        raise JobIdentityError(f"no se pudo terminar a los descendientes: {restantes}{sufijo}")
+    return tuple(intentados)
 
 
 # ---------------------------------------------------------------------------
