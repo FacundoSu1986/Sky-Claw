@@ -179,6 +179,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 
 ### Fixed
+- **Auditoría independiente de la pila del fence VFS (H-01, H-02, H-03; H-04 y H-05 quedan pendientes).** (H-01) El bridge del plugin contiene a TODO el árbol del worker, no solo al proceso que lanzó MO2: tras asignar adopta a los descendientes vivos que no estén en el Job (hasta un punto fijo; si alguno no se puede contener no hay `launch_ack`) y emite `worker_exit` solo con el Job vacío confirmado (si no, `bridge_error` de terminación y cuarentena), porque el broker toma `worker_exit` como terminalidad confirmada. (H-02) `--vfs-worker` verifica su Job con un módulo liviano (`vfs_arranque`) ANTES de importar `vfs_worker` (cuyo árbol de imports llega a `platform` → `cmd.exe /c ver`); el aborto por identidad es uno solo para ambos puntos de entrada. (H-03) La limpieza de descendientes tras un fallo de identidad es por PID y no se corta al primer error. El HOLD de seguridad se mantiene y solo lo levanta el auditor independiente; detalle y límites (capa `ctypes` sin medir en Windows) en [docs/audits/2026-11-03_identidad_del_job_onefile.md §12](docs/audits/2026-11-03_identidad_del_job_onefile.md).
 - **Etapa 6 — vigencia contextual del testigo durable, simetría M-04 y robustez del almacén
   ([ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.3, issue #866).**
   - **H-1:** si LOOT (u otro cambio de load order o de `modlist.txt`) ocurría entre el build del
