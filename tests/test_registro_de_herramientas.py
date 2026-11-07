@@ -279,6 +279,7 @@ def test_derivacion_tool_path_cfg_keys() -> None:
         "loot": "loot_exe",
         "xedit": "xedit_exe",
         "pandora": "pandora_exe",
+        "wrye_bash": "wrye_bash_exe",
     }
 
 
