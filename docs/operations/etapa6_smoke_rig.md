@@ -84,7 +84,8 @@ Variables que lee `PathResolver` (todas verificadas en
 | `mo2_root` (config) / `--mo2-root` | instalación de MO2 que **inyecta `AppContext`**. **Una `mo2_root` de la config que exista gana sobre `--mo2-root`** aunque este indique otra ruta; la CLI solo manda si la config no la define o su ruta no existe. Gana también sobre `MO2_PATH` (el resolver solo lo mira si no hubo instalación inyectada). Fijá la ruta del **sandbox en la config antes de iniciar** y confirmá la instancia seleccionada; no te apoyes solo en `--mo2-root` |
 | `SKYRIM_PATH` + `skyrim_path` (config) | carpeta del juego **para las fases asistidas**: `get_skyrim_path()` lee solo la variable, pero las raíces permitidas del sandbox salen de `skyrim_path` de la config (`AppContext`). **Poné las dos en el sandbox antes de iniciar**: con la config en el juego real y la variable en el sandbox, el validador puede rechazar la ruta y las fases quedan sin ruta resoluble. La GUI exporta la variable desde el escaneo con `setdefault`, así que una variable ya definida gana |
 | `--skyrim-path` | solo lo consume `vfs-health` (§3); **no** alimenta el resolver de las fases asistidas |
-| `WRYE_BASH_PATH` | ejecutable de Wrye Bash (`get_wrye_bash_path`) |
+| `wrye_bash_exe` (config) | ejecutable de Wrye Bash para la **tarjeta de la GUI**. Va en la **raíz** de `config.toml`, no bajo `[paths]` (se descarta). Lo agregó #882 |
+| `WRYE_BASH_PATH` | ejecutable de Wrye Bash para el servicio y el agente (`get_wrye_bash_path`). La **tarjeta no lo lee**; en cambio la GUI exporta a esta variable lo que resolvió el escaneo, con `setdefault` |
 | `MO2_PROFILE` / `--profile` | perfil **único** de la sesión (default `Default`; no se cambia en caliente) |
 
 Tests previos (si fallan en Windows, **no sigas**):
@@ -133,9 +134,11 @@ Cómo se invocan las fases, por superficie (las tres comparten `ejecutar_fase_as
 
 - **GUI:** tarjeta *Wrye Bash* → `Ejecutar` dispara `preparar`. Tras la preparación aparece la
   acción «Ya construí el parche — verificar» (etiqueta en `ritual_runner.py`).
-  **Ojo:** la tarjeta **no lee `WRYE_BASH_PATH`** (`ExternalToolSpec` de `wrye_bash` en
-  `sky_claw/local/discovery/registry.py` no tiene `config_field`). Figura `Disponible` solo si el
-  exe está en una ruta auto-detectada, p. ej. dentro de la carpeta del juego (H-1, §9).
+  **Ojo:** la tarjeta **no lee `WRYE_BASH_PATH`**. Desde #882 lee `wrye_bash_exe` de la **raíz** de
+  `config.toml` (`ExternalToolSpec` de `wrye_bash` en `sky_claw/local/discovery/registry.py`);
+  antes de #882 solo figuraba `Disponible` con el exe en una ruta auto-detectada, p. ej. dentro de
+  la carpeta del juego (H-1, §9). **No verificado en el rig:** que la tarjeta pase a `Disponible`
+  con `wrye_bash_exe` y el exe fuera de las rutas auto-detectadas.
 - **Agente (Telegram `--mode telegram`, o `/api/chat`):** tool `generate_bashed_patch` con
   `fase="preparar"` o `fase="verificar"`. El perfil lo fija la sesión, no el modelo.
 
@@ -280,7 +283,8 @@ y no se observó.
 - **H-1 (producto, GUI).** La tarjeta de Wrye Bash no lee `WRYE_BASH_PATH`: con el exe fuera de las
   rutas auto-detectadas la superficie GUI de la etapa 6 es inalcanzable aunque el servicio sí
   resuelva la variable. Confirmado leyendo `registry.py`. Es el hermano de LOOT/xEdit/Pandora, que
-  sí tienen `config_field`.
+  sí tienen `config_field`. **Corregido en #882** (issue #879): la tarjeta lee `wrye_bash_exe` de la
+  config. La verificación en hardware sigue pendiente.
 - **H-2 (entorno, seguridad operativa).** Wrye Bash cae al juego real si `-o` no valida y escribe
   fuera del sandbox. Se activó el criterio de parada, se limpió y se verificó el juego real. Ver el
   requisito del marcador en §1.
