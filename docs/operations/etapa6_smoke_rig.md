@@ -2,9 +2,10 @@
 
 > **Audiencia:** operador que valida en hardware real lo cerrado en #862/#864/#870.
 >
-> **Estado:** guía de procedimiento. **Ninguna corrida de esta guía fue ejecutada**: se armó
-> leyendo el código de `origin/main` `f9f81b7`. Lo que no se pudo confirmar leyendo está marcado
-> como *no verificado* y es lo primero que hay que anotar en el rig.
+> **Estado:** guía de procedimiento, **ejecutada el 2026-11-07** en un rig sandbox sobre
+> `origin/main` `749c9716` (E1–E7 PASS, bridge USVFS **no validado**; ver §9). Se armó leyendo el
+> código de `f9f81b7` y se corrigió con lo observado. Lo que la corrida no cubrió sigue marcado
+> como *no verificado*.
 >
 > **Fuentes leídas:** `sky_claw/local/tools/wrye_bash_service.py`,
 > `wrye_bash_asistida.py`, `etapa6_testigos.py`, `sky_claw/config.py`,
@@ -28,6 +29,11 @@ Por eso el smoke valida cuatro propiedades que los tests con mocks no pueden pro
 ## 1. Requisitos
 
 - Windows 10/11, Skyrim SE/AE, Mod Organizer 2, Wrye Bash y LOOT instalados.
+- **Juego sandbox con `SkyrimSELauncher.exe`** (marcador con el que Wrye Bash detecta la
+  instalación). Sin él, Wrye Bash rechaza `-o` **y cae a la instalación real de Steam**, y
+  escribe fuera del sandbox (incidente H-2, §9). Verificá el marcador antes de abrir Wrye Bash.
+- **Abrí MO2 a mano desde el Explorador.** Un MO2 lanzado por un proceso no interactivo no
+  inyecta USVFS (`ERROR_ACCESS_DENIED` para cualquier exe; hallazgo F3, reconfirmado).
 - Python 3.11 o 3.12 y `uv`.
 - **Perfil MO2 descartable** (copia del real, o uno nuevo con 3-5 mods). Nunca el perfil de uso.
 - Backup externo del perfil antes de empezar (`profiles/<perfil>/` completo).
@@ -62,8 +68,10 @@ Tests previos (si fallan en Windows, **no sigas**):
 
 Los docs piden validar el bridge antes de operar un perfil real
 ([safe_workflows](../user/safe_workflows.md), [real_rig_validation](real_rig_validation.md)).
-Las fases asistidas no lo usan para ejecutar nada, así que **no verifiqué que sean un requisito
-duro de la etapa 6**; hacelo igual para que el sensor de visibilidad del preflight mida algo real.
+Las fases asistidas no lo usan para ejecutar nada y el preflight del dominio USVFS omite a
+propósito el sensor de visibilidad: **no es requisito de la etapa 6** (E1–E7 pasaron con el bridge
+sin validar). Sí lo piden los docs del repo para operar un perfil real, y la validación del bridge
+sigue pendiente (§9, H-7).
 
 ```powershell
 .\dist\SkyClawApp.exe --mode install-vfs-bridge --mo2-root "D:\MO2Portable"
@@ -96,8 +104,9 @@ Cómo se invocan las fases, por superficie (las tres comparten `ejecutar_fase_as
 
 - **GUI:** tarjeta *Wrye Bash* → `Ejecutar` dispara `preparar`. Tras la preparación aparece la
   acción «Ya construí el parche — verificar» (etiqueta en `ritual_runner.py`).
-  *No verificado:* que la tarjeta figure como `Disponible` depende del escaneo y de
-  `WRYE_BASH_PATH`; anotá el estado que ves.
+  **Ojo:** la tarjeta **no lee `WRYE_BASH_PATH`** (`ExternalToolSpec` de `wrye_bash` en
+  `sky_claw/local/discovery/registry.py` no tiene `config_field`). Figura `Disponible` solo si el
+  exe está en una ruta auto-detectada, p. ej. dentro de la carpeta del juego (H-1, §9).
 - **Agente (Telegram `--mode telegram`, o `/api/chat`):** tool `generate_bashed_patch` con
   `fase="preparar"` o `fase="verificar"`. El perfil lo fija la sesión, no el modelo.
 
@@ -121,9 +130,11 @@ Campos que vas a leer en los resultados (de `preparacion_como_resultado` /
 ### E2 — Vigencia: LOOT entre build y verify (el caso central de H-1)
 
 1. `preparar`; 2. construir el parche; 3. **correr LOOT y ordenar**; 4. `verificar`.
-Esperado según el docstring de `EstadoDelContexto`: `testigo_contexto=cambio`, el testigo no se
-usa y `frescura_probada=False`; hay que volver a preparar. *No verificado en hardware:* los
-valores exactos de `success`/`motivo` en este caso; anotalos.
+Observado (con un cambio de `modlist.txt`, no un segundo sort): `success=True`, `motivo=OK`,
+`frescura_probada=False`, `testigo_origen=durable`, `testigo_contexto=cambio`, **registro no
+consumido**. Es lo que declara ADR 0016 (§7.3): el artefacto existe y está habilitado, pero la
+frescura no se prueba. **Un consumidor no puede leer solo `success`: tiene que leer
+`frescura_probada`.**
 
 ### E3 — Cierre de GUI entre fases (testigo durable)
 
@@ -132,8 +143,8 @@ valores exactos de `success`/`motivo` en este caso; anotalos.
 
 ### E4 — Verificar sin construir
 
-`preparar` → `verificar` sin tocar Wrye Bash. Esperado: `motivo=SIN_CAMBIO` o
-`ARTEFACTO_AUSENTE` según haya o no un parche previo.
+`preparar` → `verificar` sin tocar Wrye Bash. Observado: `success=False`, `motivo=SIN_CAMBIO`,
+`testigo_contexto=coincide`.
 
 ### E5 — Parche construido pero deshabilitado
 
@@ -142,15 +153,16 @@ Construir y desmarcarlo en MO2 → `verificar`. Esperado: `motivo=NO_HABILITADO`
 ### E6 — Defender y escritura atómica
 
 Repetí `preparar` 10-20 veces seguidas con Defender activo y, si podés, con un escaneo en
-curso. Esperado: ninguna falla de escritura del almacén (el código reintenta hasta 5 veces con
-backoff ante `winerror` 5/32). Anotá cualquier error y mirá que no queden archivos temporales
-al lado de `etapa6_testigos.json`. *No verificado:* el prefijo exacto de los temporales.
+curso. Observado: 20 preparaciones, 0 fallos, almacén válido en las 20, sin `.tmp` huérfanos, con un
+escaneo de Defender concurrente. Si repetís, anotá cualquier error y mirá que no queden temporales
+al lado de `etapa6_testigos.json`.
 
 ### E7 — Corte a mitad de `preparar`
 
 Matá el proceso de Sky-Claw durante una preparación. Reiniciá y repetí `preparar`; el JSON debe
-seguir siendo legible y no quedar un temporal huérfano tras la siguiente escritura (el barrido
-`_barrer_temporales_huerfanos` corre al escribir).
+seguir siendo legible. Observado: 6 cortes (0,05–0,95 s), almacén siempre legible, sin temporales.
+**Límite:** ningún corte cayó dentro de la ventana `mkstemp`→`os.replace`, así que el barrido de
+huérfanos no se forzó (lo cubren los tests).
 
 ### Fuera de alcance del rig
 
@@ -177,3 +189,43 @@ de salida o de `%USERPROFILE%\.sky_claw\state\`.
 Restaurá el perfil desde el backup. Para empezar de cero el estado de la etapa 6, cerrá
 Sky-Claw y borrá solo `etapa6_testigos.json` (y su `.lock`); el efecto es perder el testigo
 previo, no el parche ni el perfil. Hacelo recién cuando hayas guardado la evidencia.
+
+## 9. Resultado de la corrida del 2026-11-07
+
+Rig sandbox, Windows 10 Pro 10.0.19045, MO2 2.5.2, Skyrim SE 1.6.1170, Wrye Bash 315, LOOT 0.29.2,
+perfil descartable de 3 mods, Defender activo, Sky-Claw desde fuente en `749c9716`. El informe
+completo y los JSON crudos están en la máquina del operador
+(`C:\SkyClaw_Spike_Sandbox\evidence\etapa6-20261107\`), no en el repo.
+
+| Escenario | Resultado |
+|---|---|
+| E1 camino feliz (GUI) | PASS, **derivado**: el JSON de la GUI no se persiste (H-5). Evidencia: mensaje de fase 1, registro durable en disco y consumo del registro al verificar |
+| E2 vigencia | PASS: `OK`, `frescura_probada=False`, `testigo_contexto=cambio`, registro no consumido |
+| E3 cierre de GUI | PASS: `frescura_probada=True`, `testigo_origen=durable`, registro consumido |
+| E4 sin construir | PASS: `SIN_CAMBIO` |
+| E5 deshabilitado | PASS: `NO_HABILITADO` |
+| E6 Defender | PASS: 20/20 |
+| E7 corte | PASS con límite (ventana no alcanzada) |
+| Bridge USVFS | **No validado**: cuarentena heredada y desajuste plugin/broker (`VfsBridgeLaunchError: job_object…`) |
+
+Límites declarados: el perfil no tenía leveled lists, así que el Bashed Patch es mínimo (230 B) y
+se validó existencia, activación y frescura, **no el contenido del merge**; la secuencia de E2 se
+desordenó y el cambio de contexto se provocó con `modlist.txt` en lugar de un segundo sort de LOOT
+(LOOT sí corrió y reordenó el perfil, registrado aparte); el write-probe del preflight es transitorio
+y no se observó.
+
+### Hallazgos
+
+- **H-1 (producto, GUI).** La tarjeta de Wrye Bash no lee `WRYE_BASH_PATH`: con el exe fuera de las
+  rutas auto-detectadas la superficie GUI de la etapa 6 es inalcanzable aunque el servicio sí
+  resuelva la variable. Confirmado leyendo `registry.py`. Es el hermano de LOOT/xEdit/Pandora, que
+  sí tienen `config_field`.
+- **H-2 (entorno, seguridad operativa).** Wrye Bash cae al juego real si `-o` no valida y escribe
+  fuera del sandbox. Se activó el criterio de parada, se limpió y se verificó el juego real. Ver el
+  requisito del marcador en §1.
+- **H-3 (entorno).** MO2 lanzado por el harness no inyecta USVFS (F3).
+- **H-4 (producto, preflight).** `overwrite=yellow` permanente: los datos propios de Wrye Bash viven
+  en `overwrite/` y el sensor de «overwrite sucio» los reporta en cada fase. Advertencia, no bloqueo.
+- **H-5 (observabilidad).** La GUI no persiste el JSON del tool-result; para auditoría exacta usar
+  la superficie del agente.
+- **H-7 (bridge).** No validado; no invalida E1–E7.
