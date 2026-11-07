@@ -64,10 +64,6 @@ from sky_claw.logging_config import (  # noqa: E402
 logger = logging.getLogger("sky_claw")
 
 
-#: Los valores válidos de ``--mode``: una sola fuente para los ``choices`` del parser y para la sugerencia del error.
-_MODOS = ("cli", "telegram", "oneshot", "gui", "security", "install-vfs-bridge", "vfs-health")
-
-
 def _build_parser() -> argparse.ArgumentParser:
     config = Config()
     _chat_id_str = config.telegram_chat_id or ""
@@ -84,7 +80,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=_MODOS,
+        choices=[
+            "cli",
+            "telegram",
+            "oneshot",
+            "gui",
+            "security",
+            "install-vfs-bridge",
+            "vfs-health",
+        ],
         default=modo_por_defecto,
         help="Operation mode (default: %(default)s)",
     )
@@ -184,6 +188,15 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _nombres_de_modo(parser: argparse.ArgumentParser) -> frozenset[str]:
+    """Los valores válidos de ``--mode``, leídos del parser real.
+
+    La única fuente es el ``choices=[...]`` literal de ``add_argument("--mode", ...)``: ``tests/test_cli_modes.py`` lo
+    extrae del AST de este archivo (contrato estático del launcher), así que no puede pasar a ser una constante aparte.
+    """
+    return frozenset(parser._option_string_actions["--mode"].choices or ())
+
+
 #: Modos cuyo despacho en ``_main`` consume el posicional ``command``: ``oneshot`` lo ejecuta y ``security`` se lo
 #: pasa a ``_run_security`` (``--mode security "scan <ruta>"``). En cualquier otro modo el posicional se ignoraba en
 #: silencio y la invocación caía al REPL. ``tests/test_main.py`` congela la clasificación contra los ``choices``.
@@ -197,7 +210,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         # Solo se sugiere ``--mode <valor>`` si el valor ES un modo; un comando corriente va con ``--mode oneshot``.
         sugerencia = (
             f"¿quisiste pasar `--mode {args.command}`?"
-            if args.command in _MODOS
+            if args.command in _nombres_de_modo(parser)
             else "¿quisiste ejecutarlo con `--mode oneshot`?"
         )
         parser.error(
