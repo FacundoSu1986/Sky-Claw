@@ -32,6 +32,10 @@ Por eso el smoke valida cuatro propiedades que los tests con mocks no pueden pro
 - **Juego sandbox con `SkyrimSELauncher.exe`** (marcador con el que Wrye Bash detecta la
   instalación). Sin él, Wrye Bash rechaza `-o` **y cae a la instalación real de Steam**, y
   escribe fuera del sandbox (incidente H-2, §9). Verificá el marcador antes de abrir Wrye Bash.
+- **El ejecutable de Wrye Bash en MO2 lleva `-o "<carpeta del juego sandbox>"` en sus argumentos.**
+  `SKYRIM_PATH` y `skyrim_path` configuran Sky-Claw, **no** seleccionan el juego de Wrye Bash: sin
+  `-o`, o con un `-o` que no valida, Wrye Bash puede detectar el juego real. Es el mecanismo que
+  falló en H-2.
 - **Abrí MO2 a mano desde el Explorador.** Un MO2 lanzado por un proceso no interactivo no
   inyecta USVFS (`ERROR_ACCESS_DENIED` para cualquier exe; hallazgo F3, reconfirmado).
 - Python 3.11 o 3.12 y `uv`.
@@ -127,7 +131,11 @@ Campos que vas a leer en los resultados (de `preparacion_como_resultado` /
 1. `preparar`. Esperado: `pendiente=True`, `motivo=ESPERANDO_OPERADOR`. Anotá `generacion`.
 2. En MO2 lanzá **Wrye Bash desde el ejecutable del perfil** (no desde el explorador), `Rebuild
    Patch` sobre `Bashed Patch, 0.esp`, solo *Leveled Lists*, confirmar, cerrar, y verificar que el
-   plugin esté **activo** (pasos literales de `PASOS_ASISTIDOS`).
+   plugin esté **activo** (pasos literales de `PASOS_ASISTIDOS`). **Antes de `Rebuild Patch`**
+   confirmá que Wrye Bash seleccionó el juego sandbox (la carpeta que pasaste con `-o`); si no
+   podés confirmarlo, no construyas. Cómo verlo en la interfaz de Wrye Bash no está verificado: como
+   control posterior, comprobá que el `Data` del juego real no cambió (fue lo que se hizo al limpiar
+   el incidente H-2).
 3. `verificar`. Esperado: `success=True`, `motivo=OK`, `frescura_probada=True`,
    `testigo_contexto=coincide`. Dónde cae el archivo (`overwrite/` o mod de salida) queda en
    `artefacto`: anotalo.
