@@ -57,8 +57,8 @@ Variables que lee `PathResolver` (todas verificadas en
 
 | Variable | Para qué |
 |---|---|
-| `mo2_root` (config) / `--mo2-root` | instalación de MO2 que **inyecta `AppContext`** (default de la CLI: `C:\MO2Portable`). Gana sobre `MO2_PATH`: el resolver solo mira `MO2_PATH` si no hubo instalación inyectada (`_directorio_instalacion_mo2`). Fijala en el asistente y confirmá la instancia seleccionada |
-| `SKYRIM_PATH` | carpeta del juego **para las fases asistidas**: `get_skyrim_path()` lee solo esta variable. La GUI la exporta desde el escaneo (`skyrim_path` de la config) con `setdefault`, así que una variable ya definida gana |
+| `mo2_root` (config) / `--mo2-root` | instalación de MO2 que **inyecta `AppContext`**. **Una `mo2_root` de la config que exista gana sobre `--mo2-root`** aunque este indique otra ruta; la CLI solo manda si la config no la define o su ruta no existe. Gana también sobre `MO2_PATH` (el resolver solo lo mira si no hubo instalación inyectada). Fijá la ruta del **sandbox en la config antes de iniciar** y confirmá la instancia seleccionada; no te apoyes solo en `--mo2-root` |
+| `SKYRIM_PATH` + `skyrim_path` (config) | carpeta del juego **para las fases asistidas**: `get_skyrim_path()` lee solo la variable, pero las raíces permitidas del sandbox salen de `skyrim_path` de la config (`AppContext`). **Poné las dos en el sandbox antes de iniciar**: con la config en el juego real y la variable en el sandbox, el validador puede rechazar la ruta y las fases quedan sin ruta resoluble. La GUI exporta la variable desde el escaneo con `setdefault`, así que una variable ya definida gana |
 | `--skyrim-path` | solo lo consume `vfs-health` (§3); **no** alimenta el resolver de las fases asistidas |
 | `WRYE_BASH_PATH` | ejecutable de Wrye Bash (`get_wrye_bash_path`) |
 | `MO2_PROFILE` / `--profile` | perfil **único** de la sesión (default `Default`; no se cambia en caliente) |
@@ -190,11 +190,15 @@ Sky-Claw (`git rev-parse HEAD`); perfil usado; resultado completo (JSON) de cada
 escenario; contenido de `etapa6_testigos.json` (no contiene secretos, pero revisalo antes de
 adjuntarlo) y los logs de Sky-Claw y de MO2.
 
-**El JSON crudo solo se obtiene llamando a la tool directamente** (p. ej. un driver que use el
-`AsyncToolRegistry` productivo, como el de la corrida del 2026-11-07). `/api/chat` devuelve la
-respuesta final del modelo, y el router puede truncar o sanear el resultado de la tool antes de
-dárselo: una transcripción de chat **no es** evidencia exacta del resultado. Si solo tenés el chat,
-registrá esa evidencia como *no disponible*. Un escenario no ejecutado se registra como *no
+**Tres niveles de evidencia, de menor a mayor fidelidad.** `/api/chat` devuelve la respuesta final
+del modelo, y el router puede truncar o sanear el resultado de la tool antes de dárselo: una
+transcripción de chat **no es** evidencia exacta. Un driver que llame a la tool por el
+`AsyncToolRegistry` productivo (como el de la corrida del 2026-11-07) devuelve el JSON estructurado
+completo, pero con `artefacto` y `plugins_txt` **saneados** por `generate_bashed_patch`
+(`sanitize_for_prompt`: NFKC y barrido de caracteres invisibles), así que una ruta con caracteres de
+ancho completo puede no coincidir con la real: **verificá esas rutas en disco**. Solo la llamada
+directa a `WryeBashPipelineService.ejecutar_fase_asistida` conserva el resultado sin sanear. Si solo
+tenés el chat, registrá esa evidencia como *no disponible*. Un escenario no ejecutado se registra como *no
 ejecutado*, no como verde.
 
 ## 7. Criterio de parada
