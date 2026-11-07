@@ -35,8 +35,12 @@ Por eso el smoke valida cuatro propiedades que los tests con mocks no pueden pro
 - **Abrí MO2 a mano desde el Explorador.** Un MO2 lanzado por un proceso no interactivo no
   inyecta USVFS (`ERROR_ACCESS_DENIED` para cualquier exe; hallazgo F3, reconfirmado).
 - Python 3.11 o 3.12 y `uv`.
-- **Perfil MO2 descartable** (copia del real, o uno nuevo con 3-5 mods). Nunca el perfil de uso.
-- Backup externo del perfil antes de empezar (`profiles/<perfil>/` completo).
+- **Instancia MO2 aislada** (la corrida del 2026-11-07 usó un sandbox completo) con un perfil
+  descartable de 3-5 mods. Nunca el perfil de uso.
+- Backup externo **antes de empezar**. El de `profiles/<perfil>/` **no alcanza**: una copia del
+  perfil dentro de la misma instancia comparte `overwrite/` y los mods de salida con el perfil real,
+  y Wrye Bash puede modificar ahí un parche existente. Si no aislás la instancia, respaldá y
+  restaurá también `overwrite/` y cada mod de salida que pueda tocar.
 - Defender de Windows **activo** (es parte de la prueba).
 
 ## 2. Instalar y configurar
@@ -53,8 +57,9 @@ Variables que lee `PathResolver` (todas verificadas en
 
 | Variable | Para qué |
 |---|---|
-| `MO2_PATH` / `--mo2-root` | instalación de MO2 (default de la CLI: `C:\MO2Portable`) |
-| `SKYRIM_PATH` / `--skyrim-path` | carpeta del juego |
+| `mo2_root` (config) / `--mo2-root` | instalación de MO2 que **inyecta `AppContext`** (default de la CLI: `C:\MO2Portable`). Gana sobre `MO2_PATH`: el resolver solo mira `MO2_PATH` si no hubo instalación inyectada (`_directorio_instalacion_mo2`). Fijala en el asistente y confirmá la instancia seleccionada |
+| `SKYRIM_PATH` | carpeta del juego **para las fases asistidas**: `get_skyrim_path()` lee solo esta variable. La GUI la exporta desde el escaneo (`skyrim_path` de la config) con `setdefault`, así que una variable ya definida gana |
+| `--skyrim-path` | solo lo consume `vfs-health` (§3); **no** alimenta el resolver de las fases asistidas |
 | `WRYE_BASH_PATH` | ejecutable de Wrye Bash (`get_wrye_bash_path`) |
 | `MO2_PROFILE` / `--profile` | perfil **único** de la sesión (default `Default`; no se cambia en caliente) |
 
@@ -138,8 +143,14 @@ frescura no se prueba. **Un consumidor no puede leer solo `success`: tiene que l
 
 ### E3 — Cierre de GUI entre fases (testigo durable)
 
-`preparar` → cerrar Sky-Claw por completo → reabrirlo → construir → `verificar`. Esperado:
-`testigo_origen=durable`, `testigo_contexto=coincide`. Mirá que exista `etapa6_testigos.json`.
+Superficie del **agente**: `preparar` → cerrar Sky-Claw por completo → reabrirlo → construir →
+`verificar` sin payload. Esperado: `testigo_origen=durable`, `testigo_contexto=coincide`. Mirá que
+exista `etapa6_testigos.json`. (La corrida del 2026-11-07 lo hizo así.)
+
+Por la **GUI** el escenario es distinto: el resultado de `preparar` que crea la acción «Ya construí
+el parche — verificar» vive en memoria y se pierde al cerrar. Al reabrir hay que volver a
+`preparar`, y esa acción viaja con el testigo en el payload: el origen esperado es `payload`, no
+`durable`. No uses la GUI para probar el origen `durable`.
 
 ### E4 — Verificar sin construir
 
@@ -153,7 +164,9 @@ Construir y desmarcarlo en MO2 → `verificar`. Esperado: `motivo=NO_HABILITADO`
 ### E6 — Defender y escritura atómica
 
 Repetí `preparar` 10-20 veces seguidas con Defender activo y, si podés, con un escaneo en
-curso. Observado: 20 preparaciones, 0 fallos, almacén válido en las 20, sin `.tmp` huérfanos, con un
+curso. Partí de un estado sin testigo pendiente y exigí `testigo_durable=guardado` en **cada**
+iteración: una respuesta `conservado_por_build` no escribe el JSON y no cuenta como prueba de la
+escritura atómica. Observado: 20 preparaciones, 0 fallos, almacén válido en las 20, sin `.tmp` huérfanos, con un
 escaneo de Defender concurrente. Si repetís, anotá cualquier error y mirá que no queden temporales
 al lado de `etapa6_testigos.json`.
 
@@ -175,7 +188,13 @@ arma el payload sola. Está cubierto por `tests/test_etapa6_vigencia_contexto.py
 Versión de Windows, de MO2, de Wrye Bash y de LOOT; versión de USVFS si MO2 la informa; SHA de
 Sky-Claw (`git rev-parse HEAD`); perfil usado; resultado completo (JSON) de cada fase en cada
 escenario; contenido de `etapa6_testigos.json` (no contiene secretos, pero revisalo antes de
-adjuntarlo) y los logs de Sky-Claw y de MO2. Un escenario no ejecutado se registra como *no
+adjuntarlo) y los logs de Sky-Claw y de MO2.
+
+**El JSON crudo solo se obtiene llamando a la tool directamente** (p. ej. un driver que use el
+`AsyncToolRegistry` productivo, como el de la corrida del 2026-11-07). `/api/chat` devuelve la
+respuesta final del modelo, y el router puede truncar o sanear el resultado de la tool antes de
+dárselo: una transcripción de chat **no es** evidencia exacta del resultado. Si solo tenés el chat,
+registrá esa evidencia como *no disponible*. Un escenario no ejecutado se registra como *no
 ejecutado*, no como verde.
 
 ## 7. Criterio de parada
@@ -186,9 +205,13 @@ de salida o de `%USERPROFILE%\.sky_claw\state\`.
 
 ## 8. Limpieza
 
-Restaurá el perfil desde el backup. Para empezar de cero el estado de la etapa 6, cerrá
-Sky-Claw y borrá solo `etapa6_testigos.json` (y su `.lock`); el efecto es perder el testigo
-previo, no el parche ni el perfil. Hacelo recién cuando hayas guardado la evidencia.
+Restaurá el perfil, `overwrite/` y los mods de salida desde el backup. Para empezar de cero el
+estado de la etapa 6, **cerrá todos los procesos de Sky-Claw** y guardá antes la evidencia.
+`etapa6_testigos.json` es **compartido por usuario** y trae entradas de cada combinación
+`(plugins.txt, Data)`: borrarlo elimina también los testigos pendientes de otros perfiles o
+juegos. Borralo entero (con su `.lock`) solo si ese JSON contiene únicamente entradas del smoke; si
+no, quitá solo la entrada del perfil de prueba. El efecto es perder el testigo previo, no el parche
+ni el perfil.
 
 ## 9. Resultado de la corrida del 2026-11-07
 
