@@ -85,7 +85,7 @@ Variables que lee `PathResolver` (todas verificadas en
 | `SKYRIM_PATH` + `skyrim_path` (config) | carpeta del juego **para las fases asistidas**: `get_skyrim_path()` lee solo la variable, pero las raíces permitidas del sandbox salen de `skyrim_path` de la config (`AppContext`). **Poné las dos en el sandbox antes de iniciar**: con la config en el juego real y la variable en el sandbox, el validador puede rechazar la ruta y las fases quedan sin ruta resoluble. La GUI exporta la variable desde el escaneo con `setdefault`, así que una variable ya definida gana |
 | `--skyrim-path` | solo lo consume `vfs-health` (§3); **no** alimenta el resolver de las fases asistidas |
 | `wrye_bash_exe` (config) | ejecutable de Wrye Bash para la **tarjeta de la GUI**. Va en la **raíz** de `config.toml`, no bajo `[paths]` (se descarta). Lo agregó #882 |
-| `WRYE_BASH_PATH` | ejecutable de Wrye Bash para el servicio y el agente (`get_wrye_bash_path`). La **tarjeta no lo lee**; en cambio la GUI exporta a esta variable lo que resolvió el escaneo, con `setdefault` |
+| `WRYE_BASH_PATH` | **Sin efecto sobre las fases asistidas.** `PathResolver.get_wrye_bash_path` solo se define en `path_resolver.py`: ningún código de `sky_claw/` lo llama (verificado con `grep`), y las fases no lanzan Wrye Bash, que abre el operador desde MO2. Configurarla **no selecciona ni valida** el ejecutable de MO2 ni el de la tarjeta. La GUI sí exporta a esta variable lo que resolvió el escaneo, con `setdefault` |
 | `MO2_PROFILE` / `--profile` | perfil **único** de la sesión (default `Default`; no se cambia en caliente) |
 
 Tests previos (si fallan en Windows, **no sigas**):
@@ -134,7 +134,7 @@ Cómo se invocan las fases, por superficie (las tres comparten `ejecutar_fase_as
 
 - **GUI:** tarjeta *Wrye Bash* → `Ejecutar` dispara `preparar`. Tras la preparación aparece la
   acción «Ya construí el parche — verificar» (etiqueta en `ritual_runner.py`).
-  **Ojo:** la tarjeta **no lee `WRYE_BASH_PATH`**. Desde #882 lee `wrye_bash_exe` de la **raíz** de
+  **Ojo:** la tarjeta **no lee `WRYE_BASH_PATH`** (que además no tiene consumidores, ver §2). Desde #882 lee `wrye_bash_exe` de la **raíz** de
   `config.toml` (`ExternalToolSpec` de `wrye_bash` en `sky_claw/local/discovery/registry.py`);
   antes de #882 solo figuraba `Disponible` con el exe en una ruta auto-detectada, p. ej. dentro de
   la carpeta del juego (H-1, §9). **No verificado en el rig:** que la tarjeta pase a `Disponible`
@@ -281,8 +281,9 @@ y no se observó.
 ### Hallazgos
 
 - **H-1 (producto, GUI).** La tarjeta de Wrye Bash no lee `WRYE_BASH_PATH`: con el exe fuera de las
-  rutas auto-detectadas la superficie GUI de la etapa 6 es inalcanzable aunque el servicio sí
-  resuelva la variable. Confirmado leyendo `registry.py`. Es el hermano de LOOT/xEdit/Pandora, que
+  rutas auto-detectadas la superficie GUI de la etapa 6 es inalcanzable. Confirmado leyendo
+  `registry.py`. (Una versión anterior de esta guía decía que el servicio sí resolvía la variable;
+  era falso: `get_wrye_bash_path` no tiene llamadores en `sky_claw/`.) Es el hermano de LOOT/xEdit/Pandora, que
   sí tienen `config_field`. **Corregido en #882** (issue #879): la tarjeta lee `wrye_bash_exe` de la
   config. La verificación en hardware sigue pendiente.
 - **H-2 (entorno, seguridad operativa).** Wrye Bash cae al juego real si `-o` no valida y escribe
