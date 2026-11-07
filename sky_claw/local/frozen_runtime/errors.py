@@ -498,3 +498,65 @@ class SesionConsentimientoNoCoincideError(ConsentimientoError):
     dejaría pasar el replay entre sesiones del mismo propietario —dos ventanas,
     dos conversaciones— y el consentimiento de una autorizaría la otra.
     """
+
+
+# ============================================================================
+# Provisionamiento P7-A1 desde copia Stock verificada
+# ============================================================================
+
+
+class ProvisioningError(FrozenRuntimeError):
+    """Base de errores del provisionamiento Stock→Generation→Clone (P7-A1).
+
+    El provisionamiento es una operación de OPERADOR, no de la GUI ni del agente
+    LLM: no existe cableado productivo y este módulo no se importa desde el
+    agente. La clase base existe para que un caller pueda distinguir un fallo
+    tipado de un ``OSError`` crudo.
+    """
+
+
+class StockSourceError(ProvisioningError):
+    """La copia Stock no coincide con la referencia independiente declarada.
+
+    Incluye: árbol distinto (byte, tamaño o archivo de más/menos), identidad de
+    runtime distinta, archivos críticos que no coinciden, reparse/hardlinks
+    dentro de la copia, o un árbol inestable entre la verificación y la
+    re-medición. Nunca se auto-promueve a "verificado" por mirar el árbol: la
+    referencia la aporta el operador y es independiente de esta medición.
+    """
+
+
+class StockReferenceInvalidError(ProvisioningError):
+    """La referencia Stock es inválida, está incompleta o fue alterada.
+
+    Se recomputa su ``reference_digest`` al cargarla: una referencia editada a
+    mano no puede "autorizar" un árbol distinto.
+    """
+
+
+class ProvisioningSpaceError(ProvisioningError):
+    """No hay espacio libre suficiente en el volumen de destino.
+
+    Se calcula ANTES de copiar y se compara contra el tamaño del árbol sellado
+    más un margen. Un ENOSPC a mitad de copia dejaría un árbol parcial sin
+    metadata (fail-closed, no destructivo), pero además se pierde tiempo: la
+    comprobación previa es la primera barrera.
+    """
+
+
+class ProvisioningBlockedError(ProvisioningError):
+    """El storage no está inicializado o hay una transición a medio cerrar.
+
+    Provisionar no puede convivir con un journal de transición vigente ni con
+    registros de recuperación pendientes: serían dos mutadores del mismo root
+    con intenciones distintas.
+    """
+
+
+class RuntimeSetupError(ProvisioningError):
+    """El Clone no satisface el RuntimeSetup mínimo exigido por P7.
+
+    Exige ``SkyrimSE.exe`` observable, loader de SKSE y DLL de runtime de la
+    build exacta (``COMPATIBLE``). Un Clone sin esta evidencia no puede
+    registrarse como ``PROVISIONED``.
+    """
