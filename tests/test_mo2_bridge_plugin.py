@@ -770,10 +770,10 @@ def test_toda_llamada_a_log_info_del_controlador_esta_aislada_con_suppress() -> 
     assert all(_aislada(nodo) for nodo in llamadas)
 
 
-def _construcciones_del_controlador(fuente: str) -> list[bool]:
-    """Una entrada por CADA ``BridgeLaunchController(...)`` de ``fuente``: ¿pasa ``breakaway_checker``?"""
+def _construcciones_del_controlador(fuente: str) -> list[str | None]:
+    """Una entrada por CADA ``BridgeLaunchController(...)`` de ``fuente``: el ``breakaway_checker`` que pasa, o ``None``."""
     return [
-        any(clave.arg == "breakaway_checker" for clave in nodo.keywords)
+        next((ast.unparse(clave.value) for clave in nodo.keywords if clave.arg == "breakaway_checker"), None)
         for nodo in ast.walk(ast.parse(fuente))
         if isinstance(nodo, ast.Call) and ast.unparse(nodo.func).rsplit(".", 1)[-1] == "BridgeLaunchController"
     ]
@@ -785,28 +785,33 @@ def _construcciones_del_controlador(fuente: str) -> list[bool]:
         # Una construcción sin checker no puede quedar tapada por otra del mismo archivo que sí lo pasa (ni al revés).
         (
             "def f():\n    BridgeLaunchController(a=1)\n\ndef g():\n    BridgeLaunchController(a=1, breakaway_checker=h)\n",
-            [False, True],
+            [None, "h"],
         ),
         (
             "def g():\n    BridgeLaunchController(a=1, breakaway_checker=h)\n\ndef f():\n    BridgeLaunchController(a=1)\n",
-            [False, True],
+            [None, "h"],
         ),
-        ("BridgeLaunchController(a=1, breakaway_checker=h)\n", [True]),
+        # Pasar ALGO no basta: se compara el valor, así que un no-op (``lambda: None``) queda a la vista.
+        ("BridgeLaunchController(a=1, breakaway_checker=lambda: None)\n", ["lambda: None"]),
+        ("BridgeLaunchController(a=1, breakaway_checker=h)\n", ["h"]),
         ("x = 1\n", []),
     ],
 )
-def test_construcciones_del_controlador_conserva_un_resultado_por_llamada(fuente: str, esperado: list[bool]) -> None:
-    assert sorted(_construcciones_del_controlador(fuente)) == esperado
+def test_construcciones_del_controlador_conserva_un_resultado_por_llamada(
+    fuente: str, esperado: list[str | None]
+) -> None:
+    assert sorted(_construcciones_del_controlador(fuente), key=str) == esperado
 
 
 def test_todo_constructor_de_produccion_del_controlador_pasa_breakaway_checker() -> None:
     """Ancla: el default ``lambda: None`` es solo para tests con dobles; producción debe pasar el checker real."""
     raiz = pathlib.Path(__file__).resolve().parents[1]
-    sitios: dict[str, list[bool]] = {}
+    sitios: dict[str, list[str | None]] = {}
     for ruta in sorted((raiz / "sky_claw").rglob("*.py")):
         construcciones = _construcciones_del_controlador(ruta.read_text(encoding="utf-8"))
         if construcciones:
             sitios[ruta.relative_to(raiz).as_posix()] = construcciones
 
-    # Igualdad literal: un segundo constructor de producción, o uno sin el checker, rompe el test hasta revisarlo.
-    assert sitios == {"sky_claw/local/mo2/plugin_bundle/skyclaw_bridge/plugin.py": [True]}
+    # Igualdad literal sobre el VALOR: un segundo constructor de producción, uno sin checker o uno con un no-op
+    # (``lambda: None``) rompe el test hasta revisarlo.
+    assert sitios == {"sky_claw/local/mo2/plugin_bundle/skyclaw_bridge/plugin.py": ["verify_mo2_breakaway_allowed"]}
