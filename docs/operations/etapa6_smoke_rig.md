@@ -32,10 +32,20 @@ Por eso el smoke valida cuatro propiedades que los tests con mocks no pueden pro
 - **Juego sandbox con `SkyrimSELauncher.exe`** (marcador con el que Wrye Bash detecta la
   instalación). Sin él, Wrye Bash rechaza `-o` **y cae a la instalación real de Steam**, y
   escribe fuera del sandbox (incidente H-2, §9). Verificá el marcador antes de abrir Wrye Bash.
-- **El ejecutable de Wrye Bash en MO2 lleva `-o "<carpeta del juego sandbox>"` en sus argumentos.**
-  `SKYRIM_PATH` y `skyrim_path` configuran Sky-Claw, **no** seleccionan el juego de Wrye Bash: sin
-  `-o`, o con un `-o` que no valida, Wrye Bash puede detectar el juego real. Es el mecanismo que
-  falló en H-2.
+- **El ejecutable de Wrye Bash en MO2 lleva `-o "<carpeta del juego sandbox>"` en sus argumentos**,
+  con ruta **absoluta** (Wrye Bash resuelve `-o` relativo a su carpeta `Mopy`).
+  `SKYRIM_PATH` y `skyrim_path` configuran Sky-Claw, **no** seleccionan el juego de Wrye Bash.
+  Según el código de Wrye Bash v315 (`bush.py`, leído, no ejecutado), un `-o` que no valida **no
+  aborta ni avisa con un diálogo**: Wrye Bash sigue con `sOblivionPath` de `bash.ini`, el directorio
+  padre de `Mopy` y la detección por registro o Steam, y si encuentra un solo juego lo selecciona en
+  silencio. Es el mecanismo de H-2.
+- **Protegé el juego real antes de lanzar Wrye Bash por primera vez**, no solo verificarlo después.
+  Lo observado en H-2 es que, al caer al juego real, Wrye Bash creó carpetas y un parche vacío ahí.
+  **No está verificado si lo hace durante el arranque o recién al construir**, así que tratá el
+  arranque como riesgoso. Opciones, de más a menos segura: hacer el smoke en una máquina o usuario
+  donde el juego real no sea detectable (sin él, Wrye Bash muestra «could not find a game» y
+  termina, que es el fallo seguro); mover o renombrar temporalmente la carpeta del juego real; o
+  denegar la escritura sobre ella a nivel de permisos del sistema de archivos. Restaurá al final.
 - **Abrí MO2 a mano desde el Explorador.** Un MO2 lanzado por un proceso no interactivo no
   inyecta USVFS (`ERROR_ACCESS_DENIED` para cualquier exe; hallazgo F3, reconfirmado).
 - Python 3.11 o 3.12 y `uv`.
@@ -132,10 +142,16 @@ Campos que vas a leer en los resultados (de `preparacion_como_resultado` /
 2. En MO2 lanzá **Wrye Bash desde el ejecutable del perfil** (no desde el explorador), `Rebuild
    Patch` sobre `Bashed Patch, 0.esp`, solo *Leveled Lists*, confirmar, cerrar, y verificar que el
    plugin esté **activo** (pasos literales de `PASOS_ASISTIDOS`). **Antes de `Rebuild Patch`**
-   confirmá que Wrye Bash seleccionó el juego sandbox (la carpeta que pasaste con `-o`); si no
-   podés confirmarlo, no construyas. Cómo verlo en la interfaz de Wrye Bash no está verificado: como
-   control posterior, comprobá que el `Data` del juego real no cambió (fue lo que se hizo al limpiar
-   el incidente H-2).
+   abrí `BashBugDump.log` y confirmá que Wrye Bash seleccionó el juego sandbox. Según `bash.py` de
+   v315 (leído, no ejecutado) el archivo se sobrescribe en cada arranque, queda en la carpeta del
+   ejecutable de Wrye Bash (bajo USVFS puede aparecer en `overwrite/`) y se escribe línea por línea,
+   así que se puede leer con Wrye Bash abierto. Buscá la línea «Using … game:» o «Single game
+   found», seguida de la ruta, y comprobá que sea la carpeta del sandbox que pasaste con `-o`. Si
+   aparece «No known game in the path specified via -o argument», o cualquier otra ruta, **cerrá
+   Wrye Bash y detené el smoke**. El texto exacto de esas líneas viene de la lectura del código, no
+   de una corrida: confirmalo en el rig. Si no podés abrir el log, no construyas. Después de la
+   corrida, comprobá además que el `Data` del juego real no cambió (fue lo que se hizo al limpiar
+   H-2).
 3. `verificar`. Esperado: `success=True`, `motivo=OK`, `frescura_probada=True`,
    `testigo_contexto=coincide`. Dónde cae el archivo (`overwrite/` o mod de salida) queda en
    `artefacto`: anotalo.
