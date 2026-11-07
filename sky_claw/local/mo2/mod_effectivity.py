@@ -38,6 +38,7 @@ import os
 import pathlib
 import stat
 from collections.abc import Iterator, Sequence
+from typing import NamedTuple
 
 from sky_claw.app.security.links import iter_archivos_propios, link_kind_and_identity_or_raise
 from sky_claw.local.mo2.ganadores import GanadoresError, _es_carpeta_propia, _exigir_nombre_de_mod
@@ -145,21 +146,54 @@ def _roots_eclipsantes(
     return roots
 
 
+class _Eclipsante(NamedTuple):
+    """La capa de mayor prioridad que ocupa un path del artifact y, si lo hay, el enlace por el que lo ocupa."""
+
+    etiqueta: str
+    root: pathlib.Path
+    #: Primer componente del path, dentro de la capa, que es un enlace (symlink/junction); ``None`` si no pasa por uno.
+    enlace: pathlib.Path | None
+
+
+def _ocupante_de_la_capa(root: pathlib.Path, relativo: pathlib.Path) -> tuple[bool, pathlib.Path | None]:
+    """``(ocupa, enlace)``: recorre *relativo* dentro de *root* componente por componente con ``lstat``, sin seguir enlaces.
+
+    ``Path.exists()`` sigue enlaces en TODOS los componentes: un directorio intermedio que es un symlink hacía que la capa
+    "contuviera" el path con lo que hay del otro lado, un árbol que el overlay no entrega (#875). El primer enlace corta el
+    recorrido: es el ocupante, y no se mira a dónde apunta (ni siquiera si apunta a algo que exista).
+    """
+    actual = root
+    partes = relativo.parts
+    for indice, parte in enumerate(partes):
+        actual = actual / parte
+        tipo, identidad = link_kind_and_identity_or_raise(actual)
+        if identidad is None:
+            return False, None
+        if tipo is not None:
+            return True, actual
+        if indice < len(partes) - 1 and not stat.S_ISDIR(identidad.st_mode):
+            # Un archivo donde la capa necesitaría un directorio: el path no está en la capa (lo que ``exists()`` absorbía).
+            return False, None
+    return True, None
+
+
 def _ganador_eclipsante(
     data_relativo: pathlib.PurePosixPath,
     roots: Sequence[tuple[str, pathlib.Path]],
-) -> tuple[str, pathlib.Path] | None:
+) -> _Eclipsante | None:
     """Primer root (prioridad más alta) que contiene el path; ``None`` si ninguno.
 
     Un eclipsado que NO es archivo regular propio (directorio, symlink,
     junction) también "contiene" el path: devuelve ese root y el caller lo
     clasifica como incompatibilidad, que es lo que es — el overlay no va a
-    entregar el byte del artifact por ese path.
+    entregar el byte del artifact por ese path. Si el path pasa por un enlace
+    DENTRO de la capa, ``enlace`` lo nombra y el caller no compara bytes.
     """
     relativo = pathlib.Path(*data_relativo.parts)
     for etiqueta, root in roots:
-        if (root / relativo).exists():
-            return etiqueta, root
+        ocupa, enlace = _ocupante_de_la_capa(root, relativo)
+        if ocupa:
+            return _Eclipsante(etiqueta, root, enlace)
     return None
 
 
@@ -213,7 +247,15 @@ def verificar_artifact_efectivo(
                 # Sin eclipsador el ganador es el propio mod: MO2 mapea los mods
                 # por encima del game data, y los mods de prioridad menor pierden.
                 continue
-            etiqueta, root = ganador
+            etiqueta, root, enlace = ganador
+            if enlace is not None:
+                # El path atraviesa un enlace dentro de la capa: lo que hay del otro lado no es contenido de la capa (#875),
+                # así que no se comparan bytes: incompatibilidad, sin preguntar a dónde apunta.
+                incompatibles.append(
+                    f"{data_relativo.as_posix()} (eclipsado por {etiqueta} a través del enlace "
+                    f"{enlace.relative_to(root).as_posix()!r})"
+                )
+                continue
             espejo = root / pathlib.Path(*data_relativo.parts)
             tipo_espejo, identidad_espejo = link_kind_and_identity_or_raise(espejo)
             if identidad_espejo is None or tipo_espejo is not None or not stat.S_ISREG(identidad_espejo.st_mode):
