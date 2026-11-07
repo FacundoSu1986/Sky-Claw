@@ -770,16 +770,43 @@ def test_toda_llamada_a_log_info_del_controlador_esta_aislada_con_suppress() -> 
     assert all(_aislada(nodo) for nodo in llamadas)
 
 
+def _construcciones_del_controlador(fuente: str) -> list[bool]:
+    """Una entrada por CADA ``BridgeLaunchController(...)`` de ``fuente``: ¿pasa ``breakaway_checker``?"""
+    return [
+        any(clave.arg == "breakaway_checker" for clave in nodo.keywords)
+        for nodo in ast.walk(ast.parse(fuente))
+        if isinstance(nodo, ast.Call) and ast.unparse(nodo.func).rsplit(".", 1)[-1] == "BridgeLaunchController"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("fuente", "esperado"),
+    [
+        # Una construcción sin checker no puede quedar tapada por otra del mismo archivo que sí lo pasa (ni al revés).
+        (
+            "def f():\n    BridgeLaunchController(a=1)\n\ndef g():\n    BridgeLaunchController(a=1, breakaway_checker=h)\n",
+            [False, True],
+        ),
+        (
+            "def g():\n    BridgeLaunchController(a=1, breakaway_checker=h)\n\ndef f():\n    BridgeLaunchController(a=1)\n",
+            [False, True],
+        ),
+        ("BridgeLaunchController(a=1, breakaway_checker=h)\n", [True]),
+        ("x = 1\n", []),
+    ],
+)
+def test_construcciones_del_controlador_conserva_un_resultado_por_llamada(fuente: str, esperado: list[bool]) -> None:
+    assert sorted(_construcciones_del_controlador(fuente)) == esperado
+
+
 def test_todo_constructor_de_produccion_del_controlador_pasa_breakaway_checker() -> None:
     """Ancla: el default ``lambda: None`` es solo para tests con dobles; producción debe pasar el checker real."""
     raiz = pathlib.Path(__file__).resolve().parents[1]
-    sitios: dict[str, bool] = {}
+    sitios: dict[str, list[bool]] = {}
     for ruta in sorted((raiz / "sky_claw").rglob("*.py")):
-        arbol = ast.parse(ruta.read_text(encoding="utf-8"))
-        for nodo in ast.walk(arbol):
-            if isinstance(nodo, ast.Call) and ast.unparse(nodo.func).rsplit(".", 1)[-1] == "BridgeLaunchController":
-                sitios[ruta.relative_to(raiz).as_posix()] = any(
-                    clave.arg == "breakaway_checker" for clave in nodo.keywords
-                )
+        construcciones = _construcciones_del_controlador(ruta.read_text(encoding="utf-8"))
+        if construcciones:
+            sitios[ruta.relative_to(raiz).as_posix()] = construcciones
 
-    assert sitios == {"sky_claw/local/mo2/plugin_bundle/skyclaw_bridge/plugin.py": True}
+    # Igualdad literal: un segundo constructor de producción, o uno sin el checker, rompe el test hasta revisarlo.
+    assert sitios == {"sky_claw/local/mo2/plugin_bundle/skyclaw_bridge/plugin.py": [True]}
