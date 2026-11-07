@@ -177,6 +177,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 
 ### Fixed
+- **La tarjeta de Wrye Bash de la GUI lee su ruta de `config.toml` (`wrye_bash_exe`) como LOOT, xEdit y Pandora (#879).**
+  El escáner de la GUI se siembra desde la config (`build_tool_path_cfg_keys`) y recién después exporta lo
+  resuelto a `os.environ`; el `ExternalToolSpec` de `wrye_bash` tenía `snapshot_env_var` pero no
+  `config_field`, así que con el ejecutable fuera de las rutas auto-detectadas la tarjeta decía «No
+  instalado» y la etapa 6 asistida era inalcanzable desde la GUI (hallazgo H-1 del smoke en rig Windows,
+  2026-11-07). Se agrega `wrye_bash_exe` a `Config._load_defaults`, a `LocalConfig` (+ lector JSON), a la
+  migración legacy y a las dos tablas de docs. Ancla por enumeración en
+  `tests/test_wrye_bash_config_field.py`: toda spec con `snapshot_env_var` tiene `config_field` o figura en
+  una lista cerrada por nombre (hoy sólo `dyndolod`, fuera de alcance: su disponibilidad en la GUI es una
+  decisión de la etapa 9), y todo `config_field` existe en `Config` y en `LocalConfig`.
 - **Etapa 6 — vigencia contextual del testigo durable, simetría M-04 y robustez del almacén
   ([ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.3, issue #866).**
   - **H-1:** si LOOT (u otro cambio de load order o de `modlist.txt`) ocurría entre el build del

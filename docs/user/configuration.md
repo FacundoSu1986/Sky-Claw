@@ -27,7 +27,7 @@ extraído de esas secciones.
 | Grupo | Claves |
 |---|---|
 | Instalaciones | `mo2_root`, `skyrim_path`, `install_dir` |
-| Herramientas | `loot_exe`, `xedit_exe`, `pandora_exe`, `bodyslide_exe` |
+| Herramientas | `loot_exe`, `xedit_exe`, `pandora_exe`, `bodyslide_exe`, `wrye_bash_exe` |
 | LLM | `llm_provider`, `anthropic_model`, `deepseek_model`, `openai_model`, `ollama_model` |
 | Telegram | `telegram_chat_id` |
 | Estado | `first_run` |
