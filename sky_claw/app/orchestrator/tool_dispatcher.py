@@ -352,23 +352,20 @@ def build_orchestration_dispatcher(
         ),
     )
 
-    # FASE 1.5.1 + #726: generate_bashed_patch is destructive → ErrorWrapping +
-    # DictGuard + HITL gate. Contraste verificado: `WryeBashPipelineService`
-    # ya convierte todo en dict (incluido `WryeBashHeadlessUnsupportedError`, que
-    # subclasea `WryeBashExecutionError`), así que —igual que Pandora— acá el
-    # wrapping es defensa en profundidad y uniformidad del contrato, NO la
-    # corrección de un escape medido. La estrategia NO implementa
-    # `validate_for_approval`: filtra y advierte (semántica deliberada, distinta
-    # de las otras dos), y el wrapping no la altera.
+    # ADR 0016 §7 + #726: tras el retiro de ``execute_pipeline`` (#862), ambas
+    # fases asistidas de ``generate_bashed_patch`` (``preparar`` y ``verificar``)
+    # son no destructivas sobre el parche, el perfil y ``plugins.txt`` → sin
+    # ``HitlGateMiddleware`` (simétrico con ``AsyncToolRegistry``), conservando
+    # ``ErrorWrappingMiddleware`` + ``DictResultGuardMiddleware`` como defensa en
+    # profundidad del contrato de errores.
     dispatcher.register(
         GenerateBashedPatchStrategy(
             wrye_bash_pipeline=dependencies.wrye_bash_pipeline,
         ),
-        middleware=_destructive_middleware(
-            error_reason="WryeBashPipelineExecutionFailed",
-            invalid_result_reason="InvalidWryeBashPipelineResult",
-            gate=gate,
-        ),
+        middleware=[
+            ErrorWrappingMiddleware("WryeBashPipelineExecutionFailed"),
+            DictResultGuardMiddleware("InvalidWryeBashPipelineResult"),
+        ],
     )
 
     dispatcher.register(

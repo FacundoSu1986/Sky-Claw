@@ -85,9 +85,13 @@ journal, buses, locks, perfil y guard concretos; construir la composition no
 resuelve ejecutables ni rutas de MO2. El callable de Wrye Bash cierra sobre su
 servicio y el perfil de sesión, sin capturar al supervisor completo.
 
-La aprobación destructiva pre-ejecución permanece en exactamente siete tools:
-LOOT, resolución xEdit, DynDOLOD, Pandora, QuickAutoClean, Grass Cache y Wrye
-Bash. Synthesis no usa ese middleware porque su sandbox solicita aprobación
+La aprobación destructiva pre-ejecución permanece en exactamente seis tools:
+LOOT, resolución xEdit, DynDOLOD, Pandora, QuickAutoClean y Grass Cache.
+`generate_bashed_patch` (Wrye Bash) salió de esa lista tras retirar su camino
+headless (#862) y cerrar la deuda HITL de [ADR 0016](../adr/0016-etapa-6-wrye-bash-asistida.md)
+§7: sus dos fases asistidas (`preparar` y `verificar`) no mutan el parche, el
+perfil ni `plugins.txt`, y la construcción real ocurre manualmente en Wrye Bash
+GUI. Synthesis tampoco usa ese middleware porque su sandbox solicita aprobación
 post-ejecución sobre el diff; agregar el gate previo sería double-gating.
 
 ## Contratos que no deben mezclarse
