@@ -26,7 +26,7 @@
 
 Gran parte de los «no se nota» no es un problema de amplitud. Comprobá, en este orden:
 
-1. `.venv\Scripts\python -m sky_claw.local.native_parallax.cli elegibilidad --mod "<mod>" --mods <carpeta mods> --data-root <carpeta MO2> --perfil "<perfil con el que se juega>"` da `SI` para esa textura. Sin `--perfil` usa `Default`, que puede no ser el perfil del juego. Si da `NO_VERIFICADO` (por ejemplo, porque la malla está dentro de un `.bsa`, que la herramienta no lee), **no concluyas que no se usa**: seguí con la comprobación manual de la guía de prueba (paso 4: consola, xEdit y NifSkope).
+1. `.venv\Scripts\python -m sky_claw.local.native_parallax.cli elegibilidad --mod "<mod>" --mods <carpeta mods> --data-root <carpeta MO2> --perfil "<perfil con el que se juega>"` da `SI` para esa textura. Sin `--perfil` usa `Default`, que puede no ser el perfil del juego. Si da `NO_VERIFICADO` (por ejemplo, porque la malla está dentro de un `.bsa`, que la herramienta no lee), **no concluyas que no se usa**: seguí con la comprobación manual de la guía de prueba (paso 4, punto 5: consola, xEdit y NifSkope).
 2. El `AutoParallax.ini` que gana en el perfil tiene `bAutoEnableParallax = true`. Apagado, ninguna salida se usa.
 3. El objeto que muestra la textura es **Static, Movable Static o Container** (probado con la DLL 1.0.6.0 en una máquina). En puertas y activadores no hay relieve aunque la elegibilidad diga `SI`; las mallas con relieve de fábrica también las apaga el plugin.
 4. En la pestaña «Datos» de MO2, la columna «Mod» del `*_p.dds` dice «Sky-Claw - Native Parallax Output». Si otro mod tapa la salida (o trae su propio `_p`), lo que se ve es ese.
