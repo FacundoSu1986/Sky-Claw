@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
+from typing import TYPE_CHECKING, Any
 
 try:
     # Canonical source: the installed package version (derived from the git tag
@@ -17,13 +18,14 @@ except PackageNotFoundError:
     # the exe's VERSIONINFO resource. Bump it to match the release.
     __version__ = "0.2.4"
 
-# FASE 5: Asset Conflict Detection Module
-from sky_claw.local.assets import (
-    AssetConflictDetector,
-    AssetConflictReport,
-    AssetInfo,
-    AssetType,
-)
+if TYPE_CHECKING:
+    # FASE 5: Asset Conflict Detection Module
+    from sky_claw.local.assets import (
+        AssetConflictDetector,
+        AssetConflictReport,
+        AssetInfo,
+        AssetType,
+    )
 
 __all__ = [
     "AssetConflictDetector",
@@ -31,3 +33,18 @@ __all__ = [
     "AssetInfo",
     "AssetType",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Carga perezosa de re-exports para que workers livianos no arrastren ``config``/``keyring``."""
+    if name in __all__:
+        from sky_claw.local import assets as _assets  # noqa: PLC0415
+
+        return getattr(_assets, name)
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
+
+
+def __dir__() -> list[str]:
+    """Lista también los re-exports perezosos para que ``dir()``/``help()``/IDEs los vean sin resolverlos."""
+    return sorted({*globals(), *__all__})

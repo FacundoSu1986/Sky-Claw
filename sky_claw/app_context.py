@@ -2502,6 +2502,7 @@ class AppContext:
             "skyrim_path": "skyrim_path",
             "pandora_exe": "pandora_exe",
             "bodyslide_exe": "bodyslide_exe",
+            "wrye_bash_exe": "wrye_bash_exe",
             "telegram_chat_id": "telegram_chat_id",
             "ngio_mods": "ngio_mods",
             "community_shaders_mods": "community_shaders_mods",

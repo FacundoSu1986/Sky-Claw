@@ -17,7 +17,7 @@ defaults verificados son:
 
 | Categoría | Claves |
 |---|---|
-| Rutas | `mo2_root`, `install_dir`, `loot_exe`, `xedit_exe`, `pandora_exe`, `bodyslide_exe`, `skyrim_path` |
+| Rutas | `mo2_root`, `install_dir`, `loot_exe`, `xedit_exe`, `pandora_exe`, `bodyslide_exe`, `wrye_bash_exe`, `skyrim_path` |
 | Proveedor | `llm_provider`, `llm_model`, `{provider}_model` |
 | Secretos | `llm_api_key`, `{provider}_api_key`, `nexus_api_key`, `search_api_key`, `telegram_bot_token` |
 | Telegram | `telegram_chat_id` |

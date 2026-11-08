@@ -16,6 +16,7 @@ import secrets
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import psutil
@@ -37,6 +38,7 @@ from sky_claw.local.mo2.vfs_ipc import (
     read_authenticated_message,
     write_authenticated_message,
 )
+from sky_claw.local.mo2.vfs_job_identity import generar_nombre_de_job
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest, write_worker_manifest
 from sky_claw.local.mo2.vfs_session import VfsProcessSession
 
@@ -207,6 +209,23 @@ class VfsExecutionBroker:
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_MAX_BUFFERED_EVENTS)
         self._closing = False
         self._owns_instance_file_lock = False
+        # Fence de supervisión. El bridge hace `startApplication` (el worker nace
+        # CORRIENDO) y recién después `AssignProcessToJobObject`; su `launch_ack`
+        # sólo se emite si esa asignación tuvo éxito. Un descendiente creado antes
+        # de la asignación queda fuera del Job y sobrevive a su terminación, así que
+        # el worker no puede crear nada (ni el nieto de la attestation ni la
+        # herramienta) hasta que el broker le envíe `supervised`. El broker lo envía
+        # UNA vez, sólo tras un `launch_ack` del bridge para ESE job, mientras el job
+        # siga vivo y no esté siendo cancelado. Claves = job_id (se limpian con el job).
+        self._launch_acked: set[str] = set()
+        self._supervised_sent: set[str] = set()
+        # Identidad del Job (P2). El fence de arriba prueba «el bridge asignó el proceso que lanzó MO2»;
+        # en un ejecutable PyInstaller onefile ése es el bootloader, y el hijo Python que ejecuta la
+        # herramienta puede haber nacido antes del assign. Por eso el broker elige, por launch, el NOMBRE
+        # (inadivinable) del Job: lo pide en `launch_worker`, y solo da por supervisado a un worker cuyo
+        # `hello` declare ESE nombre tras haberse verificado dentro de él, con un `launch_ack` que también
+        # lo nombre. Claves = job_id; nace en `_registrar_job` y se limpia en todo camino que suelta el job.
+        self._job_objects: dict[str, str] = {}
 
     @property
     def descriptor_path(self) -> pathlib.Path:
@@ -632,6 +651,8 @@ class VfsExecutionBroker:
         self._pending[job.job_id] = result_future
         self._pending_context[job.job_id] = (job, challenge)
         self._worker_exit[job.job_id] = exit_future
+        # Único punto por el que pasan `submit` y `open_session`: ambas superficies piden un Job con nombre.
+        self._job_objects[job.job_id] = generar_nombre_de_job()
         return result_future, exit_future
 
     async def _limpiar_registro(
@@ -652,6 +673,9 @@ class VfsExecutionBroker:
         self._worker_exit.pop(job_id, None)
         self._termination_tasks.pop(job_id, None)
         self._job_replay_deadlines.pop(job_id, None)
+        self._launch_acked.discard(job_id)
+        self._supervised_sent.discard(job_id)
+        self._job_objects.pop(job_id, None)
         if session is not None:
             await session._detener_recolector()
             self._job_event_queues.pop(job_id, None)
@@ -673,6 +697,7 @@ class VfsExecutionBroker:
             "profile": job.profile,
             "manifest_path": str(manifest_path),
             "overwrite_mod": overwrite_mod,
+            "job_object": self._job_objects[job.job_id],
         }
 
     async def submit(
@@ -936,6 +961,9 @@ class VfsExecutionBroker:
         self._job_replay_deadlines.pop(job_id, None)
         self._job_event_queues.pop(job_id, None)
         self._session_drivers.pop(job_id, None)
+        self._launch_acked.discard(job_id)
+        self._supervised_sent.discard(job_id)
+        self._job_objects.pop(job_id, None)
         await asyncio.to_thread((self._jobs_dir / f"{job_id}.json").unlink, missing_ok=True)
 
     async def _cancelar_job_de_sesion(self, job_id: str) -> None:
@@ -1248,8 +1276,13 @@ class VfsExecutionBroker:
                 while not self._closing:
                     message = await read_authenticated_message(reader, self._secret)
                     self._handle_bridge_message(message)
+                    if message.get("type") == "launch_ack":
+                        await self._registrar_launch_ack(message.get("job_id"), message.get("job_object"))
             else:
                 assert worker_job_id is not None
+                # El ack pudo llegar ANTES que el hello del worker (el bridge asigna
+                # y confirma en el mismo callback que lanza): se autoriza ahora.
+                await self._autorizar_worker_si_corresponde(worker_job_id)
                 while not self._closing:
                     message = await read_authenticated_message(reader, self._secret)
                     if self._handle_worker_message(message, expected_job_id=worker_job_id):
@@ -1289,6 +1322,83 @@ class VfsExecutionBroker:
             with contextlib.suppress(ConnectionError, OSError):
                 await writer.wait_closed()
 
+    async def _registrar_launch_ack(self, job_id: object, job_object: object = None) -> None:
+        """Registra la confirmación de supervisión del bridge y autoriza al worker de ESE job.
+
+        Ignora —sin autorizar nada— un ack de un job desconocido o de otro job, de un
+        job ya resuelto (p. ej. un launch que falló) o en cancelación. Es idempotente:
+        un ack duplicado (el bridge reencola eventos tras reconectar) no reenvía nada.
+
+        El ack debe NOMBRAR el Job que el broker pidió para ESE launch: uno sin nombre (bridge viejo,
+        que ni siquiera acepta ``job_object`` en ``launch_worker``) o con otro nombre significa que lo
+        asignado no es el Job cuya identidad el worker va a verificar. No autoriza y corta al worker.
+        """
+        if not isinstance(job_id, str) or not job_id:
+            logger.warning("launch_ack sin job_id válido: se ignora")
+            return
+        future = self._pending.get(job_id)
+        if future is None or future.done():
+            logger.warning("launch_ack ignorado: el job %s no está pendiente", job_id)
+            return
+        if job_id in self._termination_tasks:
+            logger.warning("launch_ack tardío ignorado: el job %s está siendo cancelado", job_id)
+            return
+        if job_object != self._job_objects.get(job_id):
+            logger.error(
+                "launch_ack del job %s sin la identidad de Job pedida (recibido=%r): no se autoriza al worker",
+                job_id,
+                job_object,
+            )
+            self._denegar_supervision(job_id)
+            return
+        self._launch_acked.add(job_id)
+        await self._autorizar_worker_si_corresponde(job_id)
+
+    def _supervision_vigente(self, job_id: str, writer: asyncio.StreamWriter | None) -> bool:
+        """El job sigue pendiente, NO se está cancelando y ``writer`` sigue siendo su worker conectado."""
+        future = self._pending.get(job_id)
+        if future is None or future.done() or job_id in self._termination_tasks:
+            return False
+        return writer is not None and writer is self._worker_by_job.get(job_id) and not writer.is_closing()
+
+    async def _autorizar_worker_si_corresponde(self, job_id: str) -> None:
+        """Envía `supervised` al worker del job si, y sólo si, se dan TODAS las condiciones."""
+        if job_id not in self._launch_acked or job_id in self._supervised_sent:
+            return
+        writer = self._worker_by_job.get(job_id)
+        if not self._supervision_vigente(job_id, writer):
+            return
+        assert writer is not None  # lo garantiza _supervision_vigente
+        # Se marca ANTES del await: el hello del worker y el ack del bridge corren en
+        # tareas distintas y ambos intentan autorizar; sólo uno debe enviar. La reserva se
+        # conserva si el job se cancela mientras se espera el lock: un job en cancelación
+        # no se autoriza nunca.
+        self._supervised_sent.add(job_id)
+        try:
+            async with self._write_lock:
+                # Re-chequeo DENTRO del lock: si estaba tomado, esta tarea se suspendió acá y la
+                # cancelación pudo registrarse durante la espera. Su `cancel` quedó detrás de este
+                # `supervised` en la cola FIFO del lock; sin este chequeo el worker sería
+                # autorizado con el job ya cancelándose.
+                if not self._supervision_vigente(job_id, writer):
+                    logger.warning("supervised no enviado: el job %s dejó de estar vigente esperando el lock", job_id)
+                    return
+                await write_authenticated_message(
+                    writer,
+                    {"protocol_version": VFS_PROTOCOL_VERSION, "type": "supervised", "job_id": job_id},
+                    self._secret,
+                )
+        except (ConnectionError, OSError, VfsFrameError):
+            self._supervised_sent.discard(job_id)
+            logger.warning("No se pudo entregar supervised al worker %s", job_id, exc_info=True)
+
+    def _denegar_supervision(self, job_id: str) -> None:
+        """El launch falló: jamás se autoriza y el worker (si ya conectó) se corta al instante."""
+        self._launch_acked.discard(job_id)
+        writer = self._worker_by_job.get(job_id)
+        if writer is not None and not writer.is_closing():
+            writer.close()
+
     def _validate_hello(self, message: Mapping[str, object]) -> tuple[str, str | None]:
         if message.get("protocol_version") != VFS_PROTOCOL_VERSION:
             raise VfsBrokerError("versión incompatible en hello")
@@ -1301,9 +1411,22 @@ class VfsExecutionBroker:
         role = str(message["role"])
         if role == "bridge":
             return role, None
+        if message.get("supervision_fence") is not True:
+            # Un worker sin el fence despacharía sin esperar la supervisión: el
+            # broker no ejecuta ningún job con él. Actualización coordinada: daemon
+            # y worker son el mismo ejecutable (el bridge instalado no cambia).
+            raise VfsBrokerError(
+                "worker sin la capacidad supervision_fence: se rechaza (actualizá worker y daemon juntos)"
+            )
         job_id = message.get("job_id")
         if not isinstance(job_id, str) or job_id not in self._pending:
             raise VfsBrokerError("worker conectado para un job desconocido")
+        declarado = message.get("job_object")
+        if not isinstance(declarado, str) or declarado != self._job_objects.get(job_id):
+            # El worker no demostró estar dentro del Job que se pidió para ESTE launch (o es un worker sin P2).
+            raise VfsBrokerError(
+                "worker sin la identidad de Job pedida para este launch: se rechaza (actualizá worker y daemon juntos)"
+            )
         return role, job_id
 
     def _handle_bridge_message(self, message: Mapping[str, object]) -> None:
@@ -1331,6 +1454,7 @@ class VfsExecutionBroker:
                     future.set_exception(VfsBridgeLaunchError(detail))
                     if not exit_future.done():
                         exit_future.set_result(None)
+                    self._denegar_supervision(job_id)
                 elif message.get("command") in ("cancel", "terminate") or job_id in self._termination_tasks:
                     detail = message.get("message")
                     detail_str = detail if isinstance(detail, str) and detail else "error no especificado del bridge"
@@ -1373,6 +1497,20 @@ class VfsExecutionBroker:
                 parsed_exit_code = exit_code if type(exit_code) is int else None
                 if exit_future is not None and not exit_future.done():
                     exit_future.set_result(parsed_exit_code)
+                    ts_utc = datetime.now(UTC).isoformat()
+                    logger.info(
+                        "VFS worker_exit confirmado ts=%s job_id=%s exit_code=%r",
+                        ts_utc,
+                        job_id,
+                        parsed_exit_code,
+                        extra={
+                            "event": "worker_exit_confirmed",
+                            "operation": "vfs_broker",
+                            "job_id": job_id,
+                            "exit_code": parsed_exit_code,
+                            "ts_utc": ts_utc,
+                        },
+                    )
                 future = self._pending.get(job_id) if isinstance(job_id, str) else None
                 if (
                     isinstance(job_id, str)
@@ -1440,6 +1578,20 @@ class VfsExecutionBroker:
             future.set_exception(exc)
             raise
         future.set_result(result)
+        ts_utc = datetime.now(UTC).isoformat()
+        logger.info(
+            "VFS job_result recibido ts=%s job_id=%s success=%s",
+            ts_utc,
+            expected_job_id,
+            result.success,
+            extra={
+                "event": "job_result_received",
+                "operation": "vfs_broker",
+                "job_id": expected_job_id,
+                "success": result.success,
+                "ts_utc": ts_utc,
+            },
+        )
         return True
 
     @staticmethod

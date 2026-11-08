@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import time
 
 from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime.errors import (
@@ -63,6 +64,7 @@ __all__ = [
     "generacion_id_desde_evidencia",
     "leer_generation_metadata",
     "registrar_generation_metadata",
+    "registrar_generation_metadata_desde_identidad",
     "validar_generation_id",
     "verificar_generation",
 ]
@@ -209,32 +211,119 @@ def registrar_generation_metadata(root: pathlib.Path, evidence: SourceSnapshotEv
     """
     generation_id = validar_generation_id(generacion_id_desde_evidencia(evidence))
     metadata = _metadata_de_evidencia(evidence, generation_id)
-    destino = generations_state_dir(root) / f"{generation_id}.json"
-    # Exclusión (P4-S2): publicar una Generation muta `state/generations/`. El
-    # chequeo de idempotencia (leer→comparar→escribir) es un RMW que debe ser
-    # indivisible respecto de otro publicador del mismo root. Import diferido
-    # para no crear el ciclo generations → root_lock → storage → state.
+    return _registrar_metadata(root, metadata)
+
+
+def construir_generation_metadata_desde_identidad(
+    *,
+    runtime_identity: RuntimeIdentity,
+    tree_digest: TreeDigest,
+    critical_files: tuple[FileIdentity, ...],
+    provider: str,
+    provider_appid: str | None = None,
+    provider_buildid: str | None = None,
+    created_at_ns: int | None = None,
+) -> GenerationMetadata:
+    """Construye y valida (round-trip) la metadata, SIN escribir ni adquirir lock.
+
+    Existe para el camino "copia Stock verificada contra una referencia
+    independiente": esa fuente no es una ``ManagedSource`` de Steam y por lo
+    tanto no puede producir un ``SourceSnapshotEvidence`` honesto (el enum
+    ``ManagedSourceProvider`` no incluye Stock y el schema exige provider/appid
+    de proveedor). Acá el caller aporta la identidad YA verificada (digest,
+    runtime, críticos) y ``provider`` se persiste tal cual: un caller que mienta
+    sobre el proveedor queda registrado con su mentira, no se disfraza de Steam.
+
+    No crea ni copia árboles: la publicación del árbol ``versions/<id>/`` es
+    responsabilidad del provisionamiento, que la verifica fresca ANTES de llamar
+    acá. La idempotencia y la colisión se resuelven con las mismas reglas que
+    ``registrar_generation_metadata``.
+    """
+    if not isinstance(provider, str) or not provider.strip():
+        raise StateSchemaError("provider de Generation debe ser string no vacío")
+    if not isinstance(runtime_identity, RuntimeIdentity) or not runtime_identity.game_version.strip():
+        raise StateSchemaError("runtime_identity de Generation sin game_version observable")
+    if not isinstance(tree_digest, TreeDigest) or tree_digest.files <= 0:
+        raise StateSchemaError("tree_digest de Generation inválido: sin archivos")
+    generation_id = validar_generation_id(construir_generation_id(runtime_identity.game_version, tree_digest))
+    metadata = GenerationMetadata(
+        schema_version=METADATA_SCHEMA_VERSION,
+        generation_id=generation_id,
+        display_version=generation_id.split("__", 1)[0],
+        runtime_identity=runtime_identity,
+        tree_digest=tree_digest,
+        critical_files=tuple(critical_files),
+        provider=provider,
+        provider_appid=provider_appid,
+        provider_buildid=provider_buildid,
+        created_at_ns=time.time_ns() if created_at_ns is None else int(created_at_ns),
+    )
+    # Round-trip contra el lector real ANTES de escribir: si el payload no es un
+    # schema v1 válido, falla acá y no deja metadata que el lector vaya a rechazar.
+    _metadata_de_payload(_payload_de_metadata(metadata), source_label=f"metadata de '{generation_id}'")
+    return metadata
+
+
+def registrar_generation_metadata_desde_identidad(
+    root: pathlib.Path,
+    *,
+    runtime_identity: RuntimeIdentity,
+    tree_digest: TreeDigest,
+    critical_files: tuple[FileIdentity, ...],
+    provider: str,
+    provider_appid: str | None = None,
+    provider_buildid: str | None = None,
+    created_at_ns: int | None = None,
+) -> GenerationMetadata:
+    """Frontera pública: construye la metadata y la registra bajo el root lock."""
+    metadata = construir_generation_metadata_desde_identidad(
+        runtime_identity=runtime_identity,
+        tree_digest=tree_digest,
+        critical_files=critical_files,
+        provider=provider,
+        provider_appid=provider_appid,
+        provider_buildid=provider_buildid,
+        created_at_ns=created_at_ns,
+    )
+    return _registrar_metadata(root, metadata)
+
+
+def _registrar_metadata(root: pathlib.Path, metadata: GenerationMetadata) -> GenerationMetadata:
+    """Frontera pública: adquiere el root lock y delega en ``*_bajo_lock``."""
     from sky_claw.local.frozen_runtime.root_lock import participant_lock
 
     with participant_lock(root, timeout=0.0) as handle:
         handle.assert_owned()
-        if destino.exists():
-            existente = _metadata_de_payload(_leer_json(destino), source_label=str(destino))
-            # Identidad COMPLETA (digest + files + bytes) y críticos comparados SIN
-            # dependencia de orden: inventory_tree no promete orden estable de
-            # archivos, así que la idempotencia no puede depender del orden.
-            if (
-                existente.tree_digest == metadata.tree_digest
-                and existente.runtime_identity == metadata.runtime_identity
-                and _mismos_criticos(existente.critical_files, metadata.critical_files)
-            ):
-                return existente
-            raise GenerationCollisionError(
-                f"generation-id '{generation_id}' ya existe con identidad completa distinta "
-                "(digest/identidad/evidencia crítica no coinciden): fail-closed, no se sobreescribe"
-            )
-        write_json_atomic(destino, _payload_de_metadata(metadata))
-        return metadata
+        return _registrar_metadata_bajo_lock(root, metadata)
+
+
+def _registrar_metadata_bajo_lock(root: pathlib.Path, metadata: GenerationMetadata) -> GenerationMetadata:
+    """Cuerpo de registro de metadata; el caller DEBE poseer el root lock.
+
+    No re-adquiere ``participant_lock`` (no reentrante por diseño). Lo usan los
+    públicos de este módulo y el provisionamiento P7-A1, que sostiene el lock a
+    través de copia + verificación + metadata + sidecar para que la publicación
+    sea lógicamente atómica.
+    """
+    generation_id = metadata.generation_id
+    destino = generations_state_dir(root) / f"{generation_id}.json"
+    if destino.exists():
+        existente = _metadata_de_payload(_leer_json(destino), source_label=str(destino))
+        # Identidad COMPLETA (digest + files + bytes) y críticos comparados SIN
+        # dependencia de orden: inventory_tree no promete orden estable de
+        # archivos, así que la idempotencia no puede depender del orden.
+        if (
+            existente.tree_digest == metadata.tree_digest
+            and existente.runtime_identity == metadata.runtime_identity
+            and _mismos_criticos(existente.critical_files, metadata.critical_files)
+        ):
+            return existente
+        raise GenerationCollisionError(
+            f"generation-id '{generation_id}' ya existe con identidad completa distinta "
+            "(digest/identidad/evidencia crítica no coinciden): fail-closed, no se sobreescribe"
+        )
+    write_json_atomic(destino, _payload_de_metadata(metadata))
+    return metadata
 
 
 def _mismos_criticos(a: tuple[FileIdentity, ...], b: tuple[FileIdentity, ...]) -> bool:

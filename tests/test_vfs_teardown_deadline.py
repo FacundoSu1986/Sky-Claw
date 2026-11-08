@@ -42,6 +42,7 @@ from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import (
 )
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_broker import (
+    VfsBridgeLaunchError,
     VfsBridgeTerminationError,
     VfsBrokerError,
     VfsExecutionBroker,
@@ -195,6 +196,8 @@ class _WorkerFalso:
                 "protocol_version": VFS_PROTOCOL_VERSION,
                 "type": "hello",
                 "role": "worker",
+                "supervision_fence": True,  # un worker nuevo declara que espera la supervisión
+                "job_object": broker._job_objects[job_id],  # y el Job (pedido por el broker) donde se verificó
                 "instance_id": "portable-main",
                 "session_id": descriptor["session_id"],
                 "job_id": job_id,
@@ -326,6 +329,66 @@ async def test_bridge_error_durante_terminacion_despierta_inmediatamente_con_err
     finally:
         if worker is not None:
             await worker.cerrar()
+        await bridge.cerrar()
+        await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_un_launch_que_deja_un_descendiente_vivo_fuera_del_job_pone_la_instancia_en_cuarentena(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Contrato en el que se apoya el bridge (#877, hallazgo P1 de Codex).
+
+    Si el bridge no logra contener NI terminar a un descendiente del worker, queda un proceso vivo fuera del Job que
+    ``TerminateJobObject`` no alcanza. Lo reporta como ``terminate``/``termination_failed`` (no como un launch
+    rechazado) y el broker debe tratarlo como terminalidad desconocida: cuarentena, no «nada corrió».
+    """
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=5.0)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    try:
+        apertura = asyncio.create_task(
+            broker.open_session(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data)
+        )
+        launch = await bridge.recv()
+        assert launch["type"] == "launch_worker"
+
+        await bridge.bridge_error(
+            job.job_id,
+            command="terminate",
+            message="no se pudo contener a los descendientes del worker (quedan vivos fuera del Job: [101])",
+            kind="termination_failed",
+        )
+
+        with pytest.raises(VfsBridgeTerminationError, match="vivos fuera del Job"):
+            await asyncio.wait_for(apertura, timeout=3.0)
+        assert broker.quarantine_reason is not None, "un proceso vivo fuera del Job no puede dar un launch «limpio»"
+    finally:
+        await bridge.cerrar()
+        await broker.close()
+
+
+@pytest.mark.asyncio
+async def test_un_launch_rechazado_sin_vivos_no_pone_la_instancia_en_cuarentena(tmp_path: pathlib.Path) -> None:
+    """Control del anterior: el rechazo ordinario (nada vivo) sigue sin cuarentena. La distinción es el ``command``."""
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=5.0)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    try:
+        apertura = asyncio.create_task(
+            broker.open_session(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data)
+        )
+        launch = await bridge.recv()
+        assert launch["type"] == "launch_worker"
+
+        await bridge.bridge_error(job.job_id, command="launch_worker", message="manifiesto inválido", kind="rejected")
+
+        with pytest.raises(VfsBridgeLaunchError, match="manifiesto inválido"):
+            await asyncio.wait_for(apertura, timeout=3.0)
+        assert broker.quarantine_reason is None
+    finally:
         await bridge.cerrar()
         await broker.close()
 
@@ -498,7 +561,8 @@ class _OrganizerFake:
 
 
 class _JobObjectFake:
-    def __init__(self) -> None:
+    def __init__(self, nombre: str | None = None) -> None:
+        self.nombre = nombre
         self.assigned: list[int] = []
         self.terminated = False
         self.closed = False
@@ -508,6 +572,12 @@ class _JobObjectFake:
 
     def terminate(self) -> None:
         self.terminated = True
+
+    def adopt_descendants(self, process_handle: int) -> int:
+        return 0
+
+    def active_processes(self) -> int:
+        return 0
 
     def close(self) -> None:
         self.closed = True
@@ -568,6 +638,7 @@ async def test_benign_cancel_race_with_real_bridge_launch_controller(tmp_path: p
                 "profile": job.profile,
                 "manifest_path": str((broker._jobs_dir / f"{job.job_id}.json").resolve()),
                 "overwrite_mod": None,
+                "job_object": broker._job_objects[job.job_id],
             }
         )
 

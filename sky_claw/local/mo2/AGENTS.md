@@ -26,6 +26,35 @@ raíz.
 - Si falla el rollback, preservar el backup.
 - Timeout/cancelación termina y recolecta (`reap`) el worker y todo su árbol de
   procesos descendientes.
+- **El worker no crea el nieto de la attestation ni despacha la herramienta antes de estar
+  supervisado.** Espera `supervised` (autenticado, ligado a su `job_id`) ANTES de la
+  attestation, que crea el proceso nieto; lo que el intérprete crea al arrancar (imports,
+  anterior al `hello`) NO está cubierto; el
+  broker lo envía una vez, solo tras el `launch_ack` del bridge para ese job. El plazo solo
+  puede abortar, nunca habilitar; un worker sin `supervision_fence` en el `hello` se rechaza.
+  Anclas: `tests/test_vfs_fence_de_supervision.py` (protocolo, enumera `ALLOWED_VFS_TOOL_IDS`),
+  `tests/test_vfs_fence_e2e_proceso_real.py` (worker real) y
+  `tests/test_vfs_job_containment_windows.py` (Job Objects reales). Un consumidor nuevo del
+  broker hereda el fence: no lo reimplementes por herramienta.
+- **El worker EFECTIVO prueba que vive en el Job de ESTE launch antes de hablar con el broker** (P2). En un
+  `.exe` PyInstaller *onefile* el proceso que MO2 lanza y el bridge asigna es el bootloader; Python corre en un
+  HIJO que puede haber nacido antes del `assign` y quedar fuera. El broker elige por launch un nombre de Job
+  inadivinable (`Local\SkyClawVfs-<128 bits>`, `_registrar_job`: el único punto por el que pasan `submit` y
+  `open_session`); el bridge crea el Job con ese nombre (rechaza uno preexistente y concede solo consulta en su
+  DACL) y lo confirma en el `launch_ack`; el worker lo abre con `JOB_OBJECT_QUERY`, pregunta
+  `IsProcessInJob(<este proceso>, <ESE handle>)` —**nunca `NULL`**: contra `NULL` el SO responde `TRUE` para
+  CUALQUIER Job—, exige `KILL_ON_JOB_CLOSE` sin breakaway y que todo descendiente vivo esté dentro, y **cierra su
+  handle** (`KILL_ON_JOB_CLOSE` solo dispara al cerrarse el último). Si falla, `worker_main` **intenta** terminar a sus
+  descendientes y sale con 72 sin abrir un socket; la terminación no está garantizada: si la limpieza también falla
+  (un descendiente que no muere), se registra `CRITICAL` y ese proceso puede quedar vivo. Cualquier falla, incluida la de
+  construir la API de Windows o la de la propia limpieza, es un `JobIdentityError` (no un error crudo); si la
+  verificación y el cierre del handle fallan a la vez, viaja la causa de la verificación y el cierre se registra. El broker solo autoriza con el nombre pedido en el ack **y** en el
+  `hello`. Es contención, no autoría (la autenticidad sigue siendo el HMAC). Convive con el fence: no lo reemplaza.
+  Anclas: `tests/test_vfs_job_identity.py` (lógica, API falsa), `tests/test_vfs_job_identity_anclas.py` (enumeran
+  quién toca `job_object`, quién suelta un job y quién fabrica una prueba),
+  `tests/test_vfs_job_identity_windows.py` y `tests/test_vfs_job_identity_e2e_windows.py` (procesos y Job reales;
+  el e2e corre también contra el `.exe` congelado con `SKYCLAW_FROZEN_EXE`). `_CONTENCION_DEL_WORKER_VERIFICADA`
+  (PR #854) sigue en `False`: levantarlo es una decisión aparte con la evidencia de la auditoría.
 - `ganadores.py` (NP-A0d) contesta UNA vez «¿qué capa provee esta ruta virtual en el overlay del perfil?». Recibe `enabled` ya
   normalizado por `vfs_attestation.read_enabled_mods` (no parsea el modlist: un test lo ancla), recorre con
   `links.iter_archivos_propios` (no entra a enlaces), trata `overwrite` como la capa más alta y un `*.mohidden` como ausente, y

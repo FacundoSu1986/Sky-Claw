@@ -109,8 +109,9 @@ async def test_el_handler_delega_en_el_enrutado_unico(
     argumentos = espia.await_args.kwargs
     assert argumentos["profile"] == "Requiem"
     assert argumentos["fase"] == "preparar"
-    # M-04 se valida a nivel Supervisor para este path, como antes del PR B.
-    assert argumentos["validate_limit"] is False
+    # M-04 (#866, H-2): la superficie del agente valida el límite igual que la GUI y el
+    # Supervisor; antes pasaba ``False`` porque "se validaba a nivel Supervisor", y no es cierto.
+    assert argumentos["validate_limit"] is True
     assert not hasattr(WryeBashPipelineService, "execute_pipeline"), (
         "el camino headless retirado volvió a existir: la tool podría reabrirlo"
     )

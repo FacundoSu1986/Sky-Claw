@@ -15,6 +15,15 @@ PRODUCTORES_ESPERADOS = {
     ("ci.yml", "build"),
     ("release.yml", "release"),
 }
+#: Construyen el ejecutable para MEDIRLO (laboratorio de Job Objects) y no lo publican. No son una
+#: exención escrita: ``test_los_productores_sin_publicacion_no_publican_el_ejecutable`` verifica que
+#: no pueden publicarlo (token de solo lectura, ningún artefacto con ``dist``, ningún paso de
+#: firma/SBOM/release).
+PRODUCTORES_SIN_PUBLICACION = {
+    ("vfs-supervision-sandbox.yml", "sandbox"),
+}
+#: Rutas que esos productores pueden subir como artefacto: únicamente los resultados de las mediciones.
+RUTAS_DE_ARTEFACTO_PERMITIDAS = frozenset({"sandbox_min/resultados*.json", "sandbox_min/pytest.txt"})
 
 
 def _cargar_workflows() -> dict[str, dict[str, Any]]:
@@ -43,7 +52,7 @@ def test_todos_y_solo_los_workflows_productores_smokean_antes_de_publicar() -> N
     workflows = _cargar_workflows()
     productores = _productores_de_ejecutable(workflows)
 
-    assert set(productores) == PRODUCTORES_ESPERADOS
+    assert set(productores) == PRODUCTORES_ESPERADOS | PRODUCTORES_SIN_PUBLICACION
     for nombre_workflow, nombre_job in sorted(PRODUCTORES_ESPERADOS):
         steps = productores[(nombre_workflow, nombre_job)]
         build_index = _indice_unico(
@@ -96,3 +105,28 @@ def test_release_conserva_el_job_pausado_y_no_cambia_la_receta_de_firma() -> Non
     assert steps[signing_step]["run"] == (
         "cosign sign-blob dist/SkyClawApp.exe `\n  --yes `\n  --bundle dist/SkyClawApp.exe.bundle.json\n"
     )
+
+
+def test_los_productores_sin_publicacion_no_publican_el_ejecutable() -> None:
+    """Un productor fuera de ``PRODUCTORES_ESPERADOS`` solo es admisible si NO puede publicar."""
+    workflows = _cargar_workflows()
+    productores = _productores_de_ejecutable(workflows)
+    patron_publicacion = re.compile(r"\b(?:sign|sbom|release|cosign|attest|publish)\b", re.IGNORECASE)
+
+    for nombre_workflow, nombre_job in sorted(PRODUCTORES_SIN_PUBLICACION):
+        workflow = workflows[nombre_workflow]
+        steps = productores[(nombre_workflow, nombre_job)]
+
+        # El token no puede escribir en el repo ni en releases.
+        assert workflow.get("permissions") == {"contents": "read"}, nombre_workflow
+        assert "permissions" not in workflow["jobs"][nombre_job], nombre_workflow
+        for step in steps:
+            # Ningún paso de firma, SBOM ni release (ni por nombre ni por acción ni por comando).
+            for campo in (step.get("name", ""), step.get("uses", ""), step.get("run", "")):
+                assert patron_publicacion.search(campo) is None, (nombre_workflow, campo)
+            # Los artefactos subidos son SOLO los resultados del laboratorio (allowlist, no una búsqueda de
+            # subcadena: ``path: .`` subiría ``dist/SkyClawApp.exe`` sin pasar por el smoke).
+            if step.get("uses", "").startswith("actions/upload-artifact@"):
+                rutas = {linea.strip() for linea in str(step.get("with", {}).get("path", "")).splitlines()}
+                rutas.discard("")
+                assert rutas and rutas <= RUTAS_DE_ARTEFACTO_PERMITIDAS, (nombre_workflow, sorted(rutas))

@@ -11,6 +11,8 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
+from sky_claw.local.mo2.ganadores import GanadoresError, _es_carpeta_propia
+from sky_claw.local.mo2.mod_effectivity import _ocupante_de_la_capa
 from sky_claw.local.mo2.plugin_sources import OFFICIAL_MASTERS
 
 #: Dominio del digest del estado del perfil.
@@ -151,6 +153,37 @@ def _validated_profile(profile: str) -> str:
         return assert_safe_component(profile, field="profile")
     except PathViolationError as exc:
         raise VfsAttestationError(str(exc)) from exc
+
+
+def _capa_propia(raiz: pathlib.Path, *, etiqueta: str) -> bool:
+    """``True`` si *raiz* es una carpeta propia, ``False`` si no existe; un enlace o un no-directorio falla cerrado.
+
+    Es la validación de ``ganadores`` (misma fuente): ``is_dir()`` sigue enlaces, y una capa que es un enlace haría que el
+    canary saliera de —o se descartara por— un árbol que el overlay no entrega (#875).
+    """
+    try:
+        return _es_carpeta_propia(raiz, etiqueta=etiqueta)
+    except GanadoresError as exc:
+        raise VfsAttestationError(str(exc)) from exc
+
+
+def _roots_de_overwrite(data_resolved: pathlib.Path) -> list[pathlib.Path]:
+    """``[overwrite]`` si es una carpeta propia; ``[]`` si no existe (un perfil sin ``overwrite`` es válido). Un enlace falla cerrado."""
+    overwrite = data_resolved / "overwrite"
+    return [overwrite] if _capa_propia(overwrite, etiqueta="overwrite") else []
+
+
+def _ocupa_el_path(raiz: pathlib.Path, relativo: pathlib.Path) -> bool:
+    """``True`` si la capa *raiz* ocupa *relativo*: lo provee o lo atraviesa con un enlace, que nunca es contenido propio.
+
+    Recorre el path componente por componente con ``lstat`` (``Path.exists()`` sigue enlaces en todos los componentes). Un
+    error del SO no se absorbe como "ausente" ni escapa crudo: es ``VfsAttestationError``.
+    """
+    try:
+        ocupa, _enlace = _ocupante_de_la_capa(raiz, relativo)
+    except OSError as exc:
+        raise VfsAttestationError(f"no se pudo inspeccionar la capa {raiz} en {relativo.as_posix()!r}: {exc}") from exc
+    return ocupa
 
 
 #: Designador de unidad de Windows (`C:`) como componente: `mod_root / "C:"` es
@@ -655,6 +688,13 @@ def _construir_challenge(
     sí tenía un candidato válido adentro. El filtro no reemplaza esa comprobación
     posterior: la deja como defensa redundante.
 
+    Las capas (mods superiores, candidatos y ``overwrite``) se validan como
+    carpetas PROPIAS (:func:`_capa_propia`) y el path se busca en ellas sin seguir
+    enlaces (:func:`_ocupa_el_path`): un enlace nunca es contenido de la capa, igual
+    que en el ``Data`` físico. Un enlace en la raíz de una capa falla cerrado; uno
+    dentro de una capa superior cuenta como que la capa ocupa el path (el
+    candidato no es elegible).
+
     Elegibilidad = "este archivo llega efectivo al namespace virtual", que es la
     mitad estructural de lo que el runtime prueba después. NO reemplaza al
     digest del artifact completo: un canary es UN archivo representativo.
@@ -676,11 +716,11 @@ def _construir_challenge(
         candidatos: tuple[str, ...] = (source_mod,)
         # modlist.txt crece de menor a mayor prioridad. Al bajar desde el final
         # hasta el mod fuente, se acumulan exactamente los roots que lo eclipsan.
-        roots_eclipsantes: list[pathlib.Path] = [data_resolved / "overwrite"]
+        roots_eclipsantes: list[pathlib.Path] = _roots_de_overwrite(data_resolved)
         for superior in reversed(enabled[indice + 1 :]):
             safe_superior = _validated_profile(superior)
             root_superior = mods_resolved / safe_superior
-            if not root_superior.is_dir():
+            if not _capa_propia(root_superior, etiqueta=f"el mod {superior!r}"):
                 raise VfsAttestationError(f"el mod habilitado {superior!r} no existe en {mods_resolved}")
             roots_eclipsantes.append(root_superior)
     else:
@@ -690,7 +730,7 @@ def _construir_challenge(
         candidatos = tuple(reversed(enabled))
         # En la selección libre de canary, overwrite también tiene precedencia máxima
         # sobre cualquier mod normal (H1 - Fase 4).
-        roots_eclipsantes = [data_resolved / "overwrite"]
+        roots_eclipsantes = _roots_de_overwrite(data_resolved)
 
     higher_roots: list[pathlib.Path] = list(roots_eclipsantes)
 
@@ -715,7 +755,7 @@ def _construir_challenge(
     for mod_name in candidatos:
         safe_mod = safe_source if safe_source is not None else _validated_profile(mod_name)
         mod_root = mods_resolved / safe_mod
-        if not mod_root.is_dir():
+        if not _capa_propia(mod_root, etiqueta=f"el mod {mod_name!r}"):
             raise VfsAttestationError(f"el mod habilitado {mod_name!r} no existe en {mods_resolved}")
         for relative, source in _iter_mod_files(mod_root):
             if not _en_subarbol(relative, subarbol):
@@ -732,7 +772,7 @@ def _construir_challenge(
             fisico = data / relative
             if _inspeccionar_fisico_seguro(fisico, ausente_ok=True) is not None:
                 continue
-            if any((higher / relative).exists() for higher in higher_roots if higher.is_dir()):
+            if any(_ocupa_el_path(higher, relative) for higher in higher_roots):
                 continue
             sha256 = _sha256_file(source)
             return _challenge(mod_name, pathlib.PurePosixPath(*relative.parts), sha256)
@@ -761,7 +801,7 @@ def _construir_challenge(
     for mod_name in candidatos:
         safe_mod = safe_source if safe_source is not None else _validated_profile(mod_name)
         mod_root = mods_resolved / safe_mod
-        if not mod_root.is_dir():
+        if not _capa_propia(mod_root, etiqueta=f"el mod {mod_name!r}"):
             raise VfsAttestationError(f"el mod habilitado {mod_name!r} no existe en {mods_resolved}")
         for relative, source in _iter_mod_files(mod_root):
             if not _en_subarbol(relative, subarbol):
@@ -769,7 +809,7 @@ def _construir_challenge(
             fisico = data / relative
             if _inspeccionar_fisico_seguro(fisico, ausente_ok=True) is None:
                 continue
-            if any((higher / relative).exists() for higher in higher_roots if higher.is_dir()):
+            if any(_ocupa_el_path(higher, relative) for higher in higher_roots):
                 continue
             sha_fisico = _sha256_fisico_seguro(fisico)
             sha256 = _sha256_file(source)

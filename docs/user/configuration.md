@@ -27,10 +27,16 @@ extraído de esas secciones.
 | Grupo | Claves |
 |---|---|
 | Instalaciones | `mo2_root`, `skyrim_path`, `install_dir` |
-| Herramientas | `loot_exe`, `xedit_exe`, `pandora_exe`, `bodyslide_exe` |
+| Herramientas | `loot_exe`, `xedit_exe`, `pandora_exe`, `bodyslide_exe`, `wrye_bash_exe` |
 | LLM | `llm_provider`, `anthropic_model`, `deepseek_model`, `openai_model`, `ollama_model` |
 | Telegram | `telegram_chat_id` |
 | Estado | `first_run` |
+
+**Dónde se escriben.** Las claves de herramientas (`loot_exe`, `xedit_exe`, `pandora_exe`,
+`bodyslide_exe`, `wrye_bash_exe`) van en la **raíz** del TOML, antes de cualquier cabecera de
+sección. De la sección `[paths]` solo se leen `mo2_path` y `skyrim_path`
+(`sky_claw/config.py`); cualquier otra clave puesta ahí se descarta sin aviso y el escáner de la
+GUI no recibe la ruta.
 
 `llm_model` es una clave legacy: se copia en memoria al campo del proveedor
 activo cuando éste está vacío; el archivo no se reescribe por esa migración.

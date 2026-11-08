@@ -344,8 +344,21 @@ def decidir_testigo_de_preparacion(
     *,
     observado_ahora: TestigoPrevio | None,
     durable: _ObservacionDeTestigo | None,
+    verificar_contexto: bool = False,
+    contexto_ahora: str | None = None,
+    contexto_durable: str | None = None,
 ) -> DecisionDeTestigo:
     """Elige el testigo vigente de una fase 1, comparando con lo que ya había observado.
+
+    **Vigencia contextual (#866, H-1).** Con ``verificar_contexto=True`` el caso 3 sólo
+    conserva el testigo viejo si el contexto de entrada del perfil
+    (:func:`huella_de_contexto`) es el mismo con el que se guardó: si LOOT reordenó, o el
+    registro viene de un corte anterior que no guardaba huella (``contexto_durable=None``),
+    el parche construido pudo ser anterior al cambio y NO se afirma un build; se adopta lo
+    observado ahora como nueva época. Si el contexto de esta corrida no se pudo observar
+    (``contexto_ahora=None``) no hay base para decidir nada y el testigo durable se
+    conserva intacto, igual que en el caso 1. Con ``verificar_contexto=False`` (llamadores
+    puros) el comportamiento es el de PR D.
 
     Cuatro casos, y el tercero es el motivo de que esta función exista:
 
@@ -385,6 +398,14 @@ def decidir_testigo_de_preparacion(
             testigo=observado_ahora, persistir=True, construido_despues=False, origen=OrigenDelTestigo.NINGUNO
         )
 
+    if verificar_contexto and contexto_ahora is None:
+        return DecisionDeTestigo(
+            testigo=_como_testigo_previo(durable),
+            persistir=False,
+            construido_despues=False,
+            origen=OrigenDelTestigo.DURABLE,
+        )
+
     if _misma_identidad(observado_ahora, durable):
         return DecisionDeTestigo(
             testigo=observado_ahora, persistir=True, construido_despues=False, origen=OrigenDelTestigo.NINGUNO
@@ -393,6 +414,12 @@ def decidir_testigo_de_preparacion(
     construido = (not durable.existia and observado_ahora.existia) or (
         durable.existia and observado_ahora.existia and durable.sha256 != observado_ahora.sha256
     )
+    if construido and verificar_contexto and contexto_durable != contexto_ahora:
+        # El artefacto cambió, pero el contexto también: no se puede atribuir el cambio a un
+        # build de esta corrida. Nueva época con lo observado, sin afirmar un build.
+        return DecisionDeTestigo(
+            testigo=observado_ahora, persistir=True, construido_despues=False, origen=OrigenDelTestigo.NINGUNO
+        )
     if construido:
         return DecisionDeTestigo(
             testigo=_como_testigo_previo(durable),
@@ -550,6 +577,76 @@ def estado_en_plugins_txt(plugins_txt: pathlib.Path, nombre: str) -> EstadoEnPlu
         if activo:
             return EstadoEnPlugins.HABILITADO
     return EstadoEnPlugins.DESHABILITADO if encontrado else EstadoEnPlugins.AUSENTE
+
+
+#: Archivo de prioridad de mods del perfil, hermano del ``plugins.txt``. Única definición del
+#: nombre: ``WryeBashPipelineService._mods_habilitados`` lo importa de acá.
+NOMBRE_MODLIST = "modlist.txt"
+
+
+def _bytes_o_ausente(ruta: pathlib.Path) -> bytes | None:
+    """Contenido de *ruta* sin BOM y con ``\\r\\n`` normalizado; ``None`` si no existe.
+
+    Lanza ``OSError`` para cualquier otro fallo: "no pude leerlo" no es "no existe".
+    """
+    try:
+        crudo = ruta.read_bytes()
+    except FileNotFoundError:
+        return None
+    return crudo.removeprefix(_BOM_UTF8).replace(b"\r\n", b"\n")
+
+
+def huella_de_contexto(plugins_txt: pathlib.Path) -> str | None:
+    """SHA-256 del contexto de entrada del perfil de la etapa 6, o ``None`` si no es observable.
+
+    **Qué es.** El load order en el que se tomó (o se va a comparar) un testigo: los
+    ``plugins.txt`` (orden y activación de cada plugin) y ``modlist.txt`` (prioridad de los
+    mods) del perfil. Si cambia entre la fase 1 y la fase 2 —LOOT reordenó, el operador
+    agregó un mod—, un parche construido *antes* del cambio deja de ser evidencia de la
+    corrida actual. La vigencia es función de este contexto, nunca del reloj: el operador
+    puede tardar horas en Wrye Bash sin que eso invalide nada.
+
+    **Por qué excluye la entrada del Bashed Patch.** Al construirlo y tildarlo (paso 5 de
+    :data:`PASOS_ASISTIDOS`) ``plugins.txt`` incorpora la entrada del propio artefacto (``*`` + ``BASHED_PATCH_NAME``). Con esa
+    línea en el digest, el build legítimo invalidaría su propio testigo y la frescura
+    quedaría indemostrable justo en el caso feliz. Se compara sin distinguir mayúsculas
+    (misma regla que :func:`estado_en_plugins_txt`).
+
+    **Tres estados, no dos.** Un archivo ausente es una observación (``plugins.txt`` aún no
+    escrito, perfil sin ``modlist.txt``) y entra al digest con su propio marcador, distinto
+    de uno vacío. Un archivo que existe y no se puede leer devuelve ``None``: "no sé" nunca
+    colapsa en "el contexto no cambió".
+
+    Límite conocido: crear un mod desde ``overwrite`` agrega una línea a ``modlist.txt`` y
+    cambia la huella. La dirección del error es la segura (frescura no probada, se vuelve a
+    preparar), nunca un falso verde.
+    """
+    try:
+        plugins = _bytes_o_ausente(plugins_txt)
+        modlist = _bytes_o_ausente(plugins_txt.parent / NOMBRE_MODLIST)
+    except OSError:
+        return None
+
+    digest = hashlib.sha256()
+    digest.update(b"skyclaw/etapa6/contexto/v1\n")
+    if plugins is None:
+        digest.update(b"plugins:ausente\n")
+    else:
+        digest.update(b"plugins:presente\n")
+        objetivo = BASHED_PATCH_NAME.casefold()
+        for entrada, activo in parse_load_order_bytes(plugins):
+            nombre = entrada.strip()
+            if nombre.decode("utf-8", errors="replace").casefold() == objetivo:
+                continue
+            digest.update(b"+" if activo else b"-")
+            digest.update(nombre)
+            digest.update(b"\n")
+    if modlist is None:
+        digest.update(b"modlist:ausente\n")
+    else:
+        digest.update(b"modlist:presente\n")
+        digest.update(modlist)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
