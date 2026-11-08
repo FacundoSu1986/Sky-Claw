@@ -31,14 +31,17 @@ materializar nada, ni ejecutar probes runtime. Mide y falla cerrado.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
 import pathlib
 import stat
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from typing import NamedTuple
 
 from sky_claw.app.security.links import iter_archivos_propios, link_kind_and_identity_or_raise
+from sky_claw.local.mo2.ganadores import GanadoresError, _es_carpeta_propia, _exigir_nombre_de_mod
 
 logger = logging.getLogger("SkyClaw.ModEffectivity")
 
@@ -88,6 +91,25 @@ def _mismos_bytes(
     return _sha256_file(origen) == _sha256_file(espejo)
 
 
+@contextlib.contextmanager
+def _como_error_de_efectividad() -> Iterator[None]:
+    """Traduce el error de ``ganadores`` al de este gate: los callers capturan ``ModEffectivityError``, no ``GanadoresError``."""
+    try:
+        yield
+    except GanadoresError as exc:
+        raise ModEffectivityError(str(exc)) from exc
+
+
+def _capa_propia(raiz: pathlib.Path, *, etiqueta: str) -> bool:
+    """``True`` si *raiz* es una carpeta propia, ``False`` si no existe; un enlace o un no-directorio falla cerrado.
+
+    Es la validación de ``ganadores`` (misma fuente): ``is_dir()`` sigue enlaces y haría que el veredicto saliera de un árbol que
+    el overlay no entrega.
+    """
+    with _como_error_de_efectividad():
+        return _es_carpeta_propia(raiz, etiqueta=etiqueta)
+
+
 def _roots_eclipsantes(
     *,
     mod_name: str,
@@ -99,7 +121,9 @@ def _roots_eclipsantes(
 
     Sólo roots con prioridad estrictamente MAYOR que ``mod_name``. Un mod listado
     habilitado pero sin directorio es un perfil corrupto: falla cerrado en vez
-    de fingir que no eclipsa nada.
+    de fingir que no eclipsa nada. Cada capa es UNA carpeta propia de ``mods_dir``
+    (``overwrite``, de ``data_root``): un nombre que se escapa o un enlace
+    también es un perfil que no se puede afirmar, no una capa más (#807).
     """
     if enabled.count(mod_name) > 1:
         raise ModEffectivityError(
@@ -110,31 +134,66 @@ def _roots_eclipsantes(
     indice = enabled.index(mod_name)
     roots: list[tuple[str, pathlib.Path]] = []
     overwrite = data_root / "overwrite"
-    if overwrite.is_dir():
+    if _capa_propia(overwrite, etiqueta="overwrite"):
         roots.append(("overwrite", overwrite))
     for superior in reversed(enabled[indice + 1 :]):
+        with _como_error_de_efectividad():
+            _exigir_nombre_de_mod(superior)
         root_superior = mods_dir / superior
-        if not root_superior.is_dir():
+        if not _capa_propia(root_superior, etiqueta=f"el mod {superior!r}"):
             raise ModEffectivityError(f"el mod habilitado {superior!r} no existe en {mods_dir}")
         roots.append((f"mod {superior!r}", root_superior))
     return roots
 
 
+class _Eclipsante(NamedTuple):
+    """La capa de mayor prioridad que ocupa un path del artifact y, si lo hay, el enlace por el que lo ocupa."""
+
+    etiqueta: str
+    root: pathlib.Path
+    #: Primer componente del path, dentro de la capa, que es un enlace (symlink/junction); ``None`` si no pasa por uno.
+    enlace: pathlib.Path | None
+
+
+def _ocupante_de_la_capa(root: pathlib.Path, relativo: pathlib.Path) -> tuple[bool, pathlib.Path | None]:
+    """``(ocupa, enlace)``: recorre *relativo* dentro de *root* componente por componente con ``lstat``, sin seguir enlaces.
+
+    ``Path.exists()`` sigue enlaces en TODOS los componentes: un directorio intermedio que es un symlink hacía que la capa
+    "contuviera" el path con lo que hay del otro lado, un árbol que el overlay no entrega (#875). El primer enlace corta el
+    recorrido: es el ocupante, y no se mira a dónde apunta (ni siquiera si apunta a algo que exista).
+    """
+    actual = root
+    partes = relativo.parts
+    for indice, parte in enumerate(partes):
+        actual = actual / parte
+        tipo, identidad = link_kind_and_identity_or_raise(actual)
+        if identidad is None:
+            return False, None
+        if tipo is not None:
+            return True, actual
+        if indice < len(partes) - 1 and not stat.S_ISDIR(identidad.st_mode):
+            # Un archivo donde la capa necesitaría un directorio: el path no está en la capa (lo que ``exists()`` absorbía).
+            return False, None
+    return True, None
+
+
 def _ganador_eclipsante(
     data_relativo: pathlib.PurePosixPath,
     roots: Sequence[tuple[str, pathlib.Path]],
-) -> tuple[str, pathlib.Path] | None:
+) -> _Eclipsante | None:
     """Primer root (prioridad más alta) que contiene el path; ``None`` si ninguno.
 
     Un eclipsado que NO es archivo regular propio (directorio, symlink,
     junction) también "contiene" el path: devuelve ese root y el caller lo
     clasifica como incompatibilidad, que es lo que es — el overlay no va a
-    entregar el byte del artifact por ese path.
+    entregar el byte del artifact por ese path. Si el path pasa por un enlace
+    DENTRO de la capa, ``enlace`` lo nombra y el caller no compara bytes.
     """
     relativo = pathlib.Path(*data_relativo.parts)
     for etiqueta, root in roots:
-        if (root / relativo).exists():
-            return etiqueta, root
+        ocupa, enlace = _ocupante_de_la_capa(root, relativo)
+        if ocupa:
+            return _Eclipsante(etiqueta, root, enlace)
     return None
 
 
@@ -188,7 +247,15 @@ def verificar_artifact_efectivo(
                 # Sin eclipsador el ganador es el propio mod: MO2 mapea los mods
                 # por encima del game data, y los mods de prioridad menor pierden.
                 continue
-            etiqueta, root = ganador
+            etiqueta, root, enlace = ganador
+            if enlace is not None:
+                # El path atraviesa un enlace dentro de la capa: lo que hay del otro lado no es contenido de la capa (#875),
+                # así que no se comparan bytes: incompatibilidad, sin preguntar a dónde apunta.
+                incompatibles.append(
+                    f"{data_relativo.as_posix()} (eclipsado por {etiqueta} a través del enlace "
+                    f"{enlace.relative_to(root).as_posix()!r})"
+                )
+                continue
             espejo = root / pathlib.Path(*data_relativo.parts)
             tipo_espejo, identidad_espejo = link_kind_and_identity_or_raise(espejo)
             if identidad_espejo is None or tipo_espejo is not None or not stat.S_ISREG(identidad_espejo.st_mode):
