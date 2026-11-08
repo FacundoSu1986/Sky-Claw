@@ -26,7 +26,7 @@
 
 Gran parte de los «no se nota» no es un problema de amplitud. Comprobá, en este orden:
 
-1. `cli elegibilidad --mod "<mod>" --mods <carpeta mods> --data-root <carpeta MO2>` da `SI` para esa textura.
+1. `.venv\Scripts\python -m sky_claw.local.native_parallax.cli elegibilidad --mod "<mod>" --mods <carpeta mods> --data-root <carpeta MO2> --perfil "<perfil con el que se juega>"` da `SI` para esa textura. Sin `--perfil` usa `Default`, que puede no ser el perfil del juego. Si da `NO_VERIFICADO` (por ejemplo, porque la malla está dentro de un `.bsa`, que la herramienta no lee), **no concluyas que no se usa**: seguí con la comprobación manual de la guía de prueba (paso 4: consola, xEdit y NifSkope).
 2. El `AutoParallax.ini` que gana en el perfil tiene `bAutoEnableParallax = true`. Apagado, ninguna salida se usa.
 3. El objeto que muestra la textura es **Static, Movable Static o Container** (probado con la DLL 1.0.6.0 en una máquina). En puertas y activadores no hay relieve aunque la elegibilidad diga `SI`; las mallas con relieve de fábrica también las apaga el plugin.
 4. En la pestaña «Datos» de MO2, la columna «Mod» del `*_p.dds` dice «Sky-Claw - Native Parallax Output». Si otro mod tapa la salida (o trae su propio `_p`), lo que se ve es ese.
@@ -38,7 +38,7 @@ Gran parte de los «no se nota» no es un problema de amplitud. Comprobá, en es
 | El operador dice… | Probá | Qué esperar | Evidencia |
 |---|---|---|---|
 | «Se ve plano; quiero más relieve» (y los controles de arriba están bien) | `--normalizacion percentiles --percentil-bajo 2 --percentil-alto 98` | Estira el rango central: más desviación; un pequeño porcentaje de píxeles se satura (se recorta). | **Medido en una sola textura** (ADR 0014, NP-V0d, 2026-10-24): desviación 33,8 → 55,8 sobre 255, 4,3 % saturado; el propietario la vio «más» que con la normalización por defecto. Una persona; no probado en otras texturas. |
-| «Se ve puntiagudo / grumoso» | Primero, no generar esa textura o dejar el mapa de otro mod. Si querés bajar amplitud: `--centrado media`. | Lleva la media a 0,5 y baja la amplitud entre 0,5 y 1 veces (casi nada si la textura ya estaba centrada). | En la celda de prueba el operador prefirió el centrado en 2 de 3 pares. En `rottingwood01` (la «grumosa») la amplitud baja solo ≈7 %: **no la arregla**. En el juego real la textura grumosa iba sin centrar, pero la causa no se aisló. **No hay un control para bajar mucho la amplitud.** |
+| «Se ve puntiagudo / grumoso» | Primero, dejar de usar la salida de esa textura (no basta con no volver a generarla: ver «Cómo aplicar un cambio», paso 2) o dejar el mapa de otro mod. Si querés bajar amplitud: `--centrado media`. | Lleva la media a 0,5 y baja la amplitud entre 0,5 y 1 veces (casi nada si la textura ya estaba centrada). | En la celda de prueba el operador prefirió el centrado en 2 de 3 pares. En `rottingwood01` (la «grumosa») la amplitud baja solo ≈7 %: **no la arregla**. En el juego real la textura grumosa iba sin centrar, pero la causa no se aisló. **No hay un control para bajar mucho la amplitud.** |
 | «Quiero más profundidad que la que da percentiles» | No hay otro control en SkyClaw. | — | El shader del juego (Community Shaders / Auto Parallax) puede tener su propia escala; **no está verificado** si la trae. |
 
 Lo que **no** sirve para cambiar la profundidad: `--escala-x` y `--escala-y`. Una escala igual en los dos ejes no cambia la amplitud (la normalización la reescala); solo el signo importa (`-1` y `-1` invierte el relieve).
@@ -48,10 +48,10 @@ La desviación sola **no predice lo que se ve** (ADR 0014, NP-V0d): no prometas 
 ## Cómo aplicar un cambio sin romper nada
 
 1. **Respaldá** el mod de salida («Sky-Claw - Native Parallax Output») con huellas SHA-256 antes de regenerar. Para deshacer: restaurar el respaldo o desactivar el mod.
-2. **Un cambio de parámetro reemplaza la salida de esa textura** (cambia su clave de caché); lo que no cambió no se reescribe.
+2. **Un cambio de parámetro reemplaza la salida de esa textura** (cambia su clave de caché) **solo si la textura se vuelve a escribir**. Lo que no cambió no se reescribe, y una textura que sale `SIN_CONTENIDO` (la altura queda bajo el piso de contenido y no se escribe, aunque pidas `--incluir-revision`) o que no está en la carpeta de entrada **conserva su salida anterior**. Antes de comparar, mirá en el informe que el `estado` sea `ESCRITA` y revisá el `efecto`: `REEMPLAZADA` o `PUBLICADA` es lo esperado; `OMITIDA` significa que la salida estaba vigente y no se reescribió, y `EN_REVISION` que no se escribió nada. Para **dejar de usar** una salida que no querés (por ejemplo, una textura «grumosa» ya generada): restaurá el respaldo, desactivá el mod de salida, o usá `--retirar-no-incluidas` con una carpeta de entrada que **no** la incluya (esa opción borra las salidas nuestras de **todas** las texturas que no estén en esa carpeta).
 3. **Para aplicar valores distintos a texturas distintas**, usá carpetas de entrada separadas (cada una con su estructura `textures\...`), el mismo `--mods`, y **nunca** `--retirar-no-incluidas` salvo que quieras borrar el resto. Así se hizo en la prueba del juego real (dos corridas sobre el mismo mod de salida).
 4. Generá con `--incluir-revision` y leé el informe (`informe_parallax.json`): `estado`, `motivos` y `amplitud`. Un `SIN_CONTENIDO` indica una textura casi plana.
-5. Confirmá en «Datos» y mirá en el juego, en el mismo lugar y con la misma luz, con y sin el mod. **El operador decide.**
+5. Confirmá en «Datos» y mirá en el juego, en el mismo lugar y con la misma luz, con y sin el mod. Si otro mod ya trae un `_p` para esa textura, «sin el mod» compara contra ese mapa, y dos mapas de relieve parecidos no se distinguen a ojo: usá un **mapa plano como control** (guía de prueba, paso 4, punto 3). **El operador decide.**
 
 ## Reglas para el agente
 
