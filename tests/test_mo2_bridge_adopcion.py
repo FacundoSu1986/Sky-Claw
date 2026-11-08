@@ -70,6 +70,7 @@ class _ApiFalsa:
         self.fallar_abrir: set[int] = set()
         self.desaparece_al_abrir: set[int] = set()
         self.fallar_asignar: set[int] = set()
+        self.fallar_cerrar: set[int] = set()
         self.muere_al_asignar: set[int] = set()
         self.no_muere: set[int] = set()
         self.al_asignar: dict[int, Callable[[], None]] = {}
@@ -132,6 +133,8 @@ class _ApiFalsa:
 
     def close(self, handle: int) -> None:
         self.cerrados.append(handle)
+        if self._pid(handle) in self.fallar_cerrar:
+            raise BridgeCommandError(f"CloseHandle({self._pid(handle)}) falló")
 
 
 def _adoptar(api: _ApiFalsa, **kwargs: int) -> int:
@@ -208,6 +211,23 @@ def test_un_ppid_coincidente_con_creacion_anterior_a_la_del_padre_no_es_un_hijo(
     assert _adoptar(api) == 0
     assert api.asignados == []
     assert 1150 in api.cerrados, "se abrió para leer su creación y el handle no puede quedar abierto"
+
+
+def test_si_falla_cerrar_el_handle_de_un_proceso_ajeno_no_se_lo_cuenta_como_descendiente_vivo() -> None:
+    """Hallazgo de PR-Agent sobre la corrección del P1 (verificado): el proceso es AJENO, no un descendiente.
+
+    Que ``CloseHandle`` falle sobre el handle que se abrió solo para leer su creación puede rechazar el launch (no se
+    puede dar por limpia la adopción), pero NO es «un descendiente vivo fuera del Job»: reportarlo como terminación
+    pondría la instancia en cuarentena por un proceso que ni siquiera es del worker.
+    """
+    api = _ApiFalsa()
+    api.hijo(150, PID_RAIZ, CREACION_RAIZ - 10)
+    api.fallar_cerrar.add(150)
+
+    with pytest.raises(BridgeCommandError, match="150") as salida:
+        _adoptar(api)
+
+    assert not isinstance(salida.value, BridgeTerminationError)
 
 
 def test_un_hijo_que_desaparece_entre_la_enumeracion_y_la_apertura_no_es_un_fallo() -> None:

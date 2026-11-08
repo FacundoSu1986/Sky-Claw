@@ -234,8 +234,10 @@ def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _
                 except BridgeCommandError as exc:
                     detalle = str(exc)
                     # Sigue vivo salvo que terminarlo funcione: sin handle (no se pudo abrir) o con ``terminate`` fallido
-                    # queda un proceso fuera del Job que nada de lo que hace ``launch`` alcanza.
-                    sigue_vivo = True
+                    # queda un proceso fuera del Job que nada de lo que hace ``launch`` alcanza. Un PID ya identificado
+                    # como AJENO (PPID coincidente de un proceso viejo) no es un descendiente: que falle cerrar su handle
+                    # puede rechazar el launch, pero no es un sobreviviente que ponga la instancia en cuarentena.
+                    sigue_vivo = pid not in ajenos
                     if handle is not None and pid in retenidos:
                         try:
                             api.terminate(handle)
