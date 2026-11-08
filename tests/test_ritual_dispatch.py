@@ -48,7 +48,8 @@ class _FakeSupervisor:
 
 # ── Ritual → dispatcher tool mapping ─────────────────────────────────────────────
 def test_ritual_tool_map_covers_the_wired_rituals() -> None:
-    # Los 5 Rituales del Panel ya tienen estrategia HITL-gated en el dispatcher.
+    # Los 5 Rituales del Panel ya tienen estrategia registrada en el dispatcher
+    # (4 destructivos con gate HITL + wrye_bash asistido sin gate, ADR 0016 §7).
     assert RITUAL_TOOL_MAP == {
         "loot": "execute_loot_sorting",
         "wrye_bash": "generate_bashed_patch",
