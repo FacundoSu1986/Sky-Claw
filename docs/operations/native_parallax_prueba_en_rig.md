@@ -2,7 +2,7 @@
 
 > **Audiencia:** operadores (no hace falta ser técnico).
 >
-> **Estado:** experimental. El gate de calidad no tiene umbrales validados: **todo** lo que se genera queda «en revisión»
+> **Estado:** **beta** (ver [native_parallax_beta.md](native_parallax_beta.md): qué significa y cómo ajustar la profundidad). El gate de calidad no tiene umbrales validados: **todo** lo que se genera queda «en revisión»
 > y la herramienta lo escribe solo si se lo pedís (`--incluir-revision`). Esta prueba existe justamente para juntar los datos
 > con los que se calibran esos umbrales.
 >

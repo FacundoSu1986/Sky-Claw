@@ -4,6 +4,10 @@ Aplican las reglas raíz de [`../../../AGENTS.md`](../../../AGENTS.md) y, sobre 
 [`CLEAN_ROOM.md`](../../../CLEAN_ROOM.md)
 ([ADR 0013](../../../docs/adr/0013-clean-room-native-parallax.md)).
 
+**Agentes que OPERAN el generador (no que lo modifican):** el estado es **beta** y qué ajustar si el operador pide más
+o menos profundidad está en [`docs/operations/native_parallax_beta.md`](../../../docs/operations/native_parallax_beta.md).
+Hoy no hay un parámetro directo de profundidad: leé esa guía antes de proponer valores.
+
 ## Fuentes obligatorias
 
 La política clean-room, `docs/design/research/native-parallax/` y
