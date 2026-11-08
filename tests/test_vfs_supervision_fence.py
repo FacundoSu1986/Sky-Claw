@@ -7,23 +7,28 @@ Job (Windows no adopta hijos previos): sobreviven a ``TerminateJobObject`` y al
 cierre del Job, escribiendo en el output mientras el daemon cree que el árbol
 terminó.
 
-El protocolo seguro sería: *el worker no despacha ni siquiera la attestation
-(que crea el proceso nieto) hasta que el daemon le confirma que el bridge ya lo
-asignó al Job*. Este módulo mide, en las dos mitades, qué se cumple HOY:
+El protocolo seguro: *el worker no despacha ni siquiera la attestation (que crea
+el proceso nieto) hasta que el daemon le confirma que el bridge ya contuvo a todo
+el árbol en el Job*. Este módulo mide, en las dos mitades, que se cumple:
 
-* **Mitad del bridge (verde):** ``assign`` ocurre antes de ``launch_ack`` y un
-  ``assign`` fallido no emite ``launch_ack``. Es la premisa que haría válido a
-  ``launch_ack`` como señal de supervisión.
-* **Mitad del worker/broker (hueco):** no existe ningún mensaje de supervisión.
-  El ``hello_ack`` se envía al recibir el ``hello`` del worker, sin esperar al
-  bridge, y el worker pasa de ahí directo a la attestation y al despacho. Con un
-  bridge que NO confirmó la supervisión, el worker despacha igual.
+* **Mitad del bridge:** el Job nace con el nombre que pidió el broker, y ``assign``
+  y la adopción de los descendientes ocurren antes de ``launch_ack``. Un fallo en
+  cualquiera de las dos no emite ``launch_ack`` y termina al worker. Es la premisa
+  que hace válido a ``launch_ack`` como señal de supervisión.
+* **Mitad del worker/broker:** el broker solo autoriza al worker tras un
+  ``launch_ack`` del bridge para ESE job. Sin él, el worker sigue esperando: no
+  crea el nieto de la attestation ni despacha la herramienta. Con él, lo hace, en
+  ese orden.
 
-La primera prueba del hueco es una **caracterización** (verde: el hueco existe y
-queda registrado). La segunda es la **propiedad deseada** marcada
-``xfail(strict=True)``: cuando se implemente el fence, ambas deben cambiarse en
-el mismo PR —la caracterización pasa a rojo y el ``xfail`` estricto a XPASS—, de
-modo que el fence no puede aterrizar sin tocar su propia evidencia.
+Historia: este archivo nació en el PR #854 como medición de un HUECO. La mitad del
+worker era una **caracterización** (el worker despachaba sin confirmación) más la
+**propiedad deseada** marcada ``xfail(strict=True)``, y el diseño exigía que el
+fence no aterrizara sin invertir su propia evidencia. Aterrizó en ``main`` (fence
+#856, Job con nombre e identidad #860/#872, adopción de descendientes #877) y, al
+reconciliar #854 con ``main``, se invirtió: la caracterización pasó a regresión de
+la barrera y el ``xfail`` se quitó. Que estas propiedades se cumplan con dobles NO
+levanta el HOLD del backend brokered: eso exige evidencia sobre el binario
+congelado y el visto bueno del auditor independiente (ver el informe de E3-R3).
 
 NO se ejecuta ningún TexGen/DynDOLOD real ni se toca un MO2 real: el worker usa un
 handler espía y un probe de nieto espía, y el "bridge" es un cliente loopback.
@@ -37,6 +42,7 @@ import contextlib
 import json
 import pathlib
 import threading
+from dataclasses import dataclass
 
 import pytest
 
@@ -44,13 +50,18 @@ from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import (
     PROTOCOL_VERSION,
     BridgeCommandError,
     BridgeLaunchController,
+    JobObject,
 )
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker
-from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob
+from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob, VfsJobResult
 from sky_claw.local.mo2.vfs_ipc import read_authenticated_message, write_authenticated_message
+from sky_claw.local.mo2.vfs_job_identity import PruebaDeJob
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest
 from sky_claw.local.mo2.vfs_worker import VfsToolExecution, run_worker_session
+
+#: Formato que el bridge acepta para ``job_object`` (``Local\SkyClawVfs-<32 hex>``); el broker lo genera en producción.
+_NOMBRE_DEL_JOB = "Local\\SkyClawVfs-" + "ab" * 16
 
 # ---------------------------------------------------------------------------
 # Mitad A — el bridge: assign ANTES de launch_ack
@@ -76,16 +87,28 @@ class _OrganizerConLinea:
 
 
 class _JobConLinea:
-    def __init__(self, linea: list[str], *, fallar_asignacion: bool = False) -> None:
+    """Doble del Job: anota en ``linea`` cada paso del bridge y puede fallar en la asignación o en la adopción."""
+
+    def __init__(self, linea: list[str], *, fallar_en: str | None = None) -> None:
         self._linea = linea
-        self._fallar = fallar_asignacion
+        self._fallar_en = fallar_en
+        self.nombre: str | None = None
         self.terminado = False
         self.cerrado = False
 
     def assign(self, process_handle: int) -> None:
-        if self._fallar:
+        if self._fallar_en == "assign":
             raise BridgeCommandError("AssignProcessToJobObject falló: simulado")
         self._linea.append("assign")
+
+    def adopt_descendants(self, process_handle: int) -> int:
+        if self._fallar_en == "adopt":
+            raise BridgeCommandError("no se pudo adoptar a un descendiente: simulado")
+        self._linea.append("adopt")
+        return 0
+
+    def active_processes(self) -> int:
+        return 0  # el Job queda vacío al salir el worker: el monitor confirma y emite ``worker_exit`` sin terminar nada
 
     def terminate(self) -> None:
         self.terminado = True
@@ -94,11 +117,21 @@ class _JobConLinea:
         self.cerrado = True
 
 
+def test_el_doble_del_job_implementa_todo_el_protocolo_del_bridge() -> None:
+    """Un método nuevo en ``JobObject`` rompe ESTE test, en vez de dejar un doble viejo que ya no prueba nada."""
+    # Arrange / Act
+    protocolo = {nombre for nombre in vars(JobObject) if not nombre.startswith("_")}
+
+    # Assert: el protocolo congelado por igualdad literal, y el doble lo cubre entero.
+    assert protocolo == {"assign", "adopt_descendants", "active_processes", "terminate", "close"}
+    assert protocolo <= {nombre for nombre in dir(_JobConLinea) if not nombre.startswith("_")}
+
+
 def _controlador(
     tmp_path: pathlib.Path,
     linea: list[str],
     *,
-    fallar_asignacion: bool,
+    fallar_en: str | None = None,
 ) -> tuple[BridgeLaunchController, _OrganizerConLinea, _JobConLinea, dict[str, object]]:
     jobs = tmp_path / "jobs"
     jobs.mkdir()
@@ -109,7 +142,14 @@ def _controlador(
     descriptor = tmp_path / "descriptor.json"
     descriptor.write_text("{}", encoding="utf-8")
     organizer = _OrganizerConLinea(linea)
-    job = _JobConLinea(linea, fallar_asignacion=fallar_asignacion)
+    job = _JobConLinea(linea, fallar_en=fallar_en)
+
+    def crear_job(nombre: str) -> _JobConLinea:
+        # El Job nace ANTES que el proceso y con el nombre que pidió el broker (el worker lo abre por ese nombre).
+        linea.append("job")
+        job.nombre = nombre
+        return job
+
     controlador = BridgeLaunchController(
         organizer=organizer,
         worker_executable=worker,
@@ -117,7 +157,7 @@ def _controlador(
         descriptor_path=descriptor,
         jobs_root=jobs,
         send_event=lambda evento: linea.append(str(evento.get("type") or evento.get("event"))),
-        job_factory=lambda: job,
+        job_factory=crear_job,
         process_waiter=lambda handle: organizer.waitForApplication(handle, False),
     )
     mensaje: dict[str, object] = {
@@ -127,31 +167,43 @@ def _controlador(
         "profile": "Default",
         "manifest_path": str(manifiesto),
         "overwrite_mod": None,
+        "job_object": _NOMBRE_DEL_JOB,
     }
     return controlador, organizer, job, mensaje
 
 
-def test_el_bridge_asigna_al_job_object_antes_de_emitir_launch_ack(tmp_path: pathlib.Path) -> None:
+def test_el_bridge_asigna_y_adopta_en_el_job_object_antes_de_emitir_launch_ack(tmp_path: pathlib.Path) -> None:
     # Arrange
     linea: list[str] = []
-    controlador, organizer, _job, mensaje = _controlador(tmp_path, linea, fallar_asignacion=False)
+    controlador, organizer, job, mensaje = _controlador(tmp_path, linea)
 
     # Act
     controlador.launch(mensaje)
     organizer.liberar.set()
     controlador.wait_for_monitors(timeout=1)
 
-    # Assert: el worker ya CORRÍA al asignarse (ventana inherente), y el ack va DESPUÉS del assign.
-    assert linea[:3] == ["startApplication", "assign", "launch_ack"]
+    # Assert: el Job nace primero con el nombre pedido; el worker ya CORRÍA al asignarse (ventana inherente) y el ack
+    # va DESPUÉS de la asignación Y de la adopción de los descendientes que hubieran nacido antes.
+    assert linea[:5] == ["job", "startApplication", "assign", "adopt", "launch_ack"]
+    assert job.nombre == _NOMBRE_DEL_JOB
 
 
-def test_si_la_asignacion_al_job_falla_no_hay_launch_ack_y_se_termina_al_worker(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize(
+    ("fallo", "texto_del_error"),
+    [
+        ("assign", "AssignProcessToJobObject"),
+        ("adopt", "adoptar a un descendiente"),
+    ],
+)
+def test_si_la_contencion_en_el_job_falla_no_hay_launch_ack_y_se_termina_al_worker(
+    tmp_path: pathlib.Path, fallo: str, texto_del_error: str
+) -> None:
     # Arrange
     linea: list[str] = []
-    controlador, organizer, job, mensaje = _controlador(tmp_path, linea, fallar_asignacion=True)
+    controlador, organizer, job, mensaje = _controlador(tmp_path, linea, fallar_en=fallo)
 
     # Act
-    with pytest.raises(BridgeCommandError, match="AssignProcessToJobObject"):
+    with pytest.raises(BridgeCommandError, match=texto_del_error):
         controlador.launch(mensaje)
 
     # Assert: ningún ack de supervisión, y el worker sin supervisar se termina y se espera.
@@ -198,18 +250,34 @@ def _manifiesto(tmp_path: pathlib.Path) -> VfsWorkerManifest:
     )
 
 
-async def _observar_despacho_sin_confirmacion_de_supervision(tmp_path: pathlib.Path, *, ventana: float) -> list[str]:
-    """Lanza un job contra el broker real con un bridge que RETIENE la confirmación.
+@dataclass(frozen=True, slots=True)
+class _Observacion:
+    """Qué hizo el worker REAL frente a un bridge que retiene (o da) la confirmación de supervisión."""
 
-    El "bridge" completa el handshake y recibe ``launch_worker``, pero jamás envía
+    #: Lo que hizo durante la ventana SIN ``launch_ack``: ``"probe"`` = el proceso NIETO de la attestation,
+    #: ``"handler"`` = el despacho de la herramienta.
+    sin_ack: tuple[str, ...]
+    #: ¿El worker seguía vivo esperando al terminar la ventana? Sin esto, "no despachó" no distingue una barrera
+    #: que retiene de un worker que cayó por otra causa (lo que ocultaba el ``xfail`` viejo).
+    esperando: bool
+    #: Lo que había hecho tras el ``launch_ack`` (``None`` si no se confirmó).
+    con_ack: tuple[str, ...] | None
+    #: ``True`` si, tras el ``launch_ack``, la sesión del worker terminó con éxito (``None`` si no se confirmó).
+    exito: bool | None
+
+
+async def _observar_al_worker_ante_la_confirmacion_de_supervision(
+    tmp_path: pathlib.Path, *, ventana: float, confirmar: bool
+) -> _Observacion:
+    """Lanza un job contra el broker real con un bridge que RETIENE la confirmación durante ``ventana`` segundos.
+
+    El "bridge" completa el handshake y recibe ``launch_worker``, pero no envía
     ``launch_ack``: es exactamente el estado de la ventana ``startApplication`` →
-    ``AssignProcessToJobObject``. Devuelve, en orden, lo que el worker hizo durante
-    ``ventana`` segundos: ``"probe"`` es la creación del proceso NIETO de la
-    attestation y ``"handler"`` el despacho de la herramienta.
+    ``AssignProcessToJobObject`` → adopción. Con ``confirmar=True`` envía después el
+    ``launch_ack`` (control positivo: la barrera es ese mensaje y no otra cosa).
     """
     manifiesto = _manifiesto(tmp_path)
     observado: list[str] = []
-    despachado = asyncio.Event()
 
     async def probe_espia(_ruta: pathlib.Path, sha256: str, _timeout: float) -> str:
         observado.append("probe")
@@ -217,7 +285,6 @@ async def _observar_despacho_sin_confirmacion_de_supervision(tmp_path: pathlib.P
 
     async def handler_espia(_manifiesto: VfsWorkerManifest) -> VfsToolExecution:
         observado.append("handler")
-        despachado.set()
         return VfsToolExecution.ok()
 
     broker = VfsExecutionBroker(
@@ -231,7 +298,7 @@ async def _observar_despacho_sin_confirmacion_de_supervision(tmp_path: pathlib.P
     secreto = base64.urlsafe_b64decode(descriptor["token"])
     lector_bridge, escritor_bridge = await asyncio.open_connection(descriptor["host"], descriptor["port"])
     pendiente: asyncio.Task[object] | None = None
-    worker: asyncio.Task[object] | None = None
+    worker: asyncio.Task[VfsJobResult | None] | None = None
     try:
         await write_authenticated_message(
             escritor_bridge,
@@ -256,19 +323,41 @@ async def _observar_despacho_sin_confirmacion_de_supervision(tmp_path: pathlib.P
         )
         lanzamiento = await read_authenticated_message(lector_bridge, secreto)
         assert lanzamiento["type"] == "launch_worker"
-        # El worker nace y el bridge NO confirma supervisión (no hay launch_ack).
+        # El worker nace ya verificado en el Job que pidió el broker, y el bridge NO confirma supervisión (no hay
+        # launch_ack): es la ventana en la que el worker YA corre pero el árbol aún no está contenido.
+        nombre_del_job = str(lanzamiento["job_object"])
         worker = asyncio.create_task(
             run_worker_session(
                 manifest_path=pathlib.Path(str(lanzamiento["manifest_path"])),
                 descriptor_path=broker.descriptor_path,
                 expected_job_id=manifiesto.job.job_id,
+                job_identity=PruebaDeJob(nombre=nombre_del_job, pid=1234, procesos_totales=2, procesos_activos=2),
                 handlers={"health": handler_espia},
                 grandchild_probe=probe_espia,
             )
         )
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(despachado.wait(), timeout=ventana)
-        return list(observado)
+        await asyncio.sleep(ventana)
+        sin_ack = tuple(observado)
+        esperando = not worker.done()
+        if not confirmar:
+            return _Observacion(sin_ack=sin_ack, esperando=esperando, con_ack=None, exito=None)
+        await write_authenticated_message(
+            escritor_bridge,
+            {
+                "protocol_version": VFS_PROTOCOL_VERSION,
+                "type": "launch_ack",
+                "job_id": manifiesto.job.job_id,
+                "job_object": nombre_del_job,
+            },
+            secreto,
+        )
+        resultado = await asyncio.wait_for(worker, timeout=6.0)
+        return _Observacion(
+            sin_ack=sin_ack,
+            esperando=esperando,
+            con_ack=tuple(observado),
+            exito=resultado is not None and resultado.success is True,
+        )
     finally:
         # Cierre determinista de lo que haya quedado vivo (despachó o quedó esperando).
         if worker is not None:
@@ -301,35 +390,30 @@ async def _observar_despacho_sin_confirmacion_de_supervision(tmp_path: pathlib.P
         await broker.close()
 
 
-async def test_caracterizacion_hoy_el_worker_despacha_sin_que_el_bridge_confirme_la_supervision(
+async def test_regresion_de_la_barrera_el_worker_no_despacha_sin_que_el_bridge_confirme_la_supervision(
     tmp_path: pathlib.Path,
 ) -> None:
-    """HUECO REGISTRADO (verde = el hueco existe): probe del nieto y herramienta corren sin ``launch_ack``.
+    """BARRERA (regresión del hueco que este archivo caracterizaba en #854): sin ``launch_ack`` no hay nieto ni despacho.
 
-    Si este test pasa a rojo es porque se implementó el fence: hay que invertirlo
-    junto con el ``xfail`` estricto de abajo, no borrarlo.
+    Antes de la barrera este test afirmaba lo contrario (``["probe", "handler"]``). Si vuelve a ponerse rojo es que
+    alguien quitó la barrera del broker/worker: se arregla el código, no el test.
     """
-    # Arrange / Act
-    observado = await _observar_despacho_sin_confirmacion_de_supervision(tmp_path, ventana=5.0)
+    # Arrange / Act: el bridge retiene la confirmación durante toda la ventana.
+    observacion = await _observar_al_worker_ante_la_confirmacion_de_supervision(tmp_path, ventana=1.0, confirmar=False)
 
-    # Assert: el nieto (un descendiente real en producción) y la herramienta ya corrieron.
-    assert observado == ["probe", "handler"]
+    # Assert: ni el nieto (un descendiente real en producción) ni la herramienta corrieron, y el worker sigue
+    # esperando (no cayó por otra causa: sin esto la ausencia de despacho no probaría la barrera).
+    assert observacion.sin_ack == (), f"el worker creó descendientes/despachó sin supervisión: {observacion.sin_ack}"
+    assert observacion.esperando, "el worker terminó solo durante la ventana: la barrera no se está ejerciendo"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "HOLD de seguridad (E3-R3): el protocolo no tiene mensaje de supervisión; el worker crea el nieto de "
-        "la attestation y despacha la herramienta sin que el bridge haya confirmado la asignación al Job "
-        "Object. Fence mínimo propuesto en docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md"
-    ),
-)
-async def test_propiedad_deseada_el_worker_no_crea_descendientes_hasta_estar_supervisado(
-    tmp_path: pathlib.Path,
-) -> None:
-    """La propiedad que el ADR 0007 da por sentada ("worker y descendientes quedan contenidos")."""
-    # Arrange / Act: ventana corta; con el fence el worker queda bloqueado esperando la confirmación.
-    observado = await _observar_despacho_sin_confirmacion_de_supervision(tmp_path, ventana=0.5)
+async def test_propiedad_el_worker_no_crea_descendientes_hasta_estar_supervisado(tmp_path: pathlib.Path) -> None:
+    """La propiedad que el ADR 0007 da por sentada ("worker y descendientes quedan contenidos"), con control positivo."""
+    # Arrange / Act: ventana sin confirmación y, a continuación, el ``launch_ack`` del bridge.
+    observacion = await _observar_al_worker_ante_la_confirmacion_de_supervision(tmp_path, ventana=0.5, confirmar=True)
 
-    # Assert: sin confirmación de supervisión no hay probe de nieto ni despacho.
-    assert observado == [], f"el worker creó descendientes/despachó sin supervisión confirmada: {observado}"
+    # Assert: nada antes del ack; el nieto y la herramienta, en ese orden, DESPUÉS (la barrera es ese mensaje).
+    assert observacion.sin_ack == ()
+    assert observacion.esperando
+    assert observacion.con_ack == ("probe", "handler")
+    assert observacion.exito is True
