@@ -36,6 +36,7 @@ from sky_claw.local.mo2.vfs_attestation import (
     build_attestation_challenge,
     build_attestation_challenge_for_source,
     read_enabled_mods,
+    verify_vfs_attestation,
 )
 from sky_claw.local.native_parallax.diagnostico_perfil import PerfilError, cargar_perfil
 from sky_claw.local.tools.artifact_digest import digest_arbol
@@ -214,6 +215,77 @@ def test_mod_effectivity_sigue_rechazando_un_mod_realmente_no_habilitado(inst: I
             data_root=inst.data_root,
             enabled=_VALIDO,
         )
+
+
+# ---------------------------------------------------------------------------
+# 2b. P2: la unicidad es del PERFIL, no sólo del mod solicitado
+# ---------------------------------------------------------------------------
+
+#: (perfil inyectado, nombre que DEBE aparecer en el error).
+#: ``ganadores._exigir_enabled`` ya rechaza todos; ``mod_effectivity`` tiene que
+#: hacer lo mismo: recibe ``enabled`` por parámetro y es API pública.
+_PERFILES_CON_DUPLICADO = [
+    pytest.param(("A", "x", "B", "b"), "b", id="duplicado_superior_ajeno"),
+    pytest.param(("A", "a", "x", "B"), "a", id="duplicado_inferior_ajeno"),
+    pytest.param(("b", "B", "x", "A"), "B", id="duplicados_debajo_del_solicitado"),
+    pytest.param(("A", "x", "B", "X"), "X", id="duplicado_del_solicitado"),
+]
+
+
+@pytest.mark.parametrize(("enabled", "duplicado"), _PERFILES_CON_DUPLICADO)
+def test_verificar_artifact_efectivo_rechaza_cualquier_duplicado_del_perfil(
+    inst: Instancia, enabled: tuple[str, ...], duplicado: str
+) -> None:
+    """Un duplicado de OTRO mod también invalida el perfil: no se puede afirmar el overlay."""
+    inst.escribir_modlist("B", "x", "A")  # el archivo NO se lee: se inyecta ``enabled``
+    inst.poblar(("A", "a", "x", "B", "b", "X"))
+    artifact = inst.canary("x", contenido=b"ARTEFACTO")
+
+    with pytest.raises(ModEffectivityError) as capturado:
+        verificar_artifact_efectivo(
+            artifact_root=artifact.parent,
+            mod_name="x",
+            mods_dir=inst.mods,
+            data_root=inst.data_root,
+            enabled=enabled,
+        )
+
+    mensaje = str(capturado.value)
+    assert "repite el mod" in mensaje
+    assert repr(duplicado) in mensaje, "el error tiene que nombrar al duplicado REAL"
+    assert "'x'" not in mensaje, "no debe culpar al mod solicitado cuando el duplicado es ajeno"
+
+
+@pytest.mark.parametrize("grafia", ["x", "X"], ids=["minuscula", "mayuscula"])
+def test_verificar_artifact_efectivo_conserva_el_resultado_del_perfil_valido(inst: Instancia, grafia: str) -> None:
+    """No-regresión P2: ``(\"A\", \"x\", \"B\")`` sigue devolviendo el mismo veredicto."""
+    inst.escribir_modlist("B", "x", "A")
+    inst.poblar(_VALIDO)
+    artifact = inst.canary("x", contenido=b"ARTEFACTO")
+    inst.canary("X", contenido=b"ARTEFACTO")
+
+    veredicto = verificar_artifact_efectivo(
+        artifact_root=artifact.parent,
+        mod_name=grafia,
+        mods_dir=inst.mods,
+        data_root=inst.data_root,
+        enabled=_VALIDO,
+    )
+
+    assert veredicto == 1
+
+
+def test_ganadores_es_el_testigo_de_la_unicidad_global() -> None:
+    """El hermano ya rechazaba estos perfiles: ``mod_effectivity`` no puede quedar atrás."""
+    from sky_claw.local.mo2.ganadores import GanadoresError, _exigir_enabled
+
+    for enabled in (
+        ("A", "x", "B", "b"),
+        ("A", "a", "x", "B"),
+        ("b", "B", "x", "A"),
+    ):
+        with pytest.raises(GanadoresError, match="repite el mod"):
+            _exigir_enabled(enabled)
 
 
 # ---------------------------------------------------------------------------
@@ -660,3 +732,114 @@ def test_la_primitiva_canonica_devuelve_todas_las_coincidencias() -> None:
     assert helper(_AMBIGUO, "X") == [1, 3]
     assert helper(_VALIDO, "X") == [1]
     assert helper(_VALIDO, "Z") == []
+
+
+# ---------------------------------------------------------------------------
+# 8. P2: la unicidad GLOBAL del perfil se exige por FUNCIÓN, no por módulo
+# ---------------------------------------------------------------------------
+
+
+def _funcion(arbol: ast.Module, nombre: str) -> ast.FunctionDef | None:
+    return next(
+        (n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef) and n.name == nombre),
+        None,
+    )
+
+
+#: Congelado por igualdad literal: un gate nuevo que reciba ``enabled`` tiene que
+#: aparecer acá hasta que se le escriba su validación de unicidad completa.
+FUNCIONES_QUE_EXIGEN_UNICIDAD_GLOBAL = {
+    "sky_claw/local/mo2/ganadores.py": ("_exigir_enabled",),
+    "sky_claw/local/mo2/mod_effectivity.py": ("_roots_eclipsantes",),
+    "sky_claw/local/mo2/vfs_attestation.py": ("_exigir_perfil_no_ambiguo",),
+}
+
+
+def test_la_unicidad_global_del_perfil_esta_enumerada_por_ast() -> None:
+    """AST sobre TODO ``sky_claw/``: quién llama a ``_exigir_sin_repetidos``."""
+    exigentes = {}
+    for modulo, arbol in _arboles():
+        nombres = tuple(
+            sorted(
+                n.name
+                for n in ast.walk(arbol)
+                if isinstance(n, ast.FunctionDef) and _llamadas(n, "_exigir_sin_repetidos") >= 1
+            )
+        )
+        if nombres:
+            exigentes[modulo] = nombres
+    assert exigentes == FUNCIONES_QUE_EXIGEN_UNICIDAD_GLOBAL
+
+
+def test_roots_eclipsantes_exige_la_unicidad_antes_de_resolver_el_indice() -> None:
+    """La comprobación del PERFIL completo precede a la búsqueda del mod pedido."""
+    arbol = dict(_arboles())["sky_claw/local/mo2/mod_effectivity.py"]
+    funcion = _funcion(arbol, "_roots_eclipsantes")
+    assert funcion is not None, "_roots_eclipsantes desapareció"
+
+    lineas = {
+        n.func.id: n.lineno
+        for n in ast.walk(funcion)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id in {"_exigir_sin_repetidos", "_coincidencias_de_mod"}
+    }
+    assert "_exigir_sin_repetidos" in lineas, "falta la validación de unicidad de TODO el perfil"
+    assert lineas["_exigir_sin_repetidos"] < lineas["_coincidencias_de_mod"], (
+        "la unicidad global debe exigirse ANTES de resolver el índice"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 9. Caracterización del fingerprint v2: NO se normaliza ``source_mod``
+# ---------------------------------------------------------------------------
+
+
+def _comunes_de_challenge(inst: Instancia) -> dict[str, object]:
+    return {
+        "data_root": inst.data_root,
+        "mods_dir": inst.mods,
+        "profile": _PERFIL,
+        "physical_data_dir": inst.fisico,
+    }
+
+
+def test_el_fingerprint_v2_liga_el_canary_a_la_grafia_pedida(inst: Instancia) -> None:
+    """CONTRATO VIGENTE, no un defecto: ``source_mod`` entra en el digest (dominio v2).
+
+    Normalizarlo exigiría un dominio v3 (precedente #633) e invalidaría los
+    approvals durables, ``VfsJob.expected_fingerprint``, ``vfs_manifest`` y la
+    evidencia persistida. P2 NO cambia ninguno de esos contratos.
+    """
+    inst.escribir_modlist("x")
+    inst.canary_en_ambas_grafias()  # portable: NTFS y POSIX
+
+    con_minuscula = build_attestation_challenge_for_source(source_mod="x", **_comunes_de_challenge(inst))
+    con_mayuscula = build_attestation_challenge_for_source(source_mod="X", **_comunes_de_challenge(inst))
+
+    assert con_minuscula.relative_path == con_mayuscula.relative_path
+    assert con_minuscula.sha256 == con_mayuscula.sha256
+    assert (con_minuscula.source_mod, con_mayuscula.source_mod) == ("x", "X")
+    assert con_minuscula.profile_fingerprint != con_mayuscula.profile_fingerprint
+
+
+@pytest.mark.parametrize("grafia", ["x", "X"], ids=["minuscula", "mayuscula"])
+def test_el_verifier_reconstruye_el_fingerprint_con_la_grafia_de_cada_challenge(inst: Instancia, grafia: str) -> None:
+    """Caracterización de compatibilidad: cada challenge verifica con SU propio fingerprint."""
+    inst.escribir_modlist("x")
+    inst.canary_en_ambas_grafias()
+    vista = inst.virtual / _RELATIVO
+    vista.parent.mkdir(parents=True, exist_ok=True)
+    vista.write_bytes(_CANARIO)
+
+    desafio = build_attestation_challenge_for_source(source_mod=grafia, **_comunes_de_challenge(inst))
+    prueba = verify_vfs_attestation(
+        challenge=desafio,
+        data_root=inst.data_root,
+        mods_dir=inst.mods,
+        profile=_PERFIL,
+        virtual_data_dir=inst.virtual,
+    )
+
+    assert prueba.source_mod == grafia
+    assert prueba.profile_fingerprint == desafio.profile_fingerprint
