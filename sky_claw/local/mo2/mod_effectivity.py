@@ -41,7 +41,12 @@ from collections.abc import Iterator, Sequence
 from typing import NamedTuple
 
 from sky_claw.app.security.links import iter_archivos_propios, link_kind_and_identity_or_raise
-from sky_claw.local.mo2.ganadores import GanadoresError, _es_carpeta_propia, _exigir_nombre_de_mod
+from sky_claw.local.mo2.ganadores import (
+    GanadoresError,
+    _coincidencias_de_mod,
+    _es_carpeta_propia,
+    _exigir_nombre_de_mod,
+)
 
 logger = logging.getLogger("SkyClaw.ModEffectivity")
 
@@ -125,13 +130,17 @@ def _roots_eclipsantes(
     (``overwrite``, de ``data_root``): un nombre que se escapa o un enlace
     también es un perfil que no se puede afirmar, no una capa más (#807).
     """
-    if enabled.count(mod_name) > 1:
+    # #852: la identidad del mod es ``lower()`` (NTFS), no la grafía exacta. Una sola
+    # primitiva resuelve TODAS las coincidencias: dos ⇒ perfil ambiguo, ninguna ⇒
+    # no habilitado, una ⇒ ese índice (y no el de ``enabled.index(mod_name)``).
+    coincidencias = _coincidencias_de_mod(enabled, mod_name)
+    if len(coincidencias) > 1:
         raise ModEffectivityError(
             f"el modlist repite el mod {mod_name!r}: la prioridad efectiva es ambigua y no se puede afirmar"
         )
-    if mod_name not in enabled:
+    if not coincidencias:
         raise ModEffectivityError(f"el mod {mod_name!r} no está habilitado en el modlist del perfil")
-    indice = enabled.index(mod_name)
+    indice = coincidencias[0]
     roots: list[tuple[str, pathlib.Path]] = []
     overwrite = data_root / "overwrite"
     if _capa_propia(overwrite, etiqueta="overwrite"):

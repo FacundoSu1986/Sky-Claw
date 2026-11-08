@@ -39,6 +39,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Protocol
 
 from sky_claw.app.security.links import link_kind_and_identity_or_raise
+from sky_claw.local.mo2.ganadores import _coincidencias_de_mod
 from sky_claw.local.mo2.mod_effectivity import ModEffectivityError, verificar_artifact_efectivo
 from sky_claw.local.mo2.vfs_attestation import (
     VfsAttestationChallenge,
@@ -429,11 +430,18 @@ class BrokeredDynDOLODSpawnStrategy:
             raise HandoffDriftError(
                 f"no se pudo releer el estado del perfil '{self._profile}' en el boundary del spawn (UNKNOWN): {e}"
             ) from e
-        if habilitados.count(handoff.mod_name) != 1:
+        # #852: identidad por ``lower()``, no por grafía exacta. Dos coincidencias
+        # (``x``/``X``) son un perfil ambiguo: se nombra y se bloquea el spawn.
+        coincidencias = _coincidencias_de_mod(habilitados, handoff.mod_name)
+        if len(coincidencias) > 1:
+            raise HandoffDriftError(
+                f"el modlist del perfil '{self._profile}' repite el mod {handoff.mod_name!r}: "
+                "la prioridad efectiva es ambigua y no se puede afirmar en el boundary del spawn"
+            )
+        if not coincidencias:
             raise HandoffDriftError(
                 f"'{handoff.mod_name}' ya no está habilitado exactamente una vez en el perfil "
-                f"'{self._profile}' (aparece {habilitados.count(handoff.mod_name)}): el overlay ya no "
-                "entrega el artifact aprobado"
+                f"'{self._profile}' (aparece 0): el overlay ya no entrega el artifact aprobado"
             )
         # --- 6. efectividad byte-exact sobre el overlay COMPLETO (B9/B10) ---
         try:
@@ -631,11 +639,14 @@ class BrokeredDynDOLODSpawnStrategy:
             return TexGenHandoffResult.bloqueado(
                 f"no se pudo leer el estado del perfil '{self._profile}' (UNKNOWN): {e}"
             )
-        if habilitados.count(request.mod_name) > 1:
+        # #852: la MISMA primitiva que el boundary del spawn y los otros gates.
+        coincidencias = _coincidencias_de_mod(habilitados, request.mod_name)
+        if len(coincidencias) > 1:
             return TexGenHandoffResult.bloqueado(
-                f"el modlist del perfil '{self._profile}' repite '{request.mod_name}': la prioridad efectiva es ambigua"
+                f"el modlist del perfil '{self._profile}' repite el mod {request.mod_name!r}: "
+                "la prioridad efectiva es ambigua y no se puede afirmar"
             )
-        if request.mod_name not in habilitados:
+        if not coincidencias:
             return TexGenHandoffResult.bloqueado(
                 f"'{request.mod_name}' existe pero NO está habilitado en el perfil '{self._profile}' "
                 f"(falta la línea '+{request.mod_name}' en modlist.txt). Habilitalo en Mod Organizer 2 "
