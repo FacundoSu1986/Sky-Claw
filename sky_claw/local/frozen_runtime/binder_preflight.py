@@ -391,11 +391,12 @@ def _validar_aislamiento_runtime_manual(
     clone_root: pathlib.Path | None,
     stock_source_root: pathlib.Path | None,
     otros_clones_roots: Sequence[pathlib.Path] = (),
+    steam_staging_roots: Sequence[pathlib.Path] = (),
 ) -> tuple[PreflightCheckStatus, PreflightReasonCode | None, str]:
     """Valida el aislamiento físico del runtime manual saliente (fail-closed ante symlinks/reparse).
 
     Admite hardlinks históricos (st_nlink > 1) únicamente si son disjuntos de Steam,
-    Clone, Generation, Stock y otros Clones registrados.
+    áreas de staging/downloading de Steam, Clone, Generation, Stock y otros Clones registrados.
     """
     motivo = descripcion_de_enlace(manual_root)
     if motivo is not None:
@@ -410,6 +411,33 @@ def _validar_aislamiento_runtime_manual(
             PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
             f"el runtime manual '{manual_root}' no existe o no es un directorio",
         )
+
+    # Invariante fail-closed: nunca declarar independencia si falta evidencia de raíces protegidas obligatorias
+    if generation_root is None or not generation_root.is_dir():
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+            f"evidencia insuficiente para verificar aislamiento: Generation ausente o no es directorio ('{generation_root}')",
+        )
+    if managed_source_root is None or not managed_source_root.is_dir():
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+            f"evidencia insuficiente para verificar aislamiento: Managed Source (Steam) ausente o no es directorio ('{managed_source_root}')",
+        )
+    if clone_root is None or not clone_root.is_dir():
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+            f"evidencia insuficiente para verificar aislamiento: Clone destino ausente o no es directorio ('{clone_root}')",
+        )
+    if stock_source_root is not None and not stock_source_root.is_dir():
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+            f"fuente Stock declarada no es un directorio o es inaccesible: '{stock_source_root}'",
+        )
+
     try:
         archivos_manual = _archivos_fisicos(manual_root, etiqueta="outgoing_manual_runtime")
     except PhysicalReparseError as exc:
@@ -425,18 +453,30 @@ def _validar_aislamiento_runtime_manual(
             str(exc),
         )
 
-    superficies_a_evaluar: list[tuple[str, pathlib.Path]] = []
-    if generation_root is not None and generation_root.is_dir():
-        superficies_a_evaluar.append(("la Generation", generation_root))
-    if managed_source_root is not None and managed_source_root.is_dir():
-        superficies_a_evaluar.append(("la Managed Source (Steam)", managed_source_root))
-    if clone_root is not None and clone_root.is_dir():
-        superficies_a_evaluar.append(("el Clone destino", clone_root))
+    superficies_a_evaluar: list[tuple[str, pathlib.Path]] = [
+        ("la Generation", generation_root),
+        ("la Managed Source (Steam)", managed_source_root),
+        ("el Clone destino", clone_root),
+    ]
     if stock_source_root is not None and stock_source_root.is_dir():
         superficies_a_evaluar.append(("la fuente Stock", stock_source_root))
     for otro_c in otros_clones_roots:
-        if otro_c.is_dir():
-            superficies_a_evaluar.append(("otro Clone registrado", otro_c))
+        if not otro_c.is_dir():
+            return (
+                PreflightCheckStatus.FAIL,
+                PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+                f"raíz de otro Clone registrado no es directorio o es inaccesible: '{otro_c}'",
+            )
+        superficies_a_evaluar.append(("otro Clone registrado", otro_c))
+    for stage_dir in steam_staging_roots:
+        if stage_dir.exists():
+            if not stage_dir.is_dir():
+                return (
+                    PreflightCheckStatus.FAIL,
+                    PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+                    f"área de staging de Steam existe pero no es un directorio: '{stage_dir}'",
+                )
+            superficies_a_evaluar.append(("el área de staging de Steam (downloading/temp)", stage_dir))
 
     for nombre_sup, raiz_sup in superficies_a_evaluar:
         try:
@@ -511,6 +551,7 @@ def _validar_runtime_manual_saliente(
     mo2_dir: pathlib.Path,
     mo2_data_dirs: tuple[pathlib.Path, ...],
     observadores: RuntimeProbes,
+    steam_staging_roots: Sequence[pathlib.Path] = (),
 ) -> tuple[pathlib.Path | None, PreflightCheckStatus, PreflightReasonCode | None, str]:
     """Valida de forma estricta y fail-closed ``outgoing_manual_runtime_root`` (Contrato R2)."""
     raw_str = os.fspath(manual_raw)
@@ -662,6 +703,7 @@ def _validar_runtime_manual_saliente(
         clone_root=clone_root,
         stock_source_root=stock_source_root,
         otros_clones_roots=tuple(otros_clones),
+        steam_staging_roots=steam_staging_roots,
     )
     if st_aisl is not PreflightCheckStatus.PASS:
         return None, st_aisl, rz_aisl, det_aisl
@@ -1389,6 +1431,11 @@ def evaluar_binder_preflight(
 
     manual_resolved: pathlib.Path | None = None
     if outgoing_manual_runtime_root is not None:
+        steam_staging: list[pathlib.Path] = []
+        if ms_result.source is not None:
+            steam_staging.append(ms_result.source.library_steamapps / "downloading" / ms_result.source.appid)
+            steam_staging.append(ms_result.source.library_steamapps / "temp" / ms_result.source.appid)
+
         manual_res, est_manual, motivo_manual, det_manual = _validar_runtime_manual_saliente(
             manual_raw=outgoing_manual_runtime_root,
             storage=storage,
@@ -1400,6 +1447,7 @@ def evaluar_binder_preflight(
             mo2_dir=mo2_dir,
             mo2_data_dirs=mo2_data_dirs,
             observadores=observadores,
+            steam_staging_roots=tuple(steam_staging),
         )
         if motivo_manual is not None:
             _registrar_fallo_path_safety(

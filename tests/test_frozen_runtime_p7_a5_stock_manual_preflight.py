@@ -41,6 +41,7 @@ from sky_claw.local.frozen_runtime.binder_preflight import (
     PreflightCheckCode,
     PreflightCheckStatus,
     PreflightReasonCode,
+    _validar_aislamiento_runtime_manual,
     evaluar_binder_preflight,
 )
 from sky_claw.local.frozen_runtime.clones import (
@@ -1251,6 +1252,122 @@ class TestContratoR2RuntimeManualSaliente:
             "identidad física no disponible" in check_safety.detail
             or "error al verificar inodos" in check_safety.detail
         )
+
+    def test_13g_hardlink_con_archivo_en_steamapps_downloading_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """P1 adversarial: Hardlink entre Runtime Manual ('mod_manual.dll') y 'steamapps/downloading/489830/patch.dll' bloquea."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+
+        # Crear archivo en área de staging de Steam (downloading/489830)
+        steamapps_dir = rig.managed_source.parent.parent
+        downloading_dir = steamapps_dir / "downloading" / "489830"
+        downloading_dir.mkdir(parents=True, exist_ok=True)
+        archivo_staging = downloading_dir / "patch.dll"
+        archivo_staging.write_bytes(b"CONTENIDO-STAGING-STEAM-DOWNLOAD-12345")
+
+        # Hardlink en runtime manual con distinto nombre
+        archivo_manual = rig.manual_runtime / "mod_manual.dll"
+        os.link(archivo_staging, archivo_manual)
+
+        st_stage = os.stat(archivo_staging)
+        st_manual = os.stat(archivo_manual)
+        assert (st_stage.st_dev, st_stage.st_ino) == (st_manual.st_dev, st_manual.st_ino)
+        assert archivo_staging.name != archivo_manual.name
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
+            probes=rig.probes_globales_activos(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in evaluacion.reasons
+        check_safety = next(
+            (c for c in evaluacion.checks if c.check is PreflightCheckCode.PATH_SAFETY),
+            None,
+        )
+        assert check_safety is not None
+        assert check_safety.status is PreflightCheckStatus.FAIL
+        assert "mod_manual.dll" in check_safety.detail
+        assert "patch.dll" in check_safety.detail
+
+    def test_13h_raices_protegidas_obligatorias_ausentes_o_invalidas_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """P1 adversarial: Raíces protegidas obligatorias ausentes, inaccesibles o no-directorios nunca declaran independencia."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        gen_dir = generation_dir(rig.storage, rig.generation_id)
+
+        # 1. generation_root ausente
+        st_gen, rz_gen, det_gen = _validar_aislamiento_runtime_manual(
+            rig.manual_runtime,
+            generation_root=tmp_path / "GenerationInexistente",
+            managed_source_root=rig.managed_source,
+            clone_root=rig.clone_root,
+            stock_source_root=rig.stock_source,
+        )
+        assert st_gen is PreflightCheckStatus.FAIL
+        assert rz_gen is PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID
+        assert "Generation ausente o no es directorio" in det_gen
+
+        # 2. managed_source_root ausente
+        st_ms, rz_ms, det_ms = _validar_aislamiento_runtime_manual(
+            rig.manual_runtime,
+            generation_root=gen_dir,
+            managed_source_root=tmp_path / "SteamInexistente",
+            clone_root=rig.clone_root,
+            stock_source_root=rig.stock_source,
+        )
+        assert st_ms is PreflightCheckStatus.FAIL
+        assert rz_ms is PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID
+        assert "Managed Source (Steam) ausente o no es directorio" in det_ms
+
+        # 3. clone_root ausente
+        st_cl, rz_cl, det_cl = _validar_aislamiento_runtime_manual(
+            rig.manual_runtime,
+            generation_root=gen_dir,
+            managed_source_root=rig.managed_source,
+            clone_root=tmp_path / "CloneInexistente",
+            stock_source_root=rig.stock_source,
+        )
+        assert st_cl is PreflightCheckStatus.FAIL
+        assert rz_cl is PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID
+        assert "Clone destino ausente o no es directorio" in det_cl
+
+        # 4. stock_source_root declarado pero no es un directorio (archivo regular)
+        archivo_falso_stock = tmp_path / "archivo_falso_stock.txt"
+        archivo_falso_stock.write_text("no-es-directorio")
+        st_stk, rz_stk, det_stk = _validar_aislamiento_runtime_manual(
+            rig.manual_runtime,
+            generation_root=gen_dir,
+            managed_source_root=rig.managed_source,
+            clone_root=rig.clone_root,
+            stock_source_root=archivo_falso_stock,
+        )
+        assert st_stk is PreflightCheckStatus.FAIL
+        assert rz_stk is PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID
+        assert "fuente Stock declarada no es un directorio" in det_stk
+
+        # 5. staging_dir que existe pero no es un directorio
+        falso_staging = tmp_path / "staging_falso_archivo"
+        falso_staging.write_text("no-es-directorio")
+        st_stg, rz_stg, det_stg = _validar_aislamiento_runtime_manual(
+            rig.manual_runtime,
+            generation_root=gen_dir,
+            managed_source_root=rig.managed_source,
+            clone_root=rig.clone_root,
+            stock_source_root=rig.stock_source,
+            steam_staging_roots=(falso_staging,),
+        )
+        assert st_stg is PreflightCheckStatus.FAIL
+        assert rz_stg is PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID
+        assert "área de staging de Steam existe pero no es un directorio" in det_stg
 
 
 # ===========================================================================
