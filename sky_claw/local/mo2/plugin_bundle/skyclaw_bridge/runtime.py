@@ -174,6 +174,14 @@ class AdoptionApi(Protocol):
 _ADOPTION_MAX_PASSES = 8
 
 
+def _salio_confirmado(api: AdoptionApi, handle: int) -> bool:
+    """``True`` solo si se CONFIRMA que el proceso salió; si no se puede consultar, se lo trata como vivo."""
+    try:
+        return api.has_exited(handle)
+    except BridgeCommandError:
+        return False
+
+
 def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _ADOPTION_MAX_PASSES) -> int:
     """Contiene a TODO el árbol del proceso lanzado (auditoría independiente, H-01).
 
@@ -244,6 +252,9 @@ def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _
                             sigue_vivo = False
                         except BridgeCommandError as term_exc:
                             detalle += f"; no se pudo terminarlo: {term_exc}"
+                            # ``TerminateProcess`` sobre un proceso que ya salió también falla: si murió entre el
+                            # chequeo de ``has_exited`` y el ``terminate``, no queda nada vivo.
+                            sigue_vivo = not _salio_confirmado(api, handle)
                     fallos[pid] = detalle
                     if sigue_vivo:
                         vivos_fuera.add(pid)

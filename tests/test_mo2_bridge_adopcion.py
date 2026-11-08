@@ -71,6 +71,8 @@ class _ApiFalsa:
         self.desaparece_al_abrir: set[int] = set()
         self.fallar_asignar: set[int] = set()
         self.fallar_cerrar: set[int] = set()
+        self.muere_y_falla_al_terminar: set[int] = set()
+        self.fallar_has_exited: set[int] = set()
         self.muere_al_asignar: set[int] = set()
         self.no_muere: set[int] = set()
         self.al_asignar: dict[int, Callable[[], None]] = {}
@@ -106,6 +108,8 @@ class _ApiFalsa:
         return self.tabla[self._pid(handle)].creacion
 
     def has_exited(self, handle: int) -> bool:
+        if self._pid(handle) in self.fallar_has_exited:
+            raise BridgeCommandError(f"GetExitCodeProcess({self._pid(handle)}) falló")
         return not self.tabla[self._pid(handle)].vivo
 
     def in_job(self, handle: int) -> bool:
@@ -127,6 +131,10 @@ class _ApiFalsa:
     def terminate(self, handle: int) -> None:
         pid = self._pid(handle)
         self.terminados.append(pid)
+        if pid in self.muere_y_falla_al_terminar:
+            # TerminateProcess sobre un proceso que ya salió falla (ACCESS_DENIED): murió justo antes de terminarlo.
+            self.tabla[pid].vivo = False
+            raise BridgeCommandError(f"TerminateProcess({pid}) falló: el proceso ya había salido")
         if pid in self.no_muere:
             raise BridgeCommandError(f"TerminateProcess({pid}) falló")
         self.tabla[pid].vivo = False
@@ -211,6 +219,36 @@ def test_un_ppid_coincidente_con_creacion_anterior_a_la_del_padre_no_es_un_hijo(
     assert _adoptar(api) == 0
     assert api.asignados == []
     assert 1150 in api.cerrados, "se abrió para leer su creación y el handle no puede quedar abierto"
+
+
+def test_si_el_proceso_sale_entre_el_chequeo_y_el_terminate_no_se_lo_cuenta_como_vivo() -> None:
+    """Hallazgo de PR-Agent (verificado): ``TerminateProcess`` sobre un proceso que ya salió falla.
+
+    Si el hijo muere entre el ``has_exited`` del camino de asignación y el ``terminate``, el fallo de ``terminate`` no
+    significa que haya un sobreviviente: se re-consulta y, si salió, el launch se rechaza de forma ordinaria.
+    """
+    api = _ApiFalsa()
+    api.hijo(101, PID_RAIZ, 60)
+    api.fallar_asignar.add(101)
+    api.muere_y_falla_al_terminar.add(101)
+
+    with pytest.raises(BridgeCommandError, match="101") as salida:
+        _adoptar(api)
+
+    assert not isinstance(salida.value, BridgeTerminationError)
+    assert api.terminados == [101]
+
+
+def test_si_no_se_puede_confirmar_que_salio_se_lo_trata_como_vivo() -> None:
+    """Conservador: sin poder consultar ``has_exited`` tras un ``terminate`` fallido, la terminalidad es desconocida."""
+    api = _ApiFalsa()
+    api.hijo(101, PID_RAIZ, 60)
+    api.fallar_asignar.add(101)
+    api.no_muere.add(101)
+    api.fallar_has_exited.add(101)
+
+    with pytest.raises(BridgeTerminationError, match="101"):
+        _adoptar(api)
 
 
 def test_si_falla_cerrar_el_handle_de_un_proceso_ajeno_no_se_lo_cuenta_como_descendiente_vivo() -> None:
