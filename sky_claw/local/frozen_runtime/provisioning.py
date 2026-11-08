@@ -1227,7 +1227,7 @@ def cargar_digest_aprobado_stock(ruta: pathlib.Path) -> str:
     if len(crudo) > _LIMITE_ARCHIVO_DIGEST_APROBADO:
         raise StockReferenceUnapprovedError(f"el digest aprobado '{candidato}' excede el límite permitido")
     try:
-        texto = crudo.decode("utf-8").strip()
+        texto = crudo.decode("utf-8-sig").strip()
     except UnicodeDecodeError as exc:
         raise StockReferenceUnapprovedError(f"el digest aprobado '{candidato}' no es UTF-8 válido: {exc}") from exc
     if re.fullmatch(r"[0-9a-f]{64}", texto) is None:

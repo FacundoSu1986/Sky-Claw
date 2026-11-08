@@ -453,6 +453,7 @@ def construir_informe(
     outgoing_manual_runtime_root: pathlib.Path | None = None,
     approved_stock_reference_digest: str | None = None,
     approved_stock_reference_digest_file: pathlib.Path | None = None,
+    stock_source_root: pathlib.Path | None = None,
 ) -> tuple[dict[str, Any], pathlib.Path | None]:
     """Arma el informe completo. Función pura respecto del disco: sólo lee."""
     ruta = _redactor(mostrar_rutas)
@@ -572,6 +573,7 @@ def construir_informe(
         outgoing_manual_runtime_root=outgoing_manual_runtime_root,
         approved_stock_reference_digest=approved_stock_reference_digest,
         approved_stock_reference_digest_file=approved_stock_reference_digest_file,
+        stock_source_root=stock_source_root,
     )
     hallazgos.extend(_hallazgos_del_preflight(evaluacion))
 
@@ -607,6 +609,7 @@ def construir_informe(
             clone_root,
             origen,
             outgoing_manual_runtime_root,
+            stock_source_root,
             approved_stock_reference_digest_file,
             evid_datos.base_directory,
             evid_datos.mod_directory,
@@ -630,6 +633,7 @@ def construir_informe(
         "storage_root": ruta(storage_root),
         "mo2_instance": ruta(mo2_instance_dir),
         "managed_source": ruta(managed_source_root),
+        "stock_source": ruta(stock_source_root),
         "clone_objetivo": objetivo,
         "preflight_verdict": evaluacion.verdict.value,
         "preflight_ready": evaluacion.is_ready,
@@ -720,6 +724,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="ruta al archivo con el reference_digest externo aprobado (A1)",
     )
+    parser.add_argument(
+        "--stock-source",
+        type=pathlib.Path,
+        default=None,
+        help="raíz de la fuente Stock para verificar aislamiento físico en transiciones independientes",
+    )
     parser.add_argument("--mostrar-rutas", action="store_true", help="incluye rutas completas en el informe")
     args = parser.parse_args(argv)
 
@@ -734,6 +744,7 @@ def main(argv: list[str] | None = None) -> int:
         outgoing_manual_runtime_root=args.outgoing_manual_runtime,
         approved_stock_reference_digest=args.approved_stock_digest,
         approved_stock_reference_digest_file=args.approved_stock_digest_file,
+        stock_source_root=args.stock_source,
     )
     # A stdout se emite ASCII puro: la consola de Windows puede estar en cp1252 y
     # el informe contiene «→» y acentos. `print` con un carácter fuera de la

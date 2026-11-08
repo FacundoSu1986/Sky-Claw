@@ -24,9 +24,11 @@ Reutiliza estrictamente los verificadores y oráculos existentes del subsistema:
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import pathlib
 import re
+import stat
 import time
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
@@ -103,6 +105,7 @@ from sky_claw.local.frozen_runtime.provider_signals import (
 )
 from sky_claw.local.frozen_runtime.provisioning import (
     PROVIDER_STOCK,
+    StockReference,
     cargar_digest_aprobado_stock,
     verificar_procedencia_stock_generacion,
 )
@@ -396,6 +399,7 @@ def _validar_aislamiento_runtime_manual(
     stock_source_root: pathlib.Path | None,
     otros_clones_roots: Sequence[pathlib.Path] = (),
     steam_staging_roots: Sequence[pathlib.Path] = (),
+    exigir_stock_source: bool = False,
 ) -> tuple[PreflightCheckStatus, PreflightReasonCode | None, str]:
     """Valida el aislamiento físico del runtime manual saliente (fail-closed ante symlinks/reparse).
 
@@ -435,7 +439,14 @@ def _validar_aislamiento_runtime_manual(
             PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
             f"evidencia insuficiente para verificar aislamiento: Clone destino ausente o no es directorio ('{clone_root}')",
         )
-    if stock_source_root is not None and not stock_source_root.is_dir():
+    if exigir_stock_source:
+        if stock_source_root is None or not stock_source_root.is_dir():
+            return (
+                PreflightCheckStatus.FAIL,
+                PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+                f"evidencia insuficiente para verificar aislamiento: fuente Stock obligatoria ausente o no es directorio ('{stock_source_root}')",
+            )
+    elif stock_source_root is not None and not stock_source_root.is_dir():
         return (
             PreflightCheckStatus.FAIL,
             PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
@@ -543,6 +554,111 @@ def _validar_aislamiento_runtime_manual(
     return PreflightCheckStatus.PASS, None, detalle
 
 
+def _validar_autoridad_fuente_stock(
+    stock_root: pathlib.Path,
+    *,
+    reference: StockReference,
+    observadores: RuntimeProbes,
+    storage: pathlib.Path,
+    ms_root_resolved: pathlib.Path | None,
+) -> tuple[PreflightCheckStatus, PreflightReasonCode | None, str]:
+    """Valida la autoridad de stock_source_root frente a la referencia Stock aprobada (A1).
+
+    Fail-closed: una ruta arbitraria, sin identidad de Skyrim o no coincidente se rechaza.
+    """
+    motivo = descripcion_de_enlace(stock_root)
+    if motivo is not None:
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.REPARSE_POINT_DETECTED,
+            f"la fuente Stock está redirigida por enlace/reparse: {motivo}",
+        )
+    if not stock_root.is_dir():
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+            f"la fuente Stock no existe o no es un directorio: '{stock_root}'",
+        )
+    if _dentro_de_area_steamapps(stock_root):
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.PATH_CONTAINMENT_VIOLATION,
+            f"la fuente Stock está dentro de un área administrada por Steam ('steamapps'): '{stock_root}'",
+        )
+    for etiqueta, otra in (("storage_root", storage), ("Managed Source", ms_root_resolved)):
+        if otra is not None:
+            col = _colision_o_contencion(stock_root, otra)
+            if col is not None:
+                return (
+                    PreflightCheckStatus.FAIL,
+                    col,
+                    f"la fuente Stock se solapa o colisiona con {etiqueta} ('{otra}')",
+                )
+    exe_stock = stock_root / "SkyrimSE.exe"
+    if not exe_stock.is_file():
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+            f"la fuente Stock carece de SkyrimSE.exe regular: '{stock_root}'",
+        )
+    try:
+        ident_stock = observadores.identity(stock_root)
+    except (RuntimeObservationError, FrozenRuntimeError, OSError) as exc:
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+            f"no se pudo observar identidad de Skyrim SE en la fuente Stock: {exc}",
+        )
+    if ident_stock.game_key.casefold() != reference.expected_runtime.game_key.casefold() or (
+        reference.expected_runtime.game_version and ident_stock.game_version != reference.expected_runtime.game_version
+    ):
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+            f"la identidad de la fuente Stock ({ident_stock.game_key} {ident_stock.game_version}) "
+            f"no coincide con la referencia Stock aprobada "
+            f"({reference.expected_runtime.game_key} {reference.expected_runtime.game_version})",
+        )
+    for exp in reference.critical_expectations:
+        p_crit = stock_root / exp.rel_path
+        if not p_crit.is_file():
+            return (
+                PreflightCheckStatus.FAIL,
+                PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                f"la fuente Stock carece del archivo crítico esperado '{exp.rel_path}'",
+            )
+        try:
+            st = os.lstat(p_crit)
+            if stat.S_ISLNK(st.st_mode):
+                return (
+                    PreflightCheckStatus.FAIL,
+                    PreflightReasonCode.REPARSE_POINT_DETECTED,
+                    f"archivo crítico '{exp.rel_path}' en la fuente Stock es un enlace simbólico",
+                )
+            if st.st_size != exp.expected_size:
+                return (
+                    PreflightCheckStatus.FAIL,
+                    PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                    f"archivo crítico '{exp.rel_path}' en la fuente Stock tiene tamaño "
+                    f"{st.st_size} bytes (esperado {exp.expected_size})",
+                )
+            digest_real = hashlib.sha256(p_crit.read_bytes()).hexdigest()
+            if digest_real != exp.expected_digest:
+                return (
+                    PreflightCheckStatus.FAIL,
+                    PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                    f"archivo crítico '{exp.rel_path}' en la fuente Stock difiere del digest "
+                    f"esperado ({digest_real} != {exp.expected_digest})",
+                )
+        except OSError as exc:
+            return (
+                PreflightCheckStatus.FAIL,
+                PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                f"no se pudo leer el archivo crítico '{exp.rel_path}' en la fuente Stock: {exc}",
+            )
+    return PreflightCheckStatus.PASS, None, ""
+
+
 def _validar_runtime_manual_saliente(
     *,
     manual_raw: pathlib.Path,
@@ -556,6 +672,7 @@ def _validar_runtime_manual_saliente(
     mo2_data_dirs: tuple[pathlib.Path, ...],
     observadores: RuntimeProbes,
     steam_staging_roots: Sequence[pathlib.Path] = (),
+    transition_policy: BinderTransitionPolicy = BinderTransitionPolicy.STRICT_PROVIDER_IDLE,
 ) -> tuple[pathlib.Path | None, PreflightCheckStatus, PreflightReasonCode | None, str]:
     """Valida de forma estricta y fail-closed ``outgoing_manual_runtime_root`` (Contrato R2)."""
     raw_str = os.fspath(manual_raw)
@@ -708,11 +825,12 @@ def _validar_runtime_manual_saliente(
         stock_source_root=stock_source_root,
         otros_clones_roots=tuple(otros_clones),
         steam_staging_roots=steam_staging_roots,
+        exigir_stock_source=(transition_policy is BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION),
     )
     if st_aisl is not PreflightCheckStatus.PASS:
         return None, st_aisl, rz_aisl, det_aisl
 
-    return manual_norm.resolve(), PreflightCheckStatus.PASS, None, det_aisl
+    return manual_norm, PreflightCheckStatus.PASS, None, det_aisl
 
 
 def evaluar_binder_preflight(
@@ -1453,6 +1571,7 @@ def evaluar_binder_preflight(
             mo2_data_dirs=mo2_data_dirs,
             observadores=observadores,
             steam_staging_roots=tuple(steam_staging),
+            transition_policy=transition_policy,
         )
         if motivo_manual is not None:
             _registrar_fallo_path_safety(
@@ -1548,15 +1667,43 @@ def evaluar_binder_preflight(
                             ),
                         )
                         stock_digest_verificado = proc_stock.reference.reference_digest
-                        checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
-                            check=PreflightCheckCode.GENERATION_INTEGRITY,
-                            status=PreflightCheckStatus.PASS,
-                            reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                            detail=(
-                                f"generation '{gen_id}' verificada como VALID con procedencia Stock v2 íntegra "
-                                f"(reference_digest {stock_digest_verificado})"
-                            ),
-                        )
+                        if stock_source_root is not None:
+                            st_aut, rz_aut, det_aut = _validar_autoridad_fuente_stock(
+                                pathlib.Path(os.path.abspath(os.fspath(stock_source_root))),
+                                reference=proc_stock.reference,
+                                observadores=observadores,
+                                storage=storage,
+                                ms_root_resolved=ms_root_resolved,
+                            )
+                            if st_aut is not PreflightCheckStatus.PASS:
+                                checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
+                                    check=PreflightCheckCode.GENERATION_INTEGRITY,
+                                    status=st_aut,
+                                    reason=rz_aut or PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                                    detail=det_aut,
+                                )
+                                if rz_aut:
+                                    reasons.append(rz_aut)
+                            else:
+                                checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
+                                    check=PreflightCheckCode.GENERATION_INTEGRITY,
+                                    status=PreflightCheckStatus.PASS,
+                                    reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+                                    detail=(
+                                        f"generation '{gen_id}' y fuente Stock verificadas como VALID con procedencia "
+                                        f"Stock v2 íntegra (reference_digest {stock_digest_verificado})"
+                                    ),
+                                )
+                        else:
+                            checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
+                                check=PreflightCheckCode.GENERATION_INTEGRITY,
+                                status=PreflightCheckStatus.PASS,
+                                reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
+                                detail=(
+                                    f"generation '{gen_id}' verificada como VALID con procedencia Stock v2 íntegra "
+                                    f"(reference_digest {stock_digest_verificado})"
+                                ),
+                            )
                     except StockProvenanceInvalidError as exc:
                         checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
                             check=PreflightCheckCode.GENERATION_INTEGRITY,

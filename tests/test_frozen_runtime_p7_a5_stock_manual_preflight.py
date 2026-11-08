@@ -540,6 +540,7 @@ class TestContratoR1StockIndependentTransition:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
 
@@ -607,6 +608,7 @@ class TestContratoR1StockIndependentTransition:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
         assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
@@ -634,6 +636,7 @@ class TestContratoR1StockIndependentTransition:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
 
@@ -664,6 +667,7 @@ class TestContratoR1StockIndependentTransition:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
 
@@ -693,6 +697,7 @@ class TestContratoR1StockIndependentTransition:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
         assert sin_digest.verdict is BinderPreflightVerdict.BLOCKED
@@ -710,6 +715,7 @@ class TestContratoR1StockIndependentTransition:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
         assert con_digest_distinto.verdict is BinderPreflightVerdict.BLOCKED
@@ -720,6 +726,36 @@ class TestContratoR1StockIndependentTransition:
         archivo_malo.write_text("no-es-un-sha256-valido\n", encoding="utf-8")
         with pytest.raises(StockReferenceUnapprovedError):
             cargar_digest_aprobado_stock(archivo_malo)
+
+        # Subcaso 8d (P3): Contrato completo de formato en cargar_digest_aprobado_stock (BOM y malformados)
+        digest_valido = "a" * 64
+        # 1. UTF-8 sin BOM -> éxito exacto
+        f_sin_bom = tmp_path / "digest_sin_bom.txt"
+        f_sin_bom.write_text(f"{digest_valido}\n", encoding="utf-8")
+        assert cargar_digest_aprobado_stock(f_sin_bom) == digest_valido
+
+        # 2. UTF-8 con BOM -> debe admitirse y decodificar el mismo digest exacto
+        f_con_bom = tmp_path / "digest_con_bom.txt"
+        f_con_bom.write_bytes(b"\xef\xbb\xbf" + f"{digest_valido}\n".encode())
+        assert cargar_digest_aprobado_stock(f_con_bom) == digest_valido
+
+        # 3. Digest alterado (carácter no hexadecimal o longitud incorrecta) -> rechazo fail-closed
+        f_alterado = tmp_path / "digest_alterado.txt"
+        f_alterado.write_text("a" * 63 + "z\n", encoding="utf-8")
+        with pytest.raises(StockReferenceUnapprovedError, match="no es un SHA-256 hex minúsculas"):
+            cargar_digest_aprobado_stock(f_alterado)
+
+        # 4. Codificación inválida (bytes no decodificables como UTF-8) -> rechazo fail-closed
+        f_invalido_enc = tmp_path / "digest_invalid_enc.bin"
+        f_invalido_enc.write_bytes(b"\xff\xfe\x00\x00" + b"bytes_invalidos")
+        with pytest.raises(StockReferenceUnapprovedError, match="no es UTF-8 válido"):
+            cargar_digest_aprobado_stock(f_invalido_enc)
+
+        # 5. Contenido malformado (vacío)
+        f_vacio = tmp_path / "digest_vacio.txt"
+        f_vacio.write_bytes(b"")
+        with pytest.raises(StockReferenceUnapprovedError, match="tamaño inválido"):
+            cargar_digest_aprobado_stock(f_vacio)
 
 
 # ===========================================================================
@@ -772,6 +808,38 @@ class TestContratoR2RuntimeManualSaliente:
         assert obs_oraculo.verdict is EffectiveRuntimeVerdict.MISMATCH
         assert obs_oraculo.authorizes_activation is False
 
+    def test_09b_runtime_manual_retorna_manual_norm_directo_sin_resolucion_incompatible(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P2: _validar_runtime_manual_saliente devuelve manual_norm directamente (no resolve()),
+        evitando divergencias falsas con config_skyrim_path ante unidades virtuales o caminos no canónicos.
+        """
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        orig_resolve = pathlib.Path.resolve
+
+        def _mock_resolve(path_obj: pathlib.Path, strict: bool = False) -> pathlib.Path:
+            # Simula una unidad virtual Windows (subst/network) cuya resolución a bajo nivel difiere
+            if os.path.normcase(str(path_obj)) == os.path.normcase(str(rig.manual_runtime)):
+                return tmp_path / "UnidadFisicaSubyacente" / "Skyrim_Runtime_Manual"
+            return orig_resolve(path_obj, strict=strict)
+
+        monkeypatch.setattr(pathlib.Path, "resolve", _mock_resolve)
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert evaluacion.verdict is BinderPreflightVerdict.READY
+        assert evaluacion.is_ready is True
+
     def test_10_runtime_manual_no_declarado_sigue_rechazandose_como_tercer_directorio(
         self, tmp_path: pathlib.Path
     ) -> None:
@@ -789,6 +857,7 @@ class TestContratoR2RuntimeManualSaliente:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
 
@@ -893,6 +962,7 @@ class TestContratoR2RuntimeManualSaliente:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
 
@@ -915,6 +985,7 @@ class TestContratoR2RuntimeManualSaliente:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
         assert eval_traversal.verdict is BinderPreflightVerdict.BLOCKED
@@ -1071,6 +1142,7 @@ class TestContratoR2RuntimeManualSaliente:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
 
@@ -1106,6 +1178,7 @@ class TestContratoR2RuntimeManualSaliente:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
 
@@ -1400,6 +1473,7 @@ class TestContratoR3IdentidadInstanciaMO2:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
 
@@ -1618,6 +1692,7 @@ class TestContratoR3IdentidadInstanciaMO2:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
         assert eval_exe_steam.verdict is BinderPreflightVerdict.BLOCKED
@@ -1658,6 +1733,7 @@ class TestContratoR3IdentidadInstanciaMO2:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
 
@@ -1761,6 +1837,7 @@ class TestInvariantesReadOnlyYHermanoInspectorP7:
             transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
             outgoing_manual_runtime_root=rig.manual_runtime,
             approved_stock_reference_digest_file=rig.approved_digest_file,
+            stock_source_root=rig.stock_source,
         )
         assert managed_efectiva == rig.managed_source
         assert informe_ok_preflight["preflight_ready"] is True
@@ -1829,6 +1906,157 @@ class TestInvariantesReadOnlyYHermanoInspectorP7:
         salida_cli = json.loads(proc.stdout)
         assert salida_cli["listo_para_p7"] is False
 
+    def test_19d_inspector_y_preflight_aislamiento_stock_fail_closed_y_autoridad(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """P1: El inspector expone y transmite stock_source_root al preflight.
+        - Si hay hardlink cruzado entre runtime manual y Stock (con nombres diferentes), bloquea.
+        - Si no se suministra la evidencia requerida (stock_source_root ausente bajo STOCK_INDEPENDENT_TRANSITION), bloquea.
+        - Si se suministra una ruta arbitraria sin autoridad A1, bloquea.
+        - Tanto API como CLI emiten veredictos consistentes.
+        """
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        cfg_toml = tmp_path / "config.toml"
+        escaped_manual = str(rig.manual_runtime).replace("\\", "\\\\")
+        cfg_toml.write_text(f'skyrim_path = "{escaped_manual}"\n', encoding="utf-8")
+
+        monkeypatch.setattr(inspector, "default_runtime_probes", rig.probes_globales_activos)
+        monkeypatch.setenv("SKYRIM_PATH", str(rig.manual_runtime))
+
+        # 1. Hardlink cruzado a Stock bajo nombres diferentes:
+        # Stock tiene 'fuente_stock_alfa.dll', manual tiene 'manual_beta.dll'
+        stock_file = rig.stock_source / "fuente_stock_alfa.dll"
+        stock_file.write_bytes(b"CONTENIDO-STOCK-ALFA")
+        manual_hl = rig.manual_runtime / "manual_beta.dll"
+        os.link(stock_file, manual_hl)
+
+        # 1a: Invocación por API del inspector pasando stock_source_root:
+        # Debe detectar el hardlink cruzado con Stock y preflight_ready debe ser False
+        informe_hl, _ = inspector.construir_informe(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            config_path=cfg_toml,
+            managed_source_root=rig.managed_source,
+            clone_id=rig.clone_id,
+            mostrar_rutas=True,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            stock_source_root=rig.stock_source,
+        )
+        assert informe_hl["preflight_ready"] is False
+        assert informe_hl["preflight_verdict"] == BinderPreflightVerdict.BLOCKED.value
+        hl_findings = [h for h in informe_hl["hallazgos"] if str(h.get("clave")).startswith("preflight.")]
+        assert any(
+            "manual_beta.dll" in str(h.get("detalle", "")) and "fuente_stock_alfa.dll" in str(h.get("detalle", ""))
+            for h in hl_findings
+        ), f"No se reportó la colisión física de inodos entre manual y Stock: {hl_findings}"
+
+        # 1b: Invocación por CLI (--stock-source):
+        argv = [
+            "--storage-root",
+            str(rig.storage),
+            "--mo2-instance",
+            str(rig.mo2_active_global),
+            "--config",
+            str(cfg_toml),
+            "--managed-source",
+            str(rig.managed_source),
+            "--clone-id",
+            rig.clone_id,
+            "--transition-policy",
+            BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION.value,
+            "--outgoing-manual-runtime",
+            str(rig.manual_runtime),
+            "--approved-stock-digest-file",
+            str(rig.approved_digest_file),
+            "--stock-source",
+            str(rig.stock_source),
+            "--mostrar-rutas",
+        ]
+        ret = inspector.main(argv)
+        assert ret == 1
+        capturado = capsys.readouterr()
+        salida_json = json.loads(capturado.out)
+        assert salida_json["preflight_ready"] is False
+        assert salida_json["preflight_verdict"] == BinderPreflightVerdict.BLOCKED.value
+
+        # 2. Sin stock_source_root bajo STOCK_INDEPENDENT_TRANSITION:
+        # Evidencia insuficiente para verificar aislamiento -> no debe producir READY
+        informe_sin_stock, _ = inspector.construir_informe(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            config_path=cfg_toml,
+            managed_source_root=rig.managed_source,
+            clone_id=rig.clone_id,
+            mostrar_rutas=True,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            stock_source_root=None,
+        )
+        assert informe_sin_stock["preflight_ready"] is False
+        assert informe_sin_stock["preflight_verdict"] == BinderPreflightVerdict.BLOCKED.value
+
+        # 3. Ruta arbitraria como stock_source_root (sin autoridad de referencia Stock):
+        falsa_stock = tmp_path / "falsa_stock_arbitraria"
+        falsa_stock.mkdir()
+        (falsa_stock / "SkyrimSE.exe").write_bytes(b"dummy")
+        informe_falsa, _ = inspector.construir_informe(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            config_path=cfg_toml,
+            managed_source_root=rig.managed_source,
+            clone_id=rig.clone_id,
+            mostrar_rutas=True,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            stock_source_root=falsa_stock,
+        )
+        assert informe_falsa["preflight_ready"] is False
+        assert informe_falsa["preflight_verdict"] == BinderPreflightVerdict.BLOCKED.value
+
+        # 4. Eliminando el hardlink cruzado, con la fuente Stock legítima y autorizada -> preflight_ready=True
+        manual_hl.unlink()
+        stock_file.unlink()
+        informe_limpio, _ = inspector.construir_informe(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            config_path=cfg_toml,
+            managed_source_root=rig.managed_source,
+            clone_id=rig.clone_id,
+            mostrar_rutas=True,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            stock_source_root=rig.stock_source,
+        )
+        assert informe_limpio["preflight_ready"] is True
+        assert informe_limpio["preflight_verdict"] == BinderPreflightVerdict.READY.value
+        assert informe_limpio["stock_source"] == str(rig.stock_source)
+
+        # 5. Retrocompatibilidad: bajo STRICT_PROVIDER_IDLE sin stock_source_root no se exige Stock
+        rig_idle = RigStockManual(tmp_path / "rig_idle", steam_activo=False)
+        cfg_idle = tmp_path / "rig_idle" / "config.toml"
+        escaped_idle = str(rig_idle.manual_runtime).replace("\\", "\\\\")
+        cfg_idle.write_text(f'skyrim_path = "{escaped_idle}"\n', encoding="utf-8")
+        monkeypatch.setattr(inspector, "default_runtime_probes", rig_idle.probes_globales_activos)
+        monkeypatch.setenv("SKYRIM_PATH", str(rig_idle.manual_runtime))
+        informe_retro, _ = inspector.construir_informe(
+            storage_root=rig_idle.storage,
+            mo2_instance_dir=rig_idle.mo2_active_global,
+            config_path=cfg_idle,
+            managed_source_root=rig_idle.managed_source,
+            clone_id=rig_idle.clone_id,
+            mostrar_rutas=True,
+            transition_policy=BinderTransitionPolicy.STRICT_PROVIDER_IDLE,
+            outgoing_manual_runtime_root=rig_idle.manual_runtime,
+            stock_source_root=None,
+        )
+        assert informe_retro["preflight_ready"] is True
+        assert informe_retro["preflight_verdict"] == BinderPreflightVerdict.READY.value
+
     def test_20_sin_cambios_en_seleccion_de_ejecutables_ni_activacion_productiva(self, tmp_path: pathlib.Path) -> None:
         """Test 20: EMISION_PRODUCTIVA_HABILITADA permanece False, _NOMBRES_LANZADOR intacto y
         entradas de lanzadores no migradas siguen bloqueando sin atajos artificiales.
@@ -1872,6 +2100,7 @@ class TestInvariantesReadOnlyYHermanoInspectorP7:
             config_skyrim_path=str(rig.manual_runtime),
             exigir_config_skyrim_path=True,
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
             probes=rig.probes_globales_activos(),
         )
         assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
