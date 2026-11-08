@@ -1,10 +1,11 @@
 """E3-R3: el ``WIRING_SECURITY_HOLD`` se aplica en CÓDIGO, no sólo en la documentación.
 
 El backend ``brokered`` quedó seleccionable con una línea de ``config.toml``. Mientras la
-contención del worker en el Job Object no esté VERIFICADA (el proceso Python efectivo de un
-ejecutable PyInstaller *onefile* y los descendientes creados antes de la verificación pueden
-quedar fuera del Job y sobrevivir a su terminación), esa línea no puede bastar para lanzar
-TexGen/DynDOLOD. Una prosa en el CHANGELOG no detiene a un operador; una barrera sí.
+contención del worker en el Job Object no esté VERIFICADA de punta a punta (la implementan el
+fence de supervisión #856, la identidad del Job #860/#872 y la adopción de descendientes #877;
+faltan la evidencia sobre el binario final y el visto bueno del auditor independiente), esa
+línea no puede bastar para lanzar TexGen/DynDOLOD. Una prosa en el CHANGELOG no detiene a un
+operador; una barrera sí.
 
 Propiedades que fijan estos tests (cada una con su ancla, no con un recordatorio):
 
@@ -19,11 +20,10 @@ Propiedades que fijan estos tests (cada una con su ancla, no con un recordatorio
 * **Hermanos cerrados por enumeración**: quién construye la strategy real, quién llama a quién y
   quién lee o toca la constante en producción y en los tests están congelados por igualdad literal.
 
-La constante NO pasa a ``True`` cuando se fusione el fence de supervisión del broker (#856):
-ese fence impide el despacho prematuro pero no prueba que el proceso Python efectivo del
-onefile pertenezca al Job correcto. Habilitarla exige una contención verificada (adopción de los
-descendientes previos en el bridge, o un Job con nombre que el worker compruebe, u otra solución
-equivalente que cubra también lo creado antes de la verificación).
+La constante NO pasa a ``True`` por fusionar un PR de contención: el fence (#856), la identidad
+del Job (#860/#872) y la adopción (#877) ya están en ``main``. Habilitarla exige la contención
+verificada de punta a punta (evidencia sobre el binario final y visto bueno del auditor
+independiente) y se hace en un PR aparte, con revisión adversarial.
 """
 
 from __future__ import annotations

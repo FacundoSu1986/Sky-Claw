@@ -866,19 +866,20 @@ _BACKENDS_VALIDOS = (DYNDOLOD_BACKEND_STANDALONE, DYNDOLOD_BACKEND_BROKERED)
 #: de entorno, ni un parámetro: un operador no puede levantarla editando una línea. Sólo los tests
 #: del cableado la levantan, con ``monkeypatch``.
 #:
-#: NO pasa a ``True`` por fusionar el fence de supervisión del broker (#856): ese fence impide que
-#: el worker despache antes de la confirmación del bridge, pero NO prueba que el proceso Python
-#: efectivo de un ejecutable PyInstaller *onefile* (el hijo del bootloader) pertenezca al Job
-#: Object correcto, ni cubre los descendientes creados antes de la verificación. Se habilita sólo
-#: con una contención VERIFICADA —adopción de los descendientes previos en el bridge (P1), un Job
-#: con nombre que el worker compruebe (P2) u otra solución equivalente— y con la evidencia en
+#: NO pasa a ``True`` por fusionar un PR de contención. El fence de supervisión del broker (#856),
+#: el Job con nombre que el worker comprueba (#860/#872) y la adopción de descendientes en el
+#: bridge (#877) ya están en ``main``: cierran el hueco que originó el HOLD en el código y con los
+#: laboratorios de Linux y ``windows-latest``. Falta la contención VERIFICADA de punta a punta:
+#: evidencia sobre el binario final en un sandbox Windows, el visto bueno del auditor independiente,
+#: actualizar el bundle del bridge instalado en MO2 y decidir la política de teardown. Se levanta
+#: en un PR aparte, con revisión adversarial. Ver
 #: ``docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md``.
 _CONTENCION_DEL_WORKER_VERIFICADA = False
 
 _MOTIVO_DEL_HOLD = (
     "el backend 'brokered' está en WIRING_SECURITY_HOLD: la contención del worker en el Job Object "
-    "no está verificada (el proceso Python efectivo y los descendientes creados antes de la "
-    "verificación pueden quedar fuera del Job y sobrevivir a su terminación). No se construye la "
+    "no está verificada de punta a punta (faltan la evidencia sobre el binario final y el visto bueno "
+    "del auditor independiente). No se construye la "
     "strategy ni se lanza ninguna herramienta, y no hay fallback a standalone. Para correr la etapa 9 "
     "poné dyndolod_backend = 'standalone' en config.toml. "
     "Ver docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md."
