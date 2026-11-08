@@ -30,7 +30,7 @@ from sky_claw.local.local_config import LocalConfig
 _SIN_CONFIG_FIELD_POR_DECISION: frozenset[str] = frozenset({"dyndolod"})
 
 
-def test_toda_spec_con_variable_de_entorno_tiene_config_field_o_excepcion_con_nombre() -> None:
+def test_registry_spec_con_variable_de_entorno_sin_config_field_es_solo_la_excepcion_con_nombre() -> None:
     sin_config = {
         spec.key
         for spec in EXTERNAL_TOOL_REGISTRY.values()
@@ -40,12 +40,12 @@ def test_toda_spec_con_variable_de_entorno_tiene_config_field_o_excepcion_con_no
     assert sin_config == _SIN_CONFIG_FIELD_POR_DECISION
 
 
-def test_wrye_bash_declara_su_campo_de_config() -> None:
+def test_build_tool_path_cfg_keys_con_wrye_bash_declarado_devuelve_wrye_bash_exe() -> None:
     assert EXTERNAL_TOOL_REGISTRY["wrye_bash"].config_field == "wrye_bash_exe"
     assert build_tool_path_cfg_keys()["wrye_bash"] == "wrye_bash_exe"
 
 
-def test_todo_config_field_existe_en_las_dos_clases_de_config() -> None:
+def test_registry_config_field_declarado_existe_en_config_y_en_localconfig() -> None:
     """``Config`` (TOML) y ``LocalConfig`` (JSON legacy) no son intercambiables (AGENTS.md)."""
     campos_locales = {campo.name for campo in dataclasses.fields(LocalConfig)}
     defaults = Config.__dict__["_load_defaults"](SimpleNamespace())
@@ -57,7 +57,7 @@ def test_todo_config_field_existe_en_las_dos_clases_de_config() -> None:
         assert spec.config_field in campos_locales, f"{spec.key}: falta {spec.config_field!r} en LocalConfig"
 
 
-def test_el_escaner_de_la_gui_se_siembra_con_la_ruta_de_wrye_bash_de_la_config(tmp_path: Path) -> None:
+def test_build_environment_scanner_con_wrye_bash_exe_configurado_siembra_la_ruta(tmp_path: Path) -> None:
     exe = tmp_path / "Wrye Bash" / "Wrye Bash.exe"
     exe.parent.mkdir()
     exe.write_bytes(b"MZ")
@@ -69,7 +69,7 @@ def test_el_escaner_de_la_gui_se_siembra_con_la_ruta_de_wrye_bash_de_la_config(t
     assert escaner._configured_tool_paths["wrye_bash"] == exe
 
 
-def test_sin_ruta_configurada_el_escaner_no_siembra_wrye_bash(tmp_path: Path) -> None:
+def test_build_environment_scanner_sin_ruta_configurada_no_siembra_wrye_bash(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text("", encoding="utf-8")
 
