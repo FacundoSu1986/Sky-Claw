@@ -97,9 +97,9 @@ def test_probe_hijo_no_inicializa_logging(tmp_path) -> None:
 
 
 def test_nombre_de_log_worker_bloquea_path_traversal() -> None:
-    from sky_claw.local.mo2.vfs_worker import _worker_log_name
+    from sky_claw.local.mo2.vfs_arranque import nombre_de_log_del_worker  # movido desde vfs_worker (H-02)
 
-    assert _worker_log_name("../../otro\\job") == "vfs-worker-otro-job.log"
+    assert nombre_de_log_del_worker("../../otro\\job") == "vfs-worker-otro-job.log"
 
 
 def test_worker_registra_resultado_terminal_fallido(
@@ -220,14 +220,14 @@ def test_worker_sin_job_object_no_arranca_ni_abre_logs(tmp_path) -> None:
 
 
 def test_worker_que_no_prueba_su_identidad_no_conecta_y_termina_a_sus_descendientes(tmp_path) -> None:
-    from sky_claw.local.mo2 import vfs_worker
+    from sky_claw.local.mo2 import vfs_arranque, vfs_worker
 
     with (
-        patch.object(vfs_worker, "default_log_dir", return_value=tmp_path),
-        patch.object(vfs_worker, "setup_logging"),
+        patch.object(vfs_arranque, "directorio_de_logs", return_value=tmp_path),
+        patch.object(vfs_worker, "setup_logging") as setup,
         patch.object(vfs_worker, "shutdown_logging", return_value=True) as shutdown,
         patch.object(vfs_worker, "verificar_identidad_del_job", side_effect=JobIdentityError("fuera del Job")),
-        patch.object(vfs_worker, "terminar_descendientes_vivos", return_value=(41, 42)) as limpiar,
+        patch.object(vfs_arranque, "terminar_descendientes_vivos", return_value=(41, 42)) as limpiar,
         patch.object(vfs_worker.asyncio, "run") as run,
     ):
         resultado = vfs_worker.worker_main(_argv_del_worker())
@@ -235,26 +235,50 @@ def test_worker_que_no_prueba_su_identidad_no_conecta_y_termina_a_sus_descendien
     assert resultado == 72
     run.assert_not_called()  # ni un socket al broker: no hay hello sin prueba
     limpiar.assert_called_once_with()
-    shutdown.assert_called_once_with()
+    # H-02: sin prueba no se configura el logging (abre archivos y listeners), así que tampoco hay nada que cerrar.
+    setup.assert_not_called()
+    shutdown.assert_not_called()
 
 
 def test_si_la_limpieza_tambien_falla_el_worker_igual_sale_con_el_codigo_de_identidad(tmp_path, caplog) -> None:
-    from sky_claw.local.mo2 import vfs_worker
+    from sky_claw.local.mo2 import vfs_arranque, vfs_worker
 
     with (
-        patch.object(vfs_worker, "default_log_dir", return_value=tmp_path),
+        patch.object(vfs_arranque, "directorio_de_logs", return_value=tmp_path),
         patch.object(vfs_worker, "setup_logging"),
         patch.object(vfs_worker, "shutdown_logging", return_value=True),
         patch.object(vfs_worker, "verificar_identidad_del_job", side_effect=JobIdentityError("fuera del Job")),
-        patch.object(vfs_worker, "terminar_descendientes_vivos", side_effect=JobIdentityError("no murió el 13")),
+        patch.object(vfs_arranque, "terminar_descendientes_vivos", side_effect=JobIdentityError("no murió el 13")),
         patch.object(vfs_worker.asyncio, "run") as run,
-        caplog.at_level(logging.CRITICAL, logger="sky_claw.local.mo2.vfs_worker"),
+        caplog.at_level(logging.CRITICAL, logger="sky_claw.local.mo2.vfs_arranque"),
     ):
         resultado = vfs_worker.worker_main(_argv_del_worker())
 
     assert resultado == 72
     run.assert_not_called()
     assert any(getattr(r, "event", "") == "vfs_worker_cleanup_failed" for r in caplog.records)
+
+
+def test_el_logging_se_configura_solo_despues_de_verificar_el_job(tmp_path) -> None:
+    """Orden observable: ``verificar_identidad_del_job`` → ``setup_logging`` → sesión (no al revés)."""
+    from sky_claw.local.mo2 import vfs_worker
+
+    orden = MagicMock()
+
+    def _run(coro) -> None:  # noqa: ANN001
+        coro.close()
+
+    with (
+        patch.object(vfs_worker, "default_log_dir", return_value=tmp_path),
+        patch.object(vfs_worker, "verificar_identidad_del_job", orden.verificar),
+        patch.object(vfs_worker, "setup_logging", orden.setup),
+        patch.object(vfs_worker, "shutdown_logging", return_value=True),
+        patch.object(vfs_worker.asyncio, "run", side_effect=_run),
+    ):
+        orden.verificar.return_value = PRUEBA
+        vfs_worker.worker_main(_argv_del_worker())
+
+    assert [llamada[0] for llamada in orden.mock_calls] == ["verificar", "setup"]
 
 
 def test_la_sesion_recibe_la_prueba_que_produjo_el_verificador(tmp_path) -> None:
