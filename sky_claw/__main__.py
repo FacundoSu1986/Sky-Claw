@@ -25,6 +25,18 @@ from sky_claw.compat import setup_python_compat
 
 setup_python_compat()
 
+# #856: el worker VFS y su nieto de sonda se despachan ANTES de importar
+# ``AppContext``/``Config``/``keyring``. En Windows, importar ``keyring``
+# dispara ``platform.win32_ver()`` → ``cmd.exe /c ver`` en tiempo de import,
+# lo cual crearía subprocesos hijos antes del fence de supervisión del Job Object.
+if len(sys.argv) >= 2 and sys.argv[1] in ("--vfs-worker", "--vfs-probe-child"):
+    from sky_claw.local.mo2.vfs_worker import worker_main as _vfs_worker_main  # noqa: PLC0415
+
+    _vfs_argv = sys.argv[2:]
+    if sys.argv[1] == "--vfs-probe-child":
+        _vfs_argv = ["--probe-child", *_vfs_argv]
+    raise SystemExit(_vfs_worker_main(_vfs_argv))
+
 # T5-v2.1: modo worker del ejecutable congelado. El gate UIA productivo corre en
 # un proceso descartable (una llamada COM que nunca retorna no se puede matar
 # desde un hilo), y en modo congelado el helper ES este ejecutable re-invocado
@@ -102,7 +114,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default=None,
-        help="Command to execute in oneshot mode",
+        help="Command to execute in oneshot mode, or the action for security mode (e.g. 'scan <path>')",
     )
     parser.add_argument(
         "--mo2-root",
@@ -188,8 +200,36 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _nombres_de_modo(parser: argparse.ArgumentParser) -> frozenset[str]:
+    """Los valores válidos de ``--mode``, leídos del parser real.
+
+    La única fuente es el ``choices=[...]`` literal de ``add_argument("--mode", ...)``: ``tests/test_cli_modes.py`` lo
+    extrae del AST de este archivo (contrato estático del launcher), así que no puede pasar a ser una constante aparte.
+    """
+    return frozenset(parser._option_string_actions["--mode"].choices or ())
+
+
+#: Modos cuyo despacho en ``_main`` consume el posicional ``command``: ``oneshot`` lo ejecuta y ``security`` se lo
+#: pasa a ``_run_security`` (``--mode security "scan <ruta>"``). En cualquier otro modo el posicional se ignoraba en
+#: silencio y la invocación caía al REPL. ``tests/test_main.py`` congela la clasificación contra los ``choices``.
+_MODOS_CON_COMANDO = frozenset({"oneshot", "security"})
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    return _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if args.mode not in _MODOS_CON_COMANDO and args.command is not None:
+        # Solo se sugiere ``--mode <valor>`` si el valor ES un modo; un comando corriente va con ``--mode oneshot``.
+        sugerencia = (
+            f"¿quisiste pasar `--mode {args.command}`?"
+            if args.command in _nombres_de_modo(parser)
+            else "¿quisiste ejecutarlo con `--mode oneshot`?"
+        )
+        parser.error(
+            f"el argumento posicional {args.command!r} solo se admite con `--mode oneshot` o `--mode security` "
+            f"({sugerencia})"
+        )
+    return args
 
 
 # Compat: el helper vive ahora en logging_config (compartido con el bootstrap de

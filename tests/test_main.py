@@ -9,8 +9,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.__main__ import AppContext, _install_vfs_bridge, _main, _parse_args
+from sky_claw.__main__ import AppContext, _build_parser, _install_vfs_bridge, _main, _parse_args
 from sky_claw.config import Config
+
+#: Qué hace cada ``--mode`` con el posicional ``command``: ``True`` si ``_main`` lo consume (``oneshot`` lo ejecuta,
+#: ``security`` lo despacha a ``_run_security``), ``False`` si lo ignoraría en silencio. Se congela por igualdad
+#: literal contra los ``choices`` reales del parser: agregar un modo sin clasificarlo rompe el test.
+_MODOS_Y_SU_POSICIONAL: dict[str, bool] = {
+    "cli": False,
+    "telegram": False,
+    "oneshot": True,
+    "gui": False,
+    "security": True,
+    "install-vfs-bridge": False,
+    "vfs-health": False,
+}
 
 # ------------------------------------------------------------------
 # Argument parsing
@@ -70,6 +83,53 @@ class TestParseArgs:
         loot = tmp_path / "loot.exe"
         args = _parse_args(["--loot-exe", str(loot)])
         assert args.loot_exe == loot
+
+    @pytest.mark.parametrize(
+        "modo_posicional",
+        ["cli", "telegram", "oneshot", "gui", "security", "install-vfs-bridge", "vfs-health"],
+    )
+    def test_rechaza_modo_pasado_como_argumento_posicional_sin_flag_mode(self, modo_posicional: str) -> None:
+        """Pasar p. ej. ``python -m sky_claw vfs-health`` sin ``--mode`` no debe caer en silencio al REPL."""
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_args([modo_posicional])
+        assert exc_info.value.code == 2
+
+    def test_mode_security_acepta_su_comando_posicional(self) -> None:
+        """``--mode security "scan <ruta>"`` es el uso documentado (DEPLOYMENT.md, docs/user/cli.md)."""
+        args = _parse_args(["--mode", "security", "scan ."])
+        assert args.mode == "security"
+        assert args.command == "scan ."
+
+    def test_el_error_sugiere_oneshot_para_un_comando_corriente(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit):
+            _parse_args(["install Requiem"])
+        err = capsys.readouterr().err
+        assert "ejecutarlo con `--mode oneshot`" in err
+        assert "quisiste pasar" not in err
+
+    def test_el_error_sugiere_el_modo_cuando_el_posicional_es_un_nombre_de_modo(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit):
+            _parse_args(["vfs-health"])
+        err = capsys.readouterr().err
+        assert "quisiste pasar `--mode vfs-health`" in err
+        assert "ejecutarlo" not in err
+
+    def test_los_modos_clasificados_son_exactamente_los_choices_del_parser(self) -> None:
+        accion_mode = next(a for a in _build_parser()._actions if "--mode" in a.option_strings)
+        assert set(accion_mode.choices) == set(_MODOS_Y_SU_POSICIONAL)
+
+    @pytest.mark.parametrize(("modo", "consume_el_posicional"), sorted(_MODOS_Y_SU_POSICIONAL.items()))
+    def test_el_posicional_solo_se_admite_en_los_modos_que_lo_consumen(
+        self, modo: str, consume_el_posicional: bool
+    ) -> None:
+        if consume_el_posicional:
+            assert _parse_args(["--mode", modo, "x"]).command == "x"
+        else:
+            with pytest.raises(SystemExit) as exc_info:
+                _parse_args(["--mode", modo, "x"])
+            assert exc_info.value.code == 2
 
 
 # ------------------------------------------------------------------
@@ -160,6 +220,25 @@ class TestOneshot:
 
             mock_instance.start.assert_awaited_once()
             mock_router.chat.assert_awaited_once_with("search Requiem", mock_instance.session, chat_id="oneshot")
+            mock_instance.stop.assert_awaited_once()
+
+
+class TestSecurity:
+    """El modo ``security`` recibe su comando como posicional y lo despacha a ``_run_security``."""
+
+    @pytest.mark.asyncio
+    async def test_security_despacha_el_comando_posicional_a_run_security(self) -> None:
+        with (
+            patch("sky_claw.__main__.AppContext") as mock_app_context,
+            patch("sky_claw.__main__._run_security", new_callable=AsyncMock) as run_security,
+        ):
+            mock_instance = mock_app_context.return_value
+            mock_instance.start = AsyncMock()
+            mock_instance.stop = AsyncMock()
+
+            await _main(["--mode", "security", "scan ."])
+
+            run_security.assert_awaited_once_with(mock_instance, "scan .")
             mock_instance.stop.assert_awaited_once()
 
 
@@ -423,3 +502,100 @@ async def test_main_async_no_configura_handlers_dentro_del_loop() -> None:
         await main_module._main(["--mode", "oneshot"])
 
     setup.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("argv_entrada", "worker_argv_esperado", "codigo_retorno"),
+    [
+        (
+            ["--vfs-worker", "--descriptor", "d.json", "--job-id", "j1", "--manifest", "m.json"],
+            ["--descriptor", "d.json", "--job-id", "j1", "--manifest", "m.json"],
+            0,
+        ),
+        (
+            ["--vfs-probe-child", "canary.txt", "deadbeef"],
+            ["--probe-child", "canary.txt", "deadbeef"],
+            17,
+        ),
+        (
+            ["--vfs-worker"],
+            [],
+            2,
+        ),
+        (
+            ["--vfs-probe-child"],
+            ["--probe-child"],
+            2,
+        ),
+    ],
+)
+def test_despacho_vfs_worker_a_nivel_de_modulo_se_comporta_igual_que_main(
+    monkeypatch: pytest.MonkeyPatch,
+    argv_entrada: list[str],
+    worker_argv_esperado: list[str],
+    codigo_retorno: int,
+) -> None:
+    """Ancla: el despacho temprano de ``--vfs-worker`` / ``--vfs-probe-child`` a nivel de módulo en
+    ``sky_claw/__main__.py`` (antes de importar ``AppContext``/``Config``) y el despacho en ``main()``
+    transforman ``argv`` de forma idéntica y salen con el mismo código de ``worker_main``."""
+    import importlib.util
+    import sys
+
+    from sky_claw import __main__ as main_module
+    from sky_claw.local.mo2 import vfs_worker
+
+    recibidos_modulo: list[list[str]] = []
+    recibidos_main_explicito: list[list[str]] = []
+    recibidos_main_sys_argv: list[list[str]] = []
+
+    # 1. Despacho a nivel de módulo (importando/ejecutando __main__.py con __name__ != "__main__",
+    # de modo que ``if __name__ == "__main__": main()`` no corre y solo actúa el guard superior).
+    monkeypatch.setattr(
+        vfs_worker,
+        "worker_main",
+        lambda argv: (recibidos_modulo.append(list(argv)), codigo_retorno)[1],
+    )
+    monkeypatch.setattr(sys, "argv", ["sky_claw", *argv_entrada])
+    spec = importlib.util.spec_from_file_location("sky_claw._test_main_dispatch", main_module.__file__)
+    assert spec is not None and spec.loader is not None
+    modulo_aislado = importlib.util.module_from_spec(spec)
+    with pytest.raises(SystemExit) as exit_modulo:
+        spec.loader.exec_module(modulo_aislado)
+
+    # 2. Despacho en main(argv) con lista explícita.
+    monkeypatch.setattr(
+        vfs_worker,
+        "worker_main",
+        lambda argv: (recibidos_main_explicito.append(list(argv)), codigo_retorno)[1],
+    )
+    with (
+        patch.object(main_module, "setup_logging") as setup_log,
+        patch.object(main_module, "_parse_args") as parse_args,
+        pytest.raises(SystemExit) as exit_main_explicito,
+    ):
+        main_module.main(list(argv_entrada))
+    setup_log.assert_not_called()
+    parse_args.assert_not_called()
+
+    # 3. Despacho en main(None) leyendo sys.argv[1:].
+    monkeypatch.setattr(
+        vfs_worker,
+        "worker_main",
+        lambda argv: (recibidos_main_sys_argv.append(list(argv)), codigo_retorno)[1],
+    )
+    monkeypatch.setattr(sys, "argv", ["sky_claw", *argv_entrada])
+    with (
+        patch.object(main_module, "setup_logging") as setup_log_sys,
+        patch.object(main_module, "_parse_args") as parse_args_sys,
+        pytest.raises(SystemExit) as exit_main_sys_argv,
+    ):
+        main_module.main(None)
+    setup_log_sys.assert_not_called()
+    parse_args_sys.assert_not_called()
+
+    assert recibidos_modulo == [worker_argv_esperado]
+    assert recibidos_main_explicito == recibidos_modulo
+    assert recibidos_main_sys_argv == recibidos_modulo
+    assert exit_modulo.value.code == codigo_retorno
+    assert exit_main_explicito.value.code == exit_modulo.value.code
+    assert exit_main_sys_argv.value.code == exit_modulo.value.code
