@@ -28,7 +28,7 @@ from .runtime import (
     BridgeEventOutbox,
     BridgeLaunchController,
     ascii_safe_message,
-    bridge_error_event,
+    bridge_error_event_for_command,
     verify_mo2_breakaway_allowed,
 )
 
@@ -300,13 +300,7 @@ class SkyClawBridgePlugin(mobase.IPlugin):
                     raise BridgeCommandError(f"operación no permitida: {message_type!r}")
             except (OSError, RuntimeError, ValueError) as exc:
                 _qt_warning(f"Sky-Claw bridge rechazó comando: {exc}")
-                self._outgoing.put(
-                    bridge_error_event(
-                        command=message.get("type"),
-                        job_id=message.get("job_id"),
-                        exc=exc,
-                    )
-                )
+                self._outgoing.put(bridge_error_event_for_command(message, exc))
 
     def _shutdown(self) -> None:
         if self._controller is not None:

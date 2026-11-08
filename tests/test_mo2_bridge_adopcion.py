@@ -291,6 +291,138 @@ def test_si_no_converge_en_las_pasadas_permitidas_falla_cerrado() -> None:
         _adoptar(api, max_passes=3)
 
 
+def test_si_no_converge_el_error_es_de_terminacion_porque_no_se_puede_afirmar_que_no_quedo_nada_fuera() -> None:
+    """Sin punto fijo hay procesos nacidos después de la última pasada: no se sabe si alguno quedó fuera del Job."""
+    api = _ApiFalsa()
+    api.hijo(101, PID_RAIZ, 60)
+    siguiente = iter(range(102, 200))
+
+    def _otro_hijo_cada_vez() -> None:
+        api.hijo(next(siguiente), PID_RAIZ, 61)
+        api.al_asignar[max(api.tabla)] = _otro_hijo_cada_vez
+
+    api.al_asignar[101] = _otro_hijo_cada_vez
+
+    with pytest.raises(BridgeTerminationError, match="no convergió"):
+        _adoptar(api, max_passes=3)
+
+
+# Auditoría independiente, hallazgo de Codex (P1) sobre #877: el camino del ``launch`` debe distinguir entre
+# «no se pudo contener PERO se terminó» (un rechazo ordinario: nada vivo) y «queda un descendiente vivo fuera del Job»
+# (terminalidad desconocida, como la del monitor: el broker debe poner la instancia en cuarentena). La tabla ENUMERA
+# los escenarios; un modo de fallo nuevo en ``adopt_descendants`` obliga a clasificarlo acá.
+def _asignar_falla_y_terminar_ok(api: _ApiFalsa) -> None:
+    api.hijo(101, PID_RAIZ, 60)
+    api.fallar_asignar.add(101)
+
+
+def _asignar_y_terminar_fallan(api: _ApiFalsa) -> None:
+    api.hijo(101, PID_RAIZ, 60)
+    api.fallar_asignar.add(101)
+    api.no_muere.add(101)
+
+
+def _no_se_puede_abrir(api: _ApiFalsa) -> None:
+    api.hijo(101, PID_RAIZ, 60)
+    api.fallar_abrir.add(101)
+
+
+def _uno_terminado_y_otro_vivo(api: _ApiFalsa) -> None:
+    api.hijo(101, PID_RAIZ, 60)
+    api.hijo(102, PID_RAIZ, 60)
+    api.fallar_asignar.update({101, 102})
+    api.no_muere.add(102)
+
+
+@pytest.mark.parametrize(
+    ("preparar", "queda_vivo_fuera_del_job"),
+    [
+        pytest.param(_asignar_falla_y_terminar_ok, False, id="no_se_adopta_pero_se_termina"),
+        pytest.param(_asignar_y_terminar_fallan, True, id="no_se_adopta_ni_se_termina"),
+        pytest.param(_no_se_puede_abrir, True, id="no_se_puede_abrir"),
+        pytest.param(_uno_terminado_y_otro_vivo, True, id="mixto_queda_uno_vivo"),
+    ],
+)
+def test_solo_un_descendiente_vivo_fuera_del_job_hace_el_error_de_terminacion(
+    preparar: Callable[[_ApiFalsa], None], queda_vivo_fuera_del_job: bool
+) -> None:
+    api = _ApiFalsa()
+    preparar(api)
+
+    with pytest.raises(BridgeCommandError, match="no se pudo contener a los descendientes") as salida:
+        _adoptar(api)
+
+    assert isinstance(salida.value, BridgeTerminationError) is queda_vivo_fuera_del_job
+
+
+def test_el_error_de_terminacion_nombra_a_los_que_quedaron_vivos_y_no_a_los_terminados() -> None:
+    api = _ApiFalsa()
+    _uno_terminado_y_otro_vivo(api)
+
+    with pytest.raises(BridgeTerminationError) as salida:
+        _adoptar(api)
+
+    mensaje = str(salida.value)
+    assert "vivos fuera del Job" in mensaje
+    assert "[102]" in mensaje, "debe nombrar el PID que quedó vivo"
+    assert "[101" not in mensaje, "el PID terminado con éxito no está vivo"
+
+
+def test_el_controlador_conserva_el_tipo_de_terminacion_al_rechazar_el_launch(tmp_path: pathlib.Path) -> None:
+    """El ``launch`` limpia el Job y reenvía: no puede degradar el error de terminación a uno ordinario."""
+    bitacora: list[str] = []
+    eventos: list[dict[str, object]] = []
+    controlador, organizer, manifiesto = _controlador(
+        tmp_path, bitacora, eventos, falla_adopcion=BridgeTerminationError("quedan vivos fuera del Job: [101]")
+    )
+    organizer.liberar.set()
+
+    with pytest.raises(BridgeTerminationError, match="101"):
+        controlador.launch(_mensaje(manifiesto))
+
+    assert "evento:launch_ack" not in bitacora
+    assert controlador._jobs == {}
+
+
+@pytest.mark.parametrize(
+    ("tipo", "excepcion", "comando", "kind"),
+    [
+        pytest.param(
+            "launch_worker", BridgeTerminationError("vivos"), "terminate", "termination_failed", id="launch_con_vivos"
+        ),
+        pytest.param("launch_worker", BridgeCommandError("no"), "launch_worker", "rejected", id="launch_rechazado"),
+        pytest.param("launch_worker", OSError("disco"), "launch_worker", "rejected", id="launch_oserror"),
+        pytest.param("cancel", BridgeTerminationError("vivos"), "cancel", "termination_failed", id="cancel_con_vivos"),
+        pytest.param("cancel", BridgeCommandError("no"), "cancel", "rejected", id="cancel_rechazado"),
+    ],
+)
+def test_el_evento_de_error_clasifica_los_vivos_del_launch_como_terminacion(
+    tipo: str, excepcion: Exception, comando: str, kind: str
+) -> None:
+    """El broker pone en cuarentena solo ante ``cancel``/``terminate``: un launch con vivos se reporta como ``terminate``."""
+    evento = puente.bridge_error_event_for_command({"type": tipo, "job_id": "job-1"}, excepcion)
+
+    assert evento["command"] == comando
+    assert evento["kind"] == kind
+    assert evento["job_id"] == "job-1"
+    assert evento["event"] == "bridge_error"
+
+
+def test_el_plugin_reporta_los_errores_solo_por_la_funcion_que_clasifica() -> None:
+    """Ancla: un tercer sitio que arme ``bridge_error`` con ``command=message.get('type')`` saltearía la clasificación."""
+    plugin = RUNTIME.parent / "plugin.py"
+    arbol = ast.parse(plugin.read_text(encoding="utf-8"))
+    llamadas = [
+        nodo.func.id
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Name)
+        and nodo.func.id.startswith("bridge_error_event")
+    ]
+
+    assert llamadas == ["bridge_error_event_for_command"]
+
+
 def test_cierra_todos_los_handles_que_abrio_y_nunca_el_de_la_raiz() -> None:
     api = _ApiFalsa()
     api.hijo(101, PID_RAIZ, 60)

@@ -77,6 +77,20 @@ def bridge_error_event(
     }
 
 
+def bridge_error_event_for_command(message: Mapping[str, object], exc: Exception) -> dict[str, object]:
+    """``bridge_error`` de un comando fallido, con el ``command`` con el que el broker lo clasifica.
+
+    El broker pone la instancia en cuarentena solo ante ``cancel``/``terminate``; para un ``launch_worker`` fallido
+    asume «nada corrió» y libera todo. Un launch que falla porque quedó un descendiente vivo fuera del Job
+    (``BridgeTerminationError``) NO es un rechazo ordinario: se reporta como ``terminate``, la misma señal que emite el
+    monitor cuando el Job no se vacía, para que el broker conserve la terminalidad como desconocida.
+    """
+    command: object = message.get("type")
+    if command == "launch_worker" and isinstance(exc, BridgeTerminationError):
+        command = "terminate"
+    return bridge_error_event(command=command, job_id=message.get("job_id"), exc=exc)
+
+
 class BridgeEventOutbox(queue.Queue[dict[str, object]]):
     """Cola con espera acotada hasta confirmar el envío de sus eventos."""
 
@@ -175,12 +189,18 @@ def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _
     El error es por PID (como la limpieza de H-03): el fallo de uno no corta la ronda. Un descendiente vivo que no se
     pudo adoptar se intenta terminar (no puede quedar suelto fuera del Job) y al final se lanza ``BridgeCommandError``
     que los nombra a todos: el bridge no emite ``launch_ack``. Devuelve cuántos adoptó.
+
+    Dos clases de fallo, que el broker trata distinto: si todo lo que no se pudo adoptar se TERMINÓ, es un rechazo
+    ordinario (``BridgeCommandError``: nada quedó vivo). Si queda un descendiente vivo FUERA del Job (no se pudo abrir ni
+    terminar) o no se llegó a un punto fijo, la terminalidad es desconocida y el error es ``BridgeTerminationError``:
+    ``TerminateJobObject`` y ``KILL_ON_JOB_CLOSE`` no alcanzan a lo que no está en el Job.
     """
     root_pid = api.process_id(root_handle)
     retenidos: dict[int, int] = {root_pid: api.creation_time(root_handle)}  # pid -> creación
     abiertos: list[int] = []  # handles que abrió ESTA función (el de la raíz es del bridge: no se cierra)
     ajenos: set[int] = set()
     fallos: dict[int, str] = {}
+    vivos_fuera: set[int] = set()  # fallaron y NO se pudieron terminar: siguen vivos fuera del Job
     adoptados = 0
     try:
         for _ in range(max_passes):
@@ -213,16 +233,22 @@ def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _
                     adoptados += 1
                 except BridgeCommandError as exc:
                     detalle = str(exc)
+                    # Sigue vivo salvo que terminarlo funcione: sin handle (no se pudo abrir) o con ``terminate`` fallido
+                    # queda un proceso fuera del Job que nada de lo que hace ``launch`` alcanza.
+                    sigue_vivo = True
                     if handle is not None and pid in retenidos:
                         try:
                             api.terminate(handle)
+                            sigue_vivo = False
                         except BridgeCommandError as term_exc:
                             detalle += f"; no se pudo terminarlo: {term_exc}"
                     fallos[pid] = detalle
+                    if sigue_vivo:
+                        vivos_fuera.add(pid)
             if not hubo_nuevos:
                 break
         else:
-            raise BridgeCommandError(
+            raise BridgeTerminationError(
                 f"la adopción de descendientes no convergió en {max_passes} pasadas: algo sigue creando procesos"
             )
     finally:
@@ -231,6 +257,11 @@ def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _
                 api.close(handle_abierto)
     if fallos:
         detalle_total = "; ".join(f"pid {pid}: {motivo}" for pid, motivo in sorted(fallos.items()))
+        if vivos_fuera:
+            raise BridgeTerminationError(
+                "no se pudo contener a los descendientes del worker "
+                f"(quedan vivos fuera del Job: {sorted(vivos_fuera)}): {detalle_total}"
+            )
         raise BridgeCommandError(f"no se pudo contener a los descendientes del worker: {detalle_total}")
     return adoptados
 
