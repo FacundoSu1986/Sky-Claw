@@ -38,6 +38,8 @@ from sky_claw.local.frozen_runtime import (
 from sky_claw.local.frozen_runtime.binder_preflight import (
     BinderPreflightVerdict,
     BinderTransitionPolicy,
+    PreflightCheckCode,
+    PreflightCheckStatus,
     PreflightReasonCode,
     evaluar_binder_preflight,
 )
@@ -1074,6 +1076,181 @@ class TestContratoR2RuntimeManualSaliente:
         assert evaluacion.verdict is BinderPreflightVerdict.READY
         assert evaluacion.is_ready is True
         assert any("hardlink(s) históricos disjuntos" in n for n in evaluacion.notes)
+
+    def test_13d_hardlink_con_distinta_ruta_relativa_hacia_steam_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """P1: Hardlink entre Runtime Manual ('archivo_B.dll') y Steam ('archivo_A.dll') con distinta ruta relativa bloquea."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        # Steam contiene 'archivo_A.dll'
+        archivo_a = rig.managed_source / "archivo_A.dll"
+        archivo_a.write_bytes(b"CONTENIDO-A-STEAM-12345")
+
+        # Runtime manual contiene 'archivo_B.dll' que es un hardlink físico de 'archivo_A.dll'
+        archivo_b = rig.manual_runtime / "archivo_B.dll"
+        os.link(archivo_a, archivo_b)
+
+        # Verificamos que comparten st_ino en el filesystem pero sus nombres son distintos
+        st_a = os.stat(archivo_a)
+        st_b = os.stat(archivo_b)
+        assert (st_a.st_dev, st_a.st_ino) == (st_b.st_dev, st_b.st_ino)
+        assert archivo_a.name != archivo_b.name
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in evaluacion.reasons
+        check_safety = next(
+            (c for c in evaluacion.checks if c.check is PreflightCheckCode.PATH_SAFETY),
+            None,
+        )
+        assert check_safety is not None
+        assert check_safety.status is PreflightCheckStatus.FAIL
+        assert "archivo_B.dll" in check_safety.detail
+        assert "archivo_A.dll" in check_safety.detail
+
+    def test_13e_hardlink_cruzado_con_distinta_ruta_hacia_stock_o_generation_bloquea(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """P1: Hardlink con diferente ruta relativa hacia fuente Stock o Generation publicada bloquea."""
+        # Subcaso Stock: Stock contiene 'fuente_stock_x.dll', manual contiene 'runtime_manual_y.dll'
+        rig = RigStockManual(tmp_path / "caso_stock", steam_activo=True)
+        stock_file = rig.stock_source / "fuente_stock_x.dll"
+        stock_file.write_bytes(b"CONTENIDO-STOCK-FUENTE-XYZ")
+        manual_hl_stock = rig.manual_runtime / "runtime_manual_y.dll"
+        os.link(stock_file, manual_hl_stock)
+
+        eval_stock = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
+            probes=rig.probes_globales_activos(),
+        )
+
+        assert eval_stock.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in eval_stock.reasons
+        check_safety = next(
+            (c for c in eval_stock.checks if c.check is PreflightCheckCode.PATH_SAFETY),
+            None,
+        )
+        assert check_safety is not None
+        assert check_safety.status is PreflightCheckStatus.FAIL
+        assert "runtime_manual_y.dll" in check_safety.detail
+        assert "fuente_stock_x.dll" in check_safety.detail
+
+        # Subcaso Generation: Generation contiene 'gen_archive_x.dll', manual contiene 'manual_archive_z.dll'
+        rig_gen = RigStockManual(tmp_path / "caso_gen", steam_activo=True)
+        gen_dir = generation_dir(rig_gen.storage, rig_gen.generation_id)
+        gen_file = gen_dir / "gen_archive_x.dll"
+        gen_file.write_bytes(b"CONTENIDO-GENERATION-XYZ")
+        manual_hl_gen = rig_gen.manual_runtime / "manual_archive_z.dll"
+        os.link(gen_file, manual_hl_gen)
+
+        eval_gen = evaluar_binder_preflight(
+            storage_root=rig_gen.storage,
+            mo2_instance_dir=rig_gen.mo2_active_global,
+            clone_id=rig_gen.clone_id,
+            managed_source_root=rig_gen.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig_gen.manual_runtime,
+            approved_stock_reference_digest=rig_gen.approved_digest,
+            config_skyrim_path=str(rig_gen.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig_gen.manual_runtime)},
+            stock_source_root=rig_gen.stock_source,
+            probes=rig_gen.probes_globales_activos(),
+        )
+
+        assert eval_gen.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in eval_gen.reasons
+        check_gen_safety = next(
+            (c for c in eval_gen.checks if c.check is PreflightCheckCode.PATH_SAFETY),
+            None,
+        )
+        assert check_gen_safety is not None
+        assert check_gen_safety.status is PreflightCheckStatus.FAIL
+        assert "manual_archive_z.dll" in check_gen_safety.detail
+        assert "gen_archive_x.dll" in check_gen_safety.detail
+
+    def test_13f_superficie_protegida_con_identidad_fisica_invalida_falla_cerrado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P1: st_ino <= 0 o error de acceso al inspeccionar superficie protegida falla cerrado."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        real_stat = os.stat
+
+        def mock_stat(
+            path: os.PathLike[str] | str,
+            *,
+            dir_fd: int | None = None,
+            follow_symlinks: bool = True,
+        ) -> os.stat_result:
+            res = real_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+            if "SteamLibrary" in str(path) and str(path).endswith("SkyrimSE.exe"):
+                return os.stat_result(
+                    (
+                        res.st_mode,
+                        0,
+                        res.st_dev,
+                        res.st_nlink,
+                        res.st_uid,
+                        res.st_gid,
+                        res.st_size,
+                        int(res.st_atime),
+                        int(res.st_mtime),
+                        int(res.st_ctime),
+                    ),
+                    {"st_file_attributes": 0},
+                )
+            return res
+
+        monkeypatch.setattr(os, "stat", mock_stat)
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
+            probes=rig.probes_globales_activos(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in evaluacion.reasons
+        check_safety = next(
+            (c for c in evaluacion.checks if c.check is PreflightCheckCode.PATH_SAFETY),
+            None,
+        )
+        assert check_safety is not None
+        assert check_safety.status is PreflightCheckStatus.FAIL
+        assert (
+            "identidad física no disponible" in check_safety.detail
+            or "error al verificar inodos" in check_safety.detail
+        )
 
 
 # ===========================================================================

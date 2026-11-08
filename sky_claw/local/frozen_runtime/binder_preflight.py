@@ -28,7 +28,7 @@ import os
 import pathlib
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 
 from sky_claw.app.security.links import link_kind_or_raise
@@ -390,11 +390,12 @@ def _validar_aislamiento_runtime_manual(
     managed_source_root: pathlib.Path | None,
     clone_root: pathlib.Path | None,
     stock_source_root: pathlib.Path | None,
+    otros_clones_roots: Sequence[pathlib.Path] = (),
 ) -> tuple[PreflightCheckStatus, PreflightReasonCode | None, str]:
     """Valida el aislamiento físico del runtime manual saliente (fail-closed ante symlinks/reparse).
 
     Admite hardlinks históricos (st_nlink > 1) únicamente si son disjuntos de Steam,
-    Clone, Generation y Stock.
+    Clone, Generation, Stock y otros Clones registrados.
     """
     motivo = descripcion_de_enlace(manual_root)
     if motivo is not None:
@@ -433,29 +434,58 @@ def _validar_aislamiento_runtime_manual(
         superficies_a_evaluar.append(("el Clone destino", clone_root))
     if stock_source_root is not None and stock_source_root.is_dir():
         superficies_a_evaluar.append(("la fuente Stock", stock_source_root))
+    for otro_c in otros_clones_roots:
+        if otro_c.is_dir():
+            superficies_a_evaluar.append(("otro Clone registrado", otro_c))
 
     for nombre_sup, raiz_sup in superficies_a_evaluar:
         try:
-            for rel, st_manual in archivos_manual:
-                candidato = raiz_sup / rel
-                if candidato.is_file():
-                    st_sup = os.stat(candidato, follow_symlinks=False)
-                    if (
-                        st_manual.st_dev > 0
-                        and st_manual.st_ino > 0
-                        and (st_manual.st_dev, st_manual.st_ino) == (st_sup.st_dev, st_sup.st_ino)
-                    ):
-                        return (
-                            PreflightCheckStatus.FAIL,
-                            PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
-                            f"outgoing_manual_runtime_root comparte objetos de archivo (hardlink) con {nombre_sup}: '{rel}'",
-                        )
+            archivos_sup = _archivos_fisicos(raiz_sup, etiqueta=f"superficie_protegida_{nombre_sup}")
+        except PhysicalReparseError as exc:
+            return (
+                PreflightCheckStatus.FAIL,
+                PreflightReasonCode.REPARSE_POINT_DETECTED,
+                f"error de reparse al inspeccionar {nombre_sup}: {exc}",
+            )
+        except FrozenRuntimeStorageError as exc:
+            return (
+                PreflightCheckStatus.FAIL,
+                PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+                f"error al verificar inodos contra {nombre_sup}: {exc}",
+            )
         except OSError as exc:
             return (
                 PreflightCheckStatus.FAIL,
                 PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
                 f"error al verificar inodos contra {nombre_sup}: {exc}",
             )
+
+        inodos_sup: dict[tuple[int, int], str] = {}
+        for rel_sup, st_sup in archivos_sup:
+            if st_sup.st_dev <= 0 or st_sup.st_ino <= 0:
+                return (
+                    PreflightCheckStatus.FAIL,
+                    PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+                    f"identidad física no disponible en {nombre_sup} para '{rel_sup}' (fail-closed)",
+                )
+            inodos_sup[(st_sup.st_dev, st_sup.st_ino)] = rel_sup
+
+        for rel_manual, st_manual in archivos_manual:
+            if st_manual.st_dev <= 0 or st_manual.st_ino <= 0:
+                return (
+                    PreflightCheckStatus.FAIL,
+                    PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+                    f"identidad física no disponible en runtime manual para '{rel_manual}' (fail-closed)",
+                )
+            ident_manual = (st_manual.st_dev, st_manual.st_ino)
+            if ident_manual in inodos_sup:
+                rel_sup = inodos_sup[ident_manual]
+                return (
+                    PreflightCheckStatus.FAIL,
+                    PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+                    f"outgoing_manual_runtime_root comparte objetos de archivo (hardlink) con {nombre_sup}: "
+                    f"manual '{rel_manual}' <-> {nombre_sup} '{rel_sup}'",
+                )
 
     multilinks = [rel for rel, st in archivos_manual if st.st_nlink > 1]
     if multilinks:
@@ -631,6 +661,7 @@ def _validar_runtime_manual_saliente(
         managed_source_root=ms_root_resolved,
         clone_root=clone_root,
         stock_source_root=stock_source_root,
+        otros_clones_roots=tuple(otros_clones),
     )
     if st_aisl is not PreflightCheckStatus.PASS:
         return None, st_aisl, rz_aisl, det_aisl
