@@ -14,12 +14,12 @@ Modelo real de selección en Mod Organizer 2:
    ``%LOCALAPPDATA%\\ModOrganizer\\<CurrentInstance>``, posee ``ModOrganizer.ini``
    regular y carece de artefactos de instalación portable (``ModOrganizer.exe``,
    ``portable.txt``).
-2. **Instalación portable activa (``ACTIVE_PORTABLE``):**
+2. **Instalación portable ambigua (``AMBIGUOUS``):**
    ``mo2_instance_dir`` está fuera de ``%LOCALAPPDATA%\\ModOrganizer``, contiene
    tanto ``ModOrganizer.exe`` como ``ModOrganizer.ini`` regulares y el selector
    del Registro declara explícitamente modo portable (``CurrentInstance == ""``) o
-   bien la clave de Registro no existe (``ABSENT``) pero ``portable.txt`` fuerza
-   explícitamente el modo portable sin conflicto global.
+   bien la clave de Registro no existe (``ABSENT``) y hay ``portable.txt``.
+   Ninguno de estos datos identifica una ruta portable única.
 3. **Bloqueo fail-closed (``INACTIVE``, ``AMBIGUOUS``, ``UNKNOWN``):**
    Cualquier directorio huérfano/residual, discrepancia con ``CurrentInstance``,
    conflicto entre ``portable.txt`` y una instancia global seleccionada en ``HKCU``,

@@ -931,7 +931,7 @@ una futura transición `MANUAL_RUNTIME -> REGISTERED_STOCK_CLONE` sin manipular 
 - Se incorpora el 11.º check obligatorio `PreflightCheckCode.MO2_INSTANCE_IDENTITY` respaldado por `RuntimeProbes.mo2_instance` (`effective_runtime/mo2_instance.py`, 100% read-only con `winreg.KEY_READ`).
 - Contrasta el selector de instancia de Windows (`HKCU\Software\Mod Organizer Team\Mod Organizer\CurrentInstance`) y el layout físico para distinguir:
   - `ACTIVE_GLOBAL`: directorio bajo `%LOCALAPPDATA%\ModOrganizer\<Name>` con `CurrentInstance == <Name>`, `ModOrganizer.ini` presente y sin `ModOrganizer.exe` ni `portable.txt` locales.
-  - `ACTIVE_PORTABLE`: directorio fuera de `%LOCALAPPDATA%\ModOrganizer` con `ModOrganizer.exe` + `ModOrganizer.ini`, cuando `CurrentInstance == ""` o (`ABSENT` + `portable.txt`).
+  - `AMBIGUOUS` (portable): directorio fuera de `%LOCALAPPDATA%\ModOrganizer` con `ModOrganizer.exe` + `ModOrganizer.ini`, cuando `CurrentInstance == ""` o (`ABSENT` + `portable.txt`), ya que el Registro de Windows no provee autoridad de ruta única entre posibles instalaciones portables (ver §14.4 punto 4).
 - Bloquea fail-closed un directorio residual o de datos como `base_directory\ModOrganizer.ini` (`MO2_INSTANCE_INACTIVE`), instalaciones mixtas (`MO2_INSTANCE_AMBIGUOUS`) o lecturas indeterminadas del Registro (`MO2_INSTANCE_IDENTITY_UNKNOWN`).
 
 ### 14.4 Refinamientos de la Revisión Adversarial PR #885 (2026-11-08)
