@@ -327,6 +327,10 @@ def test_la_ventana_de_observacion_cuenta_desde_el_lanzamiento_y_no_desde_antes_
 # Parte Windows: el instrumento contra una verdad conocida
 # ---------------------------------------------------------------------------
 
+#: En un venv de Windows, ``sys.executable`` es un stub (``venvlauncher.exe``) que crea un hijo ``python.exe`` real
+#: de inmediato; el laboratorio debe medir el proceso real sin intermediario.
+PYTHON_DIRECTO = getattr(sys, "_base_executable", sys.executable)
+
 #: La raíz espera ``ESPERA`` s y recién entonces crea un nieto que duerme; así el retardo de asignación
 #: decide, sin carreras finas, si el nieto nace antes o después de entrar la raíz al Job.
 _RAIZ_CON_NIETO = (
@@ -342,7 +346,7 @@ def _pids_vivos(supervivientes: list[dict[str, int]]) -> list[int]:
 @solo_windows
 def test_un_nieto_creado_despues_de_asignar_entra_al_job_y_muere_con_el_job() -> None:
     # Arrange / Act: asignación inmediata → el nieto (a los 1.5 s) nace dentro del Job.
-    corrida = censo.medir_censo([sys.executable, "-c", _RAIZ_CON_NIETO], retardo_s=0.0, ventana_s=4.0, con_wmi=False)
+    corrida = censo.medir_censo([PYTHON_DIRECTO, "-c", _RAIZ_CON_NIETO], retardo_s=0.0, ventana_s=4.0, con_wmi=False)
     clasificacion = censo.clasificar(corrida)
     # Assert
     assert len(clasificacion["dentro"]) == 2, corrida
@@ -355,7 +359,7 @@ def test_un_nieto_creado_despues_de_asignar_entra_al_job_y_muere_con_el_job() ->
 @solo_windows
 def test_un_nieto_creado_antes_de_asignar_queda_fuera_y_sobrevive_a_la_terminacion() -> None:
     # Arrange / Act: asignación a los 3 s → el nieto nació a los ~1.5 s, antes de que la raíz entrara.
-    corrida = censo.medir_censo([sys.executable, "-c", _RAIZ_CON_NIETO], retardo_s=3.0, ventana_s=6.0, con_wmi=False)
+    corrida = censo.medir_censo([PYTHON_DIRECTO, "-c", _RAIZ_CON_NIETO], retardo_s=3.0, ventana_s=6.0, con_wmi=False)
     clasificacion = censo.clasificar(corrida)
     # Assert: la raíz entró; el nieto NO se adopta y sobrevive (esto es lo que P2 tiene que detectar).
     assert len(clasificacion["dentro"]) == 1, corrida
@@ -370,7 +374,7 @@ def test_un_nieto_creado_antes_de_asignar_queda_fuera_y_sobrevive_a_la_terminaci
 def test_cerrar_el_handle_del_job_tambien_mata_a_los_miembros() -> None:
     # Arrange / Act: lo que ocurre si el bridge muere (KILL_ON_JOB_CLOSE), no solo el cancel explícito.
     corrida = censo.medir_censo(
-        [sys.executable, "-c", _RAIZ_CON_NIETO], retardo_s=0.0, ventana_s=4.0, modo_fin="close", con_wmi=False
+        [PYTHON_DIRECTO, "-c", _RAIZ_CON_NIETO], retardo_s=0.0, ventana_s=4.0, modo_fin="close", con_wmi=False
     )
     # Assert
     assert censo.clasificar(corrida)["supervivientes"] == []
@@ -379,7 +383,7 @@ def test_cerrar_el_handle_del_job_tambien_mata_a_los_miembros() -> None:
 @solo_windows
 def test_la_traza_de_wmi_ve_al_nieto_creado_fuera_del_job_aunque_el_muestreo_no_lo_vea() -> None:
     # Arrange / Act
-    corrida = censo.medir_censo([sys.executable, "-c", _RAIZ_CON_NIETO], retardo_s=3.0, ventana_s=6.0, con_wmi=True)
+    corrida = censo.medir_censo([PYTHON_DIRECTO, "-c", _RAIZ_CON_NIETO], retardo_s=3.0, ventana_s=6.0, con_wmi=True)
     if not corrida["wmi"]["disponible"]:  # type: ignore[index]
         pytest.skip(f"traza de WMI NO disponible (queda sin verificar): {corrida['wmi']['motivo']}")  # type: ignore[index]
     # Assert: WMI vio el nieto por su cuenta (independiente del muestreo y del IOCP).
@@ -397,7 +401,7 @@ def test_terminar_tras_corta_con_el_arbol_vivo_y_mide_al_escapado_aunque_el_payl
     )
     # Act
     corrida = censo.medir_censo(
-        [sys.executable, "-c", carga], retardo_s=2.5, ventana_s=12.0, con_wmi=False, terminar_tras_s=0.5
+        [PYTHON_DIRECTO, "-c", carga], retardo_s=2.5, ventana_s=12.0, con_wmi=False, terminar_tras_s=0.5
     )
     clasificacion = censo.clasificar(corrida)
     # Assert

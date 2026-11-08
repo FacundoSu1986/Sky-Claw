@@ -900,3 +900,33 @@ def test_el_unico_hello_de_worker_declara_la_capacidad_de_fence() -> None:
     # Assert
     assert [archivo for archivo, _ in literales] == ["sky_claw/local/mo2/vfs_worker.py"]
     assert "supervision_fence" in literales[0][1]
+
+
+async def test_camino_feliz_registra_logs_con_timestamp_para_job_result_y_worker_exit(
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """En el camino feliz, el broker emite logs INFO con timestamp para ``job_result`` recibido y ``worker_exit`` confirmado."""
+    import logging
+
+    observado: list[str] = []
+    caplog.set_level(logging.INFO, logger="sky_claw.local.mo2.vfs_broker")
+    async with _Arnes(tmp_path) as arnes:
+        await arnes.lanzar_job()
+        worker = arnes.worker_real(observado)
+        await arnes.esperar_worker_conectado(worker)
+        await arnes.launch_ack()
+        await asyncio.wait_for(worker, timeout=6)
+        await arnes.worker_exit(exit_code=0)
+        resultado = await asyncio.wait_for(arnes.tarea, timeout=6)  # type: ignore[arg-type]
+
+    assert resultado.success is True
+    eventos = [
+        (rec.getMessage(), getattr(rec, "event", None), getattr(rec, "ts_utc", None))
+        for rec in caplog.records
+        if getattr(rec, "event", None) in ("job_result_received", "worker_exit_confirmed")
+    ]
+    assert [ev for _, ev, _ in eventos] == ["job_result_received", "worker_exit_confirmed"]
+    assert "VFS job_result recibido ts=" in eventos[0][0]
+    assert "VFS worker_exit confirmado ts=" in eventos[1][0]
+    assert all(isinstance(ts, str) and "T" in ts for _, _, ts in eventos)

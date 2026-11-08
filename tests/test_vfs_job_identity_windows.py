@@ -46,6 +46,14 @@ _JOB_OBJECT_SET_ATTRIBUTES = 0x0002
 _JOB_OBJECT_QUERY = 0x0004
 _JOB_OBJECT_TERMINATE = 0x0008
 _RUTA_DEL_MODULO = str(pathlib.Path(vfs_job_identity.__file__).resolve())
+#: En un venv de ``uv``, ``sys.executable`` es el trampoline ``venvlauncher.exe`` (que crea un proceso hijo ``python.exe``
+#: antes de devolver ``LISTO``). Usar ``sys._base_executable`` + ``PYTHONPATH`` asegura que ``_Hijo.proceso.pid`` sea
+#: el proceso Python real que ejecuta ``verificar_identidad_del_job``.
+PYTHON_DIRECTO = getattr(sys, "_base_executable", sys.executable)
+_ENTORNO_DIRECTO = {
+    **os.environ,
+    "PYTHONPATH": os.pathsep.join([str(pathlib.Path(__file__).resolve().parents[1]), *(p for p in sys.path if p)]),
+}
 
 #: Hijo de prueba. Carga el verificador por ruta, avisa (``LISTO``) y espera la bandera ``go`` ANTES de verificar:
 #: así el test puede asignarlo (o no) a un Job entre medio. ``hijo_previo`` crea un nieto ANTES de avisar.
@@ -89,7 +97,8 @@ class _Hijo:
         self.bandera = tmp_path / f"go-{os.getpid()}-{time.monotonic_ns()}"
         self.lineas: queue.Queue[str] = queue.Queue()
         self.proceso = subprocess.Popen(  # noqa: S603 - argv fijo del test
-            [sys.executable, "-c", _HIJO, _RUTA_DEL_MODULO, nombre, str(self.bandera), modo],
+            [PYTHON_DIRECTO, "-c", _HIJO, _RUTA_DEL_MODULO, nombre, str(self.bandera), modo],
+            env=_ENTORNO_DIRECTO,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

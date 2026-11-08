@@ -181,6 +181,50 @@ def crear_job(*, nombre: str | None = None, kill_on_close: bool = True) -> int:
     return int(handle)
 
 
+def crear_job_con_limit_flags(limit_flags: int) -> int:
+    """Crea un Job anónimo con EXACTAMENTE ``limit_flags``, sin flags implícitos.
+
+    Lo usa el laboratorio del preflight de breakaway: el Job que observa el núcleo
+    tiene que ser el que pidió el test, sin ``KILL_ON_JOB_CLOSE`` agregado por el helper.
+    """
+    k32 = _kernel32()
+    handle = k32.CreateJobObjectW(None, None)
+    if not handle:
+        raise _fallo("CreateJobObjectW")
+    limites: Any = _estructura_limites()()
+    limites.BasicLimitInformation.LimitFlags = limit_flags
+    try:
+        if not k32.SetInformationJobObject(
+            handle,
+            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(limites),
+            ctypes.sizeof(limites),
+        ):
+            raise _fallo("SetInformationJobObject")
+    except Exception:
+        k32.CloseHandle(handle)
+        raise
+    return int(handle)
+
+
+def limit_flags_del_job(job: int) -> int:
+    """``LimitFlags`` REALES del Job, leídos con ``QueryInformationJobObject``."""
+    from ctypes import wintypes
+
+    k32 = _kernel32()
+    limites: Any = _estructura_limites()()
+    devueltos = wintypes.DWORD(0)
+    if not k32.QueryInformationJobObject(
+        job,
+        _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+        ctypes.byref(limites),
+        ctypes.sizeof(limites),
+        ctypes.byref(devueltos),
+    ):
+        raise _fallo("QueryInformationJobObject(ExtendedLimitInformation)")
+    return int(limites.BasicLimitInformation.LimitFlags)
+
+
 def abrir_job_por_nombre(nombre: str) -> int:
     """Abre (solo consulta) un Job existente por nombre; falla si no existe."""
     k32 = _kernel32()

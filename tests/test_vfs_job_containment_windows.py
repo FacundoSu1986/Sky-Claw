@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -43,6 +44,14 @@ pytestmark = pytest.mark.skipif(
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
+#: En un venv de Windows (``uv`` / ``venv``), ``sys.executable`` es ``venvlauncher.exe``: un
+#: proceso trampoline que crea su propio Job Object anónimo (``KILL_ON_JOB_CLOSE |
+#: SILENT_BREAKAWAY_OK``) y lanza el ``python.exe`` real como subproceso hijo antes de que el
+#: padre pueda llamar a ``AssignProcessToJobObject``. Para medir la semántica del kernel sobre
+#: un proceso directo (como ocurre en CI sin venv o en un ejecutable nativo sin trampoline),
+#: usamos ``sys._base_executable`` propagando ``sys.path`` por ``PYTHONPATH``.
+PYTHON_DIRECTO = getattr(sys, "_base_executable", sys.executable)
+
 #: El padre espera un archivo-bandera ANTES de crear a su hijo: el test decide si la
 #: asignación al Job ocurre antes o después de que nazca el descendiente.
 _PADRE_QUE_ESPERA_LA_BANDERA = textwrap.dedent(
@@ -51,7 +60,8 @@ _PADRE_QUE_ESPERA_LA_BANDERA = textwrap.dedent(
     bandera, salida = sys.argv[1], sys.argv[2]
     while not os.path.exists(bandera):
         time.sleep(0.01)
-    hijo = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    ejecutable = getattr(sys, "_base_executable", sys.executable)
+    hijo = subprocess.Popen([ejecutable, "-c", "import time; time.sleep(120)"])
     open(salida, "w").write(str(hijo.pid))
     time.sleep(120)
     """
@@ -61,11 +71,21 @@ _PADRE_QUE_ESPERA_LA_BANDERA = textwrap.dedent(
 _PADRE_QUE_YA_TIENE_HIJO = textwrap.dedent(
     """
     import subprocess, sys, time
-    hijo = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    ejecutable = getattr(sys, "_base_executable", sys.executable)
+    hijo = subprocess.Popen([ejecutable, "-c", "import time; time.sleep(120)"])
     open(sys.argv[1], "w").write(str(hijo.pid))
     time.sleep(120)
     """
 )
+
+
+def _entorno_python() -> dict[str, str]:
+    rutas = [str(REPO), *(p for p in sys.path if p)]
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(rutas)}
+
+
+def _lanzar_python_como_mo2(sondas, argv_codigo: list[str]) -> subprocess.Popen[bytes]:
+    return sondas.lanzar_como_mo2([PYTHON_DIRECTO, *argv_codigo], cwd=REPO, env=_entorno_python())
 
 
 def _sondas():
@@ -134,12 +154,25 @@ def _en_job(sondas, job: int | None, pid: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def test_el_interprete_directo_del_laboratorio_no_es_un_trampoline_con_hijo_propio(tmp_path, limpieza) -> None:
+    """En venvs de Windows ``sys.executable`` es ``venvlauncher.exe``; ``PYTHON_DIRECTO`` debe ser el proceso real."""
+    sondas = _sondas()
+    salida = tmp_path / "pid.txt"
+    proceso = _lanzar_python_como_mo2(
+        sondas,
+        ["-c", "import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)", str(salida)],
+    )
+    limpieza.append(proceso)
+    pid_interno = _esperar_pid(salida)
+    assert pid_interno == proceso.pid
+
+
 def test_un_descendiente_creado_antes_de_la_asignacion_queda_fuera_del_job(tmp_path, limpieza) -> None:
     # Arrange: el "worker" ya creó a su hijo cuando el bridge recién lo asigna.
     sondas = _sondas()
     salida = tmp_path / "hijo.pid"
     with sondas.job_temporal() as job:
-        padre = sondas.lanzar_como_mo2([sys.executable, "-c", _PADRE_QUE_YA_TIENE_HIJO, str(salida)])
+        padre = _lanzar_python_como_mo2(sondas, ["-c", _PADRE_QUE_YA_TIENE_HIJO, str(salida)])
         limpieza.append(padre)
         hijo_pid = _esperar_pid(salida)
         limpieza.append(hijo_pid)
@@ -161,7 +194,7 @@ def test_un_descendiente_creado_despues_de_la_asignacion_queda_contenido_y_muere
     sondas = _sondas()
     bandera, salida = tmp_path / "go", tmp_path / "hijo.pid"
     with sondas.job_temporal() as job:
-        padre = sondas.lanzar_como_mo2([sys.executable, "-c", _PADRE_QUE_ESPERA_LA_BANDERA, str(bandera), str(salida)])
+        padre = _lanzar_python_como_mo2(sondas, ["-c", _PADRE_QUE_ESPERA_LA_BANDERA, str(bandera), str(salida)])
         limpieza.append(padre)
         _asignar_pid(sondas, job, padre.pid)
 
@@ -183,7 +216,7 @@ def test_is_process_in_job_sin_job_responde_true_para_un_job_ajeno(tmp_path, lim
     # Arrange: el proceso está en un Job IMPOSTOR y NO en el nuestro.
     sondas = _sondas()
     with sondas.job_temporal() as nuestro, sondas.job_temporal() as impostor:
-        proceso = sondas.lanzar_como_mo2([sys.executable, "-c", "import time; time.sleep(120)"])
+        proceso = _lanzar_python_como_mo2(sondas, ["-c", "import time; time.sleep(120)"])
         limpieza.append(proceso)
         _asignar_pid(sondas, impostor, proceso.pid)
 
@@ -203,7 +236,7 @@ def test_un_proceso_en_un_job_ajeno_admite_ademas_el_job_propio(tmp_path, limpie
     # Arrange: el Job ajeno NO tiene kill-on-close (como el de un lanzador cualquiera).
     sondas = _sondas()
     with sondas.job_temporal(kill_on_close=False) as ajeno, sondas.job_temporal() as nuestro:
-        proceso = sondas.lanzar_como_mo2([sys.executable, "-c", "import time; time.sleep(120)"])
+        proceso = _lanzar_python_como_mo2(sondas, ["-c", "import time; time.sleep(120)"])
         limpieza.append(proceso)
         _asignar_pid(sondas, ajeno, proceso.pid)
 
@@ -228,8 +261,9 @@ def test_un_proceso_puede_consultar_su_propio_job_y_ver_a_su_lanzador(tmp_path, 
         "'pid': os.getpid(), 'pids': list(w.pids_del_job(None)), 'kill_on_close': w.job_tiene_kill_on_close(None)}))"
     )
     with sondas.job_temporal() as job:
-        proceso = sondas.lanzar_como_mo2(
-            [sys.executable, "-c", f"import time; time.sleep(0.5); {codigo}", str(informe)]
+        proceso = _lanzar_python_como_mo2(
+            sondas,
+            ["-c", f"import time; time.sleep(0.5); {codigo}", str(informe)],
         )
         limpieza.append(proceso)
         _asignar_pid(sondas, job, proceso.pid)
@@ -250,7 +284,7 @@ def test_la_adopcion_de_descendientes_previos_los_deja_contenidos(tmp_path, limp
     sondas = _sondas()
     salida = tmp_path / "hijo.pid"
     with sondas.job_temporal() as job:
-        padre = sondas.lanzar_como_mo2([sys.executable, "-c", _PADRE_QUE_YA_TIENE_HIJO, str(salida)])
+        padre = _lanzar_python_como_mo2(sondas, ["-c", _PADRE_QUE_YA_TIENE_HIJO, str(salida)])
         limpieza.append(padre)
         hijo_pid = _esperar_pid(salida)
         limpieza.append(hijo_pid)
@@ -288,7 +322,7 @@ def test_en_jobs_anidados_el_proceso_ve_el_limite_de_su_job(tmp_path, limpieza, 
 
     def _observar(asignaciones: list[int], nombre: str) -> dict:
         informe = tmp_path / f"{nombre}.json"
-        proceso = sondas.lanzar_como_mo2([sys.executable, "-c", codigo, str(informe)])
+        proceso = _lanzar_python_como_mo2(sondas, ["-c", codigo, str(informe)])
         limpieza.append(proceso)
         for job in asignaciones:
             _asignar_pid(sondas, job, proceso.pid)
@@ -336,7 +370,7 @@ class _OrganizerQueLanzaProcesos:
 
     def startApplication(self, *_args: object) -> int:  # noqa: N802 - API de MO2
         sondas = _sondas()
-        self.proceso = sondas.lanzar_como_mo2(self._argv)
+        self.proceso = sondas.lanzar_como_mo2(self._argv, cwd=REPO, env=_entorno_python())
         if self._retardo:
             time.sleep(self._retardo)
         return sondas.abrir_proceso(self.proceso.pid)
@@ -382,7 +416,7 @@ def test_el_bridge_real_contiene_al_worker_y_a_sus_descendientes_en_el_job_corre
     # Arrange: el worker no crea a su hijo hasta que el bridge ya lo asignó (lo que garantiza el fence).
     bandera, salida = tmp_path / "go", tmp_path / "hijo.pid"
     organizer = _OrganizerQueLanzaProcesos(
-        [sys.executable, "-c", _PADRE_QUE_ESPERA_LA_BANDERA, str(bandera), str(salida)]
+        [PYTHON_DIRECTO, "-c", _PADRE_QUE_ESPERA_LA_BANDERA, str(bandera), str(salida)]
     )
     eventos: list[dict] = []
     controlador, mensaje, cancelar = _controlador_real(tmp_path, organizer, eventos)
@@ -417,7 +451,7 @@ def test_con_una_asignacion_tardia_el_bridge_real_deja_un_descendiente_fuera_del
     # Arrange
     salida = tmp_path / "hijo.pid"
     organizer = _OrganizerQueLanzaProcesos(
-        [sys.executable, "-c", _PADRE_QUE_YA_TIENE_HIJO, str(salida)], retardo_antes_de_devolver_s=2.0
+        [PYTHON_DIRECTO, "-c", _PADRE_QUE_YA_TIENE_HIJO, str(salida)], retardo_antes_de_devolver_s=2.0
     )
     eventos: list[dict] = []
     controlador, mensaje, cancelar = _controlador_real(tmp_path, organizer, eventos)
@@ -451,7 +485,7 @@ def test_una_raiz_que_ya_termino_antes_del_assign_es_una_medicion_nula(limpieza)
 
     # Act: ``python -c pass`` termina en decenas de ms; el assign llega 1.5 s después.
     medicion = sondas.medir_asignacion(
-        [sys.executable, "-c", "pass"],
+        [PYTHON_DIRECTO, "-c", "pass"],
         retardo_de_asignacion_s=1.5,
         ventana_s=2.0,
     )
@@ -476,7 +510,7 @@ def test_una_falla_real_de_asignacion_con_la_raiz_viva_no_se_disfraza_de_medicio
     # Act / Assert
     with pytest.raises(sondas.JobObjectError):
         sondas.medir_asignacion(
-            [sys.executable, "-c", "import time; time.sleep(30)"],
+            [PYTHON_DIRECTO, "-c", "import time; time.sleep(30)"],
             retardo_de_asignacion_s=0.0,
             ventana_s=2.0,
         )

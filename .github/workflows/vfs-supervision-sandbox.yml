@@ -20,6 +20,7 @@ on:
       - "tests/test_windows_onefile_census.py"
       - "tests/test_vfs_job_identity*.py"
       - "tests/test_vfs_job_containment_windows.py"
+      - "tests/test_mo2_bridge_breakaway_job_real_windows.py"
       - "tests/test_vfs_fence_de_supervision.py"
       - "tests/test_vfs_fence_e2e_proceso_real.py"
       - ".github/workflows/vfs-supervision-sandbox.yml"
@@ -68,6 +69,7 @@ jobs:
           tests/test_vfs_job_identity_anclas.py
           tests/test_mo2_bridge_worker_argv.py
           tests/test_vfs_job_containment_windows.py
+          tests/test_mo2_bridge_breakaway_job_real_windows.py
           tests/test_vfs_fence_de_supervision.py
           tests/test_vfs_fence_e2e_proceso_real.py
           2>&1 | Tee-Object -FilePath sandbox_min\pytest.txt
