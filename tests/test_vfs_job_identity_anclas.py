@@ -32,8 +32,9 @@ def _produccion() -> list[pathlib.Path]:
     return sorted(PAQUETE.rglob("*.py"))
 
 
-def test_solo_tres_modulos_de_produccion_tocan_el_campo_job_object() -> None:
-    """Broker (lo pide y lo compara), bridge (lo crea y lo confirma) y worker (lo verifica y lo declara)."""
+def test_solo_cuatro_modulos_de_produccion_tocan_el_campo_job_object() -> None:
+    """Broker (lo pide y lo compara), bridge (lo crea y lo confirma), worker (lo verifica y lo declara) y el
+    arranque liviano (lo lee para verificar el Job ANTES de importar el worker, H-02)."""
     # Arrange / Act: toda constante de texto que ES el nombre del campo o del flag, en cualquier posición.
     modulos: set[str] = set()
     for ruta in _produccion():
@@ -43,8 +44,40 @@ def test_solo_tres_modulos_de_produccion_tocan_el_campo_job_object() -> None:
     # Assert: un cuarto lector/escritor del nombre (otro lanzador, otro broker) debe revisarse contra este mecanismo.
     assert modulos == {
         "sky_claw/local/mo2/plugin_bundle/skyclaw_bridge/runtime.py",
+        "sky_claw/local/mo2/vfs_arranque.py",
         "sky_claw/local/mo2/vfs_broker.py",
         "sky_claw/local/mo2/vfs_worker.py",
+    }
+
+
+def test_los_llamadores_del_verificador_del_aborto_y_de_la_limpieza_son_exactamente_los_dos_arranques() -> None:
+    """Dos superficies, un recurso (H-02): el arranque liviano y ``worker_main`` verifican Y abortan igual.
+
+    Si un tercer llamador verificara por su cuenta, o abortara sin pasar por ``abortar_por_identidad``, volvería la
+    clase de defecto «arreglar un hermano y no al otro»: el aborto (registro + limpieza + código 72) es UNO.
+    """
+
+    def llamadores(nombre: str) -> set[tuple[str, str]]:
+        encontrados: set[tuple[str, str]] = set()
+        for ruta in _produccion():
+            for funcion in ast.walk(_arbol(ruta)):
+                if not isinstance(funcion, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                if any(
+                    isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == nombre
+                    for n in ast.walk(funcion)
+                ):
+                    encontrados.add((_relativa(ruta), funcion.name))
+        return encontrados
+
+    arranques = {
+        ("sky_claw/local/mo2/vfs_arranque.py", "arrancar_worker"),
+        ("sky_claw/local/mo2/vfs_worker.py", "worker_main"),
+    }
+    assert llamadores("verificar_identidad_del_job") == arranques
+    assert llamadores("abortar_por_identidad") == arranques
+    assert llamadores("terminar_descendientes_vivos") == {
+        ("sky_claw/local/mo2/vfs_arranque.py", "abortar_por_identidad")
     }
 
 

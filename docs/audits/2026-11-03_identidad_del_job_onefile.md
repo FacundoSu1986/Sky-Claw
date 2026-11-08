@@ -191,7 +191,7 @@ efímeros que (§5) no dejan residuos: no justifica el cambio de empaquetado. Se
   (seguro, pero inutilizable) y habría que pasar al stub de §9.
 * **Huérfanos** (§6.3-d).
 * **Doble fallo: identidad y limpieza.** Si el worker no prueba su contención **y** `terminar_descendientes_vivos` tampoco logra terminar a un descendiente (agota los intentos; p. ej. `TerminateProcess` denegado
-  sobre un proceso de mayor integridad), `_abortar_por_identidad` registra `CRITICAL` (`vfs_worker_cleanup_failed`) y **sale igual con 72**, dejando vivo a ese descendiente (queda huérfano al morir el worker).
+  sobre un proceso de mayor integridad), `abortar_por_identidad` (hoy en `vfs_arranque`, §12) registra `CRITICAL` (`vfs_worker_cleanup_failed`) y **sale igual con 72**, dejando vivo a ese descendiente (queda huérfano al morir el worker).
   No abre ningún socket ni autoriza nada, pero la terminación no está garantizada en ese caso. Solo lo cubre un test con dobles
   (`test_si_la_limpieza_tambien_falla_el_worker_igual_sale_con_el_codigo_de_identidad`); **no hay una prueba con un proceso real que se niegue a morir** `[NO VERIFICADO]`.
 * **Token no elevado.** La DACL usa `OW` (propietario) y `BA`. El runner corre con token de administrador elevado; con el token filtrado de un usuario estándar `BA` no concede y todo depende de `OW`.
@@ -292,3 +292,33 @@ con el Python base pasan los 17, y con el `.exe` congelado los 6 e2e (23/23 en t
 * El `.exe` de `1eafe1c5` usado en el censo y en los 23 tests no tiene SHA-256 registrado (se sobrescribió antes de hashearlo).
 * MO2 productivo y bajo carga; token no elevado (el agente informó haber corrido con un token filtrado, pero no quedó un registro verificable; §6 sigue marcándolo `[NO VERIFICADO]`).
 * Una prueba con un proceso real que se niegue a morir (doble fallo de §6).
+
+## 12. Seguimiento de la auditoría independiente (2026-11-07) `[EJECUTADO EN LINUX; WINDOWS PENDIENTE DE CI]`
+
+Una auditoría independiente revisó la pila (#856 → #860 → #871 → #872) y dictaminó **RECHAZADO / HOLD MANTENIDO**. Este apartado registra cómo se adjudicó
+cada hallazgo y qué hace el PR de seguimiento (apilado sobre #872). **No levanta el HOLD**: solo lo levanta el auditor independiente, con evidencia propia.
+
+| Hallazgo | Adjudicación | Estado en este PR |
+|---|---|---|
+| **H-01** — el bridge asigna y vigila solo al proceso que lanzó MO2 (en onefile, el bootloader) | El informe lo rotuló CRÍTICO; lo califico **ALTO**: un intérprete fuera del Job no puede conectar ni despachar (la verificación falla cerrado con 72), pero el proceso suelto sobrevive y el monitor emitía `worker_exit` —que el broker toma como terminalidad confirmada y con lo que libera la cuarentena— sin saber si quedaba algo vivo. | **Implementado (P1)**: `adopt_descendants` antes del `launch_ack` y `worker_exit` solo con el Job vacío (`ActiveProcesses == 0`); si no se puede confirmar, `bridge_error` de terminación (cuarentena) y nunca `worker_exit`. El mismo criterio rige en el `launch`: un descendiente que queda vivo fuera del Job (no se pudo contener ni terminar) también se reporta como terminación (cuarentena), no como un launch rechazado. Tests: `tests/test_mo2_bridge_adopcion.py` (Linux, tabla de procesos en memoria) y `tests/test_mo2_bridge_adopcion_windows.py` (kernel real; **no corridos aquí**). |
+| **H-02** — procesos creados antes de verificar el Job | El informe auditó #860, no #872. Medido en #872: solo queda el import de `uuid` → `platform` (a través de `pydantic`), cuya primera consulta lanza `cmd.exe /c ver` en Windows. | **Implementado**: `sky_claw/local/mo2/vfs_arranque.py` verifica el Job con el conjunto liviano (stdlib, `ctypes`, `psutil`) y recién entonces importa `vfs_worker`; `worker_main` también verifica antes de `setup_logging`. Control negativo medido en Linux: importar `vfs_worker` SÍ llama a `platform.system()/uname()`; el despacho real con falla de identidad no llama a nada. **Alcance de la garantía:** «se verifica antes de importar» vale cuando `--job-object` es utilizable. Sin él (ausente, sin valor, o una abreviatura: el parser del worker ya no las acepta), `arrancar_worker` delega en `worker_main`, que termina con error de uso (64 o 2) antes de abrir sockets pero **después** de importar `vfs_worker`; la entrada directa `python -m sky_claw.local.mo2.vfs_worker` tampoco verifica antes de importar. El control negativo cubre solo una falla de identidad con un nombre de Job utilizable. |
+| **H-03** — la limpieza de descendientes abortaba al primer error | Confirmado (bug real). | **Corregido**: la terminación es por PID; el error de uno no impide intentar con los demás y viaja en el mensaje final. |
+| **H-04** — DACL / token no elevado | Requiere Windows con un token filtrado. | **Pendiente, no implementado.** Sigue `[NO VERIFICADO]` (§6). |
+| **H-05** — `session_id` ausente de `launch_ack`/`supervised`/`worker_exit` | Riesgo bajo: el broker ya exige `job_id` y el nombre aleatorio de 128 bits del Job (`_registrar_launch_ack`). | **Pendiente, no implementado**: cambiaría el protocolo (bridge y broker a la vez); se decide aparte. |
+
+**Cambio respecto de §6.** §6 argumentaba que P2 alcanzaba sin P1. El informe pidió P1 y se implementó: la contención ya no depende solo de que el worker se autoverifique, también el bridge
+contiene a los descendientes que alcanza (los que cuelgan, por PPID, de un proceso que el bridge llegó a observar); un hijo creado por un proceso que muere antes de ser observado no se reconstruye: es el huérfano de §6(d). La verificación del worker sigue siendo la compuerta que autoriza (P2 prueba contención, no autoría).
+
+**Cambia de signo, a propósito:** `test_con_una_asignacion_tardia_el_bridge_real_...` (Windows) afirmaba que un descendiente previo a la asignación sobrevivía al Job; ahora se adopta y muere con él.
+Las pruebas e2e de «`assign` muy tardío → 72» deberían seguir válidas (por lectura del código; no corridas): con 8–12 s de retardo el intérprete ya se verificó y salió antes de que el bridge adopte nada. En la zona intermedia (hijo nacido antes
+del `assign` pero todavía sin verificar) la adopción puede ahora convertir un 72 en un launch exitoso: es lo buscado, y **no está medido** `[NO VERIFICADO]`.
+
+**Riesgos y límites de P1 `[NO VERIFICADO EN WINDOWS]`:**
+
+* La capa `ctypes` (ToolHelp32, `OpenProcess`, `IsProcessInJob` contra el Job propio, `AssignProcessToJobObject`, `QueryInformationJobObject`) solo se probó con dobles; la corre el workflow de sandbox de Windows.
+* Un descendiente que el bridge no pueda abrir ni terminar (p. ej. de mayor integridad) queda vivo FUERA del Job: ni `TerminateJobObject` ni `KILL_ON_JOB_CLOSE` lo alcanzan. El launch falla y el bridge lo reporta como `bridge_error` `terminate`/`termination_failed` (no como un launch rechazado), de modo que el broker pone la instancia en **cuarentena** y veta el rollback. Costo: esa instancia queda aislada hasta intervención manual (en este camino no hay `worker_exit` que la libere). Un descendiente que no se pudo adoptar pero sí terminar sigue siendo un rechazo ordinario, y que la adopción no llegue a un punto fijo se trata como terminalidad desconocida. Cubierto por `test_solo_un_descendiente_vivo_fuera_del_job_hace_el_error_de_terminacion` (bridge, tabla enumerada) y `test_un_launch_que_deja_un_descendiente_vivo_fuera_del_job_pone_la_instancia_en_cuarentena` (broker); **no probado contra Windows real** `[NO VERIFICADO EN WINDOWS]`.
+* `worker_exit` puede tardar hasta 10 s más si el Job conserva procesos tras terminarlo (plazo de fallo cerrado); con el Job vacío no cambia nada.
+* La política de teardown ante la salida del bootloader (§11.2, la cola lenta y la cuarentena espuria 1/24) **no se tocó**: sigue siendo «terminar de inmediato», como hoy.
+* Que `psutil`/`ctypes` no disparen `platform` en Windows (el conjunto liviano de H-02) no se midió allí: lo mide el workflow (paso «Origen de los procesos del CONJUNTO LIVIANO» y `test_vfs_arranque.py`).
+
+`_CONTENCION_DEL_WORKER_VERIFICADA` sigue en `False` y #854 no se toca.

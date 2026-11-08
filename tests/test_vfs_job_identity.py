@@ -55,6 +55,8 @@ class _ApiFalsa:
         fuera_del_job: Sequence[int] = (),
         murieron: Sequence[int] = (),
         no_se_dejan_matar: Sequence[int] = (),
+        error_al_terminar: Sequence[int] = (),
+        mueren_aunque_falle: bool = False,
         falla_en: str | None = None,
         excepcion: Exception | None = None,
         tambien_falla_en: str | None = None,
@@ -67,6 +69,10 @@ class _ApiFalsa:
         self.fuera_del_job = set(fuera_del_job)
         self.murieron = set(murieron)
         self.no_se_dejan_matar = set(no_se_dejan_matar)
+        # PIDs para los que ``terminar_proceso`` LANZA (p. ej. ACCESS_DENIED); los demás se terminan con normalidad.
+        self.error_al_terminar = set(error_al_terminar)
+        # Si es True, el proceso con error igual deja de estar vivo (murió mientras se esperaba su muerte).
+        self.mueren_aunque_falle = mueren_aunque_falle
         self.falla_en = falla_en
         self.tambien_falla_en = (
             tambien_falla_en  # un SEGUNDO punto de falla: fallos que ocurren juntos (verificar + cerrar)
@@ -113,6 +119,10 @@ class _ApiFalsa:
 
     def terminar_proceso(self, pid: int) -> None:
         self._fallar("terminar_proceso")
+        if pid in self.error_al_terminar:
+            if self.mueren_aunque_falle:
+                self._vivos = [vivo for vivo in self._vivos if vivo != pid]
+            raise self.excepcion
         self.terminados.append(pid)
         if pid not in self.no_se_dejan_matar:
             self._vivos = [vivo for vivo in self._vivos if vivo != pid]
@@ -462,6 +472,55 @@ def test_un_descendiente_que_ya_murio_al_terminarlo_no_es_un_error() -> None:
     api = _ApiFalsa(descendientes=(11,))
     # Act / Assert
     assert terminar_descendientes_vivos(api=api) == (11,)
+
+
+@pytest.mark.parametrize("excepcion", [JobIdentityError("denegado"), OSError("kernel32"), psutil.AccessDenied(pid=1)])
+@pytest.mark.parametrize("fallido", [11, 12, 13], ids=["el_primero", "el_del_medio", "el_ultimo"])
+def test_un_descendiente_que_no_se_puede_terminar_no_impide_intentar_con_los_demas(
+    fallido: int, excepcion: Exception
+) -> None:
+    """Auditoría independiente H-03: un error en UN pid abortaba el bucle y dejaba sin intentar a los demás.
+
+    Es la propiedad del mecanismo: la limpieza de lo no autorizado es por-PID. Que un proceso se niegue a morir
+    (``ACCESS_DENIED`` sobre uno de mayor integridad, o una espera vencida) no puede salvar a sus hermanos. Se prueba
+    con el que falla en cada posición de la lista (el informe describía el primero, pero el defecto era de cualquiera).
+    """
+    # Arrange
+    api = _ApiFalsa(descendientes=(11, 12, 13), error_al_terminar=(fallido,), excepcion=excepcion)
+    otros = {11, 12, 13} - {fallido}
+    # Act / Assert: la limpieza falla (queda uno vivo) y NOMBRA al que no murió…
+    with pytest.raises(JobIdentityError, match=str(fallido)):
+        terminar_descendientes_vivos(api=api, pausa_s=0.0)
+    # …pero los otros dos SÍ se terminaron: el error de uno no abortó el barrido.
+    assert otros <= set(api.terminados)
+    assert sorted(api.descendientes_vivos()) == [fallido]
+
+
+def test_el_error_por_pid_viaja_en_el_mensaje_de_la_limpieza_fallida() -> None:
+    # Arrange: el diagnóstico de por qué no murió no se pierde (el log CRITICAL del worker es lo único que queda).
+    api = _ApiFalsa(descendientes=(11, 12), error_al_terminar=(11,), excepcion=JobIdentityError("acceso denegado"))
+    # Act / Assert
+    with pytest.raises(JobIdentityError, match=r"11.*acceso denegado"):
+        terminar_descendientes_vivos(api=api, pausa_s=0.0)
+
+
+def test_un_descendiente_que_falla_al_terminarse_pero_ya_no_esta_vivo_no_cuenta_como_residuo() -> None:
+    # Arrange: terminar_proceso lanza (espera vencida) pero el proceso murió mientras tanto: no hay residuo que reportar.
+    api = _ApiFalsa(descendientes=(11, 12), error_al_terminar=(11,), mueren_aunque_falle=True)
+    # Act / Assert: no se afirma limpieza que no ocurrió, ni se falla por algo que ya no está vivo.
+    assert sorted(terminar_descendientes_vivos(api=api, pausa_s=0.0)) == [11, 12]
+
+
+def test_un_fallo_persistente_en_un_pid_no_impide_que_los_demas_mueran_en_rondas_posteriores() -> None:
+    # Arrange: 11 siempre falla; 12 y 13 mueren en la primera ronda, así que el resto de las rondas solo ve a 11.
+    api = _ApiFalsa(descendientes=(11, 12, 13), error_al_terminar=(11,))
+    # Act
+    with pytest.raises(JobIdentityError):
+        terminar_descendientes_vivos(api=api, intentos=3, pausa_s=0.0)
+    # Assert: 12 y 13 se terminaron UNA sola vez (no se reintenta lo que ya murió); 11 no figura entre los terminados.
+    assert api.terminados.count(12) == 1
+    assert api.terminados.count(13) == 1
+    assert 11 not in api.terminados
 
 
 # ---------------------------------------------------------------------------
