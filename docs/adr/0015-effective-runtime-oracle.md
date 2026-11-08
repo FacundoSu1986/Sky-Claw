@@ -933,3 +933,14 @@ una futura transición `MANUAL_RUNTIME -> REGISTERED_STOCK_CLONE` sin manipular 
   - `ACTIVE_GLOBAL`: directorio bajo `%LOCALAPPDATA%\ModOrganizer\<Name>` con `CurrentInstance == <Name>`, `ModOrganizer.ini` presente y sin `ModOrganizer.exe` ni `portable.txt` locales.
   - `ACTIVE_PORTABLE`: directorio fuera de `%LOCALAPPDATA%\ModOrganizer` con `ModOrganizer.exe` + `ModOrganizer.ini`, cuando `CurrentInstance == ""` o (`ABSENT` + `portable.txt`).
 - Bloquea fail-closed un directorio residual o de datos como `base_directory\ModOrganizer.ini` (`MO2_INSTANCE_INACTIVE`), instalaciones mixtas (`MO2_INSTANCE_AMBIGUOUS`) o lecturas indeterminadas del Registro (`MO2_INSTANCE_IDENTITY_UNKNOWN`).
+
+### 14.4 Refinamientos de la Revisión Adversarial PR #885 (2026-11-08)
+
+1. **Aislamiento Físico Específico del Runtime Manual Saliente (P1):**
+   `_validar_runtime_manual_saliente` no delega en `verify_clone_physical_integrity` (que exige `st_nlink == 1` propio de un Clone recién aprovisionado). En su lugar, emplea `_validar_aislamiento_runtime_manual`: audita con `_archivos_fisicos` fail-closed contra symlinks/junctions/reparse points, y comprueba que ningún archivo comparta inodo `(st_dev, st_ino)` con Steam (`managed_source_root`), Clone destino (`clone_root`), Generation (`generation_dir`) o Stock (`stock_source_root`). Archivos con `st_nlink > 1` estrictamente disjuntos de estas superficies protegidas se admiten y se reportan en el detalle de la evaluación.
+2. **Registros de Otros Clones Corruptos o Redirigidos (P1):**
+   `_raices_otros_clones_registrados` verifica `link_kind_or_raise` sobre cada archivo en `state/clones/*.json` y propaga excepciones ante registros truncados o corruptos, provocando rechazo fail-closed inmediato con `PreflightReasonCode.CLONE_RECORD_CORRUPT`.
+3. **Dependencias de Steam en Argumentos de Ejecutables (P1):**
+   `_ejecutables_dependientes_de_steam` ahora audita también `exe.arguments`: cualquier parámetro que contenga `steamapps` o referencie rutas de la Managed Source se clasifica como dependiente y bloquea con `PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED`.
+4. **Ambigüedad de Carpetas Portables en MO2 (P2):**
+   En modo portable, `HKCU\...\CurrentInstance` almacena `""` o está ausente, sin registrar ruta alguna en el sistema de Registro de Windows. Por ende, múltiples carpetas portables son indistinguibles entre sí. `probe_mo2_instance_identity` devuelve `Mo2InstanceIdentityState.AMBIGUOUS` (con `is_active = False`) ante cualquier carpeta fuera de LocalAppData con selector portable, reservando `is_active = True` exclusivamente a instancias globales comprobadas (`ACTIVE_GLOBAL`).

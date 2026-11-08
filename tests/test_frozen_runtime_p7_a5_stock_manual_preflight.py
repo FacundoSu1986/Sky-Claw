@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import types
+from collections.abc import Sequence
 
 import pytest
 
@@ -163,7 +164,7 @@ def _crear_mo2_global_sintetica(
     instance_name: str = "Skyrim Special Edition",
     game_path: pathlib.Path,
     base_directory: pathlib.Path | None = None,
-    ejecutables: list[tuple[str, str, str | None]] | None = None,
+    ejecutables: Sequence[tuple[str | None, ...]] | None = None,
 ) -> pathlib.Path:
     inst_dir = local_app_data / "ModOrganizer" / instance_name
     inst_dir.mkdir(parents=True, exist_ok=True)
@@ -183,7 +184,7 @@ def _crear_mo2_portable_sintetica(
     con_exe: bool = True,
     con_portable_txt: bool = False,
     base_directory: pathlib.Path | None = None,
-    ejecutables: list[tuple[str, str, str | None]] | None = None,
+    ejecutables: Sequence[tuple[str | None, ...]] | None = None,
 ) -> pathlib.Path:
     portable_dir.mkdir(parents=True, exist_ok=True)
     if con_exe:
@@ -204,7 +205,7 @@ def _escribir_ini_mo2(
     *,
     game_path: pathlib.Path,
     base_directory: pathlib.Path | None = None,
-    ejecutables: list[tuple[str, str, str | None]] | None = None,
+    ejecutables: Sequence[tuple[str | None, ...]] | None = None,
 ) -> None:
     escaped = str(game_path).replace("\\", "\\\\")
     lineas = [
@@ -215,11 +216,17 @@ def _escribir_ini_mo2(
     ]
     if ejecutables:
         lineas.append("[customExecutables]")
-        for idx, (titulo, binario, workdir) in enumerate(ejecutables, start=1):
+        for idx, item in enumerate(ejecutables, start=1):
+            titulo = item[0]
+            binario = item[1]
+            workdir = item[2] if len(item) > 2 else None
+            args = item[3] if len(item) > 3 else None
             lineas.append(f"{idx}\\title={titulo}")
             lineas.append(f"{idx}\\binary={binario}")
             if workdir is not None:
                 lineas.append(f"{idx}\\workingDirectory={workdir}")
+            if args is not None:
+                lineas.append(f"{idx}\\arguments={args}")
         lineas.append("")
     lineas.append("[Settings]")
     if base_directory is not None:
@@ -864,6 +871,32 @@ class TestContratoR2RuntimeManualSaliente:
         assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
         assert PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in evaluacion.reasons
 
+    def test_11c_otro_clone_en_state_corrupto_o_redirigido_bloquea_fail_closed(self, tmp_path: pathlib.Path) -> None:
+        """P1: Un registro de otro Clone corrupto o con formato inválido en storage bloquea fail-closed."""
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        clones_state = rig.storage / "state" / "clones"
+        clones_state.mkdir(parents=True, exist_ok=True)
+        # Inyectamos un registro corrupto para otro clone (no target_clone_id)
+        (clones_state / "clone-corrupto.json").write_text("{json-invalido-y-truncado", encoding="utf-8")
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CLONE_RECORD_CORRUPT in evaluacion.reasons
+
     def test_12_ruta_relativa_evasiva_y_alias_83_en_runtime_manual_bloquean(self, tmp_path: pathlib.Path) -> None:
         """Test 12 (parte multiplataforma): traversal relativo ('..') y alias 8.3 bloquean."""
         rig = RigStockManual(tmp_path, steam_activo=False)
@@ -1008,6 +1041,40 @@ class TestContratoR2RuntimeManualSaliente:
         assert eval_clone_hl.verdict is BinderPreflightVerdict.BLOCKED
         assert PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INVALID in eval_clone_hl.reasons
 
+    def test_13c_runtime_manual_con_hardlinks_disjuntos_de_steam_clone_y_gen_pasa(self, tmp_path: pathlib.Path) -> None:
+        """P1: Hardlinks históricos en runtime manual saliente disjuntos de Steam/Clone/Gen/Stock se admiten."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        # Creamos un archivo externo disjunto y un hardlink en el runtime manual
+        carpeta_externa = tmp_path / "OtraHerramientaExterna"
+        carpeta_externa.mkdir(parents=True, exist_ok=True)
+        archivo_externo = carpeta_externa / "archivo_compartido.dll"
+        archivo_externo.write_bytes(b"DLL-EXTERNA-DISJUNTA-12345")
+
+        destino_hl = rig.manual_runtime / "archivo_compartido.dll"
+        os.link(archivo_externo, destino_hl)
+
+        # Verificamos que efectivamente tiene st_nlink == 2
+        st = os.stat(destino_hl)
+        assert st.st_nlink == 2
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.READY
+        assert evaluacion.is_ready is True
+        assert any("hardlink(s) históricos disjuntos" in n for n in evaluacion.notes)
+
 
 # ===========================================================================
 # CONTRATO R3 — Identidad de la instancia MO2 activa (Global vs Portable)
@@ -1087,10 +1154,11 @@ class TestContratoR3IdentidadInstanciaMO2:
         assert obs.registry_current_instance == "Skyrim Special Edition"
 
     def test_16_instancia_portable_valida_no_se_confunde_con_la_global(self, tmp_path: pathlib.Path) -> None:
-        """Test 16: Distingue estrictamente instalación portable real frente a instancia global o carpeta huérfana."""
+        """Test 16: Con CurrentInstance="" o ABSENT fuera de LocalAppData, la identidad portable es AMBIGUOUS."""
         rig = RigStockManual(tmp_path, steam_activo=True)
 
-        # 16a: Instalación portable real (ModOrganizer.exe + ModOrganizer.ini + CurrentInstance="")
+        # 16a: Instalación portable (ModOrganizer.exe + ModOrganizer.ini + CurrentInstance="")
+        # Como el Registro no guarda rutas en modo portable, dos directorios portables son indistinguibles => AMBIGUOUS
         portable_dir = _crear_mo2_portable_sintetica(
             tmp_path / "MO2_Portable",
             game_path=rig.manual_runtime,
@@ -1098,6 +1166,15 @@ class TestContratoR3IdentidadInstanciaMO2:
             con_portable_txt=False,
             base_directory=rig.mo2_base_data,
         )
+        obs_portable = probe_mo2_instance_identity(
+            portable_dir,
+            registry_reader=lambda: Mo2RegistryObservation(state=Mo2RegistryState.OBSERVED, current_instance=""),
+            environ={"LOCALAPPDATA": str(rig.local_app_data)},
+        )
+        assert obs_portable.state is Mo2InstanceIdentityState.AMBIGUOUS
+        assert obs_portable.is_active is False
+
+        # Preflight fail-closed ante ambigüedad en directorio portable
         probes_portable = _probes_con_registro_simulado(
             local_app_data=rig.local_app_data,
             registry_obs=Mo2RegistryObservation(state=Mo2RegistryState.OBSERVED, current_instance=""),
@@ -1115,10 +1192,11 @@ class TestContratoR3IdentidadInstanciaMO2:
             environ={"SKYRIM_PATH": str(rig.manual_runtime)},
             probes=probes_portable,
         )
-        assert eval_portable.verdict is BinderPreflightVerdict.READY
-        assert eval_portable.mo2_instance_identity_state is Mo2InstanceIdentityState.ACTIVE_PORTABLE
+        assert eval_portable.verdict is BinderPreflightVerdict.BLOCKED
+        assert eval_portable.is_ready is False
+        assert PreflightReasonCode.MO2_INSTANCE_AMBIGUOUS in eval_portable.reasons
 
-        # 16b: Instalación portable forzada por portable.txt sin clave en Registro (ABSENT) => ACTIVE_PORTABLE
+        # 16b: Instalación portable con portable.txt y clave en Registro ABSENT => AMBIGUOUS
         portable_txt_dir = _crear_mo2_portable_sintetica(
             tmp_path / "MO2_Portable_Txt",
             game_path=rig.manual_runtime,
@@ -1130,7 +1208,8 @@ class TestContratoR3IdentidadInstanciaMO2:
             registry_reader=lambda: Mo2RegistryObservation(state=Mo2RegistryState.ABSENT),
             environ={"LOCALAPPDATA": str(rig.local_app_data)},
         )
-        assert obs_portable_txt.state is Mo2InstanceIdentityState.ACTIVE_PORTABLE
+        assert obs_portable_txt.state is Mo2InstanceIdentityState.AMBIGUOUS
+        assert obs_portable_txt.is_active is False
 
         # 16c: Con CurrentInstance="" (selector portable), pasar la carpeta GLOBAL en %LOCALAPPDATA% DEBE bloquear
         eval_global_con_selector_portable = evaluar_binder_preflight(
@@ -1249,6 +1328,51 @@ class TestContratoR3IdentidadInstanciaMO2:
         )
         assert eval_exe_steam.verdict is BinderPreflightVerdict.BLOCKED
         assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in eval_exe_steam.reasons
+
+    def test_17d_custom_executables_con_argumentos_apuntando_a_steam_bloquean(self, tmp_path: pathlib.Path) -> None:
+        """P1: Herramienta externa con binario fuera de Steam pero argumentos apuntando a Steam bloquea."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        # Herramienta externa en C:\Tools\xEdit.exe, pero con argumentos que referencian la Managed Source de Steam
+        tool_dir = tmp_path / "HerramientasExternas"
+        tool_dir.mkdir(parents=True, exist_ok=True)
+        tool_exe = tool_dir / "xEdit64.exe"
+        tool_exe.write_bytes(b"MZ-xedit")
+
+        _escribir_ini_mo2(
+            rig.mo2_active_global / "modorganizer.ini",
+            game_path=rig.manual_runtime,
+            base_directory=rig.mo2_base_data,
+            ejecutables=[
+                ("SKSE", f"{rig.manual_runtime.as_posix()}/skse64_loader.exe", rig.manual_runtime.as_posix()),
+                (
+                    "xEdit",
+                    tool_exe.as_posix(),
+                    tool_dir.as_posix(),
+                    f'--game-path "{rig.managed_source.as_posix()}"',
+                ),
+            ],
+        )
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
+        chk_cfg = next((c for c in evaluacion.checks if c.check.value == "config_coherence"), None)
+        assert chk_cfg is not None
+        assert "arguments (xEdit)" in chk_cfg.detail
 
 
 # ===========================================================================

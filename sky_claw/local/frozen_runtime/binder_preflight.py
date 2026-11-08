@@ -31,6 +31,7 @@ import time
 from collections.abc import Mapping
 from enum import StrEnum
 
+from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.config import SKYRIM_SE_APPID, STEAM_DEFAULT_PATHS
 from sky_claw.local.frozen_runtime.clones import (
     CANONICAL_ADMITTED_ROLE,
@@ -86,7 +87,9 @@ from sky_claw.local.frozen_runtime.generations import (
     verificar_generation,
 )
 from sky_claw.local.frozen_runtime.independence import (
-    verify_clone_physical_integrity,
+    PhysicalReparseError,
+    _archivos_fisicos,
+    descripcion_de_enlace,
 )
 from sky_claw.local.frozen_runtime.models import (
     DiscoveryState,
@@ -112,7 +115,6 @@ from sky_claw.local.frozen_runtime.storage import (
 from sky_claw.local.frozen_runtime.storage_models import (
     GenerationMetadata,
     GenerationVerificationState,
-    IndependenceState,
 )
 from sky_claw.local.runtime_vault.runtime_observation import RuntimeObservationError
 
@@ -162,11 +164,32 @@ def _comparte_inodos_correspondientes(raiz_a: pathlib.Path, raiz_b: pathlib.Path
     return False
 
 
+def _argumentos_dependientes_de_steam(
+    arguments: str,
+    managed_source_root: pathlib.Path | None,
+) -> bool:
+    """Verifica si la cadena de argumentos referencia Steam o el directorio de la Managed Source."""
+    if not arguments or not arguments.strip():
+        return False
+    args_limpio = arguments.strip()
+    norm_slash = "\\".join(args_limpio.casefold().split("/"))
+    if "\\steamapps\\" in norm_slash or norm_slash.endswith("\\steamapps") or "steamapps" in norm_slash:
+        return True
+    if managed_source_root is not None:
+        ms_str = os.path.normpath(os.path.abspath(os.fspath(managed_source_root))).casefold()
+        if ms_str in norm_slash:
+            return True
+        ms_posix = managed_source_root.as_posix().casefold()
+        if ms_posix in "/".join(args_limpio.casefold().split("\\")):
+            return True
+    return False
+
+
 def _ejecutables_dependientes_de_steam(
     ejecutables: tuple[Mo2Executable, ...],
     managed_source_root: pathlib.Path | None,
 ) -> list[str]:
-    """Identifica entradas en ``[customExecutables]`` cuyo binario o workdir cae en Steam."""
+    """Identifica entradas en ``[customExecutables]`` cuyo binario, workdir o argumentos caen en Steam."""
     dependientes: list[str] = []
     for exe in ejecutables:
         for etiqueta, valor in (("binary", exe.binary), ("workingDirectory", exe.working_directory)):
@@ -180,6 +203,8 @@ def _ejecutables_dependientes_de_steam(
             en_ms = managed_source_root is not None and _es_igual_o_hijo(norm_exe, managed_source_root)
             if en_ms or _dentro_de_area_steamapps(norm_exe):
                 dependientes.append(f"{exe.index}\\{etiqueta} ({exe.title}): '{limpio}'")
+        if exe.arguments and _argumentos_dependientes_de_steam(exe.arguments, managed_source_root):
+            dependientes.append(f"{exe.index}\\arguments ({exe.title}): '{exe.arguments}'")
     return dependientes
 
 
@@ -334,26 +359,114 @@ def _registrar_fallo_path_safety(
 
 
 def _raices_otros_clones_registrados(storage: pathlib.Path, target_clone_id: str) -> list[pathlib.Path]:
-    """Descubre otros Clones registrados en ``state/clones/*.json`` para verificar disjunción."""
+    """Descubre otros Clones registrados en ``state/clones/*.json`` para verificar disjunción.
+
+    Fail-closed: lanza FrozenRuntimeStorageError si algún registro está redirigido,
+    corrupto o ilegible.
+    """
     otros: list[pathlib.Path] = []
     carpeta = clones_state_dir(storage)
     if not carpeta.is_dir():
         return otros
-    try:
-        archivos = sorted(carpeta.glob("*.json"))
-    except OSError:
-        return otros
+    archivos = sorted(carpeta.glob("*.json"))
     for archivo in archivos:
         cid = archivo.stem
         if cid.casefold() == target_clone_id.casefold():
             continue
-        try:
-            rec = cargar_runtime_clone_record(storage, cid)
-        except (FrozenRuntimeError, OSError):
-            continue
-        if rec is not None:
-            otros.append(pathlib.Path(os.path.abspath(os.fspath(rec.root_path))))
+        tipo_enlace = link_kind_or_raise(archivo)
+        if tipo_enlace is not None:
+            raise FrozenRuntimeStorageError(f"registro de clone redirigido (reparse/symlink): '{archivo}'")
+        rec = cargar_runtime_clone_record(storage, cid)
+        if rec is None:
+            raise FrozenRuntimeStorageError(f"registro de clone vacío o ininteligible: '{archivo}'")
+        otros.append(pathlib.Path(os.path.abspath(os.fspath(rec.root_path))))
     return otros
+
+
+def _validar_aislamiento_runtime_manual(
+    manual_root: pathlib.Path,
+    *,
+    generation_root: pathlib.Path | None,
+    managed_source_root: pathlib.Path | None,
+    clone_root: pathlib.Path | None,
+    stock_source_root: pathlib.Path | None,
+) -> tuple[PreflightCheckStatus, PreflightReasonCode | None, str]:
+    """Valida el aislamiento físico del runtime manual saliente (fail-closed ante symlinks/reparse).
+
+    Admite hardlinks históricos (st_nlink > 1) únicamente si son disjuntos de Steam,
+    Clone, Generation y Stock.
+    """
+    motivo = descripcion_de_enlace(manual_root)
+    if motivo is not None:
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.REPARSE_POINT_DETECTED,
+            f"root de runtime manual redirigido: {motivo}",
+        )
+    if not manual_root.is_dir():
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+            f"el runtime manual '{manual_root}' no existe o no es un directorio",
+        )
+    try:
+        archivos_manual = _archivos_fisicos(manual_root, etiqueta="outgoing_manual_runtime")
+    except PhysicalReparseError as exc:
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.REPARSE_POINT_DETECTED,
+            str(exc),
+        )
+    except FrozenRuntimeStorageError as exc:
+        return (
+            PreflightCheckStatus.INDETERMINATE,
+            PreflightReasonCode.REPARSE_INSPECTION_FAILED,
+            str(exc),
+        )
+
+    superficies_a_evaluar: list[tuple[str, pathlib.Path]] = []
+    if generation_root is not None and generation_root.is_dir():
+        superficies_a_evaluar.append(("la Generation", generation_root))
+    if managed_source_root is not None and managed_source_root.is_dir():
+        superficies_a_evaluar.append(("la Managed Source (Steam)", managed_source_root))
+    if clone_root is not None and clone_root.is_dir():
+        superficies_a_evaluar.append(("el Clone destino", clone_root))
+    if stock_source_root is not None and stock_source_root.is_dir():
+        superficies_a_evaluar.append(("la fuente Stock", stock_source_root))
+
+    for nombre_sup, raiz_sup in superficies_a_evaluar:
+        try:
+            for rel, st_manual in archivos_manual:
+                candidato = raiz_sup / rel
+                if candidato.is_file():
+                    st_sup = os.stat(candidato, follow_symlinks=False)
+                    if (
+                        st_manual.st_dev > 0
+                        and st_manual.st_ino > 0
+                        and (st_manual.st_dev, st_manual.st_ino) == (st_sup.st_dev, st_sup.st_ino)
+                    ):
+                        return (
+                            PreflightCheckStatus.FAIL,
+                            PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+                            f"outgoing_manual_runtime_root comparte objetos de archivo (hardlink) con {nombre_sup}: '{rel}'",
+                        )
+        except OSError as exc:
+            return (
+                PreflightCheckStatus.FAIL,
+                PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
+                f"error al verificar inodos contra {nombre_sup}: {exc}",
+            )
+
+    multilinks = [rel for rel, st in archivos_manual if st.st_nlink > 1]
+    if multilinks:
+        detalle = (
+            f"runtime manual saliente verificado ({len(multilinks)} hardlink(s) históricos "
+            f"disjuntos de Steam/Clone/Generation admitidos en {len(archivos_manual)} archivo(s))"
+        )
+    else:
+        detalle = f"runtime manual saliente verificado (sin reparse ni hardlinks en {len(archivos_manual)} archivo(s))"
+
+    return PreflightCheckStatus.PASS, None, detalle
 
 
 def _validar_runtime_manual_saliente(
@@ -454,7 +567,16 @@ def _validar_runtime_manual_saliente(
         protegidas.append(("Stock source", pathlib.Path(os.path.abspath(os.fspath(stock_source_root)))))
     for dir_datos in mo2_data_dirs:
         protegidas.append(("directorio de datos de MO2", dir_datos))
-    for otro_clone in _raices_otros_clones_registrados(storage, target_clone_id):
+    try:
+        otros_clones = _raices_otros_clones_registrados(storage, target_clone_id)
+    except (FrozenRuntimeError, OSError) as exc:
+        return (
+            None,
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.CLONE_RECORD_CORRUPT,
+            f"registro de clone corrupto o ilegible en storage: {exc}",
+        )
+    for otro_clone in otros_clones:
         protegidas.append(("otro Runtime Clone registrado", otro_clone))
 
     for etiqueta, otra in protegidas:
@@ -503,53 +625,17 @@ def _validar_runtime_manual_saliente(
             f"outgoing_manual_runtime_root no posee identidad válida de Skyrim SE: {ident_manual!r}",
         )
 
-    indep_manual = verify_clone_physical_integrity(
+    st_aisl, rz_aisl, det_aisl = _validar_aislamiento_runtime_manual(
         manual_norm,
         generation_root=generation_dir(storage, gen_id),
         managed_source_root=ms_root_resolved,
+        clone_root=clone_root,
+        stock_source_root=stock_source_root,
     )
-    if indep_manual.state is not IndependenceState.INDEPENDENT:
-        msg_lower = indep_manual.message.lower()
-        if "reparse" in msg_lower or "symlink" in msg_lower:
-            return (
-                None,
-                PreflightCheckStatus.FAIL,
-                PreflightReasonCode.REPARSE_POINT_DETECTED,
-                indep_manual.message,
-            )
-        return (
-            None,
-            PreflightCheckStatus.FAIL,
-            PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
-            f"outgoing_manual_runtime_root carece de independencia física: {indep_manual.message}",
-        )
+    if st_aisl is not PreflightCheckStatus.PASS:
+        return None, st_aisl, rz_aisl, det_aisl
 
-    try:
-        if _comparte_inodos_correspondientes(manual_norm, clone_root):
-            return (
-                None,
-                PreflightCheckStatus.FAIL,
-                PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
-                "outgoing_manual_runtime_root comparte objetos de archivo (hardlinks) con el Clone destino",
-            )
-        if stock_source_root is not None:
-            stock_abs = pathlib.Path(os.path.abspath(os.fspath(stock_source_root)))
-            if _comparte_inodos_correspondientes(manual_norm, stock_abs):
-                return (
-                    None,
-                    PreflightCheckStatus.FAIL,
-                    PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
-                    "outgoing_manual_runtime_root comparte objetos de archivo (hardlinks) con la fuente Stock",
-                )
-    except OSError as exc:
-        return (
-            None,
-            PreflightCheckStatus.FAIL,
-            PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID,
-            f"error al verificar inodos del runtime manual saliente: {exc}",
-        )
-
-    return manual_norm.resolve(), PreflightCheckStatus.PASS, None, "runtime manual saliente verificado"
+    return manual_norm.resolve(), PreflightCheckStatus.PASS, None, det_aisl
 
 
 def evaluar_binder_preflight(
@@ -583,6 +669,7 @@ def evaluar_binder_preflight(
 
     checks_map: dict[PreflightCheckCode, PreflightCheckResult] = {}
     reasons: list[PreflightReasonCode] = []
+    notes_list: list[str] = []
 
     storage = pathlib.Path(os.path.abspath(os.fspath(storage_root)))
     mo2_dir = pathlib.Path(os.path.abspath(os.fspath(mo2_instance_dir)))
@@ -1293,6 +1380,8 @@ def evaluar_binder_preflight(
             )
         else:
             manual_resolved = manual_res
+            if det_manual:
+                notes_list.append(det_manual)
 
     # -------------------------------------------------------------------------
     # 9. Integridad de la Generation y procedencia Stock v2 + autoridad A1 (R1)
@@ -1681,7 +1770,7 @@ def evaluar_binder_preflight(
         stock_reference_digest=stock_digest_verificado,
         mo2_instance_identity_state=mo2_ident.state,
         assessed_at_ns=sello,
-        notes=(),
+        notes=tuple(notes_list),
     )
 
 

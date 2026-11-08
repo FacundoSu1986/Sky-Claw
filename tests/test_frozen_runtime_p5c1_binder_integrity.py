@@ -56,15 +56,13 @@ from sky_claw.local.frozen_runtime.clones import (
     registrar_runtime_clone_record,
 )
 from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import leer_game_path_de_mo2
-from sky_claw.local.frozen_runtime.effective_runtime.mo2_instance import (
-    probe_mo2_instance_identity,
-)
 from sky_claw.local.frozen_runtime.effective_runtime.models import (
     CompatibilityResult,
     LiveProcessEvidence,
     LiveProcessKind,
     LiveProcessSnapshot,
-    Mo2RegistryObservation,
+    Mo2InstanceIdentityObservation,
+    Mo2InstanceIdentityState,
     Mo2RegistryState,
     RuntimeCompatibility,
     RuntimeProbes,
@@ -124,7 +122,6 @@ def _crear_managed_source_sintetica(raiz_steam: pathlib.Path) -> pathlib.Path:
 
 def _crear_mo2_instance_sintetica(instance_dir: pathlib.Path, *, game_path: str) -> pathlib.Path:
     instance_dir.mkdir(parents=True, exist_ok=True)
-    (instance_dir / "ModOrganizer.exe").write_bytes(b"MZ-synthetic-mo2")
     ini = instance_dir / "modorganizer.ini"
     escaped = game_path.replace("\\", "\\\\")
     lineas = [
@@ -209,12 +206,48 @@ def _crear_config(path: pathlib.Path, skyrim_path: str) -> pathlib.Path:
     return path
 
 
-def _sonda_mo2_portable(ruta: pathlib.Path):
-    return probe_mo2_instance_identity(
-        ruta,
-        registry_reader=lambda: Mo2RegistryObservation(state=Mo2RegistryState.OBSERVED, current_instance=""),
-        environ={},
+def _sonda_mo2_global(ruta: pathlib.Path) -> Mo2InstanceIdentityObservation:
+    ini = ruta / "modorganizer.ini"
+    try:
+        es_archivo = ini.is_file()
+    except OSError as exc:
+        return Mo2InstanceIdentityObservation(
+            state=Mo2InstanceIdentityState.UNKNOWN,
+            instance_dir=str(ruta),
+            registry_state=Mo2RegistryState.OBSERVED,
+            registry_current_instance=ruta.name,
+            detail=f"error de filesystem al acceder a modorganizer.ini: {exc}",
+        )
+    if not es_archivo:
+        return Mo2InstanceIdentityObservation(
+            state=Mo2InstanceIdentityState.INACTIVE,
+            instance_dir=str(ruta),
+            registry_state=Mo2RegistryState.OBSERVED,
+            registry_current_instance=ruta.name,
+            detail=f"'{ruta}' carece de modorganizer.ini regular",
+        )
+    try:
+        tiene_artefactos_portables = (ruta / "ModOrganizer.exe").exists() or (ruta / "portable.txt").exists()
+    except OSError:
+        tiene_artefactos_portables = False
+    if tiene_artefactos_portables:
+        return Mo2InstanceIdentityObservation(
+            state=Mo2InstanceIdentityState.AMBIGUOUS,
+            instance_dir=str(ruta),
+            registry_state=Mo2RegistryState.OBSERVED,
+            registry_current_instance=ruta.name,
+            detail=f"la instancia global '{ruta}' contiene artefactos portables",
+        )
+    return Mo2InstanceIdentityObservation(
+        state=Mo2InstanceIdentityState.ACTIVE_GLOBAL,
+        instance_dir=str(ruta),
+        registry_state=Mo2RegistryState.OBSERVED,
+        registry_current_instance=ruta.name,
+        detail=f"instancia global activa verificada contra HKCU CurrentInstance='{ruta.name}'",
     )
+
+
+_sonda_mo2_portable = _sonda_mo2_global
 
 
 def _probes_quiescentes(estado: dict[str, bool] | None = None) -> RuntimeProbes:
@@ -241,7 +274,7 @@ def _probes_quiescentes(estado: dict[str, bool] | None = None) -> RuntimeProbes:
             state=RuntimeCompatibility.COMPATIBLE, reason="compatible sintético"
         ),
         processes=_processes,
-        mo2_instance=_sonda_mo2_portable,
+        mo2_instance=_sonda_mo2_global,
     )
 
 

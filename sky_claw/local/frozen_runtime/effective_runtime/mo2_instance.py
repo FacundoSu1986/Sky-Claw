@@ -319,11 +319,14 @@ def probe_mo2_instance_identity(
                 ),
             )
         return Mo2InstanceIdentityObservation(
-            state=Mo2InstanceIdentityState.ACTIVE_PORTABLE,
+            state=Mo2InstanceIdentityState.AMBIGUOUS,
             instance_dir=inst_str,
             registry_state=reg_obs.state,
             registry_current_instance=reg_obs.current_instance,
-            detail=f"instalación portable activa verificada en '{inst_dir}' (ModOrganizer.exe + CurrentInstance='')",
+            detail=(
+                f"ambigüedad en instalación portable ('{inst_dir}'): el Registro HKCU CurrentInstance está vacío, "
+                "lo cual no otorga autoridad de ruta entre múltiples directorios portables posibles"
+            ),
         )
 
     # reg_obs.state is Mo2RegistryState.ABSENT
@@ -337,11 +340,14 @@ def probe_mo2_instance_identity(
         )
     if tiene_exe and tiene_portable:
         return Mo2InstanceIdentityObservation(
-            state=Mo2InstanceIdentityState.ACTIVE_PORTABLE,
+            state=Mo2InstanceIdentityState.AMBIGUOUS,
             instance_dir=inst_str,
             registry_state=reg_obs.state,
             registry_current_instance=reg_obs.current_instance,
-            detail=f"instalación portable forzada por portable.txt verificada en '{inst_dir}'",
+            detail=(
+                f"ambigüedad en instalación portable con portable.txt ('{inst_dir}'): clave HKCU ausente, "
+                "portable.txt no otorga autoridad de ruta única frente a múltiples directorios portables posibles"
+            ),
         )
     if tiene_exe:
         return Mo2InstanceIdentityObservation(

@@ -130,11 +130,8 @@ class Mo2InstanceIdentityObservation:
 
     @property
     def is_active(self) -> bool:
-        """Única condición que acredita identidad activa: global verificada o portable verificada."""
-        return self.state in (
-            Mo2InstanceIdentityState.ACTIVE_GLOBAL,
-            Mo2InstanceIdentityState.ACTIVE_PORTABLE,
-        )
+        """Única condición que acredita identidad activa: global verificada."""
+        return self.state is Mo2InstanceIdentityState.ACTIVE_GLOBAL
 
 
 class RuntimeCompatibility(StrEnum):
