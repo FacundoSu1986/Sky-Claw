@@ -20,6 +20,7 @@ Verifica que el teardown brokered:
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import contextlib
@@ -1946,3 +1947,379 @@ async def test_race_bridge_lost_between_snapshot_and_recheck_enters_bridge_loss_
     assert elapsed >= 0.15, "Debió esperar la gracia de pérdida de bridge en vez de un retorno inmediato"
 
     await broker.close()
+
+
+# ==============================================================================
+# Política de teardown TRAS el resultado: la cola lenta del proceso lanzado
+# ==============================================================================
+#
+# El informe de identidad del Job (§11.2) midió con un MO2 real que entre ``job_result`` y ``worker_exit`` lo normal son
+# 0,23–0,75 s, pero hubo colas de ~22 s y 43 s: 1 de 24 corridas terminó en CUARENTENA por esto, con el resultado ya recibido.
+# La política: si el resultado ya llegó y el cierre se demora, el broker le pide al bridge cerrar el Job (el ``cancel`` de
+# siempre) y espera ``worker_exit`` hasta el MISMO plazo duro. ``worker_exit`` solo se emite con el Job vacío, así que
+# liberar al recibirlo no cambia lo que garantiza; si el bridge no puede cerrar el Job, la cuarentena sigue igual.
+
+_SUPERFICIES = ("submit", "sesion")
+
+
+async def _hasta_el_resultado(
+    superficie: str,
+    broker: VfsExecutionBroker,
+    bridge: _BridgeFalso,
+    job: VfsJob,
+    challenge,
+    mo2: pathlib.Path,
+    data: pathlib.Path,
+):
+    """Lleva el job hasta que el worker REPORTÓ su resultado: el broker queda esperando el ``worker_exit``.
+
+    Devuelve ``(desenlace, worker, sesion)``: ``desenlace`` es la tarea que termina con el resultado (o con la causa del
+    fallo) y ``sesion`` es ``None`` salvo en la superficie de sesiones.
+    """
+    if superficie == "submit":
+        desenlace = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+        launch = await bridge.recv()
+        assert launch["type"] == "launch_worker"
+        worker = await _WorkerFalso.conectar(broker, job.job_id)
+        await worker.report_result(challenge=challenge)
+        return desenlace, worker, None
+    sesion, worker = await _abrir_sesion(broker, bridge, job, challenge, mo2, data)
+    await worker.report_result(challenge=challenge)
+    return asyncio.create_task(sesion.result()), worker, sesion
+
+
+async def _cerrar_escenario(desenlace, worker, bridge: _BridgeFalso, broker: VfsExecutionBroker) -> None:
+    if desenlace is not None and not desenlace.done():
+        desenlace.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await desenlace
+    if worker is not None:
+        await worker.cerrar()
+    await bridge.cerrar()
+    await broker.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_tras_el_resultado_y_una_demora_el_broker_pide_cerrar_el_job_y_libera_sin_cuarentena(
+    tmp_path: pathlib.Path, superficie: str
+) -> None:
+    # Arrange
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=5.0, post_result_cancel_grace_seconds=0.2)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        # Act: el worker ya reportó; el proceso lanzado (el bootloader) tarda en salir, así que no llega worker_exit.
+        desenlace, worker, sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
+        pedido = await bridge.recv(timeout=2.0)
+        # El bridge cierra el Job, lo confirma VACÍO y recién entonces emite worker_exit.
+        await bridge.worker_exit(job.job_id, exit_code=0)
+        resultado = await asyncio.wait_for(desenlace, timeout=3.0)
+
+        # Assert: se pidió el cierre con el cancel de siempre, y el job termina bien SIN cuarentena.
+        assert pedido == {"protocol_version": VFS_PROTOCOL_VERSION, "type": "cancel", "job_id": job.job_id}
+        assert resultado.success is True
+        assert broker.quarantine_reason is None
+        if sesion is not None:
+            assert sesion.confirmed_terminal is True
+    finally:
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+class _JobQueSeVaciaAlTerminar:
+    """Job que, como el real, vacía el árbol al terminarlo y con eso destraba la espera del proceso lanzado."""
+
+    def __init__(self, nombre: str | None, destrabar_espera: threading.Event) -> None:
+        self.nombre = nombre
+        self._destrabar_espera = destrabar_espera
+        self.terminado = False
+        self.cerrado = False
+
+    def assign(self, handle: int) -> None:
+        pass
+
+    def adopt_descendants(self, process_handle: int) -> int:
+        return 0
+
+    def terminate(self) -> None:
+        self.terminado = True
+        self._destrabar_espera.set()
+
+    def active_processes(self) -> int:
+        return 0 if self.terminado else 1
+
+    def close(self) -> None:
+        self.cerrado = True
+
+
+@pytest.mark.asyncio
+async def test_con_el_bridge_real_el_pedido_de_cierre_libera_a_un_proceso_lanzado_que_no_sale(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Cierra el eslabón que los dobles no prueban: ``cancel`` del broker -> el bridge REAL termina el Job -> worker_exit.
+
+    El proceso lanzado (el bootloader) NO sale por su cuenta: es la cola lenta que dejaba la instancia en cuarentena.
+    """
+    # Arrange
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=5.0, post_result_cancel_grace_seconds=0.3)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    destrabar_espera = threading.Event()
+    job_del_bridge = _JobQueSeVaciaAlTerminar(None, destrabar_espera)
+    binario = tmp_path / "mock_worker.exe"
+    binario.write_bytes(b"binary")
+    loop = asyncio.get_running_loop()
+
+    def _reenviar_al_broker(evento: dict[str, object]) -> None:
+        # Lo emiten el hilo de ``launch`` y el del monitor: se envían por el socket del bridge, en el loop.
+        asyncio.run_coroutine_threadsafe(
+            write_authenticated_message(bridge.writer, evento, bridge.secret), loop
+        ).result(timeout=5.0)
+
+    controlador = BridgeLaunchController(
+        organizer=_OrganizerFake(),
+        worker_executable=binario,
+        worker_prefix=["--dummy"],
+        descriptor_path=broker.descriptor_path,
+        jobs_root=broker._jobs_dir,
+        send_event=_reenviar_al_broker,
+        job_factory=lambda _nombre: job_del_bridge,
+        process_waiter=lambda _handle: (destrabar_espera.wait(timeout=10.0), 0),
+    )
+    desenlace = worker = None
+    try:
+        desenlace = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+        launch = await bridge.recv()
+        assert launch["type"] == "launch_worker"
+        await asyncio.to_thread(controlador.launch, launch)
+        worker = await _WorkerFalso.conectar(broker, job.job_id)
+
+        # Act: el worker reporta; el proceso lanzado sigue vivo; la gracia vence y el broker pide el cierre.
+        await worker.report_result(challenge=challenge)
+        pedido = await bridge.recv(timeout=3.0)
+        controlador.cancel(pedido)
+        resultado = await asyncio.wait_for(desenlace, timeout=5.0)
+
+        # Assert: el Job se cerró por el pedido y el job termina bien SIN cuarentena.
+        assert pedido["type"] == "cancel"
+        assert job_del_bridge.terminado is True
+        assert resultado.success is True
+        assert broker.quarantine_reason is None
+    finally:
+        destrabar_espera.set()
+        await asyncio.to_thread(controlador.wait_for_monitors, timeout=5.0)
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_si_el_worker_exit_llega_a_tiempo_no_se_pide_cerrar_el_job(
+    tmp_path: pathlib.Path, superficie: str
+) -> None:
+    # Arrange: el caso normal (0,23-0,75 s) no debe pagar ningún costo ni terminar nada.
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=5.0, post_result_cancel_grace_seconds=0.6)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        # Act
+        desenlace, worker, _sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
+        await bridge.worker_exit(job.job_id, exit_code=0)
+        resultado = await asyncio.wait_for(desenlace, timeout=3.0)
+
+        # Assert: pasada de sobra la gracia, el bridge no recibió ningún pedido de cierre.
+        assert resultado.success is True
+        with pytest.raises(TimeoutError):
+            await bridge.recv(timeout=0.9)
+    finally:
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_si_el_cierre_no_se_confirma_antes_del_plazo_duro_se_conserva_la_cuarentena(
+    tmp_path: pathlib.Path, superficie: str
+) -> None:
+    # Arrange: el bridge recibe el pedido pero nunca confirma (el Job NO se demuestra vacío): fail-closed como siempre.
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=0.8, post_result_cancel_grace_seconds=0.2)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        # Act
+        desenlace, worker, _sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
+        pedido = await bridge.recv(timeout=2.0)
+
+        # Assert
+        assert pedido["type"] == "cancel"
+        with pytest.raises(VfsTeardownDeadlineError):
+            await asyncio.wait_for(desenlace, timeout=5.0)
+        assert broker.quarantine_reason is not None
+    finally:
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_pedir_el_cierre_no_extiende_el_plazo_duro(tmp_path: pathlib.Path, superficie: str) -> None:
+    # Arrange: gracia 1,0 s y plazo duro 1,5 s. Si el plazo se midiera DESPUÉS de la espera blanda vencería a ~2,5 s.
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=1.5, post_result_cancel_grace_seconds=1.0)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        # Act
+        desenlace, worker, _sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
+        inicio = asyncio.get_running_loop().time()
+        with pytest.raises(VfsTeardownDeadlineError):
+            await asyncio.wait_for(desenlace, timeout=6.0)
+        transcurrido = asyncio.get_running_loop().time() - inicio
+
+        # Assert: el plazo duro sigue siendo el de siempre (~1,5 s desde el resultado), con margen para el runner.
+        assert transcurrido < 2.2, f"el plazo duro se extendió: {transcurrido:.2f}s"
+    finally:
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_si_el_bridge_no_pudo_cerrar_el_job_hay_cuarentena_sin_esperar_el_plazo_duro(
+    tmp_path: pathlib.Path, superficie: str
+) -> None:
+    # Arrange
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=30.0, post_result_cancel_grace_seconds=0.2)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        # Act: el bridge responde que NO pudo terminar el Job.
+        desenlace, worker, _sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
+        pedido = await bridge.recv(timeout=2.0)
+        await bridge.bridge_error(
+            job.job_id, command="cancel", message="no se pudo terminar el Job", kind="termination_failed"
+        )
+
+        # Assert: cuarentena inmediata con error tipado; no se espera el plazo duro de 30 s.
+        assert pedido["type"] == "cancel"
+        with pytest.raises(VfsBridgeTerminationError):
+            await asyncio.wait_for(desenlace, timeout=2.0)
+        assert broker.quarantine_reason is not None
+    finally:
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_si_el_job_ya_se_cerro_cuando_llega_el_pedido_es_una_carrera_benigna(
+    tmp_path: pathlib.Path, superficie: str
+) -> None:
+    # Arrange: el bridge ya sacó al job de su tabla (``job_unknown``) y su worker_exit está en tránsito.
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=5.0, post_result_cancel_grace_seconds=0.2)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        # Act
+        desenlace, worker, _sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
+        pedido = await bridge.recv(timeout=2.0)
+        await bridge.bridge_error(
+            job.job_id, command="cancel", message="cancel apunta a un job desconocido", kind="job_unknown"
+        )
+        await asyncio.sleep(0.05)
+        sin_cuarentena_todavia = broker.quarantine_reason is None
+        await bridge.worker_exit(job.job_id, exit_code=0)
+        resultado = await asyncio.wait_for(desenlace, timeout=3.0)
+
+        # Assert: sin cuarentena falsa; el worker_exit en tránsito resuelve el fence y el resultado válido se preserva.
+        assert pedido["type"] == "cancel"
+        assert sin_cuarentena_todavia
+        assert resultado.success is True
+        assert broker.quarantine_reason is None
+    finally:
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_si_el_bridge_cae_tras_el_resultado_el_pedido_de_cierre_no_rompe_el_contrato_de_perdida(
+    tmp_path: pathlib.Path, superficie: str
+) -> None:
+    # Arrange: el pedido de cierre no puede enviarse (bridge caído); rige el contrato de siempre (kill-on-close).
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=2.0, fence_grace_seconds=0.4, post_result_cancel_grace_seconds=0.2)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        # Act
+        desenlace, worker, _sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
+        await bridge.cerrar()
+        resultado = await asyncio.wait_for(desenlace, timeout=5.0)
+
+        # Assert: sin una excepción de desconexión escapando del camino nuevo.
+        assert resultado.success is True
+    finally:
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+async def test_con_una_gracia_mayor_o_igual_que_el_plazo_duro_la_politica_no_se_activa(tmp_path: pathlib.Path) -> None:
+    # Arrange: con plazos cortos (los de los demás tests de este archivo) el comportamiento de siempre no cambia.
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=0.4, post_result_cancel_grace_seconds=5.0)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        # Act
+        desenlace, worker, _sesion = await _hasta_el_resultado("submit", broker, bridge, job, challenge, mo2, data)
+
+        # Assert: vence el plazo duro y nunca se pidió el cierre.
+        with pytest.raises(VfsTeardownDeadlineError):
+            await asyncio.wait_for(desenlace, timeout=5.0)
+        with pytest.raises(TimeoutError):
+            await bridge.recv(timeout=0.3)
+    finally:
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.parametrize("gracia", [0, -1.0, float("inf"), float("nan")])
+def test_la_gracia_posterior_al_resultado_debe_ser_un_numero_positivo_y_finito(
+    tmp_path: pathlib.Path, gracia: float
+) -> None:
+    # Act / Assert: un valor absurdo no puede dejar la política apagada ni disparada por error sin que nadie se entere.
+    with pytest.raises(VfsBrokerError):
+        _kw_broker(tmp_path, post_result_cancel_grace_seconds=gracia)
+
+
+def _funciones_que_llaman_a(arbol: ast.AST, nombre_del_metodo: str) -> set[str]:
+    return {
+        funcion.name
+        for funcion in ast.walk(arbol)
+        if isinstance(funcion, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            isinstance(llamada, ast.Call) and getattr(llamada.func, "attr", None) == nombre_del_metodo
+            for llamada in ast.walk(funcion)
+        )
+    }
+
+
+def test_quien_espera_el_worker_exit_esta_congelado_para_que_ninguna_espera_se_saltee_la_politica() -> None:
+    """Enumera, no muestrea: una espera nueva de ``worker_exit`` rompe este ancla hasta que se decida su política."""
+    arbol = ast.parse(pathlib.Path(vfs_broker.__file__).read_text(encoding="utf-8"))
+
+    # La espera posterior al resultado: submit() y las sesiones (``_conducir_sesion``) pasan las dos por el mismo lugar.
+    assert _funciones_que_llaman_a(arbol, "_await_job_completion") == {"submit", "_conducir_sesion"}
+    # Las únicas esperas de bajo nivel del worker_exit.
+    assert _funciones_que_llaman_a(arbol, "_await_exit_or_bridge_loss") == {
+        "_await_job_completion",
+        "_await_worker_exit",
+    }
