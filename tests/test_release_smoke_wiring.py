@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,18 @@ PRODUCTORES_SIN_PUBLICACION = {
 }
 #: Rutas que esos productores pueden subir como artefacto: únicamente los resultados de las mediciones.
 RUTAS_DE_ARTEFACTO_PERMITIDAS = frozenset({"sandbox_min/resultados*.json", "sandbox_min/pytest.txt"})
+#: Registro del SHA-256 del ejecutable recién construido (``scripts/registrar_sha256_ejecutable.py``).
+COMANDO_REGISTRO = re.compile(
+    r"python scripts/registrar_sha256_ejecutable\.py registrar dist/SkyClawApp\.exe(?: --json (?P<json>\S+))?"
+)
+COMANDO_VERIFICACION = re.compile(
+    r"python scripts/registrar_sha256_ejecutable\.py verificar (?P<json>\S+) dist/SkyClawApp\.exe"
+)
+#: Productores donde el ejecutable lo usan muchos pasos a lo largo de la corrida: ahí el hash se vuelve a
+#: verificar al final, para que «el ejecutable que se probó» y «el que se hasheó» sean el mismo archivo.
+PRODUCTORES_CON_VERIFICACION = {
+    ("vfs-supervision-sandbox.yml", "sandbox"),
+}
 
 
 def _cargar_workflows() -> dict[str, dict[str, Any]]:
@@ -130,3 +143,75 @@ def test_los_productores_sin_publicacion_no_publican_el_ejecutable() -> None:
                 rutas = {linea.strip() for linea in str(step.get("with", {}).get("path", "")).splitlines()}
                 rutas.discard("")
                 assert rutas and rutas <= RUTAS_DE_ARTEFACTO_PERMITIDAS, (nombre_workflow, sorted(rutas))
+
+
+def _usos_del_ejecutable(steps: list[dict[str, Any]], desde: int, excluidos: set[int]) -> list[int]:
+    """Índices (posteriores a ``desde``) de los pasos que mencionan al ejecutable en cualquier campo."""
+    return [
+        indice
+        for indice, step in enumerate(steps)
+        if indice > desde and indice not in excluidos and "SkyClawApp.exe" in repr(step)
+    ]
+
+
+def test_todo_productor_registra_el_sha256_del_ejecutable_antes_de_usarlo() -> None:
+    """Enumera a TODOS los productores (no una lista a mano): un productor nuevo rompe el ancla hasta registrar el hash."""
+    productores = _productores_de_ejecutable(_cargar_workflows())
+
+    assert set(productores) == PRODUCTORES_ESPERADOS | PRODUCTORES_SIN_PUBLICACION
+    for (nombre_workflow, _nombre_job), steps in sorted(productores.items()):
+        build_index = _indice_unico(
+            steps,
+            lambda step: "pyinstaller sky_claw.spec" in step.get("run", "").lower(),
+            "de construcción PyInstaller",
+        )
+        registro_index = _indice_unico(
+            steps,
+            lambda step: COMANDO_REGISTRO.fullmatch(step.get("run", "").strip()) is not None,
+            f"de registro del SHA-256 del ejecutable ({nombre_workflow})",
+        )
+        assert build_index < registro_index, f"{nombre_workflow}: el hash se registra después de construir"
+        # Ningún paso usa el ejecutable entre que se construye y que se hashea (smoke, firma, subida, pruebas).
+        previos = [
+            indice for indice in _usos_del_ejecutable(steps, build_index, {registro_index}) if indice < registro_index
+        ]
+        assert previos == [], f"{nombre_workflow}: pasos que usan el ejecutable antes de hashearlo: {previos}"
+
+
+def test_el_registro_del_laboratorio_se_sube_como_artefacto_de_resultados() -> None:
+    """El hash que no queda guardado no es evidencia: su ruta debe caer en la lista de artefactos permitidos."""
+    productores = _productores_de_ejecutable(_cargar_workflows())
+
+    for clave in sorted(PRODUCTORES_CON_VERIFICACION):
+        steps = productores[clave]
+        registro = next(
+            coincidencia
+            for step in steps
+            if (coincidencia := COMANDO_REGISTRO.fullmatch(step.get("run", "").strip())) is not None
+        )
+        ruta = registro.group("json")
+        assert ruta is not None, f"{clave}: el registro del laboratorio debe guardar su JSON (--json)"
+        assert any(fnmatch.fnmatch(ruta, patron) for patron in RUTAS_DE_ARTEFACTO_PERMITIDAS), (clave, ruta)
+
+
+def test_el_laboratorio_vuelve_a_verificar_el_hash_despues_del_ultimo_uso_del_ejecutable() -> None:
+    productores = _productores_de_ejecutable(_cargar_workflows())
+
+    for clave in sorted(PRODUCTORES_CON_VERIFICACION):
+        steps = productores[clave]
+        registro_index = _indice_unico(
+            steps,
+            lambda step: COMANDO_REGISTRO.fullmatch(step.get("run", "").strip()) is not None,
+            "de registro",
+        )
+        verificacion_index = _indice_unico(
+            steps,
+            lambda step: COMANDO_VERIFICACION.fullmatch(step.get("run", "").strip()) is not None,
+            "de verificación del SHA-256",
+        )
+        usos = _usos_del_ejecutable(steps, registro_index, {verificacion_index})
+        assert usos, f"{clave}: el laboratorio debería usar el ejecutable entre el registro y la verificación"
+        assert verificacion_index > max(usos), f"{clave}: se verifica antes del último uso del ejecutable"
+        # Debe correr también cuando un paso previo falló: es justo cuando más importa saber qué se probó.
+        condicion = str(steps[verificacion_index].get("if", ""))
+        assert "cancelled()" in condicion or "always()" in condicion, (clave, condicion)

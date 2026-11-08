@@ -253,6 +253,8 @@ jobs:
       - name: Build executable
         id: build_executable
         run: pyinstaller sky_claw.spec --clean
+      - name: Record SHA-256 of frozen executable
+        run: python scripts/registrar_sha256_ejecutable.py registrar dist/SkyClawApp.exe
       - name: Smoke-test frozen executable
         id: smoke_frozen_executable
         run: python scripts/smoke_frozen_executable.py dist/SkyClawApp.exe
