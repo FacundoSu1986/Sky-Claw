@@ -358,6 +358,10 @@ _FILAS_CON_EVIDENCIA_DE_RIG_EXTERNA = frozenset(
         "Preset de TexGen desvía `OutputPath`",
         "Clasificación del log de la etapa 9",
         "Candidato de salida de TexGen",
+        # Etapa 6: la guía de smoke resume la corrida (E1–E7), pero el informe completo y los
+        # JSON crudos viven en la máquina del operador.
+        "Etapa 6 (Wrye Bash) sin build headless",
+        "Etapa 6 (Wrye Bash) — vigencia del testigo durable y simetría M-04 (#866)",
     }
 )
 
@@ -708,3 +712,79 @@ def test_recovery_de_arranque_de_los_roots_externos_registrado_en_ooda() -> None
     assert "1801a1ba" in fila["Cerrado en"]
     assert "test_rollback_reconciler.py" in fila["Verificado por"]
     assert "test_dyndolod_workspace.py" in fila["Verificado por"]
+
+
+# ---------------------------------------------------------------------------
+# Guías de operación: el inventario y el índice no pueden ignorarlas
+# ---------------------------------------------------------------------------
+
+_OPERACIONES = _RAIZ / "docs" / "operations"
+
+#: Las dos filas de la etapa 6. Igualdad literal: una tercera fila con el mismo prefijo rompe el
+#: test hasta que se decida si también depende de la guía de smoke.
+_FILAS_DE_LA_ETAPA_6 = frozenset(
+    {
+        "Etapa 6 (Wrye Bash) sin build headless",
+        "Etapa 6 (Wrye Bash) — vigencia del testigo durable y simetría M-04 (#866)",
+    }
+)
+
+_ENLACE_A_LA_GUIA_DE_SMOKE = "operations/etapa6_smoke_rig.md"
+
+
+def test_toda_guia_de_smoke_de_rig_esta_citada_por_el_inventario() -> None:
+    """Una guía de smoke que el inventario no cita deja el estado diciendo lo contrario de lo medido.
+
+    Pasó con ``etapa6_smoke_rig.md`` (#878): documentó una corrida E1–E7 con resultado PASS y nada la
+    enlazaba, así que ``pending_ooda_status.md`` siguió diciendo «falta únicamente el smoke en rig» y
+    el estado de la etapa quedó por detrás de la evidencia. El defecto no era de redacción sino de
+    estructura: una guía huérfana no tiene quién la mantenga sincronizada con el inventario.
+
+    Se enumeran TODAS las guías ``*smoke_rig*``: una guía de smoke nueva sin cita rompe el test, en vez
+    de depender de que alguien se acuerde de la fila que corresponde.
+    """
+    guias = sorted(ruta.name for ruta in _OPERACIONES.glob("*smoke_rig*.md"))
+    assert guias, "el glob dejó de encontrar guías de smoke: el ancla ya no prueba nada"
+
+    inventario = _INVENTARIO.read_text(encoding="utf-8")
+    sin_citar = [guia for guia in guias if guia not in inventario]
+
+    assert not sin_citar, f"guías de smoke que el inventario no cita: {sin_citar}"
+
+
+def test_las_filas_de_la_etapa_6_citan_la_guia_y_declaran_lo_que_sigue_sin_validar() -> None:
+    """Las filas de la etapa 6 apuntan a la guía y nombran lo que la corrida no cubrió.
+
+    La guía es la fuente de qué escenarios pasaron y cuáles faltan: duplicar esa lista en el inventario
+    es lo que lo hizo envejecer. Lo que sí tiene que decir la fila principal, porque no depende de
+    ninguna repetición de la corrida, es el bridge USVFS sin validar (H-7), que es lo que impide dar la
+    etapa por cerrada.
+    """
+    filas = _tabla()
+
+    assert {item for item in filas if item.startswith("Etapa 6 (Wrye Bash)")} == _FILAS_DE_LA_ETAPA_6
+
+    for item in sorted(_FILAS_DE_LA_ETAPA_6):
+        celdas = " ".join(filas[item].values())
+        assert _ENLACE_A_LA_GUIA_DE_SMOKE in celdas, f"{item!r} no cita la guía de smoke"
+
+    principal = filas["Etapa 6 (Wrye Bash) sin build headless"]
+    assert principal["Estado"] == "Parcial"
+    assert "bridge USVFS" in principal["Qué falta"]
+    assert "no validado" in principal["Qué falta"]
+
+
+def test_toda_guia_de_operaciones_esta_en_el_indice_de_su_carpeta() -> None:
+    """Una guía en ``docs/operations/`` que el índice no enlaza no se descubre por navegación.
+
+    El README de la carpeta es el único índice del que cuelgan los runbooks; ``etapa6_smoke_rig.md`` y
+    ``p7_golden_master_runbook.md`` existían sin entrada. Se enumera la carpeta entera en vez de
+    revisar las dos que se descubrieron: una guía nueva sin enlace rompe este test.
+    """
+    guias = {ruta.name for ruta in _OPERACIONES.glob("*.md") if ruta.name != "README.md"}
+    assert guias, "el glob dejó de encontrar guías: el ancla ya no prueba nada"
+
+    indice = (_OPERACIONES / "README.md").read_text(encoding="utf-8")
+    enlazadas = set(re.findall(r"\]\(([\w.-]+\.md)\)", indice))
+
+    assert guias <= enlazadas, f"guías sin entrada en docs/operations/README.md: {sorted(guias - enlazadas)}"
