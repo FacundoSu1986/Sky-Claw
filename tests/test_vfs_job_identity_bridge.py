@@ -64,6 +64,12 @@ class _Job:
     def terminate(self) -> None:
         pass
 
+    def adopt_descendants(self, process_handle: int) -> int:
+        return 0
+
+    def active_processes(self) -> int:
+        return 0
+
     def close(self) -> None:
         self.cerrado = True
 

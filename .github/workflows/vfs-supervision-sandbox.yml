@@ -19,6 +19,8 @@ on:
       - "scripts/windows_spawn_origin.py"
       - "tests/test_windows_onefile_census.py"
       - "tests/test_vfs_job_identity*.py"
+      - "tests/test_vfs_arranque.py"
+      - "tests/test_mo2_bridge_adopcion*.py"
       - "tests/test_vfs_job_containment_windows.py"
       - "tests/test_mo2_bridge_breakaway_job_real_windows.py"
       - "tests/test_vfs_fence_de_supervision.py"
@@ -67,6 +69,9 @@ jobs:
           tests/test_vfs_job_identity_broker.py
           tests/test_vfs_job_identity_bridge.py
           tests/test_vfs_job_identity_anclas.py
+          tests/test_vfs_arranque.py
+          tests/test_mo2_bridge_adopcion.py
+          tests/test_mo2_bridge_adopcion_windows.py
           tests/test_mo2_bridge_worker_argv.py
           tests/test_vfs_job_containment_windows.py
           tests/test_mo2_bridge_breakaway_job_real_windows.py
@@ -77,6 +82,12 @@ jobs:
       - name: Origen de los procesos que crea el arranque del intérprete (hook de auditoría, Python de desarrollo)
         if: ${{ !cancelled() }}
         run: python -m scripts.windows_spawn_origin --json sandbox_min\resultados_origen.json
+
+      - name: Origen de los procesos del CONJUNTO LIVIANO del arranque del worker (proceso nuevo, H-02)
+        if: ${{ !cancelled() }}
+        # Proceso aparte a propósito: ``platform`` cachea su primera consulta, así que medido después de importar
+        # ``vfs_worker`` este conjunto parecería inocente aunque no lo fuera.
+        run: python -m scripts.windows_spawn_origin --fase sky_claw.local.mo2.vfs_arranque --json sandbox_min\resultados_origen_arranque.json
 
       - name: Ejecutable mínimo onefile (réplica de las opciones del spec) - construir
         if: ${{ !cancelled() }}
@@ -143,6 +154,10 @@ jobs:
           if (Test-Path sandbox_min\resultados_origen.json) {
             Write-Output "=== origen de los procesos del arranque ==="
             python -m scripts.windows_spawn_origin --resumir sandbox_min\resultados_origen.json
+          }
+          if (Test-Path sandbox_min\resultados_origen_arranque.json) {
+            Write-Output "=== origen de los procesos del conjunto liviano (vfs_arranque, proceso nuevo) ==="
+            python -m scripts.windows_spawn_origin --resumir sandbox_min\resultados_origen_arranque.json
           }
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

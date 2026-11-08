@@ -441,12 +441,15 @@ def test_el_bridge_real_contiene_al_worker_y_a_sus_descendientes_en_el_job_corre
     assert eventos[-1]["event"] == "worker_exit"
 
 
-def test_con_una_asignacion_tardia_el_bridge_real_deja_un_descendiente_fuera_del_job(tmp_path, limpieza) -> None:
-    """Caracteriza el PELIGRO que el fence de supervisión cierra del lado del worker.
+def test_con_una_asignacion_tardia_el_bridge_real_adopta_al_descendiente_previo_y_lo_termina(
+    tmp_path, limpieza
+) -> None:
+    """El PELIGRO que el fence de supervisión cierra del lado del worker, y que P1 (H-01) cierra del lado del bridge.
 
-    ``startApplication`` tarda en devolver el HANDLE (planificación, carga) y el worker ya
-    despachó: su hijo nace antes de ``assign``. El cancel del bridge mata al worker y deja
-    vivo a ese descendiente. Con el fence el worker no crea nada hasta el ``launch_ack``.
+    ``startApplication`` tarda en devolver el HANDLE (planificación, carga) y el worker ya despachó: su hijo nace antes
+    de ``assign``. Hasta la auditoría independiente el cancel del bridge mataba al worker y dejaba vivo a ese
+    descendiente (este test afirmaba exactamente eso). Ahora el bridge ADOPTA a los descendientes del proceso lanzado
+    antes de confirmar el launch, así que el cancel los termina a todos: la aserción CAMBIÓ DE SIGNO a propósito.
     """
     # Arrange
     salida = tmp_path / "hijo.pid"
@@ -466,11 +469,11 @@ def test_con_una_asignacion_tardia_el_bridge_real_deja_un_descendiente_fuera_del
     controlador.cancel(cancelar)
     controlador.wait_for_monitors(timeout=15)
 
-    # Assert
+    # Assert: el árbol entero murió con el Job, y el worker_exit se emitió con el Job vacío confirmado.
+    assert eventos[0]["type"] == "launch_ack"
     assert _esperar_muerte(worker_pid)
-    assert psutil.pid_exists(hijo_pid), "el descendiente previo a la asignación quedó fuera del Job"
-    with contextlib.suppress(psutil.Error):
-        psutil.Process(hijo_pid).kill()
+    assert _esperar_muerte(hijo_pid), "el descendiente previo a la asignación debía ser adoptado y morir con el Job"
+    assert eventos[-1]["event"] == "worker_exit"
 
 
 # ---------------------------------------------------------------------------
