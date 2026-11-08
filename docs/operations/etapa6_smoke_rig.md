@@ -316,7 +316,7 @@ del operador (`C:\SkyClaw_Spike_Sandbox\evidence\etapa6-20261108-r2\`), no en el
 | Pedido | Resultado |
 |---|---|
 | E6 con el criterio correcto | **PASS**: 20 `preparar` seguidos por el registry productivo, sin construir entre ellos, desde un almacén vacío: `testigo_durable == "guardado"` 20/20, `generacion` constante, almacén JSON válido (439 B) en las 20, 0 temporales, 0 residuos de write-probe, con 5 escaneos de Defender solapados (stdout «sin amenazas»; el `rc` de cada escaneo no quedó registrado) |
-| #879, mecanismo (sin GUI) | **PASS**: `_build_environment_scanner` y `EnvironmentScanner.scan()` sobre `config.toml` reales. `wrye_bash_exe` en la **raíz** se siembra y resuelve la ruta no auto-detectada (`readiness=found`); bajo `[paths]` se descarta; apuntando a un archivo inexistente se siembra pero da `readiness=moved_installation`, no «Disponible» (en r2 había otra copia auto-detectada en `game\Wrye Bash\`; sin ella el estado esperado es `stale_configured_path`) |
+| #879, mecanismo (sin GUI) | **PASS**: `_build_environment_scanner` y `EnvironmentScanner.scan()` sobre `config.toml` reales. `wrye_bash_exe` en la **raíz** se siembra y resuelve la ruta no auto-detectada (`readiness=found`); bajo `[paths]` se descarta; apuntando a un archivo inexistente se siembra pero da `readiness=moved_installation` (estado del scanner, no etiqueta de la tarjeta: en r2 había otra copia auto-detectada en `game\Wrye Bash\`, y con una copia detectada la herramienta queda en el snapshot y la tarjeta mostraría «Disponible»; sin ella el estado esperado es `stale_configured_path`) |
 | #879, tarjeta renderizada A–D y `Ejecutar` en B | **NO EJECUTADO** |
 | `BashBugDump.log`, inventarios tras arranque y tras `Rebuild`, E2 con un segundo sort real de LOOT | **NO EJECUTADO** |
 
@@ -344,7 +344,7 @@ en la corrida r2 y de `config.py:91-96`; la **etiqueta renderizada** de cada tar
 | A (control) | sin `wrye_bash_exe` | «No instalado» |
 | B (el fix de #882) | `wrye_bash_exe = '<ruta absoluta del .exe movido>'` en la **raíz**, antes de cualquier `[sección]` | «Disponible» (sin GUI: `readiness=found`). `Ejecutar` despacha `preparar` y el panel lo muestra como aviso «pendiente», no como fallo en rojo |
 | C | la misma clave dentro de `[paths]` | «No instalado»: de esa sección solo se leen `mo2_path` y `skyrim_path` |
-| D | `wrye_bash_exe` apuntando a un archivo que no existe | **No** «Disponible». Con la instalación movida y ninguna otra detectada: `readiness=stale_configured_path`; `moved_installation` solo aparece si además hay otra instalación auto-detectada (así fue en r2, no es el caso esperado acá). Reportá la etiqueta que muestre la tarjeta |
+| D | `wrye_bash_exe` apuntando a un archivo que no existe | «No instalado», **solo si ninguna otra copia es detectable**: ahí `readiness=stale_configured_path` y la herramienta no entra al snapshot. Si queda otra copia auto-detectada, el scanner da `moved_installation` pero la tarjeta muestra «Disponible» (la etiqueta mira la presencia en el snapshot); eso fue r2 y es el síntoma de que la instalación no se movió bien. Reportá la etiqueta que muestre la tarjeta |
 
 **Líneas reales de `BashBugDump.log` (evidencia heredada del 2026-11-07, no re-verificada).** El
 arranque de H-2, con el juego real escrito donde debía ir el sandbox:
@@ -377,6 +377,6 @@ La cadena «Single game found» no aparece en ninguno de los dos.
 **Pasos que siguen requiriendo a una persona.** (1) Proteger el juego real y verificarlo. (2) Abrir MO2 a
 mano desde el Explorador. (3) Mover la **instalación completa** de Wrye Bash fuera de la ruta
 auto-detectada, verificar su `bash.ini` y actualizar `ModOrganizer.ini` (con `-o` absoluto). (4) Reiniciar la GUI entre A, B, C y D, sin
-`WRYE_BASH_PATH`, capturar la tarjeta y, en B, pulsar `Ejecutar`. Antes de E1 (después de D) restablecer la configuración de B, reiniciar la GUI y volver a ejecutar `preparar`: los reinicios descartan la acción «verificar» creada en B (§5 E3) y tras D la tarjeta no está disponible. Al terminar, restaurar el `config.toml` respaldado. (5) Con el juego real protegido,
+`WRYE_BASH_PATH`, capturar la tarjeta y, en B, pulsar `Ejecutar`. Antes de E1 (después de D) restablecer la configuración de B, reiniciar la GUI y volver a ejecutar `preparar`: los reinicios descartan la acción «verificar» creada en B (§5 E3) y tras D la tarjeta no está disponible. Al terminar, restaurar el `config.toml` respaldado **y** devolver la instalación a su lugar original (restaurando la entrada de MO2), o dejar configurada la nueva ubicación de forma permanente (`wrye_bash_exe` en la raíz del TOML); si no, el setup final deja de detectar Wrye Bash. (5) Con el juego real protegido,
 lanzar Wrye Bash desde MO2, confirmar `BashBugDump.log` e inventariar tras el arranque y tras
 `Rebuild Patch`. (6) Opcional: E2 con un segundo sort real de LOOT. (7) Restaurar el juego real.
