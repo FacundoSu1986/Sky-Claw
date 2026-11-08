@@ -5,7 +5,8 @@ El problema que cierra. ``SkyClawApp.exe --vfs-worker`` importaba ``vfs_worker``
 nacían ANTES de que el worker hubiera probado que vive en el Job del launch: si el proceso que ejecuta Python era
 el hijo del bootloader que quedó fuera del Job, sus hijos también nacían fuera.
 
-La propiedad: **mientras la verificación del Job no haya pasado, solo se carga el conjunto liviano** (este módulo
+La propiedad (cuando hay un ``--job-object`` utilizable; ver la excepción más abajo): **mientras la verificación
+del Job no haya pasado, solo se carga el conjunto liviano** (este módulo
 y ``vfs_job_identity``: stdlib, ``ctypes`` y ``psutil``). ``vfs_worker`` se importa DESPUÉS, y con él todo lo que
 dispara ``platform``. Los dos puntos de entrada (el despacho a nivel de módulo de ``sky_claw/__main__.py`` y
 ``main()``) pasan por :func:`arrancar_worker`: un tercero que no lo hiciera es exactamente "arreglar un hermano y
@@ -17,8 +18,11 @@ sky_claw.local.mo2.vfs_worker``) y es la única que produce la ``PruebaDeJob`` q
 verificación se hace una vez más, antes, solo para que el import pesado no ocurra sin contención probada.
 
 ``--job-object`` se lee con ``argparse`` (misma semántica que el parser del worker: gana la última aparición,
-forma ``--opcion=valor``) pero SIN abreviaturas. Si no hay un ``--job-object`` utilizable se delega en
-``worker_main``, que devuelve 64 (uso) antes de abrir nada: un solo camino para el error de uso.
+forma ``--opcion=valor``) pero SIN abreviaturas (el parser del worker tampoco las acepta). Si no hay un
+``--job-object`` utilizable se delega en ``worker_main``, que termina con error de uso (64 o 2) antes de abrir nada:
+un solo camino para el error de uso. **Excepción declarada:** en ese caso ``vfs_worker`` SE IMPORTA antes del error
+de uso, y la entrada directa ``python -m sky_claw.local.mo2.vfs_worker`` también importa antes de verificar; nada se
+ejecuta sin verificar, pero esos imports no están cubiertos por la propiedad de arriba.
 
 ``vfs_job_identity`` y este módulo tienen sus imports de nivel módulo congelados por igualdad literal: agregar uno
 pesado rompe el test, a propósito.
