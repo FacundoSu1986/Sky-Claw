@@ -91,6 +91,52 @@ class ObservationState(StrEnum):
     UNREADABLE = "unreadable"
 
 
+class Mo2RegistryState(StrEnum):
+    """Desenlace read-only al consultar ``CurrentInstance`` de MO2 en ``HKCU``."""
+
+    OBSERVED = "observed"
+    ABSENT = "absent"
+    UNREADABLE = "unreadable"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Mo2RegistryObservation:
+    """Observación read-only del selector de instancia de MO2 en el Registro."""
+
+    state: Mo2RegistryState
+    current_instance: str | None = None
+    detail: str = ""
+
+
+class Mo2InstanceIdentityState(StrEnum):
+    """Estado de identidad verificada para un directorio candidato de instancia MO2."""
+
+    ACTIVE_GLOBAL = "active_global"
+    ACTIVE_PORTABLE = "active_portable"
+    INACTIVE = "inactive"
+    AMBIGUOUS = "ambiguous"
+    UNKNOWN = "unknown"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Mo2InstanceIdentityObservation:
+    """Veredicto tipado sobre si ``mo2_instance_dir`` es realmente la instancia activa de MO2."""
+
+    state: Mo2InstanceIdentityState
+    instance_dir: str
+    registry_state: Mo2RegistryState
+    registry_current_instance: str | None = None
+    detail: str = ""
+
+    @property
+    def is_active(self) -> bool:
+        """Única condición que acredita identidad activa: global verificada o portable verificada."""
+        return self.state in (
+            Mo2InstanceIdentityState.ACTIVE_GLOBAL,
+            Mo2InstanceIdentityState.ACTIVE_PORTABLE,
+        )
+
+
 class RuntimeCompatibility(StrEnum):
     """Gate ``RUNTIME_COMPATIBILITY`` (F6). ``UNKNOWN != COMPATIBLE``."""
 
@@ -290,15 +336,16 @@ class EffectiveRuntimeAssessment:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class RuntimeProbes:
-    """Los tres observadores externos, inyectables para poder probarlos.
+    """Observadores externos del runtime e instancia MO2, inyectables para pruebas.
 
     Se inyectan por la misma razón que ``PathValidator`` en ``MO2Controller``:
-    un test que necesitara un PE real con recurso de versión para ejercitar el
-    oráculo mediría el filesystem, no la lógica. Los DEFAULT están cableados en
-    ``oracle.default_runtime_probes`` y un test verifica que degradan a
-    ``UNKNOWN`` en vez de fabricar identidad.
+    un test que necesitara un PE real con recurso de versión o claves reales en
+    ``HKCU`` mediría el entorno del host, no la lógica. Los DEFAULT están
+    cableados en ``oracle.default_runtime_probes`` y fallan cerrado a ``UNKNOWN``
+    en vez de fabricar identidad.
     """
 
     identity: Callable[[pathlib.Path], RuntimeIdentity]
     compatibility: Callable[[pathlib.Path], CompatibilityResult]
     processes: Callable[[], LiveProcessSnapshot]
+    mo2_instance: Callable[[pathlib.Path], Mo2InstanceIdentityObservation] | None = None

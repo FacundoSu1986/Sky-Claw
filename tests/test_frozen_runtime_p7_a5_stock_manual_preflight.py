@@ -1,0 +1,1461 @@
+"""Tests AAA y auditoría adversarial para P7-A5 PR 1 (preflight read-only Stock + runtime manual + instancia MO2).
+
+Tracker: #867 (histórico: #672)
+Contratos cubiertos:
+- R1: Política explícita ``STOCK_INDEPENDENT_TRANSITION`` (Steam IDLE por defecto;
+  admisión acotada en Steam ACTIVE sólo con procedencia Stock v2 íntegra,
+  membresía en tres vías, autoridad externa aprobada A1, runtime saliente fuera
+  de Steam, ejecutables limpios y procesos quiescentes).
+- R2: Admisión estricta de ``outgoing_manual_runtime_root`` (ruta canónica, sin
+  traversal/enlaces/alias 8.3, identidad real de Skyrim, disjunto de Steam,
+  Stock, Generation, Clones registrados, Storage y ``base_directory`` de MO2,
+  independencia física sin hardlinks y coherencia multi-superficie).
+- R3: Identidad verificada de la instancia activa de MO2 (distingue instancia
+  global ``%LOCALAPPDATA%\\ModOrganizer\\<CurrentInstance>`` vs instalación
+  portable real con ``ModOrganizer.exe``, bloqueando instancias inactivas,
+  ambiguas o desconocidas mediante ``RuntimeProbes`` inyectables).
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import importlib.util
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import types
+
+import pytest
+
+from sky_claw.local.frozen_runtime import (
+    approval as approval_module,
+)
+from sky_claw.local.frozen_runtime.binder_preflight import (
+    BinderPreflightVerdict,
+    BinderTransitionPolicy,
+    PreflightReasonCode,
+    evaluar_binder_preflight,
+)
+from sky_claw.local.frozen_runtime.clones import (
+    RuntimeCloneLifecycle,
+    RuntimeCloneRecord,
+    registrar_runtime_clone_record,
+)
+from sky_claw.local.frozen_runtime.effective_runtime import (
+    CompatibilityResult,
+    DesiredRuntime,
+    EffectiveRuntimeVerdict,
+    LiveProcessSnapshot,
+    Mo2InstanceIdentityState,
+    Mo2RegistryObservation,
+    Mo2RegistryState,
+    RuntimeCompatibility,
+    RuntimeProbes,
+    assess_effective_runtime,
+    probe_mo2_instance_identity,
+)
+from sky_claw.local.frozen_runtime.generations import (
+    leer_generation_metadata,
+    registrar_generation_metadata,
+)
+from sky_claw.local.frozen_runtime.models import (
+    ManagedSourceProvider,
+    ProviderMetadataObservation,
+    SourceSnapshotEvidence,
+)
+from sky_claw.local.frozen_runtime.provisioning import (
+    PROVIDER_STOCK,
+    StockProvenanceInvalidError,
+    StockReference,
+    StockReferenceUnapprovedError,
+    adoptar_copia_stock,
+    cargar_digest_aprobado_stock,
+    construir_referencia_stock,
+    crear_runtime_clone_desde_generation,
+    publicar_generation_desde_stock,
+    verificar_procedencia_stock_generacion,
+)
+from sky_claw.local.frozen_runtime.storage import (
+    generation_dir,
+    generations_state_dir,
+    initialize_frozen_runtime_storage,
+)
+from sky_claw.local.runtime_vault.inventory import inventory_tree
+from sky_claw.local.runtime_vault.models import RuntimeIdentity
+from sky_claw.local.runtime_vault.runtime_observation import (
+    FreshRuntimeObservation,
+    RuntimeObservationError,
+)
+from sky_claw.local.runtime_vault.verification import tree_digest_from_files
+from tests._symlink_guard import crear_junction, junction_guard, symlink_guard
+
+VERSION = "1.6.1170.0"
+RAIZ_REPO = pathlib.Path(__file__).resolve().parents[1]
+RUTA_INSPECTOR = RAIZ_REPO / "scripts" / "p7_readonly_inspection.py"
+
+
+def _cargar_inspector() -> types.ModuleType:
+    nombre = "p7_readonly_inspection_p7_a5_test"
+    spec = importlib.util.spec_from_file_location(nombre, RUTA_INSPECTOR)
+    assert spec is not None and spec.loader is not None
+    modulo = importlib.util.module_from_spec(spec)
+    sys.modules[nombre] = modulo
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+inspector = _cargar_inspector()
+
+
+# ---------------------------------------------------------------------------
+# Fixtures y constructores sintéticos (100% en tmp_path, sin tocar sistema real)
+# ---------------------------------------------------------------------------
+
+
+def _poblar_arbol_skyrim(
+    raiz: pathlib.Path,
+    *,
+    version: str = VERSION,
+    con_skse: bool = True,
+    sello_extra: bytes = b"",
+) -> pathlib.Path:
+    (raiz / "Data" / "EmptyFolder").mkdir(parents=True, exist_ok=True)
+    (raiz / "SkyrimSE.exe").write_bytes(f"SkyrimSE-{version}".encode() + sello_extra)
+    (raiz / "SkyrimSELauncher.exe").write_bytes(b"Launcher-sintetico" + sello_extra)
+    (raiz / "steam_api64.dll").write_bytes(b"steam-api-sintetica" + sello_extra)
+    (raiz / "Data" / "Skyrim.esm").write_bytes(b"esm-payload" + sello_extra)
+    if con_skse:
+        (raiz / "skse64_loader.exe").write_bytes(b"loader-sintetico" + sello_extra)
+        (raiz / "skse64_1_6_1170.dll").write_bytes(b"skse-dll-sintetico" + sello_extra)
+    return raiz
+
+
+def _crear_steam_sintetico(
+    raiz_steam: pathlib.Path,
+    *,
+    state_flags: str = "4",
+    con_descarga_activa: bool = False,
+    appid: str = "489830",
+    buildid: str = "13189953",
+) -> pathlib.Path:
+    steamapps = raiz_steam / "steamapps"
+    common = steamapps / "common" / "Skyrim Special Edition"
+    _poblar_arbol_skyrim(common, sello_extra=b"-steam")
+    manifest = steamapps / f"appmanifest_{appid}.acf"
+    manifest.write_text(
+        f'"AppState"\n{{\n\t"appid"\t\t"{appid}"\n\t"buildid"\t\t"{buildid}"\n\t"StateFlags"\t\t"{state_flags}"\n}}\n',
+        encoding="utf-8",
+    )
+    if con_descarga_activa:
+        descarga = steamapps / "downloading" / appid
+        descarga.mkdir(parents=True, exist_ok=True)
+        (descarga / "depot.chunk").write_bytes(b"actualizacion-steam-activa")
+    return common
+
+
+def _crear_mo2_global_sintetica(
+    local_app_data: pathlib.Path,
+    *,
+    instance_name: str = "Skyrim Special Edition",
+    game_path: pathlib.Path,
+    base_directory: pathlib.Path | None = None,
+    ejecutables: list[tuple[str, str, str | None]] | None = None,
+) -> pathlib.Path:
+    inst_dir = local_app_data / "ModOrganizer" / instance_name
+    inst_dir.mkdir(parents=True, exist_ok=True)
+    _escribir_ini_mo2(
+        inst_dir / "modorganizer.ini",
+        game_path=game_path,
+        base_directory=base_directory,
+        ejecutables=ejecutables,
+    )
+    return inst_dir
+
+
+def _crear_mo2_portable_sintetica(
+    portable_dir: pathlib.Path,
+    *,
+    game_path: pathlib.Path,
+    con_exe: bool = True,
+    con_portable_txt: bool = False,
+    base_directory: pathlib.Path | None = None,
+    ejecutables: list[tuple[str, str, str | None]] | None = None,
+) -> pathlib.Path:
+    portable_dir.mkdir(parents=True, exist_ok=True)
+    if con_exe:
+        (portable_dir / "ModOrganizer.exe").write_bytes(b"MZ-portable-mo2")
+    if con_portable_txt:
+        (portable_dir / "portable.txt").write_text("", encoding="utf-8")
+    _escribir_ini_mo2(
+        portable_dir / "modorganizer.ini",
+        game_path=game_path,
+        base_directory=base_directory,
+        ejecutables=ejecutables,
+    )
+    return portable_dir
+
+
+def _escribir_ini_mo2(
+    ini_path: pathlib.Path,
+    *,
+    game_path: pathlib.Path,
+    base_directory: pathlib.Path | None = None,
+    ejecutables: list[tuple[str, str, str | None]] | None = None,
+) -> None:
+    escaped = str(game_path).replace("\\", "\\\\")
+    lineas = [
+        "[General]",
+        f"gamePath=@ByteArray({escaped})",
+        "gameName=Skyrim Special Edition",
+        "",
+    ]
+    if ejecutables:
+        lineas.append("[customExecutables]")
+        for idx, (titulo, binario, workdir) in enumerate(ejecutables, start=1):
+            lineas.append(f"{idx}\\title={titulo}")
+            lineas.append(f"{idx}\\binary={binario}")
+            if workdir is not None:
+                lineas.append(f"{idx}\\workingDirectory={workdir}")
+        lineas.append("")
+    lineas.append("[Settings]")
+    if base_directory is not None:
+        lineas.append(f"base_directory={base_directory.as_posix()}")
+    ini_path.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+
+
+def _probes_con_registro_simulado(
+    *,
+    local_app_data: pathlib.Path | None,
+    registry_obs: Mo2RegistryObservation,
+    compatibilidad: RuntimeCompatibility = RuntimeCompatibility.COMPATIBLE,
+) -> RuntimeProbes:
+    entorno_mo2 = {"LOCALAPPDATA": str(local_app_data)} if local_app_data is not None else {}
+
+    def _identidad(raiz: pathlib.Path) -> RuntimeIdentity:
+        exe = pathlib.Path(raiz) / "SkyrimSE.exe"
+        if not exe.is_file():
+            raise RuntimeObservationError(f"falta SkyrimSE.exe en '{raiz}'")
+        contenido = exe.read_bytes()
+        if not contenido.startswith(b"SkyrimSE-"):
+            raise RuntimeObservationError(f"ejecutable no reconocido como Skyrim en '{raiz}'")
+        return RuntimeIdentity(game_key="skyrimse", game_version=VERSION)
+
+    return RuntimeProbes(
+        identity=_identidad,
+        compatibility=lambda _r: CompatibilityResult(
+            state=compatibilidad,
+            reason=f"sintético: {compatibilidad.value}",
+            game_version=VERSION,
+        ),
+        processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+        mo2_instance=lambda inst_dir: probe_mo2_instance_identity(
+            inst_dir,
+            registry_reader=lambda: registry_obs,
+            environ=entorno_mo2,
+        ),
+    )
+
+
+def _snapshot_sha256_recursivo(raices: list[pathlib.Path]) -> dict[str, str]:
+    huellas: dict[str, str] = {}
+    for raiz in raices:
+        if raiz.is_file():
+            huellas[str(raiz)] = hashlib.sha256(raiz.read_bytes()).hexdigest()
+            continue
+        if not raiz.exists():
+            continue
+        for actual, dirs, archivos in os.walk(raiz):
+            dirs.sort()
+            for nombre in sorted(archivos):
+                p = pathlib.Path(actual) / nombre
+                huellas[str(p)] = hashlib.sha256(p.read_bytes()).hexdigest()
+    return huellas
+
+
+@pytest.fixture(autouse=True)
+def _parche_identidad_pe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Observación PE sintética para árboles de test (sin depender de binarios propietarios)."""
+
+    def _identidad(raiz: pathlib.Path, *, expected_game_key: str = "skyrimse") -> FreshRuntimeObservation:
+        exe = pathlib.Path(raiz) / "SkyrimSE.exe"
+        if not exe.is_file():
+            raise RuntimeObservationError(f"SkyrimSE.exe ausente en '{raiz}'")
+        raw = exe.read_bytes()
+        if not raw.startswith(b"SkyrimSE-"):
+            raise RuntimeObservationError(f"PE inválido en '{exe}'")
+        return FreshRuntimeObservation(
+            game_key=expected_game_key,
+            game_version=VERSION,
+            observed_exe_path=str(exe),
+            observed_at_ns=1,
+        )
+
+    monkeypatch.setattr("sky_claw.local.frozen_runtime.provisioning.observe_runtime_identity_from_root", _identidad)
+    monkeypatch.setattr("sky_claw.local.frozen_runtime.clones.observe_runtime_identity_from_root", _identidad)
+    monkeypatch.setattr("sky_claw.local.frozen_runtime.generations.observe_runtime_identity_from_root", _identidad)
+
+
+class RigStockManual:
+    """Escenario completo sintético similar a P7 real (Stock + Clone + Manual + Steam + MO2 Global)."""
+
+    def __init__(self, base: pathlib.Path, *, steam_activo: bool = True) -> None:
+        self.base = base
+        self.managed_source = _crear_steam_sintetico(
+            base / "SteamLibrary",
+            state_flags="1026" if steam_activo else "4",
+            con_descarga_activa=steam_activo,
+        )
+        self.stock_base = _poblar_arbol_skyrim(base / "GoldenMaster_Base", sello_extra=b"-stock")
+        self.referencia: StockReference = construir_referencia_stock(self.stock_base)
+        self.approved_digest: str = self.referencia.reference_digest
+        self.approved_digest_file = base / "A1_Evidence" / "stock_reference.approved_digest.txt"
+        self.approved_digest_file.parent.mkdir(parents=True, exist_ok=True)
+        self.approved_digest_file.write_text(f"{self.approved_digest}\n", encoding="utf-8")
+
+        self.stock_source = pathlib.Path(shutil.copytree(self.stock_base, base / "GoldenMaster_Source"))
+        self.storage = base / "FrozenRuntime"
+        assert initialize_frozen_runtime_storage(self.storage).success
+
+        copia = adoptar_copia_stock(
+            self.stock_source,
+            self.referencia,
+            storage_root=self.storage,
+            managed_source_root=self.managed_source,
+        )
+        pub = publicar_generation_desde_stock(self.storage, copia, margen_bytes=0)
+        assert pub.success and pub.generation_id is not None
+        self.generation_id: str = pub.generation_id
+
+        self.clones_parent = base / "FrozenClones"
+        self.clones_parent.mkdir(parents=True, exist_ok=True)
+        clone_res = crear_runtime_clone_desde_generation(
+            self.storage,
+            self.generation_id,
+            self.clones_parent,
+            "clone-p7-01",
+            managed_source_root=self.managed_source,
+            margen_bytes=0,
+        )
+        assert clone_res.success and clone_res.clone_root is not None
+        self.clone_id = "clone-p7-01"
+        self.clone_root: pathlib.Path = clone_res.clone_root
+
+        self.manual_runtime = _poblar_arbol_skyrim(base / "Skyrim_Runtime_Manual", sello_extra=b"-manual")
+
+        self.local_app_data = base / "LocalAppData"
+        self.mo2_base_data = base / "MO2_Data" / "SkyrimSE"
+        (self.mo2_base_data / "mods").mkdir(parents=True, exist_ok=True)
+        # INI residual inactivo en base_directory (exactamente como en el rig real A5-R1)
+        _escribir_ini_mo2(
+            self.mo2_base_data / "modorganizer.ini",
+            game_path=self.managed_source,
+        )
+
+        self.mo2_active_global = _crear_mo2_global_sintetica(
+            self.local_app_data,
+            instance_name="Skyrim Special Edition",
+            game_path=self.manual_runtime,
+            base_directory=self.mo2_base_data,
+            ejecutables=[
+                ("SKSE", f"{self.manual_runtime.as_posix()}/skse64_loader.exe", self.manual_runtime.as_posix()),
+                ("LOOT", (base / "Tools" / "LOOT" / "LOOT.exe").as_posix(), None),
+            ],
+        )
+
+    def probes_globales_activos(self) -> RuntimeProbes:
+        return _probes_con_registro_simulado(
+            local_app_data=self.local_app_data,
+            registry_obs=Mo2RegistryObservation(
+                state=Mo2RegistryState.OBSERVED,
+                current_instance="Skyrim Special Edition",
+            ),
+        )
+
+
+def _crear_generation_steam(storage: pathlib.Path, managed_source: pathlib.Path) -> tuple[str, pathlib.Path]:
+    """Crea una Generation con provider=STEAM y un Clone válido asociado."""
+    staging = storage.parent / "_staging_steam_gen"
+    _poblar_arbol_skyrim(staging, sello_extra=b"-gen-steam")
+    files = inventory_tree(staging)
+    crit = next(f for f in files if f.rel_path == "SkyrimSE.exe")
+    evidencia = SourceSnapshotEvidence(
+        observed_at_ns=1000,
+        provider=ManagedSourceProvider.STEAM,
+        game_key="skyrimse",
+        files=files,
+        critical_files=(crit,),
+        provider_metadata=ProviderMetadataObservation(
+            provider=ManagedSourceProvider.STEAM,
+            appid="489830",
+            buildid="13189953",
+        ),
+        runtime_identity=RuntimeIdentity(game_key="skyrimse", game_version=VERSION),
+        tree_digest=tree_digest_from_files(files),
+    )
+    meta = registrar_generation_metadata(storage, evidencia)
+    gen_path = generation_dir(storage, meta.generation_id)
+    shutil.copytree(staging, gen_path)
+    shutil.rmtree(staging)
+
+    clone_dir = storage.parent / "FrozenClones" / "clone-steam-01"
+    clone_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(gen_path, clone_dir)
+    registrar_runtime_clone_record(
+        storage,
+        RuntimeCloneRecord(
+            schema_version=1,
+            clone_id="clone-steam-01",
+            source_generation_id=meta.generation_id,
+            lifecycle=RuntimeCloneLifecycle.PROVISIONED,
+            intended_runtime_setup_id="setup-skse",
+            verified_runtime_setup_id="setup-skse",
+            root_path=str(clone_dir),
+            admitted_role="runtime_clone",
+            created_at_ns=1000,
+        ),
+        managed_source_root=managed_source,
+    )
+    return "clone-steam-01", clone_dir
+
+
+# ===========================================================================
+# CONTRATO R1 — Procedencia Stock y política STOCK_INDEPENDENT_TRANSITION
+# ===========================================================================
+
+
+class TestContratoR1StockIndependentTransition:
+    """Pruebas AAA y adversariales del Contrato R1 (Tests 1 a 8)."""
+
+    def test_01_steam_idle_conserva_comportamiento_por_defecto_y_bloquea_active_sin_politica(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Test 1: Con política por defecto (STRICT_PROVIDER_IDLE), Steam IDLE pasa y Steam ACTIVE bloquea."""
+        # Arrange: Steam en IDLE
+        rig_idle = RigStockManual(tmp_path / "idle", steam_activo=False)
+        _escribir_ini_mo2(
+            rig_idle.mo2_active_global / "modorganizer.ini",
+            game_path=rig_idle.managed_source,
+            base_directory=rig_idle.mo2_base_data,
+        )
+
+        # Act (Steam IDLE con política por defecto)
+        eval_idle = evaluar_binder_preflight(
+            storage_root=rig_idle.storage,
+            mo2_instance_dir=rig_idle.mo2_active_global,
+            clone_id=rig_idle.clone_id,
+            managed_source_root=rig_idle.managed_source,
+            config_skyrim_path=str(rig_idle.managed_source),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig_idle.managed_source)},
+            probes=rig_idle.probes_globales_activos(),
+        )
+
+        # Assert IDLE
+        assert eval_idle.transition_policy is BinderTransitionPolicy.STRICT_PROVIDER_IDLE
+        assert eval_idle.verdict is BinderPreflightVerdict.READY
+        assert eval_idle.is_ready is True
+
+        # Arrange: Steam ACTIVE con Stock legítimo pero política por defecto (NO opt-in)
+        rig_active = RigStockManual(tmp_path / "active_default", steam_activo=True)
+
+        # Act
+        eval_active_default = evaluar_binder_preflight(
+            storage_root=rig_active.storage,
+            mo2_instance_dir=rig_active.mo2_active_global,
+            clone_id=rig_active.clone_id,
+            managed_source_root=rig_active.managed_source,
+            outgoing_manual_runtime_root=rig_active.manual_runtime,
+            approved_stock_reference_digest=rig_active.approved_digest,
+            config_skyrim_path=str(rig_active.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig_active.manual_runtime)},
+            probes=rig_active.probes_globales_activos(),
+        )
+
+        # Assert: por defecto Steam ACTIVE SIEMPRE bloquea aunque exista Stock + A1 digest
+        assert eval_active_default.verdict is BinderPreflightVerdict.BLOCKED
+        assert eval_active_default.is_ready is False
+        assert PreflightReasonCode.MANAGED_SOURCE_INVALID in eval_active_default.reasons
+
+    def test_02_steam_active_mas_stock_independiente_legitimo_pasa_bajo_politica_explicita(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Test 2: Steam ACTIVE + STOCK_INDEPENDENT_TRANSITION pasa sólo con las 12 condiciones probadas."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+
+        # Act
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            stock_source_root=rig.stock_source,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        # Assert
+        assert evaluacion.verdict is BinderPreflightVerdict.READY
+        assert evaluacion.is_ready is True
+        assert evaluacion.reasons == (PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,)
+        assert evaluacion.stock_reference_digest == rig.approved_digest
+        assert evaluacion.outgoing_manual_runtime_root == rig.manual_runtime.resolve()
+        assert evaluacion.mo2_instance_identity_state is Mo2InstanceIdentityState.ACTIVE_GLOBAL
+
+    def test_03_steam_active_mas_generation_steam_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """Test 3: Steam ACTIVE + Generation originada en Steam bloquea incluso bajo STOCK_INDEPENDENT_TRANSITION."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        clone_steam_id, _ = _crear_generation_steam(rig.storage, rig.managed_source)
+
+        # Act
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=clone_steam_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        # Assert
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.STOCK_PROVENANCE_INVALID in evaluacion.reasons
+        assert PreflightReasonCode.MANAGED_SOURCE_INVALID in evaluacion.reasons
+
+    def test_04_steam_indeterminate_bloquea_incluso_con_stock_valido(self, tmp_path: pathlib.Path) -> None:
+        """Test 4: Steam INDETERMINATE (StateFlags vacío, corrupto o VDF roto) siempre bloquea."""
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        manifest = rig.managed_source.parent.parent / "appmanifest_489830.acf"
+        casos_indeterminados = (
+            '"AppState"\n{\n\t"appid"\t\t"489830"\n\t"buildid"\t\t"13189953"\n\t"StateFlags"\t\t""\n}\n',
+            '"AppState"\n{\n\t"appid"\t\t"489830"\n\t"buildid"\t\t"13189953"\n\t"StateFlags"\t\t"corrupto"\n}\n',
+            '"AppState"\n{\n\t"appid"\t\t"489830"\n\t"malformed_unclosed\n',
+        )
+
+        for contenido_acf in casos_indeterminados:
+            manifest.write_text(contenido_acf, encoding="utf-8")
+            evaluacion = evaluar_binder_preflight(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=rig.clone_id,
+                managed_source_root=rig.managed_source,
+                transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+                outgoing_manual_runtime_root=rig.manual_runtime,
+                approved_stock_reference_digest=rig.approved_digest,
+                config_skyrim_path=str(rig.manual_runtime),
+                exigir_config_skyrim_path=True,
+                environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+                probes=rig.probes_globales_activos(),
+            )
+            assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+            assert evaluacion.is_ready is False
+            assert PreflightReasonCode.MANAGED_SOURCE_INVALID in evaluacion.reasons
+
+    def test_05_sidecar_stock_ausente_bloquea_aunque_metadata_declare_provider_stock(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Test 5: provider='stock' en metadata sin sidecar .source.json jamás es prueba suficiente."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        sidecar = generations_state_dir(rig.storage) / f"{rig.generation_id}.source.json"
+        assert leer_generation_metadata(rig.storage, rig.generation_id).provider == PROVIDER_STOCK
+        sidecar.unlink()
+
+        # Act & Assert sobre API directa y sobre preflight
+        with pytest.raises(StockProvenanceInvalidError):
+            verificar_procedencia_stock_generacion(
+                rig.storage,
+                rig.generation_id,
+                approved_reference_digest=rig.approved_digest,
+            )
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.STOCK_PROVENANCE_INVALID in evaluacion.reasons
+
+    def test_06_sidecar_stock_adulterado_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """Test 6: Adulterar un campo del sidecar .source.json rompe su verificación y bloquea."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sidecar_path = generations_state_dir(rig.storage) / f"{rig.generation_id}.source.json"
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        # Adulteración sutil: alterar el digest esperado dentro de reference sin poder falsificar el digest sellado
+        payload["reference"]["expected_tree"]["files"] = 999999
+        sidecar_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        # Act
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        # Assert
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.STOCK_PROVENANCE_INVALID in evaluacion.reasons
+
+    def test_07_metadata_sidecar_y_membership_inconsistentes_bloquean(self, tmp_path: pathlib.Path) -> None:
+        """Test 7: Desalineación entre GenerationMetadata, sidecar y directorios físicos bloquea.
+
+        Caso adversarial discriminante: un directorio vacío extra dentro de ``versions/<gid>``
+        NO altera ``TreeDigest`` (que inventaría sólo archivos), pero rompe la verificación
+        de tres vías de ``directory_membership``.
+        """
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        (generation_dir(rig.storage, rig.generation_id) / "Data" / "DirectorioFantasmaVacio").mkdir()
+
+        # Act
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        # Assert
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.STOCK_PROVENANCE_INVALID in evaluacion.reasons
+
+    def test_08_reference_digest_distinto_o_ausente_frente_a_autoridad_aprobada_bloquea(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Test 8: Un sidecar internamente autoconsistente NO sustituye la aprobación externa A1."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        otro_arbol = _poblar_arbol_skyrim(tmp_path / "OtraFuenteNoAprobada", sello_extra=b"-no-aprobada")
+        otra_ref = construir_referencia_stock(otro_arbol)
+        assert otra_ref.reference_digest != rig.approved_digest
+
+        # Subcaso 8a: Sin digest externo aprobado en Steam ACTIVE -> bloquea (no auto-autoriza)
+        sin_digest = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=None,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert sin_digest.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.STOCK_REFERENCE_UNAPPROVED in sin_digest.reasons
+
+        # Subcaso 8b: Digest externo aprobado de otra referencia -> bloquea
+        con_digest_distinto = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=otra_ref.reference_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert con_digest_distinto.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.STOCK_REFERENCE_UNAPPROVED in con_digest_distinto.reasons
+
+        # Subcaso 8c: Archivo de digest malformado -> cargar_digest_aprobado_stock falla cerrado
+        archivo_malo = tmp_path / "bad_digest.txt"
+        archivo_malo.write_text("no-es-un-sha256-valido\n", encoding="utf-8")
+        with pytest.raises(StockReferenceUnapprovedError):
+            cargar_digest_aprobado_stock(archivo_malo)
+
+
+# ===========================================================================
+# CONTRATO R2 — Admisión estricta de outgoing_manual_runtime_root
+# ===========================================================================
+
+
+class TestContratoR2RuntimeManualSaliente:
+    """Pruebas AAA y adversariales del Contrato R2 (Tests 9 a 13 y 17)."""
+
+    def test_09_runtime_manual_valido_y_explicito_se_admite_sin_convertirse_en_clone(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Test 9: Runtime manual explícito se admite para transición pero NO es un Clone válido en el oráculo."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=False)
+
+        # Act
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        # Assert preflight admite transición saliente
+        assert evaluacion.verdict is BinderPreflightVerdict.READY
+        assert evaluacion.is_ready is True
+
+        # Assert que el oráculo de Effective Runtime NO trata el runtime manual como Desired Clone válido
+        obs_oraculo = assess_effective_runtime(
+            mo2_instance_dir=rig.mo2_active_global,
+            desired=DesiredRuntime(
+                clone_id=rig.clone_id,
+                clone_root=rig.clone_root,
+                generation_id=rig.generation_id,
+            ),
+            managed_source_root=rig.managed_source,
+            generation_roots=(generation_dir(rig.storage, rig.generation_id),),
+            config_skyrim_path=str(rig.manual_runtime),
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert obs_oraculo.verdict is EffectiveRuntimeVerdict.MISMATCH
+        assert obs_oraculo.authorizes_activation is False
+
+    def test_10_runtime_manual_no_declarado_sigue_rechazandose_como_tercer_directorio(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Test 10: Con outgoing_manual_runtime_root=None, apuntar a un tercer directorio bloquea."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=False)
+
+        # Act
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=None,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        # Assert
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
+
+    def test_11_runtime_manual_solapado_con_steam_storage_stock_clone_o_mo2_data_bloquea(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Test 11: outgoing_manual_runtime_root dentro de Steam, Stock, Storage, Clone o datos de MO2 bloquea."""
+        rig = RigStockManual(tmp_path, steam_activo=False)
+
+        # Candidatos prohibidos: Steam common, otro subdirectorio de steamapps, Stock, Clone, MO2 base_directory
+        en_steamapps = _poblar_arbol_skyrim(
+            rig.managed_source.parent / "Skyrim Manual Dentro Steamapps",
+            sello_extra=b"-in-steamapps",
+        )
+        en_mo2_datos = _poblar_arbol_skyrim(
+            rig.mo2_base_data / "mods" / "RootBuilderFakeRuntime",
+            sello_extra=b"-in-mo2-data",
+        )
+
+        for prohibido in (
+            rig.managed_source,
+            en_steamapps,
+            rig.stock_source,
+            rig.clone_root,
+            en_mo2_datos,
+        ):
+            _escribir_ini_mo2(
+                rig.mo2_active_global / "modorganizer.ini",
+                game_path=prohibido,
+                base_directory=rig.mo2_base_data,
+            )
+            evaluacion = evaluar_binder_preflight(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=rig.clone_id,
+                managed_source_root=rig.managed_source,
+                outgoing_manual_runtime_root=prohibido,
+                stock_source_root=rig.stock_source,
+                config_skyrim_path=str(prohibido),
+                exigir_config_skyrim_path=True,
+                environ={"SKYRIM_PATH": str(prohibido)},
+                probes=rig.probes_globales_activos(),
+            )
+            assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED, f"no bloqueó {prohibido}"
+            assert evaluacion.is_ready is False
+            assert (
+                PreflightReasonCode.PATHS_COLLIDE in evaluacion.reasons
+                or PreflightReasonCode.PATH_CONTAINMENT_VIOLATION in evaluacion.reasons
+                or PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in evaluacion.reasons
+            )
+
+    def test_11b_directorio_sin_identidad_real_de_skyrim_bloquea_como_runtime_manual(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Un directorio arbitrario sin ejecutable válido de Skyrim se rechaza como runtime manual."""
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        falso_runtime = tmp_path / "CarpetaCualquiera"
+        falso_runtime.mkdir()
+        (falso_runtime / "SkyrimSE.exe").write_bytes(b"NO-ES-UN-EJECUTABLE-DE-SKYRIM")
+        _escribir_ini_mo2(
+            rig.mo2_active_global / "modorganizer.ini",
+            game_path=falso_runtime,
+            base_directory=rig.mo2_base_data,
+        )
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=falso_runtime,
+            config_skyrim_path=str(falso_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(falso_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in evaluacion.reasons
+
+    def test_12_ruta_relativa_evasiva_y_alias_83_en_runtime_manual_bloquean(self, tmp_path: pathlib.Path) -> None:
+        """Test 12 (parte multiplataforma): traversal relativo ('..') y alias 8.3 bloquean."""
+        rig = RigStockManual(tmp_path, steam_activo=False)
+
+        # 12a: Traversal relativo evasivo (aunque resuelva al runtime manual legítimo)
+        ruta_evasiva = pathlib.Path(f"{rig.manual_runtime}{os.sep}..{os.sep}{rig.manual_runtime.name}")
+        eval_traversal = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=ruta_evasiva,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert eval_traversal.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in eval_traversal.reasons
+
+        # 12b: Alias corto 8.3
+        ruta_83 = tmp_path / "SKYRIM~1" / "Runtime"
+        eval_83 = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=ruta_83,
+            config_skyrim_path=str(ruta_83),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(ruta_83)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert eval_83.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.SHORT_NAME_ALIAS_DETECTED in eval_83.reasons
+
+    @junction_guard
+    def test_12b_junction_en_runtime_manual_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """Test 12 (junction Windows): un junction hacia el runtime manual legítimo bloquea."""
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        enlace_junction = tmp_path / "Manual_Junction"
+        motivo = crear_junction(enlace_junction, rig.manual_runtime)
+        assert motivo is None, motivo
+
+        _escribir_ini_mo2(
+            rig.mo2_active_global / "modorganizer.ini",
+            game_path=enlace_junction,
+            base_directory=rig.mo2_base_data,
+        )
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=enlace_junction,
+            config_skyrim_path=str(enlace_junction),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(enlace_junction)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.REPARSE_POINT_DETECTED in evaluacion.reasons
+
+    @symlink_guard
+    def test_12c_symlink_en_runtime_manual_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """Test 12 (symlink): un symlink de directorio hacia el runtime manual bloquea."""
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        enlace_sym = tmp_path / "Manual_Symlink"
+        enlace_sym.symlink_to(rig.manual_runtime, target_is_directory=True)
+
+        _escribir_ini_mo2(
+            rig.mo2_active_global / "modorganizer.ini",
+            game_path=enlace_sym,
+            base_directory=rig.mo2_base_data,
+        )
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=enlace_sym,
+            config_skyrim_path=str(enlace_sym),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(enlace_sym)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.REPARSE_POINT_DETECTED in evaluacion.reasons
+
+    def test_13_clone_o_runtime_manual_compartido_por_hardlink_con_steam_o_generation_bloquea(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Test 13: Hardlink compartido entre Clone↔Generation/Steam o Manual↔Steam bloquea."""
+        # Subcaso 13a: Runtime manual comparte un hardlink con Steam durante Steam ACTIVE
+        rig_manual_hl = RigStockManual(tmp_path / "hl_manual", steam_activo=True)
+        (rig_manual_hl.manual_runtime / "steam_api64.dll").unlink()
+        os.link(
+            rig_manual_hl.managed_source / "steam_api64.dll",
+            rig_manual_hl.manual_runtime / "steam_api64.dll",
+        )
+
+        eval_manual_hl = evaluar_binder_preflight(
+            storage_root=rig_manual_hl.storage,
+            mo2_instance_dir=rig_manual_hl.mo2_active_global,
+            clone_id=rig_manual_hl.clone_id,
+            managed_source_root=rig_manual_hl.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig_manual_hl.manual_runtime,
+            approved_stock_reference_digest=rig_manual_hl.approved_digest,
+            config_skyrim_path=str(rig_manual_hl.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig_manual_hl.manual_runtime)},
+            probes=rig_manual_hl.probes_globales_activos(),
+        )
+        assert eval_manual_hl.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in eval_manual_hl.reasons
+
+        # Subcaso 13b: Clone comparte un hardlink con la Generation publicada
+        rig_clone_hl = RigStockManual(tmp_path / "hl_clone", steam_activo=True)
+        gen_dll = generation_dir(rig_clone_hl.storage, rig_clone_hl.generation_id) / "steam_api64.dll"
+        clone_dll = rig_clone_hl.clone_root / "steam_api64.dll"
+        clone_dll.unlink()
+        os.link(gen_dll, clone_dll)
+
+        eval_clone_hl = evaluar_binder_preflight(
+            storage_root=rig_clone_hl.storage,
+            mo2_instance_dir=rig_clone_hl.mo2_active_global,
+            clone_id=rig_clone_hl.clone_id,
+            managed_source_root=rig_clone_hl.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig_clone_hl.manual_runtime,
+            approved_stock_reference_digest=rig_clone_hl.approved_digest,
+            config_skyrim_path=str(rig_clone_hl.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig_clone_hl.manual_runtime)},
+            probes=rig_clone_hl.probes_globales_activos(),
+        )
+        assert eval_clone_hl.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INVALID in eval_clone_hl.reasons
+
+
+# ===========================================================================
+# CONTRATO R3 — Identidad de la instancia MO2 activa (Global vs Portable)
+# ===========================================================================
+
+
+class TestContratoR3IdentidadInstanciaMO2:
+    """Pruebas AAA y adversariales del Contrato R3 (Tests 14, 15, 16 y 17)."""
+
+    def test_14_instancia_mo2_inactiva_o_registro_ilegible_bloquea(self, tmp_path: pathlib.Path) -> None:
+        """Test 14: Pasar el INI residual de base_directory (G:\\Modding\\MO2\\SkyrimSE) bloquea."""
+        # Arrange: HKCU CurrentInstance apunta a 'Skyrim Special Edition' en LocalAppData,
+        # pero el llamador pasa mo2_base_data (que también posee un ModOrganizer.ini residual!)
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        _escribir_ini_mo2(
+            rig.mo2_base_data / "modorganizer.ini",
+            game_path=rig.manual_runtime,
+        )
+
+        # Act
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_base_data,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+
+        # Assert: bloquea específicamente por instancia MO2 inactiva
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.MO2_INSTANCE_INACTIVE in evaluacion.reasons
+
+        # Subcaso 14b: Registro HKCU ilegible (UNKNOWN != PASS)
+        probes_reg_error = _probes_con_registro_simulado(
+            local_app_data=rig.local_app_data,
+            registry_obs=Mo2RegistryObservation(
+                state=Mo2RegistryState.UNREADABLE,
+                detail="Permiso denegado al abrir HKCU",
+            ),
+        )
+        eval_unknown = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=probes_reg_error,
+        )
+        assert eval_unknown.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.MO2_INSTANCE_IDENTITY_UNKNOWN in eval_unknown.reasons
+
+    def test_15_instancia_mo2_global_valida_se_identifica_correctamente(self, tmp_path: pathlib.Path) -> None:
+        """Test 15: CurrentInstance en HKCU + directorio coincidente bajo %LOCALAPPDATA%\\ModOrganizer => ACTIVE_GLOBAL."""
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        obs = probe_mo2_instance_identity(
+            rig.mo2_active_global,
+            registry_reader=lambda: Mo2RegistryObservation(
+                state=Mo2RegistryState.OBSERVED,
+                current_instance="Skyrim Special Edition",
+            ),
+            environ={"LOCALAPPDATA": str(rig.local_app_data)},
+        )
+        assert obs.state is Mo2InstanceIdentityState.ACTIVE_GLOBAL
+        assert obs.is_active is True
+        assert obs.registry_current_instance == "Skyrim Special Edition"
+
+    def test_16_instancia_portable_valida_no_se_confunde_con_la_global(self, tmp_path: pathlib.Path) -> None:
+        """Test 16: Distingue estrictamente instalación portable real frente a instancia global o carpeta huérfana."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+
+        # 16a: Instalación portable real (ModOrganizer.exe + ModOrganizer.ini + CurrentInstance="")
+        portable_dir = _crear_mo2_portable_sintetica(
+            tmp_path / "MO2_Portable",
+            game_path=rig.manual_runtime,
+            con_exe=True,
+            con_portable_txt=False,
+            base_directory=rig.mo2_base_data,
+        )
+        probes_portable = _probes_con_registro_simulado(
+            local_app_data=rig.local_app_data,
+            registry_obs=Mo2RegistryObservation(state=Mo2RegistryState.OBSERVED, current_instance=""),
+        )
+        eval_portable = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=portable_dir,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=probes_portable,
+        )
+        assert eval_portable.verdict is BinderPreflightVerdict.READY
+        assert eval_portable.mo2_instance_identity_state is Mo2InstanceIdentityState.ACTIVE_PORTABLE
+
+        # 16b: Instalación portable forzada por portable.txt sin clave en Registro (ABSENT) => ACTIVE_PORTABLE
+        portable_txt_dir = _crear_mo2_portable_sintetica(
+            tmp_path / "MO2_Portable_Txt",
+            game_path=rig.manual_runtime,
+            con_exe=True,
+            con_portable_txt=True,
+        )
+        obs_portable_txt = probe_mo2_instance_identity(
+            portable_txt_dir,
+            registry_reader=lambda: Mo2RegistryObservation(state=Mo2RegistryState.ABSENT),
+            environ={"LOCALAPPDATA": str(rig.local_app_data)},
+        )
+        assert obs_portable_txt.state is Mo2InstanceIdentityState.ACTIVE_PORTABLE
+
+        # 16c: Con CurrentInstance="" (selector portable), pasar la carpeta GLOBAL en %LOCALAPPDATA% DEBE bloquear
+        eval_global_con_selector_portable = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=probes_portable,
+        )
+        assert eval_global_con_selector_portable.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.MO2_INSTANCE_INACTIVE in eval_global_con_selector_portable.reasons
+
+        # 16d: Carpeta sin ModOrganizer.exe con CurrentInstance="" NO es portable válida => bloquea
+        obs_huerfana = probe_mo2_instance_identity(
+            rig.mo2_base_data,
+            registry_reader=lambda: Mo2RegistryObservation(state=Mo2RegistryState.OBSERVED, current_instance=""),
+            environ={"LOCALAPPDATA": str(rig.local_app_data)},
+        )
+        assert obs_huerfana.state is Mo2InstanceIdentityState.INACTIVE
+        assert obs_huerfana.is_active is False
+
+        # 16e: Ambigüedad: portable.txt + ModOrganizer.exe mientras HKCU selecciona una instancia global existente
+        probes_conflicto = _probes_con_registro_simulado(
+            local_app_data=rig.local_app_data,
+            registry_obs=Mo2RegistryObservation(
+                state=Mo2RegistryState.OBSERVED,
+                current_instance="Skyrim Special Edition",
+            ),
+        )
+        eval_ambigua = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=portable_txt_dir,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=probes_conflicto,
+        )
+        assert eval_ambigua.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.MO2_INSTANCE_AMBIGUOUS in eval_ambigua.reasons
+
+    def test_17_config_mo2_environ_divergentes_y_ejecutables_en_steam_bloquean(self, tmp_path: pathlib.Path) -> None:
+        """Test 17: Divergencia entre config.skyrim_path, MO2 gamePath, SKYRIM_PATH o ejecutables Steam bloquea."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+
+        # 17a: MO2 gamePath = manual_runtime, pero config.skyrim_path = Steam (split-brain real de A5-R1)
+        eval_cfg_div = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.managed_source),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert eval_cfg_div.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in eval_cfg_div.reasons
+
+        # 17b: SKYRIM_PATH en environ apunta a Steam mientras MO2 y config apuntan a manual_runtime
+        eval_env_div = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.managed_source)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert eval_env_div.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in eval_env_div.reasons
+
+        # 17c: Entrada en [customExecutables] (p. ej. SkyrimSELauncher.exe) apuntando a Steam bloquea
+        _escribir_ini_mo2(
+            rig.mo2_active_global / "modorganizer.ini",
+            game_path=rig.manual_runtime,
+            base_directory=rig.mo2_base_data,
+            ejecutables=[
+                ("SKSE", f"{rig.manual_runtime.as_posix()}/skse64_loader.exe", rig.manual_runtime.as_posix()),
+                (
+                    "Skyrim Special Edition Launcher",
+                    f"{rig.managed_source.as_posix()}/SkyrimSELauncher.exe",
+                    rig.managed_source.as_posix(),
+                ),
+            ],
+        )
+        eval_exe_steam = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert eval_exe_steam.verdict is BinderPreflightVerdict.BLOCKED
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in eval_exe_steam.reasons
+
+
+# ===========================================================================
+# Invariantes de seguridad, Read-Only, Inspector P7 y No-Activación
+# ===========================================================================
+
+
+class TestInvariantesReadOnlyYHermanoInspectorP7:
+    """Pruebas 18, 19 y 20: 100% READ-ONLY, alineación con inspector P7 y cierre productivo intacto."""
+
+    def test_18_preflight_y_sondas_permanecen_estrictamente_read_only(self, tmp_path: pathlib.Path) -> None:
+        """Test 18: Snapshot criptográfico pre/post + auditoría AST de no-mutación."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        raices = [
+            rig.managed_source.parent.parent,
+            rig.stock_source,
+            rig.storage,
+            rig.clone_root,
+            rig.manual_runtime,
+            rig.local_app_data,
+            rig.mo2_base_data,
+            rig.approved_digest_file,
+        ]
+        antes = _snapshot_sha256_recursivo(raices)
+
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            stock_source_root=rig.stock_source,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert evaluacion.is_ready is True
+
+        despues = _snapshot_sha256_recursivo(raices)
+        assert despues == antes, "evaluar_binder_preflight mutó algún archivo en disco"
+
+        # Verificar además por AST que mo2_instance.py no usa winreg de escritura
+        ruta_mo2_inst = RAIZ_REPO / "sky_claw" / "local" / "frozen_runtime" / "effective_runtime" / "mo2_instance.py"
+        arbol = ast.parse(ruta_mo2_inst.read_text(encoding="utf-8"), filename=str(ruta_mo2_inst))
+        prohibidas_winreg = {
+            "CreateKey",
+            "CreateKeyEx",
+            "SetValue",
+            "SetValueEx",
+            "DeleteKey",
+            "DeleteKeyEx",
+            "DeleteValue",
+            "SaveKey",
+            "KEY_WRITE",
+            "KEY_SET_VALUE",
+            "KEY_ALL_ACCESS",
+        }
+        ofensas: list[str] = []
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Attribute) and nodo.attr in prohibidas_winreg:
+                ofensas.append(f"{nodo.lineno}: winreg.{nodo.attr}")
+            elif isinstance(nodo, ast.Name) and nodo.id in prohibidas_winreg:
+                ofensas.append(f"{nodo.lineno}: {nodo.id}")
+        assert ofensas == [], f"operación mutante de Registro detectada: {ofensas}"
+
+    def test_19_inspector_p7_aplica_criterios_compatibles_sin_declarar_runtime_activado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test 19: El inspector P7 propaga la política/runtime manual/digest al preflight, redacta rutas,
+        pero MANTIENE listo_para_p7=False mientras Desired Runtime y MO2 sigan en el runtime manual!
+        """
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        cfg_toml = tmp_path / "config.toml"
+        escaped_manual = str(rig.manual_runtime).replace("\\", "\\\\")
+        cfg_toml.write_text(f'skyrim_path = "{escaped_manual}"\n', encoding="utf-8")
+
+        monkeypatch.setattr(inspector, "default_runtime_probes", rig.probes_globales_activos)
+        monkeypatch.setenv("SKYRIM_PATH", str(rig.manual_runtime))
+
+        # 19a: Con STOCK_INDEPENDENT_TRANSITION + runtime manual + digest aprobado:
+        # binder_preflight pasa a READY, PERO el informe global sigue BLOQUEADO porque aún no se conmutó al Clone!
+        informe_ok_preflight, managed_efectiva = inspector.construir_informe(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            config_path=cfg_toml,
+            managed_source_root=rig.managed_source,
+            clone_id=rig.clone_id,
+            mostrar_rutas=False,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+        )
+        assert managed_efectiva == rig.managed_source
+        assert informe_ok_preflight["preflight_ready"] is True
+        assert informe_ok_preflight["preflight_verdict"] == BinderPreflightVerdict.READY.value
+        hallazgos_por_clave = {h["clave"]: h for h in informe_ok_preflight["hallazgos"]}
+        assert [k for k in hallazgos_por_clave if k.startswith("preflight.")] == []
+        assert hallazgos_por_clave["desired_runtime"]["veredicto"] == inspector.HALLAZGO_BLOQUEADO
+        assert hallazgos_por_clave["mo2.game_path"]["veredicto"] == inspector.HALLAZGO_BLOQUEADO
+        assert hallazgos_por_clave["skyclaw.config"]["veredicto"] == inspector.HALLAZGO_BLOQUEADO
+        assert informe_ok_preflight["veredicto"] == inspector.VEREDICTO_BLOQUEADO
+        assert informe_ok_preflight["listo_para_p7"] is False
+
+        # Verificar que ninguna ruta privada filtró en los detalles con mostrar_rutas=False
+        detalles = "\n".join(str(h.get("detalle", "")) for h in informe_ok_preflight["hallazgos"])
+        assert str(tmp_path) not in detalles
+        assert str(rig.manual_runtime) not in detalles
+        assert rig.manual_runtime.as_posix() not in detalles
+
+        # 19b: Sin digest externo aprobado en Steam ACTIVE -> binder_preflight también bloquea en el inspector
+        informe_sin_digest, _ = inspector.construir_informe(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            config_path=cfg_toml,
+            managed_source_root=rig.managed_source,
+            clone_id=rig.clone_id,
+            mostrar_rutas=False,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest_file=None,
+        )
+        assert informe_sin_digest["preflight_ready"] is False
+        assert informe_sin_digest["preflight_verdict"] == BinderPreflightVerdict.BLOCKED.value
+        hallazgos_sin_digest = [h for h in informe_sin_digest["hallazgos"] if str(h["clave"]).startswith("preflight.")]
+        assert hallazgos_sin_digest
+        assert any(h["veredicto"] == inspector.HALLAZGO_BLOQUEADO for h in hallazgos_sin_digest)
+        detalles_sin_digest = "\n".join(str(h.get("detalle", "")) for h in informe_sin_digest["hallazgos"])
+        assert str(tmp_path) not in detalles_sin_digest
+        assert str(rig.manual_runtime) not in detalles_sin_digest
+
+        # 19c: CLI real del inspector acepta las banderas nuevas por línea de comandos
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(RUTA_INSPECTOR),
+                "--storage-root",
+                str(rig.storage),
+                "--mo2-instance",
+                str(rig.mo2_active_global),
+                "--managed-source",
+                str(rig.managed_source),
+                "--clone-id",
+                rig.clone_id,
+                "--transition-policy",
+                "stock_independent_transition",
+                "--outgoing-manual-runtime",
+                str(rig.manual_runtime),
+                "--approved-stock-digest-file",
+                str(rig.approved_digest_file),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(RAIZ_REPO),
+        )
+        assert proc.returncode == 1
+        salida_cli = json.loads(proc.stdout)
+        assert salida_cli["listo_para_p7"] is False
+
+    def test_20_sin_cambios_en_seleccion_de_ejecutables_ni_activacion_productiva(self, tmp_path: pathlib.Path) -> None:
+        """Test 20: EMISION_PRODUCTIVA_HABILITADA permanece False, _NOMBRES_LANZADOR intacto y
+        entradas de lanzadores no migradas siguen bloqueando sin atajos artificiales.
+        """
+        from sky_claw.local.frozen_runtime.effective_runtime.oracle import _NOMBRES_LANZADOR
+
+        assert approval_module.EMISION_PRODUCTIVA_HABILITADA is False
+        esperados_lanzador = frozenset(
+            {
+                "skyrimse.exe",
+                "skyrim.exe",
+                "skyrimvr.exe",
+                "skse64_loader.exe",
+                "skse_loader.exe",
+                "sksevr_loader.exe",
+                "skse64.exe",
+            }
+        )
+        assert esperados_lanzador == _NOMBRES_LANZADOR
+
+        # Un skse64_loader.exe registrado en otro directorio sigue devolviendo BLOCKED
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        otro_loader_dir = tmp_path / "OtroLoader"
+        otro_loader_dir.mkdir()
+        _escribir_ini_mo2(
+            rig.mo2_active_global / "modorganizer.ini",
+            game_path=rig.manual_runtime,
+            base_directory=rig.mo2_base_data,
+            ejecutables=[
+                ("SKSE Malo", f"{otro_loader_dir.as_posix()}/skse64_loader.exe", None),
+            ],
+        )
+        evaluacion = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+        )
+        assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
+        assert evaluacion.is_ready is False
+        assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons

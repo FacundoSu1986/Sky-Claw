@@ -64,11 +64,16 @@ from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
     decode_qt_scalar,
     leer_game_path_de_mo2,
 )
+from sky_claw.local.frozen_runtime.effective_runtime.mo2_instance import (
+    probe_mo2_instance_identity,
+)
 from sky_claw.local.frozen_runtime.effective_runtime.models import (
     CompatibilityResult,
     LiveProcessEvidence,
     LiveProcessKind,
     LiveProcessSnapshot,
+    Mo2RegistryObservation,
+    Mo2RegistryState,
     ObservationState,
     RuntimeCompatibility,
     RuntimeProbes,
@@ -172,6 +177,7 @@ def _crear_mo2_instance_sintetica(
     custom_executables: list[tuple[str, str]] | None = None,
 ) -> pathlib.Path:
     instance_dir.mkdir(parents=True, exist_ok=True)
+    (instance_dir / "ModOrganizer.exe").write_bytes(b"MZ-synthetic-mo2")
     ini = instance_dir / "modorganizer.ini"
     escaped = game_path.replace("\\", "\\\\")
     lineas = [
@@ -264,6 +270,14 @@ def _crear_config_toml(path: pathlib.Path, skyrim_path: str) -> pathlib.Path:
     return path
 
 
+def _sonda_mo2_portable(ruta: pathlib.Path):
+    return probe_mo2_instance_identity(
+        ruta,
+        registry_reader=lambda: Mo2RegistryObservation(state=Mo2RegistryState.OBSERVED, current_instance=""),
+        environ={},
+    )
+
+
 def _probes_quiescentes(version: str = "1.6.1170.0") -> RuntimeProbes:
     return RuntimeProbes(
         identity=lambda r: RuntimeIdentity(game_key="skyrimse", game_version=version),
@@ -272,6 +286,7 @@ def _probes_quiescentes(version: str = "1.6.1170.0") -> RuntimeProbes:
             reason="compatible sintético",
         ),
         processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+        mo2_instance=_sonda_mo2_portable,
     )
 
 
@@ -415,6 +430,7 @@ def test_02_mo2_abierto_rechazo_sin_mutacion(tmp_path: pathlib.Path) -> None:
             ),
             indeterminate=False,
         ),
+        mo2_instance=_sonda_mo2_portable,
     )
 
     # Act & Assert
@@ -468,6 +484,7 @@ def test_03_skyrim_skse_abierto_rechazo_sin_mutacion(tmp_path: pathlib.Path) -> 
             ),
             indeterminate=False,
         ),
+        mo2_instance=_sonda_mo2_portable,
     )
 
     with pytest.raises(BinderQuiescenceError, match="juego o SKSE vivo"):
@@ -575,6 +592,7 @@ def test_06_runtime_incompatible_rechazo(tmp_path: pathlib.Path) -> None:
             reason="SKSE no coincide con build de runtime",
         ),
         processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+        mo2_instance=_sonda_mo2_portable,
     )
 
     with pytest.raises(BinderPreflightFailedError, match="preflight"):

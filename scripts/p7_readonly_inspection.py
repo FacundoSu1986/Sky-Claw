@@ -70,10 +70,14 @@ if str(RAIZ_REPO) not in sys.path:
 from sky_claw.local.discovery.scanner import read_skyrim_version  # noqa: E402
 from sky_claw.local.frozen_runtime.binder_preflight import (  # noqa: E402
     BinderPreflightAssessment,
+    BinderTransitionPolicy,
     evaluar_binder_preflight,
 )
 from sky_claw.local.frozen_runtime.clones import cargar_runtime_clone_record  # noqa: E402
-from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import leer_game_path_de_mo2  # noqa: E402
+from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (  # noqa: E402
+    leer_directorios_datos_de_mo2,
+    leer_game_path_de_mo2,
+)
 from sky_claw.local.frozen_runtime.effective_runtime.models import ObservationState  # noqa: E402
 from sky_claw.local.frozen_runtime.effective_runtime.oracle import (  # noqa: E402
     default_runtime_probes,
@@ -439,6 +443,10 @@ def construir_informe(
     managed_source_root: pathlib.Path | None,
     clone_id: str | None,
     mostrar_rutas: bool,
+    transition_policy: BinderTransitionPolicy = BinderTransitionPolicy.STRICT_PROVIDER_IDLE,
+    outgoing_manual_runtime_root: pathlib.Path | None = None,
+    approved_stock_reference_digest: str | None = None,
+    approved_stock_reference_digest_file: pathlib.Path | None = None,
 ) -> tuple[dict[str, Any], pathlib.Path | None]:
     """Arma el informe completo. Función pura respecto del disco: sólo lee."""
     ruta = _redactor(mostrar_rutas)
@@ -554,6 +562,10 @@ def construir_informe(
         config_skyrim_path=configurado,
         exigir_config_skyrim_path=True,
         probes=default_runtime_probes(),
+        transition_policy=transition_policy,
+        outgoing_manual_runtime_root=outgoing_manual_runtime_root,
+        approved_stock_reference_digest=approved_stock_reference_digest,
+        approved_stock_reference_digest_file=approved_stock_reference_digest_file,
     )
     hallazgos.extend(_hallazgos_del_preflight(evaluacion))
 
@@ -569,13 +581,31 @@ def construir_informe(
     # pero es una sola regex entre el árbol privado y el informe— (CodeRabbit
     # sobre #851).
     origen = managed_source_root or evaluacion.managed_source_root
-    agujas = _variantes_de_ruta_para_busqueda(origen) if origen else ()
+    agujas_steam = _variantes_de_ruta_para_busqueda(origen) if origen else ()
+    agujas_manual = (
+        _variantes_de_ruta_para_busqueda(outgoing_manual_runtime_root)
+        if outgoing_manual_runtime_root is not None
+        else ()
+    )
+    agujas = tuple(dict.fromkeys([*agujas_steam, *agujas_manual]))
     if clone_root is not None and clone_root.is_dir():
         hallazgos.append(_hallazgo_de_dependencias(_dependencias_en_arbol(clone_root, agujas)))
 
     # --- Redacción de los detalles -----------------------------------------
     if not mostrar_rutas:
-        conocidas = [storage_root, mo2_instance_dir, managed_source_root, clone_root, origen, *agujas]
+        evid_datos = leer_directorios_datos_de_mo2(ini_path)
+        conocidas = [
+            storage_root,
+            mo2_instance_dir,
+            managed_source_root,
+            clone_root,
+            origen,
+            outgoing_manual_runtime_root,
+            approved_stock_reference_digest_file,
+            evid_datos.base_directory,
+            evid_datos.mod_directory,
+            *agujas,
+        ]
         hallazgos = [dataclasses.replace(h, detalle=_redactar_texto(h.detalle, ruta, conocidas)) for h in hallazgos]
 
     # --- Veredicto consolidado ---------------------------------------------
@@ -661,6 +691,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=pathlib.Path, default=None)
     parser.add_argument("--managed-source", type=pathlib.Path, default=None)
     parser.add_argument("--clone-id", default=None)
+    parser.add_argument(
+        "--transition-policy",
+        choices=[p.value for p in BinderTransitionPolicy],
+        default=BinderTransitionPolicy.STRICT_PROVIDER_IDLE.value,
+        help="política de transición para evaluar señales de Steam en el preflight",
+    )
+    parser.add_argument(
+        "--outgoing-manual-runtime",
+        type=pathlib.Path,
+        default=None,
+        help="raíz canónica del runtime manual saliente (fuera de Steam) para preflight",
+    )
+    parser.add_argument(
+        "--approved-stock-digest",
+        default=None,
+        help="reference_digest SHA-256 externo aprobado (A1) para validar procedencia Stock",
+    )
+    parser.add_argument(
+        "--approved-stock-digest-file",
+        type=pathlib.Path,
+        default=None,
+        help="ruta al archivo con el reference_digest externo aprobado (A1)",
+    )
     parser.add_argument("--mostrar-rutas", action="store_true", help="incluye rutas completas en el informe")
     args = parser.parse_args(argv)
 
@@ -671,6 +724,10 @@ def main(argv: list[str] | None = None) -> int:
         managed_source_root=args.managed_source,
         clone_id=args.clone_id,
         mostrar_rutas=args.mostrar_rutas,
+        transition_policy=BinderTransitionPolicy(args.transition_policy),
+        outgoing_manual_runtime_root=args.outgoing_manual_runtime,
+        approved_stock_reference_digest=args.approved_stock_digest,
+        approved_stock_reference_digest_file=args.approved_stock_digest_file,
     )
     # A stdout se emite ASCII puro: la consola de Windows puede estar en cp1252 y
     # el informe contiene «→» y acentos. `print` con un carácter fuera de la

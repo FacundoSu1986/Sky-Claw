@@ -56,11 +56,16 @@ from sky_claw.local.frozen_runtime.clones import (
     registrar_runtime_clone_record,
 )
 from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import leer_game_path_de_mo2
+from sky_claw.local.frozen_runtime.effective_runtime.mo2_instance import (
+    probe_mo2_instance_identity,
+)
 from sky_claw.local.frozen_runtime.effective_runtime.models import (
     CompatibilityResult,
     LiveProcessEvidence,
     LiveProcessKind,
     LiveProcessSnapshot,
+    Mo2RegistryObservation,
+    Mo2RegistryState,
     RuntimeCompatibility,
     RuntimeProbes,
 )
@@ -119,6 +124,7 @@ def _crear_managed_source_sintetica(raiz_steam: pathlib.Path) -> pathlib.Path:
 
 def _crear_mo2_instance_sintetica(instance_dir: pathlib.Path, *, game_path: str) -> pathlib.Path:
     instance_dir.mkdir(parents=True, exist_ok=True)
+    (instance_dir / "ModOrganizer.exe").write_bytes(b"MZ-synthetic-mo2")
     ini = instance_dir / "modorganizer.ini"
     escaped = game_path.replace("\\", "\\\\")
     lineas = [
@@ -203,6 +209,14 @@ def _crear_config(path: pathlib.Path, skyrim_path: str) -> pathlib.Path:
     return path
 
 
+def _sonda_mo2_portable(ruta: pathlib.Path):
+    return probe_mo2_instance_identity(
+        ruta,
+        registry_reader=lambda: Mo2RegistryObservation(state=Mo2RegistryState.OBSERVED, current_instance=""),
+        environ={},
+    )
+
+
 def _probes_quiescentes(estado: dict[str, bool] | None = None) -> RuntimeProbes:
     estado = estado if estado is not None else {}
 
@@ -227,6 +241,7 @@ def _probes_quiescentes(estado: dict[str, bool] | None = None) -> RuntimeProbes:
             state=RuntimeCompatibility.COMPATIBLE, reason="compatible sintético"
         ),
         processes=_processes,
+        mo2_instance=_sonda_mo2_portable,
     )
 
 
@@ -829,6 +844,7 @@ def _correr_hasta_crashear(rig_dir: pathlib.Path, frontera: str) -> None:
                 state=RuntimeCompatibility.COMPATIBLE, reason="compatible sintético"
             ),
             processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+            mo2_instance=_sonda_mo2_portable,
         )
         entorno = {"SKYRIM_PATH": str(rig.managed_src)}
         active = active_state_path(rig.storage)

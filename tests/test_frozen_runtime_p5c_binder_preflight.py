@@ -40,11 +40,16 @@ from sky_claw.local.frozen_runtime.clones import (
     RuntimeCloneRecord,
     registrar_runtime_clone_record,
 )
+from sky_claw.local.frozen_runtime.effective_runtime.mo2_instance import (
+    probe_mo2_instance_identity,
+)
 from sky_claw.local.frozen_runtime.effective_runtime.models import (
     CompatibilityResult,
     LiveProcessEvidence,
     LiveProcessKind,
     LiveProcessSnapshot,
+    Mo2RegistryObservation,
+    Mo2RegistryState,
     RuntimeCompatibility,
     RuntimeProbes,
 )
@@ -75,6 +80,14 @@ from sky_claw.local.runtime_vault.verification import tree_digest_from_files
 _RAIZ_WORKTREE = pathlib.Path(__file__).resolve().parent.parent
 
 
+def _sonda_mo2_portable(ruta: pathlib.Path):
+    return probe_mo2_instance_identity(
+        ruta,
+        registry_reader=lambda: Mo2RegistryObservation(state=Mo2RegistryState.OBSERVED, current_instance=""),
+        environ={},
+    )
+
+
 def _probes_limpios(
     *,
     version: str = "1.6.1170.0",
@@ -93,6 +106,7 @@ def _probes_limpios(
             processes=procesos,
             indeterminate=indeterminate_proc,
         ),
+        mo2_instance=_sonda_mo2_portable,
     )
 
 
@@ -155,6 +169,7 @@ def _crear_mo2_instance_sintetica(
     custom_executables: list[tuple[str, str]] | None = None,
 ) -> pathlib.Path:
     instance_dir.mkdir(parents=True, exist_ok=True)
+    (instance_dir / "ModOrganizer.exe").write_bytes(b"MZ-synthetic-mo2")
     ini = instance_dir / "modorganizer.ini"
     escaped = game_path.replace("\\", "\\\\")
     lineas = [
@@ -1411,7 +1426,7 @@ class TestFrozenRuntimeP5CBinderPreflight:
         assert a_parcial.is_ready is False
 
     def test_p2c_is_ready_rechaza_checks_duplicados(self) -> None:
-        """P2-C: is_ready es False si hay checks duplicados aunque la cantidad sea 10."""
+        """P2-C: is_ready es False si hay checks duplicados aunque la cantidad sea 11."""
         checks_duplicados = [
             PreflightCheckResult(
                 check=PreflightCheckCode.PATH_SAFETY,
@@ -1436,7 +1451,7 @@ class TestFrozenRuntimeP5CBinderPreflight:
                 )
             )
 
-        assert len(checks_duplicados) == 10
+        assert len(checks_duplicados) == 11
         a_dup = BinderPreflightAssessment(
             verdict=BinderPreflightVerdict.READY,
             reasons=(PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,),
@@ -1445,14 +1460,14 @@ class TestFrozenRuntimeP5CBinderPreflight:
         assert a_dup.is_ready is False
 
     def test_p2c_is_ready_pasa_con_exactamente_los_diez_checks_obligatorios(self) -> None:
-        """P2-C: is_ready es True únicamente con los 10 checks obligatorios únicos y PASS."""
+        """P2-C: is_ready es True únicamente con los 11 checks obligatorios únicos y PASS."""
         checks_completos = tuple(
             PreflightCheckResult(
                 check=cod, status=PreflightCheckStatus.PASS, reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED
             )
             for cod in PreflightCheckCode
         )
-        assert len(checks_completos) == 10
+        assert len(checks_completos) == 11
         a_ok = BinderPreflightAssessment(
             verdict=BinderPreflightVerdict.READY,
             reasons=(PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,),
@@ -1566,6 +1581,7 @@ class TestFrozenRuntimeP5CBinderPreflight:
         """Los conjuntos de checks, motivos y veredictos están congelados por igualdad literal."""
         checks_esperados = {
             "path_safety",
+            "mo2_instance_identity",
             "managed_source",
             "clone_record",
             "clone_lifecycle",
@@ -1597,6 +1613,8 @@ class TestFrozenRuntimeP5CBinderPreflight:
             "generation_not_found",
             "generation_drifted",
             "generation_invalid",
+            "stock_provenance_invalid",
+            "stock_reference_unapproved",
             "clone_physical_integrity_invalid",
             "clone_physical_integrity_indeterminate",
             "reparse_point_detected",
@@ -1604,12 +1622,16 @@ class TestFrozenRuntimeP5CBinderPreflight:
             "short_name_alias_detected",
             "path_containment_violation",
             "paths_collide",
+            "outgoing_manual_runtime_invalid",
             "skse_incompatible",
             "compatibility_unknown",
             "identity_unreadable",
             "process_table_unreadable",
             "live_game_running",
             "live_mo2_running",
+            "mo2_instance_inactive",
+            "mo2_instance_ambiguous",
+            "mo2_instance_identity_unknown",
             "mo2_ini_missing",
             "mo2_ini_unreadable",
             "mo2_game_path_unreadable",
@@ -1923,6 +1945,7 @@ class TestFrozenRuntimeP5CBinderPreflight:
             identity=lambda _r: RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0"),
             compatibility=_falla_con_type_error,
             processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+            mo2_instance=_sonda_mo2_portable,
         )
 
         with pytest.raises(TypeError, match="bug de programacion"):
@@ -1955,6 +1978,7 @@ class TestFrozenRuntimeP5CBinderPreflight:
             identity=lambda _r: RuntimeIdentity(game_key="skyrimse", game_version="1.6.1170.0"),
             compatibility=_falla_con_obs_error,
             processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+            mo2_instance=_sonda_mo2_portable,
         )
 
         evaluacion = evaluar_binder_preflight(

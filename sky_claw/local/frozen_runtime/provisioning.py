@@ -60,6 +60,7 @@ import os
 import pathlib
 import re
 import shutil
+import stat
 import time
 from collections.abc import Callable, Sequence
 
@@ -85,7 +86,9 @@ from sky_claw.local.frozen_runtime.errors import (
     ProvisioningError,
     ProvisioningSpaceError,
     RuntimeSetupError,
+    StockProvenanceInvalidError,
     StockReferenceInvalidError,
+    StockReferenceUnapprovedError,
     StockSourceError,
 )
 from sky_claw.local.frozen_runtime.generation_id import construir_generation_id, validar_generation_id
@@ -158,14 +161,19 @@ _SIDECAR_SUFFIX = ".source.json"
 __all__ = [
     "PROVIDER_STOCK",
     "CopiaStockVerificada",
+    "ProcedenciaStockVerificada",
     "ProvisionamientoResult",
     "RuntimeSetupEvidence",
+    "StockProvenanceInvalidError",
     "StockReference",
+    "StockReferenceUnapprovedError",
     "adoptar_copia_stock",
+    "cargar_digest_aprobado_stock",
     "construir_referencia_stock",
     "crear_runtime_clone_desde_generation",
     "cargar_referencia_stock",
     "publicar_generation_desde_stock",
+    "verificar_procedencia_stock_generacion",
     "verificar_runtime_setup",
 ]
 
@@ -1150,6 +1158,185 @@ def _exigir_sidecar_contra_metadata(
         raise ProvisioningError("sidecar de procedencia: runtime_identity no coincide con la metadata de la Generation")
     if not _criticos_coinciden(sidecar.critical_files, metadata.critical_files):
         raise ProvisioningError("sidecar de procedencia: critical_files no coincide con la metadata de la Generation")
+
+
+# ── verificación READ-ONLY de procedencia Stock y autoridad externa A1 ─────
+
+
+_LIMITE_ARCHIVO_DIGEST_APROBADO = 256
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ProcedenciaStockVerificada:
+    """Evidencia READ-ONLY de procedencia Stock v2 verificada en tres vías."""
+
+    generation_id: str
+    reference: StockReference
+    tree_digest: TreeDigest
+    runtime_identity: RuntimeIdentity
+    directory_membership: DirectoryMembershipEvidence
+    critical_files: tuple[FileIdentity, ...]
+    observed_at_ns: int
+    approved_reference_digest: str | None = None
+
+
+def cargar_digest_aprobado_stock(ruta: pathlib.Path) -> str:
+    """Carga y valida de forma fail-closed el ``reference_digest`` externo aprobado (A1).
+
+    Exige ruta absoluta, sin segmentos relativos (``.`` o ``..``), sin alias cortos
+    8.3 ni enlaces/reparse points en archivo o ancestros, archivo regular UTF-8 de
+    hasta 256 bytes y contenido exacto de un único SHA-256 hexadecimal en minúsculas.
+    """
+    try:
+        raw_str = os.fspath(ruta)
+    except TypeError as exc:
+        raise StockReferenceUnapprovedError("ruta de digest aprobado inválida") from exc
+    if not raw_str or not raw_str.strip():
+        raise StockReferenceUnapprovedError("ruta de digest aprobado vacía")
+    partes = [p for p in re.split(r"[\\/]", raw_str) if p]
+    if "." in partes or ".." in partes:
+        raise StockReferenceUnapprovedError(
+            f"la ruta del digest aprobado contiene segmentos relativos ('.' o '..'): '{ruta}'"
+        )
+    if any(re.search(r"~[0-9]", p) is not None for p in partes):
+        raise StockReferenceUnapprovedError(
+            f"la ruta del digest aprobado contiene un alias corto 8.3 de Windows: '{ruta}'"
+        )
+    candidato = pathlib.Path(ruta)
+    if not candidato.is_absolute():
+        raise StockReferenceUnapprovedError(f"la ruta del digest aprobado debe ser absoluta: '{ruta}'")
+    motivo_enlace = descripcion_de_enlace(candidato)
+    if motivo_enlace is not None:
+        raise StockReferenceUnapprovedError(
+            f"el archivo de digest aprobado o un ancestro está redirigido por enlace/reparse: {motivo_enlace}"
+        )
+    try:
+        st = os.lstat(candidato)
+    except OSError as exc:
+        raise StockReferenceUnapprovedError(f"no se pudo acceder al digest aprobado '{candidato}': {exc}") from exc
+    if not stat.S_ISREG(st.st_mode):
+        raise StockReferenceUnapprovedError(f"el digest aprobado '{candidato}' no es un archivo regular")
+    if st.st_size <= 0 or st.st_size > _LIMITE_ARCHIVO_DIGEST_APROBADO:
+        raise StockReferenceUnapprovedError(
+            f"tamaño inválido en '{candidato}' ({st.st_size} bytes; esperado 1..{_LIMITE_ARCHIVO_DIGEST_APROBADO})"
+        )
+    try:
+        crudo = candidato.read_bytes()
+    except OSError as exc:
+        raise StockReferenceUnapprovedError(f"no se pudo leer el digest aprobado '{candidato}': {exc}") from exc
+    if len(crudo) > _LIMITE_ARCHIVO_DIGEST_APROBADO:
+        raise StockReferenceUnapprovedError(f"el digest aprobado '{candidato}' excede el límite permitido")
+    try:
+        texto = crudo.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise StockReferenceUnapprovedError(f"el digest aprobado '{candidato}' no es UTF-8 válido: {exc}") from exc
+    if re.fullmatch(r"[0-9a-f]{64}", texto) is None:
+        raise StockReferenceUnapprovedError(
+            f"el digest aprobado en '{candidato}' no es un SHA-256 hex minúsculas de 64 caracteres"
+        )
+    return texto
+
+
+def verificar_procedencia_stock_generacion(
+    storage_root: pathlib.Path,
+    generation_id: str,
+    *,
+    approved_reference_digest: str | None = None,
+    require_approved_digest: bool = False,
+) -> ProcedenciaStockVerificada:
+    """Verifica en modo 100% READ-ONLY la procedencia Stock v2 de una Generation.
+
+    Comprueba:
+    1. Storage sin redirección por enlace/reparse y ``generation_id`` canónico.
+    2. ``GenerationMetadata`` legible con ``provider == 'stock'`` (condición necesaria,
+       jamás suficiente por sí sola).
+    3. Sidecar ``state/generations/<gid>.source.json`` schema v2 presente, íntegro,
+       con ``StockReference`` embebida cuyo ``reference_digest`` recomputa exactamente.
+    4. Consistencia cruzada entre ``GenerationMetadata`` y el sidecar (``tree_digest``,
+       ``runtime_identity``, ``critical_files`` y derivación de ``generation_id``).
+    5. Coherencia en tres vías de ``directory_membership``: ``StockReference`` ==
+       sidecar == árbol físico en ``versions/<gid>`` (detecta directorios vacíos
+       agregados o eliminados que ``TreeDigest`` no ve).
+    6. Autoridad externa de aprobación A1: si ``require_approved_digest=True``, exige
+       ``approved_reference_digest`` explícito y coincidencia exacta con
+       ``sidecar.reference.reference_digest``. Si se suministra ``approved_reference_digest``
+       en cualquier modo, valida formato y coincidencia exacta.
+    """
+    raiz = pathlib.Path(storage_root)
+    motivo_raiz = descripcion_de_enlace(raiz)
+    if motivo_raiz is not None:
+        raise StockProvenanceInvalidError(f"storage_root redirigido por enlace/reparse: {motivo_raiz}")
+    try:
+        gid = validar_generation_id(generation_id)
+    except FrozenRuntimeError as exc:
+        raise StockProvenanceInvalidError(f"generation_id inválido: {exc}") from exc
+
+    try:
+        metadata = leer_generation_metadata(raiz, gid)
+    except (FrozenRuntimeError, OSError) as exc:
+        raise StockProvenanceInvalidError(f"no se pudo leer GenerationMetadata para '{gid}': {exc}") from exc
+
+    if metadata.provider != PROVIDER_STOCK:
+        raise StockProvenanceInvalidError(
+            f"la Generation '{gid}' declara provider={metadata.provider!r}; se exige '{PROVIDER_STOCK}'"
+        )
+
+    try:
+        sidecar = _cargar_sidecar(raiz, gid)
+        _exigir_sidecar_contra_metadata(sidecar, metadata)
+    except (ProvisioningError, FrozenRuntimeError, OSError) as exc:
+        raise StockProvenanceInvalidError(f"procedencia Stock inválida en Generation '{gid}': {exc}") from exc
+
+    gen_dir = generation_dir(raiz, gid)
+    motivo_gen = descripcion_de_enlace(gen_dir)
+    if motivo_gen is not None:
+        raise StockProvenanceInvalidError(f"árbol de Generation '{gid}' redirigido por enlace/reparse: {motivo_gen}")
+    if not gen_dir.is_dir():
+        raise StockProvenanceInvalidError(f"árbol físico de Generation '{gid}' ausente en '{gen_dir}'")
+    try:
+        membership_fisica = capturar_membership_directorios(gen_dir)
+    except (DirectoryMembershipError, FrozenRuntimeError, OSError) as exc:
+        raise StockProvenanceInvalidError(
+            f"no se pudo capturar directory_membership física en '{gen_dir}': {exc}"
+        ) from exc
+    if membership_fisica != sidecar.directory_membership:
+        raise StockProvenanceInvalidError(
+            f"directory_membership física de '{gid}' diverge del sidecar/referencia Stock "
+            f"(esperado {sidecar.directory_membership.directory_count} dirs, "
+            f"observado {membership_fisica.directory_count} dirs)"
+        )
+
+    if require_approved_digest and approved_reference_digest is None:
+        raise StockReferenceUnapprovedError(
+            "se exige approved_reference_digest externo aprobado (A1), pero no fue suministrado "
+            "(un sidecar autoconsistente no sustituye la aprobación externa del propietario)"
+        )
+    digest_validado: str | None = None
+    if approved_reference_digest is not None:
+        if (
+            not isinstance(approved_reference_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", approved_reference_digest) is None
+        ):
+            raise StockReferenceUnapprovedError(
+                "approved_reference_digest inválido: debe ser SHA-256 hex minúsculas de 64 caracteres"
+            )
+        if sidecar.reference.reference_digest != approved_reference_digest:
+            raise StockReferenceUnapprovedError(
+                f"reference_digest del sidecar ('{sidecar.reference.reference_digest}') "
+                f"no coincide con la autoridad aprobada A1 ('{approved_reference_digest}')"
+            )
+        digest_validado = approved_reference_digest
+
+    return ProcedenciaStockVerificada(
+        generation_id=gid,
+        reference=sidecar.reference,
+        tree_digest=sidecar.tree_digest,
+        runtime_identity=sidecar.runtime_identity,
+        directory_membership=sidecar.directory_membership,
+        critical_files=sidecar.critical_files,
+        observed_at_ns=sidecar.observed_at_ns,
+        approved_reference_digest=digest_validado,
+    )
 
 
 def _registro_compatible(existente: RuntimeCloneRecord, gid: str, admitido: pathlib.Path) -> bool:

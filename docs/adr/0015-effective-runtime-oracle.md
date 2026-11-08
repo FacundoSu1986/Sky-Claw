@@ -890,3 +890,46 @@ contratos y comprobaciones sin alterar el carácter 100% de solo lectura:
      `FrozenRuntimeError`, `OSError`).
    - Se preserva el comportamiento fail-closed ante PE corrupto o problemas de disco (`COMPATIBILITY_UNKNOWN`),
      garantizando que errores de programación (p. ej. `TypeError`, `AttributeError`) no queden enmascarados.
+
+## 14. Extensión P7-A5 (PR 1) — Preflight Read-Only para Transición Stock Independiente, Runtime Manual Saliente e Identidad Activa de MO2
+
+**Fecha:** 2026-11-07
+
+**Trackers:** #867 (activo, P7 Golden Master) y #672 (histórico cerrado).
+
+**Propósito:** Incorporar capacidades estrictamente READ-ONLY en `binder_preflight.py`,
+`provisioning.py`, `effective_runtime/` y `scripts/p7_readonly_inspection.py` para auditar
+una futura transición `MANUAL_RUNTIME -> REGISTERED_STOCK_CLONE` sin manipular Steam y con
+`EMISION_PRODUCTIVA_HABILITADA = False`.
+
+### 14.1 Contrato R1 — `BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION`
+
+- La política por defecto sigue siendo `BinderTransitionPolicy.STRICT_PROVIDER_IDLE`
+  (`ProviderObservationState.IDLE` obligatorio; `ACTIVE` bloquea siempre).
+- Bajo `BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION` explícito, `ProviderObservationState.ACTIVE`
+  sólo se admite cuando se verifican simultáneamente las 12 garantías de aislamiento:
+  1. Managed Source descubierta y validada (`AppID == "489830"`, manifest legible, `buildid` y `StateFlags` numéricos válidos; `INDETERMINATE` o staging ilegible siempre bloquea).
+  2. Generation con procedencia Stock v2 comprobable mediante `verificar_procedencia_stock_generacion`
+     (`state/generations/<gid>.source.json` schema v2; `provider == "stock"` en metadata nunca basta por sí solo).
+  3. Consistencia criptográfica completa entre `GenerationMetadata`, sidecar `.source.json`, `tree_digest`,
+     `runtime_identity`, `critical_files` y `directory_membership` a tres vías (`StockReference == sidecar == versions/<gid>`).
+  4. Validación obligatoria contra autoridad externa A1 (`approved_stock_reference_digest` o
+     `approved_stock_reference_digest_file` vía `cargar_digest_aprobado_stock`), impidiendo que un sidecar
+     autoconsistente sustituya la aprobación del propietario (`STOCK_REFERENCE_UNAPPROVED`).
+  5. Clone `PROVISIONED`, `VALID` y físicamente independiente (`st_nlink == 1`, cero inodos compartidos con Steam, Generation o Stock, cero reparse points).
+  6. Superficie saliente y todos los `[customExecutables]` (`binary` y `workingDirectory`) completamente fuera de `managed_source_root` y `steamapps`.
+  7. Cero procesos vivos (`SkyrimSE.exe`, loaders SKSE, `ModOrganizer.exe`) y cero escrituras sobre la Managed Source.
+
+### 14.2 Contrato R2 — `outgoing_manual_runtime_root`
+
+- Con `outgoing_manual_runtime_root=None` (defecto), cualquier tercer directorio continúa rechazándose con `CONFIG_DIVERGENCE_DETECTED`.
+- Cuando se declara explícitamente `outgoing_manual_runtime_root`, el preflight valida: ruta absoluta canónica sin segmentos `.`/`..`, cero alias 8.3, cero symlinks/junctions/reparse points en ancestros y árbol interno, `SkyrimSE.exe` regular con identidad PE real de Skyrim SE, `st_nlink == 1` y disjunto en `(st_dev, st_ino)` frente a Steam/Generation/Clone/Stock, ausencia total de solapamiento con `managed_source_root`, `steamapps`, `storage_root`, `stock_source_root`, `clone_root`, otros Clones registrados, `mo2_instance_dir` y `[Settings] base_directory`/`mod_directory`, y coherencia unánime entre `MO2 gamePath`, `Config.skyrim_path` y `SKYRIM_PATH`.
+- El runtime manual nunca se registra ni se trata como un Clone válido en `assess_effective_runtime`; `scripts/p7_readonly_inspection.py` conserva `listo_para_p7 = False` (`BLOCKED`) mientras la conmutación a Clone no haya ocurrido.
+
+### 14.3 Contrato R3 — `MO2_INSTANCE_IDENTITY` (`probe_mo2_instance_identity`)
+
+- Se incorpora el 11.º check obligatorio `PreflightCheckCode.MO2_INSTANCE_IDENTITY` respaldado por `RuntimeProbes.mo2_instance` (`effective_runtime/mo2_instance.py`, 100% read-only con `winreg.KEY_READ`).
+- Contrasta el selector de instancia de Windows (`HKCU\Software\Mod Organizer Team\Mod Organizer\CurrentInstance`) y el layout físico para distinguir:
+  - `ACTIVE_GLOBAL`: directorio bajo `%LOCALAPPDATA%\ModOrganizer\<Name>` con `CurrentInstance == <Name>`, `ModOrganizer.ini` presente y sin `ModOrganizer.exe` ni `portable.txt` locales.
+  - `ACTIVE_PORTABLE`: directorio fuera de `%LOCALAPPDATA%\ModOrganizer` con `ModOrganizer.exe` + `ModOrganizer.ini`, cuando `CurrentInstance == ""` o (`ABSENT` + `portable.txt`).
+- Bloquea fail-closed un directorio residual o de datos como `base_directory\ModOrganizer.ini` (`MO2_INSTANCE_INACTIVE`), instalaciones mixtas (`MO2_INSTANCE_AMBIGUOUS`) o lecturas indeterminadas del Registro (`MO2_INSTANCE_IDENTITY_UNKNOWN`).
