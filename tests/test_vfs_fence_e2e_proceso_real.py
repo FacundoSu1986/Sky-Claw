@@ -531,6 +531,13 @@ def test_la_superficie_publica_de_sky_claw_y_app_security_se_conserva_intacta() 
     assert set(security_pkg.__all__) == esperados_security
     assert isinstance(sky_claw.__version__, str) and sky_claw.__version__
 
+    # La introspección también es superficie pública: ``dir()`` (autocompletado, ``help()``, IDEs) debe listar
+    # los símbolos perezosos igual que antes, aunque todavía no se hayan resuelto con ``__getattr__``.
+    assert esperados_raiz <= set(dir(sky_claw))
+    assert esperados_security <= set(dir(security_pkg))
+    assert dir(sky_claw) == sorted(set(dir(sky_claw)))
+    assert dir(security_pkg) == sorted(set(dir(security_pkg)))
+
     # Verificar `from sky_claw import ...` y `from sky_claw.app.security import ...` en un intérprete limpio
     python_directo = getattr(sys, "_base_executable", sys.executable)
     rutas_python = os.pathsep.join([str(REPO), *(p for p in sys.path if p)])

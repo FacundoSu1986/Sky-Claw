@@ -43,3 +43,8 @@ def __getattr__(name: str) -> Any:
         return getattr(_assets, name)
     msg = f"module {__name__!r} has no attribute {name!r}"
     raise AttributeError(msg)
+
+
+def __dir__() -> list[str]:
+    """Lista también los re-exports perezosos para que ``dir()``/``help()``/IDEs los vean sin resolverlos."""
+    return sorted({*globals(), *__all__})

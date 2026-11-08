@@ -180,6 +180,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Auditoría independiente de la pila del fence VFS (H-01, H-02, H-03; H-04 y H-05 quedan pendientes).** (H-01) El bridge del plugin contiene a TODO el árbol del worker, no solo al proceso que lanzó MO2: tras asignar adopta a los descendientes vivos que no estén en el Job (hasta un punto fijo; si alguno no se puede contener no hay `launch_ack`) y emite `worker_exit` solo con el Job vacío confirmado (si no, `bridge_error` de terminación y cuarentena), porque el broker toma `worker_exit` como terminalidad confirmada. (H-02) `--vfs-worker` verifica su Job con un módulo liviano (`vfs_arranque`) ANTES de importar `vfs_worker` (cuyo árbol de imports llega a `platform` → `cmd.exe /c ver`); el aborto por identidad es uno solo para ambos puntos de entrada. (H-03) La limpieza de descendientes tras un fallo de identidad es por PID y no se corta al primer error. El HOLD de seguridad se mantiene y solo lo levanta el auditor independiente; detalle y límites (capa `ctypes` sin medir en Windows) en [docs/audits/2026-11-03_identidad_del_job_onefile.md §12](docs/audits/2026-11-03_identidad_del_job_onefile.md).
+- **La tarjeta de Wrye Bash de la GUI lee su ruta de `config.toml` (`wrye_bash_exe`) como LOOT, xEdit y Pandora (#879).**
+  El escáner de la GUI se siembra desde la config (`build_tool_path_cfg_keys`) y recién después exporta lo
+  resuelto a `os.environ`; el `ExternalToolSpec` de `wrye_bash` tenía `snapshot_env_var` pero no
+  `config_field`, así que con el ejecutable fuera de las rutas auto-detectadas la tarjeta decía «No
+  instalado» y la etapa 6 asistida era inalcanzable desde la GUI (hallazgo H-1 del smoke en rig Windows,
+  2026-11-07). Se agrega `wrye_bash_exe` a `Config._load_defaults`, a `LocalConfig` (+ lector JSON), a la
+  migración legacy y a las dos tablas de docs. Ancla por enumeración en
+  `tests/test_wrye_bash_config_field.py`: toda spec con `snapshot_env_var` tiene `config_field` o figura en
+  una lista cerrada por nombre (hoy sólo `dyndolod`, fuera de alcance: su disponibilidad en la GUI es una
+  decisión de la etapa 9), y todo `config_field` existe en `Config` y en `LocalConfig`.
 - **Etapa 6 — vigencia contextual del testigo durable, simetría M-04 y robustez del almacén
   ([ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.3, issue #866).**
   - **H-1:** si LOOT (u otro cambio de load order o de `modlist.txt`) ocurría entre el build del

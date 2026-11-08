@@ -514,13 +514,16 @@ class BridgeLaunchController:
         )
         t_ack = time.perf_counter()
         if self._log_info is not None:
-            ts_utc = datetime.now(UTC).isoformat()
-            self._log_info(
-                f"Sky-Claw VFS Bridge launch timings ts={ts_utc} job_id={request.job_id} job_object={request.job_object} "
-                f"create_job_ms={(t_job - t0) * 1000.0:.3f} startApplication_ms={(t_start - t_job) * 1000.0:.3f} "
-                f"assign_ms={(t_assign - t_start) * 1000.0:.3f} adopt_ms={(t_adopt - t_assign) * 1000.0:.3f} "
-                f"adopted={adopted} total_to_ack_ms={(t_ack - t0) * 1000.0:.3f}"
-            )
+            # La telemetría nunca altera el flujo del protocolo: si ``log_info`` falla, el monitor igual arranca.
+            with contextlib.suppress(Exception):
+                ts_utc = datetime.now(UTC).isoformat()
+                self._log_info(
+                    f"Sky-Claw VFS Bridge launch timings ts={ts_utc} job_id={request.job_id} "
+                    f"job_object={request.job_object} "
+                    f"create_job_ms={(t_job - t0) * 1000.0:.3f} startApplication_ms={(t_start - t_job) * 1000.0:.3f} "
+                    f"assign_ms={(t_assign - t_start) * 1000.0:.3f} adopt_ms={(t_adopt - t_assign) * 1000.0:.3f} "
+                    f"adopted={adopted} total_to_ack_ms={(t_ack - t0) * 1000.0:.3f}"
+                )
         monitor = threading.Thread(
             target=self._monitor,
             args=(running,),
@@ -557,12 +560,15 @@ class BridgeLaunchController:
             with self._lock:
                 self._jobs.pop(running.request.job_id, None)
         if self._log_info is not None:
-            ts_utc = datetime.now(UTC).isoformat()
-            self._log_info(
-                f"Sky-Claw VFS Bridge worker_exit confirmed ts={ts_utc} job_id={running.request.job_id} "
-                f"wait_ok={wait_ok} exit_code={exit_code} wait_ms={(t_exit - t_wait0) * 1000.0:.3f} "
-                f"job_empty={survivors is None}"
-            )
+            # El evento que sigue (``worker_exit`` o el error de terminación) es lo que el broker espera para decidir:
+            # el log no puede impedir ninguno de los dos.
+            with contextlib.suppress(Exception):
+                ts_utc = datetime.now(UTC).isoformat()
+                self._log_info(
+                    f"Sky-Claw VFS Bridge worker_exit confirmed ts={ts_utc} job_id={running.request.job_id} "
+                    f"wait_ok={wait_ok} exit_code={exit_code} wait_ms={(t_exit - t_wait0) * 1000.0:.3f} "
+                    f"job_empty={survivors is None}"
+                )
         if survivors is not None:
             self._send_event(
                 bridge_error_event(

@@ -104,6 +104,7 @@ _RAW_SPECS: tuple[ExternalToolSpec, ...] = (
         is_critical=False,
         dispatcher_tool_name="generate_bashed_patch",
         snapshot_env_var="WRYE_BASH_PATH",
+        config_field="wrye_bash_exe",
     ),
     ExternalToolSpec(
         key="dyndolod",

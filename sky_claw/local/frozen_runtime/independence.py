@@ -152,6 +152,40 @@ def _mencion_multilink(archivos: list[tuple[str, os.stat_result]], *, limite: in
     return [f"{rel} (nlink={st.st_nlink})" for rel, st in archivos if st.st_nlink > 1][:limite]
 
 
+def verificar_sin_multilinks(root: pathlib.Path, *, etiqueta: str = "arbol") -> PhysicalIndependenceResult:
+    """Fail-closed: viola si algún archivo regular del árbol tiene ``st_nlink > 1``.
+
+    Es la primitive que necesita el provisionamiento desde una copia local: una
+    copia "física" cuyos archivos comparten file object con otro árbol (aunque
+    sea fuera de Steam) no es una base admisible para una Generation ni para un
+    Clone: mutar el socio cambia el runtime, y el digest no lo detecta porque el
+    contenido es el mismo objeto.
+
+    ``INDETERMINATE`` si la identidad física no es observable (st_dev/st_ino
+    inválidos, OSError) y ``VIOLATED`` si un reparse o un multi-link aparece.
+    Nunca devuelve ``INDEPENDENT`` por no haber podido mirar.
+    """
+    try:
+        archivos = _archivos_fisicos(pathlib.Path(root), etiqueta=etiqueta)
+    except PhysicalReparseError as exc:
+        return PhysicalIndependenceResult(state=IndependenceState.VIOLATED, message=str(exc))
+    except FrozenRuntimeStorageError as exc:
+        return PhysicalIndependenceResult(state=IndependenceState.INDETERMINATE, message=str(exc))
+    multlink = _mencion_multilink(archivos)
+    if multlink:
+        return PhysicalIndependenceResult(
+            state=IndependenceState.VIOLATED,
+            message=(
+                f"archivo(s) multi-link (hardlink) en {etiqueta}: {', '.join(multlink)} "
+                "(SFR-18: una copia local no puede compartir file objects con otro árbol)"
+            ),
+        )
+    return PhysicalIndependenceResult(
+        state=IndependenceState.INDEPENDENT,
+        message=f"sin reparse y st_nlink==1 en {len(archivos)} archivo(s): {etiqueta}",
+    )
+
+
 def verify_generation_independence(
     generation_root: pathlib.Path,
     managed_source_root: pathlib.Path,

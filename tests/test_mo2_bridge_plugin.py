@@ -661,3 +661,163 @@ def test_controller_registra_tiempos_de_launch_start_application_assign_y_ack(
     assert "Sky-Claw VFS Bridge worker_exit confirmed ts=" in logs[1]
     assert "job_id=job-1" in logs[1]
     assert "wait_ok=True exit_code=7 wait_ms=" in logs[1]
+
+
+def _controlador_con_log_info(
+    tmp_path: pathlib.Path,
+    organizer: _Organizer,
+    log_info: object,
+) -> tuple[BridgeLaunchController, dict[str, object], list[dict[str, object]], threading.Event]:
+    """Controlador con dobles y un ``log_info`` a medida; ``salio`` se activa al enviarse ``worker_exit``."""
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    manifest = jobs / "job-1.json"
+    manifest.write_text("{}", encoding="utf-8")
+    worker = tmp_path / "SkyClawApp.exe"
+    worker.write_bytes(b"exe")
+    descriptor = tmp_path / "descriptor.json"
+    descriptor.write_text("{}", encoding="utf-8")
+    eventos: list[dict[str, object]] = []
+    salio = threading.Event()
+
+    def _enviar(evento: dict[str, object]) -> None:
+        eventos.append(evento)
+        if evento.get("event") == "worker_exit":
+            salio.set()
+
+    controller = BridgeLaunchController(
+        organizer=organizer,
+        worker_executable=worker,
+        worker_prefix=("--vfs-worker",),
+        descriptor_path=descriptor,
+        jobs_root=jobs,
+        send_event=_enviar,
+        job_factory=_JobObject,
+        process_waiter=lambda handle: organizer.waitForApplication(handle, False),
+        log_info=log_info,
+    )
+    mensaje: dict[str, object] = {
+        "protocol_version": PROTOCOL_VERSION,
+        "type": "launch_worker",
+        "job_id": "job-1",
+        "profile": "Default",
+        "manifest_path": str(manifest),
+        "overwrite_mod": None,
+        "job_object": JOB_OBJECT,
+    }
+    return controller, mensaje, eventos, salio
+
+
+def test_una_falla_de_log_info_no_corta_el_lanzamiento_ni_deja_al_worker_sin_monitor(
+    tmp_path: pathlib.Path,
+) -> None:
+    """La telemetría nunca altera el flujo del protocolo: ``launch`` sigue hasta arrancar el monitor."""
+    organizer = _Organizer()
+
+    def _log_roto(_mensaje: str) -> None:
+        raise RuntimeError("qInfo no disponible")
+
+    controller, mensaje, eventos, salio = _controlador_con_log_info(tmp_path, organizer, _log_roto)
+
+    controller.launch(mensaje)
+    organizer.release.set()
+
+    assert salio.wait(timeout=2), "sin monitor no hay worker_exit: el broker nunca vería la salida del worker"
+    tipos = [(evento["type"], evento.get("event")) for evento in eventos]
+    assert ("launch_ack", None) in tipos
+    assert ("event", "worker_exit") in tipos
+
+
+def test_una_falla_de_log_info_en_la_salida_no_impide_enviar_worker_exit(tmp_path: pathlib.Path) -> None:
+    """El evento terminal habilita rollback y libera locks en el broker: el log no puede impedirlo."""
+    organizer = _Organizer()
+
+    def _log_roto_al_salir(mensaje: str) -> None:
+        if "worker_exit confirmed" in mensaje:
+            raise RuntimeError("qInfo no disponible")
+
+    controller, mensaje, eventos, salio = _controlador_con_log_info(tmp_path, organizer, _log_roto_al_salir)
+
+    controller.launch(mensaje)
+    organizer.release.set()
+
+    assert salio.wait(timeout=2), "worker_exit no llegó: el log de la salida cortó el monitor"
+    assert ("event", "worker_exit") in [(evento["type"], evento.get("event")) for evento in eventos]
+
+
+def test_toda_llamada_a_log_info_del_controlador_esta_aislada_con_suppress() -> None:
+    """Ancla: enumera los sitios de ``self._log_info(...)``; uno nuevo sin aislar rompe el test."""
+    arbol = ast.parse(inspect.getsource(bridge_runtime))
+    padres = {hijo: padre for padre in ast.walk(arbol) for hijo in ast.iter_child_nodes(padre)}
+
+    def _es_llamada_a_log_info(nodo: ast.AST) -> bool:
+        return (
+            isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Attribute)
+            and nodo.func.attr == "_log_info"
+            and isinstance(nodo.func.value, ast.Name)
+            and nodo.func.value.id == "self"
+        )
+
+    def _aislada(nodo: ast.AST) -> bool:
+        actual = nodo
+        while actual in padres:
+            actual = padres[actual]
+            if isinstance(actual, ast.With) and any(
+                isinstance(item.context_expr, ast.Call) and ast.unparse(item.context_expr.func) == "contextlib.suppress"
+                for item in actual.items
+            ):
+                return True
+        return False
+
+    llamadas = [nodo for nodo in ast.walk(arbol) if _es_llamada_a_log_info(nodo)]
+
+    assert len(llamadas) == 2  # el log de ``launch`` y el de ``_monitor``
+    assert all(_aislada(nodo) for nodo in llamadas)
+
+
+def _construcciones_del_controlador(fuente: str) -> list[str | None]:
+    """Una entrada por CADA ``BridgeLaunchController(...)`` de ``fuente``: el ``breakaway_checker`` que pasa, o ``None``."""
+    return [
+        next((ast.unparse(clave.value) for clave in nodo.keywords if clave.arg == "breakaway_checker"), None)
+        for nodo in ast.walk(ast.parse(fuente))
+        if isinstance(nodo, ast.Call) and ast.unparse(nodo.func).rsplit(".", 1)[-1] == "BridgeLaunchController"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("fuente", "esperado"),
+    [
+        # Una construcción sin checker no puede quedar tapada por otra del mismo archivo que sí lo pasa (ni al revés).
+        (
+            "def f():\n    BridgeLaunchController(a=1)\n\ndef g():\n    BridgeLaunchController(a=1, breakaway_checker=h)\n",
+            [None, "h"],
+        ),
+        (
+            "def g():\n    BridgeLaunchController(a=1, breakaway_checker=h)\n\ndef f():\n    BridgeLaunchController(a=1)\n",
+            [None, "h"],
+        ),
+        # Pasar ALGO no basta: se compara el valor, así que un no-op (``lambda: None``) queda a la vista.
+        ("BridgeLaunchController(a=1, breakaway_checker=lambda: None)\n", ["lambda: None"]),
+        ("BridgeLaunchController(a=1, breakaway_checker=h)\n", ["h"]),
+        ("x = 1\n", []),
+    ],
+)
+def test_construcciones_del_controlador_conserva_un_resultado_por_llamada(
+    fuente: str, esperado: list[str | None]
+) -> None:
+    assert sorted(_construcciones_del_controlador(fuente), key=str) == esperado
+
+
+def test_todo_constructor_de_produccion_del_controlador_pasa_breakaway_checker() -> None:
+    """Ancla: el default ``lambda: None`` es solo para tests con dobles; producción debe pasar el checker real."""
+    raiz = pathlib.Path(__file__).resolve().parents[1]
+    sitios: dict[str, list[str | None]] = {}
+    for ruta in sorted((raiz / "sky_claw").rglob("*.py")):
+        construcciones = _construcciones_del_controlador(ruta.read_text(encoding="utf-8"))
+        if construcciones:
+            sitios[ruta.relative_to(raiz).as_posix()] = construcciones
+
+    # Igualdad literal sobre el VALOR: un segundo constructor de producción, uno sin checker o uno con un no-op
+    # (``lambda: None``) rompe el test hasta revisarlo.
+    assert sitios == {"sky_claw/local/mo2/plugin_bundle/skyclaw_bridge/plugin.py": ["verify_mo2_breakaway_allowed"]}

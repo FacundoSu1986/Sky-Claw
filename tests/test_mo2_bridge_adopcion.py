@@ -479,6 +479,55 @@ def test_si_el_job_conserva_procesos_no_hay_worker_exit_sino_bridge_error_de_ter
     assert controlador._jobs == {}
 
 
+def test_una_falla_de_log_info_no_se_traga_el_error_de_terminacion_si_el_job_conserva_procesos(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Combinación de #871 (la telemetría no corta el flujo) y #877 (el Job que no se vacía avisa al broker).
+
+    El log de la salida se emite ANTES de decidir entre ``worker_exit`` y ``bridge_error``: si su falla escapara, el
+    broker no recibiría ninguno de los dos y esperaría el plazo completo con un Job que sigue vivo.
+    """
+    bitacora: list[str] = []
+    eventos: list[dict[str, object]] = []
+    controlador, _o, manifiesto = _controlador(
+        tmp_path, bitacora, eventos, waiter=lambda handle: (True, 0), activos=(1,)
+    )
+
+    def _log_roto(_mensaje: str) -> None:
+        raise RuntimeError("qInfo no disponible")
+
+    controlador._log_info = _log_roto
+
+    _monitor_directo(controlador, manifiesto)
+
+    assert [e.get("event") for e in eventos] == ["bridge_error"]
+    assert eventos[0]["kind"] == "termination_failed"
+    assert controlador._jobs == {}
+
+
+@pytest.mark.parametrize(
+    ("opciones_del_job", "esperado"),
+    [({"activos": (1,)}, "job_empty=False"), ({}, "job_empty=True")],
+    ids=["job_con_procesos", "job_vacio"],
+)
+def test_el_log_de_salida_informa_si_el_job_quedo_vacio(
+    tmp_path: pathlib.Path, opciones_del_job: dict[str, object], esperado: str
+) -> None:
+    bitacora: list[str] = []
+    eventos: list[dict[str, object]] = []
+    controlador, _o, manifiesto = _controlador(
+        tmp_path, bitacora, eventos, waiter=lambda handle: (True, 0), **opciones_del_job
+    )
+    logs: list[str] = []
+    controlador._log_info = logs.append
+
+    _monitor_directo(controlador, manifiesto)
+
+    salida = [linea for linea in logs if "worker_exit confirmed" in linea]
+    assert len(salida) == 1
+    assert esperado in salida[0]
+
+
 def test_si_no_se_puede_consultar_el_job_tampoco_se_confirma_la_salida(tmp_path: pathlib.Path) -> None:
     bitacora: list[str] = []
     eventos: list[dict[str, object]] = []

@@ -393,11 +393,30 @@ def registrar_runtime_clone_record(
     timeout: float = 0.0,
     managed_source_root: pathlib.Path | None = None,
 ) -> RuntimeCloneRecord:
-    """Registra un RuntimeCloneRecord bajo state/clones/<clone-id>.json.
+    """Frontera pública: adquiere el root lock y delega en ``*_bajo_lock``."""
+    from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+    with participant_lock(root, timeout=timeout) as handle:
+        handle.assert_owned()
+        return _registrar_runtime_clone_record_bajo_lock(
+            root,
+            record,
+            managed_source_root=managed_source_root,
+        )
+
+
+def _registrar_runtime_clone_record_bajo_lock(
+    root: pathlib.Path,
+    record: RuntimeCloneRecord,
+    *,
+    managed_source_root: pathlib.Path | None = None,
+) -> RuntimeCloneRecord:
+    """Registra un RuntimeCloneRecord; el caller DEBE poseer el root lock.
 
     Idempotente si el registro ya existe con identidad idéntica.
     Falla con RuntimeCloneCollisionError si ya existe con datos distintos (no-clobber).
-    Exclusión mediante participant_lock del FrozenRuntimeRoot.
+    No re-adquiere ``participant_lock`` (no reentrante por diseño); lo usa el
+    provisionamiento P7-A1 dentro de su sección crítica.
     """
     if (
         not isinstance(record.schema_version, int)
@@ -476,27 +495,23 @@ def registrar_runtime_clone_record(
 
     destino = clone_record_path(root, cid)
 
-    from sky_claw.local.frozen_runtime.root_lock import participant_lock
     from sky_claw.local.frozen_runtime.state import reservar_ruta_json_exclusiva
 
-    with participant_lock(root, timeout=timeout) as handle:
-        handle.assert_owned()
-
+    try:
+        existente = _leer_record_de_ruta(destino)
+    except RuntimeCloneNotFoundError:
         try:
-            existente = _leer_record_de_ruta(destino)
-        except RuntimeCloneNotFoundError:
-            try:
-                reservar_ruta_json_exclusiva(destino)
-            except FileExistsError as exc:
-                raise RuntimeCloneCollisionError(
-                    f"clone_id '{cid}' ya existe (colisión en reserva exclusiva): {exc}"
-                ) from exc
-            write_json_atomic(destino, payload)
-            return canonical_record
+            reservar_ruta_json_exclusiva(destino)
+        except FileExistsError as exc:
+            raise RuntimeCloneCollisionError(
+                f"clone_id '{cid}' ya existe (colisión en reserva exclusiva): {exc}"
+            ) from exc
+        write_json_atomic(destino, payload)
+        return canonical_record
 
-        if existente == canonical_record:
-            return existente
-        raise RuntimeCloneCollisionError(f"clone_id '{cid}' ya existe con identidad distinta (no-clobber fail-closed)")
+    if existente == canonical_record:
+        return existente
+    raise RuntimeCloneCollisionError(f"clone_id '{cid}' ya existe con identidad distinta (no-clobber fail-closed)")
 
 
 def actualizar_lifecycle_clone(
@@ -507,7 +522,31 @@ def actualizar_lifecycle_clone(
     verified_runtime_setup_id: str | None = None,
     timeout: float = 0.0,
 ) -> RuntimeCloneRecord:
-    """Actualiza la máquina de estados de un RuntimeCloneRecord bajo exclusión de root."""
+    """Frontera pública: adquiere el root lock y delega en ``*_bajo_lock``."""
+    from sky_claw.local.frozen_runtime.root_lock import participant_lock
+
+    with participant_lock(root, timeout=timeout) as handle:
+        handle.assert_owned()
+        return _actualizar_lifecycle_clone_bajo_lock(
+            root,
+            clone_id,
+            nuevo_lifecycle,
+            verified_runtime_setup_id=verified_runtime_setup_id,
+        )
+
+
+def _actualizar_lifecycle_clone_bajo_lock(
+    root: pathlib.Path,
+    clone_id: str,
+    nuevo_lifecycle: RuntimeCloneLifecycle,
+    *,
+    verified_runtime_setup_id: str | None = None,
+) -> RuntimeCloneRecord:
+    """Actualiza la máquina de estados; el caller DEBE poseer el root lock.
+
+    No re-adquiere ``participant_lock`` (no reentrante por diseño); lo usa el
+    provisionamiento P7-A1 dentro de su sección crítica.
+    """
     if not isinstance(nuevo_lifecycle, RuntimeCloneLifecycle):
         raise RuntimeCloneSchemaError(f"lifecycle inválido: {nuevo_lifecycle!r}")
 
@@ -521,69 +560,64 @@ def actualizar_lifecycle_clone(
     else:
         v_setup_cand = None
 
-    from sky_claw.local.frozen_runtime.root_lock import participant_lock
+    existente = leer_runtime_clone_record(root, cid)
+    if existente.lifecycle == nuevo_lifecycle:
+        return existente
 
-    with participant_lock(root, timeout=timeout) as handle:
-        handle.assert_owned()
-
-        existente = leer_runtime_clone_record(root, cid)
-        if existente.lifecycle == nuevo_lifecycle:
-            return existente
-
-        permitidas = VALID_LIFECYCLE_TRANSITIONS.get(existente.lifecycle, frozenset())
-        if nuevo_lifecycle not in permitidas:
-            raise RuntimeCloneLifecycleError(
-                f"transición inválida de {existente.lifecycle.value} a {nuevo_lifecycle.value} "
-                f"(permitidas: {[p.value for p in permitidas]})" + (" (estado terminal)" if not permitidas else "")
-            )
-
-        if nuevo_lifecycle in (RuntimeCloneLifecycle.CREATED, RuntimeCloneLifecycle.PROVISIONING):
-            if v_setup_cand is not None:
-                raise RuntimeCloneSchemaError(f"lifecycle {nuevo_lifecycle.value} no admite verified_runtime_setup_id")
-            v_setup = None
-        elif nuevo_lifecycle is RuntimeCloneLifecycle.PROVISIONED:
-            v_setup = v_setup_cand or existente.verified_runtime_setup_id
-            if not v_setup:
-                raise RuntimeCloneLifecycleError("PROVISIONED exige verified_runtime_setup_id no vacío")
-            if v_setup != existente.intended_runtime_setup_id:
-                raise RuntimeCloneLifecycleError(
-                    f"setup mismatch: intended '{existente.intended_runtime_setup_id}' != verified '{v_setup}'"
-                )
-        else:
-            # nuevo_lifecycle is RuntimeCloneLifecycle.INVALID
-            # Preservación forense (§19c): si el clone ya estaba PROVISIONED con un setup verificado,
-            # no se admite sustituirlo ni alterarlo; se preserva de forma inmutable.
-            if existente.verified_runtime_setup_id is not None:
-                if v_setup_cand is not None and v_setup_cand != existente.verified_runtime_setup_id:
-                    raise RuntimeCloneLifecycleError(
-                        f"transición a INVALID no admite sustituir verified_runtime_setup_id previo "
-                        f"'{existente.verified_runtime_setup_id}' por '{v_setup_cand}' (preservación forense fail-closed)"
-                    )
-                v_setup = existente.verified_runtime_setup_id
-            else:
-                if v_setup_cand is not None:
-                    raise RuntimeCloneLifecycleError(
-                        f"transición a INVALID de clone no PROVISIONED ('{existente.lifecycle.value}') "
-                        f"no admite verified_runtime_setup_id (no existe verificación previa; fail-closed)"
-                    )
-                v_setup = None
-
-        actualizado = RuntimeCloneRecord(
-            schema_version=existente.schema_version,
-            clone_id=existente.clone_id,
-            source_generation_id=existente.source_generation_id,
-            lifecycle=nuevo_lifecycle,
-            intended_runtime_setup_id=existente.intended_runtime_setup_id,
-            verified_runtime_setup_id=v_setup,
-            root_path=existente.root_path,
-            admitted_role=existente.admitted_role,
-            created_at_ns=existente.created_at_ns,
+    permitidas = VALID_LIFECYCLE_TRANSITIONS.get(existente.lifecycle, frozenset())
+    if nuevo_lifecycle not in permitidas:
+        raise RuntimeCloneLifecycleError(
+            f"transición inválida de {existente.lifecycle.value} a {nuevo_lifecycle.value} "
+            f"(permitidas: {[p.value for p in permitidas]})" + (" (estado terminal)" if not permitidas else "")
         )
 
-        payload = _payload_de_clone_record(actualizado)
-        _clone_record_de_payload(payload, source_label=f"actualización lifecycle clone '{cid}'")
-        write_json_atomic(destino, payload)
-        return actualizado
+    if nuevo_lifecycle in (RuntimeCloneLifecycle.CREATED, RuntimeCloneLifecycle.PROVISIONING):
+        if v_setup_cand is not None:
+            raise RuntimeCloneSchemaError(f"lifecycle {nuevo_lifecycle.value} no admite verified_runtime_setup_id")
+        v_setup = None
+    elif nuevo_lifecycle is RuntimeCloneLifecycle.PROVISIONED:
+        v_setup = v_setup_cand or existente.verified_runtime_setup_id
+        if not v_setup:
+            raise RuntimeCloneLifecycleError("PROVISIONED exige verified_runtime_setup_id no vacío")
+        if v_setup != existente.intended_runtime_setup_id:
+            raise RuntimeCloneLifecycleError(
+                f"setup mismatch: intended '{existente.intended_runtime_setup_id}' != verified '{v_setup}'"
+            )
+    else:
+        # nuevo_lifecycle is RuntimeCloneLifecycle.INVALID
+        # Preservación forense (§19c): si el clone ya estaba PROVISIONED con un setup verificado,
+        # no se admite sustituirlo ni alterarlo; se preserva de forma inmutable.
+        if existente.verified_runtime_setup_id is not None:
+            if v_setup_cand is not None and v_setup_cand != existente.verified_runtime_setup_id:
+                raise RuntimeCloneLifecycleError(
+                    f"transición a INVALID no admite sustituir verified_runtime_setup_id previo "
+                    f"'{existente.verified_runtime_setup_id}' por '{v_setup_cand}' (preservación forense fail-closed)"
+                )
+            v_setup = existente.verified_runtime_setup_id
+        else:
+            if v_setup_cand is not None:
+                raise RuntimeCloneLifecycleError(
+                    f"transición a INVALID de clone no PROVISIONED ('{existente.lifecycle.value}') "
+                    f"no admite verified_runtime_setup_id (no existe verificación previa; fail-closed)"
+                )
+            v_setup = None
+
+    actualizado = RuntimeCloneRecord(
+        schema_version=existente.schema_version,
+        clone_id=existente.clone_id,
+        source_generation_id=existente.source_generation_id,
+        lifecycle=nuevo_lifecycle,
+        intended_runtime_setup_id=existente.intended_runtime_setup_id,
+        verified_runtime_setup_id=v_setup,
+        root_path=existente.root_path,
+        admitted_role=existente.admitted_role,
+        created_at_ns=existente.created_at_ns,
+    )
+
+    payload = _payload_de_clone_record(actualizado)
+    _clone_record_de_payload(payload, source_label=f"actualización lifecycle clone '{cid}'")
+    write_json_atomic(destino, payload)
+    return actualizado
 
 
 def _leer_record_de_ruta(ruta: pathlib.Path) -> RuntimeCloneRecord:
@@ -657,7 +691,19 @@ def verificar_runtime_clone(
     """Verifica físicamente el Runtime Clone contra su Generation registrada."""
     try:
         record = leer_runtime_clone_record(root, clone_id)
-    except (FrozenRuntimeError, OSError) as exc:
+    except OSError as exc:
+        return GenerationVerificationResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=f"no se pudo leer el registro del clone '{clone_id}' (transitorio): {exc}",
+        )
+    except FrozenRuntimeError as exc:
+        # _leer_record_de_ruta envuelve OSError de lectura como corrupto; el
+        # cause distingue un fallo transitorio de un registro realmente inválido.
+        if isinstance(exc.__cause__, OSError):
+            return GenerationVerificationResult(
+                state=GenerationVerificationState.INDETERMINATE,
+                message=f"no se pudo leer el registro del clone '{clone_id}' (transitorio): {exc}",
+            )
         return GenerationVerificationResult(
             state=GenerationVerificationState.INVALID,
             message=f"no se pudo cargar el registro del clone '{clone_id}': {exc}",
@@ -674,6 +720,30 @@ def verificar_runtime_clone(
     from sky_claw.local.frozen_runtime.generations import verificar_generation
 
     gen_verif = verificar_generation(root, record.source_generation_id)
+    if gen_verif.state is GenerationVerificationState.INDETERMINATE:
+        if gen_verif.recorded is None:
+            from sky_claw.local.frozen_runtime.storage import generations_state_dir
+
+            metadata_path = generations_state_dir(root) / f"{record.source_generation_id}.json"
+            if not metadata_path.exists():
+                # Metadata AUSENTE: linaje huérfano confirmado => INVALID.
+                return GenerationVerificationResult(
+                    state=GenerationVerificationState.INVALID,
+                    message=(
+                        f"Generation de origen no existe o no es VALID "
+                        f"({record.source_generation_id}, {gen_verif.state.value}): {gen_verif.message}"
+                    ),
+                )
+            # Metadata PRESENTE pero ilegible/corrupta: fallo transitorio/indeterminado,
+            # no se degrada el Clone a INVALID (terminal).
+        return GenerationVerificationResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message=(
+                f"Generation de origen no verificable de forma concluyente "
+                f"({record.source_generation_id}, {gen_verif.state.value}): {gen_verif.message}"
+            ),
+            recorded=gen_verif.recorded,
+        )
     if gen_verif.state is not GenerationVerificationState.VALID:
         return GenerationVerificationResult(
             state=GenerationVerificationState.INVALID,
