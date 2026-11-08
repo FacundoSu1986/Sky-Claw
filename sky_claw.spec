@@ -158,6 +158,7 @@ hiddenimports = [
     "sky_claw.local.fomod.resolver",
     "sky_claw.local.loot.cli",
     "sky_claw.local.mo2.vfs",
+    "sky_claw.local.mo2.vfs_arranque",  # H-02: arranque liviano del worker (única entrada de --vfs-worker)
     "sky_claw.local.mo2.vfs_worker",
     "sky_claw.local.mo2.vfs_broker",
     "sky_claw.app.orchestrator.sync_engine",

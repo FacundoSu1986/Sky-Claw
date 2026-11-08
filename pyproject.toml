@@ -113,7 +113,13 @@ dev = [
     "pytest-cov",
     "pytest-timeout>=2.3,<3",
     "pytest-bdd>=8.1.0,<9",
-    "ruff>=0.4",
+    # CI-FIX-003 (2026-11-05): pin EXACTO de ruff. El extra dev usa pip en CI
+    # (`pip install -e ".[dev]"`), así que un rango `>=0.4` resolvió ruff 0.17.4
+    # (publicado 2026-11-05T18:51Z) y ese release agregó SIM102 para `elif` con
+    # `if` anidado, reportando código PRE-EXISTENTE en clones.py:355/437. El gate
+    # Lint pasó a fallar en cualquier rama nueva sin que nada del producto cambie.
+    # uv.lock ya fija 0.15.11; este pin alinea el install por pip con el lock.
+    "ruff==0.15.11",
     "pre-commit>=3.7,<5",
     "mypy>=1.10",
     "types-aiofiles",
@@ -322,6 +328,8 @@ module = [
     "sky_claw.local.mo2.vfs_broker",
     "sky_claw.local.mo2.vfs_worker",
     "sky_claw.local.mo2.vfs_session",  # PR-586A: módulo nuevo, nace estricto
+    "sky_claw.local.mo2.vfs_job_identity",  # P2 onefile: identidad del Job, módulo nuevo, nace estricto
+    "sky_claw.local.mo2.vfs_arranque",  # H-02: arranque liviano del worker (verifica el Job antes de importar), nace estricto
     "sky_claw.local.mo2.brokered_loot",
     "sky_claw.local.mo2.bridge_installer",
     "sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.protocol",

@@ -83,9 +83,10 @@ class _RunFallidoError(Exception):
 
     Lleva el ``PandoraResult`` completo para que el ``except`` arme el **mismo**
     dict de salida que el camino no-excepcional: el contrato de la tool no cambia,
-    sólo gana el rollback que le faltaba. Mismo patrón que
-    ``wrye_bash_service._RunFallidoError`` (#397) y que el ``raise`` que
-    ``synthesis_service`` ya usaba en producción.
+    sólo gana el rollback que le faltaba. Mismo patrón que el ``raise`` que
+    ``synthesis_service`` ya usaba en producción (#397). Antes de ADR 0016 §7.1 el
+    ejemplo citado era ``wrye_bash_service._RunFallidoError``; esa clase se retiró con
+    el camino headless, así que el ejemplo vivo es éste.
     """
 
     def __init__(self, result: PandoraResult) -> None:

@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Backend brokered de TexGen/DynDOLOD seleccionable en producción (E3-R3).** `build_brokered_dyndolod_spawn_strategy` existía pero nadie lo llamaba: la composición aceptaba `dyndolod_spawn_strategy` y `SupervisorAgent` no lo pasaba, así que la etapa 9 corría siempre standalone. Ahora `dyndolod_backend` (`config.toml`, default `standalone`) decide el backend y `resolve_dyndolod_spawn_strategy` arma la strategy en `AppContext` con las raíces del arranque (datos de la instancia MO2, mods, instalación, `<juego>/Data` y los `-o:` por herramienta derivados del workspace). Pedir `brokered` sin poder cumplirlo, con una instancia que no corresponde o con un valor desconocido devuelve un guard que falla cerrado en el spawn y en el gate de handoff: nunca cae a standalone. **`WIRING_SECURITY_HOLD` aplicado en código (`WIRING_RUNTIME_HOLD_ENFORCED`):** el protocolo no impide que el worker cree descendientes antes de estar asignado al Job Object, así que, mientras la constante interna `_CONTENCION_DEL_WORKER_VERIFICADA` (no configurable) sea `False`, pedir `brokered` devuelve el guard del HOLD ANTES de construir la strategy —aun con broker y rutas válidos—, sin sesión en el broker, sin subprocess local y sin fallback a standalone. No pasa a `True` por fusionar el fence de supervisión del broker (#856): eso exige una contención verificada del proceso Python efectivo del onefile y de los descendientes previos (P1/P2 u otra equivalente); ver `docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md`.
+- **Fence de supervisión del worker del broker MO2/USVFS.** El bridge hace `startApplication` (el worker nace corriendo) y recién después `AssignProcessToJobObject`; un descendiente creado antes queda fuera del Job y sobrevive a su terminación, y nada ordenaba el despacho del worker después del `launch_ack`: medido, el worker creaba el nieto de la attestation y despachaba la herramienta sin confirmación. Ahora el worker espera un mensaje `supervised` (autenticado, ligado a su `job_id`) antes de crear el nieto de la attestation y de despachar la herramienta (lo que el intérprete crea al arrancar queda fuera del fence); el broker lo envía una sola vez, solo tras el `launch_ack` del bridge para ese job y mientras el job no esté en cancelación. Cubre LOOT, `vfs-health`, TexGen y DynDOLOD por igual. El bridge instalado no cambia; **actualización coordinada**: daemon y worker son el mismo ejecutable (un worker sin la capacidad es rechazado). Límites y propuesta para la contención del proceso Python bajo PyInstaller onefile en `docs/audits/2026-11-02_fence_de_supervision_del_broker.md`.
+- **Identidad del Job del worker PyInstaller onefile (P2, apilado sobre el fence de supervisión).** El fence prueba «el bridge asignó el proceso que lanzó MO2» (en onefile, el bootloader), no «el proceso que ejecuta Python está en el Job»: un hijo Python nacido antes del `assign` queda fuera del Job. Ahora el broker elige por launch un nombre de Job inadivinable (`Local\SkyClawVfs-<128 bits>`, en `_registrar_job`, común a `submit` y `open_session`); el bridge crea el Job con ese nombre antes de lanzar (rechaza uno preexistente, DACL de solo consulta) y lo confirma en el `launch_ack`; el worker efectivo lo abre con `JOB_OBJECT_QUERY`, comprueba `IsProcessInJob` contra **ese** handle (nunca `NULL`), exige `KILL_ON_JOB_CLOSE` sin breakaway y que sus descendientes vivos estén dentro, cierra su handle y recién entonces habla con el broker; si falla intenta terminar a sus descendientes (no está garantizado: si la limpieza también falla, ese proceso puede quedar vivo) y sale con 72 sin abrir un socket. El broker solo autoriza si el ack **y** el `hello` nombran el Job que pidió. `VFS_PROTOCOL_VERSION` no cambia: un bridge, broker o worker sin la capacidad se rechaza de forma explícita. **Actualización coordinada de bridge y daemon.** `_CONTENCION_DEL_WORKER_VERIFICADA` (#854) sigue en `False`; el análisis, las mediciones del arranque del `.exe` congelado y los límites están en `docs/audits/2026-11-03_identidad_del_job_onefile.md`.
+- **El testigo de la fase 1 de la etapa 6 pasa a ser durable entre sesiones (PR D de [ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.2).**
+  Hasta el PR C el `testigo_previo` vivía lo que vivía el resultado en `ReactiveStore` (RAM) y en la
+  superficie del agente LLM ni siquiera podía viajar porque `GenerateBashedPatchParams` sólo expone
+  `fase` (A-4): cerrar la GUI entre las dos fases o verificar desde el agente obligaba a declarar
+  `frescura_probada=False`. `sky_claw/local/tools/etapa6_testigos.py` persiste la observación previa
+  (ausencia probada `existia=False, sha256=None` o presencia con digest SHA-256 cuando el artefacto
+  era regular y legible; sin entrada cuando la observación es indeterminada) en
+  `SystemPaths.runtime_state_dir() / "etapa6_testigos.json"` (exclusión por ruta canónica
+  intraproceso + lockfile cross-process `flock`/`msvcrt.locking`, escritura atómica `mkstemp` +
+  `os.replace`, rechazo de enlaces con `link_kind_or_raise` y de archivos especiales/directorios con
+  `S_ISREG` + `O_NONBLOCK` + `fstat(fd)` en archivo y lockfile, `AlmacenDeTestigosIlegibleError`
+  para no pisar un archivo corrupto y warnings estructurados con `pipeline_stage=6` + `tx_id=None`),
+  claveada por el **slot virtual** `(plugins_txt canónico, destino Data canónico)` — invariante
+  cuando la primera corrida pasa de `Data` ausente en la fase 1 a `overwrite` en la fase 2.
+  `decidir_testigo_de_preparacion` separa en el dominio los cuatro casos de reapertura y el servicio
+  expone una partición total en `testigo_durable` (`guardado`, `conservado_por_build`,
+  `conservado_sin_observacion`, `sin_observacion`, `no_disponible`, `error_de_almacen`): si el
+  operador reabre la GUI en frío después de construir y vuelve a pulsar la etapa 6, conserva el
+  testigo previo al build y lo reemite en `testigo_previo` (marcando
+  `construido_despues_de_la_preparacion=True`) para que el nuevo CTA demuestre frescura en vez de
+  fallar con `SIN_CAMBIO`. Toda sincronización de fase 1 ocurre dentro de una única transacción
+  atómica del almacén (`sincronizar_preparacion`: `cargar → observar → decidir → escribir`, sin
+  locks globales del pipeline) y etiqueta cada época con un `generacion` de 128 bits propagado en
+  `testigo_previo` mediante un único parser cerrado (`parsear_testigo_de_payload`, compartido por
+  GUI y servicio). En la fase 2 rige `payload` > `durable` > `ninguno` (`testigo_origen`), sin
+  sustituir un payload explícito malformado por estado de disco; una verificación fallida (p. ej.
+  `NO_HABILITADO`) preserva el testigo para el reintento y una con `frescura_probada=True` ejecuta
+  consumo condicional CAS (`olvidar_si_coincide` exigiendo `generacion` explícita y válida) sólo
+  cuando el testigo verificado trae su época `generacion`, de modo que ni un replay obsoleto ni un
+  payload legítimo sin `generacion` (`no_disponible` / `error_de_almacen`) pueden borrar el testigo
+  durable de una preparación posterior. Cableado en `orchestration_composition` y en
+  `system_tools.generate_bashed_patch` (el agente LLM gana frescura demostrada entre sesiones sin
+  exponer `testigo_previo` al modelo).
+  Tests: `tests/test_etapa6_testigo_durable.py` (53 funciones / 79 casos + anclas AST y de firma
+  para construcción, mutación atómica/condicional sin comodín `None` y delegación de parser,
+  incorporada también a `test-posix-core` en `.github/workflows/ci.yml` y anclada en
+  `tests/test_ci_platform_policy.py` para ejecutar en Linux las defensas POSIX exclusivas de FIFO
+  `O_NONBLOCK` + `fstat(fd)`, `fsync` de directorio padre y `fcntl.flock`; matriz de mutación
+  verificada).
+
 - **El panel del ritual ofrece la fase 2 de la etapa 6 (`Ya construí el parche — verificar`).**
   Antes, el botón del ritual sólo podía *preparar*: despachaba `payload` vacío y la
   verificación quedaba alcanzable únicamente por el agente o la API, así que la etapa 6 no se
@@ -57,7 +99,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preflight del dominio correspondiente: bajo USVFS se omite el sensor de visibilidad
   (U-01), que mide el `Data` físico y daba rojo sobre un perfil cuyos mods viven en
   `mods/`, y el sensor de permisos sondea el `overwrite` del perfil en vez del `Data`
-  —la VFS redirige la escritura, no hereda sus permisos—. `TestigoPrevio` gana el tercer estado *no sé* (`None`) y rechaza la forma
+  —la VFS redirige la escritura, no hereda sus permisos—. Ese sensor es un **write-probe**
+  real: crea y borra `.skyclaw_probe_<uuid>.tmp` en el destino. La fase 1 no muta el
+  artefacto, el perfil ni el load order, y las docstrings lo dicen así —«no muta» no es «no
+  escribe un solo byte»—; si el borrado falla, el residuo se **reporta** en el preflight
+  como `probe_residue` en amarillo (no bloquea) y dos tests de contrato del servicio fijan
+  ambas mitades. `TestigoPrevio` gana el tercer estado *no sé* (`None`) y rechaza la forma
   imposible `{existia: True, sha256: None}`.
 - **La etapa 6 ASISTIDA queda cableada a las TRES superficies de producción (PR B de ADR 0016 §7).**
   El PR #839 dejó el contrato y el servicio, pero las tres superficies seguían llamando a
@@ -109,7 +156,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pendiente_no_ratificado` del PR A **se retiró**: dos campos para una sola decisión vuelven
   a divergir.
 
+### Removed
+- **Se retira el camino headless de la etapa 6 (`WryeBashPipelineService.execute_pipeline`)
+  — ADR 0016 §7.1.** Tras el cableado asistido del PR B no quedaba **ningún** caller de
+  producción: `bash.py` no expone build, así que cada invocación tomaba los locks
+  (`Bashed Patch, 0.esp` + `load-order`), emitía `ActionManifest`, abría una TX y fallaba
+  cerrado. Con él se van 8 helpers (`ensure_runner` incluido), 3 clases module-level, **555
+  líneas netas** (el módulo pasa de 1231 a 676; la cifra original, 570/661, quedó vieja tras la ronda 12) y las dependencias `lock_manager`,
+  `snapshot_manager`, `journal` y `wrye_bash_runner` de la firma del servicio (8 → 4
+  parámetros). El hueco de saneo de `stdout`/`stderr` que el PR B había asignado a este PR
+  **se cierra por retiro**: sin subproceso no hay texto de terceros que sanear, y la tool del
+  agente ya no admite un runner. El id de lock `Bashed Patch, 0.esp` se retira con el camino
+  —sin tomador sería una mentira sobre la etapa 6— y el literal del artefacto se consolida en
+  `BASHED_PATCH_NAME` en los 5 módulos donde estaba suelto. Los 36 tests de
+  `tests/test_wrye_bash_service.py` se retiran con el código que probaban: **8 de sus contratos
+  siguen vivos** (4 se portaron a la suite asistida) y el mapeo test por test está en el ADR.
+  Anclas nuevas: `tests/test_wrye_bash_retiro_headless.py` (8 funciones, 12 ítems; **12/12**
+  mutaciones muertas sobre el retiro —incluido el registry del agente, que había quedado con
+  un parámetro muerto— y **7/7** sobre el nombre del artefacto, contadas por **AST** como
+  pares `(nombre, valor)` y no por número de línea: un comentario o un import ya no rompen el
+  ancla, y una segunda definición o un literal suelto sí).
+  Tres censos (raíces MO2, mecanismos de rollback, productores de evidencia orphan) detectaron
+  el retiro por igualdad literal y se actualizaron sin relajarlos.
+
 ### Fixed
+- **Auditoría independiente de la pila del fence VFS (H-01, H-02, H-03; H-04 y H-05 quedan pendientes).** (H-01) El bridge del plugin contiene a los descendientes del worker que alcanza, no solo al proceso que lanzó MO2: tras asignar adopta a los descendientes vivos que no estén en el Job (hasta un punto fijo; si alguno no se puede contener no hay `launch_ack`, y si queda vivo fuera del Job —no se pudo abrir ni terminar— se reporta como terminación y el broker cuarentena la instancia) y emite `worker_exit` solo con el Job vacío confirmado (si no, `bridge_error` de terminación y cuarentena), porque el broker toma `worker_exit` como terminalidad confirmada. (H-02) `--vfs-worker` verifica su Job con un módulo liviano (`vfs_arranque`) ANTES de importar `vfs_worker` (cuyo árbol de imports llega a `platform` → `cmd.exe /c ver`); el aborto por identidad es uno solo para ambos puntos de entrada. (H-03) La limpieza de descendientes tras un fallo de identidad es por PID y no se corta al primer error. El HOLD de seguridad se mantiene y solo lo levanta el auditor independiente; detalle y límites (capa `ctypes` sin medir en Windows) en [docs/audits/2026-11-03_identidad_del_job_onefile.md §12](docs/audits/2026-11-03_identidad_del_job_onefile.md).
+- **La tarjeta de Wrye Bash de la GUI lee su ruta de `config.toml` (`wrye_bash_exe`) como LOOT, xEdit y Pandora (#879).**
+  El escáner de la GUI se siembra desde la config (`build_tool_path_cfg_keys`) y recién después exporta lo
+  resuelto a `os.environ`; el `ExternalToolSpec` de `wrye_bash` tenía `snapshot_env_var` pero no
+  `config_field`, así que con el ejecutable fuera de las rutas auto-detectadas la tarjeta decía «No
+  instalado» y la etapa 6 asistida era inalcanzable desde la GUI (hallazgo H-1 del smoke en rig Windows,
+  2026-11-07). Se agrega `wrye_bash_exe` a `Config._load_defaults`, a `LocalConfig` (+ lector JSON), a la
+  migración legacy y a las dos tablas de docs. Ancla por enumeración en
+  `tests/test_wrye_bash_config_field.py`: toda spec con `snapshot_env_var` tiene `config_field` o figura en
+  una lista cerrada por nombre (hoy sólo `dyndolod`, fuera de alcance: su disponibilidad en la GUI es una
+  decisión de la etapa 9), y todo `config_field` existe en `Config` y en `LocalConfig`.
+- **Etapa 6 — vigencia contextual del testigo durable, simetría M-04 y robustez del almacén
+  ([ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.3, issue #866).**
+  - **H-1:** si LOOT (u otro cambio de load order o de `modlist.txt`) ocurría entre el build del
+    operador y la verificación, `preparar` y `verificar` seguían comparando contra el testigo viejo y
+    declaraban `frescura_probada=True` sobre un parche anterior al cambio. El registro durable guarda
+    ahora `huella_contexto` (SHA-256 de `plugins.txt` **sin** la entrada del propio Bashed Patch + `modlist.txt`);
+    si no coincide, `preparar` abre una época nueva sin afirmar un build y `verificar` no usa el testigo
+    (nuevo campo `testigo_contexto`: `coincide` / `cambio` / `no_verificable` / `no_aplica`). Los registros
+    de PR D se leen como contexto desconocido. El payload `testigo_previo` no cambia. Sin TTL por reloj.
+    Un payload con `generacion` cuyo registro ya no existe (reemplazado, consumido o almacén ilegible)
+    falla cerrado (`no_verificable`): repetir una verificación con un payload ya consumido deja de probar frescura.
+  - **H-2:** `generate_bashed_patch` del agente LLM ahora corre el guard M-04 como la GUI y el
+    `SupervisorAgent` (antes pasaba `validate_limit=False` con >254 plugins). Ancla por enumeración de los
+    sitios productivos del servicio.
+  - **H-3:** las anclas del retiro headless congelan también las funciones de módulo de
+    `wrye_bash_service.py` y prohíben `subprocess` / `create_subprocess_*` / `Popen` / `WryeBashRunner`.
+  - **H-4 / L-2 / L-3:** `os.replace` del almacén reintenta ante una violación de uso compartido
+    transitoria en Windows (`winerror` 5/32), todo fallo de E/S sale como `AlmacenDeTestigosIlegibleError`
+    y se barren los `.etapa6_testigos.*.tmp` huérfanos bajo el lock.
+  - **L-4:** corregida la cifra del retiro (1231 → 676, −555 netas).
 - **`add_mod_to_modlist` veía el mismo mod como dos si cambiaba una mayúscula (#838).**
   La primitiva comparaba los nombres del `modlist.txt` de forma exacta, mientras
   `ganadores._exigir_enabled` los compara con `lower()` porque MO2 resuelve

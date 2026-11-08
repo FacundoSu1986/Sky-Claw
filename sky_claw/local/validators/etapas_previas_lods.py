@@ -11,7 +11,7 @@ dependencias de §1 exige además la etapa 8 (grass precache). El camino de la G
 etapas 6, 7 y 8 existen y están activos en el perfil MO2 que la etapa 9 va a
 leer:
 
-* etapa 6 — ``Bashed Patch, 0.esp`` habilitado en el ``plugins.txt`` del perfil;
+* etapa 6 — el artefacto ``BASHED_PATCH_NAME`` habilitado en el ``plugins.txt`` del perfil;
 * etapa 7 — ``Synthesis.esp`` habilitado en el mismo ``plugins.txt``;
 * etapa 8 — al menos un ``*.cgid`` (archivo regular, no vacío, no enlace) bajo
   ``Grass/`` en el ``overwrite`` de MO2 o en un mod habilitado del ``modlist.txt``.
@@ -38,13 +38,14 @@ from dataclasses import dataclass
 
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline, PatcherPipelineError
+from sky_claw.local.tools.wrye_bash_runner import BASHED_PATCH_NAME
 
 logger = logging.getLogger(__name__)
 
 #: Base histórica. El nombre real es el del GRUPO de Synthesis (V2) y puede
 #: tener splits ``_2.._N`` (Mutagen `KeyForIndex`), así que el caller pasa la
 #: lista efectiva; esta constante queda sólo como default retrocompatible.
-PLUGIN_DE_WRYE_BASH = "Bashed Patch, 0.esp"
+PLUGIN_DE_WRYE_BASH = BASHED_PATCH_NAME
 PLUGIN_DE_SYNTHESIS = "Synthesis.esp"
 
 

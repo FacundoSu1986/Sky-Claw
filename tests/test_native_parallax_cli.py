@@ -33,7 +33,7 @@ from sky_claw.local.native_parallax.cli import (
 )
 from sky_claw.local.native_parallax.diagnostico_texconv import DiagnosticoDeTexconv, EstadoDeTexconv
 from sky_claw.local.native_parallax.export import TexconvNoCoincideError, generar_mips
-from sky_claw.local.native_parallax.integrate import Bordes
+from sky_claw.local.native_parallax.integrate import Bordes, Centrado
 from sky_claw.local.native_parallax.lote import EstadoDeArchivo, InformeDelLote, ParametrosDelLote
 from sky_claw.local.native_parallax.output import NOMBRE_DEL_MOD_DE_SALIDA, RutaDeSalidaInvalidaError
 from sky_claw.local.native_parallax.output_writer import SalidaOcupadaError
@@ -325,6 +325,35 @@ def test_los_argumentos_llegan_a_los_parametros_del_lote(mundo: pathlib.Path, mo
         "retirar_no_incluidas": True,
     }
     assert capturado["raiz_de_salida"] == (mundo / "mods" / NOMBRE_DEL_MOD_DE_SALIDA).absolute()
+
+
+def test_el_centrado_llega_a_los_parametros_del_lote_y_apagado_no_cambia_nada(
+    mundo: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capturados: list[ParametrosDelLote] = []
+
+    async def falso(normales: Any, **kwargs: Any) -> InformeDelLote:
+        capturados.append(kwargs["parametros"])
+        return InformeDelLote(parametros=kwargs["parametros"], archivos=(), otras_rutas=(), encoder=None)
+
+    monkeypatch.setattr(cli, "procesar_lote", falso)
+
+    assert _generar(mundo, "--incluir-revision")[0] == CODIGO_OK
+    assert _generar(mundo, "--incluir-revision", "--centrado", "media")[0] == CODIGO_OK
+
+    apagado, encendido = capturados
+    assert apagado.centrado is Centrado.NINGUNO and "centrado" not in apagado.a_diccionario()
+    assert encendido.centrado is Centrado.MEDIA and encendido.a_diccionario()["centrado"] == "media"
+
+
+def test_el_parser_acepta_solo_los_centrados_conocidos() -> None:
+    base = ["generar", "--carpeta", "a", "--mods", "b"]
+
+    assert construir_parser().parse_args(base).centrado == "ninguno"
+    assert construir_parser().parse_args([*base, "--centrado", "media"]).centrado == "media"
+    with pytest.raises(SystemExit) as salida:
+        construir_parser().parse_args([*base, "--centrado", "mediana"])
+    assert salida.value.code == 2
 
 
 def test_una_textura_que_falla_da_codigo_1_y_las_demas_se_escriben(mundo: pathlib.Path) -> None:

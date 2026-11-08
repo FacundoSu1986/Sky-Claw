@@ -159,6 +159,7 @@ ni un umbral. Una desviación cercana a 0 es un mapa que casi no desplaza nada e
 | Detalle raro en texturas que vienen de otro programa | `--convencion opengl` | algunos programas exportan el canal verde al revés; Skyrim usa DirectX. La herramienta no lo adivina: lo fija el origen del archivo |
 | Costura visible al repetir la textura | `--bordes neumann` | otra hipótesis de borde (más lenta) |
 | Relieve muy plano o con puntos extremos | `--normalizacion percentiles --percentil-bajo 2 --percentil-alto 98` | recorta los extremos antes de normalizar |
+| Prueba A/B de la altura (**experimental**) | `--centrado media` | lleva la **media** de la altura exportada a 0,5 (hoy queda donde caiga) sin recortar nada; la amplitud baja entre 0,5 y 1 veces. Apagado (por defecto) la salida no cambia ni un byte. No hay evidencia en el juego de cuál es mejor: compará contra la salida sin centrar, en el mismo lugar y con la misma luz |
 
 Cada cambio de parámetro cambia la clave de caché: la salida anterior de esa textura se reemplaza sola (solo si no la
 editaste a mano). Con `--retirar-no-incluidas` también se borran las salidas de texturas que ya no están en la carpeta de
@@ -179,7 +180,7 @@ entrada; si no pudo leer alguna carpeta de la entrada se niega a correr (código
   daría normales equivocadas sin ningún error. En la tanda del 30/10 dos texturas de un mod (normales DXT5) quedaron `NO_PROCESADA` con `FormatoNoSoportadoError: … DXT5 no verificado`. **Todavía no hay
   un camino soportado** para esas texturas (reconvertirlas a mano sin respetar ese canal sería peor que no usarlas); soportarlas es trabajo de código aparte y, por decisión del operador (30/10), **no es prioridad por ahora**.
 - No hay un control de «altura» o «intensidad» en el generador: la salida siempre se normaliza a [0, 1] y qué tan fuerte se ve lo decide el juego. Un control así queda como idea
-  pendiente (ver el issue de la auditoría), no como funcionalidad.
+  pendiente (ver el issue de la auditoría), no como funcionalidad. `--centrado media` (experimental, #834 ítem 8) **no** es ese control: mueve la media de la altura y, como efecto secundario, reduce la amplitud (entre 0,5 y 1 veces; ver la tabla de arriba).
 - Un mapa casi plano era sobre todo un defecto de la integración (unos pocos píxeles bajo el horizonte lo arruinaban) y ya está corregido; si igual lo ves en el informe (`amplitud` con
   desviación cercana a 0), mandame la textura de entrada.
 - La generación solo existe como línea de comandos (sin interfaz gráfica ni agente). El diagnóstico del perfil (`diagnosticar_parallax_perfil`) sí está en la GUI y en el agente. La integración con MO2 (habilitar el mod solo) viene después.

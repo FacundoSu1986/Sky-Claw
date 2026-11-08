@@ -11,7 +11,6 @@ import hashlib
 import json
 import logging
 import pathlib
-import re
 import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -31,6 +30,7 @@ from sky_claw.local.loot.cli import (
     LOOTRunner,
     LOOTTimeoutError,
 )
+from sky_claw.local.mo2.vfs_arranque import abortar_por_identidad, nombre_de_log_del_worker
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, verify_vfs_attestation
 from sky_claw.local.mo2.vfs_contracts import (
     ALLOWED_VFS_SESSION_TOOL_IDS,
@@ -43,7 +43,12 @@ from sky_claw.local.mo2.vfs_contracts import (
     VfsToolExitEvent,
     VfsToolStartedEvent,
 )
-from sky_claw.local.mo2.vfs_ipc import read_authenticated_message, write_authenticated_message
+from sky_claw.local.mo2.vfs_ipc import VfsFrameError, read_authenticated_message, write_authenticated_message
+from sky_claw.local.mo2.vfs_job_identity import (
+    JobIdentityError,
+    PruebaDeJob,
+    verificar_identidad_del_job,
+)
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest, read_worker_manifest
 from sky_claw.local.tools._process import kill_and_reap
 from sky_claw.logging_config import (
@@ -58,6 +63,10 @@ logger = logging.getLogger(__name__)
 _GRANDCHILD_TIMEOUT_SECONDS = 10.0
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
 _RESULT_ACK_TIMEOUT_SECONDS = 5.0
+#: Plazo MÁXIMO para que el bridge confirme la supervisión. Es una cota de FALLO CERRADO,
+#: no un sustituto de la garantía: vencido el plazo el worker ABORTA sin haber creado el nieto de
+#: la attestation ni despachado la herramienta; jamás prosigue "por las dudas". La confirmación real llega en milisegundos.
+_SUPERVISION_TIMEOUT_SECONDS = 30.0
 #: Captura por stream de un proceso de sesión: COLA acotada, no buffer completo.
 #: Un tool charlatán no puede inflar el ``VfsJobResult`` (frame IPC de 1 MiB) ni
 #: la memoria del worker; el diagnóstico conserva los últimos bytes.
@@ -71,12 +80,6 @@ _DRENAJE_GRACIA_SEGUNDOS = 2.0
 _SONDEO_DE_SALIDA_SEGUNDOS = 0.1
 #: Windows ``CREATE_NO_WINDOW`` — sin consola parpadeante para tools de consola.
 _CREATE_NO_WINDOW = 0x08000000
-
-
-def _worker_log_name(job_id: str) -> str:
-    """Construye un nombre de log seguro y estable para el job."""
-    safe_job_id = re.sub(r"[^A-Za-z0-9_-]+", "-", job_id).strip("-_")
-    return f"vfs-worker-{safe_job_id or 'unknown'}.log"
 
 
 @dataclass(frozen=True, slots=True)
@@ -927,6 +930,42 @@ def run_probe_child(path: pathlib.Path, expected_sha256: str) -> int:
     return 0
 
 
+async def _esperar_supervision(
+    reader: asyncio.StreamReader,
+    *,
+    secret: bytes,
+    job_id: str,
+    timeout: float,
+) -> str:
+    """Espera la confirmación de supervisión del broker ANTES del nieto de la attestation y de la herramienta.
+
+    Devuelve ``"supervised"`` (el bridge asignó este worker al Job Object) o
+    ``"cancelled"`` (el job se canceló mientras esperaba; no se despacha nada). Todo
+    lo demás —plazo vencido, EOF, mensaje de otro job, tipo inesperado, versión
+    incompatible— es un fallo CERRADO: ``VfsWorkerBootstrapError`` sin nieto ni herramienta.
+    """
+    try:
+        mensaje = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=timeout)
+    except TimeoutError as exc:
+        raise VfsWorkerBootstrapError(
+            f"supervisión no confirmada por el bridge en {timeout:g}s: el worker aborta sin crear el nieto de la attestation ni despachar la herramienta"
+        ) from exc
+    except (asyncio.IncompleteReadError, ConnectionError, OSError, VfsFrameError) as exc:
+        raise VfsWorkerBootstrapError(
+            f"se cortó el canal con el broker antes de confirmarse la supervisión: {exc}"
+        ) from exc
+    if mensaje.get("protocol_version") != VFS_PROTOCOL_VERSION:
+        raise VfsWorkerBootstrapError("mensaje incompatible mientras se esperaba la supervisión")
+    if mensaje.get("job_id") != job_id:
+        raise VfsWorkerBootstrapError("la confirmación de supervisión corresponde a otro job: se rechaza")
+    tipo = mensaje.get("type")
+    if tipo == "supervised":
+        return "supervised"
+    if tipo == "cancel":
+        return "cancelled"
+    raise VfsWorkerBootstrapError(f"mensaje no permitido mientras se esperaba la supervisión: {tipo!r}")
+
+
 async def _wait_for_cancel(
     reader: asyncio.StreamReader,
     *,
@@ -947,11 +986,17 @@ async def run_worker_session(
     manifest_path: pathlib.Path,
     descriptor_path: pathlib.Path,
     expected_job_id: str,
+    job_identity: PruebaDeJob,
     handlers: Mapping[str, VfsToolHandler] | None = None,
     session_handlers: Mapping[str, VfsSessionToolHandler] | None = None,
     grandchild_probe: GrandchildProbe | None = None,
+    supervision_timeout: float = _SUPERVISION_TIMEOUT_SECONDS,
 ) -> VfsJobResult | None:
-    """Ejecuta el worker y reporta al daemon; ``None`` significa cancelación."""
+    """Ejecuta el worker y reporta al daemon; ``None`` significa cancelación.
+
+    ``job_identity`` es obligatoria y solo la produce ``verificar_identidad_del_job``: sin una prueba de que
+    este proceso vive en el Job que el bridge creó para este launch no hay forma de armar el ``hello``.
+    """
     descriptor = await asyncio.to_thread(load_broker_descriptor, descriptor_path)
     manifest = await asyncio.to_thread(
         read_worker_manifest,
@@ -976,12 +1021,31 @@ async def run_worker_session(
                 "instance_id": descriptor.instance_id,
                 "session_id": descriptor.session_id,
                 "job_id": manifest.job.job_id,
+                # Declara que este worker espera la supervisión antes de despachar: el
+                # broker rechaza a los que no lo declaran (sin fallback silencioso).
+                "supervision_fence": True,
+                # El Job (por nombre) dentro del cual ESTE proceso demostró estar antes de conectar. El broker
+                # lo compara con el que pidió para este launch: otro nombre, o ninguno, no se autoriza.
+                "job_object": job_identity.nombre,
             },
             descriptor.secret,
         )
         ack = await read_authenticated_message(reader, descriptor.secret)
         if ack.get("protocol_version") != VFS_PROTOCOL_VERSION or ack.get("type") != "hello_ack":
             raise VfsWorkerBootstrapError("el broker rechazó el hello del worker")
+
+        # FENCE DE SUPERVISIÓN. Hasta acá este proceso pudo haber nacido antes de que el
+        # bridge lo asignara al Job Object; `execute_worker_manifest` crea el proceso
+        # NIETO de la attestation y después la herramienta, así que nada de eso ocurre
+        # sin la confirmación (autenticada y ligada a este job_id) del broker.
+        supervision = await _esperar_supervision(
+            reader,
+            secret=descriptor.secret,
+            job_id=manifest.job.job_id,
+            timeout=supervision_timeout,
+        )
+        if supervision == "cancelled":
+            return None
 
         # Los eventos mid-job y el job_result comparten el socket: el write lock
         # serializa ambos emisores (hoy secuenciales, mañana no necesariamente).
@@ -1056,12 +1120,15 @@ async def run_worker_session(
 
 
 def _parse_worker_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="sky-claw-vfs-worker")
+    # Sin abreviaturas: el arranque liviano (``vfs_arranque._identidad_declarada``) lee ``--job-object``/``--job-id``
+    # con ``allow_abbrev=False``; los dos parsers tienen que coincidir en qué opciones existen.
+    parser = argparse.ArgumentParser(prog="sky-claw-vfs-worker", allow_abbrev=False)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--manifest", type=pathlib.Path)
     group.add_argument("--probe-child", action="store_true")
     parser.add_argument("--descriptor", type=pathlib.Path)
     parser.add_argument("--job-id")
+    parser.add_argument("--job-object")
     parser.add_argument("probe_path", nargs="?", type=pathlib.Path)
     parser.add_argument("probe_sha256", nargs="?")
     return parser.parse_args(argv)
@@ -1074,11 +1141,20 @@ def worker_main(argv: list[str] | None = None) -> int:
         if args.probe_path is None or args.probe_sha256 is None:
             return 64
         return run_probe_child(args.probe_path, args.probe_sha256)
-    if args.descriptor is None or not args.job_id:
+    if args.descriptor is None or not args.job_id or not args.job_object:
         return 64
+    # IDENTIDAD DEL JOB, antes de abrir ningún socket Y antes de configurar el logging (auditoría independiente,
+    # H-02): el proceso que ejecuta Python puede ser un HIJO del que el bridge asignó (PyInstaller onefile) y haber
+    # nacido antes del assign. Si no puede demostrar que vive en el Job de ESTE launch, no habla con el broker, no
+    # crea nietos, no despacha nada y no abre archivos ni listeners de log. El aborto es el MISMO que usa el
+    # arranque liviano (``vfs_arranque``), que ya verificó antes de importar este módulo.
+    try:
+        prueba = verificar_identidad_del_job(args.job_object)
+    except JobIdentityError as exc:
+        return abortar_por_identidad(args.job_id, exc)
     setup_logging(
         log_dir=default_log_dir() / "workers",
-        log_file=_worker_log_name(args.job_id),
+        log_file=nombre_de_log_del_worker(args.job_id),
         process_role="vfs_worker",
         console_stream=None,
     )
@@ -1088,6 +1164,7 @@ def worker_main(argv: list[str] | None = None) -> int:
                 manifest_path=args.manifest,
                 descriptor_path=args.descriptor,
                 expected_job_id=args.job_id,
+                job_identity=prueba,
             )
         )
     except (OSError, RuntimeError, ValueError) as exc:

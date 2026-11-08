@@ -57,6 +57,7 @@ class LocalConfig:
     skyrim_path: str | None = None
     pandora_exe: str | None = None
     bodyslide_exe: str | None = None
+    wrye_bash_exe: str | None = None
     # Nombres de los mods MO2 instalados por ensure_ngio (NGIO no tiene exe;
     # el orquestador los necesita para add_mod_to_modlist).
     ngio_mods: list[str] | None = None
@@ -162,6 +163,7 @@ def load(path: pathlib.Path = _DEFAULT_PATH) -> LocalConfig:
             telegram_chat_id=data.get("telegram_chat_id"),
             pandora_exe=data.get("pandora_exe"),
             bodyslide_exe=data.get("bodyslide_exe"),
+            wrye_bash_exe=data.get("wrye_bash_exe"),
             ngio_mods=data.get("ngio_mods"),
             community_shaders_mods=data.get("community_shaders_mods"),
             first_run=data.get("first_run", True),

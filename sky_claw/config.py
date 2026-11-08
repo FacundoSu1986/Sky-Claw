@@ -352,6 +352,7 @@ class Config:
             "xedit_exe": "",
             "pandora_exe": "",
             "bodyslide_exe": "",
+            "wrye_bash_exe": "",
             "skyrim_path": "",
             # ADR 0011 §2.1 — raíz de trabajo externa del pipeline DynDOLOD/TexGen.
             # Vacía = DynDOLOD administrado NO CONFIGURADO: el resto de Sky-Claw
