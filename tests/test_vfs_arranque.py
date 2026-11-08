@@ -132,6 +132,31 @@ def test_acepta_la_forma_con_igual() -> None:
     verificar.assert_called_once_with(NOMBRE_DE_JOB)
 
 
+def _abreviaturas_propias(opcion: str) -> list[str]:
+    """Todas las abreviaturas propias de una opción larga: de ``--x`` en adelante, sin la opción completa."""
+    return [opcion[:n] for n in range(3, len(opcion))]
+
+
+@pytest.mark.parametrize("opcion", ["--job-object", "--job-id"])
+def test_el_parser_del_worker_no_acepta_abreviaturas_que_el_arranque_liviano_no_lee(opcion: str) -> None:
+    """Los dos parsers deben coincidir en qué opciones existen: argparse acepta prefijos únicos si no se le prohíbe.
+
+    El arranque liviano lee ``--job-object``/``--job-id`` con ``allow_abbrev=False``. Si el parser del worker aceptara
+    ``--job-obj``, el arranque vería «sin Job» y delegaría (importando ``vfs_worker``, antes de verificar nada) mientras
+    el worker sí leería esa opción: la garantía de «se verifica antes de importar» tendría un hueco por abreviatura.
+    """
+    from sky_claw.local.mo2 import vfs_worker
+
+    base = ["--manifest", "m.json", "--descriptor", "d.json"]
+    # Control positivo: con la opción completa el parser acepta el argv. Sin esto, un rechazo por cualquier otra causa
+    # (p. ej. una opción requerida que falta) haría pasar el test por la razón equivocada.
+    assert vfs_worker._parse_worker_args([*base, opcion, "valor"]) is not None
+    for abreviatura in _abreviaturas_propias(opcion):
+        with pytest.raises(SystemExit) as salida:
+            vfs_worker._parse_worker_args([*base, abreviatura, "valor"])
+        assert salida.value.code == 2, f"el parser del worker aceptó la abreviatura {abreviatura!r}"
+
+
 @pytest.mark.parametrize(
     "argv",
     [

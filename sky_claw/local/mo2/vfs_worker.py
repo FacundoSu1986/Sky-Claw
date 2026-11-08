@@ -1120,7 +1120,9 @@ async def run_worker_session(
 
 
 def _parse_worker_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="sky-claw-vfs-worker")
+    # Sin abreviaturas: el arranque liviano (``vfs_arranque._identidad_declarada``) lee ``--job-object``/``--job-id``
+    # con ``allow_abbrev=False``; los dos parsers tienen que coincidir en qué opciones existen.
+    parser = argparse.ArgumentParser(prog="sky-claw-vfs-worker", allow_abbrev=False)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--manifest", type=pathlib.Path)
     group.add_argument("--probe-child", action="store_true")
