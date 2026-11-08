@@ -128,11 +128,13 @@ def _contiene_alias_83(ruta: str | pathlib.Path) -> bool:
 
 
 def _tiene_segmentos_relativos_crudos(raw_str: str) -> bool:
+    """True si la cadena cruda contiene componentes '.' o '..' sin resolver."""
     partes = [p for p in re.split(r"[\\/]", raw_str) if p]
     return "." in partes or ".." in partes
 
 
 def _dentro_de_area_steamapps(ruta: pathlib.Path) -> bool:
+    """True si la ruta o alguno de sus ancestros se denomina 'steamapps'."""
     return any(comp.name.casefold() == "steamapps" for comp in (ruta, *ruta.parents))
 
 
@@ -331,6 +333,7 @@ class BinderPreflightAssessment:
 
 
 def _deduplicar_motivos(reasons: list[PreflightReasonCode]) -> tuple[PreflightReasonCode, ...]:
+    """Elimina motivos duplicados conservando el orden de inserción de los fallos."""
     vistos: set[PreflightReasonCode] = set()
     salida: list[PreflightReasonCode] = []
     for r in reasons:
@@ -348,6 +351,7 @@ def _registrar_fallo_path_safety(
     reason: PreflightReasonCode,
     detail: str,
 ) -> None:
+    """Registra un fallo en PATH_SAFETY sólo si el check aún no ha fallado."""
     reasons.append(reason)
     if checks_map[PreflightCheckCode.PATH_SAFETY].status is PreflightCheckStatus.PASS:
         checks_map[PreflightCheckCode.PATH_SAFETY] = PreflightCheckResult(
@@ -1163,6 +1167,7 @@ def evaluar_binder_preflight(
                 reasons.append(PreflightReasonCode.MANAGED_SOURCE_INVALID)
 
     def _bloqueo_temprano(cid_actual: str | None = None) -> BinderPreflightAssessment:
+        """Construye un BinderPreflightAssessment con veredicto BLOCKED temprano."""
         if steam_active_pendiente_exencion and PreflightCheckCode.MANAGED_SOURCE not in checks_map:
             checks_map[PreflightCheckCode.MANAGED_SOURCE] = PreflightCheckResult(
                 check=PreflightCheckCode.MANAGED_SOURCE,

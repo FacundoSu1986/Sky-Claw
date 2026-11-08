@@ -52,10 +52,12 @@ _REPARSE_ATTR = 0x00000400
 
 
 def _normalizar_ruta(ruta: str | pathlib.Path) -> str:
+    """Normaliza una ruta a forma canónica absoluta con normcase y normpath."""
     return os.path.normcase(os.path.normpath(os.path.abspath(os.fspath(ruta))))
 
 
 def _es_igual_o_hijo(candidato: str | pathlib.Path, contenedor: str | pathlib.Path) -> bool:
+    """True si candidato es igual o descendiente del directorio contenedor."""
     hijo = _normalizar_ruta(candidato)
     padre = _normalizar_ruta(contenedor)
     if hijo == padre:
@@ -160,6 +162,7 @@ def _inspeccionar_marcadores_instancia(
 
 
 def _nombre_instancia_seguro(nombre: str) -> bool:
+    """True si el nombre de instancia no contiene caracteres de navegación de ruta."""
     if not nombre or nombre in (".", ".."):
         return False
     return "/" not in nombre and "\\" not in nombre and ":" not in nombre

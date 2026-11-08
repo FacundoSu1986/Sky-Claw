@@ -169,6 +169,7 @@ def _observacion_de_ruta(
     label: str = "",
     detail: str = "",
 ) -> SurfaceObservation:
+    """Construye un SurfaceObservation con normalización canónica de ruta."""
     return SurfaceObservation(
         source=source,
         state=state,

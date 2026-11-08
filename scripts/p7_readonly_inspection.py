@@ -126,6 +126,7 @@ class Hallazgo:
     detalle: str
 
     def como_dict(self) -> dict[str, str]:
+        """Representación serializable del hallazgo como diccionario."""
         return {"clave": self.clave, "veredicto": self.veredicto, "detalle": self.detalle}
 
 
@@ -133,6 +134,7 @@ def _redactor(mostrar: bool) -> Any:
     """Devuelve una función que acorta rutas salvo que se pidan completas."""
 
     def _ruta(valor: str | os.PathLike[str] | None) -> str | None:
+        """Formatea o redacta rutas según la bandera mostrar."""
         if valor is None:
             return None
         texto = os.fspath(valor)
@@ -318,6 +320,7 @@ def _dependencias_en_arbol(instance: pathlib.Path, agujas: tuple[str, ...]) -> I
 
 
 def _lista_de_no_inspeccionados(inspeccion: InspeccionDeDependencias) -> str:
+    """Formatea la lista de candidatos que no pudieron ser inspeccionados."""
     return ", ".join(f"{relativo} ({motivo})" for relativo, motivo in inspeccion.no_inspeccionados)
 
 
@@ -368,6 +371,7 @@ def _veredicto_consolidado(hallazgos: list[Hallazgo]) -> str:
 
 
 def _estado_del_journal(storage_root: pathlib.Path) -> Hallazgo:
+    """Evalúa el estado del journal de transición en storage_root."""
     try:
         cargado = cargar_journal_transicion(storage_root)
     except Exception as exc:  # noqa: BLE001 - un journal corrupto es un hallazgo, no un crash
@@ -410,6 +414,7 @@ def _estado_de_recuperacion(storage_root: pathlib.Path) -> Hallazgo:
 
 
 def _procesos_vivos() -> Hallazgo:
+    """Verifica si existen procesos concurrentes que bloqueen la transición."""
     foto = default_runtime_probes().processes()
     if foto.indeterminate:
         return Hallazgo("procesos", HALLAZGO_INDETERMINADO, f"tabla de procesos ilegible: {foto.detail}")
@@ -420,6 +425,7 @@ def _procesos_vivos() -> Hallazgo:
 
 
 def _hallazgos_del_preflight(evaluacion: BinderPreflightAssessment) -> list[Hallazgo]:
+    """Traduce la evaluación de preflight del binder en hallazgos legibles."""
     hallazgos: list[Hallazgo] = []
     for chequeo in evaluacion.checks:
         if chequeo.status.value == "pass":
