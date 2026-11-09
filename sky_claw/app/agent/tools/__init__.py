@@ -565,11 +565,13 @@ class AsyncToolRegistry:
         # they were never wired in production and always returned "not configured".
         #
         # HITL policy of the agent layer (decisión, no olvido): los tools destructivos
-        # de este registry LLM (run_loot_sort / run_pandora / run_bodyslide /
-        # generate_bashed_patch) NO piden aprobación HITL — solo el lock distribuido
-        # los serializa contra otros mutadores (GUI / preview). `run_xedit_script`
-        # queda fuera de esta lista: esta superficie está limitada a diagnósticos
-        # read-only bundleados y stageados canónicamente.
+        # de este registry LLM (run_loot_sort / run_pandora / run_bodyslide) NO piden
+        # aprobación HITL — solo el lock distribuido los serializa contra otros
+        # mutadores (GUI / preview). `generate_bashed_patch` (#862 + ADR 0016 §7) y
+        # `run_xedit_script` quedan fuera de esa lista: `generate_bashed_patch` sólo
+        # ejecuta las dos fases asistidas no destructivas (`preparar` / `verificar`)
+        # sin gate HITL tampoco en el dispatcher, y `run_xedit_script` está limitado
+        # a diagnósticos read-only bundleados y stageados canónicamente.
         # El gate HITL vive en el dispatcher de la GUI (Rituales); acá el operador de
         # Telegram es el humano de confianza. Si esto cambia, agregar el gate de
         # aprobación es un cambio transversal aparte (no parchear tool por tool).
