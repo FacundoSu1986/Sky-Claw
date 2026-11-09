@@ -83,6 +83,39 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Campos de auditoría de la etapa 6 asistida (#880 H-5). Lista BLANCA y de escalares: el
+# resultado completo trae rutas (``artefacto``, ``plugins_txt``) y un ``message`` libre
+# que puede citarlas, y el log no debe llevar rutas sin sanear.
+_CAMPOS_AUDITORIA_ASISTIDA: tuple[str, ...] = (
+    "success",
+    "reason",
+    "motivo",
+    "frescura_probada",
+    "testigo_origen",
+    "testigo_contexto",
+    "testigo_durable",
+    "estado_en_plugins",
+)
+
+
+def _registrar_resultado_asistido(fase: str, resultado: object) -> None:
+    """Deja en el log el veredicto estructurado de una fase, sin rutas ni texto libre.
+
+    La GUI no persistía el JSON de ``verificar`` (la superficie del agente sí lo devuelve),
+    así que una validación real por GUI no dejaba evidencia. Se llama desde el punto ÚNICO
+    de enrutado, por lo que cubre las tres superficies a la vez.
+    """
+    if not isinstance(resultado, dict):
+        return
+    campos = {k: resultado[k] for k in _CAMPOS_AUDITORIA_ASISTIDA if k in resultado}
+    logger.info(
+        "Etapa 6 asistida fase=%s resultado=%s",
+        fase,
+        campos,
+        extra={"pipeline_stage": _ETAPA_WRYE_BASH, "fase_asistida": fase, "tx_id": None},
+    )
+
+
 #: Número canónico de la etapa de Wrye Bash en el pipeline (AGENTS.md §5.5).
 _ETAPA_WRYE_BASH = 6
 
@@ -725,8 +758,11 @@ class WryeBashPipelineService:
                 "message": (f"Fase asistida desconocida: {fase!r}. Las fases válidas son {sorted(FASES_ASISTIDAS)}."),
             }
         if fase == FASE_VERIFICAR:
-            return await self.verificar_etapa_asistida(profile=profile, testigo_previo=testigo_previo)
-        return await self.preparar_etapa_asistida(profile=profile, validate_limit=validate_limit)
+            resultado = await self.verificar_etapa_asistida(profile=profile, testigo_previo=testigo_previo)
+        else:
+            resultado = await self.preparar_etapa_asistida(profile=profile, validate_limit=validate_limit)
+        _registrar_resultado_asistido(fase, resultado)
+        return resultado
 
     async def preparar_etapa_asistida(self, *, profile: str, validate_limit: bool = True) -> dict[str, Any]:
         """Fase 1 de la etapa 6: instrucciones para el operador + testigo previo.
