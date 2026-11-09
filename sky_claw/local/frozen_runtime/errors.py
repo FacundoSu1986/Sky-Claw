@@ -534,6 +534,26 @@ class StockReferenceInvalidError(ProvisioningError):
     """
 
 
+class StockProvenanceInvalidError(ProvisioningError):
+    """La Generation no posee procedencia Stock v2 íntegra y verificable en tres vías.
+
+    Incluye: ``provider != 'stock'``, ausencia o corrupción del sidecar
+    ``state/generations/<gid>.source.json``, divergencia entre ``GenerationMetadata``
+    y el sidecar, o desalineación de ``directory_membership`` frente al árbol físico
+    en ``versions/<gid>``. ``provider='stock'`` por sí solo jamás alcanza.
+    """
+
+
+class StockReferenceUnapprovedError(ProvisioningError):
+    """La referencia Stock del sidecar carece de aprobación externa A1 válida o no coincide.
+
+    Un sidecar autoconsistente en el storage no sustituye la autoridad externa del
+    propietario: cuando una política exige aprobación externa (p. ej.
+    ``STOCK_INDEPENDENT_TRANSITION``), la ausencia, malformación, redirección por
+    enlace/reparse o discrepancia del ``reference_digest`` aprobado falla cerrado.
+    """
+
+
 class ProvisioningSpaceError(ProvisioningError):
     """No hay espacio libre suficiente en el volumen de destino.
 

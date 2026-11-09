@@ -1513,6 +1513,12 @@ class TestAnclaConstructoresManualesDeMods:
         ("sky_claw/local/tools/output_targets.py", "synthesis_output_target"): 1,
         # Reconciliador de `move_aside`: productores sobre la raíz MO2 cruda.
         ("sky_claw/local/tools/rollback_reconciler.py", "construir_productores_de_move_aside"): 1,
+        # Effective Runtime Oracle (P7-A5): resuelve el default MO2
+        # `%BASE_DIR%/mods` cuando `mod_directory` está vacío o ausente en `[Settings]`.
+        (
+            "sky_claw/local/frozen_runtime/effective_runtime/mo2_ini.py",
+            "leer_directorios_datos_de_mo2",
+        ): 2,
     }
 
     def test_constructores_enumerados_y_congelados(self) -> None:
