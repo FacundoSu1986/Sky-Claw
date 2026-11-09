@@ -482,7 +482,10 @@ def actualizar_game_path_en_ini(
     except OSError as exc:
         raise FormatoIniNoAdmitidoError(f"modorganizer.ini no se pudo leer ({ruta}): {exc}") from exc
 
-    bytes_finales = prever_bytes(contenido, nuevo_game_path, plan_ejecutables=mutaciones)
+    if mutaciones:
+        bytes_finales = prever_bytes(contenido, nuevo_game_path, plan_ejecutables=mutaciones)
+    else:
+        bytes_finales = prever_bytes(contenido, nuevo_game_path)
 
     if bytes_finales != contenido:
         # Cierre de la ventana lectura→reemplazo DENTRO del escritor. El binder
@@ -621,7 +624,10 @@ def actualizar_game_path_por_handle(
     """
     mutaciones = _normalizar_mutaciones(plan_ejecutables)
     contenido = retenido.leer_bytes()
-    bytes_finales = prever_bytes(contenido, nuevo_game_path, plan_ejecutables=mutaciones)
+    if mutaciones:
+        bytes_finales = prever_bytes(contenido, nuevo_game_path, plan_ejecutables=mutaciones)
+    else:
+        bytes_finales = prever_bytes(contenido, nuevo_game_path)
 
     if bytes_finales == contenido:
         # El valor ya era el pedido. No se escribe: escribir cambiaría el mtime

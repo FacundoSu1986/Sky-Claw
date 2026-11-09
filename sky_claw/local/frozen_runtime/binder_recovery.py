@@ -832,7 +832,10 @@ def _coincide_con_lo_escrito(
             )
 
         try:
-            previsto = prever_bytes(previos, esperado, plan_ejecutables=mutaciones_plan)
+            if mutaciones_plan:
+                previsto = prever_bytes(previos, esperado, plan_ejecutables=mutaciones_plan)
+            else:
+                previsto = prever_bytes(previos, esperado)
         except (FormatoIniNoAdmitidoError, RecuperacionError, ValueError):
             return False
         if previsto == actuales:

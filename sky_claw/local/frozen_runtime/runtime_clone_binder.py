@@ -973,12 +973,19 @@ def ejecutar_transicion_binder(
                         f"no se muta una superficie cuya identidad no liga ({exc})"
                     ) from exc
                 try:
-                    actualizar_game_path_por_handle(
-                        exclusion,
-                        target_clone_root,
-                        plan_ejecutables=_preflight_lock.plan_migracion_ejecutables,
-                        al_escribir=_marcar_escritura_iniciada,
-                    )
+                    if _preflight_lock.plan_migracion_ejecutables:
+                        actualizar_game_path_por_handle(
+                            exclusion,
+                            target_clone_root,
+                            plan_ejecutables=_preflight_lock.plan_migracion_ejecutables,
+                            al_escribir=_marcar_escritura_iniciada,
+                        )
+                    else:
+                        actualizar_game_path_por_handle(
+                            exclusion,
+                            target_clone_root,
+                            al_escribir=_marcar_escritura_iniciada,
+                        )
                 except Mo2IniEscrituraError as exc:
                     # Se captura la huella TAMBIÉN cuando la escritura falla: el
                     # archivo puede haber quedado a medias por nuestra cuenta, y
