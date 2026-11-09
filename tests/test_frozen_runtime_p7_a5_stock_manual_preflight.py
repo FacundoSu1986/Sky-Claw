@@ -2151,11 +2151,33 @@ class TestInvariantesReadOnlyYHermanoInspectorP7:
             cargar_digest_aprobado_stock(digest_file)
         monkeypatch.undo()
 
-        # 1b. Error de lectura en descriptor de cargar_digest_aprobado_stock
-        def mock_read_error(fd: int, n: int) -> bytes:
-            raise OSError("I/O error simulado en lectura de descriptor")
+        # Helper para simular error de I/O en lectura manteniendo el descriptor válido
+        class _FailingReader:
+            def __init__(self, real_fh: object) -> None:
+                self._fh = real_fh
 
-        monkeypatch.setattr(os, "read", mock_read_error)
+            def fileno(self) -> int:
+                return self._fh.fileno()
+
+            def read(self, *args: object, **kwargs: object) -> bytes:
+                raise OSError("I/O error simulado en lectura de descriptor")
+
+            def __enter__(self) -> _FailingReader:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                self._fh.close()
+
+        import builtins
+
+        real_open = builtins.open
+
+        def mock_open_failing(*args: object, **kwargs: object) -> object:
+            fh = real_open(*args, **kwargs)
+            return _FailingReader(fh)
+
+        # 1b. Error de lectura en descriptor de cargar_digest_aprobado_stock
+        monkeypatch.setattr(builtins, "open", mock_open_failing)
         with pytest.raises(StockReferenceUnapprovedError, match="no se pudo leer el digest aprobado"):
             cargar_digest_aprobado_stock(digest_file)
         monkeypatch.undo()
@@ -2175,7 +2197,7 @@ class TestInvariantesReadOnlyYHermanoInspectorP7:
         monkeypatch.undo()
 
         # 2b. Error de lectura en descriptor de archivo crítico
-        monkeypatch.setattr(os, "read", mock_read_error)
+        monkeypatch.setattr(builtins, "open", mock_open_failing)
         st_read, rz_read, det_read = _validar_autoridad_fuente_stock(
             rig.stock_source,
             reference=rig.referencia,

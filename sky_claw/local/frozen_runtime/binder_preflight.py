@@ -723,44 +723,34 @@ def _validar_autoridad_fuente_stock(
                     PreflightReasonCode.REPARSE_POINT_DETECTED,
                     f"archivo crítico '{exp.rel_path}' en la fuente Stock es un enlace simbólico",
                 )
-            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            fd = os.open(p_crit, flags)
-        except OSError as exc:
-            return (
-                PreflightCheckStatus.FAIL,
-                PreflightReasonCode.STOCK_PROVENANCE_INVALID,
-                f"no se pudo acceder al archivo crítico '{exp.rel_path}' en la fuente Stock: {exc}",
-            )
-        try:
-            fst = os.fstat(fd)
-            if not stat.S_ISREG(fst.st_mode):
-                return (
-                    PreflightCheckStatus.FAIL,
-                    PreflightReasonCode.STOCK_PROVENANCE_INVALID,
-                    f"archivo crítico '{exp.rel_path}' en la fuente Stock no es un archivo regular",
-                )
-            if (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
-                return (
-                    PreflightCheckStatus.FAIL,
-                    PreflightReasonCode.STOCK_PROVENANCE_INVALID,
-                    f"sustitución concurrente detectada en archivo crítico '{exp.rel_path}' de la fuente Stock",
-                )
-            if fst.st_size != exp.expected_size:
-                return (
-                    PreflightCheckStatus.FAIL,
-                    PreflightReasonCode.STOCK_PROVENANCE_INVALID,
-                    f"archivo crítico '{exp.rel_path}' en la fuente Stock tiene tamaño "
-                    f"{fst.st_size} bytes (esperado {exp.expected_size})",
-                )
-            hasher = hashlib.sha256()
-            while True:
-                chunk = os.read(fd, 64 * 1024)
-                if not chunk:
-                    break
-                hasher.update(chunk)
-            digest_real = hasher.hexdigest()
+            with open(p_crit, "rb") as fh:
+                fst = os.fstat(fh.fileno())
+                if not stat.S_ISREG(fst.st_mode):
+                    return (
+                        PreflightCheckStatus.FAIL,
+                        PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                        f"archivo crítico '{exp.rel_path}' en la fuente Stock no es un archivo regular",
+                    )
+                if (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
+                    return (
+                        PreflightCheckStatus.FAIL,
+                        PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                        f"sustitución concurrente detectada en archivo crítico '{exp.rel_path}' de la fuente Stock",
+                    )
+                if fst.st_size != exp.expected_size:
+                    return (
+                        PreflightCheckStatus.FAIL,
+                        PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                        f"archivo crítico '{exp.rel_path}' en la fuente Stock tiene tamaño "
+                        f"{fst.st_size} bytes (esperado {exp.expected_size})",
+                    )
+                hasher = hashlib.sha256()
+                while True:
+                    chunk = fh.read(64 * 1024)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                digest_real = hasher.hexdigest()
             if digest_real != exp.expected_digest:
                 return (
                     PreflightCheckStatus.FAIL,
@@ -774,9 +764,6 @@ def _validar_autoridad_fuente_stock(
                 PreflightReasonCode.STOCK_PROVENANCE_INVALID,
                 f"no se pudo leer el archivo crítico '{exp.rel_path}' en la fuente Stock: {exc}",
             )
-        finally:
-            if fd >= 0:
-                os.close(fd)
     return PreflightCheckStatus.PASS, None, ""
 
 
