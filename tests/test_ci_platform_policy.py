@@ -34,6 +34,11 @@ def _jobs() -> dict[str, Any]:
     return cast(dict[str, Any], workflow["jobs"])
 
 
+def _concurrency() -> dict[str, Any]:
+    workflow = yaml.safe_load(WORKFLOW_CI.read_text(encoding="utf-8"))
+    return cast(dict[str, Any], workflow["concurrency"])
+
+
 def _paso_por_id(job: dict[str, Any], step_id: str) -> dict[str, Any]:
     coincidencias = [step for step in job["steps"] if step.get("id") == step_id]
     assert len(coincidencias) == 1, f"se esperaba exactamente un step con id={step_id!r}"
@@ -130,3 +135,58 @@ def test_objetivos_posix_apuntan_a_tests_reales_y_cubren_skip_win32_de_etapa6() 
     for nombre_fn in exclusivos_posix:
         cubierto = rel_etapa6 in modulos_completos or (rel_etapa6, nombre_fn) in nodos_puntuales
         assert cubierto, f"{rel_etapa6}::{nombre_fn} se salta en Windows y tampoco corre en test-posix-core"
+
+
+def test_concurrencia_ci_aisla_commits_de_main_y_cancela_solo_en_pull_request() -> None:
+    """Verifica el contrato de concurrencia de ci.yml:
+    - En pull_request: agrupa por ref de PR y cancela corridas obsoletas (ahorro de runners).
+    - En push (main/master): agrupa por commit SHA y NO cancela en progreso, evitando
+      que merges sucesivos a main aborten la certificación y fallen el fan-in de tests.
+    """
+    concurrency = _concurrency()
+
+    expresion_grupo_esperada = (
+        "${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}"
+    )
+    expresion_cancel_esperada = "${{ github.event_name == 'pull_request' }}"
+
+    assert concurrency["group"] == expresion_grupo_esperada
+    assert concurrency["cancel-in-progress"] == expresion_cancel_esperada
+
+
+def test_semantica_concurrencia_para_los_tres_escenarios() -> None:
+    """Verifica estáticamente la semántica de GitHub Actions para los tres escenarios:
+    1. Dos commits sucesivos a main: tienen distinto SHA -> grupos distintos, sin cancelación.
+    2. Dos actualizaciones al mismo PR: mismo ref (refs/pull/N/merge) -> mismo grupo, se cancela la anterior.
+    3. Re-run del mismo SHA en main: mismo SHA -> mismo grupo, cancel-in-progress=false (encola, no aborta).
+    """
+    concurrency = _concurrency()
+    assert "github.event_name == 'pull_request' && github.ref || github.sha" in concurrency["group"]
+    assert concurrency["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
+
+    def evaluar_grupo(event_name: str, ref: str, sha: str, workflow: str = "Sky-Claw CI/CD") -> str:
+        # En GitHub Actions: event_name == 'pull_request' && ref || sha
+        token = ref if event_name == "pull_request" else sha
+        return f"{workflow}-{token}"
+
+    def evaluar_cancel(event_name: str) -> bool:
+        # En GitHub Actions: event_name == 'pull_request'
+        return event_name == "pull_request"
+
+    # Escenario 1: Dos commits sucesivos a main
+    grupo_main_1 = evaluar_grupo("push", "refs/heads/main", "5556d282")
+    grupo_main_2 = evaluar_grupo("push", "refs/heads/main", "c30fff4f")
+    assert grupo_main_1 != grupo_main_2, "Los commits de main deben tener grupos de concurrencia aislados"
+    assert evaluar_cancel("push") is False, "En push a main cancel-in-progress debe ser False"
+
+    # Escenario 2: Dos actualizaciones del mismo PR
+    grupo_pr_v1 = evaluar_grupo("pull_request", "refs/pull/898/merge", "11111111")
+    grupo_pr_v2 = evaluar_grupo("pull_request", "refs/pull/898/merge", "22222222")
+    assert grupo_pr_v1 == grupo_pr_v2, "Las actualizaciones del mismo PR deben compartir grupo para cancelarse"
+    assert evaluar_cancel("pull_request") is True, "En pull_request cancel-in-progress debe ser True"
+
+    # Escenario 3: Re-run del mismo SHA
+    grupo_rerun_1 = evaluar_grupo("push", "refs/heads/main", "5556d282")
+    grupo_rerun_2 = evaluar_grupo("push", "refs/heads/main", "5556d282")
+    assert grupo_rerun_1 == grupo_rerun_2
+    assert evaluar_cancel("push") is False, "El re-run del mismo SHA en main no debe cancelar en progreso"
