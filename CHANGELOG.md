@@ -219,7 +219,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     operador y la verificación, `preparar` y `verificar` seguían comparando contra el testigo viejo y
     declaraban `frescura_probada=True` sobre un parche anterior al cambio. El registro durable guarda
     ahora `huella_contexto` (SHA-256 de `plugins.txt` **sin** la entrada del propio Bashed Patch + `modlist.txt`);
-    si no coincide, `preparar` abre una época nueva sin afirmar un build y `verificar` no usa el testigo
+    si no coincide y el artefacto apareció o cambió su digest, `preparar` abre una época nueva sin afirmar un build (con el artefacto sin cambios conserva la generación y solo actualiza la huella) y `verificar` no usa el testigo
     (nuevo campo `testigo_contexto`: `coincide` / `cambio` / `no_verificable` / `no_aplica`). Los registros
     de PR D se leen como contexto desconocido. El payload `testigo_previo` no cambia. Sin TTL por reloj.
     Un payload con `generacion` cuyo registro ya no existe (reemplazado, consumido o almacén ilegible)

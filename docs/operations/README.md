@@ -19,8 +19,13 @@
 - [Recuperación](recovery.md)
 - [Release](release.md)
 - [Validación en rig real](real_rig_validation.md)
+- [Smoke de la etapa 6 asistida en el rig Windows](etapa6_smoke_rig.md) — procedimiento y
+  resultado de la corrida de Wrye Bash asistido (MO2 + USVFS); el informe completo queda fuera
+  del repo.
 - [Prueba del generador nativo de parallax en un rig real](native_parallax_prueba_en_rig.md)
 - [Parallax nativo (beta): estado y cómo ajustar la profundidad](native_parallax_beta.md)
+- [Runbook P7: provisionar un Golden Master](p7_golden_master_runbook.md) — preparado, **no
+  ejecutado**; cada mutación exige aprobación explícita del propietario.
 - [Deployment y preflight](../../DEPLOYMENT.md)
 
 ## Regla operativa
