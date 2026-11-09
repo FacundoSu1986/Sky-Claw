@@ -47,8 +47,12 @@ _PREFIJO_BYTE_ARRAY = "@ByteArray("
 #: asuma ``[Settings]`` —el error que esta constante documenta— reporta "no
 #: configurado" sobre una instancia perfectamente configurada.
 _SECCION_GENERAL = "General"
+_SECCION_SETTINGS = "Settings"
 _SECCION_EJECUTABLES = "customExecutables"
 _CLAVE_GAME_PATH = "gamePath"
+_CLAVE_BASE_DIRECTORY = "base_directory"
+_CLAVE_MOD_DIRECTORY = "mod_directory"
+_TOKEN_BASE_DIR = "%BASE_DIR%"
 
 #: Escapes de una letra que Qt interpreta dentro de un byte array. El valor es
 #: el byte que representa (``\\a`` = BEL, no la letra ``a``). Es la tabla
@@ -299,6 +303,16 @@ class Mo2Executable:
     arguments: str | None = None
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class Mo2DataDirectoriesEvidence:
+    """Evidencia read-only de ``[Settings] base_directory`` y ``mod_directory``."""
+
+    state: ObservationState
+    base_directory: str | None = None
+    mod_directory: str | None = None
+    detail: str = ""
+
+
 def leer_game_path_de_mo2(ini_path: pathlib.Path) -> Mo2GamePathEvidence:
     """Lee ``[General] gamePath`` de un ``modorganizer.ini``. Nunca lanza.
 
@@ -404,3 +418,73 @@ def leer_ejecutables_de_mo2(ini_path: pathlib.Path) -> tuple[Mo2Executable, ...]
             )
         )
     return tuple(ejecutables)
+
+
+def _decodificar_ruta_settings(crudo: str, *, clave: str) -> tuple[str | None, str]:
+    """Decodifica un valor de ruta en ``[Settings]``, fallando cerrado ante ``@ByteArray`` corrupto."""
+    limpio = crudo.strip()
+    if limpio.startswith(_PREFIJO_BYTE_ARRAY):
+        interior = _interior_del_byte_array(limpio)
+        if interior is None:
+            return None, f"{clave} es un @ByteArray malformado"
+        try:
+            decodificado = _desescapar_bytes(interior).decode("utf-8", "surrogateescape")
+        except QtByteArrayIrrecuperableError as exc:
+            return None, f"{clave} usa un escape Qt con pérdida: {exc}"
+        return decodificado.strip(), ""
+    return limpio, ""
+
+
+def leer_directorios_datos_de_mo2(ini_path: pathlib.Path) -> Mo2DataDirectoriesEvidence:
+    """Lee ``[Settings] base_directory`` y ``mod_directory`` en modo read-only (sin lanzar).
+
+    MO2 interpreta la ausencia de ``base_directory`` como el directorio padre del
+    propio ``ModOrganizer.ini``, y expande ``%BASE_DIR%`` en ``mod_directory``
+    (por defecto ``%BASE_DIR%/mods``). Si alguno de los valores está truncado o
+    declara una ruta relativa no expandible a absoluta, devuelve ``UNREADABLE``.
+    """
+    ruta_ini = pathlib.Path(ini_path)
+    contenido, motivo = _leer_texto(ruta_ini)
+    if contenido is None:
+        return Mo2DataDirectoriesEvidence(state=ObservationState.ABSENT, detail=motivo)
+
+    seccion = _leer_seccion(contenido, _SECCION_SETTINGS)
+    crudo_base = seccion.get(_CLAVE_BASE_DIRECTORY)
+    if crudo_base is not None:
+        base_dec, error_base = _decodificar_ruta_settings(crudo_base, clave=_CLAVE_BASE_DIRECTORY)
+        if base_dec is None:
+            return Mo2DataDirectoriesEvidence(state=ObservationState.UNREADABLE, detail=error_base)
+        base_resuelta = base_dec if base_dec else str(ruta_ini.parent)
+    else:
+        base_resuelta = str(ruta_ini.parent)
+
+    if not pathlib.Path(base_resuelta).is_absolute():
+        return Mo2DataDirectoriesEvidence(
+            state=ObservationState.UNREADABLE,
+            detail=f"base_directory en [Settings] no es una ruta absoluta: '{base_resuelta}'",
+        )
+
+    crudo_mods = seccion.get(_CLAVE_MOD_DIRECTORY)
+    if crudo_mods is not None:
+        mods_dec, error_mods = _decodificar_ruta_settings(crudo_mods, clave=_CLAVE_MOD_DIRECTORY)
+        if mods_dec is None:
+            return Mo2DataDirectoriesEvidence(state=ObservationState.UNREADABLE, detail=error_mods)
+        if mods_dec:
+            # Expansión explícita de %BASE_DIR% sin invocar str.replace (ancla AST read-only).
+            mod_resuelta = base_resuelta.join(mods_dec.split(_TOKEN_BASE_DIR))
+        else:
+            mod_resuelta = str(pathlib.Path(base_resuelta) / "mods")
+    else:
+        mod_resuelta = str(pathlib.Path(base_resuelta) / "mods")
+
+    if not pathlib.Path(mod_resuelta).is_absolute():
+        return Mo2DataDirectoriesEvidence(
+            state=ObservationState.UNREADABLE,
+            detail=f"mod_directory en [Settings] no resuelve a ruta absoluta: '{mod_resuelta}'",
+        )
+
+    return Mo2DataDirectoriesEvidence(
+        state=ObservationState.OBSERVED,
+        base_directory=base_resuelta,
+        mod_directory=mod_resuelta,
+    )

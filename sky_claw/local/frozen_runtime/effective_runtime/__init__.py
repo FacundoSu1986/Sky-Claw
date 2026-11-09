@@ -24,12 +24,17 @@ from sky_claw.local.frozen_runtime.effective_runtime.compatibility import (
     assess_runtime_compatibility,
 )
 from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
+    Mo2DataDirectoriesEvidence,
     Mo2Executable,
     Mo2GamePathEvidence,
     decode_qt_byte_array,
     decode_qt_scalar,
+    leer_directorios_datos_de_mo2,
     leer_ejecutables_de_mo2,
     leer_game_path_de_mo2,
+)
+from sky_claw.local.frozen_runtime.effective_runtime.mo2_instance import (
+    probe_mo2_instance_identity,
 )
 from sky_claw.local.frozen_runtime.effective_runtime.models import (
     CompatibilityResult,
@@ -41,6 +46,10 @@ from sky_claw.local.frozen_runtime.effective_runtime.models import (
     LiveProcessEvidence,
     LiveProcessKind,
     LiveProcessSnapshot,
+    Mo2InstanceIdentityObservation,
+    Mo2InstanceIdentityState,
+    Mo2RegistryObservation,
+    Mo2RegistryState,
     ObservationState,
     ReasonCode,
     RuntimeCompatibility,
@@ -67,8 +76,13 @@ __all__ = [
     "LiveProcessEvidence",
     "LiveProcessKind",
     "LiveProcessSnapshot",
+    "Mo2DataDirectoriesEvidence",
     "Mo2Executable",
     "Mo2GamePathEvidence",
+    "Mo2InstanceIdentityObservation",
+    "Mo2InstanceIdentityState",
+    "Mo2RegistryObservation",
+    "Mo2RegistryState",
     "ObservationState",
     "ReasonCode",
     "RuntimeCompatibility",
@@ -80,8 +94,10 @@ __all__ = [
     "decode_qt_scalar",
     "default_runtime_probes",
     "desired_runtime_from_storage",
+    "leer_directorios_datos_de_mo2",
     "leer_ejecutables_de_mo2",
     "leer_game_path_de_mo2",
     "probe_live_processes",
+    "probe_mo2_instance_identity",
     "raiz_de_la_imagen",
 ]

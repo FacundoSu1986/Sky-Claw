@@ -41,8 +41,10 @@ Por eso el smoke valida cuatro propiedades que los tests con mocks no pueden pro
   silencio. Es el mecanismo de H-2.
 - **Protegé el juego real antes de lanzar Wrye Bash por primera vez**, no solo verificarlo después.
   Lo observado en H-2 es que, al caer al juego real, Wrye Bash creó carpetas y un parche vacío ahí.
-  **No está verificado si lo hace durante el arranque o recién al construir**, así que tratá el
-  arranque como riesgoso. Opciones, de más a menos segura: hacer el smoke en una máquina o usuario
+  El log de ese arranque (§10) muestra que `init_dirs` fijó `Data folder`, `Game Mods location` y
+  `Bash Mod Data location` en la instalación real **durante el arranque**. **Sigue sin verificarse si
+  los archivos se crean en el arranque o recién al construir**, así que tratá el arranque como
+  riesgoso. Opciones, de más a menos segura: hacer el smoke en una máquina o usuario
   donde el juego real no sea detectable (sin él, Wrye Bash muestra «could not find a game» y
   termina, que es el fallo seguro); mover o renombrar temporalmente la carpeta del juego real; o
   denegar la escritura sobre ella a nivel de permisos del sistema de archivos. Restaurá al final.
@@ -52,8 +54,12 @@ Por eso el smoke valida cuatro propiedades que los tests con mocks no pueden pro
   `basher/__init__.py` de v315, **no verificada por nosotros**). Tres controles, los dos primeros
   observados en la corrida del 2026-11-07: (1) poné el juego sandbox en una carpeta padre **distinta**
   de la del juego real; (2) configurá el `bash.ini` de Wrye Bash para que sus rutas de datos queden
-  dentro del sandbox (en el rig terminaron en `overwrite/` bajo USVFS; las claves exactas no están
-  verificadas acá: tomalas del `bash.ini` usado en el rig, en su paquete de evidencia); (3) antes de
+  dentro del sandbox (en el rig terminaron en `overwrite/` bajo USVFS). El `bash.ini` del rig fija,
+  con rutas dentro del sandbox, estas claves de `[General]`: `sLocalAppDataPath`, `sOblivionPath`,
+  `sOblivionMods`, `sBashModData`, `sInstallersData` y `sPersonalPath`; y en `[Settings]`:
+  `bEnsurePatchExists=True`, `bPromptActivateBashedPatch=False` y `bShowSplashScreen=False`. No está
+  verificado que esas seis sean las únicas necesarias, ni que `bEnsurePatchExists` sea lo que crea un
+  parche vacío al arrancar (el nombre lo sugiere); (3) antes de
   empezar, comprobá si ya existe `<padre del juego real>\Skyrim Special Edition Mods` y, si existe,
   respaldalo y restauralo al final.
 - **Abrí MO2 a mano desde el Explorador.** Un MO2 lanzado por un proceso no interactivo no
@@ -158,11 +164,15 @@ Campos que vas a leer en los resultados (de `preparacion_como_resultado` /
    abrí `BashBugDump.log` y confirmá que Wrye Bash seleccionó el juego sandbox. Según `bash.py` de
    v315 (leído, no ejecutado) el archivo se sobrescribe en cada arranque, queda en la carpeta del
    ejecutable de Wrye Bash (bajo USVFS puede aparecer en `overwrite/`) y se escribe línea por línea,
-   así que se puede leer con Wrye Bash abierto. Buscá la línea «Using … game:» o «Single game
-   found», seguida de la ruta, y comprobá que sea la carpeta del sandbox que pasaste con `-o`. Si
-   aparece «No known game in the path specified via -o argument», o cualquier otra ruta, **cerrá
-   Wrye Bash y detené el smoke**. El texto exacto de esas líneas viene de la lectura del código, no
-   de una corrida: confirmalo en el rig. Si no podés abrir el log, no construyas. Después de la
+   así que se puede leer con Wrye Bash abierto (comprobá que su fecha sea la del último
+   arranque: uno anterior es evidencia obsoleta). Las líneas reales de un arranque bien resuelto
+   (log del 2026-11-07, ver §10) son `bush.py … _detectGames: Set game mode to Skyrim Special
+   Edition (Steam) specified via -o argument: <ruta>` y `initialization.py … init_dirs: Data folder
+   set to <ruta>\Data`: ambas deben apuntar a la carpeta del sandbox que pasaste con `-o`. Si aparece
+   `_detectGames: No known game in the path specified via -o argument: <ruta>`, o un `Data folder
+   set to` con **otra** ruta (el arranque de H-2 mostró ahí el juego real), **cerrá Wrye Bash y
+   detené el smoke**. Esas líneas son evidencia heredada de la corrida anterior: no se
+   re-verificaron con un arranque desde MO2. Si no podés abrir el log, no construyas. Después de la
    corrida, comprobá además que el `Data` del juego real no cambió (fue lo que se hizo al limpiar
    H-2).
 3. `verificar`. Esperado: `success=True`, `motivo=OK`, `frescura_probada=True`,
@@ -268,7 +278,7 @@ completo y los JSON crudos están en la máquina del operador
 | E3 cierre de GUI | PASS: `frescura_probada=True`, `testigo_origen=durable`, registro consumido |
 | E4 sin construir | PASS: `SIN_CAMBIO` |
 | E5 deshabilitado | PASS: `NO_HABILITADO` |
-| E6 Defender | PASS: 20/20 sin fallos, **pero** el informe no registra el valor de `testigo_durable` de cada preparación: no prueba que las 20 hayan escrito el JSON. Repetir con el criterio de E6 (`guardado` en cada iteración) |
+| E6 Defender | PASS: 20/20 `guardado`, 0 temporales. El JSON crudo de esa corrida ya registraba `testigo_durable` en las 20; solo faltaba transcribirlo al informe. Repetido el 2026-11-08 (§10): 20/20 `guardado` |
 | E7 corte | PASS con límite (ventana no alcanzada) |
 | Bridge USVFS | **No validado**: cuarentena heredada y desajuste plugin/broker (`VfsBridgeLaunchError: job_object…`) |
 
@@ -285,13 +295,99 @@ y no se observó.
   `registry.py`. (Una versión anterior de esta guía decía que el servicio sí resolvía la variable;
   era falso: `get_wrye_bash_path` no tiene llamadores en `sky_claw/`.) Es el hermano de LOOT/xEdit/Pandora, que
   sí tienen `config_field`. **Corregido en #882** (issue #879): la tarjeta lee `wrye_bash_exe` de la
-  config. La verificación en hardware sigue pendiente.
+  config. La verificación **de la tarjeta renderizada** en hardware sigue pendiente (§10): el mecanismo se
+  verificó sin GUI.
 - **H-2 (entorno, seguridad operativa).** Wrye Bash cae al juego real si `-o` no valida y escribe
   fuera del sandbox. Se activó el criterio de parada, se limpió y se verificó el juego real. Ver el
   requisito del marcador en §1.
 - **H-3 (entorno).** MO2 lanzado por el harness no inyecta USVFS (F3).
 - **H-4 (producto, preflight).** `overwrite=yellow` permanente: los datos propios de Wrye Bash viven
   en `overwrite/` y el sensor de «overwrite sucio» los reporta en cada fase. Advertencia, no bloqueo.
-- **H-5 (observabilidad).** La GUI no persiste el JSON del tool-result; para auditoría exacta usar
-  la superficie del agente.
+  **Decisión (#880): se acepta y se documenta; el sensor no se toca.** Excluir del sensor lo propio
+  de Wrye Bash lo debilitaría —es un sensor de seguridad del preflight (ADR 0016 §R3-1)— y eso
+  requiere un ADR, no un parche. Para que el amarillo desaparezca en un perfil real, el operador mueve
+  esos datos a un mod de salida (en MO2, menú contextual de `overwrite`, opción de crear un mod; el
+  nombre exacto del menú no está verificado). Eso agrega una línea a `modlist.txt` y cambia la huella
+  de contexto: si se hace entre `preparar` y `verificar`, la verificación queda en
+  `frescura_probada=False` y hay que volver a preparar (dirección segura, ADR 0016 §7.3, límite a).
+  Conviene hacerlo **antes** de `preparar`. *No verificado en hardware.*
+- **H-5 (observabilidad).** Resuelto en el código: `ejecutar_fase_asistida`, el punto único de las
+  tres superficies, deja en el log de Sky-Claw un registro por fase con `success`, `reason`/`motivo`,
+  `frescura_probada`, `testigo_origen`, `testigo_contexto`, `testigo_durable` y `estado_en_plugins`
+  (campo `fase_asistida`). Lista blanca: **no** lleva rutas ni el `message` libre, así que no hay
+  nada que sanear. El JSON completo con rutas sigue disponible solo por la superficie del agente.
 - **H-7 (bridge).** No validado; no invalida E1–E7.
+
+## 10. Corrida r2 (2026-11-08): `main` `03635d6`, sandbox, veredicto parcial
+
+Segunda corrida sobre `main` con #882 y #883 mergeados. Un agente de shell la hizo sin interacción de
+GUI: el resto queda para una persona delante del PC. El informe y los JSON crudos están en la máquina
+del operador (`C:\SkyClaw_Spike_Sandbox\evidence\etapa6-20261108-r2\`), no en el repo.
+
+| Pedido | Resultado |
+|---|---|
+| E6 con el criterio correcto | **PASS**: 20 `preparar` seguidos por el registry productivo, sin construir entre ellos, desde un almacén vacío: `testigo_durable == "guardado"` 20/20, `generacion` constante, almacén JSON válido (439 B) en las 20, 0 temporales, 0 residuos de write-probe, con 5 escaneos de Defender solapados (stdout «sin amenazas»; el `rc` de cada escaneo no quedó registrado) |
+| #879, mecanismo (sin GUI) | **PASS**: `_build_environment_scanner` y `EnvironmentScanner.scan()` sobre `config.toml` reales. `wrye_bash_exe` en la **raíz** se siembra y resuelve la ruta no auto-detectada (`readiness=found`); bajo `[paths]` se descarta; apuntando a un archivo inexistente se siembra pero da `readiness=moved_installation` (estado del scanner, no etiqueta de la tarjeta: en r2 había otra copia auto-detectada en `game\Wrye Bash\`, y con una copia detectada la herramienta queda en el snapshot y la tarjeta mostraría «Disponible»; sin ella el estado esperado es `stale_configured_path`) |
+| #879, tarjeta renderizada A–D y `Ejecutar` en B | **NO EJECUTADO** |
+| `BashBugDump.log`, inventarios tras arranque y tras `Rebuild`, E2 con un segundo sort real de LOOT | **NO EJECUTADO** |
+
+**Por qué lo no ejecutado no se ejecutó.** Requiere abrir MO2 a mano desde el Explorador (un MO2 lanzado
+por un proceso no interactivo no inyecta USVFS), proteger el juego real y manejar la GUI; el agente no
+tocó permisos ni nombres de la instalación real. No hay capturas ni resultados de GUI inventados.
+
+**Limitación del rig para A, C y D.** El ejecutable de Wrye Bash sigue también en `game\Wrye Bash\`,
+que se auto-detecta: con esa copia presente, A, C y D darían «Disponible» igual. Para reproducirlos hay
+que **mover la instalación completa** de Wrye Bash (la carpeta entera, con su `bash.ini` y sus
+recursos; no copiar ni mover solo el `.exe`) a una carpeta no auto-detectada, fuera de `game\` y de
+`mo2-install\`. Wrye Bash fija su carpeta de trabajo en la del ejecutable (`bash.py` de v315, leído),
+así que, si busca ahí su `bash.ini` (no verificado), un `.exe` suelto pierde el aislado de §1 y puede
+caer en rutas por defecto fuera del sandbox. Después de mover: **cerrar MO2**, actualizar `ModOrganizer.ini` (con `-o` absoluto) y reabrir MO2 desde el Explorador para que no conserve la ruta vieja del ejecutable (o refrescar la entrada desde el diálogo de ejecutables de MO2; el comportamiento de MO2 aquí no está verificado), y **comprobar que el
+`bash.ini` de la carpeta nueva conserva las rutas de §1 dentro del sandbox antes de arrancar**.
+
+**Casos A–D de la tarjeta.** Condiciones comunes: instalación movida como arriba, `WRYE_BASH_PATH`
+**sin definir** en el entorno (la tarjeta no la lee, así que se descarta como variable), `config.toml`
+respaldado byte a byte, y GUI reiniciada entre caso y caso
+(`python -m sky_claw --mode gui --profile Etapa6Smoke`). Las expectativas salen de lo observado sin GUI
+en la corrida r2 y de `config.py:91-96`; la **etiqueta renderizada** de cada tarjeta no está verificada.
+
+| Caso | Configuración de `config.toml` | Esperado |
+|---|---|---|
+| A (control) | sin `wrye_bash_exe` | «No instalado» |
+| B (el fix de #882) | `wrye_bash_exe = '<ruta absoluta del .exe movido>'` en la **raíz**, antes de cualquier `[sección]` | «Disponible» (sin GUI: `readiness=found`). `Ejecutar` despacha `preparar` y el panel lo muestra como aviso «pendiente», no como fallo en rojo |
+| C | la misma clave dentro de `[paths]` | «No instalado»: de esa sección solo se leen `mo2_path` y `skyrim_path` |
+| D | `wrye_bash_exe` apuntando a un archivo que no existe | «No instalado», **solo si ninguna otra copia es detectable**: ahí `readiness=stale_configured_path` y la herramienta no entra al snapshot. Si queda otra copia auto-detectada, el scanner da `moved_installation` pero la tarjeta muestra «Disponible» (la etiqueta mira la presencia en el snapshot); eso fue r2 y es el síntoma de que la instalación no se movió bien. Reportá la etiqueta que muestre la tarjeta |
+
+**Líneas reales de `BashBugDump.log` (evidencia heredada del 2026-11-07, no re-verificada).** El
+arranque de H-2, con el juego real escrito donde debía ir el sandbox:
+
+    _detectGames: No known game in the path specified via -o argument: C:\SkyClaw_Spike_Sandbox\game
+    init_dirs: Data folder set to G:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data
+    init_dirs: Game Mods location set to G:\SteamLibrary\steamapps\common\Skyrim Special Edition Mods
+    init_dirs: Bash Mod Data location set to G:\SteamLibrary\steamapps\common\Skyrim Special Edition Mods\Bash Mod Data
+
+y el del build, ya con la selección correcta:
+
+    _detectGames: Set game mode to Skyrim Special Edition (Steam) specified via -o argument:  C:\SkyClaw_Spike_Sandbox\game
+    init_dirs: Data folder set to C:\SkyClaw_Spike_Sandbox\game\Data
+    init_dirs: Game Mods location set to C:\SkyClaw_Spike_Sandbox\game\Data\SkyClaw Bash\Mods
+    init_dirs: Bash Mod Data location set to C:\SkyClaw_Spike_Sandbox\game\Data\SkyClaw Bash\Bash Mod Data
+
+En el rig de esa corrida el archivo estaba en `game\Wrye Bash\BashBugDump.log`. Tras mover la
+instalación queda junto al **ejecutable que se lanzó**, así que abrí el de la ubicación actual (bajo
+USVFS puede aparecer en `overwrite\`) y comprobá que sea del **último** arranque: se sobrescribe en
+cada uno, de modo que un log con fecha anterior al lanzamiento es evidencia obsoleta.
+La cadena «Single game found» no aparece en ninguno de los dos.
+
+**Trampas de método para quien repita el smoke.**
+- Los drivers de una corrida anterior pueden apuntar a un worktree viejo: el de la primera corrida
+  apuntaba a `749c9716`, anterior a #882. Repetirlos tal cual no prueba lo que hay en `main`.
+- Un venv nuevo puede resolver `import sky_claw` al worktree **principal** si no se fuerza
+  `sys.path.insert(0, <worktree bajo prueba>)`. Ni `PYTHONPATH` solo ni el venv nuevo alcanzan:
+  comprobá `sky_claw.__file__` antes de dar un resultado por válido.
+
+**Pasos que siguen requiriendo a una persona.** (1) Proteger el juego real y verificarlo. (2) Abrir MO2 a
+mano desde el Explorador. (3) Mover la **instalación completa** de Wrye Bash fuera de la ruta
+auto-detectada, verificar su `bash.ini` y actualizar `ModOrganizer.ini` (con `-o` absoluto). (4) Reiniciar la GUI entre A, B, C y D, sin
+`WRYE_BASH_PATH`, capturar la tarjeta y, en B, pulsar `Ejecutar`. Antes de E1 (después de D) restablecer la configuración de B, reiniciar la GUI y volver a ejecutar `preparar`: los reinicios descartan la acción «verificar» creada en B (§5 E3) y tras D la tarjeta no está disponible. Al terminar, restaurar el `config.toml` respaldado **y** devolver la instalación a su lugar original (restaurando la entrada de MO2), o dejar configurada la nueva ubicación de forma permanente (`wrye_bash_exe` en la raíz del TOML); si no, el setup final deja de detectar Wrye Bash. (5) Con el juego real protegido,
+lanzar Wrye Bash desde MO2, confirmar `BashBugDump.log` e inventariar tras el arranque y tras
+`Rebuild Patch`. (6) Opcional: E2 con un segundo sort real de LOOT. (7) Restaurar el juego real.

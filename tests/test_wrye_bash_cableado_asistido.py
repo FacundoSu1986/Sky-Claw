@@ -910,3 +910,66 @@ async def test_ritual_gui_preparar_y_verificar_con_modo_local_apagado_no_abre_mo
     assert notificaciones_hitl == []
     assert store.get(STORE_KEY_PENDING_HITL) is None
     assert store.get(STORE_KEY_RITUAL_FEEDBACK)["type"] == "positive"
+
+
+# ==============================================================================
+# 3. Auditoría: el resultado de cada fase queda en el log (#880 H-5)
+# ==============================================================================
+
+
+_RUTA_SENSIBLE = "C:\\Users\\operador\\SkyrimSE\\Data\\Bashed Patch, 0.esp"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fase", ["preparar", "verificar"])
+async def test_el_enrutado_registra_el_resultado_de_cada_fase_sin_rutas(
+    fase: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """El punto único loguea los campos de auditoría y NUNCA rutas ni mensajes libres.
+
+    La GUI no devolvía el JSON de ``verificar`` a ningún log, así que una validación real
+    por GUI no dejaba evidencia. Como las tres superficies pasan por
+    ``ejecutar_fase_asistida``, loguear ahí cubre a todas a la vez (no un camino y su gemelo).
+    """
+    servicio = _servicio()
+    resultado = {
+        "success": False,
+        "message": f"No se encontró {_RUTA_SENSIBLE}",
+        "motivo": "artefacto_ausente",
+        "artefacto": _RUTA_SENSIBLE,
+        "plugins_txt": _RUTA_SENSIBLE,
+        "reason": "ArtefactoAusente",
+        "estado_en_plugins": "ausente",
+        "frescura_probada": False,
+        "testigo_origen": "durable",
+        "testigo_contexto": "coincide",
+        "testigo_durable": "guardado",
+    }
+    servicio.preparar_etapa_asistida = AsyncMock(return_value=dict(resultado))
+    servicio.verificar_etapa_asistida = AsyncMock(return_value=dict(resultado))
+
+    with caplog.at_level("INFO", logger="sky_claw.local.tools.wrye_bash_service"):
+        devuelto = await servicio.ejecutar_fase_asistida(profile="P", fase=fase)
+
+    assert devuelto == resultado  # el log no altera lo que ve el llamador
+    registros = [r for r in caplog.records if getattr(r, "fase_asistida", None) == fase]
+    assert len(registros) == 1, "debe haber exactamente un registro de auditoría por fase"
+    # Igualdad exacta del dict logueado (clave → valor): lo que entra y lo que no. Comparar
+    # strings sueltos en el texto daría verde con un valor bajo la clave equivocada.
+    campos = registros[0].args[1]  # type: ignore[index]
+    # Y el mismo dict viaja como campo estructurado para el log JSON, no solo en el mensaje.
+    assert registros[0].resultado_asistido == campos  # type: ignore[attr-defined]
+    assert campos == {
+        "success": False,
+        "reason": "ArtefactoAusente",
+        "motivo": "artefacto_ausente",
+        "frescura_probada": False,
+        "testigo_origen": "durable",
+        "testigo_contexto": "coincide",
+        "testigo_durable": "guardado",
+        "estado_en_plugins": "ausente",
+    }
+    for excluida in ("message", "artefacto", "plugins_txt"):
+        assert excluida not in campos, f"{excluida!r} puede llevar rutas y no va al log"
+    assert _RUTA_SENSIBLE not in caplog.text
+    assert "operador" not in caplog.text

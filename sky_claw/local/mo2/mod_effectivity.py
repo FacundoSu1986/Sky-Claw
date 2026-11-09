@@ -41,7 +41,13 @@ from collections.abc import Iterator, Sequence
 from typing import NamedTuple
 
 from sky_claw.app.security.links import iter_archivos_propios, link_kind_and_identity_or_raise
-from sky_claw.local.mo2.ganadores import GanadoresError, _es_carpeta_propia, _exigir_nombre_de_mod
+from sky_claw.local.mo2.ganadores import (
+    GanadoresError,
+    _coincidencias_de_mod,
+    _es_carpeta_propia,
+    _exigir_nombre_de_mod,
+    _exigir_sin_repetidos,
+)
 
 logger = logging.getLogger("SkyClaw.ModEffectivity")
 
@@ -125,13 +131,19 @@ def _roots_eclipsantes(
     (``overwrite``, de ``data_root``): un nombre que se escapa o un enlace
     también es un perfil que no se puede afirmar, no una capa más (#807).
     """
-    if enabled.count(mod_name) > 1:
-        raise ModEffectivityError(
-            f"el modlist repite el mod {mod_name!r}: la prioridad efectiva es ambigua y no se puede afirmar"
-        )
-    if mod_name not in enabled:
+    # #852 P2: la unicidad es de TODO el perfil, no sólo del mod solicitado.
+    # ``ganadores._exigir_enabled`` ya la exige y este gate recibe ``enabled``
+    # por parámetro: un duplicado de otro mod dejaría el overlay sin afirmar.
+    # Se valida ANTES de resolver el índice, con la MISMA primitiva canónica.
+    with _como_error_de_efectividad():
+        _exigir_sin_repetidos(enabled)
+    # #852: la identidad del mod es ``lower()`` (NTFS), no la grafía exacta.
+    # La unicidad ya quedó probada arriba: acá sólo queda "no habilitado" o
+    # exactamente UN índice (y no ``enabled.index(mod_name)``, que elegía por grafía).
+    coincidencias = _coincidencias_de_mod(enabled, mod_name)
+    if not coincidencias:
         raise ModEffectivityError(f"el mod {mod_name!r} no está habilitado en el modlist del perfil")
-    indice = enabled.index(mod_name)
+    indice = coincidencias[0]
     roots: list[tuple[str, pathlib.Path]] = []
     overwrite = data_root / "overwrite"
     if _capa_propia(overwrite, etiqueta="overwrite"):

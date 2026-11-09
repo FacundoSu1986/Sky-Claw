@@ -69,6 +69,9 @@ from sky_claw.local.frozen_runtime.effective_runtime.models import (
     LiveProcessEvidence,
     LiveProcessKind,
     LiveProcessSnapshot,
+    Mo2InstanceIdentityObservation,
+    Mo2InstanceIdentityState,
+    Mo2RegistryState,
     ObservationState,
     RuntimeCompatibility,
     RuntimeProbes,
@@ -264,6 +267,50 @@ def _crear_config_toml(path: pathlib.Path, skyrim_path: str) -> pathlib.Path:
     return path
 
 
+def _sonda_mo2_global(ruta: pathlib.Path) -> Mo2InstanceIdentityObservation:
+    ini = ruta / "modorganizer.ini"
+    try:
+        es_archivo = ini.is_file()
+    except OSError as exc:
+        return Mo2InstanceIdentityObservation(
+            state=Mo2InstanceIdentityState.UNKNOWN,
+            instance_dir=str(ruta),
+            registry_state=Mo2RegistryState.OBSERVED,
+            registry_current_instance=ruta.name,
+            detail=f"error de filesystem al acceder a modorganizer.ini: {exc}",
+        )
+    if not es_archivo:
+        return Mo2InstanceIdentityObservation(
+            state=Mo2InstanceIdentityState.INACTIVE,
+            instance_dir=str(ruta),
+            registry_state=Mo2RegistryState.OBSERVED,
+            registry_current_instance=ruta.name,
+            detail=f"'{ruta}' carece de modorganizer.ini regular",
+        )
+    try:
+        tiene_artefactos_portables = (ruta / "ModOrganizer.exe").exists() or (ruta / "portable.txt").exists()
+    except OSError:
+        tiene_artefactos_portables = False
+    if tiene_artefactos_portables:
+        return Mo2InstanceIdentityObservation(
+            state=Mo2InstanceIdentityState.AMBIGUOUS,
+            instance_dir=str(ruta),
+            registry_state=Mo2RegistryState.OBSERVED,
+            registry_current_instance=ruta.name,
+            detail=f"la instancia global '{ruta}' contiene artefactos portables",
+        )
+    return Mo2InstanceIdentityObservation(
+        state=Mo2InstanceIdentityState.ACTIVE_GLOBAL,
+        instance_dir=str(ruta),
+        registry_state=Mo2RegistryState.OBSERVED,
+        registry_current_instance=ruta.name,
+        detail=f"instancia global activa verificada contra HKCU CurrentInstance='{ruta.name}'",
+    )
+
+
+_sonda_mo2_portable = _sonda_mo2_global
+
+
 def _probes_quiescentes(version: str = "1.6.1170.0") -> RuntimeProbes:
     return RuntimeProbes(
         identity=lambda r: RuntimeIdentity(game_key="skyrimse", game_version=version),
@@ -272,6 +319,7 @@ def _probes_quiescentes(version: str = "1.6.1170.0") -> RuntimeProbes:
             reason="compatible sintético",
         ),
         processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+        mo2_instance=_sonda_mo2_global,
     )
 
 
@@ -415,6 +463,7 @@ def test_02_mo2_abierto_rechazo_sin_mutacion(tmp_path: pathlib.Path) -> None:
             ),
             indeterminate=False,
         ),
+        mo2_instance=_sonda_mo2_portable,
     )
 
     # Act & Assert
@@ -468,6 +517,7 @@ def test_03_skyrim_skse_abierto_rechazo_sin_mutacion(tmp_path: pathlib.Path) -> 
             ),
             indeterminate=False,
         ),
+        mo2_instance=_sonda_mo2_portable,
     )
 
     with pytest.raises(BinderQuiescenceError, match="juego o SKSE vivo"):
@@ -575,6 +625,7 @@ def test_06_runtime_incompatible_rechazo(tmp_path: pathlib.Path) -> None:
             reason="SKSE no coincide con build de runtime",
         ),
         processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+        mo2_instance=_sonda_mo2_portable,
     )
 
     with pytest.raises(BinderPreflightFailedError, match="preflight"):

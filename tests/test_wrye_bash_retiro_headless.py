@@ -366,6 +366,9 @@ _FUNCIONES_DE_MODULO_DEL_SERVICIO = frozenset(
         # #866, H-1: vigencia contextual del testigo durable en la fase 2.
         "_leer_registro_de_la_epoca",
         "_evaluar_contexto",
+        # #880, H-5: auditoría del resultado de cada fase (solo log, lista blanca sin rutas;
+        # no spawnea ni muta nada).
+        "_registrar_resultado_asistido",
     }
 )
 

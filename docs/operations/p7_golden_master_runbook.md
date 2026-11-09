@@ -342,10 +342,16 @@ detenerse y restaurar desde backup, **no** editar el JSON a mano.
 
 1. **A5 (binder):** registrar `Desired Runtime` y repuntar `gamePath` de MO2 con
    el binder existente, con aprobación HITL y `EMISION_PRODUCTIVA_HABILITADA`
-   habilitada en un PR propio. Requisitos actuales del preflight: Managed Source
-   **IDLE** (hoy ACTIVE), sin procesos MO2/Skyrim/SKSE, journal coherente.
-2. **P7-A … P7-G (ver §10).** Hasta que A5 no se ejecute, el inspector P7 seguirá
-   `BLOCKED` (desired_runtime/clone_record/version.skyrim/mo2.game_path).
+   habilitada en un PR propio.
+   - **Nota P7-A5 PR 1 (solo lectura):** `evaluar_binder_preflight` y
+     `scripts/p7_readonly_inspection.py` incorporan `BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION`
+     (procedencia Stock v2 + digest externo A1 aprobado), admisión explícita de
+     `outgoing_manual_runtime_root` e identidad activa de instancia MO2
+     (`MO2_INSTANCE_IDENTITY`), manteniendo `STRICT_PROVIDER_IDLE` por defecto y
+     `EMISION_PRODUCTIVA_HABILITADA = False`. La migración transaccional de
+     `[customExecutables]` y la habilitación productiva pertenecen a PRs posteriores.
+2. **P7-A … P7-G (ver §10).** Hasta que A5 no se ejecute efectivamente, el inspector P7 seguirá
+   `BLOCKED` (`listo_para_p7=False`: `desired_runtime`/`clone_record`/`version.skyrim`/`mo2.game_path`).
 
 ## 10. Matriz P7 y umbrales
 
