@@ -1,12 +1,13 @@
 name: Sky-Claw CI/CD
 
 on:
-  # Solo main/master en push: las ramas feat/fix/etc. con PR disparaban la matriz
-  # completa dos veces (push + pull_request) porque concurrency usa github.ref
-  # (refs/heads vs refs/pull/N/merge) y no se cancelan entre sí. Con 2 Pythons
-  # eso eran 4 jobs Windows de ~35-40 min compitiendo por runners y cancelándose
-  # por timeout. El control que importa (incluido el revisor adversarial) corre
-  # en pull_request. Ramas sin PR no corren CI hasta abrir el PR.
+  # Solo main/master en push: antes se agrupaba por github.ref (refs/heads vs
+  # refs/pull/N/merge) y las ramas con PR disparaban la matriz dos veces sin
+  # cancelarse entre sí. Ahora la concurrencia se diferencia por evento:
+  # en push se aísla por github.sha (sin cancelarse entre commits distintos de main),
+  # mientras que en pull_request se agrupa por el ref del PR con cancelación
+  # en progreso. Mantener push restringido a main/master evita duplicación en
+  # feature branches y reserva runners Windows para certificación de integración.
   push:
     branches: [main, master]
   # pull_request sin filtro de branches: corre en todo PR, incluyendo stacked

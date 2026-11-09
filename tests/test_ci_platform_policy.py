@@ -35,6 +35,7 @@ def _jobs() -> dict[str, Any]:
 
 
 def _concurrency() -> dict[str, Any]:
+    """Carga y devuelve la sección `concurrency` de ci.yml."""
     workflow = yaml.safe_load(WORKFLOW_CI.read_text(encoding="utf-8"))
     return cast(dict[str, Any], workflow["concurrency"])
 
@@ -158,7 +159,8 @@ def test_semantica_concurrencia_para_los_tres_escenarios() -> None:
     """Verifica estáticamente la semántica de GitHub Actions para los tres escenarios:
     1. Dos commits sucesivos a main: tienen distinto SHA -> grupos distintos, sin cancelación.
     2. Dos actualizaciones al mismo PR: mismo ref (refs/pull/N/merge) -> mismo grupo, se cancela la anterior.
-    3. Re-run del mismo SHA en main: mismo SHA -> mismo grupo, cancel-in-progress=false (encola, no aborta).
+    3. Re-run del mismo SHA en main: mismo SHA -> mismo grupo, cancel-in-progress=false. No cancela la corrida
+       en progreso (aunque re-runs pendientes concurrentes puedan reemplazarse por la cola de GitHub Actions).
     """
     concurrency = _concurrency()
     assert "github.event_name == 'pull_request' && github.ref || github.sha" in concurrency["group"]
@@ -189,4 +191,6 @@ def test_semantica_concurrencia_para_los_tres_escenarios() -> None:
     grupo_rerun_1 = evaluar_grupo("push", "refs/heads/main", "5556d282")
     grupo_rerun_2 = evaluar_grupo("push", "refs/heads/main", "5556d282")
     assert grupo_rerun_1 == grupo_rerun_2
-    assert evaluar_cancel("push") is False, "El re-run del mismo SHA en main no debe cancelar en progreso"
+    assert evaluar_cancel("push") is False, (
+        "El re-run del mismo SHA en main no cancela la corrida en curso (cancel-in-progress=false)"
+    )
