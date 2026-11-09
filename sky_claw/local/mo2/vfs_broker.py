@@ -1053,9 +1053,11 @@ class VfsExecutionBroker:
         Si la gracia no es menor que el deadline duro no hay ventana donde pedirlo: la política no se activa. Un bridge
         desconectado no es un error de este camino: rige el contrato de pérdida de bridge de la espera dura.
 
-        ``deadline`` es el instante ABSOLUTO del deadline duro: el envío queda acotado por él, así un socket que no
-        drena no puede dejar colgado a un job exitoso ni impedir que ese deadline venza (la trama ya está en el buffer
-        antes del ``drain()``, de modo que cancelar la espera no deja una trama a medias, y el lock de escritura se libera).
+        ``deadline`` es el instante ABSOLUTO del deadline duro. El envío corre como tarea y se espera lo primero que
+        ocurra —que termine, que llegue el ``worker_exit`` o que venza ese deadline—: un socket que no drena (o un lock de
+        escritura retenido por otro) no puede dejar colgado a un job exitoso, ni impedir que el deadline venza, ni
+        retener a un ``worker_exit`` que ya llegó. Cancelar el envío es seguro: la trama ya está en el buffer antes del
+        ``drain()`` (no queda una trama a medias) y el lock de escritura se libera.
         """
         gracia = self._post_result_cancel_grace
         if job_id is None or gracia >= self._connected_worker_exit_deadline:
@@ -1073,17 +1075,29 @@ class VfsExecutionBroker:
             gracia,
             extra={"event": "post_result_cancel_requested", "operation": "vfs_broker", "job_id": job_id},
         )
+        envio = asyncio.create_task(
+            self._send_bridge({"protocol_version": VFS_PROTOCOL_VERSION, "type": "cancel", "job_id": job_id}),
+            name=f"vfs-post-result-cancel-{job_id}",
+        )
         try:
-            await asyncio.wait_for(
-                self._send_bridge({"protocol_version": VFS_PROTOCOL_VERSION, "type": "cancel", "job_id": job_id}),
-                timeout=restante,
-            )
-        except (VfsBrokerError, ConnectionError, OSError, TimeoutError):
-            logger.warning(
-                "No se pudo pedir al bridge cerrar el Job de %s tras el resultado (o no a tiempo)",
-                job_id,
-                exc_info=True,
-            )
+            # Se espera lo PRIMERO que ocurra: el envío termina, llega el worker_exit o vence el deadline duro. Un envío
+            # trabado no retiene ni al evento terminal ni al deadline.
+            esperados: set[asyncio.Future[Any]] = {envio, exit_future}
+            await asyncio.wait(esperados, timeout=restante, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not envio.done():
+                await _cancel_and_join(envio)
+        if envio.cancelled():
+            if not exit_future.done():
+                logger.warning("No se pudo pedir al bridge cerrar el Job de %s tras el resultado a tiempo", job_id)
+            return
+        error = envio.exception()
+        if error is None:
+            return
+        if isinstance(error, (VfsBrokerError, ConnectionError, OSError)):
+            logger.warning("No se pudo pedir al bridge cerrar el Job de %s tras el resultado", job_id, exc_info=error)
+            return
+        raise error
 
     async def _await_worker_exit(
         self,

@@ -1988,6 +1988,15 @@ async def _hasta_el_resultado(
     return asyncio.create_task(sesion.result()), worker, sesion
 
 
+def _envios_de_cancel_pendientes() -> list[str]:
+    """Tareas de envío del cancel posterior al resultado que siguen vivas: no debe quedar ninguna."""
+    return [
+        tarea.get_name()
+        for tarea in asyncio.all_tasks()
+        if tarea.get_name().startswith("vfs-post-result-cancel-") and not tarea.done()
+    ]
+
+
 async def _cerrar_escenario(desenlace, worker, bridge: _BridgeFalso, broker: VfsExecutionBroker) -> None:
     if desenlace is not None and not desenlace.done():
         desenlace.cancel()
@@ -2221,9 +2230,77 @@ async def test_si_el_envio_del_cancel_se_traba_el_plazo_duro_se_sigue_haciendo_c
             desenlace.result()
         assert transcurrido < 2.3, f"el envío trabado extendió el plazo duro: {transcurrido:.2f}s"
         assert broker.quarantine_reason is not None
+        assert _envios_de_cancel_pendientes() == [], "quedó una tarea de envío colgada"
     finally:
         # Sin esto, la limpieza (que cancela el job y vuelve a pasar por el envío parcheado) quedaría colgada.
         liberar_envio.set()
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_si_el_envio_del_cancel_esta_trabado_un_worker_exit_que_llega_no_espera_al_envio(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, superficie: str
+) -> None:
+    # Arrange: el envío del cancel está pendiente (socket que no drena) y el plazo duro queda lejos (6 s).
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=6.0, post_result_cancel_grace_seconds=0.3)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    liberar_envio = asyncio.Event()
+    try:
+        desenlace, worker, _sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
+
+        async def _envio_trabado(_mensaje: object) -> None:
+            await liberar_envio.wait()
+
+        monkeypatch.setattr(broker, "_send_bridge", _envio_trabado)
+
+        # Act: ya pasó la gracia (el cancel quedó pendiente) y el bridge confirma por su canal de lectura.
+        await asyncio.sleep(0.8)
+        await bridge.worker_exit(job.job_id, exit_code=0)
+        terminados, _pendientes = await asyncio.wait({desenlace}, timeout=2.0)
+
+        # Assert: el evento terminal no espera al envío trabado (ni al plazo duro de 6 s) y no hay cuarentena.
+        assert terminados, "el worker_exit quedó esperando al envío trabado del cancel"
+        assert desenlace.result().success is True
+        assert broker.quarantine_reason is None
+        assert _envios_de_cancel_pendientes() == [], "quedó una tarea de envío colgada"
+    finally:
+        liberar_envio.set()
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_un_error_inesperado_del_envio_se_propaga_y_no_se_traga(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, superficie: str
+) -> None:
+    # Arrange: convención del repo (``test_await_worker_exit_propaga_type_error_interno_sin_reintento``): solo se tolera
+    # lo que el camino hermano ya toleraba (error del broker, de conexión o de SO); un bug interno NO se vuelve un warning.
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=1.5, post_result_cancel_grace_seconds=0.3)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        desenlace, worker, _sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
+
+        async def _envio_roto(_mensaje: object) -> None:
+            raise TypeError("bug interno simulado")
+
+        monkeypatch.setattr(broker, "_send_bridge", _envio_roto)
+
+        # Act
+        terminados, _pendientes = await asyncio.wait({desenlace}, timeout=6.0)
+
+        # Assert: el error llega al llamador, y como el worker_exit no llegó la instancia queda en cuarentena.
+        assert terminados
+        with pytest.raises(TypeError, match="bug interno simulado"):
+            desenlace.result()
+        assert broker.quarantine_reason is not None
+    finally:
         await _cerrar_escenario(desenlace, worker, bridge, broker)
 
 
