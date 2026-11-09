@@ -154,8 +154,9 @@ Cómo se invocan las fases, por superficie (las tres comparten `ejecutar_fase_as
   **Ojo:** la tarjeta **no lee `WRYE_BASH_PATH`** (que además no tiene consumidores, ver §2). Desde #882 lee `wrye_bash_exe` de la **raíz** de
   `config.toml` (`ExternalToolSpec` de `wrye_bash` en `sky_claw/local/discovery/registry.py`);
   antes de #882 solo figuraba `Disponible` con el exe en una ruta auto-detectada, p. ej. dentro de
-  la carpeta del juego (H-1, §9). **No verificado en el rig:** que la tarjeta pase a `Disponible`
-  con `wrye_bash_exe` y el exe fuera de las rutas auto-detectadas.
+  la carpeta del juego (H-1, §9). **Verificado en el rig (r3, §11):** con `wrye_bash_exe` en la raíz
+  y el exe fuera de las rutas auto-detectadas la tarjeta pasa a `Disponible` y `Ejecutar` despacha
+  `preparar`.
 - **Agente (Telegram `--mode telegram`, o `/api/chat`):** tool `generate_bashed_patch` con
   `fase="preparar"` o `fase="verificar"`. El perfil lo fija la sesión, no el modelo.
 
@@ -271,7 +272,11 @@ de salida o de `%USERPROFILE%\.sky_claw\state\`.
 
 ## 8. Limpieza
 
-Restaurá el perfil, `overwrite/` y los mods de salida desde el backup. Para empezar de cero el
+Restaurá el perfil, `overwrite/`, los mods de salida y los archivos afectados de `Data` del juego
+sandbox desde el backup (el de `Data` que pide §1: Wrye Bash puede borrar ahí archivos propios, como
+pasó con `Bogus.esp` y `Bogus.espf` en r3, que **no** se pudieron restaurar por no haberlo hecho).
+Comparalo contra el estado actual antes de restaurar, para no pisar nada que haya cambiado a propósito.
+Para empezar de cero el
 estado de la etapa 6, **cerrá todos los procesos de Sky-Claw** y guardá antes la evidencia.
 `etapa6_testigos.json` es **compartido por usuario** y trae entradas de cada combinación
 `(plugins.txt, Data)`: borrarlo elimina también los testigos pendientes de otros perfiles o
