@@ -2323,3 +2323,11 @@ def test_quien_espera_el_worker_exit_esta_congelado_para_que_ninguna_espera_se_s
         "_await_job_completion",
         "_await_worker_exit",
     }
+    # Las esperas que NO son posteriores a un resultado válido y por eso quedan fuera de la política: la rama de
+    # excepción de submit() y de las sesiones (resultado inválido o fallo de lifecycle) y el camino de cancel/timeout.
+    # Escribir el porqué no las verifica: se congelan, y una espera nueva de worker_exit rompe el ancla.
+    assert _funciones_que_llaman_a(arbol, "_await_worker_exit") == {
+        "submit",
+        "_conducir_sesion",
+        "_request_termination_and_wait",
+    }
