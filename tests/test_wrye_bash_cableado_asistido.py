@@ -938,6 +938,8 @@ async def test_el_enrutado_registra_el_resultado_de_cada_fase_sin_rutas(
         "motivo": "artefacto_ausente",
         "artefacto": _RUTA_SENSIBLE,
         "plugins_txt": _RUTA_SENSIBLE,
+        "reason": "ArtefactoAusente",
+        "estado_en_plugins": "ausente",
         "frescura_probada": False,
         "testigo_origen": "durable",
         "testigo_contexto": "coincide",
@@ -952,8 +954,20 @@ async def test_el_enrutado_registra_el_resultado_de_cada_fase_sin_rutas(
     assert devuelto == resultado  # el log no altera lo que ve el llamador
     registros = [r for r in caplog.records if getattr(r, "fase_asistida", None) == fase]
     assert len(registros) == 1, "debe haber exactamente un registro de auditoría por fase"
-    texto = registros[0].getMessage()
-    for campo in ("artefacto_ausente", "durable", "coincide", "guardado"):
-        assert campo in texto, f"falta {campo!r} en el log de auditoría"
+    # Igualdad exacta del dict logueado (clave → valor): lo que entra y lo que no. Comparar
+    # strings sueltos en el texto daría verde con un valor bajo la clave equivocada.
+    campos = registros[0].args[1]  # type: ignore[index]
+    assert campos == {
+        "success": False,
+        "reason": "ArtefactoAusente",
+        "motivo": "artefacto_ausente",
+        "frescura_probada": False,
+        "testigo_origen": "durable",
+        "testigo_contexto": "coincide",
+        "testigo_durable": "guardado",
+        "estado_en_plugins": "ausente",
+    }
+    for excluida in ("message", "artefacto", "plugins_txt"):
+        assert excluida not in campos, f"{excluida!r} puede llevar rutas y no va al log"
     assert _RUTA_SENSIBLE not in caplog.text
     assert "operador" not in caplog.text
