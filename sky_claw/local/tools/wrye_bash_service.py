@@ -112,7 +112,13 @@ def _registrar_resultado_asistido(fase: str, resultado: object) -> None:
         "Etapa 6 asistida fase=%s resultado=%s",
         fase,
         campos,
-        extra={"pipeline_stage": _ETAPA_WRYE_BASH, "fase_asistida": fase, "tx_id": None},
+        extra={
+            "pipeline_stage": _ETAPA_WRYE_BASH,
+            "fase_asistida": fase,
+            "tx_id": None,
+            # Campo estructurado: el log JSON lo emite como objeto, no solo como texto del mensaje.
+            "resultado_asistido": campos,
+        },
     )
 
 

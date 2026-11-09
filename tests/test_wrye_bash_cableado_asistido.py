@@ -957,6 +957,8 @@ async def test_el_enrutado_registra_el_resultado_de_cada_fase_sin_rutas(
     # Igualdad exacta del dict logueado (clave → valor): lo que entra y lo que no. Comparar
     # strings sueltos en el texto daría verde con un valor bajo la clave equivocada.
     campos = registros[0].args[1]  # type: ignore[index]
+    # Y el mismo dict viaja como campo estructurado para el log JSON, no solo en el mensaje.
+    assert registros[0].resultado_asistido == campos  # type: ignore[attr-defined]
     assert campos == {
         "success": False,
         "reason": "ArtefactoAusente",
