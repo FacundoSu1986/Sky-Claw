@@ -893,6 +893,7 @@ def ejecutar_transicion_binder(
                 mo2_ini_path=ini_path,
                 config_path=config_path,
                 environ_skyrim_path=env_actual.get("SKYRIM_PATH"),
+                plan_ejecutables=_preflight_lock.plan_migracion_ejecutables,
             )
         except recovery.RecuperacionError as exc:
             raise BinderError(f"Fallo al capturar el snapshot durable de superficies: {exc}") from exc
@@ -973,7 +974,10 @@ def ejecutar_transicion_binder(
                     ) from exc
                 try:
                     actualizar_game_path_por_handle(
-                        exclusion, target_clone_root, al_escribir=_marcar_escritura_iniciada
+                        exclusion,
+                        target_clone_root,
+                        plan_ejecutables=_preflight_lock.plan_migracion_ejecutables,
+                        al_escribir=_marcar_escritura_iniciada,
                     )
                 except Mo2IniEscrituraError as exc:
                     # Se captura la huella TAMBIÉN cuando la escritura falla: el

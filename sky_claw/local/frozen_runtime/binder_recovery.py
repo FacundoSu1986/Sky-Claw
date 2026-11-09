@@ -209,6 +209,7 @@ class RegistroRecuperacion:
     #: segundo caso pisaría una escritura ajena.
     desired_previsto_generation: str | None = None
     desired_previsto_clone: str | None = None
+    plan_ejecutables_mutaciones: tuple[dict[str, object], ...] | None = None
 
     def superficie(self, kind: str) -> SuperficieCapturada | None:
         return next((s for s in self.superficies if s.kind == kind), None)
@@ -300,6 +301,7 @@ def capturar_registro(
     mo2_ini_path: pathlib.Path,
     config_path: pathlib.Path | None,
     environ_skyrim_path: str | None,
+    plan_ejecutables: object = None,
     clock_ns: object = time.time_ns,
 ) -> RegistroRecuperacion:
     """Construye el registro con los bytes REALES de cada superficie.
@@ -314,6 +316,34 @@ def capturar_registro(
         _capturar_bytes(_KIND_ACTIVE, active_state_path(storage_root)),
         _capturar_environ(environ_skyrim_path),
     )
+
+    mutaciones_serializadas: tuple[dict[str, object], ...] | None = None
+    if plan_ejecutables is not None:
+        if hasattr(plan_ejecutables, "serializar"):
+            mutaciones_serializadas = tuple(plan_ejecutables.serializar())
+        elif hasattr(plan_ejecutables, "mutaciones"):
+            mutaciones_serializadas = tuple(
+                {
+                    "index": m.index,
+                    "campo": m.campo,
+                    "valor_previo": m.valor_previo,
+                    "valor_nuevo": m.valor_nuevo,
+                }
+                for m in plan_ejecutables.mutaciones
+            )
+        elif isinstance(plan_ejecutables, (tuple, list)):
+            mutaciones_serializadas = tuple(
+                {
+                    "index": m.index,
+                    "campo": m.campo,
+                    "valor_previo": m.valor_previo,
+                    "valor_nuevo": m.valor_nuevo,
+                }
+                if hasattr(m, "index")
+                else dict(m)
+                for m in plan_ejecutables
+            )
+
     return RegistroRecuperacion(
         schema_version=SCHEMA_VERSION,
         transition_id=transition_id,
@@ -328,6 +358,7 @@ def capturar_registro(
         updated_at_ns=sello,
         desired_previsto_generation=target_generation_id,
         desired_previsto_clone=target_clone_id,
+        plan_ejecutables_mutaciones=mutaciones_serializadas,
     )
 
 
@@ -337,7 +368,7 @@ def capturar_registro(
 
 
 def _serializar(registro: RegistroRecuperacion) -> dict[str, object]:
-    return {
+    salida: dict[str, object] = {
         "schema_version": registro.schema_version,
         "transition_id": registro.transition_id,
         "journal_revision": registro.journal_revision,
@@ -361,6 +392,9 @@ def _serializar(registro: RegistroRecuperacion) -> dict[str, object]:
             for s in registro.superficies
         ],
     }
+    if registro.plan_ejecutables_mutaciones is not None:
+        salida["plan_ejecutables_mutaciones"] = list(registro.plan_ejecutables_mutaciones)
+    return salida
 
 
 def _parsear(payload: object, *, ruta: pathlib.Path) -> RegistroRecuperacion:
@@ -418,6 +452,11 @@ def _parsear(payload: object, *, ruta: pathlib.Path) -> RegistroRecuperacion:
     for campo in ("transition_id", "operation", "target_clone_id", "target_generation_id", "expected_effective_path"):
         if not isinstance(payload.get(campo), str):
             raise RegistroCorruptoError(f"{ruta}: falta '{campo}'")
+    mut_raw = payload.get("plan_ejecutables_mutaciones")
+    mut_tuple: tuple[dict[str, object], ...] | None = None
+    if isinstance(mut_raw, list):
+        mut_tuple = tuple(d for d in mut_raw if isinstance(d, dict))
+
     return RegistroRecuperacion(
         schema_version=SCHEMA_VERSION,
         transition_id=str(payload["transition_id"]),
@@ -438,6 +477,7 @@ def _parsear(payload: object, *, ruta: pathlib.Path) -> RegistroRecuperacion:
         desired_previsto_clone=(
             payload["desired_previsto_clone"] if isinstance(payload.get("desired_previsto_clone"), str) else None
         ),
+        plan_ejecutables_mutaciones=mut_tuple,
     )
 
 
@@ -773,13 +813,26 @@ def _coincide_con_lo_escrito(
         previos = superficie.bytes_previos()
         if previos is None:
             return False
+        from sky_claw.local.frozen_runtime.mo2_executables_plan import MutacionCampoEjecutable
         from sky_claw.local.frozen_runtime.mo2_ini_escritura import (
             FormatoIniNoAdmitidoError,
             prever_bytes,
         )
 
+        mutaciones_plan: tuple[MutacionCampoEjecutable, ...] = ()
+        if registro.plan_ejecutables_mutaciones:
+            mutaciones_plan = tuple(
+                MutacionCampoEjecutable(
+                    index=int(str(d["index"])),
+                    campo=str(d["campo"]),
+                    valor_previo=str(d.get("valor_previo", "")),
+                    valor_nuevo=str(d["valor_nuevo"]),
+                )
+                for d in registro.plan_ejecutables_mutaciones
+            )
+
         try:
-            previsto = prever_bytes(previos, esperado)
+            previsto = prever_bytes(previos, esperado, plan_ejecutables=mutaciones_plan)
         except (FormatoIniNoAdmitidoError, RecuperacionError, ValueError):
             return False
         if previsto == actuales:
