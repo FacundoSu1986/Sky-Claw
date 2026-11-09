@@ -62,6 +62,17 @@ Por eso el smoke valida cuatro propiedades que los tests con mocks no pueden pro
   parche vacío al arrancar (el nombre lo sugiere); (3) antes de
   empezar, comprobá si ya existe `<padre del juego real>\Skyrim Special Edition Mods` y, si existe,
   respaldalo y restauralo al final.
+- **Respaldá también el `Data` del juego sandbox antes de lanzar Wrye Bash** (observado en la corrida
+  r3, §11). En el `Rebuild Patch`, Wrye Bash **borró dos archivos de 61 B** (`Bogus.esp` y
+  `Bogus.espf`, en `game\Data\SkyClaw Bash\Bash Mod Data\Backups\`) **fuera de `overwrite\`**:
+  su limpieza propia de backups no se redirige a `overwrite\` bajo USVFS, así que el supuesto «todo lo
+  que escribe Wrye Bash cae en `overwrite\`» **no vale** para el borrado. El backup de perfil,
+  `overwrite\` y mods **no los cubre**. Con el juego real en lugar del sandbox (H-2), esa misma limpieza
+  podría borrar archivos reales. Comparé el `Data` del sandbox contra el respaldo después de cada build.
+- **Creá la carpeta `LocalAppData` que pide el `bash.ini`** (observado en r3, §11). Si `sLocalAppDataPath`
+  apunta a una carpeta que no existe, el primer arranque de Wrye Bash falla con `BoltError: LocalAppData
+  folder does not exist`. Crearla (en r3, en el overlay) resolvió el segundo arranque; antes de crearla,
+  `-o` ya había validado bien el sandbox.
 - **Abrí MO2 a mano desde el Explorador.** Un MO2 lanzado por un proceso no interactivo no
   inyecta USVFS (`ERROR_ACCESS_DENIED` para cualquier exe; hallazgo F3, reconfirmado).
 - Python 3.11 o 3.12 y `uv`.
@@ -157,7 +168,11 @@ Campos que vas a leer en los resultados (de `preparacion_como_resultado` /
 
 ### E1 — Camino feliz
 
-1. `preparar`. Esperado: `pendiente=True`, `motivo=ESPERANDO_OPERADOR`. Anotá `generacion`.
+1. **Abrí MO2 primero y dejá que el perfil se estabilice**; recién entonces `preparar`. Esperado:
+   `pendiente=True`, `motivo=ESPERANDO_OPERADOR`. Anotá `generacion`. Si preparás **antes** de abrir
+   MO2, MO2 reescribe `modlist.txt`/`plugins.txt` al abrir, la huella de contexto cambia entre fases y
+   `verificar` da `success=True` pero `frescura_probada=False`, `testigo_contexto=cambio` (observado en
+   r3, §11; es la dirección segura del diseño, no un defecto, pero no prueba frescura).
 2. En MO2 lanzá **Wrye Bash desde el ejecutable del perfil** (no desde el explorador), `Rebuild
    Patch` sobre `Bashed Patch, 0.esp`, solo *Leveled Lists*, confirmar, cerrar, y verificar que el
    plugin esté **activo** (pasos literales de `PASOS_ASISTIDOS`). **Antes de `Rebuild Patch`**
@@ -295,7 +310,7 @@ y no se observó.
   `registry.py`. (Una versión anterior de esta guía decía que el servicio sí resolvía la variable;
   era falso: `get_wrye_bash_path` no tiene llamadores en `sky_claw/`.) Es el hermano de LOOT/xEdit/Pandora, que
   sí tienen `config_field`. **Corregido en #882** (issue #879): la tarjeta lee `wrye_bash_exe` de la
-  config. La verificación **de la tarjeta renderizada** en hardware sigue pendiente (§10): el mecanismo se
+  config. La tarjeta renderizada se verificó en hardware en la corrida r3 (§11); el mecanismo se
   verificó sin GUI.
 - **H-2 (entorno, seguridad operativa).** Wrye Bash cae al juego real si `-o` no valida y escribe
   fuera del sandbox. Se activó el criterio de parada, se limpió y se verificó el juego real. Ver el
@@ -348,7 +363,7 @@ caer en rutas por defecto fuera del sandbox. Después de mover: **cerrar MO2**, 
 **sin definir** en el entorno (la tarjeta no la lee, así que se descarta como variable), `config.toml`
 respaldado byte a byte, y GUI reiniciada entre caso y caso
 (`python -m sky_claw --mode gui --profile Etapa6Smoke`). Las expectativas salen de lo observado sin GUI
-en la corrida r2 y de `config.py:91-96`; la **etiqueta renderizada** de cada tarjeta no está verificada.
+en la corrida r2 y de `config.py:91-96`; la **etiqueta renderizada** de cada tarjeta se verificó después en r3 (§11).
 
 | Caso | Configuración de `config.toml` | Esperado |
 |---|---|---|
@@ -385,9 +400,48 @@ La cadena «Single game found» no aparece en ninguno de los dos.
   `sys.path.insert(0, <worktree bajo prueba>)`. Ni `PYTHONPATH` solo ni el venv nuevo alcanzan:
   comprobá `sky_claw.__file__` antes de dar un resultado por válido.
 
-**Pasos que siguen requiriendo a una persona.** (1) Proteger el juego real y verificarlo. (2) Abrir MO2 a
+**Pasos que requerían a una persona (ejecutados en r3, §11, salvo E2).** (1) Proteger el juego real y verificarlo. (2) Abrir MO2 a
 mano desde el Explorador. (3) Mover la **instalación completa** de Wrye Bash fuera de la ruta
 auto-detectada, verificar su `bash.ini` y actualizar `ModOrganizer.ini` (con `-o` absoluto). (4) Reiniciar la GUI entre A, B, C y D, sin
 `WRYE_BASH_PATH`, capturar la tarjeta y, en B, pulsar `Ejecutar`. Antes de E1 (después de D) restablecer la configuración de B, reiniciar la GUI y volver a ejecutar `preparar`: los reinicios descartan la acción «verificar» creada en B (§5 E3) y tras D la tarjeta no está disponible. Al terminar, restaurar el `config.toml` respaldado **y** devolver la instalación a su lugar original (restaurando la entrada de MO2), o dejar configurada la nueva ubicación de forma permanente (`wrye_bash_exe` en la raíz del TOML); si no, el setup final deja de detectar Wrye Bash. (5) Con el juego real protegido,
 lanzar Wrye Bash desde MO2, confirmar `BashBugDump.log` e inventariar tras el arranque y tras
 `Rebuild Patch`. (6) Opcional: E2 con un segundo sort real de LOOT. (7) Restaurar el juego real.
+
+## 11. Corrida r3 (2026-11-09): `main` `6f10b31b`, rig Windows, validación manual
+
+Un agente con control de pantalla hizo la parte manual (MO2 abierto a mano desde el Explorador, GUI
+manejada por CDP, MO2 y Wrye Bash por capturas y clics reales). Commit probado: `6f10b31b` (incluye
+#895 y #886), perfil `Etapa6Smoke`, MO2 2.5.2 / USVFS 0.5.6.1 / Wrye Bash 315. El informe y la evidencia
+(capturas, JSON, logs, manifiesto de hashes) están en la máquina del operador
+(`C:\SkyClaw_Spike_Sandbox\evidence\etapa6-manual-r3\`), **no en el repo**: lo de abajo es el resumen
+del informe del agente, no una reproducción nuestra.
+
+| Pedido | Resultado |
+|---|---|
+| A: sin `wrye_bash_exe` | **PASS**: «No instalado» |
+| B: clave en la raíz del TOML | **PASS**: «Disponible»; `Ejecutar` despachó `preparar` (`ESPERANDO_OPERADOR`, `testigo_durable=guardado`) con aviso «pendiente», sin toast rojo |
+| C: clave bajo `[paths]` | **PASS**: «No instalado» |
+| D: archivo inexistente, sin otra copia detectable | **PASS**: «No instalado» (con otra copia detectable habría dicho «Disponible», ver §10) |
+| E1 por GUI con Wrye Bash lanzado desde MO2 | **PASS**: `success=True`, `motivo=OK`, `frescura_probada=True`, `testigo_origen=payload`, `testigo_contexto=coincide`, `estado_en_plugins=HABILITADO`; registro durable consumido (`{}`). Artefacto final en `overwrite\Bashed Patch, 0.esp` (230 B: el perfil no tiene leveled lists, así que se valida existencia, activación y frescura, **no** el contenido del merge) |
+| `BashBugDump.log` | Junto al ejecutable lanzado, con fecha del último arranque; las cuatro líneas (`_detectGames`, `Data folder`, `Game Mods location`, `Bash Mod Data location`) apuntan al sandbox |
+| Log de #895 | Línea `Etapa 6 asistida fase=verificar resultado={...}` con `success`, `motivo`, `frescura_probada`, `testigo_origen`, `testigo_contexto` y `estado_en_plugins`, sin rutas ni `message`. `testigo_durable` **no** sale en `verificar` (solo en `preparar`) |
+| Juego real | **Intacto** en las 8 comprobaciones por manifiesto (16.309 archivos); sin `Skyrim Special Edition Mods` |
+| Restauración | `config.toml` y `ModOrganizer.ini` byte-idénticos al respaldo; `overwrite\` y perfil idénticos al baseline; Wrye Bash devuelto a su lugar. Con una excepción: los 2 archivos de D2 |
+
+**Desviaciones y hallazgos de la corrida.**
+
+- **D1 (secuencia).** La primera tentativa de E1 dio `frescura_probada=False` porque se preparó antes de
+  abrir MO2. Repetida con MO2 abierto y el perfil estable, dio `True`. Ya incorporado a E1 (§5).
+- **D2 (seguridad).** Wrye Bash borró `Bogus.esp` y `Bogus.espf` (61 B) de `game\Data` del sandbox
+  durante el `Rebuild`, fuera de `overwrite\`. No se restauraron (no había copia de su contenido y
+  recrearlos habría sido inventarlo). Ya incorporado a §1. **Abierto**: si el preflight debería exigir
+  ese respaldo, queda como issue de producto.
+- **D3.** El primer arranque falló por la carpeta `LocalAppData` ausente. Ya incorporado a §1.
+- **D4/D5.** Había evidencia de otra corrida del mismo día (se usó solo como lectura) y el escritorio era
+  compartido con otras sesiones; no se observó interferencia sobre el rig.
+- **D6.** El botón «Instalar» de una tarjeta «No instalado» **no instala** (la propia tarjeta lo declara
+  para una próxima iteración). Es comportamiento documentado, no se evaluó en A–D.
+
+**NO ejecutado en r3:** E2 con un segundo sort real de LOOT (opcional), E3–E7 (fuera de alcance, ya
+cubiertos en r1/r2), el bridge USVFS (no lo requiere la etapa 6 asistida) y el contenido del merge del
+parche (perfil sin leveled lists).
