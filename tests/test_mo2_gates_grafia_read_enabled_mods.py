@@ -24,6 +24,7 @@ import ast
 import functools
 import hashlib
 import pathlib
+from collections.abc import Iterator
 
 import pytest
 
@@ -615,6 +616,24 @@ def _arboles() -> tuple[tuple[str, ast.Module], ...]:
     )
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _liberar_censo_ast_al_cerrar_el_modulo() -> Iterator[None]:
+    """Libera los AST al terminar el módulo: **sólo** mitigación de retención de memoria.
+
+    ``_arboles`` conserva 428 módulos / 736.948 nodos (~187 MiB medidos) durante
+    toda la sesión pytest y encarece ``gc.collect()`` de ~4 ms a ~420 ms. El caché
+    es perezoso y se repuebla solo, así que vaciarlo NO altera el censo exhaustivo
+    ni introduce dependencia del orden de ejecución. No se invoca ``gc.collect()``.
+
+    Esto NO resuelve la falla intermitente 15
+    (``test_cancelacion_repetida_no_reinicia_deadline_ni_pierde_excepcion``): su
+    causa raíz no quedó demostrada. Este cambio no aumenta timeouts, no agrega
+    esperas y no oculta ningún resultado intermitente.
+    """
+    yield
+    _arboles.cache_clear()
+
+
 def _llamadas(arbol: ast.Module, nombre: str) -> int:
     return sum(
         1
@@ -843,3 +862,57 @@ def test_el_verifier_reconstruye_el_fingerprint_con_la_grafia_de_cada_challenge(
 
     assert prueba.source_mod == grafia
     assert prueba.profile_fingerprint == desafio.profile_fingerprint
+
+
+# ---------------------------------------------------------------------------
+# Ancla del ciclo de vida del censo AST: perder el fixture rompe este test
+# ---------------------------------------------------------------------------
+
+
+def test_el_fixture_libera_el_censo_ast_al_cerrar_el_modulo() -> None:
+    """``_arboles`` retiene ~187 MiB; el fixture de módulo DEBE liberarlo en el teardown.
+
+    Se ancla por AST el propio módulo: alcance de módulo, ``autouse``, un ``yield``
+    y la llamada a ``cache_clear()`` DESPUÉS de él. Sin ``gc.collect()``: liberar el
+    caché no es forzar una recolección.
+    """
+    arbol = ast.parse(pathlib.Path(__file__).read_bytes())
+    fixtures = [
+        nodo
+        for nodo in arbol.body
+        if isinstance(nodo, ast.FunctionDef)
+        and any(
+            isinstance(decorador, ast.Call)
+            and isinstance(decorador.func, ast.Attribute)
+            and decorador.func.attr == "fixture"
+            and any(
+                kw.arg == "scope" and isinstance(kw.value, ast.Constant) and kw.value.value == "module"
+                for kw in decorador.keywords
+            )
+            and any(
+                kw.arg == "autouse" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+                for kw in decorador.keywords
+            )
+            for decorador in nodo.decorator_list
+        )
+    ]
+    assert len(fixtures) == 1, "falta el fixture scope=module autouse que libera el censo AST"
+
+    fixture = fixtures[0]
+    limpiezas = [
+        nodo
+        for nodo in ast.walk(fixture)
+        if isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and nodo.func.attr == "cache_clear"
+        and isinstance(nodo.func.value, ast.Name)
+        and nodo.func.value.id == "_arboles"
+    ]
+    yields = [nodo.lineno for nodo in ast.walk(fixture) if isinstance(nodo, ast.Yield)]
+    assert len(limpiezas) == 1, "el fixture debe llamar exactamente una vez a _arboles.cache_clear()"
+    assert len(yields) == 1, "el fixture debe usar yield para liberar en el TEARDOWN"
+    assert limpiezas[0].lineno > yields[0], "cache_clear() debe ejecutarse DESPUÉS del yield"
+    assert not any(
+        isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute) and nodo.func.attr == "collect"
+        for nodo in ast.walk(fixture)
+    ), "el fixture no debe invocar gc.collect()"
