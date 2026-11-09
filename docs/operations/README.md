@@ -20,6 +20,7 @@
 - [Release](release.md)
 - [Validación en rig real](real_rig_validation.md)
 - [Prueba del generador nativo de parallax en un rig real](native_parallax_prueba_en_rig.md)
+- [Parallax nativo (beta): estado y cómo ajustar la profundidad](native_parallax_beta.md)
 - [Deployment y preflight](../../DEPLOYMENT.md)
 
 ## Regla operativa

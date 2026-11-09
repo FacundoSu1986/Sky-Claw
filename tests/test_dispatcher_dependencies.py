@@ -85,8 +85,13 @@ def test_builder_registra_exactamente_las_dieciseis_tools() -> None:
     assert dispatcher.registered_tools() == _TOOLS
 
 
-def test_gate_hitl_envuelve_exactamente_las_siete_tools_destructivas() -> None:
-    from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+def test_gate_hitl_envuelve_exactamente_las_seis_tools_destructivas() -> None:
+    """Verifica que HitlGateMiddleware envuelva sólo las seis tools destructivas y no generate_bashed_patch."""
+    from sky_claw.app.orchestrator.tool_strategies.middleware import (
+        DictResultGuardMiddleware,
+        ErrorWrappingMiddleware,
+        HitlGateMiddleware,
+    )
 
     gate = HitlGateMiddleware(allow_unattended=True)
     dispatcher = build_orchestration_dispatcher(
@@ -103,8 +108,11 @@ def test_gate_hitl_envuelve_exactamente_las_siete_tools_destructivas() -> None:
         "generate_animations",
         "quick_auto_clean",
         "generate_grass_cache",
-        "generate_bashed_patch",
     }
+    assert [type(item) for item in dispatcher._middleware["generate_bashed_patch"]] == [
+        ErrorWrappingMiddleware,
+        DictResultGuardMiddleware,
+    ]
 
 
 def test_strategies_retienen_las_mismas_instancias_y_callables() -> None:

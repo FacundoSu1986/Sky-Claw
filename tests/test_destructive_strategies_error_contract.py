@@ -1,14 +1,19 @@
-"""Contrato de errores del dispatcher para las estrategias destructivas restantes.
+"""Contrato de errores del dispatcher para las estrategias envueltas en #726.
 
 Origen: issue #726 (auditoría del orquestador), separado del PR #722 —que cerró
 este mismo defecto SOLO para ``generate_lods`` (Finding 6 de #592)— para no
 ampliar su blast radius.
 
-``generate_animations`` (Pandora), ``quick_auto_clean`` (xEdit: reescribe los
-DLC oficiales en disco) y ``generate_bashed_patch`` (Wrye Bash) viven en
-``DESTRUCTIVE_TOOL_PATTERNS`` y se registran con el gate HITL, pero SIN
-``ErrorWrappingMiddleware`` ni ``DictResultGuardMiddleware``. Dos huecos, ambos
-en el camino real de ejecución de la GUI y del agente:
+En #726, ``generate_animations`` (Pandora), ``quick_auto_clean`` (xEdit: reescribe
+los DLC oficiales en disco) y ``generate_bashed_patch`` (Wrye Bash) vivían en
+``DESTRUCTIVE_TOOL_PATTERNS`` con el gate HITL, pero SIN
+``ErrorWrappingMiddleware`` ni ``DictResultGuardMiddleware``. Tras retirar el
+camino headless de Wrye Bash (#862) y su compuerta HITL (ADR 0016 §7),
+``generate_animations`` y ``quick_auto_clean`` permanecen en
+``DESTRUCTIVE_TOOL_PATTERNS`` (``HERRAMIENTAS_DESTRUCTIVAS``) con la tripleta
+completa, mientras ``generate_bashed_patch`` conserva ``ErrorWrappingMiddleware``
++ ``DictResultGuardMiddleware`` sin ``HitlGateMiddleware``. Dos huecos cerrados
+por este contrato en el camino real de ejecución de la GUI y del agente:
 
 1. **Demostrado (rojo→verde):** el ``ValueError`` de ``validate_for_approval``
    —el rechazo de claves que la estrategia no honra, Codex #213— escapa del
@@ -46,13 +51,16 @@ Este módulo congela el contrato DESPUÉS del fix. Por cada herramienta:
    un error— con la clave de idempotencia liberada;
 6. resultado exitoso pasa intacto (red de regresión).
 
-Y dos invariantes de seguridad que el fix NO puede romper:
+Y tres invariantes estructurales y de seguridad que el fix NO puede romper:
 
-7. el wrapping no tapa la denegación HITL: sin aprobación no se ejecuta nada y
-   el caller recibe ``HITLApprovalDenied``;
+7. el wrapping no tapa la denegación HITL en ``HERRAMIENTAS_DESTRUCTIVAS``: sin
+   aprobación no se ejecuta nada y el caller recibe ``HITLApprovalDenied``,
+   mientras ``generate_bashed_patch`` corre sin pedir aprobación HITL;
 8. el ancla de familia (por introspección, no por muestreo): TODA herramienta
-   de ``DESTRUCTIVE_TOOL_PATTERNS`` registrada lleva wrapping + guard + gate.
-   Registrar una estrategia destructiva nueva sin la tripleta rompe este test.
+   de ``DESTRUCTIVE_TOOL_PATTERNS`` registrada lleva wrapping + guard + gate
+   (registrar una estrategia destructiva nueva sin la tripleta rompe este test),
+   y ``generate_bashed_patch`` conserva exactamente ``[ErrorWrappingMiddleware,
+   DictResultGuardMiddleware]`` sin ``HitlGateMiddleware``.
 """
 
 from __future__ import annotations
@@ -89,8 +97,12 @@ _RAZON_RESULTADO_INVALIDO: dict[str, str] = {
     "generate_bashed_patch": "InvalidWryeBashPipelineResult",
 }
 
-#: Las tres herramientas destructivas que #722 dejó fuera de su fix.
+#: Las tres herramientas que #726 envolvió con ErrorWrapping + DictResultGuard.
+#: Tras el retiro del camino headless (#862) y de su gate HITL (ADR 0016 §7),
+#: ``generate_bashed_patch`` conserva wrapping + guard (sin ``HitlGateMiddleware``),
+#: mientras ``generate_animations`` y ``quick_auto_clean`` siguen siendo destructivas.
 HERRAMIENTAS = list(_RAZON_ERROR)
+HERRAMIENTAS_DESTRUCTIVAS = ["generate_animations", "quick_auto_clean"]
 
 
 class _GuardQueNiega(HITLGuard):
@@ -364,11 +376,12 @@ async def test_exito_registra_estado_completed(tool: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. El wrapping NO tapa la denegación HITL
+# 7. El wrapping NO tapa la denegación HITL en las destructivas, y
+#    generate_bashed_patch (etapa 6 asistida, ADR 0016 §7) corre sin HITL
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tool", HERRAMIENTAS)
+@pytest.mark.parametrize("tool", HERRAMIENTAS_DESTRUCTIVAS)
 async def test_denegacion_hitl_no_queda_tapada_por_el_wrapping(tool: str) -> None:
     """Verifica que la denegación del operador en HitlGateMiddleware retorne HITLApprovalDenied sin ejecutar."""
     # Arrange: gate real con un guard que niega.
@@ -384,6 +397,30 @@ async def test_denegacion_hitl_no_queda_tapada_por_el_wrapping(tool: str) -> Non
     assert resultado["reason"] == "HITLApprovalDenied"
     assert guard.contador == 1
     doble.assert_not_awaited()
+
+
+async def test_generate_bashed_patch_corre_sin_gate_hitl_y_conserva_wrapping_y_guard() -> None:
+    """ADR 0016 §7: ni ``preparar`` ni ``verificar`` mutan; ``generate_bashed_patch`` corre
+    sin pedir aprobación a ``HITLGuard`` (incluso con ``HitlGateMiddleware()`` sin guard o con
+    un guard que niega), pero conserva ``ErrorWrappingMiddleware`` y ``DictResultGuardMiddleware``."""
+    guard = _GuardQueNiega()
+    dependencias, doble = _doble_para("generate_bashed_patch", retorno={"success": True, "motivo": "OK"})
+    dispatcher_con_guard_que_niega = _construir_dispatcher(
+        gate=HitlGateMiddleware(hitl_guard=guard),
+        **dependencias,
+    )
+    dispatcher_sin_guard = _construir_dispatcher(
+        gate=HitlGateMiddleware(),
+        **dependencias,
+    )
+
+    res_1 = await dispatcher_con_guard_que_niega.dispatch("generate_bashed_patch", {"fase": "verificar"})
+    res_2 = await dispatcher_sin_guard.dispatch("generate_bashed_patch", {"fase": "preparar"})
+
+    assert res_1 == {"success": True, "motivo": "OK"}
+    assert res_2 == {"success": True, "motivo": "OK"}
+    assert guard.contador == 0
+    assert doble.await_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -432,3 +469,19 @@ def test_toda_herramienta_destructiva_esta_registrada() -> None:
 
     registradas = set(dispatcher.registered_tools())
     assert set(DESTRUCTIVE_TOOL_PATTERNS) <= registradas
+
+
+def test_generate_bashed_patch_conserva_wrapping_y_guard_sin_gate_hitl() -> None:
+    """Ancla simétrica a la tripleta destructiva: tras salir de ``DESTRUCTIVE_TOOL_PATTERNS``
+    (ADR 0016 §7), ``generate_bashed_patch`` conserva exactamente ``[ErrorWrappingMiddleware,
+    DictResultGuardMiddleware]`` y no lleva ``HitlGateMiddleware``."""
+    dispatcher = _construir_dispatcher()
+    cadena = dispatcher._middleware.get("generate_bashed_patch")
+
+    assert cadena is not None
+    assert [type(mw) for mw in cadena] == [
+        ErrorWrappingMiddleware,
+        DictResultGuardMiddleware,
+    ]
+    assert cadena[0].reason_code == "WryeBashPipelineExecutionFailed"
+    assert cadena[1].reason_code == "InvalidWryeBashPipelineResult"
