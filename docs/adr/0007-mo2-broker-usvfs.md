@@ -154,7 +154,8 @@ nunca `<MO2>/overwrite` como path.
   `job_result` ya recibido, si el `worker_exit` no llega dentro de
   `post_result_cancel_grace_seconds` (por defecto 5.0 s, positivo y finito), el broker
   le pide al bridge cerrar el Job con el `cancel` de siempre, **una vez**, y sigue
-  esperando hasta el MISMO deadline duro (pedirlo no lo extiende). Cubre `submit()` y
+  esperando hasta el MISMO deadline duro (pedirlo no lo extiende: el envío queda acotado por ese deadline, así que un socket
+  que no drena no puede dejar colgado a un job exitoso). Cubre `submit()` y
   las sesiones, que comparten `_await_job_completion`. No relaja nada: `worker_exit` solo
   se emite con el Job VACÍO, así que liberar al recibirlo conserva la garantía; si el
   bridge responde que no pudo terminarlo, o no lo confirma antes del deadline, la

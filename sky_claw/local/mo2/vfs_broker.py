@@ -1028,7 +1028,7 @@ class VfsExecutionBroker:
         result = await asyncio.wait_for(asyncio.shield(result_future), timeout=timeout)
         # El deadline duro es ABSOLUTO y se fija antes de la espera blanda: pedir el cierre no lo extiende.
         deadline = asyncio.get_running_loop().time() + self._connected_worker_exit_deadline
-        await self._pedir_cierre_si_el_worker_exit_se_demora(exit_future, job_id=job_id)
+        await self._pedir_cierre_si_el_worker_exit_se_demora(exit_future, job_id=job_id, deadline=deadline)
         while not exit_future.done():
             await self._await_exit_or_bridge_loss(exit_future, deadline, job_id=job_id)
         exit_future.result()
@@ -1039,6 +1039,7 @@ class VfsExecutionBroker:
         exit_future: asyncio.Future[int | None],
         *,
         job_id: str | None,
+        deadline: float,
     ) -> None:
         """Con el resultado ya recibido, pide al bridge cerrar el Job si el ``worker_exit`` se demora.
 
@@ -1051,6 +1052,10 @@ class VfsExecutionBroker:
 
         Si la gracia no es menor que el deadline duro no hay ventana donde pedirlo: la política no se activa. Un bridge
         desconectado no es un error de este camino: rige el contrato de pérdida de bridge de la espera dura.
+
+        ``deadline`` es el instante ABSOLUTO del deadline duro: el envío queda acotado por él, así un socket que no
+        drena no puede dejar colgado a un job exitoso ni impedir que ese deadline venza (la trama ya está en el buffer
+        antes del ``drain()``, de modo que cancelar la espera no deja una trama a medias, y el lock de escritura se libera).
         """
         gracia = self._post_result_cancel_grace
         if job_id is None or gracia >= self._connected_worker_exit_deadline:
@@ -1058,6 +1063,9 @@ class VfsExecutionBroker:
         await asyncio.wait({exit_future}, timeout=gracia)
         if exit_future.done():
             return
+        restante = deadline - asyncio.get_running_loop().time()
+        if restante <= 0:
+            return  # el deadline duro ya venció: lo resuelve la espera dura que sigue (cuarentena), sin enviar nada
         logger.warning(
             "El worker VFS %s ya reportó su resultado pero no confirmó worker_exit en %.1fs; se pide al bridge MO2 "
             "cerrar el Job (la cuarentena sigue vigente si no lo confirma)",
@@ -1066,9 +1074,16 @@ class VfsExecutionBroker:
             extra={"event": "post_result_cancel_requested", "operation": "vfs_broker", "job_id": job_id},
         )
         try:
-            await self._send_bridge({"protocol_version": VFS_PROTOCOL_VERSION, "type": "cancel", "job_id": job_id})
-        except (VfsBrokerError, ConnectionError, OSError):
-            logger.warning("No se pudo pedir al bridge cerrar el Job de %s tras el resultado", job_id, exc_info=True)
+            await asyncio.wait_for(
+                self._send_bridge({"protocol_version": VFS_PROTOCOL_VERSION, "type": "cancel", "job_id": job_id}),
+                timeout=restante,
+            )
+        except (VfsBrokerError, ConnectionError, OSError, TimeoutError):
+            logger.warning(
+                "No se pudo pedir al bridge cerrar el Job de %s tras el resultado (o no a tiempo)",
+                job_id,
+                exc_info=True,
+            )
 
     async def _await_worker_exit(
         self,

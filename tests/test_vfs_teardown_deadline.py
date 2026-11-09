@@ -2189,6 +2189,46 @@ async def test_pedir_el_cierre_no_extiende_el_plazo_duro(tmp_path: pathlib.Path,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_si_el_envio_del_cancel_se_traba_el_plazo_duro_se_sigue_haciendo_cumplir(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, superficie: str
+) -> None:
+    # Arrange: un bridge cuyo socket no drena: el envío del cancel no vuelve nunca. La política corre en el camino
+    # FELIZ (un job exitoso), así que un envío sin cota dejaría colgado a un job que antes terminaba por el plazo duro.
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=1.5, post_result_cancel_grace_seconds=0.3)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    liberar_envio = asyncio.Event()
+    try:
+        desenlace, worker, _sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
+
+        async def _envio_trabado(_mensaje: object) -> None:
+            await liberar_envio.wait()
+
+        monkeypatch.setattr(broker, "_send_bridge", _envio_trabado)
+
+        # Act
+        inicio = asyncio.get_running_loop().time()
+        # ``asyncio.wait`` y no ``wait_for``: este último CANCELARÍA el job al vencer y esperaría a que termine de
+        # cancelarse, que vuelve a pasar por el envío trabado (el test colgaría en vez de fallar).
+        terminados, _pendientes = await asyncio.wait({desenlace}, timeout=6.0)
+        transcurrido = asyncio.get_running_loop().time() - inicio
+
+        # Assert: el plazo duro sigue siendo el de siempre (~1,5 s desde el resultado), y con cuarentena.
+        assert terminados, "el job quedó colgado: el envío trabado impidió que venciera el plazo duro"
+        with pytest.raises(VfsTeardownDeadlineError):
+            desenlace.result()
+        assert transcurrido < 2.3, f"el envío trabado extendió el plazo duro: {transcurrido:.2f}s"
+        assert broker.quarantine_reason is not None
+    finally:
+        # Sin esto, la limpieza (que cancela el job y vuelve a pasar por el envío parcheado) quedaría colgada.
+        liberar_envio.set()
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
 async def test_si_el_bridge_no_pudo_cerrar_el_job_hay_cuarentena_sin_esperar_el_plazo_duro(
     tmp_path: pathlib.Path, superficie: str
 ) -> None:
