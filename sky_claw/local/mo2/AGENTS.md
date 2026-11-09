@@ -26,6 +26,25 @@ raíz.
 - Si falla el rollback, preservar el backup.
 - Timeout/cancelación termina y recolecta (`reap`) el worker y todo su árbol de
   procesos descendientes.
+- **Un PPID no prueba parentesco: el bridge adopta por PPID pero solo descarta con evidencia positiva** (H-01, #877).
+  Windows no reasigna el PPID cuando el padre muere, así que un proceso viejo —típicamente de sistema (`csrss`,
+  `wininit`, `winlogon`: sus padres, los `smss` de sesión, ya salieron), que `OpenProcess` rechaza con ACCESS_DENIED—
+  puede quedar como «hijo» del PID que el sistema le entregue después al worker, y antes nunca se podía leer su
+  creación (necesita handle) para descartarlo: el launch terminaba en `BridgeTerminationError` y la instancia en
+  cuarentena (flake de CI, run 42537421209: «quedan vivos fuera del Job: [720, 844] … GetLastError=5»).
+  `adopt_descendants` solo lo saca de la cuenta si su creación, leída SIN abrirlo
+  (`AdoptionApi.creation_time_by_pid` → `NtQuerySystemInformation`, la misma lectura de reserva de `psutil`), es
+  **anterior** a la de su padre retenido. Sin esa evidencia —lectura fallida, el PID ya no figura, creación IGUAL o
+  posterior— un candidato que no se pudo identificar sigue siendo un descendiente vivo fuera del Job
+  (`BridgeTerminationError`): no lo relajes. El error nombra el PPID de cada candidato. Todo implementador nuevo de
+  `AdoptionApi` aplica la misma regla; los consumidores con `psutil.Process.children` (`vfs_job_identity`, `vfs`,
+  `grass_cache_runner`) ya la tienen. Anclas: `tests/test_mo2_bridge_adopcion.py` (la tabla
+  `…solo_se_descarta_con_evidencia_positiva…` enumera los casos; `test_todo_implementador_…` y
+  `test_no_hay_otro_implementador_…` congelan la familia) y `tests/test_mo2_bridge_adopcion_windows.py` (kernel real:
+  reproduce el ACCESS_DENIED sobre un proceso de sistema real y compara `NtQuerySystemInformation` con
+  `GetProcessTimes`). **Sin medir:** que el PID reciclado ocurra en la práctica (el asignador de PIDs de Windows es
+  LIFO y no se pudo provocar a voluntad: la causa del flake de CI es una hipótesis consistente con la firma, no una
+  prueba) y la disposición de la estructura en Python de 32 bits.
 - **El worker no crea el nieto de la attestation ni despacha la herramienta antes de estar
   supervisado.** Espera `supervised` (autenticado, ligado a su `job_id`) ANTES de la
   attestation, que crea el proceso nieto; lo que el intérprete crea al arrancar (imports,
