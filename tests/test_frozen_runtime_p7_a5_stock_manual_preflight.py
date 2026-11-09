@@ -2106,3 +2106,158 @@ class TestInvariantesReadOnlyYHermanoInspectorP7:
         assert evaluacion.verdict is BinderPreflightVerdict.BLOCKED
         assert evaluacion.is_ready is False
         assert PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED in evaluacion.reasons
+
+    def test_21_toctou_descriptor_based_validation_and_read_errors(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test 21: Validación basada en descriptor único, fstat y prevención TOCTOU.
+
+        1. cargar_digest_aprobado_stock: detecta sustitución concurrente y falla cerrado ante error de lectura.
+        2. _validar_autoridad_fuente_stock: detecta sustitución concurrente en archivo crítico y falla cerrado ante error de lectura.
+        """
+        from sky_claw.local.frozen_runtime.binder_preflight import _validar_autoridad_fuente_stock
+        from sky_claw.local.frozen_runtime.provisioning import (
+            StockReferenceUnapprovedError,
+            cargar_digest_aprobado_stock,
+        )
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        digest_file = tmp_path / "approved_digest.txt"
+        digest_file.write_text(rig.approved_digest + "\n", encoding="utf-8")
+
+        # 1a. Sustitución concurrente en cargar_digest_aprobado_stock: fstat retorna dev/ino distinto
+        real_fstat = os.fstat
+
+        def mock_fstat_divergente(fd: int) -> os.stat_result:
+            st = real_fstat(fd)
+            # Modificar st_ino para simular sustitución concurrente entre lstat y open
+            return os.stat_result(
+                (
+                    st.st_mode,
+                    st.st_ino + 999999,
+                    st.st_dev,
+                    st.st_nlink,
+                    st.st_uid,
+                    st.st_gid,
+                    st.st_size,
+                    st.st_atime,
+                    st.st_mtime,
+                    st.st_ctime,
+                )
+            )
+
+        monkeypatch.setattr(os, "fstat", mock_fstat_divergente)
+        with pytest.raises(StockReferenceUnapprovedError, match="sustitución concurrente detectada"):
+            cargar_digest_aprobado_stock(digest_file)
+        monkeypatch.undo()
+
+        # 1b. Error de lectura en descriptor de cargar_digest_aprobado_stock
+        def mock_read_error(fd: int, n: int) -> bytes:
+            raise OSError("I/O error simulado en lectura de descriptor")
+
+        monkeypatch.setattr(os, "read", mock_read_error)
+        with pytest.raises(StockReferenceUnapprovedError, match="no se pudo leer el digest aprobado"):
+            cargar_digest_aprobado_stock(digest_file)
+        monkeypatch.undo()
+
+        # 2a. Sustitución concurrente en _validar_autoridad_fuente_stock sobre archivo crítico
+        monkeypatch.setattr(os, "fstat", mock_fstat_divergente)
+        st_sust, rz_sust, det_sust = _validar_autoridad_fuente_stock(
+            rig.stock_source,
+            reference=rig.referencia,
+            observadores=rig.probes_globales_activos(),
+            storage=rig.storage,
+            ms_root_resolved=rig.managed_source,
+        )
+        assert st_sust is PreflightCheckStatus.FAIL
+        assert rz_sust is PreflightReasonCode.STOCK_PROVENANCE_INVALID
+        assert "sustitución concurrente detectada" in det_sust
+        monkeypatch.undo()
+
+        # 2b. Error de lectura en descriptor de archivo crítico
+        monkeypatch.setattr(os, "read", mock_read_error)
+        st_read, rz_read, det_read = _validar_autoridad_fuente_stock(
+            rig.stock_source,
+            reference=rig.referencia,
+            observadores=rig.probes_globales_activos(),
+            storage=rig.storage,
+            ms_root_resolved=rig.managed_source,
+        )
+        assert st_read is PreflightCheckStatus.FAIL
+        assert rz_read is PreflightReasonCode.STOCK_PROVENANCE_INVALID
+        assert "no se pudo leer el archivo crítico" in det_read
+        monkeypatch.undo()
+
+    def test_22_autoridad_fuente_stock_rechaza_raiz_parcial_o_divergente_en_inventario(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Test 22: Rechazo adversarial de una raíz Stock que coincide sólo en archivos críticos
+        pero difiere en el resto del inventario (directorios / archivos).
+
+        Verifica que no se puede inducir un READY incorrecto suministrando una raíz Stock parcial
+        que oculte hardlinks entre el runtime manual y la copia Stock auténtica.
+        """
+        rig = RigStockManual(tmp_path, steam_activo=True)
+
+        # Crear una raíz Stock parcial falsa:
+        # Tiene SkyrimSE.exe y steam_api64.dll legítimos (copiados de la auténtica),
+        # pero carece del directorio Data/ y del resto del inventario sellado en la referencia A1.
+        stock_parcial = tmp_path / "StockParcialFake"
+        stock_parcial.mkdir()
+        shutil.copy2(rig.stock_source / "SkyrimSE.exe", stock_parcial / "SkyrimSE.exe")
+        shutil.copy2(rig.stock_source / "steam_api64.dll", stock_parcial / "steam_api64.dll")
+
+        # Crear en manual_runtime un hardlink a un archivo no crítico de la fuente Stock real
+        # (p. ej. Data/Skyrim.esm)
+        esm_stock = rig.stock_source / "Data" / "Skyrim.esm"
+        esm_manual = rig.manual_runtime / "Data" / "Skyrim.esm"
+        esm_manual.parent.mkdir(parents=True, exist_ok=True)
+        if esm_manual.exists():
+            esm_manual.unlink()
+        os.link(esm_stock, esm_manual)
+
+        # 1. Si preflight evaluara stock_parcial como fuente Stock válida,
+        # como stock_parcial carece de Data/Skyrim.esm,
+        # la validación de aislamiento NO detectaría el hardlink cruzado y emitiría READY (falso positivo).
+        # El contrato de autoridad DEBE rechazar stock_parcial fail-closed por divergencia de inventario/membership.
+        eval_parcial = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=stock_parcial,
+            probes=rig.probes_globales_activos(),
+        )
+        assert eval_parcial.verdict is BinderPreflightVerdict.BLOCKED
+        assert eval_parcial.is_ready is False
+        assert PreflightReasonCode.STOCK_PROVENANCE_INVALID in eval_parcial.reasons
+        chk_gen = next(c for c in eval_parcial.checks if c.check is PreflightCheckCode.GENERATION_INTEGRITY)
+        assert chk_gen.status is PreflightCheckStatus.FAIL
+
+        # 2. Con la fuente Stock auténtica autorizada, la autoridad pasa pero el aislamiento
+        # detecta el hardlink cruzado con Data/Skyrim.esm y bloquea por OUTGOING_MANUAL_RUNTIME_INVALID.
+        eval_real = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=rig.stock_source,
+            probes=rig.probes_globales_activos(),
+        )
+        assert eval_real.verdict is BinderPreflightVerdict.BLOCKED
+        assert eval_real.is_ready is False
+        assert PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in eval_real.reasons
+        chk_man = next(c for c in eval_real.checks if c.check is PreflightCheckCode.PATH_SAFETY)
+        assert chk_man.status is PreflightCheckStatus.FAIL

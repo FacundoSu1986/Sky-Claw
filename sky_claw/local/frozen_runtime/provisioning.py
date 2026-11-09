@@ -1220,10 +1220,30 @@ def cargar_digest_aprobado_stock(ruta: pathlib.Path) -> str:
         raise StockReferenceUnapprovedError(
             f"tamaño inválido en '{candidato}' ({st.st_size} bytes; esperado 1..{_LIMITE_ARCHIVO_DIGEST_APROBADO})"
         )
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     try:
-        crudo = candidato.read_bytes()
+        fd = os.open(candidato, flags)
+    except OSError as exc:
+        raise StockReferenceUnapprovedError(f"no se pudo abrir el digest aprobado '{candidato}': {exc}") from exc
+    try:
+        fst = os.fstat(fd)
+        if not stat.S_ISREG(fst.st_mode):
+            raise StockReferenceUnapprovedError(f"el digest aprobado '{candidato}' no es un archivo regular")
+        if (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
+            raise StockReferenceUnapprovedError(
+                f"sustitución concurrente detectada en el digest aprobado '{candidato}'"
+            )
+        if fst.st_size != st.st_size:
+            raise StockReferenceUnapprovedError(
+                f"tamaño alterado concurrentemente en '{candidato}' ({fst.st_size} vs {st.st_size})"
+            )
+        crudo = os.read(fd, _LIMITE_ARCHIVO_DIGEST_APROBADO + 1)
     except OSError as exc:
         raise StockReferenceUnapprovedError(f"no se pudo leer el digest aprobado '{candidato}': {exc}") from exc
+    finally:
+        os.close(fd)
     if len(crudo) > _LIMITE_ARCHIVO_DIGEST_APROBADO:
         raise StockReferenceUnapprovedError(f"el digest aprobado '{candidato}' excede el límite permitido")
     try:

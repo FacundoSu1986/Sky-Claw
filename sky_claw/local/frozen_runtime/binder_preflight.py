@@ -93,6 +93,10 @@ from sky_claw.local.frozen_runtime.independence import (
     _archivos_fisicos,
     descripcion_de_enlace,
 )
+from sky_claw.local.frozen_runtime.membership import (
+    DirectoryMembershipError,
+    capturar_membership_directorios,
+)
 from sky_claw.local.frozen_runtime.models import (
     DiscoveryState,
     ManagedSourceDiscoveryResult,
@@ -561,10 +565,12 @@ def _validar_autoridad_fuente_stock(
     observadores: RuntimeProbes,
     storage: pathlib.Path,
     ms_root_resolved: pathlib.Path | None,
+    generation_root: pathlib.Path | None = None,
 ) -> tuple[PreflightCheckStatus, PreflightReasonCode | None, str]:
     """Valida la autoridad de stock_source_root frente a la referencia Stock aprobada (A1).
 
-    Fail-closed: una ruta arbitraria, sin identidad de Skyrim o no coincidente se rechaza.
+    Fail-closed: una ruta arbitraria, sin identidad de Skyrim, con enlaces/reparse o que
+    diverja en directory_membership o inventario frente a la referencia aprobada se rechaza.
     """
     motivo = descripcion_de_enlace(stock_root)
     if motivo is not None:
@@ -619,6 +625,88 @@ def _validar_autoridad_fuente_stock(
             f"no coincide con la referencia Stock aprobada "
             f"({reference.expected_runtime.game_key} {reference.expected_runtime.game_version})",
         )
+
+    # 1. Validación de Directory Membership (estructura completa de directorios frente a referencia A1)
+    try:
+        membership_stock = capturar_membership_directorios(stock_root)
+    except (DirectoryMembershipError, FrozenRuntimeError, OSError) as exc:
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+            f"no se pudo capturar directory_membership en la fuente Stock: {exc}",
+        )
+    if membership_stock != reference.directory_membership:
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+            f"directory_membership de la fuente Stock diverge de la referencia Stock aprobada "
+            f"(esperado {reference.directory_membership.directory_count} dirs, "
+            f"observado {membership_stock.directory_count} dirs)",
+        )
+
+    # 2. Validación de inventario físico (conteo, bytes totales y ausencia de enlaces/reparse)
+    archivos_stock: dict[str, int] = {}
+    pendientes = [stock_root]
+    while pendientes:
+        actual = pendientes.pop()
+        try:
+            with os.scandir(actual) as entradas:
+                for ent in entradas:
+                    p = pathlib.Path(ent.path)
+                    motivo_ent = descripcion_de_enlace(p)
+                    if motivo_ent is not None:
+                        return (
+                            PreflightCheckStatus.FAIL,
+                            PreflightReasonCode.REPARSE_POINT_DETECTED,
+                            f"entrada '{p}' en la fuente Stock es un enlace/reparse: {motivo_ent}",
+                        )
+                    if ent.is_dir(follow_symlinks=False):
+                        pendientes.append(p)
+                    elif ent.is_file(follow_symlinks=False):
+                        st_ent = ent.stat(follow_symlinks=False)
+                        rel_posix = p.relative_to(stock_root).as_posix()
+                        archivos_stock[rel_posix] = st_ent.st_size
+                    else:
+                        return (
+                            PreflightCheckStatus.FAIL,
+                            PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                            f"entrada '{p}' en la fuente Stock no es archivo regular ni directorio",
+                        )
+        except OSError as exc:
+            return (
+                PreflightCheckStatus.FAIL,
+                PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                f"error al recorrer la fuente Stock '{actual}': {exc}",
+            )
+
+    total_archivos = len(archivos_stock)
+    total_bytes = sum(archivos_stock.values())
+    if total_archivos != reference.expected_tree.files or total_bytes != reference.expected_tree.bytes:
+        return (
+            PreflightCheckStatus.FAIL,
+            PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+            f"el inventario de la fuente Stock diverge de la referencia Stock aprobada "
+            f"(archivos: {total_archivos} vs {reference.expected_tree.files}; "
+            f"bytes: {total_bytes} vs {reference.expected_tree.bytes})",
+        )
+
+    if generation_root is not None and generation_root.is_dir():
+        for rel_path, sz_stock in archivos_stock.items():
+            p_gen = generation_root / rel_path
+            if not p_gen.is_file():
+                return (
+                    PreflightCheckStatus.FAIL,
+                    PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                    f"archivo '{rel_path}' presente en la fuente Stock pero ausente en la Generation validada",
+                )
+            if p_gen.stat().st_size != sz_stock:
+                return (
+                    PreflightCheckStatus.FAIL,
+                    PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                    f"archivo '{rel_path}' en la fuente Stock difiere en tamaño con la Generation validada",
+                )
+
+    # 3. Validación de archivos críticos basada en descriptor único, fstat y prevención TOCTOU
     for exp in reference.critical_expectations:
         p_crit = stock_root / exp.rel_path
         if not p_crit.is_file():
@@ -635,14 +723,44 @@ def _validar_autoridad_fuente_stock(
                     PreflightReasonCode.REPARSE_POINT_DETECTED,
                     f"archivo crítico '{exp.rel_path}' en la fuente Stock es un enlace simbólico",
                 )
-            if st.st_size != exp.expected_size:
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(p_crit, flags)
+        except OSError as exc:
+            return (
+                PreflightCheckStatus.FAIL,
+                PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                f"no se pudo acceder al archivo crítico '{exp.rel_path}' en la fuente Stock: {exc}",
+            )
+        try:
+            fst = os.fstat(fd)
+            if not stat.S_ISREG(fst.st_mode):
+                return (
+                    PreflightCheckStatus.FAIL,
+                    PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                    f"archivo crítico '{exp.rel_path}' en la fuente Stock no es un archivo regular",
+                )
+            if (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
+                return (
+                    PreflightCheckStatus.FAIL,
+                    PreflightReasonCode.STOCK_PROVENANCE_INVALID,
+                    f"sustitución concurrente detectada en archivo crítico '{exp.rel_path}' de la fuente Stock",
+                )
+            if fst.st_size != exp.expected_size:
                 return (
                     PreflightCheckStatus.FAIL,
                     PreflightReasonCode.STOCK_PROVENANCE_INVALID,
                     f"archivo crítico '{exp.rel_path}' en la fuente Stock tiene tamaño "
-                    f"{st.st_size} bytes (esperado {exp.expected_size})",
+                    f"{fst.st_size} bytes (esperado {exp.expected_size})",
                 )
-            digest_real = hashlib.sha256(p_crit.read_bytes()).hexdigest()
+            hasher = hashlib.sha256()
+            while True:
+                chunk = os.read(fd, 64 * 1024)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+            digest_real = hasher.hexdigest()
             if digest_real != exp.expected_digest:
                 return (
                     PreflightCheckStatus.FAIL,
@@ -656,6 +774,9 @@ def _validar_autoridad_fuente_stock(
                 PreflightReasonCode.STOCK_PROVENANCE_INVALID,
                 f"no se pudo leer el archivo crítico '{exp.rel_path}' en la fuente Stock: {exc}",
             )
+        finally:
+            if fd >= 0:
+                os.close(fd)
     return PreflightCheckStatus.PASS, None, ""
 
 
@@ -1674,6 +1795,7 @@ def evaluar_binder_preflight(
                                 observadores=observadores,
                                 storage=storage,
                                 ms_root_resolved=ms_root_resolved,
+                                generation_root=generation_dir(storage, gen_id),
                             )
                             if st_aut is not PreflightCheckStatus.PASS:
                                 checks_map[PreflightCheckCode.GENERATION_INTEGRITY] = PreflightCheckResult(
