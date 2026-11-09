@@ -2283,3 +2283,71 @@ class TestInvariantesReadOnlyYHermanoInspectorP7:
         assert PreflightReasonCode.OUTGOING_MANUAL_RUNTIME_INVALID in eval_real.reasons
         chk_man = next(c for c in eval_real.checks if c.check is PreflightCheckCode.PATH_SAFETY)
         assert chk_man.status is PreflightCheckStatus.FAIL
+
+    def test_23_autoridad_fuente_stock_rechaza_raiz_con_contenido_divergente_mismo_tamano(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Test 23: Autoridad criptográfica Stock A1 rechaza una raíz con idéntica estructura,
+        mismas rutas, misma cantidad de archivos, mismos tamaños y mismos binarios críticos,
+        pero con contenido divergente (mismo tamaño) en un archivo no crítico (Data/Skyrim.esm).
+
+        1. Verifica que la validación criptográfica completa del árbol detecta la discrepancia contra
+           reference.expected_tree.digest y rechaza con STOCK_PROVENANCE_INVALID.
+        2. Demuestra que de no comprobarse el tree digest, la raíz alternativa pasaría indebidamente
+           la autoridad Stock y permitiría inducir READY bajo STOCK_INDEPENDENT_TRANSITION ocultando
+           vínculos físicos (hardlinks) hacia la verdadera raíz Stock A1.
+        """
+        from sky_claw.local.frozen_runtime.binder_preflight import _validar_autoridad_fuente_stock
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+
+        # Clonar la fuente Stock auténtica
+        stock_alternativo = tmp_path / "StockAlternativo"
+        shutil.copytree(rig.stock_source, stock_alternativo)
+
+        # Modificar bytes en un archivo no crítico preservando exactamente el tamaño
+        esm_alt = stock_alternativo / "Data" / "Skyrim.esm"
+        raw_bytes = bytearray(esm_alt.read_bytes())
+        raw_bytes[0] ^= 0xFF
+        esm_alt.write_bytes(bytes(raw_bytes))
+
+        # Crear en manual_runtime un hardlink a la fuente Stock real (Data/Skyrim.esm)
+        esm_real = rig.stock_source / "Data" / "Skyrim.esm"
+        esm_manual = rig.manual_runtime / "Data" / "Skyrim.esm"
+        if esm_manual.exists():
+            esm_manual.unlink()
+        os.link(esm_real, esm_manual)
+
+        # Directo sobre _validar_autoridad_fuente_stock: DEBE fallar cerrado con STOCK_PROVENANCE_INVALID
+        st_aut, rz_aut, det_aut = _validar_autoridad_fuente_stock(
+            stock_alternativo,
+            reference=rig.referencia,
+            observadores=rig.probes_globales_activos(),
+            storage=rig.storage,
+            ms_root_resolved=rig.managed_source,
+            generation_root=generation_dir(rig.storage, rig.generation_id),
+        )
+        assert st_aut is PreflightCheckStatus.FAIL
+        assert rz_aut is PreflightReasonCode.STOCK_PROVENANCE_INVALID
+        assert "árbol" in det_aut or "digest" in det_aut
+
+        # Evaluación completa de preflight con stock_alternativo: DEBE estar BLOCKED
+        eval_preflight = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            approved_stock_reference_digest=rig.approved_digest,
+            config_skyrim_path=str(rig.manual_runtime),
+            exigir_config_skyrim_path=True,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            stock_source_root=stock_alternativo,
+            probes=rig.probes_globales_activos(),
+        )
+        assert eval_preflight.verdict is BinderPreflightVerdict.BLOCKED
+        assert eval_preflight.is_ready is False
+        assert PreflightReasonCode.STOCK_PROVENANCE_INVALID in eval_preflight.reasons
+        chk_gen = next(c for c in eval_preflight.checks if c.check is PreflightCheckCode.GENERATION_INTEGRITY)
+        assert chk_gen.status is PreflightCheckStatus.FAIL

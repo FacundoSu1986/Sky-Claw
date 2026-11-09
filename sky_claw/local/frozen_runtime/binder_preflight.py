@@ -124,6 +124,7 @@ from sky_claw.local.frozen_runtime.storage_models import (
     GenerationVerificationState,
 )
 from sky_claw.local.runtime_vault.runtime_observation import RuntimeObservationError
+from sky_claw.local.runtime_vault.verification import verify_tree
 
 _RE_ALIAS_83 = re.compile(r"~[0-9]")
 
@@ -764,6 +765,22 @@ def _validar_autoridad_fuente_stock(
                 PreflightReasonCode.STOCK_PROVENANCE_INVALID,
                 f"no se pudo leer el archivo crítico '{exp.rel_path}' en la fuente Stock: {exc}",
             )
+
+    # 4. Verificación criptográfica completa del árbol Stock contra reference.expected_tree (RV-1)
+    res_tree = verify_tree(stock_root, expected=reference.expected_tree)
+    if not res_tree.success:
+        det_msg = res_tree.message or "discrepancia en TreeDigest"
+        msg_lower = det_msg.lower()
+        if any(w in msg_lower for w in ("enlace", "symlink", "junction", "reparse")):
+            motivo_fallo = PreflightReasonCode.REPARSE_POINT_DETECTED
+        else:
+            motivo_fallo = PreflightReasonCode.STOCK_PROVENANCE_INVALID
+        return (
+            PreflightCheckStatus.FAIL,
+            motivo_fallo,
+            f"el árbol de la fuente Stock no coincide con el TreeDigest de la referencia Stock aprobada: {det_msg}",
+        )
+
     return PreflightCheckStatus.PASS, None, ""
 
 
