@@ -303,8 +303,19 @@ y no se observó.
 - **H-3 (entorno).** MO2 lanzado por el harness no inyecta USVFS (F3).
 - **H-4 (producto, preflight).** `overwrite=yellow` permanente: los datos propios de Wrye Bash viven
   en `overwrite/` y el sensor de «overwrite sucio» los reporta en cada fase. Advertencia, no bloqueo.
-- **H-5 (observabilidad).** La GUI no persiste el JSON del tool-result; para auditoría exacta usar
-  la superficie del agente.
+  **Decisión (#880): se acepta y se documenta; el sensor no se toca.** Excluir del sensor lo propio
+  de Wrye Bash lo debilitaría —es un sensor de seguridad del preflight (ADR 0016 §R3-1)— y eso
+  requiere un ADR, no un parche. Para que el amarillo desaparezca en un perfil real, el operador mueve
+  esos datos a un mod de salida (en MO2, menú contextual de `overwrite`, opción de crear un mod; el
+  nombre exacto del menú no está verificado). Eso agrega una línea a `modlist.txt` y cambia la huella
+  de contexto: si se hace entre `preparar` y `verificar`, la verificación queda en
+  `frescura_probada=False` y hay que volver a preparar (dirección segura, ADR 0016 §7.3, límite a).
+  Conviene hacerlo **antes** de `preparar`. *No verificado en hardware.*
+- **H-5 (observabilidad).** Resuelto en el código: `ejecutar_fase_asistida`, el punto único de las
+  tres superficies, deja en el log de Sky-Claw un registro por fase con `success`, `reason`/`motivo`,
+  `frescura_probada`, `testigo_origen`, `testigo_contexto`, `testigo_durable` y `estado_en_plugins`
+  (campo `fase_asistida`). Lista blanca: **no** lleva rutas ni el `message` libre, así que no hay
+  nada que sanear. El JSON completo con rutas sigue disponible solo por la superficie del agente.
 - **H-7 (bridge).** No validado; no invalida E1–E7.
 
 ## 10. Corrida r2 (2026-11-08): `main` `03635d6`, sandbox, veredicto parcial
