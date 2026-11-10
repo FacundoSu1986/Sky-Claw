@@ -454,8 +454,39 @@ def _parsear(payload: object, *, ruta: pathlib.Path) -> RegistroRecuperacion:
             raise RegistroCorruptoError(f"{ruta}: falta '{campo}'")
     mut_raw = payload.get("plan_ejecutables_mutaciones")
     mut_tuple: tuple[dict[str, object], ...] | None = None
-    if isinstance(mut_raw, list):
-        mut_tuple = tuple(d for d in mut_raw if isinstance(d, dict))
+    if mut_raw is not None:
+        if not isinstance(mut_raw, list):
+            raise RegistroCorruptoError(f"{ruta}: 'plan_ejecutables_mutaciones' debe ser una lista")
+        claves_validas = frozenset({"index", "campo", "valor_previo", "valor_nuevo"})
+        campos_validos = frozenset({"binary", "workingDirectory", "arguments"})
+        mut_list: list[dict[str, object]] = []
+        pares_vistos: set[tuple[int, str]] = set()
+        for idx_m, item in enumerate(mut_raw):
+            if not isinstance(item, dict):
+                raise RegistroCorruptoError(f"{ruta}: mutación {idx_m} no es un objeto")
+            claves = set(item.keys())
+            faltantes = claves_validas - claves
+            if faltantes:
+                raise RegistroCorruptoError(f"{ruta}: mutación {idx_m} tiene campos faltantes: {faltantes}")
+            sobrantes = claves - claves_validas
+            if sobrantes:
+                raise RegistroCorruptoError(f"{ruta}: mutación {idx_m} tiene campos sobrantes: {sobrantes}")
+            idx = item["index"]
+            if not isinstance(idx, int) or isinstance(idx, bool) or idx < 1:
+                raise RegistroCorruptoError(f"{ruta}: mutación {idx_m} tiene 'index' inválido: {idx!r}")
+            campo = item["campo"]
+            if not isinstance(campo, str) or campo not in campos_validos:
+                raise RegistroCorruptoError(f"{ruta}: mutación {idx_m} tiene 'campo' inválido: {campo!r}")
+            if not isinstance(item["valor_previo"], str) or not isinstance(item["valor_nuevo"], str):
+                raise RegistroCorruptoError(
+                    f"{ruta}: mutación {idx_m} tiene valor no string en valor_previo/valor_nuevo"
+                )
+            par = (idx, campo)
+            if par in pares_vistos:
+                raise RegistroCorruptoError(f"{ruta}: mutación duplicada para el índice {idx} y campo '{campo}'")
+            pares_vistos.add(par)
+            mut_list.append(dict(item))
+        mut_tuple = tuple(mut_list)
 
     return RegistroRecuperacion(
         schema_version=SCHEMA_VERSION,

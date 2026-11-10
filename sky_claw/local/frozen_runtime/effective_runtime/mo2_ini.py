@@ -301,6 +301,7 @@ class Mo2Executable:
     binary: str
     working_directory: str | None = None
     arguments: str | None = None
+    anomalia: str | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -386,37 +387,124 @@ def leer_game_path_de_mo2(ini_path: pathlib.Path) -> Mo2GamePathEvidence:
 def leer_ejecutables_de_mo2(ini_path: pathlib.Path) -> tuple[Mo2Executable, ...]:
     """Entradas de ``[customExecutables]``, ordenadas por índice. Nunca lanza.
 
-    Una entrada sin ``N\\\\binary`` se omite: sin binario no hay ejecutable
-    seleccionado que observar, y fabricar una ruta a partir del ``title`` sería
-    inventar evidencia. El índice se parsea del prefijo numérico de la clave.
+    Detecta anomalías (claves duplicadas, entradas huérfanas sin binario, índices
+    inválidos, líneas malformadas o secciones duplicadas) y las adjunta en el
+    campo ``anomalia`` del ejecutable para que el planificador pueda fallar cerrado.
     """
     contenido, _motivo = _leer_texto(ini_path)
     if contenido is None:
         return ()
-    seccion = _leer_seccion(contenido, _SECCION_EJECUTABLES)
+
+    en_custom = False
+    secciones_custom_vistas = 0
+    claves_vistas: set[str] = set()
+    anomalias_detectadas: list[str] = []
 
     por_indice: dict[int, dict[str, str]] = {}
-    for clave, valor in seccion.items():
-        prefijo, separador, campo = clave.partition("\\")
-        if not separador or not prefijo.isdigit():
+    indices_con_duplicados: set[int] = set()
+
+    for linea_bruta in contenido.splitlines():
+        linea = linea_bruta.strip().lstrip("\ufeff").strip()
+        if not linea or linea.startswith(";") or linea.startswith("#"):
             continue
-        por_indice.setdefault(int(prefijo), {})[campo] = valor
+        if linea.startswith("[") and linea.endswith("]"):
+            nombre = linea[1:-1].strip()
+            if nombre.lower() == "customexecutables":
+                secciones_custom_vistas += 1
+                if secciones_custom_vistas > 1:
+                    anomalias_detectadas.append("Sección [customExecutables] duplicada en INI")
+                en_custom = True
+            else:
+                en_custom = False
+            continue
+
+        if not en_custom:
+            continue
+
+        if "=" not in linea:
+            anomalias_detectadas.append(f"Línea malformada sin '=' en [customExecutables]: '{linea}'")
+            continue
+
+        clave, _, valor = linea.partition("=")
+        clave_limpia = clave.strip()
+        clave_norm = clave_limpia.lower()
+        es_duplicada = clave_norm in claves_vistas
+        if es_duplicada:
+            anomalias_detectadas.append(f"Clave duplicada en [customExecutables]: '{clave_limpia}'")
+        claves_vistas.add(clave_norm)
+
+        prefijo, separador, campo = clave_limpia.partition("\\")
+        if not separador:
+            anomalias_detectadas.append(f"Clave sin separador de índice en [customExecutables]: '{clave_limpia}'")
+            continue
+
+        if not prefijo.isdigit():
+            anomalias_detectadas.append(f"Índice no numérico en [customExecutables]: '{prefijo}'")
+            continue
+
+        idx = int(prefijo)
+        if es_duplicada:
+            indices_con_duplicados.add(idx)
+
+        campos_idx = por_indice.setdefault(idx, {})
+        if campo in campos_idx and campos_idx[campo] != valor:
+            indices_con_duplicados.add(idx)
+        campos_idx[campo] = valor
 
     ejecutables: list[Mo2Executable] = []
-    for indice in sorted(por_indice):
+    indices_ordenados = sorted(por_indice.keys())
+
+    for indice in indices_ordenados:
         campos = por_indice[indice]
         binario = campos.get("binary", "").strip()
+        titulo = campos.get("title", "").strip()
+        wd = campos.get("workingDirectory", "").strip() or None
+        args = campos.get("arguments")
+
+        anomalia_partes: list[str] = []
+        if indice in indices_con_duplicados:
+            anomalia_partes.append(f"Índice {indice} contiene claves duplicadas en el INI")
         if not binario:
-            continue
+            anomalia_partes.append(f"Índice {indice} contiene campos pero carece de binary")
+        if indice < 1:
+            anomalia_partes.append(f"Índice {indice} es inválido (< 1)")
+
+        anomalia_str = "; ".join(anomalia_partes) if anomalia_partes else None
+
         ejecutables.append(
             Mo2Executable(
                 index=indice,
-                title=campos.get("title", "").strip(),
+                title=titulo,
                 binary=binario,
-                working_directory=campos.get("workingDirectory", "").strip() or None,
-                arguments=campos.get("arguments"),
+                working_directory=wd,
+                arguments=args,
+                anomalia=anomalia_str,
             )
         )
+
+    if anomalias_detectadas:
+        anomalias_unidas = "; ".join(anomalias_detectadas)
+        if not ejecutables:
+            ejecutables.append(
+                Mo2Executable(
+                    index=0,
+                    title="Anomalía INI",
+                    binary="",
+                    anomalia=anomalias_unidas,
+                )
+            )
+        else:
+            primer_exe = ejecutables[0]
+            anomalia_comb = f"{anomalias_unidas}; {primer_exe.anomalia}" if primer_exe.anomalia else anomalias_unidas
+            ejecutables[0] = Mo2Executable(
+                index=primer_exe.index,
+                title=primer_exe.title,
+                binary=primer_exe.binary,
+                working_directory=primer_exe.working_directory,
+                arguments=primer_exe.arguments,
+                anomalia=anomalia_comb,
+            )
+
     return tuple(ejecutables)
 
 

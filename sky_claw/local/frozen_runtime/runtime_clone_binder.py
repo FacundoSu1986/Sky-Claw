@@ -64,6 +64,7 @@ from sky_claw.local.frozen_runtime.approval import (
 )
 from sky_claw.local.frozen_runtime.binder_preflight import (
     BinderPreflightAssessment,
+    BinderTransitionPolicy,
     evaluar_binder_preflight,
 )
 from sky_claw.local.frozen_runtime.clones import (
@@ -106,6 +107,9 @@ from sky_claw.local.frozen_runtime.journal import (
     digest_canonico,
     exigir_proyeccion_ligada,
     proyectar_propuesta,
+)
+from sky_claw.local.frozen_runtime.mo2_executables_plan import (
+    PlanMigracionEjecutablesMO2,
 )
 from sky_claw.local.frozen_runtime.mo2_ini_escritura import (
     Mo2IniEscrituraError,
@@ -269,6 +273,7 @@ class _ObservacionPrevia:
     game_path: str
     desired: DesiredRuntime
     ini_sha256: str
+    plan_migracion_ejecutables: PlanMigracionEjecutablesMO2 | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +342,11 @@ def _revalidar_bajo_lock(
     config_skyrim_path: str | None,
     env_actual: Mapping[str, str],
     observadores: RuntimeProbes,
+    transition_policy: BinderTransitionPolicy = BinderTransitionPolicy.STRICT_PROVIDER_IDLE,
+    outgoing_manual_runtime_root: pathlib.Path | None = None,
+    stock_source_root: pathlib.Path | None = None,
+    approved_stock_reference_digest: str | None = None,
+    approved_stock_reference_digest_file: pathlib.Path | None = None,
 ) -> tuple[BinderPreflightAssessment, bytes]:
     """Revalida TODO lo que el preflight inicial observó, ya bajo el lock.
 
@@ -401,6 +411,11 @@ def _revalidar_bajo_lock(
         exigir_config_skyrim_path=True,
         environ=env_actual,
         probes=observadores,
+        transition_policy=transition_policy,
+        outgoing_manual_runtime_root=outgoing_manual_runtime_root,
+        stock_source_root=stock_source_root,
+        approved_stock_reference_digest=approved_stock_reference_digest,
+        approved_stock_reference_digest_file=approved_stock_reference_digest_file,
     )
     if not preflight.is_ready:
         raise BinderPreflightFailedError(
@@ -419,6 +434,8 @@ def _revalidar_bajo_lock(
             f"deriva del gamePath observado entre preflight y lock: {preflight.observed_mo2_game_path!r} != "
             f"{previo.game_path!r}"
         )
+    if preflight.plan_migracion_ejecutables != previo.plan_migracion_ejecutables:
+        raise BinderVerificationError("el plan de migración de ejecutables cambió entre el preflight inicial y el lock")
     # El Desired tampoco puede haber cambiado bajo los pies.
     desired_ahora = desired_runtime_from_storage(storage_path)
     if (desired_ahora.clone_id, desired_ahora.generation_id) != (previo.desired.clone_id, previo.desired.generation_id):
@@ -611,6 +628,11 @@ def ejecutar_transicion_binder(
     environ: MutableMapping[str, str] | None = None,
     probes: RuntimeProbes | None = None,
     transition_id: str | None = None,
+    transition_policy: BinderTransitionPolicy = BinderTransitionPolicy.STRICT_PROVIDER_IDLE,
+    outgoing_manual_runtime_root: pathlib.Path | None = None,
+    stock_source_root: pathlib.Path | None = None,
+    approved_stock_reference_digest: str | None = None,
+    approved_stock_reference_digest_file: pathlib.Path | None = None,
 ) -> BinderResult:
     """Ejecuta la transición segura y transaccional de MO2 hacia un Runtime Clone.
 
@@ -708,6 +730,11 @@ def ejecutar_transicion_binder(
         exigir_config_skyrim_path=True,
         environ=env_actual,
         probes=observadores,
+        transition_policy=transition_policy,
+        outgoing_manual_runtime_root=outgoing_manual_runtime_root,
+        stock_source_root=stock_source_root,
+        approved_stock_reference_digest=approved_stock_reference_digest,
+        approved_stock_reference_digest_file=approved_stock_reference_digest_file,
     )
     if not preflight.is_ready:
         raise BinderPreflightFailedError(
@@ -728,6 +755,7 @@ def ejecutar_transicion_binder(
         game_path=previous_path,
         desired=desired_actual,
         ini_sha256=ini_sha_inicial,
+        plan_migracion_ejecutables=preflight.plan_migracion_ejecutables,
     )
 
     # -------------------------------------------------------------------------
@@ -874,6 +902,11 @@ def ejecutar_transicion_binder(
             config_skyrim_path=cfg_skyrim_actual,
             env_actual=env_actual,
             observadores=observadores,
+            transition_policy=transition_policy,
+            outgoing_manual_runtime_root=outgoing_manual_runtime_root,
+            stock_source_root=stock_source_root,
+            approved_stock_reference_digest=approved_stock_reference_digest,
+            approved_stock_reference_digest_file=approved_stock_reference_digest_file,
         )
 
         # 5.2 — Snapshot durable (FIX 3). Se CAPTURA antes del PENDING para que un

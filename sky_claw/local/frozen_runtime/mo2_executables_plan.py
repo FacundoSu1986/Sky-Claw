@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import pathlib
+import re
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -98,9 +99,21 @@ def _es_igual_o_hijo(camino: pathlib.Path, base: pathlib.Path) -> bool:
 
 
 def _dentro_de_area_steamapps(camino: pathlib.Path) -> bool:
-    """Detecta si la ruta cae en directorios típicos de Steamapps."""
-    partes = {p.lower() for p in camino.parts}
-    return bool(partes & {"steamapps", "common", "downloading"} and "skyrim special edition" in partes)
+    """Detecta si la ruta o alguno de sus ancestros se denomina 'steamapps'."""
+    return any(comp.name.casefold() == "steamapps" for comp in (camino, *camino.parents))
+
+
+def _contiene_referencia_a_ruta(texto: str, ruta_base: pathlib.Path) -> bool:
+    """Detecta si un texto contiene referencias a una ruta base o sus descendientes."""
+    if not texto:
+        return False
+    fspath = os.fspath(ruta_base).rstrip("/\\")
+    if not fspath:
+        return False
+    fspath_forward = "/".join(fspath.split("\\"))
+    texto_forward = "/".join(texto.split("\\"))
+    patron = re.escape(fspath_forward) + r"(?:[/\"'\s]|$)"
+    return bool(re.search(patron, texto_forward, flags=re.IGNORECASE))
 
 
 def _argumentos_dependientes_de_steam(argumentos: str, managed_source_root: pathlib.Path | None) -> bool:
@@ -149,6 +162,22 @@ def planificar_migracion_ejecutables(
     indices_vistos: set[int] = set()
 
     for exe in ejecutables:
+        if getattr(exe, "anomalia", None):
+            motivo = f"Ejecutable {exe.index} ({exe.title}) contiene anomalías en el INI: {exe.anomalia}"
+            entradas.append(
+                EntradaPlanEjecutableMO2(
+                    index=exe.index,
+                    title=exe.title,
+                    clasificacion=ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA,
+                    binary_original=exe.binary,
+                    working_dir_original=exe.working_directory,
+                    arguments_original=exe.arguments,
+                    motivo=motivo,
+                )
+            )
+            motivos_bloqueo.append(motivo)
+            continue
+
         if exe.index < 1 or exe.index in indices_vistos:
             motivo = f"Índice de ejecutable inválido o duplicado: {exe.index}"
             entradas.append(
@@ -291,6 +320,25 @@ def planificar_migracion_ejecutables(
                 motivos_bloqueo.append(motivo)
                 continue
 
+            if exe.arguments and _contiene_referencia_a_ruta(exe.arguments, norm_outgoing):
+                motivo = (
+                    f"Ejecutable migrable {exe.index} ({exe.title}) contiene referencias residuales "
+                    f"al runtime anterior en arguments: '{exe.arguments}'"
+                )
+                entradas.append(
+                    EntradaPlanEjecutableMO2(
+                        index=exe.index,
+                        title=exe.title,
+                        clasificacion=ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA,
+                        binary_original=exe.binary,
+                        working_dir_original=exe.working_directory,
+                        arguments_original=exe.arguments,
+                        motivo=motivo,
+                    )
+                )
+                motivos_bloqueo.append(motivo)
+                continue
+
             # MIGRABLE_AL_CLONE
             nuevo_bin_str = _formatear_ruta_mo2(target_bin)
             mutaciones.append(
@@ -339,6 +387,48 @@ def planificar_migracion_ejecutables(
             continue
 
         # 3. Externo al runtime y fuera de Steam (herramientas como LOOT, SSEEdit, etc.)
+        if exe.working_directory:
+            wd_raw = exe.working_directory.strip().strip('"')
+            if wd_raw:
+                norm_wd = pathlib.Path(os.path.normpath(os.path.abspath(wd_raw)))
+                if _es_igual_o_hijo(norm_wd, norm_outgoing):
+                    motivo = (
+                        f"Herramienta externa {exe.index} ({exe.title}) tiene workingDirectory "
+                        f"dentro del runtime saliente: '{exe.working_directory}'"
+                    )
+                    entradas.append(
+                        EntradaPlanEjecutableMO2(
+                            index=exe.index,
+                            title=exe.title,
+                            clasificacion=ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA,
+                            binary_original=exe.binary,
+                            working_dir_original=exe.working_directory,
+                            arguments_original=exe.arguments,
+                            motivo=motivo,
+                        )
+                    )
+                    motivos_bloqueo.append(motivo)
+                    continue
+
+        if exe.arguments and _contiene_referencia_a_ruta(exe.arguments, norm_outgoing):
+            motivo = (
+                f"Herramienta externa {exe.index} ({exe.title}) contiene referencias residuales "
+                f"al runtime anterior en arguments: '{exe.arguments}'"
+            )
+            entradas.append(
+                EntradaPlanEjecutableMO2(
+                    index=exe.index,
+                    title=exe.title,
+                    clasificacion=ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA,
+                    binary_original=exe.binary,
+                    working_dir_original=exe.working_directory,
+                    arguments_original=exe.arguments,
+                    motivo=motivo,
+                )
+            )
+            motivos_bloqueo.append(motivo)
+            continue
+
         entradas.append(
             EntradaPlanEjecutableMO2(
                 index=exe.index,

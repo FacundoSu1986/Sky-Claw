@@ -283,6 +283,8 @@ def _construir_lineas(
     en_general = False
     seccion_general_vista = False
     en_custom_executables = False
+    seccion_custom_vista = False
+    claves_custom_vistas: set[str] = set()
     tocadas: list[int] = []
     salida: list[str] = []
 
@@ -302,7 +304,13 @@ def _construir_lineas(
                 tocadas.append(len(salida))
                 salida.append(_con_terminador(f"gamePath={valor}", formato))
             en_general = False
-            en_custom_executables = encabezado.lower() == "customexecutables"
+            if encabezado.lower() == "customexecutables":
+                if seccion_custom_vista:
+                    raise FormatoIniNoAdmitidoError(f"Sección [{encabezado}] duplicada en INI")
+                seccion_custom_vista = True
+                en_custom_executables = True
+            else:
+                en_custom_executables = False
 
         if en_general and not any(_es_game_path(salida[i]) for i in tocadas) and _es_game_path(linea):
             tocadas.append(len(salida))
@@ -312,6 +320,9 @@ def _construir_lineas(
         if en_custom_executables and "=" in linea:
             clave, _, _ = linea.partition("=")
             clave_norm = clave.strip().lower()
+            if clave_norm in claves_custom_vistas:
+                raise FormatoIniNoAdmitidoError(f"Clave duplicada en [customExecutables]: '{clave.strip()}'")
+            claves_custom_vistas.add(clave_norm)
             if clave_norm in mutaciones_map:
                 tocadas.append(len(salida))
                 salida.append(_reemplazar_valor(linea, mutaciones_map[clave_norm]))

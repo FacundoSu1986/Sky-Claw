@@ -7,8 +7,10 @@ recuperación ante interrupción y gobernanza en preflight.
 
 from __future__ import annotations
 
+import json
 import pathlib
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 
@@ -21,11 +23,15 @@ from sky_claw.local.frozen_runtime.binder_preflight import (
     evaluar_binder_preflight,
 )
 from sky_claw.local.frozen_runtime.binder_recovery import (
+    RegistroCorruptoError,
     _coincide_con_lo_escrito,
     capturar_registro,
     cargar_registro,
     escribir_registro_locked,
     restaurar_registro_locked,
+)
+from sky_claw.local.frozen_runtime.clones import (
+    cargar_runtime_clone_record,
 )
 from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
     Mo2Executable,
@@ -35,18 +41,28 @@ from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
 from sky_claw.local.frozen_runtime.mo2_executables_plan import (
     ClasificacionEjecutableMO2,
     MutacionCampoEjecutable,
+    _dentro_de_area_steamapps,
     planificar_migracion_ejecutables,
 )
 from sky_claw.local.frozen_runtime.mo2_ini_escritura import (
     EscrituraIniNoVerificadaError,
+    FormatoIniNoAdmitidoError,
     actualizar_game_path_en_ini,
     actualizar_game_path_por_handle,
     prever_bytes,
+)
+from sky_claw.local.frozen_runtime.runtime_clone_binder import (
+    BinderResult,
+    ejecutar_transicion_binder,
 )
 from sky_claw.local.frozen_runtime.storage import recovery_state_dir
 from sky_claw.local.runtime_vault.runtime_observation import (
     FreshRuntimeObservation,
     RuntimeObservationError,
+)
+from tests.test_frozen_runtime_p5c1_mo2_clone_binder import (
+    _crear_config_toml,
+    _preparar_aprobacion,
 )
 from tests.test_frozen_runtime_p7_a5_stock_manual_preflight import (
     RigStockManual,
@@ -782,3 +798,394 @@ def test_preflight_aprueba_plan_migracion_ejecutables_completo(tmp_path: pathlib
     plan = assessment.plan_migracion_ejecutables
     assert not plan.bloqueado
     assert len(plan.entradas) == 2
+
+
+# ---------------------------------------------------------------------------
+# Task P1 / P2: Auditoría Adversarial y Fixes
+# ---------------------------------------------------------------------------
+
+
+def test_p1_c_deteccion_steam_no_restringida_a_skyrim_special_edition() -> None:
+    """_dentro_de_area_steamapps veta cualquier ruta bajo steamapps, no solo 'skyrim special edition'."""
+    assert _dentro_de_area_steamapps(pathlib.Path("C:/Steam/steamapps/common/Skyrim Special Edition/SkyrimSE.exe"))
+    assert _dentro_de_area_steamapps(pathlib.Path("C:/Steam/steamapps/downloading/489830/SkyrimSE.exe"))
+    assert _dentro_de_area_steamapps(pathlib.Path("C:/Steam/steamapps/temp/489830/SkyrimSE.exe"))
+    assert _dentro_de_area_steamapps(pathlib.Path("C:/Steam/steamapps/common/Fallout 4/Fallout4.exe"))
+    assert not _dentro_de_area_steamapps(pathlib.Path("D:/Modding/Games/Skyrim/SkyrimSE.exe"))
+
+
+def test_p1_b_dependencias_residuales_al_runtime_anterior_bloquean(tmp_path: pathlib.Path) -> None:
+    """Referencias residuales en workingDirectory o arguments al runtime manual saliente bloquean la migración."""
+    outgoing = tmp_path / "Runtime_Manual"
+    outgoing.mkdir()
+    clone = tmp_path / "Runtime_Clone"
+    clone.mkdir()
+
+    tools_dir = tmp_path / "Tools" / "SSEEdit"
+    tools_dir.mkdir(parents=True)
+    sseedit = tools_dir / "SSEEdit.exe"
+    sseedit.write_bytes(b"MZ_SSEEDIT")
+
+    # Caso 1: Binario externo SSEEdit con arguments=-D "RUNTIME_MANUAL/Data" -> BLOCKED
+    exe_sseedit_args = Mo2Executable(
+        index=1,
+        title="SSEEdit",
+        binary=str(sseedit).replace("\\", "/"),
+        arguments=f'-D "{outgoing / "Data"}"',
+    )
+    plan1 = planificar_migracion_ejecutables(
+        ejecutables=(exe_sseedit_args,),
+        outgoing_runtime_root=outgoing,
+        target_clone_root=clone,
+    )
+    assert plan1.bloqueado
+    assert plan1.entradas[0].clasificacion is ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA
+    assert "referencias residuales" in plan1.motivos_bloqueo[0].lower()
+
+    # Caso 2: Binario externo con workingDirectory dentro de outgoing runtime -> BLOCKED
+    exe_sseedit_wd = Mo2Executable(
+        index=1,
+        title="SSEEdit",
+        binary=str(sseedit).replace("\\", "/"),
+        working_directory=str(outgoing / "Data").replace("\\", "/"),
+    )
+    plan2 = planificar_migracion_ejecutables(
+        ejecutables=(exe_sseedit_wd,),
+        outgoing_runtime_root=outgoing,
+        target_clone_root=clone,
+    )
+    assert plan2.bloqueado
+    assert plan2.entradas[0].clasificacion is ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA
+    assert "workingdirectory" in plan2.motivos_bloqueo[0].lower()
+
+    # Caso 3: Binario migrable (SKSE) con argumentos apuntando al runtime manual -> BLOCKED
+    skse_src = outgoing / "skse.exe"
+    skse_src.write_bytes(b"MZ")
+    skse_dst = clone / "skse.exe"
+    skse_dst.write_bytes(b"MZ")
+    exe_skse_args = Mo2Executable(
+        index=1,
+        title="SKSE",
+        binary=str(skse_src).replace("\\", "/"),
+        arguments=f'-profile "{outgoing / "Profiles"}"',
+    )
+    plan3 = planificar_migracion_ejecutables(
+        ejecutables=(exe_skse_args,),
+        outgoing_runtime_root=outgoing,
+        target_clone_root=clone,
+    )
+    assert plan3.bloqueado
+    assert plan3.entradas[0].clasificacion is ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA
+
+    # Caso 4: Argumentos entrecomillados y rutas con espacios al runtime saliente -> BLOCKED
+    outgoing_sp = tmp_path / "Runtime Manual Con Espacios"
+    outgoing_sp.mkdir()
+    exe_skse_espacios = Mo2Executable(
+        index=1,
+        title="SKSE",
+        binary=str(skse_src).replace("\\", "/"),
+        arguments=f'-o "{outgoing_sp / "Directorio Espacios"}"',
+    )
+    plan4 = planificar_migracion_ejecutables(
+        ejecutables=(exe_skse_espacios,),
+        outgoing_runtime_root=outgoing_sp,
+        target_clone_root=clone,
+    )
+    assert plan4.bloqueado
+
+    # Caso 5: Argumentos ya apuntando al Clone -> NO bloqueado
+    exe_skse_clone = Mo2Executable(
+        index=1,
+        title="SKSE",
+        binary=str(skse_src).replace("\\", "/"),
+        arguments=f'-D "{clone / "Data"}"',
+    )
+    plan5 = planificar_migracion_ejecutables(
+        ejecutables=(exe_skse_clone,),
+        outgoing_runtime_root=outgoing,
+        target_clone_root=clone,
+    )
+    assert not plan5.bloqueado
+    assert plan5.entradas[0].clasificacion is ClasificacionEjecutableMO2.MIGRABLE_AL_CLONE
+
+    # Caso 6: Herramienta externa totalmente independiente -> EXTERNA_PRESERVABLE
+    exe_loot = Mo2Executable(
+        index=1,
+        title="LOOT",
+        binary=str(sseedit).replace("\\", "/"),
+        working_directory=str(tools_dir).replace("\\", "/"),
+        arguments="--game=SkyrimSE",
+    )
+    plan6 = planificar_migracion_ejecutables(
+        ejecutables=(exe_loot,),
+        outgoing_runtime_root=outgoing,
+        target_clone_root=clone,
+    )
+    assert not plan6.bloqueado
+    assert plan6.entradas[0].clasificacion is ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE
+
+
+def test_p1_d_duplicados_y_anomalias_en_custom_executables_rechazados(tmp_path: pathlib.Path) -> None:
+    """Fixtures INI con duplicados o anomalías son rechazados en planificación y previsión de bytes."""
+    outgoing = tmp_path / "Runtime_Manual"
+    outgoing.mkdir()
+    clone = tmp_path / "Runtime_Clone"
+    clone.mkdir()
+
+    # Fixture 1: 1\binary duplicado con valores distintos
+    ini1 = tmp_path / "ini1.ini"
+    ini1.write_bytes(
+        b"[General]\r\n"
+        b"gamePath=@ByteArray(C:\\\\Manual)\r\n"
+        b"[customExecutables]\r\n"
+        b"1\\title=Tool\r\n"
+        b"1\\binary=C:/Manual/tool_a.exe\r\n"
+        b"1\\binary=C:/Manual/tool_b.exe\r\n"
+    )
+    exes1 = leer_ejecutables_de_mo2(ini1)
+    plan1 = planificar_migracion_ejecutables(exes1, outgoing, clone)
+    assert plan1.bloqueado or any(
+        e.clasificacion is ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA for e in plan1.entradas
+    )
+    with pytest.raises(FormatoIniNoAdmitidoError, match="[Cc]lave duplicada"):
+        prever_bytes(ini1.read_bytes(), str(clone), plan_ejecutables=plan1)
+
+    # Fixture 2: 1\workingDirectory duplicado
+    ini2 = tmp_path / "ini2.ini"
+    ini2.write_bytes(
+        b"[General]\r\n"
+        b"gamePath=@ByteArray(C:\\\\Manual)\r\n"
+        b"[customExecutables]\r\n"
+        b"1\\title=Tool\r\n"
+        b"1\\binary=C:/Manual/tool.exe\r\n"
+        b"1\\workingDirectory=C:/DirA\r\n"
+        b"1\\workingDirectory=C:/DirB\r\n"
+    )
+    exes2 = leer_ejecutables_de_mo2(ini2)
+    plan2 = planificar_migracion_ejecutables(exes2, outgoing, clone)
+    assert plan2.bloqueado
+    with pytest.raises(FormatoIniNoAdmitidoError, match="[Cc]lave duplicada"):
+        prever_bytes(ini2.read_bytes(), str(clone), plan_ejecutables=plan2)
+
+    # Fixture 3: 1\arguments sin 1\binary
+    ini3 = tmp_path / "ini3.ini"
+    ini3.write_bytes(
+        b"[General]\r\n"
+        b"gamePath=@ByteArray(C:\\\\Manual)\r\n"
+        b"[customExecutables]\r\n"
+        b"1\\title=Orphan\r\n"
+        b"1\\arguments=-foo -bar\r\n"
+    )
+    exes3 = leer_ejecutables_de_mo2(ini3)
+    plan3 = planificar_migracion_ejecutables(exes3, outgoing, clone)
+    assert plan3.bloqueado
+
+    # Fixture 4: Índice inválido y clave malformada
+    ini4 = tmp_path / "ini4.ini"
+    ini4.write_bytes(
+        b"[General]\r\n"
+        b"gamePath=@ByteArray(C:\\\\Manual)\r\n"
+        b"[customExecutables]\r\n"
+        b"0\\binary=C:/Manual/zero.exe\r\n"
+        b"malformed_entry_no_slash=val\r\n"
+    )
+    exes4 = leer_ejecutables_de_mo2(ini4)
+    plan4 = planificar_migracion_ejecutables(exes4, outgoing, clone)
+    assert plan4.bloqueado
+
+    # Fixture 5: Sección [customExecutables] duplicada
+    ini5 = tmp_path / "ini5.ini"
+    ini5.write_bytes(
+        b"[General]\r\n"
+        b"gamePath=@ByteArray(C:\\\\Manual)\r\n"
+        b"[customExecutables]\r\n"
+        b"1\\binary=C:/Tools/loot.exe\r\n"
+        b"[customExecutables]\r\n"
+        b"2\\binary=C:/Tools/xedit.exe\r\n"
+    )
+    with pytest.raises(FormatoIniNoAdmitidoError, match="[Ss]ección.*duplicada"):
+        prever_bytes(ini5.read_bytes(), str(clone))
+
+
+def test_p2_recovery_fail_closed_ante_plan_ejecutables_corrupto(tmp_path: pathlib.Path) -> None:
+    """Cargar registro con plan_ejecutables_mutaciones corrupto falla cerrado con RegistroCorruptoError."""
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    rec_dir = recovery_state_dir(storage)
+    rec_dir.mkdir(parents=True)
+
+    base_payload = {
+        "schema_version": 1,
+        "transition_id": "test-tid-001",
+        "journal_revision": 1,
+        "operation": "promotion",
+        "target_clone_id": "clone-1",
+        "target_generation_id": "gen-1",
+        "expected_effective_path": "C:/Clone",
+        "fase": "PREPARADO",
+        "superficies": [
+            {"kind": "active_json", "path": "C:/active.json", "existed": False},
+            {"kind": "mo2_ini", "path": "C:/mo2/modorganizer.ini", "existed": False},
+            {"kind": "config", "path": "C:/cfg/config.toml", "existed": False},
+            {"kind": "environ", "path": None, "existed": False},
+        ],
+    }
+
+    def _intentar(mut_val: object, match_err: str) -> None:
+        p = dict(base_payload)
+        p["plan_ejecutables_mutaciones"] = mut_val
+        reg_file = rec_dir / "test-tid-001.json"
+        reg_file.write_text(json.dumps(p), encoding="utf-8")
+        with pytest.raises(RegistroCorruptoError, match=match_err):
+            cargar_registro(storage, "test-tid-001")
+
+    # 1. Elemento que no es lista
+    _intentar("no_es_lista", "debe ser una lista")
+    # 2. Elemento que no es dict
+    _intentar(["no_es_dict"], "no es un objeto")
+    # 3. Campos ausentes
+    _intentar([{"index": 1, "campo": "binary"}], "faltantes")
+    # 4. Tipos incorrectos
+    _intentar([{"index": "1", "campo": "binary", "valor_previo": "A", "valor_nuevo": "B"}], "inválido")
+    _intentar([{"index": 1, "campo": "binary", "valor_previo": 123, "valor_nuevo": "B"}], "no string")
+    # 5. Índices duplicados para el mismo campo
+    _intentar(
+        [
+            {"index": 1, "campo": "binary", "valor_previo": "A", "valor_nuevo": "B"},
+            {"index": 1, "campo": "binary", "valor_previo": "A", "valor_nuevo": "C"},
+        ],
+        "mutación duplicada",
+    )
+    # 6. Campos desconocidos
+    _intentar([{"index": 1, "campo": "binary", "valor_previo": "A", "valor_nuevo": "B", "injected": True}], "sobrantes")
+
+    # 7. Registro antiguo sin plan_ejecutables_mutaciones -> se carga correctamente (retrocompatible)
+    p_retro = dict(base_payload)
+    reg_file = rec_dir / "test-tid-001.json"
+    reg_file.write_text(json.dumps(p_retro), encoding="utf-8")
+    reg_cargado = cargar_registro(storage, "test-tid-001")
+    assert reg_cargado.plan_ejecutables_mutaciones is None
+
+
+def test_p1_a_binder_transmite_politica_y_ejecuta_migracion(tmp_path: pathlib.Path) -> None:
+    """ejecutar_transicion_binder transmite politica STOCK_INDEPENDENT_TRANSITION y ejecuta mutaciones de ejecutables."""
+    rig = RigStockManual(tmp_path, steam_activo=True)
+
+    skse_src = rig.manual_runtime / "skse64_loader.exe"
+    skse_src.write_bytes(b"MZ_SKSE")
+    skse_dst = rig.clone_root / "skse64_loader.exe"
+    skse_dst.write_bytes(b"MZ_SKSE")
+
+    _escribir_ini_mo2(
+        rig.mo2_active_global / "modorganizer.ini",
+        game_path=rig.manual_runtime,
+        base_directory=rig.mo2_base_data,
+        ejecutables=[
+            ("SKSE", str(skse_src).replace("\\", "/"), str(rig.manual_runtime).replace("\\", "/")),
+        ],
+    )
+
+    clone_rec = cargar_runtime_clone_record(rig.storage, rig.clone_id)
+    assert clone_rec is not None
+
+    propuesta, consentimiento = _preparar_aprobacion(
+        rig.storage,
+        target_generation_id=rig.generation_id,
+        target_clone_id=rig.clone_id,
+        runtime_setup_id=clone_rec.verified_runtime_setup_id or "setup-skse-clean",
+    )
+
+    cfg_path = _crear_config_toml(
+        rig.mo2_active_global / "config.toml",
+        skyrim_path=str(rig.manual_runtime),
+    )
+
+    resultado: BinderResult = ejecutar_transicion_binder(
+        storage_root=rig.storage,
+        mo2_instance_dir=rig.mo2_active_global,
+        target_clone_id=rig.clone_id,
+        propuesta=propuesta,
+        consentimiento=consentimiento,
+        managed_source_root=rig.managed_source,
+        config_path=cfg_path,
+        environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+        probes=rig.probes_globales_activos(),
+        transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+        outgoing_manual_runtime_root=rig.manual_runtime,
+        stock_source_root=rig.stock_source,
+        approved_stock_reference_digest=rig.approved_digest,
+    )
+
+    assert resultado.success
+    # Verificar que el INI fue mutado con el clone y el ejecutable también
+    exes = leer_ejecutables_de_mo2(rig.mo2_active_global / "modorganizer.ini")
+    assert len(exes) == 1
+    assert exes[0].binary == str(skse_dst).replace("\\", "/")
+    assert exes[0].working_directory == str(rig.clone_root).replace("\\", "/")
+    gp = leer_game_path_de_mo2(rig.mo2_active_global / "modorganizer.ini")
+    assert gp.path == str(rig.clone_root)
+
+
+def test_integral_transicion_con_rollback_restaura_bytes_exactos(tmp_path: pathlib.Path) -> None:
+    """Fallo en persistencia de config tras mutar el INI induce rollback que restaura el archivo byte a byte."""
+    rig = RigStockManual(tmp_path, steam_activo=True)
+
+    skse_src = rig.manual_runtime / "skse64_loader.exe"
+    skse_src.write_bytes(b"MZ_SKSE")
+    skse_dst = rig.clone_root / "skse64_loader.exe"
+    skse_dst.write_bytes(b"MZ_SKSE")
+
+    ini_file = rig.mo2_active_global / "modorganizer.ini"
+    _escribir_ini_mo2(
+        ini_file,
+        game_path=rig.manual_runtime,
+        base_directory=rig.mo2_base_data,
+        ejecutables=[
+            ("SKSE", str(skse_src).replace("\\", "/"), str(rig.manual_runtime).replace("\\", "/")),
+        ],
+    )
+    ini_bytes_original = ini_file.read_bytes()
+
+    clone_rec = cargar_runtime_clone_record(rig.storage, rig.clone_id)
+    assert clone_rec is not None
+
+    propuesta, consentimiento = _preparar_aprobacion(
+        rig.storage,
+        target_generation_id=rig.generation_id,
+        target_clone_id=rig.clone_id,
+        runtime_setup_id=clone_rec.verified_runtime_setup_id or "setup-skse-clean",
+    )
+
+    cfg_path = _crear_config_toml(
+        rig.mo2_active_global / "config.toml",
+        skyrim_path=str(rig.manual_runtime),
+    )
+
+    def _fallo_config(*_args: object, **_kwargs: object) -> None:
+        raise OSError(13, "error de E/S simulado en persistencia de config")
+
+    with (
+        patch(
+            "sky_claw.local.frozen_runtime.runtime_clone_binder.persistir_campo",
+            side_effect=_fallo_config,
+        ),
+        pytest.raises(OSError, match="error de E/S simulado"),
+    ):
+        ejecutar_transicion_binder(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            target_clone_id=rig.clone_id,
+            propuesta=propuesta,
+            consentimiento=consentimiento,
+            managed_source_root=rig.managed_source,
+            config_path=cfg_path,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest=rig.approved_digest,
+        )
+
+    # Verificar que el rollback restauró el INI byte a byte
+    assert ini_file.read_bytes() == ini_bytes_original
