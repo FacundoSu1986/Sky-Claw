@@ -3168,7 +3168,7 @@ requires-dist = [
     { name = "brotli", marker = "platform_python_implementation == 'CPython'", specifier = ">=1.2.1,<2" },
     { name = "brotlicffi", marker = "platform_python_implementation == 'PyPy'", specifier = ">=1.2.1.0,<2" },
     { name = "certifi", specifier = ">=2026.10.19" },
-    { name = "comtypes", marker = "sys_platform == 'win32'", specifier = ">=1.4.16,<2" },
+    { name = "comtypes", marker = "sys_platform == 'win32'", specifier = ">=1.4.16,<1.5.0" },
     { name = "cryptography", specifier = ">=50.0.0" },
     { name = "defusedxml", specifier = ">=0.7.1,<1" },
     { name = "google-genai", marker = "extra == 'dev'", specifier = ">=1.0,<2" },

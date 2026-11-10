@@ -79,7 +79,10 @@ dependencies = [
     # atca a COM cuando el gate lo necesita. Semver inferior/bajo cortado para
     # que una versión <1.4.16 (sin el fix de SAFEARRAY de BSTR en arrays de
     # ``IUIAutomationElementArray::GetElement``) no dispare errores en el rig.
-    "comtypes>=1.4.16,<2; sys_platform == 'win32'",
+    # CI-FIX-004 (2026-11-10): tope en <1.5.0. comtypes 1.5.0 introdujo py.typed
+    # incompleto (re-exports y llamadas COM no tipadas) que rompe mypy strict en CI Windows.
+    # uv.lock y requirements.lock ya fijan 1.4.16; este tope alinea pip con los locks.
+    "comtypes>=1.4.16,<1.5.0; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
