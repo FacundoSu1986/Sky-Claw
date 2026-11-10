@@ -96,21 +96,21 @@ CLOSED), `feat/skse-autoinstall` (PR #422 CLOSED) y los `backup/*`, `codex/*`,
 
 ```powershell
 # Ver qué contiene el bundle
-./archive/git-branches/restore.ps1 -List
+./archive/git-branches/restore.ps1 -Bundle archive/git-branches/obsolete-branches-20261004.bundle -List
 
 # Restaurar una rama puntual (con su nombre original)
-./archive/git-branches/restore.ps1 -Branch 'wip/pr503-provenance-fix'
+./archive/git-branches/restore.ps1 -Bundle archive/git-branches/obsolete-branches-20261004.bundle -Branch 'wip/pr503-provenance-fix'
 
 # Si el mismo nombre tiene tips local y remoto, elegir su ref completo
-./archive/git-branches/restore.ps1 -Branch 'refs/remotes/origin/wip/pr503-provenance-fix'
+./archive/git-branches/restore.ps1 -Bundle archive/git-branches/obsolete-branches-20261004.bundle -Branch 'refs/remotes/origin/wip/pr503-provenance-fix'
 
 # Si la rama local ya existe, -Branch aborta; con -Force la sobreescribe
-./archive/git-branches/restore.ps1 -Branch 'wip/pr503-provenance-fix' -Force
+./archive/git-branches/restore.ps1 -Bundle archive/git-branches/obsolete-branches-20261004.bundle -Branch 'wip/pr503-provenance-fix' -Force
 
 # Restaurar todas sin pisar destinos modificados (-Force permite sobrescribir explícitamente)
 # locales -> refs/heads/restored/*; remotas -> refs/heads/restored/origin/*
 # (incluye 'restored/main', el ref base del bundle)
-./archive/git-branches/restore.ps1 -All
+./archive/git-branches/restore.ps1 -Bundle archive/git-branches/obsolete-branches-20261004.bundle -All
 ```
 
 O con git directamente:
@@ -138,9 +138,12 @@ Usá el script con guardas fail-closed (recomputa PRs abiertos y worktrees en
 runtime). Corre en **dry-run** por defecto:
 
 ```powershell
-./archive/git-branches/delete-branches.ps1                          # dry-run
-./archive/git-branches/delete-branches.ps1 -Execute                # borra locales seguras
-./archive/git-branches/delete-branches.ps1 -Execute -IncludeRemote # + remotas (origin)
+# Con dos archivos en la carpeta, pasar el manifiesto y el bundle del archivo que se quiere usar
+# (por defecto toma el .bundle más nuevo y el MANIFEST.tsv de este primer archivo):
+$viejo = @{ Manifest = 'archive/git-branches/MANIFEST.tsv'; Bundle = 'archive/git-branches/obsolete-branches-20261004.bundle' }
+./archive/git-branches/delete-branches.ps1 @viejo                          # dry-run
+./archive/git-branches/delete-branches.ps1 @viejo -Execute                # borra locales seguras
+./archive/git-branches/delete-branches.ps1 @viejo -Execute -IncludeRemote # + remotas (origin)
 ```
 
 El clon objetivo es el que contiene el script; `-Repository <ruta>` permite elegir
@@ -279,5 +282,7 @@ defecto los dos scripts toman el `.bundle` más nuevo de la carpeta y `delete-br
 ```
 
 Con git directamente, `git branch <rama> <SHA-del-manifiesto>` solo funciona mientras `git gc` no haya podado los
-objetos: borrar una rama borra también su reflog y sus commits quedan sin referencias (2 semanas por defecto).
+objetos: borrar una rama borra también su reflog y sus commits quedan sin referencias. No hay una ventana de
+recuperación garantizada: la poda se decide por la antigüedad de cada objeto, no por cuándo se borró la rama,
+y puede ocurrir en el próximo `git gc` (el límite por defecto de 2 semanas no es una garantía).
 El bundle no caduca.
