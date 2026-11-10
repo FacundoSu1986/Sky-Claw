@@ -24,6 +24,7 @@ from sky_claw.local.validators.dyndolod_disk_budget import (
     DiskVolume,
     disk_budget_preflight_check,
 )
+from sky_claw.local.validators.dyndolod_disk_budget import _disk_usage_free as _medicion_real
 from sky_claw.local.validators.preflight import PreflightService, PreflightStatus
 
 _GIB = 1024**3
@@ -173,3 +174,16 @@ def test_el_volumen_de_temporales_es_el_que_usa_la_config() -> None:
     assert all(kw.arg != "temp_dir" for c in llamadas for kw in c.keywords), (
         "el servicio ahora cablea temp_dir: el rol `temp` del sensor de disco debe seguirlo"
     )
+
+
+def test_la_medicion_real_funciona_aunque_la_suite_la_enmascare(tmp_path: pathlib.Path) -> None:
+    """El fixture autouse de ``conftest.py`` fija ``_disk_usage_free`` para que la suite no dependa del host.
+
+    Este test usa la referencia ORIGINAL (importada antes de que el fixture la reemplace) para probar que la
+    medición por defecto sí habla con ``shutil.disk_usage`` y que el sensor la consume de punta a punta:
+    el enmascaramiento global no deja la ruta real sin ejercitar.
+    """
+    assert _medicion_real(tmp_path) > 0
+    scan = DiskBudgetChecker(volumes=[DiskVolume("temp", tmp_path, 1)], free_bytes=_medicion_real).check()
+    assert not scan.issues
+    assert scan.measured and "temp" in scan.measured[0]
