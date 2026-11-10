@@ -862,6 +862,11 @@ class DynDOLODPipelineService:
             disk_volumes.append(
                 DiskVolume("work_root", self._workspace.root, DYNDOLOD_MIN_FREE_BYTES_POR_ROL["work_root"])
             )
+        # `-t:` lo decide `DynDOLODConfig`: este servicio NO le pasa `temp_dir` (cae a
+        # `tempfile.gettempdir()`) y `extra_args` no puede redefinirlo
+        # (`_extra_args_admisibles`), así que éste ES el volumen de temporales de la
+        # corrida. Si algún día el servicio cablea `temp_dir`, este rol tiene que
+        # seguirlo: lo ancla `test_el_volumen_de_temporales_es_el_que_usa_la_config`.
         disk_volumes.append(
             DiskVolume("temp", pathlib.Path(tempfile.gettempdir()), DYNDOLOD_MIN_FREE_BYTES_POR_ROL["temp"])
         )

@@ -152,3 +152,22 @@ def test_los_otros_servicios_no_declaran_el_sensor_de_la_etapa_9(otro: str) -> N
     """El umbral es de TexGen/DynDOLOD (GBs de LODs): no se le aplica a servicios que no lo generan."""
     fuente = (_RAIZ / "sky_claw" / "local" / "tools" / f"{otro}.py").read_text(encoding="utf-8")
     assert "dyndolod_disk_budget" not in fuente
+
+
+def test_el_volumen_de_temporales_es_el_que_usa_la_config() -> None:
+    """El rol ``temp`` mide ``tempfile.gettempdir()`` porque la config de la corrida cae ahí.
+
+    Si el servicio empezara a pasar ``temp_dir`` a ``DynDOLODConfig`` el sensor mediría el volumen
+    equivocado y daría un verde sobre un disco que no es el de los temporales. El test rompe en
+    ese momento y obliga a derivar el rol de la misma fuente.
+    """
+    fuente = (_RAIZ / "sky_claw" / "local" / "tools" / "dyndolod_service.py").read_text(encoding="utf-8")
+    llamadas = [
+        n
+        for n in ast.walk(ast.parse(fuente))
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "DynDOLODConfig"
+    ]
+    assert llamadas, "el servicio dejó de construir DynDOLODConfig: revisar de dónde sale `-t:`"
+    assert all(kw.arg != "temp_dir" for c in llamadas for kw in c.keywords), (
+        "el servicio ahora cablea temp_dir: el rol `temp` del sensor de disco debe seguirlo"
+    )
