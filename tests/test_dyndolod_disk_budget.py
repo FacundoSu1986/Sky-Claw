@@ -135,10 +135,15 @@ def test_el_servicio_dyndolod_cablea_el_sensor_de_disco_con_los_tres_roles() -> 
     constructor productivo recibe no protege nada.
     """
     fuente = (_RAIZ / "sky_claw" / "local" / "tools" / "dyndolod_service.py").read_text(encoding="utf-8")
-    arbol = ast.parse(fuente)
+    # Sólo el cuerpo de `_ensure_preflight`: un helper, o un segundo sitio que construya `DiskVolume` en el
+    # mismo módulo, no puede hacer pasar (ni fallar) un ancla que habla del preflight real.
+    metodos = [
+        n for n in ast.walk(ast.parse(fuente)) if isinstance(n, ast.FunctionDef) and n.name == "_ensure_preflight"
+    ]
+    assert len(metodos) == 1, "se esperaba exactamente un `_ensure_preflight` en el servicio"
     pasa_disk_check = False
     roles: set[str] = set()
-    for nodo in ast.walk(arbol):
+    for nodo in ast.walk(metodos[0]):
         if isinstance(nodo, ast.Call) and getattr(nodo.func, "id", None) == "PreflightService":
             pasa_disk_check = pasa_disk_check or any(kw.arg == "disk_check" for kw in nodo.keywords)
         es_volumen = isinstance(nodo, ast.Call) and getattr(nodo.func, "id", None) == "DiskVolume"
