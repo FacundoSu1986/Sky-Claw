@@ -1104,6 +1104,19 @@ def ejecutar_transicion_binder(
             # -----------------------------------------------------------------
             # 5.5 — VERIFY EFFECTIVE (readback de superficies persistidas)
             # -----------------------------------------------------------------
+            try:
+                ini_bytes_actuales = ini_path.read_bytes()
+            except OSError as exc:
+                raise BinderVerificationError(
+                    f"Fallo de lectura en modorganizer.ini tras liberar exclusión: {exc}"
+                ) from exc
+
+            if ini_bytes_tras_escritura is not None and ini_bytes_actuales != ini_bytes_tras_escritura:
+                raise BinderVerificationError(
+                    "modorganizer.ini divergente tras liberar exclusión: el contenido actual no coincide con "
+                    "la imagen exacta verificada bajo exclusión (modificación externa concurrente detectada)"
+                )
+
             readback_ini = leer_game_path_de_mo2(ini_path)
             if readback_ini.state is not ObservationState.OBSERVED or not readback_ini.path:
                 raise BinderVerificationError(

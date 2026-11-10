@@ -42,12 +42,35 @@ Este registro es un **subordinado** del journal, no un segundo FSM:
   su lugar y la clasificación del journal queda para ``journal.reconciliar_journal``,
   que es su dueño. El resultado declara ``requiere_dueno=True``.
 
-Alcance de la garantía (declarado, no insinuado)
-------------------------------------------------
-``PROCESS_CRASH_RECOVERY = DEMONSTRATED`` (tests de reinicio con contexto nuevo).
-``POWER_LOSS_GUARANTEE = NOT_CLAIMED``: se usa el mismo ``os.replace`` atómico
-del resto del paquete, sin WAL ni ``fsync`` de directorio, igual que
-``state.write_json_atomic``.
+Alcance de la garantía y taxonomía de recuperación (P7-A5 PR 2)
+----------------------------------------------------------------
+1. Rollback en proceso con autoría conocida:
+   Ocurre en el mismo proceso del binder al interceptar un fallo antes de FINALIZE.
+   Cuenta con evidencia viva de autoría (``ini_escritura_intentada`` y huella
+   ``bytes_tras_escritura_ini`` bajo exclusión OS). Si los bytes actuales coinciden
+   con lo escrito bajo exclusión, restaura atómicamente el estado original desde el
+   snapshot durable. Si difieren (modificación externa concurrente), rechaza la
+   autoría, no sobrescribe el archivo en disco y preserva evidencia forense.
+
+2. Recuperación en frío sin autoría demostrable:
+   Ocurre en un proceso nuevo tras reinicio o corte abrupto. Al carecer de contexto
+   en memoria (``escritura_intentada is None``), opera fail-closed: cualquier
+   contenido divergente del snapshot se clasifica como ``escritura_ajena = True``,
+   no se sobrescribe en disco, se preserva copia en ``recovery_evidence/<tid>/``
+   y se emite ``requiere_dueno = True``.
+
+3. Intervención explícita del propietario:
+   Las divergencias no atribuibles o estados pendientes no se resuelven a ciegas.
+   El operador audita la evidencia forense y decide si fuerza la restauración
+   del baseline (``escritura_intentada=True``) o adopta el estado en disco
+   mediante ``journal.reconciliar_journal()``.
+
+4. Garantías de corte eléctrico no establecidas:
+   ``POWER_LOSS_GUARANTEE = NOT_CLAIMED``. La recuperación está demostrada frente
+   a caídas de proceso (``PROCESS_CRASH_RECOVERY = DEMONSTRATED``) mediante
+   ``os.replace`` atómico en el mismo volumen. No se reclama durabilidad ante
+   pérdida de suministro eléctrico o caídas del kernel (sin WAL ni fsync a nivel
+   de hardware/directorio).
 """
 
 from __future__ import annotations

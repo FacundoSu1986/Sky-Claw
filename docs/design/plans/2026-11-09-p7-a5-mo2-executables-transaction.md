@@ -86,11 +86,17 @@
   - Accurate `_coincide_con_lo_escrito` and `_es_escritura_propia_interrumpida` incorporating executable mutations.
   - Comprehensive rollback of both `gamePath` and `[customExecutables]`.
 
-- [ ] **Step 1: Write failing tests for crash and interrupted write detection with custom executables**
-- [ ] **Step 2: Run pytest to verify tests fail (RED)**
-- [ ] **Step 3: Update `RegistroRecuperacion`, `capturar_registro`, and `_coincide_con_lo_escrito`**
-- [ ] **Step 4: Update `runtime_clone_binder.py` to pass plan to writer and recovery**
-- [ ] **Step 5: Run pytest to verify tests pass (GREEN)**
+- [x] **Step 1: Write failing tests for crash and interrupted write detection with custom executables**
+- [x] **Step 2: Run pytest to verify tests fail (RED)**
+- [x] **Step 3: Update `RegistroRecuperacion`, `capturar_registro`, and `_coincide_con_lo_escrito`**
+- [x] **Step 4: Update `runtime_clone_binder.py` to pass plan to writer and recovery**
+- [x] **Step 5: Run pytest to verify tests pass (GREEN)**
+
+#### Recovery & Rollback Taxonomy (P7-A5 PR 2 Integridad):
+- **Rollback en proceso (autoría conocida):** Restaura baseline si bytes en disco coinciden con la escritura bajo exclusión; rechaza y preserva evidencia si un tercero alteró el archivo tras liberar exclusión.
+- **Recuperación en frío (sin autoría demostrable):** Fail-closed; clasifica superficies divergentes como `escritura_ajena`, no sobrescribe el archivo en disco y archiva copia inmutable en `recovery_evidence/`.
+- **Intervención explícita del propietario:** Resolución soberana; operador decide entre forzar restauración (`escritura_intentada=True`) o reconciliar el journal.
+- **Garantías de corte eléctrico:** `POWER_LOSS_GUARANTEE = NOT_CLAIMED`; durabilidad demostrada ante caídas de proceso (`PROCESS_CRASH_RECOVERY = DEMONSTRATED`) mediante `os.replace` atómico.
 
 ---
 

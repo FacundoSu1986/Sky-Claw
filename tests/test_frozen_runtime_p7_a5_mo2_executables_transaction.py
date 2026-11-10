@@ -1576,3 +1576,105 @@ def test_recuperacion_tras_corte_restaura_custom_executables_desde_registro_dura
     exes_restaurados = leer_ejecutables_de_mo2(ini_file)
     assert exes_restaurados[0].binary == str(skse_src).replace("\\", "/")
     assert exes_restaurados[0].working_directory == str(rig.manual_runtime).replace("\\", "/")
+
+
+def test_adversarial_modificacion_ini_tras_liberar_exclusion(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test adversarial: modificacion del INI tras liberar exclusion antes de VERIFY EFFECTIVE."""
+    rig = RigStockManual(tmp_path, steam_activo=True)
+
+    skse_src = rig.manual_runtime / "skse64_loader.exe"
+    skse_src.write_bytes(b"MZ_SKSE")
+    skse_dst = rig.clone_root / "skse64_loader.exe"
+    skse_dst.write_bytes(b"MZ_SKSE")
+
+    ini_file = rig.mo2_active_global / "modorganizer.ini"
+    manual_rt_str = str(rig.manual_runtime).replace("\\", "/")
+    clone_rt_str = str(rig.clone_root).replace("\\", "/")
+
+    _escribir_ini_mo2(
+        ini_file,
+        game_path=rig.manual_runtime,
+        base_directory=rig.mo2_base_data,
+        ejecutables=[
+            ("SKSE", str(skse_src).replace("\\", "/"), manual_rt_str),
+        ],
+    )
+
+    clone_rec = cargar_runtime_clone_record(rig.storage, rig.clone_id)
+    assert clone_rec is not None
+
+    propuesta, consentimiento = _preparar_aprobacion(
+        rig.storage,
+        target_generation_id=rig.generation_id,
+        target_clone_id=rig.clone_id,
+        runtime_setup_id=clone_rec.verified_runtime_setup_id or "setup-skse-clean",
+    )
+
+    cfg_path = _crear_config_toml(
+        rig.mo2_active_global / "config.toml",
+        skyrim_path=str(rig.manual_runtime),
+    )
+
+    from sky_claw.local.frozen_runtime.mo2_ini_exclusion import ExclusionIni
+
+    orig_cerrar = ExclusionIni.cerrar
+    modificacion_inyectada = False
+
+    def interceptar_cerrar(self_exclusion: ExclusionIni) -> None:
+        nonlocal modificacion_inyectada
+        orig_cerrar(self_exclusion)
+        texto = ini_file.read_text(encoding="utf-8")
+        # El escritor migró workingDirectory al Clone.
+        # Simulamos una modificación externa concurrente que conserva gamePath al Clone,
+        # pero reintroduce la dependencia al runtime saliente en workingDirectory:
+        if f"1\\workingDirectory={clone_rt_str}" in texto:
+            texto_mutado = texto.replace(
+                f"1\\workingDirectory={clone_rt_str}",
+                f"1\\workingDirectory={manual_rt_str}",
+            )
+            ini_file.write_text(texto_mutado, encoding="utf-8")
+            modificacion_inyectada = True
+
+    monkeypatch.setattr(ExclusionIni, "cerrar", interceptar_cerrar)
+
+    from sky_claw.local.frozen_runtime.journal import (
+        JournalDisposition,
+        cargar_journal_transicion,
+    )
+    from sky_claw.local.frozen_runtime.runtime_clone_binder import BinderVerificationError
+
+    with pytest.raises(BinderVerificationError, match="modorganizer.ini divergente tras liberar exclusión"):
+        ejecutar_transicion_binder(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            target_clone_id=rig.clone_id,
+            propuesta=propuesta,
+            consentimiento=consentimiento,
+            managed_source_root=rig.managed_source,
+            config_path=cfg_path,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime)},
+            probes=rig.probes_globales_activos(),
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest=rig.approved_digest,
+        )
+
+    assert modificacion_inyectada is True
+
+    # 1. El rollback NO debe haber sobrescrito la modificación externa
+    ini_post_rollback = ini_file.read_text(encoding="utf-8")
+    assert f"1\\workingDirectory={manual_rt_str}" in ini_post_rollback
+
+    # 2. La evidencia de la modificación externa debe haber quedado preservada
+    evidence_dir = rig.storage / "recovery_evidence"
+    assert evidence_dir.exists()
+    archivos_evidencia = list(evidence_dir.rglob("mo2_ini-*.bin"))
+    assert len(archivos_evidencia) >= 1
+
+    # 3. El journal debe permanecer en estado recuperable (no FINALIZED)
+    snap_journal = cargar_journal_transicion(rig.storage)
+    assert snap_journal.disposition is not JournalDisposition.NONE
