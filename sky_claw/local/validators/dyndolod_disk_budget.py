@@ -91,12 +91,17 @@ def _ancestro_existente(path: pathlib.Path) -> pathlib.Path:
     return actual
 
 
-def _identidad_de_volumen(probe: pathlib.Path) -> object:
-    """Clave del volumen físico de ``probe``. ``st_dev`` si se puede leer; si no, la propia ruta."""
+def _identidad_de_volumen(probe: pathlib.Path) -> object | None:
+    """Clave del volumen físico de ``probe`` (``st_dev``), o ``None`` si no se puede leer.
+
+    ``None`` significa "identidad desconocida": no se puede afirmar que dos roles compartan —ni que no
+    compartan— volumen, así que :meth:`DiskBudgetChecker.check` no los agrupa y marca el resultado como
+    no medible en vez de dar un verde que quizá cuente dos veces el mismo disco como dos.
+    """
     try:
         return probe.stat().st_dev
     except OSError:
-        return probe
+        return None
 
 
 def _gib(valor: int) -> str:
@@ -117,13 +122,19 @@ class DiskBudgetChecker:
 
     def check(self) -> DiskBudgetScan:
         grupos: dict[object, list[tuple[DiskVolume, pathlib.Path]]] = {}
+        identidad_desconocida: set[object] = set()
         for volume in self._volumes:
             probe = _ancestro_existente(volume.path)
-            grupos.setdefault(_identidad_de_volumen(probe), []).append((volume, probe))
+            identidad = _identidad_de_volumen(probe)
+            if identidad is None:
+                # Sin identidad no se agrupa: cada rol es su propio grupo y queda marcado.
+                identidad = object()
+                identidad_desconocida.add(identidad)
+            grupos.setdefault(identidad, []).append((volume, probe))
 
         medidos: list[str] = []
         issues: list[DiskBudgetIssue] = []
-        for miembros in grupos.values():
+        for clave, miembros in grupos.items():
             etiqueta = "+".join(v.label for v, _ in miembros)
             probe = miembros[0][1]
             requerido = sum(v.required_bytes for v, _ in miembros)
@@ -143,6 +154,20 @@ class DiskBudgetChecker:
                 )
                 continue
             medidos.append(f"{etiqueta}: {_gib(libre)} libres en {probe}")
+            if libre >= requerido and clave in identidad_desconocida:
+                issues.append(
+                    DiskBudgetIssue(
+                        label=etiqueta,
+                        path=str(probe),
+                        kind="unmeasurable",
+                        required_bytes=requerido,
+                        free_bytes=libre,
+                        remediation=(
+                            f"Alcanza para {etiqueta} por separado, pero no se pudo determinar si comparte "
+                            "volumen con otro rol de la etapa 9: verificá a mano que el total alcance."
+                        ),
+                    )
+                )
             if libre < requerido:
                 issues.append(
                     DiskBudgetIssue(

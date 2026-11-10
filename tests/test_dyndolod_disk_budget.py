@@ -187,3 +187,24 @@ def test_la_medicion_real_funciona_aunque_la_suite_la_enmascare(tmp_path: pathli
     scan = DiskBudgetChecker(volumes=[DiskVolume("temp", tmp_path, 1)], free_bytes=_medicion_real).check()
     assert not scan.issues
     assert scan.measured and "temp" in scan.measured[0]
+
+
+def test_identidad_de_volumen_desconocida_no_da_verde(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Si no se puede saber qué roles comparten volumen, no se afirma un verde.
+
+    Sin identidad, tratar cada ruta como un volumen distinto da verde con 15 GiB libres para dos roles que
+    necesitan 10 + 10 si en realidad son el mismo disco. Debe quedar amarillo ("no se pudo medir"); y si
+    algún volumen SÍ está corto, sigue siendo rojo.
+    """
+    monkeypatch.setattr("sky_claw.local.validators.dyndolod_disk_budget._identidad_de_volumen", lambda _p: None)
+    otra = tmp_path / "mods"
+    otra.mkdir()
+    volumenes = [DiskVolume("work_root", tmp_path, 10 * _GIB), DiskVolume("mods", otra, 10 * _GIB)]
+
+    amarillo = DiskBudgetChecker(volumes=volumenes, free_bytes=lambda _p: 15 * _GIB).check()
+    check = disk_budget_preflight_check(amarillo)
+    assert check.status is PreflightStatus.YELLOW
+    assert all(i.kind == "unmeasurable" for i in amarillo.issues)
+
+    rojo = DiskBudgetChecker(volumes=volumenes, free_bytes=lambda _p: 5 * _GIB).check()
+    assert disk_budget_preflight_check(rojo).status is PreflightStatus.RED
