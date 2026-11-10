@@ -139,7 +139,7 @@ def test_el_servicio_dyndolod_cablea_el_sensor_de_disco_con_los_tres_roles() -> 
     roles: set[str] = set()
     for nodo in ast.walk(arbol):
         if isinstance(nodo, ast.Call) and getattr(nodo.func, "id", None) == "PreflightService":
-            pasa_disk_check = any(kw.arg == "disk_check" for kw in nodo.keywords)
+            pasa_disk_check = pasa_disk_check or any(kw.arg == "disk_check" for kw in nodo.keywords)
         es_volumen = isinstance(nodo, ast.Call) and getattr(nodo.func, "id", None) == "DiskVolume"
         if es_volumen and nodo.args and isinstance(nodo.args[0], ast.Constant):
             roles.add(str(nodo.args[0].value))
@@ -147,7 +147,9 @@ def test_el_servicio_dyndolod_cablea_el_sensor_de_disco_con_los_tres_roles() -> 
     assert roles == {"work_root", "temp", "mods"}
 
 
-@pytest.mark.parametrize("otro", ["loot_service", "xedit_service", "synthesis_service", "pandora_service"])
+@pytest.mark.parametrize(
+    "otro", ["loot_service", "xedit_service", "synthesis_service", "pandora_service", "wrye_bash_service"]
+)
 def test_los_otros_servicios_no_declaran_el_sensor_de_la_etapa_9(otro: str) -> None:
     """El umbral es de TexGen/DynDOLOD (GBs de LODs): no se le aplica a servicios que no lo generan."""
     fuente = (_RAIZ / "sky_claw" / "local" / "tools" / f"{otro}.py").read_text(encoding="utf-8")
