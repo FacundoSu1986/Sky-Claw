@@ -358,3 +358,19 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         sys.stderr.flush()
         sys.stdout.flush()
         os._exit(3)
+
+
+@pytest.fixture(autouse=True)
+def _espacio_de_disco_suficiente_en_la_etapa_9(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El sensor de presupuesto de disco de la etapa 9 no depende de la máquina que corre la suite.
+
+    ``DynDOLODPipelineService._ensure_preflight`` cablea ``DiskBudgetChecker`` con un piso de varios GiB
+    por volumen. Más de 20 módulos de tests construyen ese servicio con el preflight real; sin este
+    aislamiento, un ``%TEMP%`` o un ``tmp_path`` con poco espacio libre pondría en rojo tests que hablan
+    de visibilidad, handoff o rollback. Sólo se fija la MEDICIÓN por defecto: los tests del sensor
+    (``test_dyndolod_disk_budget.py``) inyectan su propia ``free_bytes`` y no lo notan.
+    """
+    monkeypatch.setattr(
+        "sky_claw.local.validators.dyndolod_disk_budget._disk_usage_free",
+        lambda _ruta: 1024**4,
+    )
