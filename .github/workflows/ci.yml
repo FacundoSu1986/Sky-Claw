@@ -1,12 +1,13 @@
 name: Sky-Claw CI/CD
 
 on:
-  # Solo main/master en push: las ramas feat/fix/etc. con PR disparaban la matriz
-  # completa dos veces (push + pull_request) porque concurrency usa github.ref
-  # (refs/heads vs refs/pull/N/merge) y no se cancelan entre sí. Con 2 Pythons
-  # eso eran 4 jobs Windows de ~35-40 min compitiendo por runners y cancelándose
-  # por timeout. El control que importa (incluido el revisor adversarial) corre
-  # en pull_request. Ramas sin PR no corren CI hasta abrir el PR.
+  # Solo main/master en push: antes se agrupaba por github.ref (refs/heads vs
+  # refs/pull/N/merge) y las ramas con PR disparaban la matriz dos veces sin
+  # cancelarse entre sí. Ahora la concurrencia se diferencia por evento:
+  # en push se aísla por github.sha (sin cancelarse entre commits distintos de main),
+  # mientras que en pull_request se agrupa por el ref del PR con cancelación
+  # en progreso. Mantener push restringido a main/master evita duplicación en
+  # feature branches y reserva runners Windows para certificación de integración.
   push:
     branches: [main, master]
   # pull_request sin filtro de branches: corre en todo PR, incluyendo stacked
@@ -15,8 +16,14 @@ on:
   pull_request:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # En pull_request: un push nuevo cancela la corrida obsoleta del mismo PR
+  # (mismo ref `refs/pull/N/merge`), ahorrando runners Windows de 40+ min.
+  # En push (main/master): cada commit tiene su propio grupo por SHA y NO
+  # se cancelan entre sí (`cancel-in-progress: false`). Esto evita que merges
+  # sucesivos a main aborten la certificación y dejen 'Tests (Pytest)' en
+  # estado fallido ('Test matrix failed: cancelled/abandoned').
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
