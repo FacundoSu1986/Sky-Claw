@@ -102,18 +102,19 @@ class BackendUIAWindows:
             import comtypes.client  # noqa: PLC0415
         except ImportError as exc:  # pragma: no cover -- depende del rig
             raise UIANoDisponibleError("falta el binding COM `comtypes` (dependencia win32 de Sky-Claw)") from exc
+        # comtypes>=1.5 trae py.typed: COMError/CoInitialize dejan de ser Any implícito. Se accede vía Any (válido con 1.4.x y 1.5.x).
         self._comtypes: Any = comtypes
-        self._errores_com: tuple[type[BaseException], ...] = (comtypes.COMError, OSError)
+        self._errores_com: tuple[type[BaseException], ...] = (self._comtypes.COMError, OSError)
         # `ValueError`: comtypes lo lanza al usar un puntero COM nulo ("NULL COM
         # pointer access"). Tupla precalculada: mypy no acepta `except (*t, X)`.
         self._errores_de_patron: tuple[type[BaseException], ...] = (*self._errores_com, ValueError)
         self._apartamento = False
         try:
-            comtypes.CoInitialize()
+            self._comtypes.CoInitialize()
             self._apartamento = True
             self._mod: Any = comtypes.client.GetModule("UIAutomationCore.dll")
             self._uia: Any = comtypes.client.CreateObject(CLSID_CUIAUTOMATION, interface=self._mod.IUIAutomation)
-        except (comtypes.COMError, OSError, ImportError) as exc:  # pragma: no cover -- depende del rig
+        except (self._comtypes.COMError, OSError, ImportError) as exc:  # pragma: no cover -- depende del rig
             self.liberar()
             raise UIANoDisponibleError(f"no se pudo inicializar UI Automation: {exc}") from exc
 
