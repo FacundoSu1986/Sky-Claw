@@ -127,3 +127,104 @@ git worktree add .worktrees/<nombre> <rama>
 pwsh -File archive/git-branches/restore.ps1 -Branch '<rama-o-ref-completo>'
 # Un nombre corto ambiguo requiere refs/heads/<rama> o refs/remotes/origin/<rama>.
 ```
+
+## Poda del 2026-11-10
+
+> **Base `main`:** `2dab73ad` · **Worktrees registrados:** 78 → 35 · **Stashes:** 8, sin tocar.
+> Las ramas se archivaron y borraron por otro camino: ver `git-branches/README.md`, sección
+> "Segundo archivo (2026-11-10)".
+
+**Criterio.** Un worktree se retiró solo si, en el momento de hacerlo: (1) `git status` estaba limpio,
+(2) su rama estaba integrada en `main` (o era un detached cuyo HEAD ya es ancestro de `main`),
+(3) su reflog de HEAD no tenía commits ni checkouts en las últimas 96 h y (4) no era el principal, la sesión
+actual, una sesión de la app (`.claude/worktrees/*`), de Codex ni el binding legado de `AGENTS.md`.
+Siempre con `git worktree remove` **sin** `--force`. Además, `git worktree prune` quitó la entrada colgada
+`parallax-mod-comparison-test-034e0a` (su `gitdir` ya no existía).
+
+### Removidos (43)
+
+| Path | Rama / estado |
+|---|---|
+| `.worktrees/592-enospc-packaging` | `fix/dyndolod-packaging-enospc-preserve-previous` |
+| `.worktrees/706-postmerge-hardening` | `fix/telegram-706-postmerge-hardening` |
+| `.worktrees/baseline-9fe88cb4-symcheck` | detached `9fe88cb4` |
+| `.worktrees/ci-windows-test-timeout` | `ci-windows-test-timeout` |
+| `.worktrees/db-741-lease-cancel` | `fix/db-741-cancelled-acquire-lease` |
+| `.worktrees/dyndolod-592-dispatcher-errors` | `fix/dyndolod-592-dispatcher-errors` |
+| `.worktrees/dyndolod-592-f4-f5-output-evidence` | `fix/dyndolod-592-f4-f5-output-evidence` |
+| `.worktrees/dyndolod-661-unattended-windows-rig` | `validation/dyndolod-661-unattended-windows-rig` |
+| `.worktrees/e3-r2-d1-worker-argv` | `fix/mo2-e3-r2-d1-worker-argv` |
+| `.worktrees/f1-taxonomia-modal-stitched` | `fix/dyndolod-f1-taxonomia-modal` |
+| `.worktrees/f2-uia-modal-reobservation` | `fix/dyndolod-f2-uia-modal-reobservation` |
+| `.worktrees/f2b-output-reobservation` | `fix/dyndolod-f2b-output-reobservation` |
+| `.worktrees/fix-qodo-models` | `ci/qodo-model-resilience` |
+| `.worktrees/frozen-runtime-p04` | `design/frozen-runtime-reference-clone-p04` |
+| `.worktrees/frozen-runtime-p4-contracts` | `design/frozen-runtime-p4-contracts` |
+| `.worktrees/frozen-runtime-p4-s1-root-lock` | `feat/frozen-runtime-p4-s1-root-lock` |
+| `.worktrees/frozen-runtime-p4-s2-participant-wiring` | `frozen-runtime-p4-s2-participant-wiring` |
+| `.worktrees/frozen-runtime-p4-s3-durable-journal` | `frozen-runtime-p4-s3-durable-journal` |
+| `.worktrees/frozen-runtime-p4-s4-approval-authority` | `feat/frozen-runtime-p4-s4-approval-authority` |
+| `.worktrees/frozen-runtime-p4-s5-scope-binding` | `feat/frozen-runtime-p4-s5-scope-binding` |
+| `.worktrees/frozen-runtime-p4-s7-witness-binding` | `feat/frozen-runtime-p4-s7-witness-request-binding` |
+| `.worktrees/frozen-runtime-p5b-durable-authority` | `feat/frozen-runtime-p5b-durable-authority` |
+| `.worktrees/frozen-runtime-p5c-binder-preflight` | `feat/frozen-runtime-p5c-binder-preflight` |
+| `.worktrees/frozen-runtime-p5c1-mvp-binder` | `feat/frozen-runtime-p5c1-mvp-binder` |
+| `.worktrees/h4-r7-bound-review` | `h4-r7-bound-review` |
+| `.worktrees/h4-resize-normal-fix` | `h4-resize-normal-fix` |
+| `.worktrees/h4-resize-normal-gate` | `h4-resize-normal-gate` |
+| `.worktrees/h4-resize-normal-preflight` | `h4-resize-normal-preflight` |
+| `.worktrees/merge-conflict-standards` | `merge-conflict-standards` |
+| `.worktrees/np-a0c-diagtexconv` | `np-a0c-diagtexconv` |
+| `.worktrees/np-m6-rev73` | detached `268fa84a` |
+| `.worktrees/p4s2-io-errors` | `p4s2-io-errors` |
+| `.worktrees/p4s6-reconcile-778` | `reconcile-778-fix` |
+| `.worktrees/p5a-baseline-efc1bebc` | detached `efc1bebc` |
+| `.worktrees/p5a-effective-runtime-oracle` | `p5a-effective-runtime-oracle` |
+| `.worktrees/parallax-unattended` | `parallax-unattended-core` |
+| `.worktrees/pr-857-qodo-049` | `dependabot/github_actions/github-actions-minor-patch-421cb9cc85` |
+| `.worktrees/pr697-review-remediation` | `pr697-review-remediation` |
+| `.worktrees/privacy-redact-identifiers` | `privacy/redact-operator-identifiers` |
+| `.worktrees/r1c-9fbf0b2fef17-20261101T134003Z` | detached `9fbf0b2f` |
+| `.worktrees/rev72-m6-final-validation` | `research/native-parallax-m6-rev5` |
+| `.worktrees/rig-item3` | `rig/item3` |
+| `.worktrees/vfs-bridge-robusto` | `feat/vfs-bridge-robusto` |
+
+### Incidentes y lecciones
+
+- **`git worktree remove` también borra los archivos ignorados.** Los `scratch/` (notas de trabajo que git no
+  versiona: 399 archivos en 7 worktrees) se copiaron a la cuarentena y se verificó la copia antes de retirar.
+  Los `.pytest-tmp-*`, cachés, `.venv` y las bases vacías de `.skyclaw_backups/` se dejaron ir.
+- **4 worktrees quedaron a medias** (`592-enospc-packaging`, `baseline-9fe88cb4-symcheck`,
+  `dyndolod-592-f4-f5-output-evidence`, `h4-r7-bound-review`): git los dio de baja pero no pudo vaciar el
+  directorio ("Directory not empty", por las carpetas `.pytest-tmp-*`). Se comprobó que lo restante era
+  descartable y se borraron por ruta exacta. Antes de borrar un worktree con muchas carpetas `.pytest-tmp-*`,
+  conviene limpiarlas primero.
+- **Las ramas `claude/<nombre>` de sesiones de la app con carpeta viva no se borran**, aunque su tip esté en
+  `main`: la app puede buscarlas por nombre.
+- Aparecieron sesiones nuevas durante la poda y se fusionaron PRs en GitHub (`origin/main` avanzó 2 commits).
+  Por eso cada paso destructivo revalida el estado en el momento, no el de la foto inicial.
+
+### Conservados (35)
+
+Cada worktree figura una sola vez, bajo el primer motivo que lo excluyó.
+
+| Cant. | Qué | Por qué |
+|---:|---|---|
+| 1 | Principal (`main`) | Integración; tiene carpetas temporales sin trackear que no se tocaron |
+| 1 | Esta sesión | En uso |
+| 5 | `.claude/worktrees/*` | Sesiones de la app: se cierran archivando la sesión |
+| 1 | Codex (`$CODEX_HOME/worktrees/…`) | Sesión activa con cambios sin commitear |
+| 1 | `E:/Sectores/…/Skyclaw_Worktree` | Binding legado de `AGENTS.md` (retirarlo requiere un PR a `AGENTS.md` y a `LEGADOS` del test) |
+| 6 | Con cambios sin commitear o archivos sin trackear | Trabajo posiblemente vivo |
+| 8 | Actividad en las últimas 96 h | Se retiran en una pasada futura |
+| 10 | Rama con PR abierto o con trabajo sin respaldo | Decisión del dueño |
+| 2 | Detached con HEAD fuera de `main` (`np-v0d`, `p5a-integration`) | Sus commits solo son alcanzables desde ese worktree |
+
+### Cuarentena
+
+`archive/worktree-quarantine/20261110/` (gitignored, en el checkout principal):
+
+- `foto-previa.txt`: todas las ramas, refs remotas, stashes y worktrees antes de empezar.
+- `plan.json`: conjuntos calculados (worktrees a retirar, ramas candidatas y conservadas).
+- `bundle.sha256` y `scratch/<worktree>/` (7 directorios de notas de trabajo).
+- `stash-<n>-<sha>.patch`: los 8 stashes exportados como parche. Los stashes **no** se borraron.

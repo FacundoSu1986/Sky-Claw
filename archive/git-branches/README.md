@@ -31,6 +31,8 @@ el manifiesto `MANIFEST.tsv` y el script `restore.ps1`.
 | `MANIFEST.tsv` | sí | una fila por ref: nombre, tipo, estado de PR, nº de PR, fecha, SHA, subject |
 | `restore.ps1` | sí | restaura una rama o todas desde el bundle (incluye refs remotas) |
 | `delete-branches.ps1` | sí | borra ramas con guardas fail-closed (recomputa PRs abiertos y worktrees en runtime); dry-run por defecto |
+| `MANIFEST-20261110.tsv` | sí | segundo archivo (2026-11-10): una fila por rama local archivada y borrada |
+| `obsolete-branches-20261110.bundle` | no (gitignored) | 147 refs: 135 borradas + 11 conservadas + `main` como base |
 | `README.md` | sí | este documento |
 | `../WORKTREES.md` | sí | convención e inventario de worktrees (poda relacionada) |
 
@@ -213,3 +215,69 @@ la única copia de commits sin publicar. Antes de una nueva poda, seleccionar y
 auditar un conjunto explícito de refs, generar otro bundle con nombre único y
 su propio manifiesto, y probar su restauración en un repositorio vacío. Conservar
 el snapshot anterior; la fecha por sí sola no evita una colisión de nombres.
+
+## Segundo archivo (2026-11-10)
+
+Poda posterior a la del 2026-10-04, hecha con el procedimiento de la sección anterior: **bundle nuevo
+de nombre único y manifiesto propio**. El bundle del 2026-10-04 y su `MANIFEST.tsv` quedaron intactos.
+
+| | |
+|---|---|
+| Bundle | `obsolete-branches-20261110.bundle`, 23,2 MB, 147 refs (135 borradas + 11 conservadas + `main` como base) |
+| SHA-256 | `A445816A62E8E76F4E1B0B8B106BEFF4AEF780D96AFB7AB609580E55DBB6BE54` |
+| Manifiesto | `MANIFEST-20261110.tsv`: 135 filas (90 `MERGED`, 2 `CLOSED`, 43 `NO_PR`) |
+| Base | `main` @ `1910f9a6` |
+| Dónde está | **Solo local**: `archive/git-branches/` del checkout principal (gitignored). No se subió a ningún release |
+
+Si se quiere una segunda copia fuera de esta máquina, subirlo como asset de un release en borrador, como se
+hizo con el bundle anterior (la auditoría de secretos de abajo ya está hecha).
+
+**Qué se borró.** 135 ramas **locales**; el remoto (GitHub) no se tocó.
+
+- 92 con PR mergeado o cerrado, con el script del repo:
+  `delete-branches.ps1 -Manifest MANIFEST-20261110.tsv -Bundle obsolete-branches-20261110.bundle -Execute`.
+- 43 sin PR (`NO_PR`), que el script omite por diseño. Se borraron con la misma primitiva que usa el
+  script, `git update-ref -d refs/heads/<rama> <SHA>` (falla si el tip se movió), con aprobación explícita
+  del dueño y repitiendo las guardas (tip = manifiesto = bundle, sin PR abierto, sin worktree):
+  22 con el tip ya ancestro de `main` y 21 `backup/*`, `wip/*`, `respaldo/*`, `scratch/*` y similares
+  que ya estaban en el bundle del 2026-10-04.
+
+**Criterio de "integrada".** No se usó `git branch --merged`, que con squash subestima. Una rama cuenta como
+integrada si su tip es ancestro de `origin/main`, o es igual (o ancestro) del head de un PR mergeado, o su
+`patch-id` acumulado es idéntico al de un commit de `main` (`arena/f17ec4b4-sky-claw` y
+`fix/dyndolod-f2b-output-reobservation`).
+
+**Conservadas.** Están en el bundle pero **no** en el manifiesto, así que el script nunca las borra:
+
+| Rama | Tip | Motivo |
+|---|---|---|
+| `arena/c3c2ebf9-sky-claw` | `d3fb5980` | PR #839 mergeado, pero el tip no coincide con el head del PR; sin respaldo previo |
+| `audit/h4-check` | `497dcc5c` | PR #723 mergeado; 10 commits locales sobre el head del PR; sin respaldo previo |
+| `codex/integration-five-prs` | `b2e6e13b` | merge de ramas de revisión, sin PR; sin respaldo previo |
+| `feat/vfs-lazy-package-init` | `3fec0d23` | PR #872 mergeado, pero el tip no coincide con el head del PR; sin respaldo previo |
+| `fix/pr-857-merge-ready` | `f781592f` | sin PR propio (el #857 salió por otra rama); 2 commits sin respaldo previo |
+| `h4-r7-bound-research` | `91c22464` | sin PR; 2 commits sin respaldo previo |
+
+Además, cinco ramas de sesiones de la app que todavía tienen su carpeta en `.claude/worktrees/`
+(`claude/agitated-dirac-61cf78`, `claude/native-parallax-generator-a65b85`,
+`claude/prs-714-715-duplicates-de2f0c`, `claude/prueba-papelera-parallax-4aef65`,
+`claude/suspicious-ptolemy-49bb51`): no pierden commits, pero la app puede buscarlas por nombre. Se retiran
+al archivar la sesión.
+
+**Verificación previa al borrado.** `git bundle verify` correcto. Restaurado en un repo vacío con
+`fetch.fsckObjects=true`: 147 de 147 refs con el SHA del bundle y `fsck --connectivity-only` limpio. Auditoría
+de secretos sobre los 425 commits que nunca estuvieron en una ref remota (mismos patrones de la sección
+anterior más tokens de bots de Telegram): 0 coincidencias y 0 archivos sensibles.
+
+**Cómo restaurar.** Pasar siempre `-Bundle` (y `-Manifest` en `delete-branches.ps1`) de forma explícita: por
+defecto los dos scripts toman el `.bundle` más nuevo de la carpeta y `delete-branches.ps1` toma además el
+`MANIFEST.tsv` anterior.
+
+```powershell
+./archive/git-branches/restore.ps1 -Bundle archive/git-branches/obsolete-branches-20261110.bundle -List
+./archive/git-branches/restore.ps1 -Bundle archive/git-branches/obsolete-branches-20261110.bundle -Branch 'wip/pr503-provenance-fix'
+```
+
+Con git directamente, `git branch <rama> <SHA-del-manifiesto>` solo funciona mientras `git gc` no haya podado los
+objetos: borrar una rama borra también su reflog y sus commits quedan sin referencias (2 semanas por defecto).
+El bundle no caduca.
