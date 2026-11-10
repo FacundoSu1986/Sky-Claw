@@ -15,6 +15,7 @@ import dataclasses
 import logging
 import os
 import pathlib
+import tempfile
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -788,6 +789,11 @@ class DynDOLODPipelineService:
             return None
 
         # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
+        from sky_claw.local.validators.dyndolod_disk_budget import (
+            DYNDOLOD_MIN_FREE_BYTES_POR_ROL,
+            DiskBudgetChecker,
+            DiskVolume,
+        )
         from sky_claw.local.validators.preflight import PreflightService
         from sky_claw.local.validators.preflight_sensors import (
             build_master_order_sensor,
@@ -847,9 +853,31 @@ class DynDOLODPipelineService:
             else None
         )
 
+        # P-1: presupuesto de disco ANTES de generar (antes sólo se medía al
+        # empaquetar, tras 30+ min). Tres roles —work root, temporales (`-t:`
+        # cae a %TEMP%) y mods/— que el sensor suma si comparten volumen.
+        # Sin ruta resoluble el rol se omite: no se mide lo que no se sabe.
+        disk_volumes: list[DiskVolume] = []
+        if self._workspace is not None:
+            disk_volumes.append(
+                DiskVolume("work_root", self._workspace.root, DYNDOLOD_MIN_FREE_BYTES_POR_ROL["work_root"])
+            )
+        # `-t:` lo decide `DynDOLODConfig`: este servicio NO le pasa `temp_dir` (cae a
+        # `tempfile.gettempdir()`) y `extra_args` no puede redefinirlo
+        # (`_extra_args_admisibles`), así que éste ES el volumen de temporales de la
+        # corrida. Si algún día el servicio cablea `temp_dir`, este rol tiene que
+        # seguirlo: lo ancla `test_el_volumen_de_temporales_es_el_que_usa_la_config`.
+        disk_volumes.append(
+            DiskVolume("temp", pathlib.Path(tempfile.gettempdir()), DYNDOLOD_MIN_FREE_BYTES_POR_ROL["temp"])
+        )
+        if isinstance(mods_dir, pathlib.Path):
+            disk_volumes.append(DiskVolume("mods", mods_dir, DYNDOLOD_MIN_FREE_BYTES_POR_ROL["mods"]))
+        disk_check = DiskBudgetChecker(volumes=disk_volumes).check
+
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
             permissions_check=_permissions,
+            disk_check=disk_check,
             overwrite_check=overwrite_check,
             masters_check=masters_check,
             limits_check=limits_check,

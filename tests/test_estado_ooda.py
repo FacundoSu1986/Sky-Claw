@@ -125,7 +125,7 @@ _ITEMS = frozenset(
         # de medir ENOSPC —ahora mide primero y sustituye bajo `DirectoryRollback`—,
         # así que este censo de inventario y los dos de familia
         # (`test_rollback_salida.py`, `test_rollback_reconciler.py`) se mueven juntos.
-        # Fila "Parcial" porque el PR está pendiente de merge; #592 sigue ABIERTO por
+        # Fila "Parcial" porque #592 sigue ABIERTO por
         # sus otros findings.
         "Runner P2.2 — el packaging preserva el mod anterior ante ENOSPC y fallos de copia (`RUNNER_P2_PACKAGING_PRESERVE_PREVIOUS`, #592 finding 2)",
         # #726: el contrato de errores del dispatcher (ErrorWrapping +
@@ -579,7 +579,7 @@ def test_runner_r2_reparse_copy_registrado_como_cerrado_tras_merge() -> None:
     Contrato post-merge: la fila deja de ser ``Parcial``, cita el merge commit y no
     puede volver a declarar el estado pre-merge. Además el tracking conserva lo que
     NO se cerró: #592 sigue abierto por sus otros findings, y R3 —que sí tiene fix—
-    queda en ``Parcial`` con ``merge_status=PENDING`` hasta que su PR se mergee.
+    quedó en ``Parcial`` (smoke de rig pendiente) con ``merge_status=MERGED`` tras #693.
     """
     fila = _tabla()["Runner P1 — packaging rechaza descendientes reparse antes de copiar (`RUNNER_P1_REPARSE_COPY`)"]
     estado = fila["Qué falta"]
@@ -619,24 +619,26 @@ def test_runner_r2_reparse_copy_registrado_como_cerrado_tras_merge() -> None:
         assert frase_obsoleta not in estado, f"frase pre-merge reintroducida en R2: {frase_obsoleta!r}"
         assert frase_obsoleta not in fila["Cerrado en"], f"frase pre-merge reintroducida en R2: {frase_obsoleta!r}"
 
-    # R3 no se adelanta: su PR sigue abierto, así que la fila queda en `Parcial`
-    # con el fix declarado y `merge_status=PENDING` — nunca `Cerrado`/`MERGED`.
+    # R3 se mergeó (#693, `3e0c0670`): la fila cita el merge commit. Sigue `Parcial`
+    # porque le falta el smoke runtime real en rig con MO2, que ningún test cierra.
     fila_r3 = _tabla()["Runner P2 — doble cancelación interrumpe el cleanup (`RUNNER_P2_DOUBLE_CANCEL`)"]
     assert fila_r3["Estado"] == "Parcial"
-    assert "pendiente de merge" in fila_r3["Cerrado en"]
+    assert "3e0c0670" in fila_r3["Cerrado en"], "la fila debe citar el merge commit de #693"
+    assert "pendiente de merge" not in fila_r3["Cerrado en"]
     assert "resolution_status=FIXED" in fila_r3["Qué falta"]
     assert "evidence_status=REPRODUCED" in fila_r3["Qué falta"]
-    assert "merge_status=PENDING" in fila_r3["Qué falta"]
-    assert "merge_status=MERGED" not in fila_r3["Qué falta"], (
-        "R3 no puede declararse MERGED antes de que su PR se mergee"
+    assert "merge_status=MERGED" in fila_r3["Qué falta"]
+    assert "merge_status=PENDING" not in fila_r3["Qué falta"]
+    assert "smoke runtime real en rig con MO2" in fila_r3["Qué falta"], (
+        "el residuo de rig no puede desaparecer al mergear"
     )
 
 
 def test_runner_p22_conserva_el_previo_y_no_se_adelanta_al_merge() -> None:
-    """#592 finding 2 tiene fix y evidencia, pero su PR sigue abierto.
+    """#592 finding 2 tiene fix y evidencia, y #709 ya está mergeado.
 
     Mismo contrato que R2/R3: ``Parcial`` mientras ``#592`` siga abierto por sus
-    otros findings, ``merge_status`` nunca ``MERGED``. Y los dos límites que el fix
+    otros findings, con el merge commit citado. Y los dos límites que el fix
     declara —la promoción no es atómica y no se reclama crash-safety desde
     ``Path.rename``— no pueden desaparecer de la fila: son justamente lo que
     distingue «el previo sobrevive» de «el previo nunca corrió riesgo».
@@ -661,10 +663,11 @@ def test_runner_p22_conserva_el_previo_y_no_se_adelanta_al_merge() -> None:
     estado = fila["Qué falta"]
 
     assert fila["Estado"] == "Parcial"
-    assert "pendiente de merge" in fila["Cerrado en"]
+    assert "74054f51" in fila["Cerrado en"], "la fila debe citar el merge commit de #709"
+    assert "pendiente de merge" not in fila["Cerrado en"]
     assert "resolution_status=FIXED" in estado
     assert "evidence_status=REPRODUCED" in estado
-    assert "merge_status=MERGED" not in estado
+    assert "merge_status=MERGED" in estado
     # El doc escribe la negación en mayúsculas ("NO es atómica"): se compara sin
     # distinguir caso para que una edición de estilo no rompa el ancla.
     assert "no es atómica" in estado.lower()
