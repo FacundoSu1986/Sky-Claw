@@ -679,8 +679,15 @@ def ejecutar_transicion_binder(
     cfg_skyrim_actual = _leer_skyrim_path_persistido(config_path)
     desired_actual = desired_runtime_from_storage(storage_path)
 
+    es_transicion_con_ejecutables = (
+        transition_policy is BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION
+        or outgoing_manual_runtime_root is not None
+    )
+
     clone_rec_candidato = cargar_runtime_clone_record(storage_path, target_clone_id)
-    if clone_rec_candidato is not None:
+    # Contrato legacy: si la transición no incluye ejecutables opt-in, el chequeo
+    # idempotente temprano se mantiene para configuraciones históricas coherentes.
+    if clone_rec_candidato is not None and not es_transicion_con_ejecutables:
         candidato_root_norm = _norm(clone_rec_candidato.root_path)
         evidencia_ini_actual = leer_game_path_de_mo2(ini_path)
         if (
@@ -745,6 +752,50 @@ def ejecutar_transicion_binder(
     target_clone_root = preflight.target_clone_root
     target_generation_id = preflight.source_generation_id
     previous_path = preflight.observed_mo2_game_path or ""
+
+    # Idempotencia de transición opt-in con ejecutables:
+    # Se evalúa POST-preflight. Solo si el preflight autorizó, NO quedan mutaciones
+    # pendientes en [customExecutables], y todas las superficies físicas y el journal
+    # acreditan finalización durable, se declara éxito idempotente.
+    if es_transicion_con_ejecutables and clone_rec_candidato is not None:
+        plan_ejecutables = preflight.plan_migracion_ejecutables
+        sin_mutaciones = plan_ejecutables is not None and len(plan_ejecutables.mutaciones) == 0
+        if sin_mutaciones:
+            candidato_root_norm = _norm(clone_rec_candidato.root_path)
+            evidencia_ini_actual = leer_game_path_de_mo2(ini_path)
+            if (
+                desired_actual.clone_id == target_clone_id
+                and desired_actual.clone_root is not None
+                and _norm(desired_actual.clone_root) == candidato_root_norm
+                and evidencia_ini_actual.state is ObservationState.OBSERVED
+                and evidencia_ini_actual.path is not None
+                and _norm(evidencia_ini_actual.path) == candidato_root_norm
+            ):
+                post_eval_existente = assess_effective_runtime(
+                    mo2_instance_dir=mo2_dir,
+                    desired=desired_actual,
+                    managed_source_root=managed_source_root,
+                    config_skyrim_path=cfg_skyrim_actual,
+                    environ=env_actual,
+                    probes=observadores,
+                )
+                if post_eval_existente.authorizes_activation:
+                    _exigir_finalizacion_durable(
+                        storage_path,
+                        target_clone_id,
+                        clone_rec_candidato.source_generation_id,
+                    )
+                    return BinderResult(
+                        success=True,
+                        message="El runtime ya se encuentra activado y consistente en el Runtime Clone objetivo",
+                        transition_id="idempotent-noop",
+                        target_clone_id=target_clone_id,
+                        target_clone_root=pathlib.Path(clone_rec_candidato.root_path),
+                        target_generation_id=clone_rec_candidato.source_generation_id,
+                        previous_effective_path=clone_rec_candidato.root_path,
+                        new_effective_path=clone_rec_candidato.root_path,
+                    )
+
     # Setup que el Clone tiene VERIFICADO. Es lo que el propietario tiene que
     # haber aprobado: el preflight valida la integridad del setup provisionado,
     # no su identidad contra el scope.

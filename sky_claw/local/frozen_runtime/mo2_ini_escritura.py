@@ -282,6 +282,7 @@ def _construir_lineas(
     lineas = texto.split("\n")
     en_general = False
     seccion_general_vista = False
+    game_path_encontrado = False
     en_custom_executables = False
     seccion_custom_vista = False
     claves_custom_vistas: set[str] = set()
@@ -300,9 +301,10 @@ def _construir_lineas(
                 en_custom_executables = False
                 salida.append(linea)
                 continue
-            if en_general and not any(_es_game_path(salida[i]) for i in tocadas):
+            if en_general and not game_path_encontrado:
                 tocadas.append(len(salida))
                 salida.append(_con_terminador(f"gamePath={valor}", formato))
+                game_path_encontrado = True
             en_general = False
             if encabezado.lower() == "customexecutables":
                 if seccion_custom_vista:
@@ -312,9 +314,12 @@ def _construir_lineas(
             else:
                 en_custom_executables = False
 
-        if en_general and not any(_es_game_path(salida[i]) for i in tocadas) and _es_game_path(linea):
-            tocadas.append(len(salida))
-            salida.append(_reemplazar_valor(linea, valor))
+        if en_general and not game_path_encontrado and _es_game_path(linea):
+            game_path_encontrado = True
+            nueva_linea = _reemplazar_valor(linea, valor)
+            if nueva_linea != linea:
+                tocadas.append(len(salida))
+            salida.append(nueva_linea)
             continue
 
         if en_custom_executables and "=" in linea:
@@ -324,8 +329,10 @@ def _construir_lineas(
                 raise FormatoIniNoAdmitidoError(f"Clave duplicada en [customExecutables]: '{clave.strip()}'")
             claves_custom_vistas.add(clave_norm)
             if clave_norm in mutaciones_map:
-                tocadas.append(len(salida))
-                salida.append(_reemplazar_valor(linea, mutaciones_map[clave_norm]))
+                nueva_linea = _reemplazar_valor(linea, mutaciones_map[clave_norm])
+                if nueva_linea != linea:
+                    tocadas.append(len(salida))
+                salida.append(nueva_linea)
                 mutaciones_aplicadas.add(clave_norm)
                 continue
 
@@ -338,7 +345,7 @@ def _construir_lineas(
         salida.insert(0, "[General]" + ("\r" if formato.crlf else ""))
         salida.insert(1, _con_terminador(f"gamePath={valor}", formato))
         tocadas = [0, 1] + [i + 2 for i in tocadas]
-    elif en_general and not any(_es_game_path(salida[i]) for i in tocadas):
+    elif en_general and not game_path_encontrado:
         # [General] era la última sección: se agrega al final de ella.
         if salida and salida[-1] == "":
             # El archivo termina con salto de línea: la línea nueva va ANTES del
@@ -370,6 +377,9 @@ def _verificar_preservacion(
     normalizó un salto, reordenó una clave o perdió una línea, el resto de la
     lista deja de ser idéntica al original.
     """
+    if despues == antes:
+        return
+
     if not tocadas:
         raise EscrituraIniNoVerificadaError("verificación de preservación: la edición no tocó ninguna línea")
 
@@ -378,8 +388,6 @@ def _verificar_preservacion(
     if len(despues) == len(antes):
         # REEMPLAZO en el lugar: sólo pueden diferir las líneas declaradas, y
         # tanto la versión previa como la nueva tienen que ser gamePath o mutación de ejecutable.
-        if despues == antes:
-            return
         distintas = [indice for indice, (a, d) in enumerate(zip(antes, despues, strict=True)) if a != d]
         if distintas != list(tocadas):
             raise EscrituraIniNoVerificadaError(

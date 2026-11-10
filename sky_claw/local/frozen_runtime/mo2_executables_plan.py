@@ -339,6 +339,59 @@ def planificar_migracion_ejecutables(
                 motivos_bloqueo.append(motivo)
                 continue
 
+            nuevo_wd_str = None
+            wd_invalido = False
+            if exe.working_directory:
+                wd_raw = exe.working_directory.strip().strip('"')
+                if wd_raw:
+                    norm_wd = pathlib.Path(os.path.normpath(os.path.abspath(wd_raw)))
+                    if _es_igual_o_hijo(norm_wd, norm_outgoing):
+                        rel_wd = norm_wd.relative_to(norm_outgoing)
+                        target_wd = norm_clone / rel_wd
+                        if not target_wd.exists():
+                            motivo = (
+                                f"Directorio de trabajo destino homólogo de {exe.index} ({exe.title}) "
+                                f"inexistente en Clone: '{target_wd}'"
+                            )
+                            entradas.append(
+                                EntradaPlanEjecutableMO2(
+                                    index=exe.index,
+                                    title=exe.title,
+                                    clasificacion=ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA,
+                                    binary_original=exe.binary,
+                                    working_dir_original=exe.working_directory,
+                                    arguments_original=exe.arguments,
+                                    motivo=motivo,
+                                )
+                            )
+                            motivos_bloqueo.append(motivo)
+                            wd_invalido = True
+                        elif not target_wd.is_dir():
+                            motivo = (
+                                f"Destino homólogo de workingDirectory de {exe.index} ({exe.title}) "
+                                f"en Clone no es un directorio: '{target_wd}'"
+                            )
+                            entradas.append(
+                                EntradaPlanEjecutableMO2(
+                                    index=exe.index,
+                                    title=exe.title,
+                                    clasificacion=ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA,
+                                    binary_original=exe.binary,
+                                    working_dir_original=exe.working_directory,
+                                    arguments_original=exe.arguments,
+                                    motivo=motivo,
+                                )
+                            )
+                            motivos_bloqueo.append(motivo)
+                            wd_invalido = True
+                        else:
+                            nuevo_wd_str = _formatear_ruta_mo2(target_wd)
+                    else:
+                        nuevo_wd_str = exe.working_directory
+
+            if wd_invalido:
+                continue
+
             # MIGRABLE_AL_CLONE
             nuevo_bin_str = _formatear_ruta_mo2(target_bin)
             mutaciones.append(
@@ -350,25 +403,15 @@ def planificar_migracion_ejecutables(
                 )
             )
 
-            nuevo_wd_str = None
-            if exe.working_directory:
-                wd_raw = exe.working_directory.strip().strip('"')
-                if wd_raw:
-                    norm_wd = pathlib.Path(os.path.normpath(os.path.abspath(wd_raw)))
-                    if _es_igual_o_hijo(norm_wd, norm_outgoing):
-                        rel_wd = norm_wd.relative_to(norm_outgoing)
-                        target_wd = norm_clone / rel_wd
-                        nuevo_wd_str = _formatear_ruta_mo2(target_wd)
-                        mutaciones.append(
-                            MutacionCampoEjecutable(
-                                index=exe.index,
-                                campo="workingDirectory",
-                                valor_previo=exe.working_directory,
-                                valor_nuevo=nuevo_wd_str,
-                            )
-                        )
-                    else:
-                        nuevo_wd_str = exe.working_directory
+            if nuevo_wd_str is not None and nuevo_wd_str != exe.working_directory:
+                mutaciones.append(
+                    MutacionCampoEjecutable(
+                        index=exe.index,
+                        campo="workingDirectory",
+                        valor_previo=exe.working_directory or "",
+                        valor_nuevo=nuevo_wd_str,
+                    )
+                )
 
             entradas.append(
                 EntradaPlanEjecutableMO2(
