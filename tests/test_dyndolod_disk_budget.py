@@ -208,3 +208,38 @@ def test_identidad_de_volumen_desconocida_no_da_verde(tmp_path: pathlib.Path, mo
 
     rojo = DiskBudgetChecker(volumes=volumenes, free_bytes=lambda _p: 5 * _GIB).check()
     assert disk_budget_preflight_check(rojo).status is PreflightStatus.RED
+
+
+def _roles_del_preflight_real(tmp_path: pathlib.Path, *, mods_resoluble: bool) -> set[str]:
+    """Construye ``DynDOLODPipelineService`` de verdad y devuelve los roles que su sensor de disco mide."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+    from tests.test_vfs_visibility_wiring import _instancia, _resolver
+
+    skyrim, mo2 = _instancia(tmp_path)
+    resolver = _resolver(skyrim=skyrim, mo2=mo2)
+    resolver.get_mo2_mods_path_best_effort = MagicMock(return_value=(mo2 / "mods") if mods_resoluble else None)
+    servicio = DynDOLODPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        path_resolver=resolver,
+        journal=MagicMock(),
+        event_bus=MagicMock(),
+        workspace=SimpleNamespace(root=tmp_path / "work_root_externo"),
+    )
+    preflight = servicio._ensure_preflight()
+    assert preflight is not None
+    checker = preflight._disk_check.__self__  # type: ignore[union-attr]
+    return {v.label for v in checker._volumes}
+
+
+def test_el_servicio_real_mide_los_tres_roles_cuando_todo_es_resoluble(tmp_path: pathlib.Path) -> None:
+    """Complementa al ancla AST: lo que ella no ve es qué roles quedan REALMENTE en el sensor en runtime."""
+    assert _roles_del_preflight_real(tmp_path, mods_resoluble=True) == {"work_root", "temp", "mods"}
+
+
+def test_sin_mods_resoluble_el_sensor_omite_ese_rol_y_no_inventa_una_ruta(tmp_path: pathlib.Path) -> None:
+    """Un ``mods_dir`` no resoluble omite el rol ``mods`` (no se mide lo que no se sabe); work_root y temp siguen."""
+    assert _roles_del_preflight_real(tmp_path, mods_resoluble=False) == {"work_root", "temp"}
