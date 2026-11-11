@@ -89,6 +89,43 @@ def vfs_instance_id(mo2_root: pathlib.Path) -> str:
     return f"mo2-{digest}"
 
 
+def lock_de_instancia_tiene_dueno_vivo(lock_path: pathlib.Path) -> bool:
+    """¿El lock de instancia en ``lock_path`` pertenece a un proceso que sigue vivo?
+
+    Es la ÚNICA definición de «lock huérfano»: el broker la usa al arrancar y ``vfs_quarantine`` (la superficie de
+    operador de la cuarentena) la usa para decidir si puede liberar. Conservadora: ante la duda, el dueño está vivo.
+    """
+    try:
+        raw = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return True
+    if isinstance(raw, dict) and raw.get("quarantined"):
+        # Si el lock está envenenado por cuarentena fail-closed, nunca se considera huérfano ni libre
+        return True
+    pid = raw.get("pid") if isinstance(raw, dict) else None
+    if type(pid) is not int or pid <= 0:
+        return True
+    if pid == os.getpid():
+        return True
+    expected_create_time = raw.get("create_time") if isinstance(raw, dict) else None
+    # Liveness vía psutil + create_time, NO os.kill(pid, 0): en Windows os.kill
+    # sobre un PID reciclado por un proceso protegido del SO lanza un SystemError
+    # irrecuperable (OSError con excepción C sin traducir), y un PID simplemente
+    # reusado se leería como "vivo" y el lock jamás se reclamaría (deadlock de
+    # arranque tras un crash del broker). create_time da la identidad estable del
+    # proceso, mismo patrón que vfs.MO2Controller._kill_process_tree (review #302).
+    try:
+        create_time = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return False  # el dueño murió: PID libre → lock reclamable
+    except psutil.Error:
+        return True  # no verificable (AccessDenied/…): conservador, no robar el lock
+    # Vivo salvo que el create_time registrado no coincida (PID reusado por otro
+    # proceso ⇒ el dueño original ya murió). Un lock antiguo sin create_time
+    # (None) no dispara la reclamación: se trata como vivo (conservador).
+    return not (isinstance(expected_create_time, (int, float)) and create_time != expected_create_time)
+
+
 class VfsBrokerError(RuntimeError):
     """Error de lifecycle o protocolo del broker VFS."""
 
@@ -499,35 +536,7 @@ class VfsExecutionBroker:
         raise VfsBrokerError(f"no se pudo reclamar el lock de la instancia {self._instance_id}")
 
     def _instance_lock_owner_alive(self) -> bool:
-        try:
-            raw = json.loads(self._instance_lock_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            return True
-        if isinstance(raw, dict) and raw.get("quarantined"):
-            # Si el lock está envenenado por cuarentena fail-closed, nunca se considera huérfano ni libre
-            return True
-        pid = raw.get("pid") if isinstance(raw, dict) else None
-        if type(pid) is not int or pid <= 0:
-            return True
-        if pid == os.getpid():
-            return True
-        expected_create_time = raw.get("create_time") if isinstance(raw, dict) else None
-        # Liveness vía psutil + create_time, NO os.kill(pid, 0): en Windows os.kill
-        # sobre un PID reciclado por un proceso protegido del SO lanza un SystemError
-        # irrecuperable (OSError con excepción C sin traducir), y un PID simplemente
-        # reusado se leería como "vivo" y el lock jamás se reclamaría (deadlock de
-        # arranque tras un crash del broker). create_time da la identidad estable del
-        # proceso, mismo patrón que vfs.MO2Controller._kill_process_tree (review #302).
-        try:
-            create_time = psutil.Process(pid).create_time()
-        except psutil.NoSuchProcess:
-            return False  # el dueño murió: PID libre → lock reclamable
-        except psutil.Error:
-            return True  # no verificable (AccessDenied/…): conservador, no robar el lock
-        # Vivo salvo que el create_time registrado no coincida (PID reusado por otro
-        # proceso ⇒ el dueño original ya murió). Un lock antiguo sin create_time
-        # (None) no dispara la reclamación: se trata como vivo (conservador).
-        return not (isinstance(expected_create_time, (int, float)) and create_time != expected_create_time)
+        return lock_de_instancia_tiene_dueno_vivo(self._instance_lock_path)
 
     def _release_instance_file_lock(self) -> None:
         if not self._owns_instance_file_lock:

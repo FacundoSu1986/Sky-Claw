@@ -55,6 +55,18 @@ raíz.
   `tests/test_vfs_job_identity_windows.py` y `tests/test_vfs_job_identity_e2e_windows.py` (procesos y Job reales;
   el e2e corre también contra el `.exe` congelado con `SKYCLAW_FROZEN_EXE`). `_CONTENCION_DEL_WORKER_VERIFICADA`
   (PR #854) sigue en `False`: levantarlo es una decisión aparte con la evidencia de la auditoría.
+- **La cuarentena del broker se libera con UNA sola pieza y con evidencia** (H-4). La cuarentena persiste de tres
+  formas (marcador `.<instancia>.quarantine`, lock envenenado `quarantined: true` y lock de un broker que murió sin
+  cerrar) y borrar solo una no alcanza: el próximo arranque reclama el lock huérfano y la reimpone.
+  `vfs_quarantine.py` contesta «¿está en cuarentena y por qué?» y la libera (`--mode vfs-quarantine`); para decidir si
+  un lock está huérfano reusa `vfs_broker.lock_de_instancia_tiene_dueno_vivo`, la ÚNICA definición (el broker la usa
+  para reclamar): no la copies. Exige evidencia no vacía, se niega con un dueño vivo del lock (un broker vivo la
+  volvería a persistir desde su memoria), borra el lock —releído y sin cambios— ANTES que el marcador (un fallo a mitad
+  deja siempre cuarentena entera) y registra `CRITICAL`. Todo escritor nuevo del estado de cuarentena es un mutador más:
+  tiene que entrar al conjunto congelado. Anclas: `tests/test_vfs_quarantine.py` (fabrica cada estado con el broker REAL
+  y exige que lo que dice el módulo coincida con lo que el broker hace al arrancar) y
+  `tests/test_vfs_quarantine_anclas.py` (enumera por AST quién muta el marcador/lock, los sitios que arman la ruta de
+  estado y que todo `--mode` esté documentado).
 - `ganadores.py` (NP-A0d) contesta UNA vez «¿qué capa provee esta ruta virtual en el overlay del perfil?». Recibe `enabled` ya
   normalizado por `vfs_attestation.read_enabled_mods` (no parsea el modlist: un test lo ancla), recorre con
   `links.iter_archivos_propios` (no entra a enlaces), trata `overwrite` como la capa más alta y un `*.mohidden` como ausente, y

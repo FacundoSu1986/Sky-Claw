@@ -18,6 +18,7 @@ import os
 import pathlib
 import signal
 import sys
+from typing import TYPE_CHECKING
 
 # Apply Python 3.14+ polyfills before importing sky_claw submodules that could
 # transitively pull NiceGUI / vbuild. Must run before the package imports below.
@@ -72,6 +73,10 @@ from sky_claw.logging_config import (  # noqa: E402
     shutdown_logging,
 )
 
+if TYPE_CHECKING:
+    # Solo para la anotación: importarlo acá cargaría el broker VFS antes del despacho de los workers.
+    from sky_claw.local.mo2.vfs_quarantine import EstadoDeCuarentena
+
 logger = logging.getLogger("sky_claw")
 
 
@@ -99,6 +104,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "security",
             "install-vfs-bridge",
             "vfs-health",
+            "vfs-quarantine",
         ],
         default=modo_por_defecto,
         help="Operation mode (default: %(default)s)",
@@ -142,6 +148,17 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="Timeout in seconds for the vfs-health worker (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--vfs-quarantine-action",
+        choices=["status", "release"],
+        default="status",
+        help="vfs-quarantine: report the quarantine state or release it; release needs --vfs-evidence (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--vfs-evidence",
+        default=None,
+        help="vfs-quarantine release: what you verified (e.g. no job process is left alive); it is logged as CRITICAL",
     )
     parser.add_argument(
         "--db-path",
@@ -366,6 +383,56 @@ async def _run_vfs_health(args: argparse.Namespace) -> None:
         await broker.close()
 
 
+async def _run_vfs_quarantine(args: argparse.Namespace) -> EstadoDeCuarentena:
+    """H-4: informa o libera la cuarentena persistida del broker VFS, sin arrancar el daemon.
+
+    Despachado ANTES de ``AppContext``: arrancarlo levantaría el broker y tomaría el lock que este modo necesita ver
+    libre. La instancia sale de ``--mo2-root`` (igual que ``install-vfs-bridge``); además se listan todas las
+    instancias con cuarentena bajo ``vfs_bridge``, por si esa ruta no coincide con la que usó la sesión.
+    """
+    from sky_claw.local.mo2.vfs_broker import vfs_instance_id
+    from sky_claw.local.mo2.vfs_quarantine import (
+        COMO_LIBERAR,
+        leer_estado_de_cuarentena,
+        liberar_cuarentena,
+        listar_instancias_con_cuarentena,
+    )
+
+    base = Config.DEFAULT_CONFIG_DIR / "vfs_bridge"
+    instance_id = vfs_instance_id(pathlib.Path(args.mo2_root).resolve())
+    state_dir = base / instance_id
+
+    if args.vfs_quarantine_action == "release":
+        previo = await asyncio.to_thread(liberar_cuarentena, state_dir, instance_id, evidencia=args.vfs_evidence or "")
+        if previo.en_cuarentena:
+            logger.info("Cuarentena de la instancia %s liberada: ya se puede arrancar Sky-Claw", instance_id)
+        return previo
+
+    estado = await asyncio.to_thread(leer_estado_de_cuarentena, state_dir, instance_id)
+    if estado.en_cuarentena:
+        origen = estado.origen.value if estado.origen is not None else "?"
+        logger.warning(
+            "Instancia %s EN CUARENTENA (origen=%s, job=%s, razón=%s, dueño vivo=%s)",
+            instance_id,
+            origen,
+            estado.job_id,
+            estado.razon,
+            "sí" if estado.dueno_vivo else "no",
+        )
+        logger.warning("Para liberarla: %s", COMO_LIBERAR)
+    else:
+        logger.info("Instancia %s sin cuarentena persistida", instance_id)
+    otras = [e for e in await asyncio.to_thread(listar_instancias_con_cuarentena, base) if e.instance_id != instance_id]
+    for otra in otras:
+        logger.warning(
+            "Otra instancia bajo %s está EN CUARENTENA: %s (job=%s). Si es la de tu MO2, pasá su --mo2-root",
+            base,
+            otra.instance_id,
+            otra.job_id,
+        )
+    return estado
+
+
 async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> None:
     """Asynchronous runner for CLI, Telegram, oneshot and security modes.
 
@@ -380,6 +447,9 @@ async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> N
         return
     if args.mode == "vfs-health":
         await _run_vfs_health(args)
+        return
+    if args.mode == "vfs-quarantine":
+        await _run_vfs_quarantine(args)
         return
     if args.mode == "oneshot" and not args.command:
         logger.error("Oneshot mode requires a command argument.")

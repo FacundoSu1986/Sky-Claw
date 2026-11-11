@@ -9,7 +9,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.__main__ import AppContext, _build_parser, _install_vfs_bridge, _main, _parse_args
+from sky_claw.__main__ import (
+    AppContext,
+    _build_parser,
+    _install_vfs_bridge,
+    _main,
+    _parse_args,
+    _run_vfs_quarantine,
+)
 from sky_claw.config import Config
 
 #: Qué hace cada ``--mode`` con el posicional ``command``: ``True`` si ``_main`` lo consume (``oneshot`` lo ejecuta,
@@ -23,6 +30,7 @@ _MODOS_Y_SU_POSICIONAL: dict[str, bool] = {
     "security": True,
     "install-vfs-bridge": False,
     "vfs-health": False,
+    "vfs-quarantine": False,
 }
 
 # ------------------------------------------------------------------
@@ -86,7 +94,7 @@ class TestParseArgs:
 
     @pytest.mark.parametrize(
         "modo_posicional",
-        ["cli", "telegram", "oneshot", "gui", "security", "install-vfs-bridge", "vfs-health"],
+        ["cli", "telegram", "oneshot", "gui", "security", "install-vfs-bridge", "vfs-health", "vfs-quarantine"],
     )
     def test_rechaza_modo_pasado_como_argumento_posicional_sin_flag_mode(self, modo_posicional: str) -> None:
         """Pasar p. ej. ``python -m sky_claw vfs-health`` sin ``--mode`` no debe caer en silencio al REPL."""
@@ -328,6 +336,112 @@ class TestVfsHealth:
 
         health.assert_awaited_once()
         app_context.assert_not_called()
+
+
+class TestVfsQuarantine:
+    """H-4: ``--mode vfs-quarantine`` es la superficie de operador de la cuarentena del broker VFS."""
+
+    @staticmethod
+    def _args(tmp_path: pathlib.Path, *extra: str):
+        return _parse_args(["--mode", "vfs-quarantine", "--mo2-root", str(tmp_path / "MO2"), *extra])
+
+    @staticmethod
+    def _dejar_en_cuarentena(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, args) -> pathlib.Path:
+        """Persiste un marcador de cuarentena donde lo buscaría el modo (instancia derivada de ``--mo2-root``)."""
+        from sky_claw.local.mo2.vfs_broker import vfs_instance_id
+        from sky_claw.local.mo2.vfs_quarantine import rutas_de_estado
+
+        monkeypatch.setattr(Config, "DEFAULT_CONFIG_DIR", tmp_path / "cfg")
+        instancia = vfs_instance_id(pathlib.Path(args.mo2_root).resolve())
+        state_dir = tmp_path / "cfg" / "vfs_bridge" / instancia
+        state_dir.mkdir(parents=True)
+        rutas_de_estado(state_dir, instancia).marcador.write_text(
+            json.dumps({"job_id": "job-9", "reason": "terminalidad desconocida", "timestamp": 1_700_000_000.0}),
+            encoding="utf-8",
+        )
+        return state_dir
+
+    def test_el_parser_acepta_el_modo_con_su_accion_y_la_evidencia(self, tmp_path: pathlib.Path) -> None:
+        por_defecto = self._args(tmp_path)
+        assert por_defecto.vfs_quarantine_action == "status"
+        assert por_defecto.vfs_evidence is None
+
+        liberar = self._args(tmp_path, "--vfs-quarantine-action", "release", "--vfs-evidence", "revisé el proceso")
+        assert liberar.vfs_quarantine_action == "release"
+        assert liberar.vfs_evidence == "revisé el proceso"
+
+    def test_la_accion_solo_admite_los_valores_documentados(self, tmp_path: pathlib.Path) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            self._args(tmp_path, "--vfs-quarantine-action", "borrar-todo")
+        assert exc_info.value.code == 2
+
+    @pytest.mark.asyncio
+    async def test_el_modo_no_arranca_app_context(self, tmp_path: pathlib.Path) -> None:
+        """Arrancar ``AppContext`` levantaría el broker y tomaría el lock que este modo necesita ver libre."""
+        with (
+            patch("sky_claw.__main__._run_vfs_quarantine", new_callable=AsyncMock) as modo,
+            patch("sky_claw.__main__.AppContext") as app_context,
+        ):
+            await _main(["--mode", "vfs-quarantine", "--mo2-root", str(tmp_path / "MO2")])
+
+        modo.assert_awaited_once()
+        app_context.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_status_informa_la_cuarentena_y_como_liberarla(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        args = self._args(tmp_path)
+        self._dejar_en_cuarentena(tmp_path, monkeypatch, args)
+
+        with caplog.at_level(logging.INFO, logger="sky_claw"):
+            estado = await _run_vfs_quarantine(args)
+
+        assert estado.en_cuarentena is True
+        texto = "\n".join(r.getMessage() for r in caplog.records)
+        assert "EN CUARENTENA" in texto
+        assert "job-9" in texto and "terminalidad desconocida" in texto
+        assert "--vfs-quarantine-action release" in texto and "--vfs-evidence" in texto
+
+    @pytest.mark.asyncio
+    async def test_status_sin_cuarentena_lo_dice(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(Config, "DEFAULT_CONFIG_DIR", tmp_path / "cfg")
+
+        with caplog.at_level(logging.INFO, logger="sky_claw"):
+            estado = await _run_vfs_quarantine(self._args(tmp_path))
+
+        assert estado.en_cuarentena is False
+        assert "sin cuarentena" in "\n".join(r.getMessage() for r in caplog.records).lower()
+
+    @pytest.mark.asyncio
+    async def test_release_sin_evidencia_falla_y_no_libera(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sky_claw.local.mo2.vfs_quarantine import CuarentenaNoLiberableError, rutas_de_estado
+
+        args = self._args(tmp_path, "--vfs-quarantine-action", "release")
+        state_dir = self._dejar_en_cuarentena(tmp_path, monkeypatch, args)
+
+        with pytest.raises(CuarentenaNoLiberableError, match="evidencia"):
+            await _run_vfs_quarantine(args)
+
+        assert rutas_de_estado(state_dir, state_dir.name).marcador.exists()
+
+    @pytest.mark.asyncio
+    async def test_release_con_evidencia_libera(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from sky_claw.local.mo2.vfs_quarantine import leer_estado_de_cuarentena
+
+        args = self._args(
+            tmp_path, "--vfs-quarantine-action", "release", "--vfs-evidence", "no queda ningún proceso del job"
+        )
+        state_dir = self._dejar_en_cuarentena(tmp_path, monkeypatch, args)
+
+        previo = await _run_vfs_quarantine(args)
+
+        assert previo.en_cuarentena is True
+        assert leer_estado_de_cuarentena(state_dir, state_dir.name).en_cuarentena is False
 
 
 class TestTelegram:
