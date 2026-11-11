@@ -6,6 +6,8 @@ name: tmp debug PR908
 # GITHUB_STEP_SUMMARY en vez de quedar sólo en el log del paso.
 
 on:
+  push:
+    branches: [arena/bb4f2e9a-sky-claw]
   workflow_dispatch:
 
 permissions:
