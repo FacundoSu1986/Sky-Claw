@@ -17,6 +17,7 @@ Se omite fuera de Windows con motivo explícito: un skip NO cuenta como PASS; la
 from __future__ import annotations
 
 import contextlib
+import os
 import subprocess
 import sys
 import textwrap
@@ -25,7 +26,12 @@ import time
 import psutil
 import pytest
 
-from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import BridgeCommandError, Win32JobObject
+from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge import runtime as puente
+from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import (
+    BridgeCommandError,
+    Win32JobObject,
+    adopt_descendants,
+)
 from sky_claw.local.mo2.vfs_job_identity import generar_nombre_de_job
 from tests.test_vfs_job_containment_windows import (
     _PADRE_QUE_ESPERA_LA_BANDERA,
@@ -210,6 +216,122 @@ def test_la_adopcion_real_no_toca_a_un_proceso_ajeno_al_arbol(tmp_path, limpieza
         assert psutil.pid_exists(ajeno.pid), "un proceso ajeno al árbol no puede entrar al Job ni morir con él"
     finally:
         _sondas().cerrar_handle(handle_del_padre)
+
+
+# ---------------------------------------------------------------------------
+# PPID reciclado de un proceso de sistema que NO se puede abrir (flake de CI: «[720, 844] ... GetLastError=5»)
+# ---------------------------------------------------------------------------
+
+#: Segundos entre 1601-01-01 (época de FILETIME) y 1970-01-01.
+_SEGUNDOS_1601_A_1970 = 11_644_473_600
+
+
+def _api_real(job: Win32JobObject) -> puente._Win32AdoptionApi:
+    """La capa ``ctypes`` de producción, la misma que arma ``Win32JobObject.adopt_descendants``."""
+    return puente._Win32AdoptionApi(job._kernel32, job._handle)
+
+
+def _no_se_puede_abrir(api: puente._Win32AdoptionApi, pid: int) -> bool:
+    try:
+        handle = api.open_process(pid)
+    except BridgeCommandError:
+        return True
+    if handle is not None:
+        api.close(handle)
+    return False
+
+
+def _procesos_viejos_que_no_se_pueden_abrir(api: puente._Win32AdoptionApi, *, mas_viejos_que: int) -> list[int]:
+    """Procesos (``csrss``, ``wininit``, ...) que existían antes que ``mas_viejos_que`` y el bridge no puede abrir."""
+    limite = psutil.Process(mas_viejos_que).create_time()
+    encontrados: list[int] = []
+    for pid, _ppid in api.processes():
+        if pid <= 4 or not _no_se_puede_abrir(api, pid):  # 0 y 4 son Idle y System: nada que comparar
+            continue
+        with contextlib.suppress(psutil.Error):
+            if psutil.Process(pid).create_time() < limite:
+                encontrados.append(pid)
+    return encontrados
+
+
+def test_la_creacion_leida_sin_abrir_el_proceso_coincide_con_la_leida_por_handle(limpieza, job) -> None:
+    """Valida la disposición de la estructura del sistema contra ``GetProcessTimes``, bit a bit, en el kernel real."""
+    # Arrange
+    api = _api_real(job)
+    dormido = _lanzar(["-c", "import time; time.sleep(120)"])
+    limpieza.append(dormido)
+
+    for pid in (os.getpid(), dormido.pid):
+        handle = api.open_process(pid)
+        assert handle is not None
+        try:
+            por_handle = api.creation_time(handle)
+        finally:
+            api.close(handle)
+
+        # Act / Assert
+        assert api.creation_time_by_pid(pid) == por_handle, f"la creación de {pid} no coincide"
+
+
+def test_la_creacion_de_un_pid_que_no_existe_es_desconocida_y_no_un_error(job) -> None:
+    assert _api_real(job).creation_time_by_pid(2**31 - 8) is None
+
+
+def test_la_creacion_de_un_proceso_que_no_se_puede_abrir_se_lee_del_sistema_y_coincide_con_psutil(
+    limpieza, job
+) -> None:
+    # Arrange: un proceso de sistema real que el bridge no puede abrir (ACCESS_DENIED), más viejo que uno recién lanzado.
+    api = _api_real(job)
+    reciente = _lanzar(["-c", "import time; time.sleep(120)"])
+    limpieza.append(reciente)
+    inabribles = _procesos_viejos_que_no_se_pueden_abrir(api, mas_viejos_que=reciente.pid)
+    if not inabribles:
+        pytest.skip("este Windows no tiene procesos viejos inabribles para este token: no hay qué medir")
+
+    # Act
+    leida = api.creation_time_by_pid(inabribles[0])
+
+    # Assert: la misma marca de tiempo que ve psutil (que usa la instantánea del sistema cuando el proceso no se abre).
+    assert leida is not None
+    esperada = psutil.Process(inabribles[0]).create_time()
+    assert abs((leida / 10_000_000 - _SEGUNDOS_1601_A_1970) - esperada) < 0.01
+
+
+def test_un_proceso_de_sistema_inabrible_con_ppid_reciclado_no_hace_fallar_la_adopcion_real(limpieza, job) -> None:
+    """REPRODUCE el flake de CI con el kernel real: ``OpenProcess`` del proceso viejo falla con ``GetLastError=5``.
+
+    El PID reciclado no se puede provocar a voluntad (el asignador de PIDs es LIFO), así que se inyecta el PPID en la
+    única capa que lo lee del sistema (``processes``): lo demás —``OpenProcess``, la creación, el Job— es real.
+    """
+    # Arrange
+    dormido = _lanzar(["-c", "import time; time.sleep(120)"])
+    limpieza.append(dormido)
+    real = _api_real(job)
+    viejos = _procesos_viejos_que_no_se_pueden_abrir(real, mas_viejos_que=dormido.pid)
+    if not viejos:
+        pytest.skip("este Windows no tiene procesos viejos inabribles para este token: no hay qué reproducir")
+    viejo = viejos[0]
+
+    class _ApiConPidReciclado(puente._Win32AdoptionApi):
+        def processes(self) -> list[tuple[int, int]]:
+            return [(pid, dormido.pid if pid == viejo else ppid) for pid, ppid in super().processes()]
+
+    api = _ApiConPidReciclado(job._kernel32, job._handle)
+    assert (viejo, dormido.pid) in api.processes(), "control: el proceso viejo aparece como hijo del lanzado"
+    with pytest.raises(BridgeCommandError, match=r"GetLastError=5"):
+        api.open_process(viejo)  # control: es el mismo ACCESS_DENIED que vio CI
+    handle_del_lanzado = _sondas().abrir_proceso(dormido.pid)
+    try:
+        job.assign(handle_del_lanzado)
+
+        # Act: antes del arreglo esto lanzaba ``BridgeTerminationError`` («quedan vivos fuera del Job: [<viejo>]»).
+        adoptados = adopt_descendants(api, handle_del_lanzado)
+
+        # Assert: el proceso de sistema no es un descendiente: ni se adopta ni se toca.
+        assert adoptados == 0
+        assert psutil.pid_exists(viejo), "el proceso de sistema ajeno no puede morir"
+    finally:
+        _sondas().cerrar_handle(handle_del_lanzado)
 
 
 def test_active_processes_sobre_un_job_cerrado_falla_con_un_error_del_bridge() -> None:
