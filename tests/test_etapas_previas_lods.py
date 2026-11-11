@@ -11,6 +11,7 @@ habilitado / mod deshabilitado), con el perfil MO2 montado en ``tmp_path``.
 from __future__ import annotations
 
 import json
+import logging
 import pathlib
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -245,12 +246,16 @@ def test_sin_instancia_mo2_el_servicio_no_afirma_etapas(tmp_path):
 # La propiedad: *una corrida desatendida nunca arranca sin probar las etapas 6–8
 # o sin la aprobación explícita del operador, por cualquier superficie*. El camino
 # remoto (``GestorDeTrabajosDeLods``) tiene el override HITL; el dispatcher
-# (``GenerateLodsStrategy``) no tiene canal remoto, así que corta. La corrida
-# ASISTIDA desde la GUI sigue sin guard: decisión del owner (SOP §5.2).
+# (``GenerateLodsStrategy``) no tiene canal remoto, así que en DESATENDIDO corta.
+# La corrida ASISTIDA desde la GUI también verifica (D-3, decisión del owner del
+# 2026-11-11, que revirtió la exclusión anterior de SOP §5.2): si faltan etapas
+# previas pide la confirmación del operador por su propio canal (modal de la GUI)
+# y sin su confirmación no arranca.
 
 import ast  # noqa: E402
 
 from sky_claw.app.orchestrator.tool_strategies.generate_lods import GenerateLodsStrategy  # noqa: E402
+from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion  # noqa: E402
 from sky_claw.local.validators.etapas_previas_lods import EvidenciaDeEtapasPrevias  # noqa: E402
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
@@ -288,13 +293,130 @@ async def test_el_dispatcher_lanza_la_corrida_desatendida_con_las_etapas_complet
     servicio.execute.assert_awaited_once_with(preset="Medium", interaction_mode="desatendido")
 
 
-@pytest.mark.parametrize("payload", [{"preset": "Medium"}, {"preset": "Medium", "interaction_mode": "asistido"}])
-async def test_la_corrida_asistida_del_dispatcher_sigue_sin_guard(payload):
-    """La exclusión documentada (SOP §5.2): el owner decide si la GUI asistida lo suma."""
-    servicio = _servicio_con_evidencia(EvidenciaDeEtapasPrevias(faltantes=("etapa 6: falta",)))
-    await GenerateLodsStrategy(servicio).execute(payload)
-    servicio.verificar_etapas_previas.assert_not_called()
-    servicio.execute.assert_awaited_once()
+_FALTA_UNA_ETAPA = EvidenciaDeEtapasPrevias(faltantes=("etapa 6: falta",))
+_PAYLOADS_ASISTIDOS = [{"preset": "Medium"}, {"preset": "Medium", "interaction_mode": "asistido"}]
+_IDS_ASISTIDOS = ["sin_modo", "asistido_explicito"]
+
+
+class _Aprobador:
+    """El canal humano de la GUI, doble: responde ``decision`` y recuerda qué se le preguntó."""
+
+    def __init__(self, decision: ResultadoConfirmacion | BaseException) -> None:
+        self.decision = decision
+        self.llamadas: list[tuple[str, ...]] = []
+
+    async def __call__(self, faltantes: tuple[str, ...]) -> ResultadoConfirmacion:
+        self.llamadas.append(faltantes)
+        if isinstance(self.decision, BaseException):  # incluye CancelledError, que NO es Exception
+            raise self.decision
+        return self.decision
+
+
+@pytest.mark.parametrize("payload", _PAYLOADS_ASISTIDOS, ids=_IDS_ASISTIDOS)
+@pytest.mark.parametrize(
+    "decision",
+    [ResultadoConfirmacion.DENEGADA, ResultadoConfirmacion.TIMEOUT, ResultadoConfirmacion.CANAL_NO_DISPONIBLE],
+)
+async def test_la_corrida_asistida_no_arranca_si_el_operador_no_confirma(payload, decision):
+    servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)
+    aprobador = _Aprobador(decision)
+
+    resultado = await GenerateLodsStrategy(servicio, aprobar_sin_etapas_previas=aprobador).execute(payload)
+
+    servicio.execute.assert_not_awaited()
+    assert aprobador.llamadas == [("etapa 6: falta",)], "se le pregunta al operador, con cada etapa faltante nombrada"
+    assert resultado["success"] is False
+    assert "etapas previas" in resultado["message"] and "etapa 6: falta" in resultado["message"]
+    assert resultado["etapas_faltantes"] == ["etapa 6: falta"]
+    assert resultado["assisted"] is True
+    assert resultado["interaction_mode"] == "asistido"
+
+
+@pytest.mark.parametrize("payload", _PAYLOADS_ASISTIDOS, ids=_IDS_ASISTIDOS)
+async def test_la_corrida_asistida_sin_canal_de_confirmacion_corta_fail_closed(payload):
+    """Sin aprobador cableado no hay a quién preguntarle: se corta, no se sigue en silencio."""
+    servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)
+
+    resultado = await GenerateLodsStrategy(servicio).execute(payload)
+
+    servicio.execute.assert_not_awaited()
+    assert resultado["success"] is False and resultado["etapas_faltantes"] == ["etapa 6: falta"]
+
+
+@pytest.mark.parametrize("payload", _PAYLOADS_ASISTIDOS, ids=_IDS_ASISTIDOS)
+async def test_la_corrida_asistida_arranca_si_el_operador_confirma_y_queda_registrado(payload, caplog):
+    servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)
+    aprobador = _Aprobador(ResultadoConfirmacion.APROBADA)
+
+    with caplog.at_level(logging.WARNING):
+        await GenerateLodsStrategy(servicio, aprobar_sin_etapas_previas=aprobador).execute(payload)
+
+    servicio.execute.assert_awaited_once_with(**payload)
+    assert aprobador.llamadas == [("etapa 6: falta",)]
+    override = [r for r in caplog.records if "etapa 6: falta" in r.getMessage() and r.levelno >= logging.WARNING]
+    assert override, "el override del operador deja evidencia en el log"
+    assert all(getattr(r, "pipeline_stage", None) == 9 for r in override)
+
+
+@pytest.mark.parametrize("payload", _PAYLOADS_ASISTIDOS, ids=_IDS_ASISTIDOS)
+async def test_con_las_etapas_completas_el_asistido_no_le_pregunta_nada_al_operador(payload):
+    servicio = _servicio_con_evidencia(EvidenciaDeEtapasPrevias(faltantes=()))
+    aprobador = _Aprobador(ResultadoConfirmacion.DENEGADA)
+
+    await GenerateLodsStrategy(servicio, aprobar_sin_etapas_previas=aprobador).execute(payload)
+
+    assert aprobador.llamadas == []
+    servicio.execute.assert_awaited_once_with(**payload)
+
+
+async def test_si_no_se_pudo_verificar_el_asistido_tambien_le_pregunta_al_operador():
+    """El gate es fail-closed: una metadata rota cuenta como etapa faltante, y la decide el operador."""
+    servicio = _servicio_con_evidencia(RuntimeError("metadata rota"))
+    aprobador = _Aprobador(ResultadoConfirmacion.DENEGADA)
+
+    resultado = await GenerateLodsStrategy(servicio, aprobar_sin_etapas_previas=aprobador).execute({"preset": "Medium"})
+
+    assert len(aprobador.llamadas) == 1 and aprobador.llamadas[0]
+    servicio.execute.assert_not_awaited()
+    assert resultado["success"] is False
+
+
+async def test_un_aprobador_que_lanza_no_deja_arrancar_la_corrida_asistida():
+    """Fail-closed ante un canal humano roto: cualquier falla del aprobador es «no disponible»."""
+    servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)
+
+    resultado = await GenerateLodsStrategy(
+        servicio, aprobar_sin_etapas_previas=_Aprobador(RuntimeError("el canal explotó"))
+    ).execute({"preset": "Medium"})
+
+    servicio.execute.assert_not_awaited()
+    assert resultado["success"] is False and resultado["etapas_faltantes"]
+
+
+async def test_la_cancelacion_del_aprobador_se_propaga_y_no_se_traga():
+    import asyncio  # noqa: PLC0415
+
+    servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)
+    estrategia = GenerateLodsStrategy(servicio, aprobar_sin_etapas_previas=_Aprobador(asyncio.CancelledError()))
+
+    with pytest.raises(asyncio.CancelledError):
+        await estrategia.execute({"preset": "Medium"})
+
+    servicio.execute.assert_not_awaited()
+
+
+async def test_el_desatendido_del_dispatcher_no_usa_el_override_del_asistido():
+    """El override de la GUI es del modo ASISTIDO: el desatendido sigue cortando sin preguntar (sin canal remoto)."""
+    servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)
+    aprobador = _Aprobador(ResultadoConfirmacion.APROBADA)
+
+    resultado = await GenerateLodsStrategy(servicio, aprobar_sin_etapas_previas=aprobador).execute(
+        {"preset": "Medium", "interaction_mode": "desatendido"}
+    )
+
+    assert aprobador.llamadas == []
+    servicio.execute.assert_not_awaited()
+    assert resultado["success"] is False and resultado["interaction_mode"] == "desatendido"
 
 
 async def test_un_modo_invalido_lo_rechaza_el_servicio_no_el_guard():

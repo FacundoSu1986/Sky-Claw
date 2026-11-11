@@ -20,6 +20,12 @@ la GUI no la intercepta, así que viaja por el canal remoto del guard.
 ``hitl_guard=None`` no es "aprobado": es ``CANAL_NO_DISPONIBLE`` y la corrida se
 corta.
 
+**La excepción es el override del modo ASISTIDO de la GUI** (D-3,
+``aprobar_sin_etapas_previas_asistido``): ahí el destinatario es el operador frente
+a la GUI, no el remoto, así que usa su PROPIA categoría
+(``CATEGORIA_DYNDOLOD_ETAPAS_PREVIAS_ASISTIDO``), que la GUI sí estaciona como modal.
+Con la del remoto la pregunta se habría ido a Telegram.
+
 **No conoce al runner ni a COM**: traduce el puerto ``AprobadorDesatendido`` a
 ``HITLGuard.request_approval`` y nada más.
 """
@@ -31,6 +37,7 @@ import logging
 
 from sky_claw.app.security.hitl import (
     CATEGORIA_DYNDOLOD_DESATENDIDO,
+    CATEGORIA_DYNDOLOD_ETAPAS_PREVIAS_ASISTIDO,
     Decision,
     HITLGuard,
     new_hitl_request_id,
@@ -95,6 +102,16 @@ def texto_de_etapas_previas(faltantes: tuple[str, ...]) -> tuple[str, str]:
     """``(reason, detail)`` del prompt de etapas previas: cada etapa faltante, nombrada."""
     reason = (
         "Etapa 9 (LODs) pedida desde el canal remoto, pero faltan artefactos de etapas previas "
+        "(SOP §5.2: DynDOLOD tiene que correr DESPUÉS de Wrye Bash, Synthesis y el grass cache). "
+        "Aprobá sólo si sabés que esas etapas no aplican a tu lista; denegá para cortar."
+    )
+    return reason, "\n".join(f"- {faltante}" for faltante in faltantes)
+
+
+def texto_de_etapas_previas_del_asistido(faltantes: tuple[str, ...]) -> tuple[str, str]:
+    """``(reason, detail)`` del prompt de la GUI en modo asistido: mismo hecho, otro destinatario."""
+    reason = (
+        "Etapa 9 (LODs) pedida desde la GUI en modo ASISTIDO, pero faltan artefactos de etapas previas "
         "(SOP §5.2: DynDOLOD tiene que correr DESPUÉS de Wrye Bash, Synthesis y el grass cache). "
         "Aprobá sólo si sabés que esas etapas no aplican a tu lista; denegá para cortar."
     )
@@ -175,6 +192,38 @@ class AprobadorDesatendidoHITL:
             raise
         except Exception:  # noqa: BLE001 -- canal humano: cualquier fallo es "no disponible"
             logger.warning("el canal HITL de las etapas previas falló", exc_info=True)
+            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+        return _traducir(decision)
+
+    async def aprobar_sin_etapas_previas_asistido(
+        self,
+        faltantes: tuple[str, ...],
+        *,
+        timeout_seconds: float = TIMEOUT_APROBACION_ETAPAS_PREVIAS_S,
+    ) -> ResultadoConfirmacion:
+        """Override HUMANO del guard de etapas previas del modo ASISTIDO desde la GUI (D-3, SOP §5.2).
+
+        Mismo hecho que ``aprobar_sin_etapas_previas`` y otro destinatario: el operador frente a la GUI. Por eso
+        usa su PROPIA categoría, que ``make_gui_hitl_notify`` estaciona como modal con su dueño y nunca
+        auto-aprueba; con la categoría del remoto la pregunta se habría ido a Telegram.
+        """
+        if self._guard is None:
+            logger.warning("etapas previas faltantes (asistido) sin canal HITL cableado: la etapa 9 no arranca")
+            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+        reason, detail = texto_de_etapas_previas_del_asistido(faltantes)
+        request_id = new_hitl_request_id("dyndolod-etapas-asistido")
+        try:
+            decision = await self._guard.request_approval(
+                request_id=request_id,
+                reason=reason,
+                detail=detail,
+                category=CATEGORIA_DYNDOLOD_ETAPAS_PREVIAS_ASISTIDO,
+                timeout=float(timeout_seconds),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- canal humano: cualquier fallo es "no disponible"
+            logger.warning("el canal HITL de las etapas previas (asistido) falló", exc_info=True)
             return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
         return _traducir(decision)
 

@@ -378,6 +378,10 @@ def build_orchestration_composition(
         preview_service_provider=preview_chain_service_provider,
         # NP-A0h: las MISMAS raíces que arma AppContext para el MO2Controller del agente LLM (un solo resolver).
         raices_mo2_provider=path_resolver.raices_de_instancia_mo2,
+        # D-3: la GUI (este dispatcher) también verifica las etapas previas en modo ASISTIDO y le pide la
+        # confirmación al operador por SU canal (modal de la GUI, categoría propia, nunca auto-aprobada). El agente
+        # remoto tiene el suyo en AppContext, sobre el mismo guard.
+        aprobar_sin_etapas_previas=AprobadorDesatendidoHITL(hitl_guard=hitl_guard).aprobar_sin_etapas_previas_asistido,
     )
 
     # ------------------------------------------------------------------

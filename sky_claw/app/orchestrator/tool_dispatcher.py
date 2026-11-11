@@ -280,7 +280,10 @@ def build_orchestration_dispatcher(
 
     # FASE 1.5.1 + #592 F6: generate_lods is destructive → ErrorWrapping + DictGuard + HITL gate
     dispatcher.register(
-        GenerateLodsStrategy(service=dependencies.dyndolod_service),
+        GenerateLodsStrategy(
+            service=dependencies.dyndolod_service,
+            aprobar_sin_etapas_previas=dependencies.aprobar_sin_etapas_previas,
+        ),
         middleware=_destructive_middleware(
             error_reason="DynDOLODPipelineExecutionFailed",
             invalid_result_reason="InvalidDynDOLODResult",

@@ -35,6 +35,7 @@ _CAMPOS_DEPENDENCIAS = [
     "default_profile_getter",
     "preview_service_provider",
     "raices_mo2_provider",
+    "aprobar_sin_etapas_previas",
 ]
 
 _TOOLS = [
