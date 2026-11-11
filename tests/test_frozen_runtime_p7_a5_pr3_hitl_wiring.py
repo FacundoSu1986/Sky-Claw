@@ -47,6 +47,8 @@ import hashlib
 import os
 import pathlib
 import re
+import shutil
+import urllib.parse
 
 import pytest
 
@@ -88,11 +90,11 @@ from sky_claw.local.frozen_runtime.errors import (
     ApprovalHitolNoDisponibleError,
     ApprovalMaxIssuedError,
     ConsentimientoDuplicadoError,
+    FrozenRuntimeLockBusyError,
     SesionConsentimientoNoCoincideError,
 )
 from sky_claw.local.frozen_runtime.owner_consent import (
     DecisionConsentimiento,
-    RegistroConsentimientos,
     verificar_identidad_telegram,
 )
 from sky_claw.local.frozen_runtime.provisioning import (
@@ -100,12 +102,13 @@ from sky_claw.local.frozen_runtime.provisioning import (
 )
 from sky_claw.local.frozen_runtime.storage import (
     approvals_state_dir,
-    initialize_frozen_runtime_storage,
     issuances_state_dir,
+    transition_journal_path,
 )
 from tests._rig_p7_a5 import (
     RigStockManual,
     aplicar_parche_identidad_pe,
+    crear_config_toml,
     escribir_ini_mo2,
     probes_con_registro_simulado,
     snapshot_sha256_recursivo,
@@ -226,7 +229,9 @@ def _habilitar_emision(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
 
 
-def _sesion(rig: RigStockManual, *, policy: BinderTransitionPolicy = BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION):
+def _sesion(
+    rig: RigStockManual, *, policy: BinderTransitionPolicy = BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION
+):
     return SesionTransicionGoldenMaster(
         storage_root=rig.storage,
         mo2_instance_dir=rig.mo2_active_global,
@@ -380,11 +385,16 @@ class TestContratoG1EvidenciaDerivada:
             )
         assert _sin_evidencia_durable(rig.storage)
 
-    def test_04_politica_stock_exige_el_digest_aprobado_de_a1(self, tmp_path: pathlib.Path) -> None:
-        """Sin ancla A1 no se deriva evidencia bajo ``STOCK_INDEPENDENT_TRANSITION``."""
+    def test_04_politica_stock_sin_ancla_a1_falla_cerrado(self, tmp_path: pathlib.Path) -> None:
+        """Sin ancla A1 no se deriva evidencia bajo ``STOCK_INDEPENDENT_TRANSITION``.
+
+        El gate que lo hace cumplir HOY es el preflight (``stock_reference_unapproved``);
+        el cableado repite la comprobación después de ``READY`` para que un preflight
+        futuro que deje de exigirla no convierta este camino en un bypass silencioso.
+        """
         rig = RigStockManual(tmp_path, steam_activo=True)
 
-        with pytest.raises(EvidenciaTransicionError, match="A1|digest"):
+        with pytest.raises(EvidenciaTransicionError, match="stock_reference_unapproved"):
             derivar_evidencia_transicion(
                 storage_root=rig.storage,
                 mo2_instance_dir=rig.mo2_active_global,
@@ -418,13 +428,21 @@ class TestContratoG1EvidenciaDerivada:
             )
 
     def test_06_clone_no_provisionado_no_produce_evidencia(self, tmp_path: pathlib.Path) -> None:
-        """Un Clone ``PROVISIONING`` no es destino de una transición autorizable."""
+        """Un Clone que no está ``PROVISIONED`` no es destino de una transición autorizable."""
         rig = RigStockManual(tmp_path, steam_activo=True)
         registro = cargar_runtime_clone_record(rig.storage, rig.clone_id)
         assert registro is not None
+        # El registro es no-clobber: el caso se arma con un Clone NUEVO, no pisando el del rig.
+        copia = pathlib.Path(shutil.copytree(rig.clone_root, tmp_path / "FrozenClones" / "clone-en-provisioning"))
         registrar_runtime_clone_record(
             rig.storage,
-            dataclasses.replace(registro, lifecycle=RuntimeCloneLifecycle.PROVISIONING),
+            dataclasses.replace(
+                registro,
+                clone_id="clone-en-provisioning",
+                lifecycle=RuntimeCloneLifecycle.PROVISIONING,
+                verified_runtime_setup_id=None,
+                root_path=str(copia),
+            ),
             managed_source_root=rig.managed_source,
         )
 
@@ -432,7 +450,7 @@ class TestContratoG1EvidenciaDerivada:
             derivar_evidencia_transicion(
                 storage_root=rig.storage,
                 mo2_instance_dir=rig.mo2_active_global,
-                clone_id=rig.clone_id,
+                clone_id="clone-en-provisioning",
                 transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
                 managed_source_root=rig.managed_source,
                 outgoing_manual_runtime_root=rig.manual_runtime,
@@ -470,15 +488,11 @@ class TestContratoG1EvidenciaDerivada:
             )
 
     def test_08_generation_ausente_no_produce_evidencia(self, tmp_path: pathlib.Path) -> None:
-        """Un Clone cuyo registro apunta a una Generation inexistente no autoriza nada."""
+        """Un Clone cuya Generation perdió su metadata no autoriza nada (linaje no verificable)."""
         rig = RigStockManual(tmp_path, steam_activo=True)
-        registro = cargar_runtime_clone_record(rig.storage, rig.clone_id)
-        assert registro is not None
-        registrar_runtime_clone_record(
-            rig.storage,
-            dataclasses.replace(registro, source_generation_id="1.0.0.0__aaaaaaaaaaaa"),
-            managed_source_root=rig.managed_source,
-        )
+        metadata = rig.storage / "state" / "generations" / f"{rig.generation_id}.json"
+        assert metadata.is_file()
+        metadata.unlink()
 
         with pytest.raises(EvidenciaTransicionError):
             derivar_evidencia_transicion(
@@ -525,9 +539,7 @@ class TestContratoG1EvidenciaDerivada:
 
 
 class TestContratoG2G3PresentacionYEmision:
-    def test_10_la_presentacion_muestra_el_scope_derivado_y_la_procedencia(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_10_la_presentacion_muestra_el_scope_derivado_y_la_procedencia(self, tmp_path: pathlib.Path) -> None:
         """La presentación es la del registro HITL y contiene los 14 campos del scope."""
         rig = RigStockManual(tmp_path, steam_activo=True)
         sesion = _sesion(rig)
@@ -542,7 +554,9 @@ class TestContratoG2G3PresentacionYEmision:
         for campo in ("generation_id", "clone_id", "clone_evidence", "runtime_setup_id", "approval_provenance"):
             assert campo in texto, campo
         assert solicitud.evidencia.approval_provenance in texto
-        assert str(rig.mo2_active_global) in solicitud.evidencia.approval_provenance
+        # La procedencia es legible: sin decodificar se lee el path de la instancia.
+        procedencia_visible = urllib.parse.unquote(solicitud.evidencia.approval_provenance).lower()
+        assert os.path.normcase(str(rig.mo2_active_global)).lower() in procedencia_visible
         # Presentar no emite: la propuesta es un valor en memoria sin autoridad.
         assert _sin_evidencia_durable(rig.storage)
 
@@ -609,9 +623,7 @@ class TestContratoG2G3PresentacionYEmision:
         _habilitar_emision(monkeypatch)
 
         solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
-        assert (
-            sesion.decidir_y_emitir(solicitud=solicitud, decision=decision, identidad=_identidad_telegram()) is None
-        )
+        assert sesion.decidir_y_emitir(solicitud=solicitud, decision=decision, identidad=_identidad_telegram()) is None
         assert _sin_evidencia_durable(rig.storage)
 
     def test_14_una_solicitud_resuelta_no_se_reabre(
@@ -699,7 +711,9 @@ class TestContratoG2G3PresentacionYEmision:
                     decision=DecisionConsentimiento.APROBAR,
                     identidad=_identidad_telegram(),
                 )
-            except (ApprovalCasError, ApprovalMaxIssuedError) as exc:
+            except (ApprovalCasError, ApprovalMaxIssuedError, FrozenRuntimeLockBusyError) as exc:
+                # Las tres son fail-closed: dos emisiones no pueden coexistir ni por
+                # CAS, ni por MAX_ISSUED=1, ni por el lock del root.
                 return f"rechazada:{type(exc).__name__}"
             return "emitida"
 
@@ -779,7 +793,7 @@ class TestContratoG6DiagnosticoDurable:
     def test_23_journal_pendiente_ajeno_bloquea_la_solicitud(self, tmp_path: pathlib.Path) -> None:
         """Un PENDING de otra transición no se pisa: primero se resuelve, después se autoriza."""
         rig = RigStockManual(tmp_path, steam_activo=False)
-        journal_path = rig.storage / "state" / "transition-journal.json"
+        journal_path = transition_journal_path(rig.storage)
         journal_path.parent.mkdir(parents=True, exist_ok=True)
         journal_path.write_text(
             '{"schema_version": 2, "state": "PENDING_PROMOTION", "journal_revision": 1}',
@@ -809,6 +823,8 @@ class TestContratoG7PoliticaHistorica:
             game_path=rig.managed_source,
             base_directory=rig.mo2_base_data,
         )
+        crear_config_toml(rig.config_path, skyrim_path=str(rig.managed_source))
+        rig.environ["SKYRIM_PATH"] = str(rig.managed_source)
         sesion = SesionTransicionGoldenMaster(
             storage_root=rig.storage,
             mo2_instance_dir=rig.mo2_active_global,
@@ -896,7 +912,9 @@ class TestExtremoAExtremo:
         assert ledger.ledger is not None and ledger.ledger.state is ApprovalLifecycle.CONSUMED
 
         # Journal FINALIZED y registro inmutable de la transición.
-        assert journal_module.cargar_journal_transicion(rig.storage).disposition is journal_module.JournalDisposition.NONE
+        assert (
+            journal_module.cargar_journal_transicion(rig.storage).disposition is journal_module.JournalDisposition.NONE
+        )
         historial = journal_module.derivar_historial_finalizados(rig.storage)
         assert historial.latest is not None
         assert historial.latest.transition_id == resultado.transicion_id
