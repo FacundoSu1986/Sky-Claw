@@ -1,0 +1,1030 @@
+"""P7-A5 PR 3 — cableado de autorización HITL para la transición Golden Master.
+
+Tracker: #867 (histórico: #672) · ADR 0012 §35.2, §36.6, §37.2, §37.4, §39.3-§39.4, §46, §47
+ADR 0015 §12, §13
+
+Qué congela este archivo
+------------------------
+Hasta P7-A5 PR 2 las piezas existían **sueltas y sin cablear**:
+
+```text
+approval.proponer_aprobacion        (FASE A: propuesta)          sin llamador productivo
+owner_consent.presentar/responder   (FASE B/B': HITL)            HITL_PRODUCTIVE = NOT_WIRED
+owner_consent.emitir_aprobacion_autorizada (FASE C: ISSUE)       cerrada por interruptor
+runtime_clone_binder.ejecutar_...   (CONSUME → BIND → FINALIZE)  sin emisor que lo alimente
+```
+
+El cableado que este archivo prueba es la cadena completa —**evidencia derivada de
+observación real → propuesta → presentación al propietario → decisión → emisión →
+consumo → binder → verificación → finalización**— y, con la misma fuerza, las
+**puertas que impiden que exista un atajo**:
+
+```text
+G1  el scope NO se arma con strings del llamador: sale de verificadores read-only
+G2  la presentación la acuña el registro HITL, no el cableado
+G3  la emisión sigue CERRADA (EMISION_PRODUCTIVA_HABILITADA = False) y el cableado
+    no la abre: los tests que emiten lo hacen por monkeypatch EXPLÍCITO del
+    interruptor, así que abrirlo es un cambio de una línea con consumidor ya probado
+G4  el consentimiento es single-use, de una sola sesión y de un solo root
+G5  si la evidencia cambia entre la presentación y la ejecución, no se emite y no
+    se ejecuta: la aprobación es de un estado del mundo, no de una intención
+G6  no se autoriza una segunda transición mientras una está en curso o reanudable
+G7  EMISION_PRODUCTIVA_HABILITADA = False se preserva: el cableado no define el
+    interruptor ni consume aprobaciones por su cuenta
+```
+
+``HITL_PRODUCTIVE`` cambia de ``NOT_WIRED`` a ``WIRED_BUT_GATED`` en este PR: existe
+un consumidor autorizado de extremo a extremo y la emisión sigue cerrada hasta que
+el dueño la abra en un PR propio.
+"""
+
+from __future__ import annotations
+
+import ast
+import concurrent.futures
+import dataclasses
+import hashlib
+import os
+import pathlib
+import re
+
+import pytest
+
+from sky_claw.local.frozen_runtime import approval as approval_module
+from sky_claw.local.frozen_runtime import journal as journal_module
+from sky_claw.local.frozen_runtime import mo2_ini_exclusion
+from sky_claw.local.frozen_runtime import runtime_clone_binder as binder_module
+from sky_claw.local.frozen_runtime.approval import (
+    ApprovalLifecycle,
+    cargar_ledger_aprobacion,
+    derivar_autoridad_aprobacion,
+    leer_binding_solicitud,
+)
+from sky_claw.local.frozen_runtime.autorizacion_hitl_transicion import (
+    EstadoDurable,
+    EvidenciaTransicionError,
+    ReanudacionRequiereDuenoError,
+    SesionFueraDeOrdenError,
+    SesionTransicionGoldenMaster,
+    TransicionEnCursoError,
+    TransicionYaActivaError,
+    derivar_evidencia_transicion,
+    diagnosticar_estado_durable,
+)
+from sky_claw.local.frozen_runtime.binder_preflight import BinderTransitionPolicy
+from sky_claw.local.frozen_runtime.clones import (
+    RuntimeCloneLifecycle,
+    cargar_runtime_clone_record,
+    registrar_runtime_clone_record,
+)
+from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import leer_game_path_de_mo2
+from sky_claw.local.frozen_runtime.effective_runtime.models import (
+    Mo2RegistryObservation,
+    Mo2RegistryState,
+    ObservationState,
+)
+from sky_claw.local.frozen_runtime.errors import (
+    ApprovalCasError,
+    ApprovalHitolNoDisponibleError,
+    ApprovalMaxIssuedError,
+    ConsentimientoDuplicadoError,
+    SesionConsentimientoNoCoincideError,
+)
+from sky_claw.local.frozen_runtime.owner_consent import (
+    DecisionConsentimiento,
+    RegistroConsentimientos,
+    verificar_identidad_telegram,
+)
+from sky_claw.local.frozen_runtime.provisioning import (
+    verificar_runtime_setup,
+)
+from sky_claw.local.frozen_runtime.storage import (
+    approvals_state_dir,
+    initialize_frozen_runtime_storage,
+    issuances_state_dir,
+)
+from tests._rig_p7_a5 import (
+    RigStockManual,
+    aplicar_parche_identidad_pe,
+    escribir_ini_mo2,
+    probes_con_registro_simulado,
+    snapshot_sha256_recursivo,
+)
+
+RAIZ_REPO = pathlib.Path(__file__).resolve().parents[1]
+MODULO_CABLEADO = RAIZ_REPO / "sky_claw" / "local" / "frozen_runtime" / "autorizacion_hitl_transicion.py"
+OPERADOR = 424242
+SOLO_WINDOWS = pytest.mark.skipif(
+    os.name != "nt",
+    reason=(
+        "la mutación de modorganizer.ini exige la exclusión de archivos compartidos de Win32 "
+        "(FILE_SHARE_NONE); fuera de Windows el binder falla cerrado a propósito"
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures y dobles
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _identidad_pe(monkeypatch: pytest.MonkeyPatch) -> None:
+    aplicar_parche_identidad_pe(monkeypatch)
+
+
+class _ExclusionPosix:
+    """Doble POSIX del handle de exclusión de Win32, SÓLO para verificar el cableado acá.
+
+    En Windows CI corre la exclusión REAL: este doble se aplica únicamente cuando
+    ``os.name != "nt"``, y hay un test que lo afirma. Sin él, ninguna prueba de
+    extremo a extremo podría correr fuera de Windows y el cableado se diseñaría a
+    ciegas (que es exactamente el defecto que este PR cierra).
+
+    Lo que el doble NO promete: exclusión real entre procesos. Fuera de Windows el
+    binder falla cerrado por diseño; el doble no cambia esa política, sólo permite
+    recorrer el camino feliz en un entorno de test.
+    """
+
+    def __init__(self, ruta: pathlib.Path) -> None:
+        self.ruta = pathlib.Path(ruta)
+        self._abierta = True
+        self.diagnostico = mo2_ini_exclusion.DiagnosticoExclusion(
+            estado=mo2_ini_exclusion.EstadoExclusion.ESTABLISHED,
+            ruta=self.ruta,
+            motivo="doble POSIX de test: la exclusión de Win32 no existe fuera de Windows",
+            intentos=0,
+        )
+
+    @property
+    def autoriza(self) -> bool:
+        return self._abierta
+
+    @property
+    def estado(self) -> mo2_ini_exclusion.EstadoExclusion:
+        return self.diagnostico.estado
+
+    def leer_bytes(self) -> bytes:
+        if not self._abierta:
+            raise mo2_ini_exclusion.Mo2IniExclusionError("exclusión cerrada")
+        return self.ruta.read_bytes()
+
+    def huella(self) -> str:
+        return hashlib.sha256(self.leer_bytes()).hexdigest()
+
+    def verificar_huella(self, esperada: str) -> None:
+        if self.huella() != esperada:
+            raise mo2_ini_exclusion.Mo2IniExclusionError("huella divergente (doble POSIX)")
+
+    def escribir_bytes(self, datos: bytes, *, al_escribir: object = None) -> None:
+        if not self._abierta:
+            raise mo2_ini_exclusion.Mo2IniExclusionError("exclusión cerrada")
+        if callable(al_escribir):
+            al_escribir()
+        self.ruta.write_bytes(datos)
+
+    def cerrar(self) -> None:
+        self._abierta = False
+
+
+@pytest.fixture
+def exclusion_de_test(monkeypatch: pytest.MonkeyPatch) -> str:
+    """``real`` en Windows, ``doble_posix`` fuera: el valor lo afirma un test."""
+    if os.name == "nt":
+        return "real"
+    monkeypatch.setattr(
+        binder_module,
+        "adquirir_exclusion_ini",
+        lambda ruta, **_kwargs: _ExclusionPosix(pathlib.Path(ruta)),
+    )
+    return "doble_posix"
+
+
+def _identidad_telegram(*, operador: int = OPERADOR) -> object:
+    """Identidad que produce el verificador REAL a partir de un update real de Telegram."""
+    return verificar_identidad_telegram(
+        {"from": {"id": operador}, "chat": {"id": operador, "type": "private"}},
+        operador_configurado=OPERADOR,
+    )
+
+
+def _recolector() -> tuple[list[object], object]:
+    entregadas: list[object] = []
+
+    def _entregar(presentacion: object) -> None:
+        entregadas.append(presentacion)
+
+    return entregadas, _entregar
+
+
+def _habilitar_emision(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Abre el interruptor SÓLO durante el test: es la simulación del PR de activación.
+
+    El valor en el código fuente sigue siendo ``False``; el test que lo ancla lo
+    verifica leyendo el archivo, no el atributo mutado.
+    """
+    monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+
+
+def _sesion(rig: RigStockManual, *, policy: BinderTransitionPolicy = BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION):
+    return SesionTransicionGoldenMaster(
+        storage_root=rig.storage,
+        mo2_instance_dir=rig.mo2_active_global,
+        clone_id=rig.clone_id,
+        transition_policy=policy,
+        managed_source_root=rig.managed_source,
+        outgoing_manual_runtime_root=rig.manual_runtime,
+        stock_source_root=rig.stock_source,
+        approved_stock_reference_digest_file=rig.approved_digest_file,
+        config_path=rig.config_path,
+        environ=rig.environ,
+        probes=rig.probes_globales_activos(),
+    )
+
+
+def _superficies_del_rig(rig: RigStockManual) -> list[pathlib.Path]:
+    return [
+        rig.mo2_active_global / "modorganizer.ini",
+        rig.config_path,
+        rig.manual_runtime,
+        rig.managed_source,
+        rig.stock_source,
+        rig.stock_base,
+        rig.storage / "versions",
+    ]
+
+
+def _huellas(rig: RigStockManual) -> dict[str, str]:
+    return snapshot_sha256_recursivo(_superficies_del_rig(rig))
+
+
+def _sin_evidencia_durable(storage: pathlib.Path) -> bool:
+    return not list(issuances_state_dir(storage).iterdir()) and not list(approvals_state_dir(storage).iterdir())
+
+
+# ===========================================================================
+# CONTRATO G1 — la evidencia sale de verificadores, no del llamador
+# ===========================================================================
+
+
+class TestContratoG1EvidenciaDerivada:
+    def test_01_evidencia_stock_independiente_con_steam_activo(self, tmp_path: pathlib.Path) -> None:
+        """El scope se deriva de observación verificada; ningún campo lo aporta el llamador."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+
+        evidencia = derivar_evidencia_transicion(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            config_path=rig.config_path,
+            environ=rig.environ,
+            probes=rig.probes_globales_activos(),
+        )
+
+        # Destino: identidad de la Generation y del Clone, no una ruta del llamador.
+        assert evidencia.clone_id == rig.clone_id
+        assert evidencia.generation_id == rig.generation_id
+        registro = cargar_runtime_clone_record(rig.storage, rig.clone_id)
+        assert registro is not None
+        assert evidencia.runtime_setup_id == registro.verified_runtime_setup_id
+        assert evidencia.clone_root == pathlib.Path(registro.root_path)
+        assert evidencia.clone_lifecycle is RuntimeCloneLifecycle.PROVISIONED
+
+        # Evidencia content-bound: recomputada desde el árbol observado.
+        setup_observado = verificar_runtime_setup(evidencia.clone_root)
+        assert setup_observado.setup_id == evidencia.runtime_setup_id
+        assert re.fullmatch(r"[0-9a-f]{64}", evidencia.clone_evidence)
+        assert re.fullmatch(r"[0-9a-f]{64}", evidencia.runtime_setup_evidence)
+        assert re.fullmatch(r"[0-9a-f]{64}", evidencia.compatibility_evidence_id)
+        assert evidencia.runtime_setup_evidence != evidencia.compatibility_evidence_id
+
+        # Origen: no había activación de Sky-Claw, así que el bootstrap es el íntegramente vacío.
+        assert evidencia.source_activation.generation_id is None
+        assert evidencia.source_activation.clone_id is None
+        assert evidencia.source_activation.runtime_setup_id is None
+        assert evidencia.source_activation.effective_runtime_evidence is None
+
+        # Procedencia A1 aprobada y política efectiva, ambas verificadas (no supuestas).
+        assert evidencia.stock_reference_digest == rig.approved_digest
+        assert evidencia.transition_policy is BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION
+
+        # La procedencia es determinista y liga instancia, INI, política, Stock y destino.
+        assert evidencia.approval_provenance.startswith("golden-master:v1:")
+        repeated = derivar_evidencia_transicion(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            config_path=rig.config_path,
+            environ=rig.environ,
+            probes=rig.probes_globales_activos(),
+        )
+        assert repeated.approval_provenance == evidencia.approval_provenance
+        assert repeated.clone_evidence == evidencia.clone_evidence
+
+    def test_02_candidate_id_es_determinista_y_content_bound(self, tmp_path: pathlib.Path) -> None:
+        """PROMOTION exige candidate_id: se deriva del contenido, no de un contador."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        primera = derivar_evidencia_transicion(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            config_path=rig.config_path,
+            environ=rig.environ,
+            probes=rig.probes_globales_activos(),
+        )
+        segunda = derivar_evidencia_transicion(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            config_path=rig.config_path,
+            environ=rig.environ,
+            probes=rig.probes_globales_activos(),
+        )
+        assert primera.candidate_id == segunda.candidate_id
+        assert re.fullmatch(r"cand_[0-9a-f]{32}", primera.candidate_id)
+
+    def test_03_preflight_bloqueado_no_produce_evidencia(self, tmp_path: pathlib.Path) -> None:
+        """Steam ACTIVE bajo la política histórica: no hay evidencia que presentar."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+
+        with pytest.raises(EvidenciaTransicionError, match="preflight"):
+            derivar_evidencia_transicion(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=rig.clone_id,
+                transition_policy=BinderTransitionPolicy.STRICT_PROVIDER_IDLE,
+                managed_source_root=rig.managed_source,
+                config_path=rig.config_path,
+                environ=rig.environ,
+                probes=rig.probes_globales_activos(),
+            )
+        assert _sin_evidencia_durable(rig.storage)
+
+    def test_04_politica_stock_exige_el_digest_aprobado_de_a1(self, tmp_path: pathlib.Path) -> None:
+        """Sin ancla A1 no se deriva evidencia bajo ``STOCK_INDEPENDENT_TRANSITION``."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+
+        with pytest.raises(EvidenciaTransicionError, match="A1|digest"):
+            derivar_evidencia_transicion(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=rig.clone_id,
+                transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+                managed_source_root=rig.managed_source,
+                outgoing_manual_runtime_root=rig.manual_runtime,
+                config_path=rig.config_path,
+                environ=rig.environ,
+                probes=rig.probes_globales_activos(),
+            )
+
+    def test_05_setup_del_clone_alterado_no_produce_evidencia(self, tmp_path: pathlib.Path) -> None:
+        """El setup aprobado es el observado: un SKSE distinto invalida la evidencia."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        (rig.clone_root / "skse64_loader.exe").write_bytes(b"loader-ALTERADO")
+
+        with pytest.raises(EvidenciaTransicionError, match="setup"):
+            derivar_evidencia_transicion(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=rig.clone_id,
+                transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+                managed_source_root=rig.managed_source,
+                outgoing_manual_runtime_root=rig.manual_runtime,
+                stock_source_root=rig.stock_source,
+                approved_stock_reference_digest_file=rig.approved_digest_file,
+                config_path=rig.config_path,
+                environ=rig.environ,
+                probes=rig.probes_globales_activos(),
+            )
+
+    def test_06_clone_no_provisionado_no_produce_evidencia(self, tmp_path: pathlib.Path) -> None:
+        """Un Clone ``PROVISIONING`` no es destino de una transición autorizable."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        registro = cargar_runtime_clone_record(rig.storage, rig.clone_id)
+        assert registro is not None
+        registrar_runtime_clone_record(
+            rig.storage,
+            dataclasses.replace(registro, lifecycle=RuntimeCloneLifecycle.PROVISIONING),
+            managed_source_root=rig.managed_source,
+        )
+
+        with pytest.raises(EvidenciaTransicionError):
+            derivar_evidencia_transicion(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=rig.clone_id,
+                transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+                managed_source_root=rig.managed_source,
+                outgoing_manual_runtime_root=rig.manual_runtime,
+                stock_source_root=rig.stock_source,
+                approved_stock_reference_digest_file=rig.approved_digest_file,
+                config_path=rig.config_path,
+                environ=rig.environ,
+                probes=rig.probes_globales_activos(),
+            )
+
+    def test_07_instancia_mo2_no_activa_no_produce_evidencia(self, tmp_path: pathlib.Path) -> None:
+        """La instancia se verifica por registro: otra instancia activa no se admite."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        probes_ajenas = probes_con_registro_simulado(
+            local_app_data=rig.local_app_data,
+            registry_obs=Mo2RegistryObservation(
+                state=Mo2RegistryState.OBSERVED,
+                current_instance="Otra Instancia",
+            ),
+        )
+
+        with pytest.raises(EvidenciaTransicionError):
+            derivar_evidencia_transicion(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=rig.clone_id,
+                transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+                managed_source_root=rig.managed_source,
+                outgoing_manual_runtime_root=rig.manual_runtime,
+                stock_source_root=rig.stock_source,
+                approved_stock_reference_digest_file=rig.approved_digest_file,
+                config_path=rig.config_path,
+                environ=rig.environ,
+                probes=probes_ajenas,
+            )
+
+    def test_08_generation_ausente_no_produce_evidencia(self, tmp_path: pathlib.Path) -> None:
+        """Un Clone cuyo registro apunta a una Generation inexistente no autoriza nada."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        registro = cargar_runtime_clone_record(rig.storage, rig.clone_id)
+        assert registro is not None
+        registrar_runtime_clone_record(
+            rig.storage,
+            dataclasses.replace(registro, source_generation_id="1.0.0.0__aaaaaaaaaaaa"),
+            managed_source_root=rig.managed_source,
+        )
+
+        with pytest.raises(EvidenciaTransicionError):
+            derivar_evidencia_transicion(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=rig.clone_id,
+                transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+                managed_source_root=rig.managed_source,
+                outgoing_manual_runtime_root=rig.manual_runtime,
+                stock_source_root=rig.stock_source,
+                approved_stock_reference_digest_file=rig.approved_digest_file,
+                config_path=rig.config_path,
+                environ=rig.environ,
+                probes=rig.probes_globales_activos(),
+            )
+
+    def test_09_maquina_de_estados_de_la_sesion(self, tmp_path: pathlib.Path) -> None:
+        """No se ejecuta lo que no se autorizó: la sesión no es un contenedor de strings."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        entregadas, entregar = _recolector()
+
+        with pytest.raises(SesionFueraDeOrdenError):
+            sesion.ejecutar(solicitud=None, consentimiento=None)  # type: ignore[arg-type]
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        assert len(entregadas) == 1
+        with pytest.raises(SesionFueraDeOrdenError):
+            sesion.ejecutar(solicitud=solicitud, consentimiento=None)  # type: ignore[arg-type]
+
+        with pytest.raises((ApprovalHitolNoDisponibleError, EvidenciaTransicionError)):
+            sesion.decidir_y_emitir(
+                solicitud=solicitud,
+                decision=DecisionConsentimiento.APROBAR,
+                identidad=_identidad_telegram(),
+            )
+        # Nada durable se escribió: sigue sin haber witnesses ni tombstones.
+        assert _sin_evidencia_durable(rig.storage)
+
+
+# ===========================================================================
+# CONTRATO G2/G3 — presentación real, emisión cerrada por defecto
+# ===========================================================================
+
+
+class TestContratoG2G3PresentacionYEmision:
+    def test_10_la_presentacion_muestra_el_scope_derivado_y_la_procedencia(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """La presentación es la del registro HITL y contiene los 14 campos del scope."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        entregadas, entregar = _recolector()
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+
+        presentacion = entregadas[0]
+        assert presentacion.solicitud_id == solicitud.presentacion.solicitud_id
+        assert presentacion.approval_seq == 1
+        texto = presentacion.texto
+        for campo in ("generation_id", "clone_id", "clone_evidence", "runtime_setup_id", "approval_provenance"):
+            assert campo in texto, campo
+        assert solicitud.evidencia.approval_provenance in texto
+        assert str(rig.mo2_active_global) in solicitud.evidencia.approval_provenance
+        # Presentar no emite: la propuesta es un valor en memoria sin autoridad.
+        assert _sin_evidencia_durable(rig.storage)
+
+    def test_11_emision_cerrada_falla_cerrado_y_no_muta_nada(self, tmp_path: pathlib.Path) -> None:
+        """``EMISION_PRODUCTIVA_HABILITADA = False``: el cableado no emite ni toca superficies."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        antes = _huellas(rig)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        with pytest.raises(ApprovalHitolNoDisponibleError, match="emisión productiva sigue cerrada"):
+            sesion.decidir_y_emitir(
+                solicitud=solicitud,
+                decision=DecisionConsentimiento.APROBAR,
+                identidad=_identidad_telegram(),
+            )
+
+        assert _sin_evidencia_durable(rig.storage)
+        assert _huellas(rig) == antes
+        ledger = cargar_ledger_aprobacion(rig.storage)
+        assert ledger.ledger is None or ledger.ledger.state is not ApprovalLifecycle.ISSUED
+
+    def test_12_cadena_autorizada_emite_witness_ligado_a_la_solicitud(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Con el interruptor abierto: ISSUE con binding de la solicitud que el dueño vio."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud,
+            decision=DecisionConsentimiento.APROBAR,
+            identidad=_identidad_telegram(),
+        )
+
+        assert consentimiento is not None
+        assert consentimiento.approval_scope_digest == solicitud.propuesta.scope.approval_scope_digest
+        autoridad = derivar_autoridad_aprobacion(rig.storage)
+        assert len(autoridad.witnesses) == 1
+        witness = autoridad.witnesses[0]
+        assert witness.approval_seq == 1
+        assert witness.approval_scope_digest == solicitud.propuesta.scope.approval_scope_digest
+        assert witness.solicitud_binding is not None
+        binding = leer_binding_solicitud(rig.storage, witness.approval_seq)
+        assert binding.solicitud_id == solicitud.presentacion.solicitud_id
+        assert binding.owner_subject == str(OPERADOR)
+        # Emitir NO consume: no hay tombstone y el journal sigue sin transición.
+        assert autoridad.tombstones == ()
+        assert cargar_ledger_aprobacion(rig.storage).ledger.state is ApprovalLifecycle.ISSUED
+        assert journal_module.cargar_journal_transicion(rig.storage).journal is None
+
+    @pytest.mark.parametrize("decision", [DecisionConsentimiento.RECHAZAR, DecisionConsentimiento.CANCELAR])
+    def test_13_decision_negativa_no_emite(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, decision: DecisionConsentimiento
+    ) -> None:
+        """Rechazar o cancelar no produce consentimiento ni escribe autoridad."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        assert (
+            sesion.decidir_y_emitir(solicitud=solicitud, decision=decision, identidad=_identidad_telegram()) is None
+        )
+        assert _sin_evidencia_durable(rig.storage)
+
+    def test_14_una_solicitud_resuelta_no_se_reabre(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Una decisión terminal no se repite: el consentimiento es single-use."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        sesion.decidir_y_emitir(
+            solicitud=solicitud,
+            decision=DecisionConsentimiento.APROBAR,
+            identidad=_identidad_telegram(),
+        )
+        with pytest.raises((ConsentimientoDuplicadoError, SesionFueraDeOrdenError)):
+            sesion.decidir_y_emitir(
+                solicitud=solicitud,
+                decision=DecisionConsentimiento.APROBAR,
+                identidad=_identidad_telegram(),
+            )
+        assert len(derivar_autoridad_aprobacion(rig.storage).witnesses) == 1
+
+    def test_15_otra_sesion_de_propietario_no_puede_decidir(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un tercero con otra identidad no puede convertir la solicitud en aprobación."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        ajeno = verificar_identidad_telegram(
+            {"from": {"id": 999111}, "chat": {"id": 999111, "type": "private"}},
+            operador_configurado=999111,
+        )
+        with pytest.raises(SesionConsentimientoNoCoincideError):
+            sesion.decidir_y_emitir(
+                solicitud=solicitud,
+                decision=DecisionConsentimiento.APROBAR,
+                identidad=ajeno,
+            )
+        assert _sin_evidencia_durable(rig.storage)
+
+    def test_16_evidencia_cambiada_tras_la_presentacion_no_emite(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Se aprueba un estado del mundo: si el subtree cambia, la aprobación no aplica."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        (rig.clone_root / "inyectado_tras_presentar.bin").write_bytes(b"drift")
+
+        with pytest.raises(EvidenciaTransicionError):
+            sesion.decidir_y_emitir(
+                solicitud=solicitud,
+                decision=DecisionConsentimiento.APROBAR,
+                identidad=_identidad_telegram(),
+            )
+        assert _sin_evidencia_durable(rig.storage)
+
+    def test_17_dos_aprobaciones_concurrentes_no_producen_dos_witnesses(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Concurrencia: el CAS de la caché y ``MAX_ISSUED = 1`` dejan pasar una sola emisión."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        _habilitar_emision(monkeypatch)
+        solicitudes = []
+        for _ in range(2):
+            sesion = _sesion(rig)
+            _, entregar = _recolector()
+            solicitudes.append((sesion, sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)))
+
+        def _emitir(item: tuple[SesionTransicionGoldenMaster, object]) -> str:
+            sesion, solicitud = item
+            try:
+                sesion.decidir_y_emitir(
+                    solicitud=solicitud,
+                    decision=DecisionConsentimiento.APROBAR,
+                    identidad=_identidad_telegram(),
+                )
+            except (ApprovalCasError, ApprovalMaxIssuedError) as exc:
+                return f"rechazada:{type(exc).__name__}"
+            return "emitida"
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            resultados = sorted(pool.map(_emitir, solicitudes))
+
+        assert resultados.count("emitida") == 1, resultados
+        assert len(derivar_autoridad_aprobacion(rig.storage).witnesses) == 1
+
+
+# ===========================================================================
+# CONTRATO G7 / anclas enumerativas — el cableado no agrega puertas paralelas
+# ===========================================================================
+
+
+class TestAnclasEnumerativas:
+    def test_18_el_interruptor_sigue_cerrado_y_es_unico(self) -> None:
+        """Censo por texto sobre el FUENTE, no sobre el atributo que el test mutó."""
+        patron = re.compile(r"^EMISION_PRODUCTIVA_HABILITADA\s*=", re.MULTILINE)
+        definiciones: list[str] = []
+        for ruta in sorted((RAIZ_REPO / "sky_claw").rglob("*.py")):
+            if "__pycache__" in ruta.parts:
+                continue
+            if patron.search(ruta.read_text(encoding="utf-8")):
+                definiciones.append(ruta.relative_to(RAIZ_REPO).as_posix())
+        assert definiciones == ["sky_claw/local/frozen_runtime/approval.py"]
+
+    def test_19_el_cableado_no_consume_ni_emite_por_su_cuenta(self) -> None:
+        """El cableado usa la superficie de emisión, no una copia; y no consume aprobaciones."""
+        fuente = MODULO_CABLEADO.read_text(encoding="utf-8")
+        assert "consumir_aprobacion(" not in fuente, (
+            "el cableado debe delegar el consumo en el binder: consumir acá sería un segundo consumidor "
+            "y el censo de P4-S6 quedaría desactualizado en silencio"
+        )
+        assert "_emitir_aprobacion_bajo_lock(" not in fuente
+        assert "ConsentimientoAprobacion(" not in fuente, (
+            "el único módulo que construye consentimientos es owner_consent (censo P4-S6)"
+        )
+        assert "emitir_aprobacion_autorizada(" in fuente, (
+            "la emisión tiene que pasar por la superficie productiva, que es la que falla cerrada"
+        )
+
+    def test_20_el_cableado_no_usa_la_superficie_hitl_de_tools(self) -> None:
+        """``app.security.hitl`` aprueba TOOLS, no transiciones: no es un atajo válido."""
+        arbol = ast.parse(MODULO_CABLEADO.read_text(encoding="utf-8"))
+        modulos: set[str] = set()
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Import):
+                modulos.update(alias.name for alias in nodo.names)
+            elif isinstance(nodo, ast.ImportFrom) and nodo.module and not nodo.level:
+                modulos.add(nodo.module)
+        assert not {m for m in modulos if m.startswith("sky_claw.app.security.hitl")}, modulos
+        assert not {m for m in modulos if m.startswith("sky_claw.app.comms")}, modulos
+
+    def test_21_el_doble_posix_no_se_activa_en_windows(self, exclusion_de_test: str) -> None:
+        """El doble de exclusión es de POSIX: en Windows CI corre la exclusión real."""
+        if os.name == "nt":
+            assert exclusion_de_test == "real"
+        else:
+            assert exclusion_de_test == "doble_posix"
+            assert binder_module.adquirir_exclusion_ini is not mo2_ini_exclusion.adquirir_exclusion_ini
+
+
+# ===========================================================================
+# CONTRATO G6 — diagnóstico durable: una transición a la vez
+# ===========================================================================
+
+
+class TestContratoG6DiagnosticoDurable:
+    def test_22_storage_nuevo_esta_limpio(self, tmp_path: pathlib.Path) -> None:
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        diagnostico = diagnosticar_estado_durable(rig.storage)
+        assert diagnostico.estado is EstadoDurable.LIMPIO
+        assert diagnostico.transicion_en_curso is None
+        assert diagnostico.transicion_reanudable is None
+
+    def test_23_journal_pendiente_ajeno_bloquea_la_solicitud(self, tmp_path: pathlib.Path) -> None:
+        """Un PENDING de otra transición no se pisa: primero se resuelve, después se autoriza."""
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        journal_path = rig.storage / "state" / "transition-journal.json"
+        journal_path.parent.mkdir(parents=True, exist_ok=True)
+        journal_path.write_text(
+            '{"schema_version": 2, "state": "PENDING_PROMOTION", "journal_revision": 1}',
+            encoding="utf-8",
+        )
+        diagnostico = diagnosticar_estado_durable(rig.storage)
+        assert diagnostico.estado is not EstadoDurable.LIMPIO
+
+        sesion = _sesion(rig, policy=BinderTransitionPolicy.STRICT_PROVIDER_IDLE)
+        _, entregar = _recolector()
+        with pytest.raises((TransicionEnCursoError, EvidenciaTransicionError)):
+            sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        assert not list(issuances_state_dir(rig.storage).iterdir())
+
+
+# ===========================================================================
+# CONTRATO G7 — política histórica preservada
+# ===========================================================================
+
+
+class TestContratoG7PoliticaHistorica:
+    def test_24_la_sesion_no_degrada_ni_asciende_la_politica(self, tmp_path: pathlib.Path) -> None:
+        """STRICT_PROVIDER_IDLE es el default y el cableado no lo cambia por su cuenta."""
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        escribir_ini_mo2(
+            rig.mo2_active_global / "modorganizer.ini",
+            game_path=rig.managed_source,
+            base_directory=rig.mo2_base_data,
+        )
+        sesion = SesionTransicionGoldenMaster(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            managed_source_root=rig.managed_source,
+            config_path=rig.config_path,
+            environ={"SKYRIM_PATH": str(rig.managed_source)},
+            probes=rig.probes_globales_activos(),
+        )
+        _, entregar = _recolector()
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        assert solicitud.evidencia.transition_policy is BinderTransitionPolicy.STRICT_PROVIDER_IDLE
+        assert solicitud.evidencia.stock_reference_digest is None
+
+    def test_25_stock_independiente_no_relaja_la_independencia_fisica(self, tmp_path: pathlib.Path) -> None:
+        """Bajo ``STOCK_INDEPENDENT_TRANSITION`` un hardlink en el Clone sigue bloqueando."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        original = rig.clone_root / "Data" / "Skyrim.esm"
+        enlace = rig.clone_root / "Data" / "Skyrim_esm_enlazado.esm"
+        try:
+            os.link(original, enlace)
+        except (OSError, NotImplementedError):
+            pytest.skip("el sistema de archivos no soporta hardlinks")
+
+        with pytest.raises(EvidenciaTransicionError):
+            derivar_evidencia_transicion(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=rig.clone_id,
+                transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+                managed_source_root=rig.managed_source,
+                outgoing_manual_runtime_root=rig.manual_runtime,
+                stock_source_root=rig.stock_source,
+                approved_stock_reference_digest_file=rig.approved_digest_file,
+                config_path=rig.config_path,
+                environ=rig.environ,
+                probes=rig.probes_globales_activos(),
+            )
+
+
+# ===========================================================================
+# Extremo a extremo (mutación real del INI: Windows)
+# ===========================================================================
+
+
+@SOLO_WINDOWS
+class TestExtremoAExtremo:
+    def test_30_transicion_golden_master_autorizada_completa_la_cadena(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Solicitud → presentación → decisión → emisión → consumo → binder → verificación."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        antes = _huellas(rig)
+        sesion = _sesion(rig)
+        entregadas, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud,
+            decision=DecisionConsentimiento.APROBAR,
+            identidad=_identidad_telegram(),
+        )
+        assert consentimiento is not None
+        resultado = sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+
+        assert resultado.transicion_id
+        assert resultado.binder is not None and resultado.binder.success is True
+        assert resultado.binder.target_clone_root == rig.clone_root.resolve()
+
+        # Superficies: INI y config apuntan al Clone.
+        evidencia_ini = leer_game_path_de_mo2(rig.mo2_active_global / "modorganizer.ini")
+        assert evidencia_ini.state is ObservationState.OBSERVED
+        assert pathlib.Path(evidencia_ini.path or "").resolve() == rig.clone_root.resolve()
+        assert str(rig.clone_root) in rig.config_path.read_text(encoding="utf-8")
+
+        # Autoridad durable: aprobación CONSUMIDA por ESTA transición, una sola vez.
+        autoridad = derivar_autoridad_aprobacion(rig.storage)
+        assert len(autoridad.witnesses) == 1
+        assert len(autoridad.tombstones) == 1
+        tombstone = autoridad.tombstones[0]
+        assert tombstone.terminal_state.value == "CONSUMED"
+        assert tombstone.consumed_by_transition_id == resultado.transicion_id
+        ledger = cargar_ledger_aprobacion(rig.storage)
+        assert ledger.ledger is not None and ledger.ledger.state is ApprovalLifecycle.CONSUMED
+
+        # Journal FINALIZED y registro inmutable de la transición.
+        assert journal_module.cargar_journal_transicion(rig.storage).disposition is journal_module.JournalDisposition.NONE
+        historial = journal_module.derivar_historial_finalizados(rig.storage)
+        assert historial.latest is not None
+        assert historial.latest.transition_id == resultado.transicion_id
+        assert historial.latest.target_clone_id == rig.clone_id
+
+        # Nada de Steam, Stock, Generation ni del runtime manual cambió.
+        despues = _huellas(rig)
+        for superficie in (
+            rig.managed_source,
+            rig.stock_source,
+            rig.stock_base,
+            rig.manual_runtime,
+            rig.storage / "versions",
+        ):
+            for clave, huella in antes.items():
+                if clave.startswith(str(superficie)):
+                    assert despues[clave] == huella, f"se mutó una superficie prohibida: {clave}"
+        assert exclusion_de_test in {"real", "doble_posix"}
+
+    def test_31_una_segunda_solicitud_tras_activar_no_reautoria(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Activado el runtime, la misma operación no vuelve a pedir aprobación."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+        sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+
+        sesion_nueva = _sesion(rig)
+        _, entregar_nuevo = _recolector()
+        with pytest.raises(TransicionYaActivaError):
+            sesion_nueva.preparar(identidad=_identidad_telegram(), entregar=entregar_nuevo)
+        assert len(derivar_autoridad_aprobacion(rig.storage).witnesses) == 1
+
+    def test_32_recuperacion_de_aprobacion_consumida_antes_del_pending(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Fallo entre el burn y el PENDING: la MISMA aprobación consumida completa la transición."""
+        from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        antes_ini = (rig.mo2_active_global / "modorganizer.ini").read_bytes()
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        original = recovery.capturar_registro
+
+        def _falla_una_vez(*args: object, **kwargs: object) -> object:
+            raise recovery.RecuperacionError("fallo inyectado entre el burn y el PENDING")
+
+        monkeypatch.setattr(recovery, "capturar_registro", _falla_una_vez)
+        with pytest.raises(Exception):  # noqa: B017 — el tipo lo fija el binder, acá se mide el estado durable
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.setattr(recovery, "capturar_registro", original)
+
+        # Estado durable: aprobación QUEMADA, journal sin transición, INI intacto.
+        autoridad = derivar_autoridad_aprobacion(rig.storage)
+        assert len(autoridad.tombstones) == 1
+        assert autoridad.tombstones[0].terminal_state.value == "CONSUMED"
+        assert journal_module.cargar_journal_transicion(rig.storage).journal is None
+        assert (rig.mo2_active_global / "modorganizer.ini").read_bytes() == antes_ini
+
+        diagnostico = diagnosticar_estado_durable(rig.storage)
+        assert diagnostico.estado is EstadoDurable.REANUDABLE
+        assert diagnostico.transicion_reanudable == autoridad.tombstones[0].consumed_by_transition_id
+
+        # Una aprobación NUEVA sería una segunda autorización de lo mismo: se rechaza.
+        _, entregar_nuevo = _recolector()
+        with pytest.raises(TransicionEnCursoError):
+            _sesion(rig).preparar(identidad=_identidad_telegram(), entregar=entregar_nuevo)
+
+        reanudado = _sesion(rig).reanudar(transition_id=diagnostico.transicion_reanudable or "")
+        assert reanudado.binder is not None and reanudado.binder.success is True
+        # La MISMA aprobación (seq 1) completó: no se emitió una segunda.
+        assert len(derivar_autoridad_aprobacion(rig.storage).witnesses) == 1
+        assert journal_module.derivar_historial_finalizados(rig.storage).latest is not None
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
+
+    def test_33_fallo_despues_del_pending_no_se_reanuda_y_exige_al_dueno(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Fallo con PENDING publicado: el burn-first gastó la aprobación y decide el dueño."""
+        from sky_claw.local.frozen_runtime import mo2_ini_escritura
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        def _falla_escribir(*args: object, **kwargs: object) -> bytes:
+            raise mo2_ini_escritura.Mo2IniEscrituraError("fallo inyectado en la escritura del INI")
+
+        monkeypatch.setattr(binder_module, "actualizar_game_path_por_handle", _falla_escribir)
+        with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+
+        diagnostico = diagnosticar_estado_durable(rig.storage)
+        assert diagnostico.estado is not EstadoDurable.LIMPIO
+        assert diagnostico.journal_disposition is journal_module.JournalDisposition.PENDING_PROMOTION
+
+        # Ni una aprobación nueva ni una reanudación automática: la decisión es del dueño.
+        _, entregar_nuevo = _recolector()
+        with pytest.raises(TransicionEnCursoError):
+            _sesion(rig).preparar(identidad=_identidad_telegram(), entregar=entregar_nuevo)
+        with pytest.raises(ReanudacionRequiereDuenoError):
+            _sesion(rig).reanudar(transition_id=resultado_transicion(rig))
+        assert len(derivar_autoridad_aprobacion(rig.storage).witnesses) == 1
+
+
+def resultado_transicion(rig: RigStockManual) -> str:
+    """transition_id del PENDING vigente (sólo para el caso negativo del test 33)."""
+    snapshot = journal_module.cargar_journal_transicion(rig.storage)
+    assert snapshot.journal is not None
+    return snapshot.journal.transition_id
