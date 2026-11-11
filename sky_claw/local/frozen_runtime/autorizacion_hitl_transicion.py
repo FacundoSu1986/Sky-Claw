@@ -416,8 +416,15 @@ def _registros_de_clones(storage_root: pathlib.Path) -> tuple[pathlib.Path, ...]
     for ruta in sorted(directorio.glob("*.json")):
         try:
             registro = cargar_runtime_clone_record(storage_root, ruta.stem)
-        except FrozenRuntimeError:
-            continue
+        except FrozenRuntimeError as exc:
+            # Fail-closed: esta lista sostiene la afirmación «el runtime saliente no es una
+            # superficie administrada». Un registro ilegible no prueba nada, y descartarlo en
+            # silencio convertiría una prueba faltante en una prueba superada.
+            raise EvidenciaTransicionError(
+                f"el registro de Clone {ruta.name} existe pero no se puede leer ({exc}): sin ese registro "
+                "no se puede afirmar que el runtime observado no pertenezca a un Clone administrado por "
+                "Sky-Claw (fail-closed)"
+            ) from exc
         if registro is not None:
             raices.append(pathlib.Path(registro.root_path))
     return tuple(raices)
@@ -1351,14 +1358,17 @@ class SesionTransicionGoldenMaster:
             )
 
         if diagnostico.estado is EstadoDurable.PENDIENTE_RECUPERABLE:
-            recuperacion = recovery.recuperar_transicion_interrumpida(self._storage_root, transition_id=transition_id)
-            reconciliacion = journal_module.reconciliar_journal(self._storage_root)
+            # SÓLO diagnóstico. ``recuperar_transicion_interrumpida`` reescribe superficies y
+            # retira registros: es una operación con efectos y no puede viajar escondida dentro
+            # de un método que después lanza una excepción (el operador no sabría qué cambió).
+            # La recuperación es un paso EXPLÍCITO del dueño; acá no se escribe ni un byte.
             raise ReanudacionRequiereDuenoError(
-                "la transición dejó un PENDING publicado: el burn-first gastó la aprobación y no se "
-                f"re-emite. Recuperación de superficies={recuperacion.estado.value} "
-                f"(requiere dueño={recuperacion.requiere_dueno}); reconciliación del journal="
-                f"{reconciliacion.veredicto.value}. Opciones del dueño: restaurar desde el snapshot y "
-                "reconciliar el journal, y después autorizar una transición NUEVA"
+                "la transición dejó un PENDING publicado: el burn-first gastó la aprobación, no se "
+                "re-emite y esta reanudación es de SÓLO DIAGNÓSTICO (no restaura nada). La "
+                "recuperación de superficies es un paso explícito del dueño: "
+                "binder_recovery.recuperar_transicion_interrumpida(root, transition_id=...) restaura "
+                "desde el snapshot durable, journal.reconciliar_journal(root) clasifica el journal, y "
+                "después se autoriza una transición NUEVA"
             )
         if diagnostico.estado is EstadoDurable.REQUIERE_DUENO:
             raise ReanudacionRequiereDuenoError(diagnostico.motivo)
@@ -1368,7 +1378,11 @@ class SesionTransicionGoldenMaster:
                 f"(estado={diagnostico.estado.value}, reanudable={diagnostico.transicion_reanudable!r})"
             )
 
-        aprobacion = self._aprobacion_consumida_durable(transition_id)
+        aprobacion, witness = self._aprobacion_consumida_durable(transition_id)
+        # Re-derivar y comparar contra lo APROBADO, igual que hace ``ejecutar``: una
+        # interrupción no puede degradar el vínculo con la instancia de MO2 ni con el
+        # estado del mundo que el propietario aprobó (F-08).
+        self._exigir_evidencia_aprobada(witness=witness, actual=self.derivar_evidencia())
         resultado = ejecutar_transicion_binder(
             storage_root=self._storage_root,
             mo2_instance_dir=self._mo2_instance_dir,
@@ -1394,7 +1408,25 @@ class SesionTransicionGoldenMaster:
             scope_digest=aprobacion.scope_digest,
         )
 
-    def _aprobacion_consumida_durable(self, transition_id: str) -> AprobacionConsumida:
+    def _exigir_evidencia_aprobada(self, *, witness: IssuanceWitness, actual: EvidenciaTransicion) -> None:
+        """La reanudación corre sobre el estado que el propietario aprobó, no sobre el actual.
+
+        ``approval_provenance`` liga instancia de MO2, SHA-256 del INI, ``gamePath``
+        observado, config persistido, política y ancla A1; comparar campo por campo
+        contra la proyección del witness es lo que impide que una aprobación gastada
+        para la instancia A se aplique al INI de la instancia B (F-08).
+        """
+        aprobados = witness.scope_payload
+        observados = actual.campos_derivados()
+        distintas = sorted(campo for campo, valor in observados.items() if aprobados.get(campo) != valor)
+        if distintas:
+            raise EvidenciaTransicionError(
+                "la evidencia re-derivada no es la que el propietario aprobó (campos distintos: "
+                f"{distintas}): la aprobación liga una instancia de MO2 y un estado del mundo concretos y "
+                "no se reanuda sobre otro estado. Se descarta la reanudación; hay que presentar de nuevo"
+            )
+
+    def _aprobacion_consumida_durable(self, transition_id: str) -> tuple[AprobacionConsumida, IssuanceWitness]:
         """Reconstruye la evidencia de consumo DESDE la autoridad durable.
 
         No se guarda en memoria ni se acepta del llamador: sale del witness
@@ -1439,7 +1471,7 @@ class SesionTransicionGoldenMaster:
             created_at_ns=int(self._clock_ns()),
         )
         try:
-            return verificar_consumo_aprobacion(
+            aprobacion = verificar_consumo_aprobacion(
                 self._storage_root,
                 approval_id=terminal.approval_id,
                 approval_seq=terminal.approval_seq,
@@ -1451,6 +1483,9 @@ class SesionTransicionGoldenMaster:
             raise ReanudacionNoDisponibleError(
                 f"la evidencia de consumo de la transición {transition_id!r} no liga con el witness: {exc}"
             ) from exc
+        # El witness vuelve con la aprobación: es la proyección APROBADA contra la que se
+        # re-verifica el estado actual antes de reanudar (F-08).
+        return aprobacion, witness
 
 
 __all__ = [
