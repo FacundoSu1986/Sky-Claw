@@ -145,6 +145,20 @@ def test_los_productores_sin_publicacion_no_publican_el_ejecutable() -> None:
                 assert rutas and rutas <= RUTAS_DE_ARTEFACTO_PERMITIDAS, (nombre_workflow, sorted(rutas))
 
 
+#: Las ÚNICAS condiciones completas que hacen correr un paso también cuando uno anterior falló (o, con
+#: ``always()``, hasta si cancelaron el job). Una subcadena no alcanza: ``cancelled()`` solo es verdadero si
+#: cancelaron, y ``success() && !cancelled()`` exige que todo lo anterior haya salido bien.
+_CONDICIONES_QUE_CORREN_TRAS_UN_FALLO = frozenset({"!cancelled()", "always()"})
+
+
+def _corre_tras_un_fallo(condicion: str) -> bool:
+    """``True`` si ``condicion`` es exactamente ``!cancelled()`` o ``always()``, con o sin ``${{ }}`` ni espacios."""
+    sin_espacios = re.sub(r"\s+", "", condicion)
+    if sin_espacios.startswith("${{") and sin_espacios.endswith("}}"):
+        sin_espacios = sin_espacios[3:-2]
+    return sin_espacios in _CONDICIONES_QUE_CORREN_TRAS_UN_FALLO
+
+
 def _usos_del_ejecutable(steps: list[dict[str, Any]], desde: int, excluidos: set[int]) -> list[int]:
     """Índices (posteriores a ``desde``) de los pasos que mencionan al ejecutable en cualquier campo."""
     return [
@@ -214,4 +228,38 @@ def test_el_laboratorio_vuelve_a_verificar_el_hash_despues_del_ultimo_uso_del_ej
         assert verificacion_index > max(usos), f"{clave}: se verifica antes del último uso del ejecutable"
         # Debe correr también cuando un paso previo falló: es justo cuando más importa saber qué se probó.
         condicion = str(steps[verificacion_index].get("if", ""))
-        assert "cancelled()" in condicion or "always()" in condicion, (clave, condicion)
+        assert _corre_tras_un_fallo(condicion), (clave, condicion)
+
+
+# ---------------------------------------------------------------------------
+# La condición «corre también tras un fallo» se compara EXACTA, no por subcadena (review CodeRabbit, #888)
+# ---------------------------------------------------------------------------
+
+CONDICIONES_QUE_CORREN_TRAS_UN_FALLO = [
+    "!cancelled()",
+    "${{ !cancelled() }}",
+    "${{!cancelled()}}",
+    "  ${{   !  cancelled( )  }}  ",
+    "always()",
+    "${{ always() }}",
+]
+#: Las que una comparación por subcadena (``"cancelled()" in condicion``) dejaría pasar y que SALTEAN el paso
+#: cuando un paso previo falla: ``cancelled()`` solo es verdadero si cancelaron el job, y ``success() && ...``
+#: exige que todo lo anterior haya salido bien.
+CONDICIONES_QUE_SALTEAN_EL_PASO_TRAS_UN_FALLO = [
+    "",
+    "cancelled()",
+    "${{ cancelled() }}",
+    "${{ success() && !cancelled() }}",
+    "${{ success() }}",
+    "${{ !cancelled() && success() }}",
+    "${{ always() && success() }}",
+    "${{ failure() }}",
+]
+
+
+def test_la_condicion_tras_un_fallo_se_compara_exacta_y_no_por_subcadena() -> None:
+    for condicion in CONDICIONES_QUE_CORREN_TRAS_UN_FALLO:
+        assert _corre_tras_un_fallo(condicion), condicion
+    for condicion in CONDICIONES_QUE_SALTEAN_EL_PASO_TRAS_UN_FALLO:
+        assert not _corre_tras_un_fallo(condicion), condicion
