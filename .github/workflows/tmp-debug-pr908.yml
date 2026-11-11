@@ -1,9 +1,9 @@
 name: tmp debug PR908
 
 # Workflow TEMPORAL de diagnóstico (se elimina antes del merge).
-# Los logs de los jobs de CI no son accesibles desde este entorno, pero el
-# resumen del check-run sí: por eso el resultado de pytest se publica en
-# GITHUB_STEP_SUMMARY en vez de quedar sólo en el log del paso.
+# Motivo: los logs de los jobs de CI no son legibles desde el entorno del agente
+# (viven en un blob host no accesible), pero los comentarios del PR sí. Por eso el
+# resultado de pytest se publica como comentario en el PR #908.
 
 on:
   push:
@@ -12,6 +12,8 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
+  issues: write
 
 jobs:
   solo-pr3:
@@ -31,9 +33,20 @@ jobs:
         run: |
           python -m pytest tests/test_frozen_runtime_p7_a5_pr3_hitl_wiring.py -q --timeout=180 --tb=short -rf 2>&1 | Tee-Object -FilePath pr3.txt
           $code = $LASTEXITCODE
-          "## PR3 exit=$code" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "exit=$code" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
           Get-Content pr3.txt | Select-Object -Last 400 | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
           exit $code
+      - name: publicar diagnóstico
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $texto = (Get-Content pr3.txt -Raw)
+          if ($texto.Length -gt 12000) { $texto = $texto.Substring($texto.Length - 12000) }
+          $json = ConvertTo-Json @{ body = "### diag PR3 (windows-latest py3.12)`n``````text`n$texto`n``````" } -Depth 5
+          [System.IO.File]::WriteAllText("$PWD/payload.json", $json)
+          gh api "repos/${{ github.repository }}/issues/908/comments" --method POST --input payload.json
 
   suite-completa:
     name: "diagnostico / suite completa"
@@ -52,6 +65,17 @@ jobs:
         run: |
           python -m pytest tests/ -q --timeout=180 --tb=no -rf 2>&1 | Tee-Object -FilePath full.txt
           $code = $LASTEXITCODE
-          "## suite exit=$code" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "exit=$code" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
           Get-Content full.txt | Select-Object -Last 400 | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
           exit $code
+      - name: publicar diagnóstico
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $texto = (Get-Content full.txt -Raw)
+          if ($texto.Length -gt 20000) { $texto = $texto.Substring($texto.Length - 20000) }
+          $json = ConvertTo-Json @{ body = "### diag suite completa (windows-latest py3.12)`n``````text`n$texto`n``````" } -Depth 5
+          [System.IO.File]::WriteAllText("$PWD/payload2.json", $json)
+          gh api "repos/${{ github.repository }}/issues/908/comments" --method POST --input payload2.json
