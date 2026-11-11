@@ -1011,6 +1011,7 @@ def ejecutar_transicion_binder(
         # abortar sin tocar el archivo. Este flag es la verdad de proceso y es lo
         # que impide atribuir a la transición un cambio de un tercero.
         ini_escritura_intentada: bool | None = False
+        ini_escritura_iniciada: bool = False
         # Lo que quedó en el INI, leído por el handle retenido ANTES de
         # ``cerrar()``. Es la única prueba de autoría que sigue valiendo después
         # de liberar la exclusión: mientras se retiene, nadie más puede escribir,
@@ -1020,8 +1021,9 @@ def ejecutar_transicion_binder(
 
         def _marcar_escritura_iniciada() -> None:
             """Se invoca justo antes de mutar el INI, y sólo si se va a mutar."""
-            nonlocal ini_escritura_intentada
+            nonlocal ini_escritura_intentada, ini_escritura_iniciada
             ini_escritura_intentada = True
+            ini_escritura_iniciada = True
 
         try:
             # -----------------------------------------------------------------
@@ -1110,6 +1112,12 @@ def ejecutar_transicion_binder(
                 raise BinderVerificationError(
                     f"Fallo de lectura en modorganizer.ini tras liberar exclusión: {exc}"
                 ) from exc
+
+            if ini_escritura_iniciada and ini_bytes_tras_escritura is None:
+                raise BinderVerificationError(
+                    "evidencia insuficiente en modorganizer.ini: la transición modificó el INI "
+                    "pero no se pudieron verificar los bytes bajo exclusión"
+                )
 
             if ini_bytes_tras_escritura is not None and ini_bytes_actuales != ini_bytes_tras_escritura:
                 raise BinderVerificationError(

@@ -113,10 +113,10 @@
   - Block with `CONFIG_DIVERGENCE_DETECTED` on Steam-dependent, obsolete, or ambiguous entries.
   - Pass when all entries are `MIGRABLE_AL_CLONE` or `EXTERNA_PRESERVABLE`.
 
-- [ ] **Step 1: Write failing tests for preflight blocking on unmigrated / obsolete / steam executables**
-- [ ] **Step 2: Run pytest to verify tests fail (RED)**
-- [ ] **Step 3: Wire executable plan validation in `evaluar_binder_preflight`**
-- [ ] **Step 4: Run pytest to verify tests pass (GREEN)**
+- [x] **Step 1: Write failing tests for preflight blocking on unmigrated / obsolete / steam executables**
+- [x] **Step 2: Run pytest to verify tests fail (RED)**
+- [x] **Step 3: Wire executable plan validation in `evaluar_binder_preflight`**
+- [x] **Step 4: Run pytest to verify tests pass (GREEN)**
 
 ---
 
@@ -125,10 +125,10 @@
 **Files:**
 - All changed files.
 
-- [ ] **Step 1: Run complete test suite (P7, P5C, P4, AST invariant tests)**
-- [ ] **Step 2: Run `ruff check`, `ruff format --check`, and `mypy`**
-- [ ] **Step 3: Verify zero productive mutations and `EMISION_PRODUCTIVA_HABILITADA = False`**
-- [ ] **Step 4: Commit changes with descriptive messages in Spanish**
-- [ ] **Step 5: Push branch and create GitHub Draft PR**
-- [ ] **Step 6: Monitor CI runs until green**
-- [ ] **Step 7: Deliver final report with SHA, CI status, and verdict**
+- [x] **Step 1: Run complete test suite (P7, P5C, P4, AST invariant tests)**
+- [x] **Step 2: Run `ruff check`, `ruff format --check`, and `mypy`**
+- [x] **Step 3: Verify zero productive mutations and `EMISION_PRODUCTIVA_HABILITADA = False`**
+- [x] **Step 4: Commit changes with descriptive messages in Spanish**
+- [x] **Step 5: Push branch and create GitHub Draft PR**
+- [x] **Step 6: Monitor CI runs until green**
+- [x] **Step 7: Deliver final report with SHA, CI status, and verdict**

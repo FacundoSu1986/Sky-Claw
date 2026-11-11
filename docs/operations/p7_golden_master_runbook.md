@@ -345,6 +345,7 @@ El subsistema transaccional distingue cuatro cuadrantes operativos rigurosos par
 1. **Rollback en proceso con autoría conocida:**
    - Ocurre dentro del ciclo de vida del mismo proceso cuando se intercepta un fallo antes de `FINALIZE` (p. ej. error de preflight bajo lock, fallo en persistencia de config o divergencia de readback tras liberar la exclusión).
    - El binder conserva en memoria la evidencia de autoría (`ini_escritura_intentada` y la huella `ini_bytes_tras_escritura` leída bajo el handle de exclusión OS).
+   - **Guard fail-closed de evidencia suficiente:** si la transición mutó el INI pero no se pudo obtener `ini_bytes_tras_escritura` bajo exclusión, el binder aborta con `BinderVerificationError` antes de CAS/FINALIZE. La autoría se degrada a desconocida (`ini_escritura_intentada = None`), impidiendo falsos éxitos ante mutaciones ajenas no comprobables.
    - Si el disco refleja exactamente lo escrito por la transición o un prefijo rasgado propio, restaura atómicamente el estado previo desde el snapshot durable.
    - Si se detecta mutación externa posterior a la liberación de exclusión, rechaza la autoría, no sobrescribe el archivo en disco y bifurca a preservación forense.
 
