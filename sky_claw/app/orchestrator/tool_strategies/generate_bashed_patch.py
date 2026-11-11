@@ -25,16 +25,8 @@ class GenerateBashedPatchStrategy:
     ) -> None:
         self.wrye_bash_pipeline = wrye_bash_pipeline
 
-    def describe_for_approval(self, payload_dict: dict[str, Any]) -> str:
-        # warn=False: execute() filters (and warns) again for the same payload —
-        # warning here too would duplicate the log line per invocation.
-        filtered = self._filter_payload(payload_dict, warn=False)
-        if not filtered:
-            return "payload: <empty>"
-        parts = [f"{key}={value!r}" for key, value in sorted(filtered.items())]
-        return "payload: " + ", ".join(parts)
-
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
+        """Filtra las claves permitidas, descarta opcionales en None y delega en el pipeline asistido."""
         filtered = self._filter_payload(payload_dict)
         # `fase=None` (clave presente y vacía, típico del formulario de la GUI) llegaría
         # al servicio como fase inválida y devolvería `FaseInvalida`. Se descarta acá para
@@ -45,9 +37,10 @@ class GenerateBashedPatchStrategy:
                 del filtered[clave_opcional]
         return await self.wrye_bash_pipeline(**filtered)
 
-    def _filter_payload(self, payload_dict: dict[str, Any], *, warn: bool = True) -> dict[str, Any]:
+    def _filter_payload(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
+        """Conserva únicamente las claves declaradas en _VALID_BASHED_PATCH_KEYS y advierte sobre el resto."""
         filtered = {key: value for key, value in payload_dict.items() if key in _VALID_BASHED_PATCH_KEYS}
         unexpected = payload_dict.keys() - _VALID_BASHED_PATCH_KEYS
-        if unexpected and warn:
+        if unexpected:
             logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
         return filtered

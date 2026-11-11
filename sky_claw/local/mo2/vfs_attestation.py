@@ -7,11 +7,16 @@ import os
 import pathlib
 import re
 import stat
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
-from sky_claw.local.mo2.ganadores import GanadoresError, _es_carpeta_propia
+from sky_claw.local.mo2.ganadores import (
+    GanadoresError,
+    _coincidencias_de_mod,
+    _es_carpeta_propia,
+    _exigir_sin_repetidos,
+)
 from sky_claw.local.mo2.mod_effectivity import _ocupante_de_la_capa
 from sky_claw.local.mo2.plugin_sources import OFFICIAL_MASTERS
 
@@ -335,6 +340,19 @@ def assert_canary_fisicamente_distinguible(
         )
 
 
+def _exigir_perfil_no_ambiguo(enabled: Sequence[str]) -> None:
+    """Traduce la unicidad del modlist al error de este gate (#852).
+
+    Un perfil con el mismo mod dos veces (``+x`` y ``+X``) no tiene prioridad
+    efectiva resoluble: todos los consumidores de la tupla tienen que rechazarlo
+    en la PUERTA, no cada uno con su propio criterio.
+    """
+    try:
+        _exigir_sin_repetidos(enabled)
+    except GanadoresError as exc:
+        raise VfsAttestationError(str(exc)) from exc
+
+
 def read_enabled_mods(modlist_path: pathlib.Path) -> tuple[str, ...]:
     """Mods HABILITADOS del ``modlist.txt`` del perfil, en orden de prioridad creciente.
 
@@ -355,6 +373,10 @@ def read_enabled_mods(modlist_path: pathlib.Path) -> tuple[str, ...]:
     * ``+Nombre`` — mod habilitado.
     * ``-Nombre`` / ``#comentario`` / ``*separador`` — no habilitado o no-mod.
     * cualquier otra forma es un archivo malformado ⇒ falla cerrado.
+    * **Ambigüedad (#852):** el mismo mod dos veces bajo la identidad canónica
+      (``+x`` / ``+X``) ⇒ ``VfsAttestationError``. La prioridad efectiva no se
+      puede afirmar, así que la comprobación vive acá, en la ÚNICA lectura del
+      perfil, y no se reparte entre los consumidores.
 
     Raises:
         VfsAttestationError: archivo ilegible o línea inválida. "No pude leer el
@@ -372,6 +394,7 @@ def read_enabled_mods(modlist_path: pathlib.Path) -> tuple[str, ...]:
         if not line.startswith("+") or not line[1:].strip():
             raise VfsAttestationError(f"línea inválida en modlist.txt: {line!r}")
         enabled.append(line[1:].strip())
+    _exigir_perfil_no_ambiguo(enabled)
     return tuple(reversed(enabled))
 
 
@@ -706,13 +729,16 @@ def _construir_challenge(
         )
     profile_modlist = profile_dir / "modlist.txt"
     enabled = read_enabled_mods(profile_modlist)
+    # Defensa en profundidad: el lector ya falla cerrado, pero este gate también
+    # recibe ``enabled`` inyectado y ninguna de sus DOS modalidades puede elegir
+    # una entrada por grafía (#852).
+    _exigir_perfil_no_ambiguo(enabled)
     if source_mod is not None:
         safe_source = _validated_profile(source_mod)
-        if enabled.count(source_mod) > 1:
-            raise VfsAttestationError(f"el modlist repite el mod {source_mod!r}: la prioridad es ambigua")
-        if source_mod not in enabled:
+        coincidencias = _coincidencias_de_mod(enabled, source_mod)
+        if not coincidencias:
             raise VfsAttestationError(f"el mod {source_mod!r} no está habilitado en el perfil {profile_name!r}")
-        indice = enabled.index(source_mod)
+        indice = coincidencias[0]
         candidatos: tuple[str, ...] = (source_mod,)
         # modlist.txt crece de menor a mayor prioridad. Al bajar desde el final
         # hasta el mod fuente, se acumulan exactamente los roots que lo eclipsan.

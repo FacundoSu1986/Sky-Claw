@@ -209,20 +209,21 @@ class ObservadorUIAWindows:
         # excepción pública de comtypes (re-exportada de `_ctypes`); `OSError`
         # cubre `CoInitialize`, e `ImportError` la generación de módulo de
         # `GetModule`. Hallazgo de review (Qodo).
-        self._errores_del_rig: tuple[type[BaseException], ...] = (comtypes.COMError, OSError)
+        # comtypes>=1.5 trae py.typed: COMError/CoInitialize dejan de ser Any implícito. Se accede vía Any (válido con 1.4.x y 1.5.x).
         self._comtypes: Any = comtypes
+        self._errores_del_rig: tuple[type[BaseException], ...] = (self._comtypes.COMError, OSError)
         #: Bandera de ownership del apartamento: ``True`` sólo entre un
         #: ``CoInitialize`` exitoso y su ``CoUninitialize`` correspondiente.
         self._apartamento_inicializado = False
         try:
-            comtypes.CoInitialize()
+            self._comtypes.CoInitialize()
             self._apartamento_inicializado = True
             self._uia_mod: Any = comtypes.client.GetModule("UIAutomationCore.dll")
             self._uia: Any = comtypes.client.CreateObject(
                 CLSID_CUIAUTOMATION,
                 interface=self._uia_mod.IUIAutomation,
             )
-        except (comtypes.COMError, OSError, ImportError) as exc:  # pragma: no cover -- depende del rig
+        except (self._comtypes.COMError, OSError, ImportError) as exc:  # pragma: no cover -- depende del rig
             # Ownership también en el fracaso: si CoInitialize ya había
             # inicializado el apartamento, se desinicializa antes de propagar —
             # el ``S_FALSE`` de un hilo de pool reutilizado cuenta igual.

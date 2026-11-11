@@ -61,6 +61,9 @@ from sky_claw.local.frozen_runtime.effective_runtime.models import (
     LiveProcessEvidence,
     LiveProcessKind,
     LiveProcessSnapshot,
+    Mo2InstanceIdentityObservation,
+    Mo2InstanceIdentityState,
+    Mo2RegistryState,
     RuntimeCompatibility,
     RuntimeProbes,
 )
@@ -203,6 +206,50 @@ def _crear_config(path: pathlib.Path, skyrim_path: str) -> pathlib.Path:
     return path
 
 
+def _sonda_mo2_global(ruta: pathlib.Path) -> Mo2InstanceIdentityObservation:
+    ini = ruta / "modorganizer.ini"
+    try:
+        es_archivo = ini.is_file()
+    except OSError as exc:
+        return Mo2InstanceIdentityObservation(
+            state=Mo2InstanceIdentityState.UNKNOWN,
+            instance_dir=str(ruta),
+            registry_state=Mo2RegistryState.OBSERVED,
+            registry_current_instance=ruta.name,
+            detail=f"error de filesystem al acceder a modorganizer.ini: {exc}",
+        )
+    if not es_archivo:
+        return Mo2InstanceIdentityObservation(
+            state=Mo2InstanceIdentityState.INACTIVE,
+            instance_dir=str(ruta),
+            registry_state=Mo2RegistryState.OBSERVED,
+            registry_current_instance=ruta.name,
+            detail=f"'{ruta}' carece de modorganizer.ini regular",
+        )
+    try:
+        tiene_artefactos_portables = (ruta / "ModOrganizer.exe").exists() or (ruta / "portable.txt").exists()
+    except OSError:
+        tiene_artefactos_portables = False
+    if tiene_artefactos_portables:
+        return Mo2InstanceIdentityObservation(
+            state=Mo2InstanceIdentityState.AMBIGUOUS,
+            instance_dir=str(ruta),
+            registry_state=Mo2RegistryState.OBSERVED,
+            registry_current_instance=ruta.name,
+            detail=f"la instancia global '{ruta}' contiene artefactos portables",
+        )
+    return Mo2InstanceIdentityObservation(
+        state=Mo2InstanceIdentityState.ACTIVE_GLOBAL,
+        instance_dir=str(ruta),
+        registry_state=Mo2RegistryState.OBSERVED,
+        registry_current_instance=ruta.name,
+        detail=f"instancia global activa verificada contra HKCU CurrentInstance='{ruta.name}'",
+    )
+
+
+_sonda_mo2_portable = _sonda_mo2_global
+
+
 def _probes_quiescentes(estado: dict[str, bool] | None = None) -> RuntimeProbes:
     estado = estado if estado is not None else {}
 
@@ -227,6 +274,7 @@ def _probes_quiescentes(estado: dict[str, bool] | None = None) -> RuntimeProbes:
             state=RuntimeCompatibility.COMPATIBLE, reason="compatible sintético"
         ),
         processes=_processes,
+        mo2_instance=_sonda_mo2_global,
     )
 
 
@@ -829,6 +877,7 @@ def _correr_hasta_crashear(rig_dir: pathlib.Path, frontera: str) -> None:
                 state=RuntimeCompatibility.COMPATIBLE, reason="compatible sintético"
             ),
             processes=lambda: LiveProcessSnapshot(processes=(), indeterminate=False),
+            mo2_instance=_sonda_mo2_portable,
         )
         entorno = {"SKYRIM_PATH": str(rig.managed_src)}
         active = active_state_path(rig.storage)

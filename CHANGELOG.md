@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Los workflows que construyen `SkyClawApp.exe` registran su SHA-256 (`scripts/registrar_sha256_ejecutable.py`).** La evidencia sobre el binario final solo vale si se sabe CUÁL fue: `ci.yml`, `release.yml` y el laboratorio de Windows (`vfs-supervision-sandbox.yml`) calculan el hash justo después de construir y lo dejan en el log y en el resumen del job; el laboratorio además guarda un JSON con el contexto del run (commit, job, run id) en su artefacto de resultados y, tras el último uso del ejecutable, **verifica** que sea el mismo archivo que se hasheó (falla ante cualquier duda). Anclado por igualdad sobre la familia de productores en `tests/test_release_smoke_wiring.py`: un productor nuevo sin registro rompe el test. Un hash identifica ESTE archivo; no se verificó que dos builds del mismo commit produzcan los mismos bytes. El job de `release.yml` está pausado (`if: false`): su paso nuevo no corre hasta reactivarlo y por ahora solo lo cubre el ancla. `build.bat` (build local de desarrollo) queda fuera.
+- **Política de teardown tras el resultado: una cola lenta del proceso lanzado ya no deja la instancia en cuarentena (`VfsExecutionBroker`, `post_result_cancel_grace_seconds`).** Con el `job_result` ya recibido, si el `worker_exit` no llega en 5 s (por defecto; positivo y finito) el broker le pide al bridge cerrar el Job con el `cancel` de siempre, una vez, y espera hasta el MISMO deadline duro de 30 s (pedirlo no lo extiende, ni siquiera si el envío se traba: queda acotado por ese deadline). Un MO2 real midió 0,23–0,75 s en lo normal y colas de ~22 s y ~43 s por la salida lenta del bootloader: 1 de 24 corridas terminó en cuarentena con el resultado ya recibido (medición de otra sesión, no reproducida aquí). No relaja el fail-closed: `worker_exit` solo se emite con el Job vacío; si el bridge no puede cerrarlo o no lo confirma antes del deadline, la cuarentena sigue igual, y un `job_unknown` es una carrera benigna. Cubre `submit()` y las sesiones (comparten `_await_job_completion`; la lista de quién espera `worker_exit` está congelada por AST en `tests/test_vfs_teardown_deadline.py`). No cambia `_CONTENCION_DEL_WORKER_VERIFICADA` ni el protocolo.
+- **Auditoría de la etapa 6 asistida en el log (#880, H-5).** `ejecutar_fase_asistida`, el punto único de las tres superficies (GUI, `SupervisorAgent` y tool del agente), registra un `INFO` por fase con `success`, `reason`/`motivo`, `frescura_probada`, `testigo_origen`, `testigo_contexto`, `testigo_durable` y `estado_en_plugins`. Lista blanca sin rutas ni `message` libre. El sensor de overwrite no cambia (H-4 se documenta en `docs/operations/etapa6_smoke_rig.md`).
 - **Fence de supervisión del worker del broker MO2/USVFS.** El bridge hace `startApplication` (el worker nace corriendo) y recién después `AssignProcessToJobObject`; un descendiente creado antes queda fuera del Job y sobrevive a su terminación, y nada ordenaba el despacho del worker después del `launch_ack`: medido, el worker creaba el nieto de la attestation y despachaba la herramienta sin confirmación. Ahora el worker espera un mensaje `supervised` (autenticado, ligado a su `job_id`) antes de crear el nieto de la attestation y de despachar la herramienta (lo que el intérprete crea al arrancar queda fuera del fence); el broker lo envía una sola vez, solo tras el `launch_ack` del bridge para ese job y mientras el job no esté en cancelación. Cubre LOOT, `vfs-health`, TexGen y DynDOLOD por igual. El bridge instalado no cambia; **actualización coordinada**: daemon y worker son el mismo ejecutable (un worker sin la capacidad es rechazado). Límites y propuesta para la contención del proceso Python bajo PyInstaller onefile en `docs/audits/2026-11-02_fence_de_supervision_del_broker.md`.
 - **Identidad del Job del worker PyInstaller onefile (P2, apilado sobre el fence de supervisión).** El fence prueba «el bridge asignó el proceso que lanzó MO2» (en onefile, el bootloader), no «el proceso que ejecuta Python está en el Job»: un hijo Python nacido antes del `assign` queda fuera del Job. Ahora el broker elige por launch un nombre de Job inadivinable (`Local\SkyClawVfs-<128 bits>`, en `_registrar_job`, común a `submit` y `open_session`); el bridge crea el Job con ese nombre antes de lanzar (rechaza uno preexistente, DACL de solo consulta) y lo confirma en el `launch_ack`; el worker efectivo lo abre con `JOB_OBJECT_QUERY`, comprueba `IsProcessInJob` contra **ese** handle (nunca `NULL`), exige `KILL_ON_JOB_CLOSE` sin breakaway y que sus descendientes vivos estén dentro, cierra su handle y recién entonces habla con el broker; si falla intenta terminar a sus descendientes (no está garantizado: si la limpieza también falla, ese proceso puede quedar vivo) y sale con 72 sin abrir un socket. El broker solo autoriza si el ack **y** el `hello` nombran el Job que pidió. `VFS_PROTOCOL_VERSION` no cambia: un bridge, broker o worker sin la capacidad se rechaza de forma explícita. **Actualización coordinada de bridge y daemon.** `_CONTENCION_DEL_WORKER_VERIFICADA` (#854) sigue en `False`; el análisis, las mediciones del arranque del `.exe` congelado y los límites están en `docs/audits/2026-11-03_identidad_del_job_onefile.md`.
 - **El testigo de la fase 1 de la etapa 6 pasa a ser durable entre sesiones (PR D de [ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.2).**
@@ -157,6 +159,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a divergir.
 
 ### Removed
+- **Se retira la compuerta HITL (`HitlGateMiddleware`) sobre `generate_bashed_patch` — PR E de
+  [ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.** En el PR B (#853) la herramienta
+  se dejó deliberadamente en `DESTRUCTIVE_TOOL_PATTERNS` para separar el cableado de la decisión
+  de seguridad. Tras retirar `execute_pipeline` (#862), ni `preparar` ni `verificar` mutan el
+  parche, el perfil ni `plugins.txt` (sólo corren el write-probe efímero del sensor de permisos en
+  `overwrite` y sincronizan el testigo JSON bajo `SystemPaths.runtime_state_dir()`), mientras que
+  la construcción real del `Bashed Patch, 0.esp` ya exige acción explícita del operador dentro de
+  Wrye Bash GUI. Mantener el gate hacía que con «Modo local» apagado (`auto_approve=False`) la GUI
+  abriera dos modales de aprobación sobre lecturas, que sin canal de notificación o sin
+  `HITLGuard` fallara cerrado con `HITLApprovalDenied` / `HITLGateUnavailable`, y dejaba una
+  asimetría directa con `AsyncToolRegistry` (donde el agente LLM ya invocaba la tool sin gate).
+  `generate_bashed_patch` sale de `DESTRUCTIVE_TOOL_PATTERNS` (quedan las 6 herramientas
+  destructivas reales), `OrchestrationToolDispatcher` la registra con
+  `[ErrorWrappingMiddleware("WryeBashPipelineExecutionFailed"), DictResultGuardMiddleware("InvalidWryeBashPipelineResult")]`,
+  y `GenerateBashedPatchStrategy.describe_for_approval` se retira para no dejar código muerto ni
+  satisfacer falsamente `ApprovalPayloadDescriber`. Los 4 censos que enumeran las herramientas
+  destructivas (`test_hitl_destructive_gate.py`, `test_dispatcher_dependencies.py`,
+  `test_destructive_strategies_error_contract.py` y `tests/bdd/test_mapa_sop_features.py`) se
+  actualizan sin relajarlos, y `tests/test_wrye_bash_cableado_asistido.py` suma pruebas E2E del
+  dispatcher sin `HITLGuard` y del flujo completo de `run_ritual` + `run_ritual_resume` con
+  `auto_approve=False`.
 - **Se retira el camino headless de la etapa 6 (`WryeBashPipelineService.execute_pipeline`)
   — ADR 0016 §7.1.** Tras el cableado asistido del PR B no quedaba **ningún** caller de
   producción: `bash.py` no expone build, así que cada invocación tomaba los locks
@@ -197,7 +220,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     operador y la verificación, `preparar` y `verificar` seguían comparando contra el testigo viejo y
     declaraban `frescura_probada=True` sobre un parche anterior al cambio. El registro durable guarda
     ahora `huella_contexto` (SHA-256 de `plugins.txt` **sin** la entrada del propio Bashed Patch + `modlist.txt`);
-    si no coincide, `preparar` abre una época nueva sin afirmar un build y `verificar` no usa el testigo
+    si no coincide y el artefacto apareció o cambió su digest, `preparar` abre una época nueva sin afirmar un build (con el artefacto sin cambios conserva la generación y solo actualiza la huella) y `verificar` no usa el testigo
     (nuevo campo `testigo_contexto`: `coincide` / `cambio` / `no_verificable` / `no_aplica`). Los registros
     de PR D se leen como contexto desconocido. El payload `testigo_previo` no cambia. Sin TTL por reloj.
     Un payload con `generacion` cuyo registro ya no existe (reemplazado, consumido o almacén ilegible)
