@@ -379,6 +379,28 @@ El subsistema transaccional distingue cuatro cuadrantes operativos rigurosos par
      (`MO2_INSTANCE_IDENTITY`), manteniendo `STRICT_PROVIDER_IDLE` por defecto y
      `EMISION_PRODUCTIVA_HABILITADA = False`. La migración transaccional de
      `[customExecutables]` y la habilitación productiva pertenecen a PRs posteriores.
+   - **Nota P7-A5 PR 3 (cableado, emisión todavía cerrada):** el consumidor
+     autorizado existe desde el 2026-11-11
+     (`sky_claw/local/frozen_runtime/autorizacion_hitl_transicion.py`) y expone
+     `HITL_PRODUCTIVE = WIRED_BUT_GATED`. Estado real de cada gate:
+     `EMISION_PRODUCTIVA_HABILITADA = False`,
+     `TRANSPORT_ADAPTER = NOT_WIRED` (no hay entrega ni decisión por Telegram
+     todavía), `PRIMERA_TRANSICION_REAL = NOT_EXECUTED`,
+     `CANDIDATE_OBJECT = NOT_CREATED`,
+     `REANUDACION_POST_PENDING = REQUIERE_DUENO`.
+     **Corrección de este runbook (§9.1):** el requisito de A5 **no** es
+     uniformemente «Steam IDLE». Bajo `STRICT_PROVIDER_IDLE` (por defecto) Steam
+     debe estar IDLE; bajo `STOCK_INDEPENDENT_TRANSITION` se admite Steam
+     **ACTIVE** siempre que haya digest externo A1 aprobado, procedencia Stock v2
+     y se conserven las comprobaciones de independencia física del Clone (un
+     hardlink sigue bloqueando). La política efectiva que se aprueba viaja en el
+     `approval_provenance` de la aprobación.
+     **Reanudación:** si un fallo ocurre **antes** de publicar el `PENDING`, la
+     misma aprobación consumida completa la transición
+     (`reanudar(transition_id)`); si el `PENDING` ya está publicado, la
+     aprobación está gastada y el caso requiere al dueño
+     (`recuperar_transicion_interrumpida` + `reconciliar_journal` + nueva
+     aprobación). No existe re-emisión automática.
 2. **P7-A … P7-G (ver §10).** Hasta que A5 no se ejecute efectivamente, el inspector P7 seguirá
    `BLOCKED` (`listo_para_p7=False`: `desired_runtime`/`clone_record`/`version.skyrim`/`mo2.game_path`).
 
