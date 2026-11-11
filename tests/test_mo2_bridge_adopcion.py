@@ -76,6 +76,12 @@ class _ApiFalsa:
         self.muere_al_asignar: set[int] = set()
         self.no_muere: set[int] = set()
         self.al_asignar: dict[int, Callable[[], None]] = {}
+        # Creación leída SIN handle (instantánea del sistema): es lo único que puede decir cuándo nació un proceso que
+        # no se pudo abrir. ``consultas_por_pid`` registra cada lectura para anclar que no se repite por pasada.
+        self.fallar_creation_time: set[int] = set()  # ``GetProcessTimes`` falla con el handle ya abierto
+        self.no_figura_en_la_instantanea: set[int] = set()
+        self.falla_la_lectura_por_pid: set[int] = set()
+        self.consultas_por_pid: list[int] = []
 
     def hijo(self, pid: int, ppid: int, creacion: int, *, en_job: bool = False) -> None:
         self.tabla[pid] = _Proc(ppid=ppid, creacion=creacion)
@@ -105,7 +111,18 @@ class _ApiFalsa:
         return 1000 + pid
 
     def creation_time(self, handle: int) -> int:
+        if self._pid(handle) in self.fallar_creation_time:
+            raise BridgeCommandError(f"GetProcessTimes({self._pid(handle)}) falló")
         return self.tabla[self._pid(handle)].creacion
+
+    def creation_time_by_pid(self, pid: int) -> int | None:
+        self.consultas_por_pid.append(pid)
+        if pid in self.falla_la_lectura_por_pid:
+            raise BridgeCommandError(f"NtQuerySystemInformation falló al leer {pid}")
+        proceso = self.tabla.get(pid)
+        if proceso is None or not proceso.vivo or pid in self.no_figura_en_la_instantanea:
+            return None
+        return proceso.creacion
 
     def has_exited(self, handle: int) -> bool:
         if self._pid(handle) in self.fallar_has_exited:
@@ -321,6 +338,135 @@ def test_un_hijo_que_no_se_puede_abrir_es_un_fallo_porque_no_se_puede_probar_su_
         _adoptar(api)
 
     assert api.asignados == [102]
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# PPID reciclado de un proceso que no se puede identificar por handle
+# --------------------------------------------------------------------------------------------------------------------
+# Windows no reasigna el PPID cuando el padre muere: un proceso viejo conserva un PPID numérico que el sistema puede
+# entregar más tarde al worker. Los de sistema (``csrss``, ``wininit``, ``winlogon``: su padre, el ``smss`` de sesión, ya
+# salió) además NO se pueden abrir (ACCESS_DENIED), así que su creación no se puede leer por handle y el chequeo de
+# «nació después que su padre» nunca corría para ellos: el candidato caía en «vivo fuera del Job» y el launch terminaba
+# en cuarentena. El flake de CI (``quedan vivos fuera del Job: [720, 844]``, ``GetLastError=5``, dos PIDs bajos con el
+# mismo error) tiene esa firma. La regla: solo la evidencia POSITIVA —la creación leída SIN abrir el proceso, anterior
+# a la de su padre— saca a un candidato de la cuenta; sin ella sigue siendo un descendiente vivo fuera del Job.
+def _inabrible_mas_viejo_que_el_padre(api: _ApiFalsa) -> None:
+    api.hijo(101, PID_RAIZ, CREACION_RAIZ - 10)
+    api.fallar_abrir.add(101)
+
+
+def _inabrible_mas_nuevo_que_el_padre(api: _ApiFalsa) -> None:
+    api.hijo(101, PID_RAIZ, CREACION_RAIZ + 10)
+    api.fallar_abrir.add(101)
+
+
+def _inabrible_nacido_en_el_mismo_instante_que_el_padre(api: _ApiFalsa) -> None:
+    """Un bootloader crea a su hijo a los pocos ms: la misma marca de tiempo es un hijo, no un proceso viejo."""
+    api.hijo(101, PID_RAIZ, CREACION_RAIZ)
+    api.fallar_abrir.add(101)
+
+
+def _inabrible_que_no_figura_en_la_instantanea(api: _ApiFalsa) -> None:
+    api.hijo(101, PID_RAIZ, CREACION_RAIZ - 10)
+    api.fallar_abrir.add(101)
+    api.no_figura_en_la_instantanea.add(101)
+
+
+def _inabrible_cuya_lectura_de_creacion_falla(api: _ApiFalsa) -> None:
+    api.hijo(101, PID_RAIZ, CREACION_RAIZ - 10)
+    api.fallar_abrir.add(101)
+    api.falla_la_lectura_por_pid.add(101)
+
+
+def _abrible_sin_creacion_por_handle_y_mas_viejo_que_el_padre(api: _ApiFalsa) -> None:
+    api.hijo(101, PID_RAIZ, CREACION_RAIZ - 10)
+    api.fallar_creation_time.add(101)
+
+
+def _abrible_sin_creacion_por_handle_y_mas_nuevo_que_el_padre(api: _ApiFalsa) -> None:
+    api.hijo(101, PID_RAIZ, CREACION_RAIZ + 10)
+    api.fallar_creation_time.add(101)
+
+
+@pytest.mark.parametrize(
+    ("preparar", "es_un_descendiente_vivo"),
+    [
+        pytest.param(_inabrible_mas_viejo_que_el_padre, False, id="inabrible_mas_viejo_que_el_padre_es_pid_reciclado"),
+        pytest.param(_inabrible_mas_nuevo_que_el_padre, True, id="inabrible_mas_nuevo_es_un_descendiente_real"),
+        pytest.param(_inabrible_nacido_en_el_mismo_instante_que_el_padre, True, id="inabrible_del_mismo_instante"),
+        pytest.param(_inabrible_que_no_figura_en_la_instantanea, True, id="inabrible_sin_lectura_de_creacion"),
+        pytest.param(_inabrible_cuya_lectura_de_creacion_falla, True, id="inabrible_con_la_lectura_fallida"),
+        pytest.param(
+            _abrible_sin_creacion_por_handle_y_mas_viejo_que_el_padre, False, id="abrible_sin_handle_mas_viejo"
+        ),
+        pytest.param(
+            _abrible_sin_creacion_por_handle_y_mas_nuevo_que_el_padre, True, id="abrible_sin_handle_mas_nuevo"
+        ),
+    ],
+)
+def test_un_candidato_sin_creacion_por_handle_solo_se_descarta_con_evidencia_positiva_de_ser_mas_viejo_que_su_padre(
+    preparar: Callable[[_ApiFalsa], None], es_un_descendiente_vivo: bool
+) -> None:
+    """La tabla ENUMERA lo que puede pasar al no poder leer la creación por handle: un caso nuevo se clasifica acá."""
+    api = _ApiFalsa()
+    preparar(api)
+
+    if es_un_descendiente_vivo:
+        with pytest.raises(BridgeTerminationError, match="101"):
+            _adoptar(api)
+    else:
+        assert _adoptar(api) == 0
+    assert api.asignados == [], "ni un PID reciclado ni uno que no se pudo identificar se asigna al Job"
+    assert api.terminados == [], "sin poder probar que es un descendiente no se lo termina"
+    assert sorted(api.cerrados) == sorted(api.abiertos), "todo handle que se abrió se cierra"
+
+
+def test_un_nieto_inabrible_se_compara_con_la_creacion_de_su_padre_inmediato_y_no_con_la_de_la_raiz() -> None:
+    """Nació después que la raíz (55 > 50) pero ANTES que su supuesto padre (55 < 60): su PPID es un PID reciclado."""
+    api = _ApiFalsa()
+    api.hijo(101, PID_RAIZ, 60)
+    api.hijo(102, 101, 55)
+    api.fallar_abrir.add(102)
+
+    assert _adoptar(api) == 1
+    assert api.asignados == [101]
+
+
+def test_la_lectura_de_la_creacion_de_un_inabrible_ajeno_no_se_repite_en_cada_pasada() -> None:
+    """Un PID ya descartado no vuelve a costar una instantánea del sistema por cada pasada de la adopción."""
+    api = _ApiFalsa()
+    api.hijo(101, PID_RAIZ, 60)
+    api.al_asignar[101] = lambda: api.hijo(102, 101, 61)  # obliga a una segunda pasada
+    api.hijo(150, PID_RAIZ, CREACION_RAIZ - 10)
+    api.fallar_abrir.add(150)
+
+    assert _adoptar(api) == 2
+    assert api.consultas_por_pid == [150]
+
+
+def test_el_error_de_terminacion_no_nombra_al_inabrible_que_resulto_ser_un_pid_reciclado() -> None:
+    """Un descendiente real inabrible sigue haciendo fallar el launch; el proceso viejo de al lado no se culpa."""
+    api = _ApiFalsa()
+    api.hijo(101, PID_RAIZ, CREACION_RAIZ - 10)
+    api.hijo(102, PID_RAIZ, 60)
+    api.fallar_abrir.update({101, 102})
+
+    with pytest.raises(BridgeTerminationError) as salida:
+        _adoptar(api)
+
+    mensaje = str(salida.value)
+    assert "[102]" in mensaje
+    assert "101" not in mensaje
+
+
+def test_el_error_nombra_el_padre_del_candidato_para_poder_diagnosticar_una_colision_de_pid() -> None:
+    """La evidencia del flake de CI era una sola línea sin el PPID: así no se podía distinguir un hijo de un PID reciclado."""
+    api = _ApiFalsa()
+    api.hijo(101, PID_RAIZ, 60)
+    api.fallar_abrir.add(101)
+
+    with pytest.raises(BridgeTerminationError, match=rf"pid 101 \(PPID {PID_RAIZ}\)"):
+        _adoptar(api)
 
 
 def test_si_ni_siquiera_se_puede_terminar_al_que_no_se_adopto_el_error_lo_dice() -> None:
@@ -831,3 +977,64 @@ def test_la_unica_implementacion_de_produccion_del_job_cumple_el_contrato_comple
     contrato = {"assign", "adopt_descendants", "terminate", "active_processes", "close"}
     assert publicos("JobObject") == contrato
     assert publicos("Win32JobObject") == contrato
+
+
+def _metodos_publicos_de_toda_clase_llamada(nombre: str, *, modulo: pathlib.Path) -> set[str]:
+    """Métodos públicos de la clase ``nombre`` en cualquier nivel (``_Win32AdoptionApi`` vive bajo ``if sys.platform``)."""
+    arbol = ast.parse(modulo.read_text(encoding="utf-8"))
+    clases = [n for n in ast.walk(arbol) if isinstance(n, ast.ClassDef) and n.name == nombre]
+    assert len(clases) == 1, f"debe haber exactamente una clase {nombre}"
+    return {n.name for n in clases[0].body if isinstance(n, ast.FunctionDef) and not n.name.startswith("_")}
+
+
+#: Lo que la adopción necesita del sistema operativo. Igualdad literal: un método nuevo en el Protocol obliga a
+#: decidir quién lo implementa (la API real y el doble), y ESTE test es el único que se entera en Linux, donde
+#: ``_Win32AdoptionApi`` queda dentro de un ``if sys.platform == "win32"`` que mypy no evalúa.
+_CONTRATO_DE_LA_API_DE_ADOPCION = frozenset(
+    {
+        "processes",
+        "process_id",
+        "open_process",
+        "creation_time",
+        "creation_time_by_pid",
+        "has_exited",
+        "in_job",
+        "assign",
+        "terminate",
+        "close",
+    }
+)
+
+
+def test_todo_implementador_de_la_api_de_adopcion_cumple_el_contrato_completo() -> None:
+    """``AdoptionApi`` (Protocol), la API real de Windows y el doble de estos tests exponen los mismos métodos."""
+    assert _metodos_publicos_de_toda_clase_llamada("AdoptionApi", modulo=RUNTIME) == _CONTRATO_DE_LA_API_DE_ADOPCION
+    assert (
+        _metodos_publicos_de_toda_clase_llamada("_Win32AdoptionApi", modulo=RUNTIME) == _CONTRATO_DE_LA_API_DE_ADOPCION
+    )
+    este_modulo = pathlib.Path(__file__)
+    doble = _metodos_publicos_de_toda_clase_llamada("_ApiFalsa", modulo=este_modulo)
+    assert doble - {"hijo"} == _CONTRATO_DE_LA_API_DE_ADOPCION
+
+
+def test_no_hay_otro_implementador_de_la_api_de_adopcion_en_el_arbol() -> None:
+    """Enumera por AST quién define a la vez ``open_process`` y ``creation_time``: la huella de un implementador."""
+    raiz = RAIZ
+    implementadores: set[str] = set()
+    for ruta in [*raiz.glob("sky_claw/**/*.py"), *raiz.glob("scripts/**/*.py"), *raiz.glob("tests/**/*.py")]:
+        texto = ruta.read_text(encoding="utf-8")
+        if "def open_process" not in texto:  # prefiltro barato: solo se parsea quien define el método
+            continue
+        arbol = ast.parse(texto)
+        for clase in (n for n in ast.walk(arbol) if isinstance(n, ast.ClassDef)):
+            metodos = {n.name for n in clase.body if isinstance(n, ast.FunctionDef)}
+            if {"open_process", "creation_time", "creation_time_by_pid"} <= metodos:
+                implementadores.add(f"{ruta.relative_to(raiz).as_posix()}::{clase.name}")
+
+    # El contrato (Protocol), el implementador real y el doble. Otro que aparezca debe declararse acá: es un tercer
+    # camino que decide quién es un descendiente y tiene que aplicar la misma regla de PID reciclado.
+    assert implementadores == {
+        "sky_claw/local/mo2/plugin_bundle/skyclaw_bridge/runtime.py::AdoptionApi",
+        "sky_claw/local/mo2/plugin_bundle/skyclaw_bridge/runtime.py::_Win32AdoptionApi",
+        "tests/test_mo2_bridge_adopcion.py::_ApiFalsa",
+    }
