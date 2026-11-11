@@ -314,7 +314,39 @@ class GestorDeTrabajosDeLods:
     def estado(self) -> dict[str, Any]:
         if self._actual is None:
             return {"success": True, "message": "", "estado": "sin_trabajos"}
-        return {"success": True, "message": "", **self._actual.resumen()}
+        datos: dict[str, Any] = {"success": True, "message": "", **self._actual.resumen()}
+        # H-11: solo mientras el trabajo está vivo. Un snapshot que el servicio aún conserve tras el fin de la
+        # corrida no es progreso: es el rastro de algo que ya terminó.
+        if self.en_curso():
+            progreso = self._progreso_del_servicio()
+            if progreso is not None:
+                datos["progreso"] = progreso
+        return datos
+
+    def _progreso_del_servicio(self) -> dict[str, Any] | None:
+        """Última muestra del latido de la herramienta, en HECHOS; ``None`` si no hay o no se puede leer.
+
+        Best-effort: ``lods_status`` es la consulta con la que el operador averigua si la etapa 9 sigue viva, así
+        que ninguna falla acá puede romperla. No hay un veredicto «colgado»: el operador (o el LLM) juzga con
+        ``log_sin_cambios_segundos`` y con ``muestra_hace_segundos`` —la edad de la muestra— a la vista; un latido
+        que dejó de llegar también es información.
+        """
+        try:
+            servicio = self._proveedor()
+            muestra = None if servicio is None else getattr(servicio, "progreso_actual", None)
+            if muestra is None:
+                return None
+            sin_cambios = muestra.log_idle_seconds
+            return {
+                "herramienta": muestra.tool_name,
+                "transcurrido_segundos": round(muestra.elapsed_seconds, 1),
+                "log_bytes": muestra.log_bytes,
+                "log_sin_cambios_segundos": None if sin_cambios is None else round(sin_cambios, 1),
+                "muestra_hace_segundos": round(max(0.0, time.time() - muestra.sampled_at), 1),
+            }
+        except Exception:  # noqa: BLE001 -- la consulta de estado nunca se rompe por el progreso
+            logger.warning("no se pudo leer el progreso de la etapa 9 para lods_status", exc_info=True)
+            return None
 
     async def cerrar(self) -> None:
         """Shutdown: cancela el trabajo vivo y espera a que el pipeline limpie."""

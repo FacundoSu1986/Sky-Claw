@@ -2199,6 +2199,29 @@ class StandaloneDynDOLODSpawnStrategy:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ProgresoDeHerramienta:
+    """Una muestra del avance de TexGen/DynDOLOD, tomada en cada latido (H-11).
+
+    La etapa 9 dura horas y, sin esto, nadie podía distinguir «generando» de «colgado». Son HECHOS, no un
+    veredicto: el umbral de «sin actividad» lo juzga quien consume la muestra (un operador, la GUI o el agente).
+
+    ``tool_name`` es la fase vista desde el runner (``TexGen``/``DynDOLOD``). ``log_*`` salen del log de
+    ``_ruta_del_log`` y son ``None`` si todavía no existe o no se puede leer; bajo USVFS ese archivo puede
+    aparecer en otra capa y quedar siempre ``None`` (no medido en un rig): ``elapsed_seconds`` siempre está.
+    """
+
+    tool_name: str
+    elapsed_seconds: float
+    log_path: str | None = None
+    log_bytes: int | None = None
+    log_idle_seconds: float | None = None
+
+
+#: Observador del latido: best-effort, jamás decide el resultado de la corrida.
+AvisoDeProgreso = Callable[[ProgresoDeHerramienta], Awaitable[None]]
+
+
 class DynDOLODRunner:
     """
     Runner asíncrono para TexGen y DynDOLOD con empaquetado automático para MO2.
@@ -2256,6 +2279,7 @@ class DynDOLODRunner:
         readiness: CapacidadDeReadinessUIA | ReadinessMode,
         spawn_strategy: DynDOLODSpawnStrategy | None = None,
         desatendido: CapacidadDesatendidaUIA | None = None,
+        on_progress: AvisoDeProgreso | None = None,
     ) -> None:
         """
         Inicializa el runner de DynDOLOD.
@@ -2271,6 +2295,9 @@ class DynDOLODRunner:
                 siendo la autoridad de la corrida en los dos modos.
         """
         self._config = config
+        # H-11: quién recibe la muestra de cada latido. ``None`` = nadie (tests, uso directo): el latido sigue
+        # solo escribiendo al logger, como siempre.
+        self._on_progress = on_progress
         # Guard de runtime además del tipo: el runner corre con mypy exento, así
         # que un caller sin anotaciones podría pasar ``None`` — y ese ``None``
         # volvería a ser el default silencioso que este constructor eliminó. La
@@ -2778,6 +2805,7 @@ class DynDOLODRunner:
                     tool_name,
                     elapsed,
                 )
+                await self._reportar_progreso(tool_name, elapsed)
 
         drain_out = asyncio.create_task(_drain(proc.stdout, stdout_chunks))
         drain_err = asyncio.create_task(_drain(proc.stderr, stderr_chunks))
@@ -4843,6 +4871,49 @@ class DynDOLODRunner:
             else self._config.dyndolod_exe
         )
         return exe.parent / "Logs" / f"{tool}_{self._modo()}_log.txt"
+
+    def _medir_progreso(self, tool_name: str, elapsed_seconds: float) -> ProgresoDeHerramienta:
+        """Toma la muestra del latido: tiempo transcurrido y, si existe, tamaño y antigüedad del log.
+
+        Bloqueante (un ``stat``): se llama desde un hilo. Solo LEE metadatos del log por la misma ruta que usa el
+        post-check (``_ruta_del_log``); no abre ni parsea el archivo. Sin log todavía (o ilegible) queda solo el
+        tiempo. La antigüedad nunca es negativa aunque el reloj del archivo vaya adelantado.
+        """
+        ruta = self._ruta_del_log(tool_name)
+        try:
+            estado = ruta.stat()
+        except OSError:
+            return ProgresoDeHerramienta(tool_name=tool_name, elapsed_seconds=elapsed_seconds)
+        return ProgresoDeHerramienta(
+            tool_name=tool_name,
+            elapsed_seconds=elapsed_seconds,
+            log_path=str(ruta),
+            log_bytes=estado.st_size,
+            log_idle_seconds=max(0.0, time.time() - estado.st_mtime),
+        )
+
+    async def _reportar_progreso(self, tool_name: str, elapsed_seconds: float) -> None:
+        """Entrega la muestra del latido al observador, best-effort: su falla NO cambia la corrida (H-11).
+
+        El latido corre en su propia tarea y la limpieza la cancela al terminar el proceso, así que un observador
+        que no vuelve no retrasa el fin de la corrida. La cancelación se propaga; cualquier otra falla (el bus
+        caído, un snapshot que no se pudo armar) se registra y el latido sigue con el próximo intervalo.
+        """
+        aviso = self._on_progress
+        if aviso is None:
+            return
+        try:
+            progreso = await asyncio.to_thread(self._medir_progreso, tool_name, elapsed_seconds)
+            await aviso(progreso)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- observador best-effort: nunca decide ni rompe la corrida
+            logger.warning(
+                "no se pudo reportar el progreso de %s",
+                tool_name,
+                exc_info=True,
+                extra={"operation_type": "dyndolod_progreso_no_reportado", "tx_id": _tx_id()},
+            )
 
     def _firma_del_log(self, tool: str) -> tuple[int | str, ...] | None:
         """Firma de CONTINUIDAD del log ANTES de lanzar: ``(tamaño, digest)``.
