@@ -312,3 +312,55 @@ async def test_el_helper_lee_el_pedido_y_el_canal_se_borra(tmp_path):
     directorio, tipo = registro.read_text(encoding="utf-8").split("|")
     assert tipo == "OBSERVAR"
     assert not pathlib.Path(directorio).exists()
+
+
+# ---------------------------------------------------------------------------
+# Los scripts de MEDICIÓN (H-8): solo lectura, y la familia está enumerada
+# ---------------------------------------------------------------------------
+
+SCRIPTS = RAIZ / "scripts"
+#: Los scripts que importan la superficie UIA. Congelado por igualdad: uno nuevo rompe el ancla hasta que se audita.
+SCRIPTS_QUE_TOCAN_LA_SUPERFICIE_UIA = {"dyndolod_medir_contrato_uia.py"}
+#: Lo que un script de medición puede pedirle al puerto de observación: solo enumerar ventanas y controles.
+METODOS_DE_LECTURA_PERMITIDOS_AL_SCRIPT = {"ventanas_de_proceso", "controles_de_ventana"}
+#: Todos los métodos del puerto ``ObservadorUIA`` (tres, los tres de lectura).
+METODOS_DEL_PUERTO = {"ventanas_de_proceso", "controles_de_ventana", "leer_valor"}
+
+
+def _scripts_que_importan_la_superficie_uia() -> set[str]:
+    encontrados: set[str] = set()
+    for archivo in sorted(SCRIPTS.glob("*.py")):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        if any(
+            isinstance(n, ast.ImportFrom) and n.module and n.module.startswith("sky_claw.local.tools.dyndolod_uia_")
+            for n in ast.walk(arbol)
+        ):
+            encontrados.add(archivo.name)
+    return encontrados
+
+
+def test_los_scripts_que_tocan_la_superficie_uia_estan_congelados():
+    assert _scripts_que_importan_la_superficie_uia() == SCRIPTS_QUE_TOCAN_LA_SUPERFICIE_UIA
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS_QUE_TOCAN_LA_SUPERFICIE_UIA))
+def test_un_script_de_medicion_no_nombra_ninguna_primitiva_que_actue_ni_importa_al_driver(script):
+    nombres = _nombres_de_codigo(SCRIPTS / script)
+    assert "ventanas_de_proceso" in nombres, "el detector no ve nada: el ancla pasaría vacía"
+    prohibidas = PRIMITIVAS_MUTANTES | PRIMITIVAS_WIN32_PROHIBIDAS | PRIMITIVAS_AUTORIZADAS
+    assert nombres & prohibidas == set(), sorted(nombres & prohibidas)
+    arbol = ast.parse((SCRIPTS / script).read_text(encoding="utf-8"))
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.ImportFrom) and nodo.module:
+            assert "dyndolod_uia_driver" not in nodo.module, nodo.module
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS_QUE_TOCAN_LA_SUPERFICIE_UIA))
+def test_un_script_de_medicion_solo_le_pide_al_puerto_enumerar_ventanas_y_controles(script):
+    arbol = ast.parse((SCRIPTS / script).read_text(encoding="utf-8"))
+    llamados = {
+        n.func.attr
+        for n in ast.walk(arbol)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in METODOS_DEL_PUERTO
+    }
+    assert llamados == METODOS_DE_LECTURA_PERMITIDOS_AL_SCRIPT
