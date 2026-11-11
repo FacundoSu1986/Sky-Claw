@@ -91,6 +91,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 import logging
 import os
 import pathlib
@@ -102,6 +103,7 @@ from enum import StrEnum
 
 from sky_claw.local.frozen_runtime import binder_recovery as recovery
 from sky_claw.local.frozen_runtime import journal as journal_module
+from sky_claw.local.frozen_runtime import storage
 from sky_claw.local.frozen_runtime.approval import (
     ApprovalOperation,
     ApprovalTombstone,
@@ -154,14 +156,17 @@ from sky_claw.local.frozen_runtime.owner_consent import (
     IdentidadPropietario,
     PresentacionConsentimiento,
     RegistroConsentimientos,
+    _exigir_identidad_verificada,
     emitir_aprobacion_autorizada,
 )
 from sky_claw.local.frozen_runtime.provisioning import verificar_runtime_setup
+from sky_claw.local.frozen_runtime.root_lock import canonical_root_key, participant_lock
 from sky_claw.local.frozen_runtime.runtime_clone_binder import (
     BinderResult,
     _propuesta_desde_witness,
     ejecutar_transicion_binder,
 )
+from sky_claw.local.frozen_runtime.state import write_json_atomic
 from sky_claw.local.frozen_runtime.storage_models import GenerationVerificationState
 from sky_claw.local.runtime_vault.inventory import inventory_tree
 from sky_claw.local.runtime_vault.verification import tree_digest_from_files
@@ -217,9 +222,44 @@ class SesionFueraDeOrdenError(AutorizacionTransicionError):
     """Se intentó un paso sin cumplir el anterior (o con otro objeto de sesión)."""
 
 
+class AbandonoTransicionInvalidoError(AutorizacionTransicionError):
+    """El abandono solicitado es inválido o viola una precondición durable (fail-closed)."""
+
+
+class AbandonoCorruptoError(AutorizacionTransicionError):
+    """El registro de abandono persistido es ilegible, incompleto o su digest no coincide (fail-closed)."""
+
+
+#: Versión canónica del esquema de registros de abandono durable (§Codex discussion_r4543251726)
+SCHEMA_VERSION_ABANDONO = 1
+
+
 # ---------------------------------------------------------------------------
 # Modelos
 # ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class RegistroAbandonoTransicion:
+    """Registro inmutable y verificable del abandono explícito de una transición consumida.
+
+    Liga durablemente el storage root, la transición abandonada, la aprobación consumida,
+    la identidad del propietario que la autorizó, el motivo y el timestamp, sellado por un digest canónico.
+    """
+
+    schema_version: int
+    root_id: str
+    transition_id: str
+    approval_id: str
+    approval_seq: int
+    scope_digest: str
+    propietario_sujeto: str
+    propietario_superficie: str
+    propietario_sesion: str
+    propietario_mecanismo: str
+    motivo: str
+    abandonado_en_ns: int
+    record_digest: str
 
 
 class OrigenTransicion(StrEnum):
@@ -404,7 +444,12 @@ def _leer_skyrim_path_persistido(config_path: pathlib.Path | None) -> str | None
         return None
     from sky_claw.local.frozen_runtime.runtime_clone_binder import _leer_skyrim_path_persistido as lector
 
-    return lector(config_path)
+    try:
+        return lector(config_path)
+    except (FrozenRuntimeError, OSError, ValueError) as exc:
+        raise EvidenciaTransicionError(
+            f"la configuración persistida ({config_path}) no existe o no es legible: {exc}"
+        ) from exc
 
 
 def _registros_de_clones(storage_root: pathlib.Path) -> tuple[pathlib.Path, ...]:
@@ -585,7 +630,21 @@ def derivar_evidencia_transicion(
     mo2_dir = pathlib.Path(os.path.abspath(os.fspath(mo2_instance_dir)))
     ini_path = mo2_dir / "modorganizer.ini"
     observadores = probes if probes is not None else default_runtime_probes()
+    if config_path is None:
+        raise EvidenciaTransicionError(
+            "se exige config_path para verificar la configuración persistida antes de presentar o emitir "
+            "una aprobación (fail-closed contra el requisito estricto del binder; Codex discussion_r4543251718)"
+        )
+    if not pathlib.Path(config_path).is_file():
+        raise EvidenciaTransicionError(
+            f"la configuración persistida ({config_path}) no existe o no es legible (fail-closed)"
+        )
     cfg_skyrim = _leer_skyrim_path_persistido(config_path)
+    if not cfg_skyrim:
+        raise EvidenciaTransicionError(
+            f"el archivo de configuración persistido ({config_path}) no define skyrim_path: "
+            "el binder exige una configuración coherente para la transición (fail-closed)"
+        )
 
     preflight = evaluar_binder_preflight(
         storage_root=storage_path,
@@ -593,7 +652,7 @@ def derivar_evidencia_transicion(
         clone_id=clone_id,
         managed_source_root=managed_source_root,
         config_skyrim_path=cfg_skyrim,
-        exigir_config_skyrim_path=config_path is not None,
+        exigir_config_skyrim_path=True,
         environ=environ,
         probes=observadores,
         transition_policy=transition_policy,
@@ -857,8 +916,223 @@ def _sha256_archivo(ruta: pathlib.Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Diagnóstico durable
+# Diagnóstico durable y resolución por abandono
 # ---------------------------------------------------------------------------
+
+
+def _calcular_digest_abandono(payload: Mapping[str, object]) -> str:
+    """Calcula el digest canónico del registro de abandono sobre todos sus campos salvo 'record_digest'."""
+    data = {k: v for k, v in payload.items() if k != "record_digest"}
+    return digest_canonico(data)
+
+
+def cargar_registro_abandono(
+    ruta: pathlib.Path,
+    *,
+    expected_root_id: str | None = None,
+) -> RegistroAbandonoTransicion:
+    """Lee y valida un registro durable de abandono. Falla cerrado ante cualquier anomalía."""
+    p = pathlib.Path(ruta)
+    if not p.is_file():
+        raise AbandonoTransicionInvalidoError(f"el archivo de registro de abandono no existe: {p}")
+    try:
+        raw = p.read_bytes()
+        contenido = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise AbandonoCorruptoError(f"el registro de abandono en {p} no es JSON válido: {exc}") from exc
+
+    if not isinstance(contenido, dict):
+        raise AbandonoCorruptoError(f"el registro de abandono en {p} debe ser un objeto JSON")
+
+    version = contenido.get("schema_version")
+    if version != SCHEMA_VERSION_ABANDONO:
+        raise AbandonoCorruptoError(
+            f"versión de schema no soportada en {p}: {version!r} (se esperaba {SCHEMA_VERSION_ABANDONO})"
+        )
+
+    campos = (
+        "root_id",
+        "transition_id",
+        "approval_id",
+        "approval_seq",
+        "scope_digest",
+        "propietario_sujeto",
+        "propietario_superficie",
+        "propietario_sesion",
+        "propietario_mecanismo",
+        "motivo",
+        "abandonado_en_ns",
+        "record_digest",
+    )
+    faltantes = [c for c in campos if c not in contenido]
+    if faltantes:
+        raise AbandonoCorruptoError(f"el registro de abandono en {p} carece de campos obligatorios: {faltantes}")
+
+    root_id = str(contenido["root_id"])
+    if expected_root_id is not None and root_id != expected_root_id:
+        raise AbandonoTransicionInvalidoError(
+            f"el root_id del registro ({root_id}) no coincide con el esperado ({expected_root_id})"
+        )
+
+    digest_declarado = str(contenido["record_digest"])
+    digest_calculado = _calcular_digest_abandono(contenido)
+    if digest_declarado != digest_calculado:
+        raise AbandonoCorruptoError(
+            f"el digest del registro de abandono en {p} está corrupto (declarado={digest_declarado}, calculado={digest_calculado})"
+        )
+
+    return RegistroAbandonoTransicion(
+        schema_version=int(version),
+        root_id=root_id,
+        transition_id=str(contenido["transition_id"]),
+        approval_id=str(contenido["approval_id"]),
+        approval_seq=int(contenido["approval_seq"]),
+        scope_digest=str(contenido["scope_digest"]),
+        propietario_sujeto=str(contenido["propietario_sujeto"]),
+        propietario_superficie=str(contenido["propietario_superficie"]),
+        propietario_sesion=str(contenido["propietario_sesion"]),
+        propietario_mecanismo=str(contenido["propietario_mecanismo"]),
+        motivo=str(contenido["motivo"]),
+        abandonado_en_ns=int(contenido["abandonado_en_ns"]),
+        record_digest=digest_declarado,
+    )
+
+
+def _cargar_abandonos(storage_root: pathlib.Path) -> dict[str, RegistroAbandonoTransicion]:
+    """Carga todos los registros de abandono del storage. Falla cerrado si alguno está corrupto."""
+    dir_abandonos = storage.abandoned_transitions_state_dir(storage_root)
+    if not dir_abandonos.is_dir():
+        return {}
+    esperado_root = canonical_root_key(storage_root)[0]
+    registros: dict[str, RegistroAbandonoTransicion] = {}
+    for ruta in sorted(dir_abandonos.glob("*.json")):
+        reg = cargar_registro_abandono(ruta, expected_root_id=esperado_root)
+        registros[reg.transition_id] = reg
+    return registros
+
+
+def abandonar_transicion_consumida(
+    storage_root: pathlib.Path,
+    *,
+    transition_id: str,
+    identidad: IdentidadPropietario,
+    motivo: str,
+    timeout: float = 30.0,
+    clock_ns: Callable[[], int] = time.time_ns,
+) -> RegistroAbandonoTransicion:
+    """Registra el abandono autorizado de una transición consumida que no llegó a finalizar.
+
+    Invariantes obligatorios (§Codex discussion_r4543251726):
+    - Requiere identidad verificada del propietario (reutiliza el mecanismo HITL existente).
+    - Exige que transition_id y motivo sean cadenas no vacías.
+    - Se ejecuta bajo el participant_lock del storage_root (exclusión mutua durable).
+    - Idempotente y resistente a replay: si ya fue abandonada con idénticos parámetros, retorna el registro existente.
+    - Rechaza si el journal tiene PENDING.
+    - Rechaza si existen registros de recuperación no resueltos.
+    - Rechaza si la transición ya está FINALIZED en el historial.
+    - Rechaza si no existe una aprobación CONSUMED para este transition_id.
+    - La aprobación y el tombstone CONSUMED permanecen INTACTOS (no se borran ni se modifican).
+    - Persiste un registro JSON atómico e inmutable en state/abandoned_transitions/<transition_id>.json.
+    """
+    if not isinstance(transition_id, str) or not transition_id.strip():
+        raise AbandonoTransicionInvalidoError("transition_id debe ser una cadena no vacía")
+    t_id = transition_id.strip()
+
+    if not isinstance(motivo, str) or not motivo.strip():
+        raise AbandonoTransicionInvalidoError("se exige un motivo no vacío para autorizar el abandono")
+    motivo_limpio = motivo.strip()
+
+    _exigir_identidad_verificada(identidad)
+
+    storage_path = pathlib.Path(os.path.abspath(os.fspath(storage_root)))
+    if not storage_path.is_dir():
+        raise AbandonoTransicionInvalidoError(f"storage_root no existe o no es directorio: {storage_path}")
+
+    with participant_lock(storage_path, timeout=timeout):
+        root_id = canonical_root_key(storage_path)[0]
+        ruta_registro = storage.abandoned_transition_record_path(storage_path, t_id)
+
+        # Idempotencia: si ya existe el registro de abandono, validarlo y devolverlo
+        if ruta_registro.is_file():
+            registro_existente = cargar_registro_abandono(ruta_registro, expected_root_id=root_id)
+            if registro_existente.transition_id == t_id:
+                return registro_existente
+
+        # 1. Verificar journal: rechazar si hay PENDING
+        try:
+            snapshot_journal = cargar_journal_transicion(storage_path)
+            if snapshot_journal.disposition not in _SIN_TRANSICION:
+                raise AbandonoTransicionInvalidoError(
+                    f"no se puede abandonar: el journal declara un PENDING ({snapshot_journal.disposition.value}) "
+                    f"para la transición {snapshot_journal.journal.transition_id if snapshot_journal.journal else t_id!r}. "
+                    "El dueño debe resolver primero la transición pendiente"
+                )
+        except (JournalCorruptError, JournalSchemaError, JournalIdentityError, JournalStoreNoInicializadoError) as exc:
+            raise AbandonoTransicionInvalidoError(f"el journal no es legible ({exc}): fail-closed") from exc
+
+        # 2. Verificar recovery: rechazar si existen registros de recuperación
+        try:
+            registros_rec = list(recovery.listar_registros(storage_path))
+            if registros_rec:
+                raise AbandonoTransicionInvalidoError(
+                    f"no se puede abandonar: existen {len(registros_rec)} registro(s) de recuperación no resueltos. "
+                    "El dueño debe recuperar las superficies antes de autorizar el abandono"
+                )
+        except (recovery.RecuperacionError, OSError) as exc:
+            raise AbandonoTransicionInvalidoError(
+                f"error al verificar registros de recuperación ({exc}): fail-closed"
+            ) from exc
+
+        # 3. Verificar historial: rechazar si ya está FINALIZED
+        try:
+            historial = derivar_historial_finalizados(storage_path)
+            if any(r.transition_id == t_id for r in historial.registros):
+                raise AbandonoTransicionInvalidoError(
+                    f"la transición {t_id!r} ya está FINALIZED: no se puede abandonar una transición finalizada con éxito"
+                )
+        except (FrozenRuntimeError, OSError) as exc:
+            raise AbandonoTransicionInvalidoError(
+                f"error al consultar el historial de finalizados ({exc}): fail-closed"
+            ) from exc
+
+        # 4. Verificar tombstone: debe existir tombstone CONSUMED para este transition_id
+        try:
+            consumidos = _tombstones_consumidos(storage_path)
+        except (FrozenRuntimeError, OSError) as exc:
+            raise AbandonoTransicionInvalidoError(
+                f"error al consultar la autoridad de aprobación ({exc}): fail-closed"
+            ) from exc
+
+        tombstone = next((t for t in consumidos if t.consumed_by_transition_id == t_id), None)
+        if tombstone is None:
+            raise AbandonoTransicionInvalidoError(
+                f"no se encontró ninguna aprobación consumida por la transición {t_id!r} para abandonar"
+            )
+
+        # 5. Asegurar directorio de abandonos y persistir registro inmutable atómico
+        storage.asegurar_directorio_abandonos(storage_path)
+        ahora_ns = int(clock_ns())
+
+        payload: dict[str, object] = {
+            "schema_version": SCHEMA_VERSION_ABANDONO,
+            "root_id": root_id,
+            "transition_id": t_id,
+            "approval_id": tombstone.approval_id,
+            "approval_seq": int(tombstone.approval_seq),
+            "scope_digest": tombstone.approval_scope_digest,
+            "propietario_sujeto": identidad.sujeto,
+            "propietario_superficie": identidad.superficie.value,
+            "propietario_sesion": identidad.sesion,
+            "propietario_mecanismo": identidad.mecanismo,
+            "motivo": motivo_limpio,
+            "abandonado_en_ns": ahora_ns,
+        }
+        digest = _calcular_digest_abandono(payload)
+        payload["record_digest"] = digest
+
+        write_json_atomic(ruta_registro, payload)
+
+        return cargar_registro_abandono(ruta_registro, expected_root_id=root_id)
 
 
 def _tombstones_consumidos(root: pathlib.Path) -> tuple[ApprovalTombstone, ...]:
@@ -948,7 +1222,33 @@ def diagnosticar_estado_durable(storage_root: pathlib.Path) -> DiagnosticoDurabl
             ),
         )
 
-    reanudables = [t for t in consumidos if t.consumed_by_transition_id not in finalizados]
+    try:
+        abandonos = _cargar_abandonos(storages)
+    except (AbandonoCorruptoError, AbandonoTransicionInvalidoError, FrozenRuntimeError, OSError) as exc:
+        return DiagnosticoDurable(
+            estado=EstadoDurable.REQUIERE_DUENO,
+            journal_disposition=disposition,
+            transicion_en_curso=en_curso,
+            transicion_reanudable=None,
+            registros_recuperacion=registros,
+            motivo=f"los registros de abandono no son legibles o están corruptos ({exc}): fail-closed",
+        )
+
+    reanudables: list[ApprovalTombstone] = []
+    for t in consumidos:
+        t_id = t.consumed_by_transition_id
+        if t_id in finalizados:
+            continue
+        if t_id in abandonos:
+            abandono = abandonos[t_id]
+            if (
+                abandono.approval_id == t.approval_id
+                and abandono.approval_seq == int(t.approval_seq)
+                and abandono.scope_digest == t.approval_scope_digest
+            ):
+                continue
+        reanudables.append(t)
+
     if reanudables:
         ultimo = max(reanudables, key=lambda t: int(t.approval_seq))
         return DiagnosticoDurable(
@@ -1487,13 +1787,34 @@ class SesionTransicionGoldenMaster:
         # re-verifica el estado actual antes de reanudar (F-08).
         return aprobacion, witness
 
+    def abandonar(
+        self,
+        *,
+        transition_id: str,
+        identidad: IdentidadPropietario,
+        motivo: str,
+        timeout: float = 30.0,
+    ) -> RegistroAbandonoTransicion:
+        """Registra el abandono autorizado de una transición consumida sobre el storage de la sesión."""
+        return abandonar_transicion_consumida(
+            storage_root=self._storage_root,
+            transition_id=transition_id,
+            identidad=identidad,
+            motivo=motivo,
+            timeout=timeout,
+            clock_ns=self._clock_ns,
+        )
+
 
 __all__ = [
     "CANDIDATE_OBJECT",
     "EMISION_PRODUCTIVA_ABIERTA_POR_ESTE_MODULO",
     "PRIMERA_TRANSICION_REAL",
     "REANUDACION_POST_PENDING",
+    "SCHEMA_VERSION_ABANDONO",
     "TRANSPORT_ADAPTER",
+    "AbandonoCorruptoError",
+    "AbandonoTransicionInvalidoError",
     "AutorizacionTransicionError",
     "DiagnosticoDurable",
     "EscenarioTransicion",
@@ -1501,6 +1822,7 @@ __all__ = [
     "EvidenciaTransicion",
     "EvidenciaTransicionError",
     "OrigenTransicion",
+    "RegistroAbandonoTransicion",
     "ReanudacionNoDisponibleError",
     "ReanudacionRequiereDuenoError",
     "ResultadoTransicion",
@@ -1509,6 +1831,8 @@ __all__ = [
     "SolicitudTransicion",
     "TransicionEnCursoError",
     "TransicionYaActivaError",
+    "abandonar_transicion_consumida",
+    "cargar_registro_abandono",
     "derivar_evidencia_transicion",
     "diagnosticar_estado_durable",
 ]

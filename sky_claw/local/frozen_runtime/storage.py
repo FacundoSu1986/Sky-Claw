@@ -144,6 +144,23 @@ def recovery_state_dir(root: pathlib.Path) -> pathlib.Path:
     return state_dir(root) / "recovery"
 
 
+def abandoned_transitions_state_dir(root: pathlib.Path) -> pathlib.Path:
+    """Store INMUTABLE de resoluciones por abandono de transiciones consumidas (P7-A5 HOTFIX)."""
+    return state_dir(root) / "abandoned_transitions"
+
+
+def abandoned_transition_record_path(root: pathlib.Path, transition_id: str) -> pathlib.Path:
+    """Ruta al registro JSON de abandono de una transición consumida."""
+    return abandoned_transitions_state_dir(root) / f"{transition_id}.json"
+
+
+def asegurar_directorio_abandonos(root: pathlib.Path) -> pathlib.Path:
+    """Crea el directorio de transiciones abandonadas bajo las admisiones del storage."""
+    directorio = abandoned_transitions_state_dir(root)
+    directorio.mkdir(parents=True, exist_ok=True)
+    return directorio
+
+
 def generation_dir(root: pathlib.Path, generation_id: str) -> pathlib.Path:
     return versions_dir(root) / generation_id
 
@@ -359,6 +376,7 @@ def _initialize_frozen_runtime_storage_locked(
         issuances_state_dir(ruta),
         approvals_state_dir(ruta),
         recovery_state_dir(ruta),
+        abandoned_transitions_state_dir(ruta),
     )
     creados: list[pathlib.Path] = []
     try:

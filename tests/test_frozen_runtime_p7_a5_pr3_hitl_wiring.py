@@ -44,10 +44,12 @@ import ast
 import concurrent.futures
 import dataclasses
 import hashlib
+import json
 import os
 import pathlib
 import re
 import shutil
+import time
 import tomllib
 import urllib.parse
 
@@ -55,7 +57,7 @@ import pytest
 
 from sky_claw.local.frozen_runtime import approval as approval_module
 from sky_claw.local.frozen_runtime import journal as journal_module
-from sky_claw.local.frozen_runtime import mo2_ini_exclusion
+from sky_claw.local.frozen_runtime import mo2_ini_exclusion, storage
 from sky_claw.local.frozen_runtime import runtime_clone_binder as binder_module
 from sky_claw.local.frozen_runtime.approval import (
     ApprovalLifecycle,
@@ -64,14 +66,20 @@ from sky_claw.local.frozen_runtime.approval import (
     leer_binding_solicitud,
 )
 from sky_claw.local.frozen_runtime.autorizacion_hitl_transicion import (
+    AbandonoCorruptoError,
+    AbandonoTransicionInvalidoError,
     EstadoDurable,
+    EvidenciaTransicion,
     EvidenciaTransicionError,
     ReanudacionRequiereDuenoError,
+    RegistroAbandonoTransicion,
     SesionFueraDeOrdenError,
     SesionTransicionGoldenMaster,
     TransicionEnCursoError,
     TransicionYaActivaError,
     _registros_de_clones,
+    abandonar_transicion_consumida,
+    cargar_registro_abandono,
     derivar_evidencia_transicion,
     diagnosticar_estado_durable,
 )
@@ -93,16 +101,22 @@ from sky_claw.local.frozen_runtime.errors import (
     ApprovalMaxIssuedError,
     ConsentimientoDuplicadoError,
     FrozenRuntimeLockBusyError,
+    IdentidadPropietarioNoVerificadaError,
     SesionConsentimientoNoCoincideError,
+    SuperficieSinIdentidadVerificadaError,
 )
 from sky_claw.local.frozen_runtime.owner_consent import (
+    MECANISMO_PRESENCIA_LOCAL,
     DecisionConsentimiento,
+    SuperficieConsentimiento,
+    _acuñar_identidad,
     render_valor_scope,
     verificar_identidad_telegram,
 )
 from sky_claw.local.frozen_runtime.provisioning import (
     verificar_runtime_setup,
 )
+from sky_claw.local.frozen_runtime.root_lock import canonical_root_key
 from sky_claw.local.frozen_runtime.storage import (
     approvals_state_dir,
     issuances_state_dir,
@@ -584,6 +598,87 @@ class TestContratoG1EvidenciaDerivada:
         # cerrado por sí mismo, sin depender de que el preflight lo haya mirado.
         with pytest.raises(EvidenciaTransicionError, match="no se puede leer"):
             _registros_de_clones(rig.storage)
+
+    def test_37a_config_path_none_rechaza_antes_de_presentar_y_no_deja_aprobacion_issued(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Solución al finding Codex discussion_r4543251718:
+
+        Sin config_path, derivar_evidencia_transicion / sesion.preparar() rechaza de inmediato
+        con EvidenciaTransicionError antes de presentar o emitir una aprobación, impidiendo
+        que quede una aprobación ISSUED colgada en el ledger para una transición condenada.
+        """
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = SesionTransicionGoldenMaster(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            config_path=None,
+            environ=rig.environ,
+            probes=rig.probes_globales_activos(),
+        )
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        with pytest.raises(EvidenciaTransicionError, match="se exige config_path"):
+            sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+
+        # Ninguna aprobación fue emitida ni quedó registrada en el ledger
+        autoridad = derivar_autoridad_aprobacion(rig.storage)
+        assert len(autoridad.witnesses) == 0
+        ledger_res = cargar_ledger_aprobacion(rig.storage)
+        assert ledger_res.ledger is None or ledger_res.ledger.state != ApprovalLifecycle.ISSUED
+
+    def test_37b_config_invalida_ausente_o_incoherente_se_rechaza_antes_de_presentar(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """Objetivo A: configuraciones ausentes, ilegibles o incoherentes se rechazan en derivación/preparación."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+
+        def _derivar(cfg_p: pathlib.Path | None) -> EvidenciaTransicion:
+            return derivar_evidencia_transicion(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=rig.clone_id,
+                transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+                managed_source_root=rig.managed_source,
+                outgoing_manual_runtime_root=rig.manual_runtime,
+                stock_source_root=rig.stock_source,
+                approved_stock_reference_digest_file=rig.approved_digest_file,
+                config_path=cfg_p,
+                environ=rig.environ,
+                probes=rig.probes_globales_activos(),
+            )
+
+        # 1. Config ausente (None)
+        with pytest.raises(EvidenciaTransicionError, match="se exige config_path"):
+            _derivar(None)
+
+        # 2. Config inexistente (archivo no existe)
+        with pytest.raises(EvidenciaTransicionError, match="no existe o no es legible"):
+            _derivar(tmp_path / "inexistente_config.toml")
+
+        # 3. Config ilegible (corrupta)
+        cfg_corrupto = tmp_path / "corrupto_config.toml"
+        cfg_corrupto.write_text("skyrim_path = [esto no es toml valido", encoding="utf-8")
+        with pytest.raises(EvidenciaTransicionError, match="no existe o no es legible"):
+            _derivar(cfg_corrupto)
+
+        # 4. Config incoherente (skyrim_path divergente que no coincide con el preflight)
+        cfg_incoherente = tmp_path / "incoherente_config.toml"
+        crear_config_toml(cfg_incoherente, skyrim_path=str(tmp_path / "RutaInventada"))
+        with pytest.raises(EvidenciaTransicionError, match="preflight de integración no autorizó la operación"):
+            _derivar(cfg_incoherente)
+
+        # 5. Config válida: conserva el flujo existente
+        ev = _derivar(rig.config_path)
+        assert ev is not None
+        assert ev.config_path == rig.config_path
 
 
 class TestContratoG2G3PresentacionYEmision:
@@ -1224,6 +1319,582 @@ class TestExtremoAExtremo:
         # Y la recuperación sigue siendo posible, pero como operación EXPLÍCITA del dueño.
         recuperacion = recovery.recuperar_transicion_interrumpida(rig.storage, transition_id=transition_id)
         assert recuperacion.estado is not None
+
+    def test_38_reproduccion_consumed_sin_pending_evidencia_cambiada_deadlock(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Reproducción del finding Codex discussion_r4543251726 (Objetivo B):
+
+        1. Aprobación ISSUED -> CONSUMED.
+        2. Fallo inyectado antes de PENDING (sin journal PENDING ni recovery).
+        3. Cambio de evidencia del entorno.
+        4. reanudar() es rechazada porque la evidencia ya no coincide con lo aprobado.
+        5. sesion.preparar() está permanentemente bloqueada (DEADLOCK) porque
+           diagnosticar_estado_durable() clasifica el estado como REANUDABLE.
+        """
+        from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        original = recovery.capturar_registro
+
+        def _falla_antes_de_pending(*args: object, **kwargs: object) -> object:
+            raise recovery.RecuperacionError("fallo inyectado entre el burn y el PENDING")
+
+        monkeypatch.setattr(recovery, "capturar_registro", _falla_antes_de_pending)
+        with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.setattr(recovery, "capturar_registro", original)
+
+        # Verificar estado tras el fallo: CONSUMED, sin PENDING, sin recovery
+        autoridad = derivar_autoridad_aprobacion(rig.storage)
+        assert len(autoridad.tombstones) == 1
+        tombstone = autoridad.tombstones[0]
+        assert tombstone.terminal_state.value == "CONSUMED"
+        trans_id = tombstone.consumed_by_transition_id
+        assert trans_id is not None
+        assert journal_module.cargar_journal_transicion(rig.storage).journal is None
+        assert not list(recovery_state_dir(rig.storage).glob("*.json"))
+
+        # Cambio de evidencia del entorno: mutamos modorganizer.ini (cambia sha256 preservando CRLF)
+        ini_path = rig.mo2_active_global / "modorganizer.ini"
+        ini_path.write_bytes(ini_path.read_bytes() + b"\r\n# mutacion de evidencia\r\n")
+
+        # 4. reanudar() es rechazada porque la evidencia no coincide
+        with pytest.raises(
+            EvidenciaTransicionError, match="la evidencia re-derivada no es la que el propietario aprobó"
+        ):
+            sesion.reanudar(transition_id=trans_id)
+
+        # 5. una sesion nueva intentar preparar() está bloqueada en DEADLOCK por TransicionEnCursoError
+        _, entregar_2 = _recolector()
+        with pytest.raises(TransicionEnCursoError, match="se reanuda con la MISMA aprobación"):
+            _sesion(rig).preparar(identidad=_identidad_telegram(), entregar=entregar_2)
+
+    def test_38b_abandono_autorizado_resuelve_deadlock_y_permite_nueva_autorizacion(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Solución autorizada al finding Codex discussion_r4543251726 (Objetivo B):
+
+        Tras el deadlock de test_38, el propietario ejecuta un abandono explícito y autorizado:
+        - La aprobación consumida permanece CONSUMED (nunca vuelve a ISSUED).
+        - El tombstone CONSUMED permanece intacto.
+        - Se crea un registro durable e inmutable de abandono con todos los invariantes ligados.
+        - diagnosticar_estado_durable() pasa a LIMPIO.
+        - Una nueva sesión puede preparar (seq 2), emitir y ejecutar a éxito la transición.
+        """
+        from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        original = recovery.capturar_registro
+
+        def _falla_antes_de_pending(*args: object, **kwargs: object) -> object:
+            raise recovery.RecuperacionError("fallo inyectado entre el burn y el PENDING")
+
+        monkeypatch.setattr(recovery, "capturar_registro", _falla_antes_de_pending)
+        with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.setattr(recovery, "capturar_registro", original)
+
+        autoridad = derivar_autoridad_aprobacion(rig.storage)
+        tombstone = autoridad.tombstones[0]
+        trans_id = tombstone.consumed_by_transition_id
+        assert trans_id is not None
+
+        # Modificación de evidencia para detonar deadlock (preservando CRLF)
+        ini_path = rig.mo2_active_global / "modorganizer.ini"
+        ini_path.write_bytes(ini_path.read_bytes() + b"\r\n# mutacion de evidencia\r\n")
+
+        # Comprobar que reanudar falla y preparar está bloqueada
+        with pytest.raises(EvidenciaTransicionError):
+            sesion.reanudar(transition_id=trans_id)
+        _, entregar_bloqueada = _recolector()
+        with pytest.raises(TransicionEnCursoError):
+            _sesion(rig).preparar(identidad=_identidad_telegram(), entregar=entregar_bloqueada)
+
+        # OPERACIÓN DE ABANDONO AUTORIZADO
+        motivo = "evidencia del entorno cambió tras interrupción pre-pending; transición abandonada legítimamente"
+        registro = sesion.abandonar(
+            transition_id=trans_id,
+            identidad=_identidad_telegram(),
+            motivo=motivo,
+        )
+
+        # Invariantes del registro de abandono
+        assert isinstance(registro, RegistroAbandonoTransicion)
+        assert registro.schema_version == 1
+        assert registro.transition_id == trans_id
+        assert registro.approval_id == tombstone.approval_id
+        assert registro.approval_seq == int(tombstone.approval_seq)
+        assert registro.scope_digest == tombstone.approval_scope_digest
+        assert registro.propietario_sujeto == str(OPERADOR)
+        assert registro.propietario_superficie == "telegram"
+        assert registro.propietario_mecanismo == "telegram_from_id"
+        assert registro.motivo == motivo
+        assert bool(registro.record_digest)
+
+        # Invariantes de persistencia y no regresión
+        autoridad_post = derivar_autoridad_aprobacion(rig.storage)
+        assert len(autoridad_post.tombstones) == 1
+        assert autoridad_post.tombstones[0].terminal_state.value == "CONSUMED"
+        ledger_res = cargar_ledger_aprobacion(rig.storage)
+        assert ledger_res.ledger is not None
+        assert ledger_res.ledger.state.value == "CONSUMED"
+
+        # Diagnóstico reconoce la resolución
+        diag = diagnosticar_estado_durable(rig.storage)
+        assert diag.estado is EstadoDurable.LIMPIO
+
+        # Nueva preparación es posible, sin reutilizar consentimiento previo
+        sesion_2 = _sesion(rig)
+        entregadas_2, entregar_2 = _recolector()
+        solicitud_2 = sesion_2.preparar(identidad=_identidad_telegram(), entregar=entregar_2)
+        assert solicitud_2.presentacion.approval_seq == 2
+        assert len(entregadas_2) == 1
+
+        consentimiento_2 = sesion_2.decidir_y_emitir(
+            solicitud=solicitud_2, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento_2 is not None
+
+        # Ejecución a éxito
+        resultado_2 = sesion_2.ejecutar(solicitud=solicitud_2, consentimiento=consentimiento_2)
+        assert resultado_2.binder is not None and resultado_2.binder.success is True
+        assert resultado_2.aprobacion_seq == 2
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
+        assert len(derivar_autoridad_aprobacion(rig.storage).witnesses) == 2
+
+    def test_39_adversarial_abandono_duplicado_es_idempotente(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Adversarial: reintentar o duplicar abandono es idempotente y resistente a replay."""
+        from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        original = recovery.capturar_registro
+        monkeypatch.setattr(
+            recovery, "capturar_registro", lambda *a, **k: (_ for _ in ()).throw(recovery.RecuperacionError("fail"))
+        )
+        with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.setattr(recovery, "capturar_registro", original)
+
+        tombstone = derivar_autoridad_aprobacion(rig.storage).tombstones[0]
+        trans_id = tombstone.consumed_by_transition_id
+        assert trans_id is not None
+
+        # Primer abandono
+        reg1 = sesion.abandonar(
+            transition_id=trans_id,
+            identidad=_identidad_telegram(),
+            motivo="primer abandono",
+        )
+        # Segundo abandono (duplicado/replay)
+        reg2 = sesion.abandonar(
+            transition_id=trans_id,
+            identidad=_identidad_telegram(),
+            motivo="primer abandono",
+        )
+        assert reg1 == reg2
+        assert reg2.transition_id == trans_id
+
+        # Solo existe un archivo en el directorio
+        archivos = list(storage.abandoned_transitions_state_dir(rig.storage).glob("*.json"))
+        assert len(archivos) == 1
+
+    def test_40_adversarial_abandono_rechaza_otro_root(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Adversarial: el registro de abandono no es transferible a otro root (expected_root_id mismatch)."""
+        from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        original = recovery.capturar_registro
+        monkeypatch.setattr(
+            recovery, "capturar_registro", lambda *a, **k: (_ for _ in ()).throw(recovery.RecuperacionError("fail"))
+        )
+        with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.setattr(recovery, "capturar_registro", original)
+
+        tombstone = derivar_autoridad_aprobacion(rig.storage).tombstones[0]
+        trans_id = tombstone.consumed_by_transition_id
+        assert trans_id is not None
+
+        sesion.abandonar(transition_id=trans_id, identidad=_identidad_telegram(), motivo="abandono")
+
+        ruta_reg = storage.abandoned_transition_record_path(rig.storage, trans_id)
+        assert ruta_reg.is_file()
+
+        # Al cargarlo con expected_root_id de otro root, falla cerrado
+        with pytest.raises(AbandonoTransicionInvalidoError, match="no coincide con el esperado"):
+            cargar_registro_abandono(ruta_reg, expected_root_id="otro_root_id_falso")
+
+    def test_41_adversarial_abandono_rechaza_otro_transition_id(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Adversarial: no se puede abandonar un transition_id que no tiene tombstone CONSUMED."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+
+        with pytest.raises(AbandonoTransicionInvalidoError, match="no se encontró ninguna aprobación consumida"):
+            sesion.abandonar(
+                transition_id="trans_inexistente_12345",
+                identidad=_identidad_telegram(),
+                motivo="intento invalido",
+            )
+
+        with pytest.raises(AbandonoTransicionInvalidoError, match="transition_id debe ser una cadena no vacía"):
+            sesion.abandonar(
+                transition_id="   ",
+                identidad=_identidad_telegram(),
+                motivo="intento invalido",
+            )
+
+        with pytest.raises(AbandonoTransicionInvalidoError, match="se exige un motivo no vacío"):
+            sesion.abandonar(
+                transition_id="trans_valida",
+                identidad=_identidad_telegram(),
+                motivo="",
+            )
+
+    def test_42_adversarial_abandono_rechaza_identidad_no_verificada(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Adversarial: la decisión exige autorización verificada del propietario; rechaza GUI o identidades falsas."""
+        from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        original = recovery.capturar_registro
+        monkeypatch.setattr(
+            recovery, "capturar_registro", lambda *a, **k: (_ for _ in ()).throw(recovery.RecuperacionError("fail"))
+        )
+        with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.setattr(recovery, "capturar_registro", original)
+
+        tombstone = derivar_autoridad_aprobacion(rig.storage).tombstones[0]
+        trans_id = tombstone.consumed_by_transition_id
+        assert trans_id is not None
+
+        # 1. Identidad fabricada sin sello (intento de bypass)
+        class _IdentidadFalsa:
+            superficie = SuperficieConsentimiento.TELEGRAM
+            sujeto = str(OPERADOR)
+            sesion = str(OPERADOR)
+            mecanismo = "telegram_from_id"
+
+        with pytest.raises(IdentidadPropietarioNoVerificadaError):
+            sesion.abandonar(
+                transition_id=trans_id,
+                identidad=_IdentidadFalsa(),  # type: ignore[arg-type]
+                motivo="intento falso",
+            )
+
+        # 2. Identidad con superficie GUI (mecanismo presencia local, no verificado)
+        identidad_gui = _acuñar_identidad(
+            superficie=SuperficieConsentimiento.GUI,
+            sujeto="local_user",
+            sesion="desktop_session",
+            mecanismo=MECANISMO_PRESENCIA_LOCAL,
+            verificado_en_ns=time.time_ns(),
+        )
+        with pytest.raises((IdentidadPropietarioNoVerificadaError, SuperficieSinIdentidadVerificadaError)):
+            sesion.abandonar(
+                transition_id=trans_id,
+                identidad=identidad_gui,
+                motivo="intento gui",
+            )
+
+    def test_43_adversarial_abandono_falla_si_aprobacion_o_tombstone_corrupto(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Adversarial: si el registro de abandono o el tombstone está corrupto, diagnosticar_estado_durable y cargar fallan cerrado."""
+        from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        original = recovery.capturar_registro
+        monkeypatch.setattr(
+            recovery, "capturar_registro", lambda *a, **k: (_ for _ in ()).throw(recovery.RecuperacionError("fail"))
+        )
+        with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.setattr(recovery, "capturar_registro", original)
+
+        tombstone = derivar_autoridad_aprobacion(rig.storage).tombstones[0]
+        trans_id = tombstone.consumed_by_transition_id
+        assert trans_id is not None
+
+        sesion.abandonar(transition_id=trans_id, identidad=_identidad_telegram(), motivo="abandono")
+
+        ruta_reg = storage.abandoned_transition_record_path(rig.storage, trans_id)
+        assert ruta_reg.is_file()
+
+        # 1. Corrupción de contenido JSON
+        ruta_reg.write_text("ESTO NO ES JSON VALIDO", encoding="utf-8")
+        with pytest.raises(AbandonoCorruptoError, match="no es JSON válido"):
+            cargar_registro_abandono(ruta_reg)
+        diag = diagnosticar_estado_durable(rig.storage)
+        assert diag.estado is EstadoDurable.REQUIERE_DUENO
+
+        # 2. Corrupción de digest
+        data = {
+            "schema_version": 1,
+            "root_id": canonical_root_key(rig.storage)[0],
+            "transition_id": trans_id,
+            "approval_id": tombstone.approval_id,
+            "approval_seq": int(tombstone.approval_seq),
+            "scope_digest": tombstone.approval_scope_digest,
+            "propietario_sujeto": str(OPERADOR),
+            "propietario_superficie": "telegram",
+            "propietario_sesion": str(OPERADOR),
+            "propietario_mecanismo": "telegram_from_id",
+            "motivo": "abandono",
+            "abandonado_en_ns": 123456,
+            "record_digest": "digest_falsificado_0000000000000000000000000000000000000000000000000000000000000000",
+        }
+        ruta_reg.write_text(json.dumps(data), encoding="utf-8")
+        with pytest.raises(AbandonoCorruptoError, match="está corrupto"):
+            cargar_registro_abandono(ruta_reg)
+
+        # 3. Schema no soportado
+        data["record_digest"] = "val"
+        data["schema_version"] = 999
+        ruta_reg.write_text(json.dumps(data), encoding="utf-8")
+        with pytest.raises(AbandonoCorruptoError, match="versión de schema no soportada"):
+            cargar_registro_abandono(ruta_reg)
+
+    def test_44_adversarial_abandono_rechaza_si_pending_en_journal(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Adversarial: rechazar abandono si existe PENDING en journal (debe recuperarse/reconciliarse primero)."""
+        from sky_claw.local.frozen_runtime import mo2_ini_escritura
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        # Inyectar fallo después de publicar PENDING
+        def _falla_escribir(*args: object, **kwargs: object) -> bytes:
+            raise mo2_ini_escritura.Mo2IniEscrituraError("fallo al mutar ini")
+
+        monkeypatch.setattr(binder_module, "actualizar_game_path_por_handle", _falla_escribir)
+        with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.undo()
+
+        trans_id = resultado_transicion(rig)
+        assert (
+            journal_module.cargar_journal_transicion(rig.storage).disposition
+            is not journal_module.JournalDisposition.NONE
+        )
+
+        with pytest.raises(AbandonoTransicionInvalidoError, match="el journal declara un PENDING"):
+            abandonar_transicion_consumida(
+                rig.storage,
+                transition_id=trans_id,
+                identidad=_identidad_telegram(),
+                motivo="intento indebido de abandono con PENDING",
+            )
+
+    def test_45_adversarial_abandono_rechaza_si_recovery_existente(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Adversarial: rechazar abandono si existen registros de recuperación no resueltos."""
+        from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        original = recovery.capturar_registro
+        monkeypatch.setattr(
+            recovery, "capturar_registro", lambda *a, **k: (_ for _ in ()).throw(recovery.RecuperacionError("fail"))
+        )
+        with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.setattr(recovery, "capturar_registro", original)
+
+        tombstone = derivar_autoridad_aprobacion(rig.storage).tombstones[0]
+        trans_id = tombstone.consumed_by_transition_id
+        assert trans_id is not None
+
+        # Simular presencia de un registro de recuperación no resuelto
+        rec_dir = recovery_state_dir(rig.storage)
+        rec_dir.mkdir(parents=True, exist_ok=True)
+        (rec_dir / f"{trans_id}.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "transition_id": trans_id,
+                    "operation": "PROMOTION",
+                    "fase": "CAPTURED",
+                    "superficies": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(AbandonoTransicionInvalidoError, match="registros de recuperación"):
+            abandonar_transicion_consumida(
+                rig.storage,
+                transition_id=trans_id,
+                identidad=_identidad_telegram(),
+                motivo="intento indebido con recovery pendiente",
+            )
+
+    def test_46_adversarial_abandono_rechaza_si_transicion_finalized(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Adversarial: rechazar abandono si la transición ya completó exitosamente (FINALIZED)."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        res = sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        assert res.binder is not None and res.binder.success is True
+        trans_id = res.transicion_id
+
+        # La transición completó y está en finalizados
+        historial = journal_module.derivar_historial_finalizados(rig.storage)
+        assert any(r.transition_id == trans_id for r in historial.registros)
+
+        with pytest.raises(AbandonoTransicionInvalidoError, match="ya está FINALIZED"):
+            abandonar_transicion_consumida(
+                rig.storage,
+                transition_id=trans_id,
+                identidad=_identidad_telegram(),
+                motivo="intento indebido sobre transicion finalizada",
+            )
+
+    def test_47_adversarial_abandono_maneja_fallo_de_persistencia(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Adversarial: si la escritura atómica del registro de abandono falla, falla cerrado sin corromper el estado."""
+        from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        original = recovery.capturar_registro
+        monkeypatch.setattr(
+            recovery, "capturar_registro", lambda *a, **k: (_ for _ in ()).throw(recovery.RecuperacionError("fail"))
+        )
+        with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.setattr(recovery, "capturar_registro", original)
+
+        tombstone = derivar_autoridad_aprobacion(rig.storage).tombstones[0]
+        trans_id = tombstone.consumed_by_transition_id
+        assert trans_id is not None
+
+        from sky_claw.local.frozen_runtime import autorizacion_hitl_transicion as hitl_module
+
+        # Simular fallo de IO en write_json_atomic
+        def _falla_write(*args: object, **kwargs: object) -> None:
+            raise OSError("fallo de disco inyectado en write_json_atomic")
+
+        monkeypatch.setattr(hitl_module, "write_json_atomic", _falla_write)
+
+        with pytest.raises(OSError, match="fallo de disco inyectado"):
+            sesion.abandonar(
+                transition_id=trans_id,
+                identidad=_identidad_telegram(),
+                motivo="abandono con fallo de io",
+            )
+        monkeypatch.undo()
+
+        # No se dejó ningún registro corrupto
+        ruta_reg = storage.abandoned_transition_record_path(rig.storage, trans_id)
+        assert not ruta_reg.exists()
 
 
 def diagnostico_estado_actual(rig: RigStockManual) -> EstadoDurable:
