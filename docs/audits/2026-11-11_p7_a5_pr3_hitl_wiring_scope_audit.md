@@ -172,3 +172,87 @@ están conectadas y **no deben** estarlo: un `HITLRequest` aprobado no es un
   altera el journal, no cambia el binder y no abre la emisión.
 - Los residuales R-1 (instancia MO2 fuera del scope), F-02, F-04 y el costo de F-03
   quedan escritos y tienen follow-up propuesto en el plan de activación.
+
+## 9. Revisión adversarial externa (auditor independiente, mismo día)
+
+La revisión independiente del parche encontró tres defectos y una afirmación
+documental no reproducible. Los cuatro se reconciliaron con TDD **antes** de
+declarar nada listo para integración.
+
+### F-08 — CONFIRMADO (crítico): `reanudar()` no re-verificaba la evidencia aprobada
+
+`ejecutar()` derivaba la evidencia y la comparaba campo por campo; `reanudar()` no.
+Reconstruía la aprobación consumida desde el witness, comprobaba `clone_id` y
+llamaba al binder **sin volver a mirar el estado actual**: ni la instancia de MO2, ni
+el SHA-256 del INI, ni la política, ni el `gamePath` observado.
+
+Reproducción medida sobre el código anterior (rig sintético, mismo Clone destino,
+instancia global B con su propio INI):
+
+```text
+P1 CONFIRMADO: reanudar desde B terminó con reanudada
+INI de B cambió: True
+B apunta ahora a: gamePath=@ByteArray(.../FrozenClones/clone-p7-01)
+journal: NONE   finalizados: 1
+```
+
+Es decir: una aprobación **consumida para la instancia A**, cuya procedencia nombra
+A, reanudaba la transición sobre el INI de **B** y la dejaba FINALIZED. La ventana es
+peor que cualquier otra: el escenario de reanudación es exactamente una interrupción,
+cuando nadie está mirando.
+
+Corrección: `_aprobacion_consumida_durable` devuelve también el witness, y
+`reanudar` llama a `_exigir_evidencia_aprobada`, que compara los campos derivados
+contra la proyección **aprobada** (`witness.scope_payload`) y rechaza con
+`EvidenciaTransicionError` listando los campos distintos. Test `test_34`
+(RED: `DID NOT RAISE`; GREEN: rechazo + instancia B, journal, recuperación y
+autoridad intactos, y la instancia A todavía puede completar).
+
+### F-09 — CONFIRMADO (alto): `reanudar()` tenía efectos antes de pedir al dueño
+
+Con un `PENDING` publicado, `reanudar()` llamaba a
+`binder_recovery.recuperar_transicion_interrumpida()` —que reescribe superficies y
+retira registros de recuperación— y a `journal.reconciliar_journal()`, y **después**
+lanzaba `ReanudacionRequiereDuenoError`. El operador recibía una excepción sin saber
+qué archivos se habían tocado.
+
+Corrección: `reanudar()` en `PENDIENTE_RECUPERABLE` es **sólo diagnóstico** (no escribe
+ni un byte) y el mensaje nombra las dos operaciones explícitas del dueño. Test
+`test_35`: el INI queda byte a byte igual, el conjunto de registros de recuperación no
+cambia (el que dejó el propio binder al fallar sigue siendo el mismo), el journal
+sigue `PENDING_PROMOTION` y la recuperación explícita sigue siendo posible.
+
+### F-10 — CONFIRMADO como defensa en profundidad (no explotable de punta a punta)
+
+`_registros_de_clones()` capturaba `FrozenRuntimeError` y seguía: un registro de Clone
+ilegible desaparecía de la lista que sostiene la afirmación «el runtime saliente no es
+una superficie administrada».
+
+Medición: **el preflight ya falla cerrado** en ese escenario
+(`clone_record_corrupt` antes de llegar a la derivación), así que no era explotable de
+punta a punta. Se endurece igual: la función ahora lanza `EvidenciaTransicionError` en
+lugar de descartar el registro, porque una prueba faltante no puede convertirse en una
+prueba superada. Test `test_36` afirma las dos capas (bloqueo del preflight con
+`clone_record_corrupt` y fail-closed del helper).
+
+### F-11 — CONFIRMADO (documental): la corrida POSIX de los E2E no era reproducible
+
+La documentación afirmaba que los cuatro tests de extremo a extremo se habían
+ejecutado fuera de Windows con el doble POSIX, pero `@SOLO_WINDOWS` los omitía en una
+corrida normal: la afirmación no era reproducible por un tercero.
+
+Corrección: opt-in explícito `SKY_CLAW_PR3_E2E_POSIX=1` en el propio marcador, con la
+razón y el comando dentro del `reason`. Corrida reproducible: 33 passed en POSIX
+(incluye los cuatro E2E y `test_21`, que sigue afirmando que en Windows se usa la
+exclusión real).
+
+### Lo que la revisión confirma como correcto
+
+- La dirección arquitectónica: el cableado reutiliza `approval`, `owner_consent`,
+  `binder_preflight` y el binder; no crea otra autoridad.
+- `EMISION_PRODUCTIVA_HABILITADA = False`, `TRANSPORT_ADAPTER = NOT_WIRED` y la
+  primera transición real fuera de alcance.
+- El hallazgo F-05 (la instancia no está en el scope) es real y **la reanudación era
+  justamente la vía que lo explotaba** (F-08): el residual R-1 queda mitigado también
+  en la reanudación, y sólo un llamador directo del binder sigue fuera de esa
+  comprobación.

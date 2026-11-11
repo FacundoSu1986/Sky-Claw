@@ -76,13 +76,22 @@ ancla A1 + destino + digests (F-05).
 ### 2.3 Reanudación honesta
 
 ```text
-fallo ANTES de publicar el PENDING   → REANUDABLE      → reanudar() completa con la MISMA aprobación
-fallo DESPUÉS de publicar el PENDING → PENDIENTE_REC.  → recuperar superficies + reconciliar journal
-                                                          → REQUIERE_DUENO (la aprobación ya se gastó)
+fallo ANTES de publicar el PENDING   → REANUDABLE      → re-derivar + comparar contra lo APROBADO
+                                                         → reanudar() completa con la MISMA aprobación
+fallo DESPUÉS de publicar el PENDING → PENDIENTE_REC.  → reanudar() SÓLO diagnostica (no escribe)
+                                                         → recuperación = paso EXPLÍCITO del dueño
+                                                         → REQUIERE_DUENO (la aprobación ya se gastó)
 ```
 
 No se inventa una segunda emisión para «recuperar» un burn (burn-first, §37.2). El
 `transition_id` de reanudación es el del tombstone durable, no uno nuevo.
+
+La reanudación **re-verifica** el estado actual contra la proyección aprobada del
+witness antes de tocar el binder: la interrupción no puede degradar el vínculo con la
+instancia de MO2 ni con el estado del mundo que el propietario aprobó (F-08). Y no
+restaura nada: `recuperar_transicion_interrumpida` reescribe superficies, así que es
+una operación del dueño, no un efecto lateral de un método que lanza una excepción
+(F-09).
 
 ## 3. Implementación mínima justificada
 
@@ -110,6 +119,21 @@ sólo si `os.name != "nt"`, con `test_21` que afirma que en Windows no se aplica
 Windows CI corre la exclusión **real**; la lógica del cableado ya quedó verificada
 contra el binder completo.
 
+### 4.1 Primera corrida en Windows CI (py3.12, `windows-latest`)
+
+`2 failed, 28 passed` — los **cuatro** tests de extremo a extremo pasaron con la
+exclusión Win32 real, y los dos fallos eran **afirmaciones del test escritas para
+POSIX**, no defectos del cableado:
+
+| Test | Por qué fallaba sólo en Windows | Corrección (lado del test) |
+|---|---|---|
+| `test_10` | la presentación rinde cada valor con `render_valor_scope` (`json.dumps`), así que un path `d:\a\…` aparece con los `\` escapados; el test buscaba la procedencia cruda | se compara `render_valor_scope(provenance) in texto`, que es exactamente lo que el propietario ve, y se mantiene la comprobación de legibilidad sobre `unquote(...)` |
+| `test_30` | leía `config.toml` como texto y buscaba `str(clone_root)`; TOML escapa `\\` | se parsea con `tomllib` y se compara `os.path.normcase(skyrim_path) == os.path.normcase(str(clone_root))` |
+
+Ninguno de los dos cambios toca el módulo: el contrato ya era el correcto y el test
+lo afirmaba de una forma que sólo valía en POSIX. Los dos casos se re-ejecutaron
+también en POSIX con el doble de exclusión (`5 passed`).
+
 ## 5. CI
 
 - Gates existentes, sin cambios de configuración: `ruff check`, `ruff format --check`,
@@ -118,13 +142,18 @@ contra el binder completo.
   los 51 fallos restantes son **preexistentes y exclusivos de POSIX** (la exclusión de
   Win32 no existe fuera de Windows; verificado con `git stash`: mismo número y mismos
   tests en `main`).
-- Tests nuevos: 26 ejecutables en cualquier SO + 4 Windows-only.
+- Tests nuevos: 29 ejecutables en cualquier SO + 4 Windows-only (con
+  `SKY_CLAW_PR3_E2E_POSIX=1` también corren en POSIX con el doble de exclusión).
+- Revisión adversarial externa: 3 defectos confirmados y corregidos con TDD
+  (`test_34` reanudación desde otra instancia, `test_35` reanudación de sólo lectura,
+  `test_36` registro de Clone ilegible) y 1 corrección documental (F-11). Ver §9 de la
+  auditoría.
 
 ## 6. Riesgos residuales
 
 | ID | Riesgo | Impacto | Mitigación / follow-up |
 |---|---|---|---|
-| R-1 | El scope no liga la instancia MO2 para llamadores **directos** del binder | una aprobación podría aplicarse a otro INI | mitigado por procedencia + re-verificación en el cableado; cierre definitivo = campo de scope v3 o verificación en el binder (PR propio, cambia la puerta productiva) |
+| R-1 | El scope no liga la instancia MO2 para llamadores **directos** del binder | una aprobación podría aplicarse a otro INI | mitigado por procedencia + re-verificación en `decidir_y_emitir`, `ejecutar` **y `reanudar`** (F-08); cierre definitivo = campo de scope v3 o verificación en el binder (PR propio, cambia la puerta productiva) |
 | R-2 | `SourceActivation` vacío para runtime saliente no gestionado (F-02) | la representación no distingue «sin runtime» de «runtime no gestionado» | declarado en procedencia; follow-up: estado explícito en el contrato |
 | R-3 | `candidate_id` surrogate (F-04) | no es un Candidate de P3 | follow-up: productor real en el provisionamiento |
 | R-4 | Costo de F-03: hashing completo del Clone por derivación (3 por transición) | minutos en un árbol de ~17 GiB | aceptable para una operación aprobada y supervisada; follow-up: caché de inventario con invalidación por `usn`/mtime |

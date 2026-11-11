@@ -397,10 +397,15 @@ El subsistema transaccional distingue cuatro cuadrantes operativos rigurosos par
      `approval_provenance` de la aprobación.
      **Reanudación:** si un fallo ocurre **antes** de publicar el `PENDING`, la
      misma aprobación consumida completa la transición
-     (`reanudar(transition_id)`); si el `PENDING` ya está publicado, la
-     aprobación está gastada y el caso requiere al dueño
-     (`recuperar_transicion_interrumpida` + `reconciliar_journal` + nueva
-     aprobación). No existe re-emisión automática.
+     (`reanudar(transition_id)`) — y sólo si el estado actual sigue coincidiendo
+     campo por campo con lo que el propietario aprobó (instancia de MO2, hash
+     del INI, política, procedencia); si algo cambió, se rechaza.
+     Si el `PENDING` ya está publicado, la aprobación está gastada y el caso
+     requiere al dueño: `reanudar` en ese estado es **sólo diagnóstico y no
+     escribe nada**, y la recuperación se pide explícitamente
+     (`binder_recovery.recuperar_transicion_interrumpida` +
+     `journal.reconciliar_journal` + nueva aprobación). No existe re-emisión
+     automática.
 2. **P7-A … P7-G (ver §10).** Hasta que A5 no se ejecute efectivamente, el inspector P7 seguirá
    `BLOCKED` (`listo_para_p7=False`: `desired_runtime`/`clone_record`/`version.skyrim`/`mo2.game_path`).
 
