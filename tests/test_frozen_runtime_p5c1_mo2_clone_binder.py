@@ -330,6 +330,7 @@ def _preparar_aprobacion(
     target_clone_id: str,
     operation: ApprovalOperation = ApprovalOperation.PROMOTION,
     transition_id: str = "8f4e1a90-5ac1-4b6d-9c21-0d2b8f4e1a90",
+    runtime_setup_id: str = "setup-skse-clean",
 ) -> tuple[PropuestaAprobacion, ConsentimientoAprobacion]:
     source_act = SourceActivation(
         generation_id=target_generation_id,
@@ -344,7 +345,7 @@ def _preparar_aprobacion(
         generation_id=target_generation_id,
         clone_id=target_clone_id,
         clone_evidence="d" * 64,
-        runtime_setup_id="setup-skse-clean",
+        runtime_setup_id=runtime_setup_id,
         runtime_setup_evidence="e" * 64,
         compatibility_evidence_id="f" * 64,
         candidate_id="cand-p5c1",

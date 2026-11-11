@@ -338,6 +338,35 @@ detenerse y restaurar desde backup, **no** editar el JSON a mano.
 - **Crash/kill testing:** SÓLO en entorno desechable (storage y árboles sintéticos
   en `%TEMP%`/`tmp_path`), nunca sobre instalaciones reales.
 
+### 8.1 Taxonomía de recuperación y rollback del binder (P7-A5 PR 2)
+
+El subsistema transaccional distingue cuatro cuadrantes operativos rigurosos para la gestión de anomalías:
+
+1. **Rollback en proceso con autoría conocida:**
+   - Ocurre dentro del ciclo de vida del mismo proceso cuando se intercepta un fallo antes de `FINALIZE` (p. ej. error de preflight bajo lock, fallo en persistencia de config o divergencia de readback tras liberar la exclusión).
+   - El binder conserva en memoria la evidencia de autoría (`ini_escritura_intentada` y la huella `ini_bytes_tras_escritura` leída bajo el handle de exclusión OS).
+   - **Guard fail-closed de evidencia suficiente:** si la transición mutó el INI pero no se pudo obtener `ini_bytes_tras_escritura` bajo exclusión, el binder aborta con `BinderVerificationError` antes de CAS/FINALIZE. La autoría se degrada a desconocida (`ini_escritura_intentada = None`), impidiendo falsos éxitos ante mutaciones ajenas no comprobables.
+   - Si el disco refleja exactamente lo escrito por la transición o un prefijo rasgado propio, restaura atómicamente el estado previo desde el snapshot durable.
+   - Si se detecta mutación externa posterior a la liberación de exclusión, rechaza la autoría, no sobrescribe el archivo en disco y bifurca a preservación forense.
+
+2. **Recuperación en frío sin autoría demostrable:**
+   - Ocurre al invocar `recuperar_transicion_interrumpida()` desde un proceso nuevo tras reinicio, crash inesperado o terminación abrupta.
+   - Al carecer de contexto volátil de autoría (`escritura_intentada is None`), el mecanismo opera **fail-closed**.
+   - Cualquier archivo cuyo contenido difiera del snapshot inicial es clasificado como `escritura_ajena = True`.
+   - **No se sobrescribe a ciegas el archivo en disco.** El contenido divergente se preserva en `storage/recovery_evidence/<transition_id>/` y se emite `requiere_dueno = True`.
+
+3. **Intervención explícita del propietario:**
+   - Ni el binder ni la recuperación automática resuelven escrituras ajenas sin autorización humana.
+   - Ante clasificaciones de `escritura_ajena` o journals en `PENDING_*`, el propietario debe auditar la evidencia forense archivada.
+   - Opciones soberanas del operador:
+     a) Descartar la mutación ajena y forzar restauración del baseline pasando `escritura_intentada=True`.
+     b) Adoptar el estado existente en disco y sincronizar la FSM mediante `journal.reconciliar_journal()`.
+
+4. **Garantías de corte eléctrico no establecidas:**
+   - `POWER_LOSS_GUARANTEE = NOT_CLAIMED`.
+   - El sistema garantiza y verifica recuperación ante caídas de proceso (`PROCESS_CRASH_RECOVERY = DEMONSTRATED`) mediante `os.replace` atómico dentro del mismo volumen.
+   - **No se promete ni reclama durabilidad ante cortes de energía o caídas del kernel** (sin WAL transaccional, sin `fsync` a nivel de directorio ni barreras de caché en controlador físico).
+
 ## 9. Después del Clone: uso con MO2 (fases posteriores, no este runbook)
 
 1. **A5 (binder):** registrar `Desired Runtime` y repuntar `gamePath` de MO2 con
