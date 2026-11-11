@@ -48,6 +48,7 @@ import os
 import pathlib
 import re
 import shutil
+import tomllib
 import urllib.parse
 
 import pytest
@@ -70,6 +71,7 @@ from sky_claw.local.frozen_runtime.autorizacion_hitl_transicion import (
     SesionTransicionGoldenMaster,
     TransicionEnCursoError,
     TransicionYaActivaError,
+    _registros_de_clones,
     derivar_evidencia_transicion,
     diagnosticar_estado_durable,
 )
@@ -95,6 +97,7 @@ from sky_claw.local.frozen_runtime.errors import (
 )
 from sky_claw.local.frozen_runtime.owner_consent import (
     DecisionConsentimiento,
+    render_valor_scope,
     verificar_identidad_telegram,
 )
 from sky_claw.local.frozen_runtime.provisioning import (
@@ -103,12 +106,14 @@ from sky_claw.local.frozen_runtime.provisioning import (
 from sky_claw.local.frozen_runtime.storage import (
     approvals_state_dir,
     issuances_state_dir,
+    recovery_state_dir,
     transition_journal_path,
 )
 from tests._rig_p7_a5 import (
     RigStockManual,
     aplicar_parche_identidad_pe,
     crear_config_toml,
+    crear_mo2_global_sintetica,
     escribir_ini_mo2,
     probes_con_registro_simulado,
     snapshot_sha256_recursivo,
@@ -117,11 +122,19 @@ from tests._rig_p7_a5 import (
 RAIZ_REPO = pathlib.Path(__file__).resolve().parents[1]
 MODULO_CABLEADO = RAIZ_REPO / "sky_claw" / "local" / "frozen_runtime" / "autorizacion_hitl_transicion.py"
 OPERADOR = 424242
+#: Los cuatro tests de extremo a extremo mutan ``modorganizer.ini`` de verdad y por eso
+#: corren con la exclusión de Win32. En POSIX la exclusión real no existe, así que se
+#: omiten... salvo que se pida explícitamente el doble POSIX de ``exclusion_de_test``.
+#: El opt-in hace REPRODUCIBLE la afirmación de la documentación:
+#:
+#:     SKY_CLAW_PR3_E2E_POSIX=1 python -m pytest tests/test_frozen_runtime_p7_a5_pr3_hitl_wiring.py
+E2E_POSIX_PEDIDO = os.environ.get("SKY_CLAW_PR3_E2E_POSIX") == "1"
 SOLO_WINDOWS = pytest.mark.skipif(
-    os.name != "nt",
+    os.name != "nt" and not E2E_POSIX_PEDIDO,
     reason=(
         "la mutación de modorganizer.ini exige la exclusión de archivos compartidos de Win32 "
-        "(FILE_SHARE_NONE); fuera de Windows el binder falla cerrado a propósito"
+        "(FILE_SHARE_NONE); fuera de Windows el binder falla cerrado a propósito "
+        "(para correrlos con el doble POSIX: SKY_CLAW_PR3_E2E_POSIX=1)"
     ),
 )
 
@@ -532,10 +545,45 @@ class TestContratoG1EvidenciaDerivada:
         # Nada durable se escribió: sigue sin haber witnesses ni tombstones.
         assert _sin_evidencia_durable(rig.storage)
 
+    # ===========================================================================
+    # CONTRATO G2/G3 — presentación real, emisión cerrada por defecto
+    # ===========================================================================
 
-# ===========================================================================
-# CONTRATO G2/G3 — presentación real, emisión cerrada por defecto
-# ===========================================================================
+    def test_36_registro_de_clone_ilegible_no_permite_declarar_bootstrap_vacio(self, tmp_path: pathlib.Path) -> None:
+        """Un registro de Clone ilegible es fail-closed, no "no hay Clones".
+
+        ``_registros_de_clones`` alimenta la prueba de que el runtime saliente NO es
+        una superficie administrada. Si el registro relevante está corrupto y se
+        ignora, esa prueba desaparece en silencio y el bootstrap vacío se declara
+        sobre un estado que el dueño tiene que reconciliar.
+        """
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        clones = rig.storage / "state" / "clones"
+        (clones / "clone-ilegible.json").write_text("{no es json", encoding="utf-8")
+
+        # El preflight ya bloquea con ``clone_record_corrupt``; el chequeo propio del
+        # cableado (defensa en profundidad) es el que impide que un registro ilegible se
+        # descarte en silencio si el preflight algún día deja de mirarlo.
+        with pytest.raises(EvidenciaTransicionError) as capturado:
+            derivar_evidencia_transicion(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=rig.clone_id,
+                transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+                managed_source_root=rig.managed_source,
+                outgoing_manual_runtime_root=rig.manual_runtime,
+                stock_source_root=rig.stock_source,
+                approved_stock_reference_digest_file=rig.approved_digest_file,
+                config_path=rig.config_path,
+                environ=rig.environ,
+                probes=rig.probes_globales_activos(),
+            )
+        assert "clone_record_corrupt" in str(capturado.value)
+
+        # Y el helper que sostiene la afirmación «no es una superficie administrada» falla
+        # cerrado por sí mismo, sin depender de que el preflight lo haya mirado.
+        with pytest.raises(EvidenciaTransicionError, match="no se puede leer"):
+            _registros_de_clones(rig.storage)
 
 
 class TestContratoG2G3PresentacionYEmision:
@@ -553,8 +601,11 @@ class TestContratoG2G3PresentacionYEmision:
         texto = presentacion.texto
         for campo in ("generation_id", "clone_id", "clone_evidence", "runtime_setup_id", "approval_provenance"):
             assert campo in texto, campo
-        assert solicitud.evidencia.approval_provenance in texto
-        # La procedencia es legible: sin decodificar se lee el path de la instancia.
+        # La presentación rinde cada valor por ``render_valor_scope`` (json.dumps), así que
+        # en Windows los ``\`` del path salen escapados: se compara el valor RENDIDO, que es
+        # el que el propietario ve, no el crudo.
+        assert render_valor_scope(solicitud.evidencia.approval_provenance) in texto
+        # La procedencia sigue siendo legible: decodificada se lee el path de la instancia.
         procedencia_visible = urllib.parse.unquote(solicitud.evidencia.approval_provenance).lower()
         assert os.path.normcase(str(rig.mo2_active_global)).lower() in procedencia_visible
         # Presentar no emite: la propuesta es un valor en memoria sin autoridad.
@@ -899,7 +950,8 @@ class TestExtremoAExtremo:
         evidencia_ini = leer_game_path_de_mo2(rig.mo2_active_global / "modorganizer.ini")
         assert evidencia_ini.state is ObservationState.OBSERVED
         assert pathlib.Path(evidencia_ini.path or "").resolve() == rig.clone_root.resolve()
-        assert str(rig.clone_root) in rig.config_path.read_text(encoding="utf-8")
+        config = tomllib.loads(rig.config_path.read_text(encoding="utf-8"))
+        assert os.path.normcase(config["skyrim_path"]) == os.path.normcase(str(rig.clone_root))
 
         # Autoridad durable: aprobación CONSUMIDA por ESTA transición, una sola vez.
         autoridad = derivar_autoridad_aprobacion(rig.storage)
@@ -1039,6 +1091,144 @@ class TestExtremoAExtremo:
         with pytest.raises(ReanudacionRequiereDuenoError):
             _sesion(rig).reanudar(transition_id=resultado_transicion(rig))
         assert len(derivar_autoridad_aprobacion(rig.storage).witnesses) == 1
+
+    def test_34_reanudar_no_aplica_una_aprobacion_de_otra_instancia(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Una aprobación consumida para la instancia A no se reanuda desde la instancia B.
+
+        El scope de 14 campos liga el runtime destino, no la instancia de MO2 (hallazgo
+        F-05): la instancia viaja en ``approval_provenance``. Si la reanudación no la
+        re-verificara, un consentimiento gastado en A se aplicaría al INI de B, y el
+        momento elegido —una interrupción— es justo cuando nadie está mirando.
+        """
+        from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion_a = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+        solicitud = sesion_a.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion_a.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        original = recovery.capturar_registro
+
+        def _falla_una_vez(*args: object, **kwargs: object) -> object:
+            raise recovery.RecuperacionError("fallo inyectado entre el burn y el PENDING")
+
+        monkeypatch.setattr(recovery, "capturar_registro", _falla_una_vez)
+        with pytest.raises(Exception):  # noqa: B017 — el tipo lo fija el binder, acá se mide el estado
+            sesion_a.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.setattr(recovery, "capturar_registro", original)
+
+        diagnostico = diagnosticar_estado_durable(rig.storage)
+        assert diagnostico.estado is EstadoDurable.REANUDABLE
+        transition_id = diagnostico.transicion_reanudable or ""
+        assert transition_id
+
+        # La instancia GLOBAL activa pasa a ser otra: mismo Clone destino, otro INI y otro storage local.
+        local_app_data_b = tmp_path / "LocalAppData_B"
+        instancia_b = crear_mo2_global_sintetica(
+            local_app_data_b, instance_name="Skyrim Special Edition", game_path=rig.manual_runtime
+        )
+        config_b = crear_config_toml(tmp_path / "config_b.toml", skyrim_path=str(rig.manual_runtime))
+        ini_b_antes = (instancia_b / "modorganizer.ini").read_bytes()
+        sesion_b = SesionTransicionGoldenMaster(
+            storage_root=rig.storage,
+            mo2_instance_dir=instancia_b,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            config_path=config_b,
+            environ={"SKYRIM_PATH": str(rig.manual_runtime), "LOCALAPPDATA": str(local_app_data_b)},
+            probes=probes_con_registro_simulado(
+                local_app_data=local_app_data_b,
+                registry_obs=Mo2RegistryObservation(
+                    state=Mo2RegistryState.OBSERVED, current_instance="Skyrim Special Edition"
+                ),
+            ),
+        )
+        with pytest.raises(EvidenciaTransicionError, match="campos distintos"):
+            sesion_b.reanudar(transition_id=transition_id)
+
+        # El rechazo ocurre ANTES de mutar: instancia B, journal, recuperación y autoridad intactos.
+        assert (instancia_b / "modorganizer.ini").read_bytes() == ini_b_antes
+        assert journal_module.cargar_journal_transicion(rig.storage).journal is None
+        assert not list(recovery_state_dir(rig.storage).glob("*.json"))
+        autoridad = derivar_autoridad_aprobacion(rig.storage)
+        assert len(autoridad.tombstones) == 1
+        assert autoridad.tombstones[0].terminal_state.value == "CONSUMED"
+        assert diagnostico_estado_actual(rig) is EstadoDurable.REANUDABLE
+
+        # Y la instancia aprobada sigue pudiendo completar: el rechazo no dañó el estado.
+        reanudado = _sesion(rig).reanudar(transition_id=transition_id)
+        assert reanudado.binder is not None and reanudado.binder.success is True
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
+
+    def test_35_reanudar_con_pending_es_solo_diagnostico(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Con un ``PENDING`` publicado, ``reanudar`` informa y NO restaura nada.
+
+        ``binder_recovery.recuperar_transicion_interrumpida`` reescribe superficies y
+        retira registros: es una operación con efectos. Hacerla dentro de un método que
+        después lanza una excepción deja al operador sin saber qué cambió. La
+        recuperación queda como paso EXPLÍCITO del dueño; acá se afirma que la
+        reanudación es de sólo lectura.
+        """
+        from sky_claw.local.frozen_runtime import binder_recovery as recovery
+        from sky_claw.local.frozen_runtime import mo2_ini_escritura
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion = _sesion(rig)
+        _, entregar = _recolector()
+        _habilitar_emision(monkeypatch)
+        solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+        )
+        assert consentimiento is not None
+
+        def _falla_escribir(*args: object, **kwargs: object) -> bytes:
+            raise mo2_ini_escritura.Mo2IniEscrituraError("fallo inyectado en la escritura del INI")
+
+        monkeypatch.setattr(binder_module, "actualizar_game_path_por_handle", _falla_escribir)
+        with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+        monkeypatch.undo()
+
+        ini_tras_fallo = (rig.mo2_active_global / "modorganizer.ini").read_bytes()
+        transition_id = resultado_transicion(rig)
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.PENDIENTE_RECUPERABLE
+        # El binder YA dejó su propio registro de recuperación al fallar: la referencia es ése,
+        # no «ningún registro»; lo que se mide es que reanudar no agregue ni cambie ninguno.
+        registros_antes = sorted(ruta.name for ruta in recovery_state_dir(rig.storage).glob("*.json"))
+
+        with pytest.raises(ReanudacionRequiereDuenoError, match="PENDING"):
+            _sesion(rig).reanudar(transition_id=transition_id)
+
+        # Nada se restauró ni se registró: el estado durable es el mismo que dejó el fallo.
+        assert (rig.mo2_active_global / "modorganizer.ini").read_bytes() == ini_tras_fallo
+        assert sorted(ruta.name for ruta in recovery_state_dir(rig.storage).glob("*.json")) == registros_antes
+        assert (
+            journal_module.cargar_journal_transicion(rig.storage).disposition
+            is journal_module.JournalDisposition.PENDING_PROMOTION
+        )
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.PENDIENTE_RECUPERABLE
+        # Y la recuperación sigue siendo posible, pero como operación EXPLÍCITA del dueño.
+        recuperacion = recovery.recuperar_transicion_interrumpida(rig.storage, transition_id=transition_id)
+        assert recuperacion.estado is not None
+
+
+def diagnostico_estado_actual(rig: RigStockManual) -> EstadoDurable:
+    """Estado durable del root del rig (alias legible para los tests de reanudación)."""
+    return diagnosticar_estado_durable(rig.storage).estado
 
 
 def resultado_transicion(rig: RigStockManual) -> str:
