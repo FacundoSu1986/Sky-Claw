@@ -1,0 +1,55 @@
+name: tmp debug PR908
+
+# Workflow TEMPORAL de diagnóstico (se elimina antes del merge).
+# Los logs de los jobs de CI no son accesibles desde este entorno, pero el
+# resumen del check-run sí: por eso el resultado de pytest se publica en
+# GITHUB_STEP_SUMMARY en vez de quedar sólo en el log del paso.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  solo-pr3:
+    name: "diagnostico / archivo PR3"
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+      - name: pytest archivo PR3
+        shell: pwsh
+        run: |
+          python -m pytest tests/test_frozen_runtime_p7_a5_pr3_hitl_wiring.py -q --timeout=180 --tb=short -rf 2>&1 | Tee-Object -FilePath pr3.txt
+          $code = $LASTEXITCODE
+          "## PR3 exit=$code" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          Get-Content pr3.txt | Select-Object -Last 400 | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          exit $code
+
+  suite-completa:
+    name: "diagnostico / suite completa"
+    runs-on: windows-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+      - name: pytest suite completa
+        shell: pwsh
+        run: |
+          python -m pytest tests/ -q --timeout=180 --tb=no -rf 2>&1 | Tee-Object -FilePath full.txt
+          $code = $LASTEXITCODE
+          "## suite exit=$code" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          Get-Content full.txt | Select-Object -Last 400 | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          exit $code
