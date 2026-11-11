@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 #: El procedimiento para el operador, en UN solo lugar: lo muestran ``--mode vfs-quarantine`` y ``lods_status``.
 COMO_LIBERAR = (
     "Cerrá Sky-Claw, confirmá en el Administrador de tareas que no queda vivo ningún proceso del job (el worker "
-    "SkyClawApp.exe --vfs-worker ni la herramienta que lanzó: TexGen, DynDOLOD, LODGen, texconv…) y corré "
+    "SkyClawApp.exe --vfs-worker ni la herramienta que lanzó: TexGen, DynDOLOD, LODGen…) y corré "
     '--mode vfs-quarantine --vfs-quarantine-action release --vfs-evidence "<qué verificaste>"'
 )
 _RAZON_SIN_DATO = "terminalidad indeterminada previa"
