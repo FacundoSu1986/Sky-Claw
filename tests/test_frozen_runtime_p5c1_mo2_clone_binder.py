@@ -331,6 +331,7 @@ def _preparar_aprobacion(
     operation: ApprovalOperation = ApprovalOperation.PROMOTION,
     transition_id: str = "8f4e1a90-5ac1-4b6d-9c21-0d2b8f4e1a90",
     runtime_setup_id: str = "setup-skse-clean",
+    approval_provenance: str = "hitl:user-authorized",
 ) -> tuple[PropuestaAprobacion, ConsentimientoAprobacion]:
     source_act = SourceActivation(
         generation_id=target_generation_id,
@@ -349,7 +350,7 @@ def _preparar_aprobacion(
         runtime_setup_evidence="e" * 64,
         compatibility_evidence_id="f" * 64,
         candidate_id="cand-p5c1",
-        approval_provenance="hitl:user-authorized",
+        approval_provenance=approval_provenance,
     )
     consentimiento = ConsentimientoAprobacion(
         approval_scope_digest=propuesta.scope.approval_scope_digest,

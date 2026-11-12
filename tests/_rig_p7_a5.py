@@ -16,6 +16,7 @@ import pathlib
 import shutil
 from collections.abc import Sequence
 
+from sky_claw.local.frozen_runtime.binder_preflight import BinderTransitionPolicy
 from sky_claw.local.frozen_runtime.clones import (
     RuntimeCloneLifecycle,
     RuntimeCloneRecord,
@@ -349,6 +350,36 @@ class RigStockManual:
             "environ": self.environ,
             "probes": self.probes_globales_activos(),
         }
+
+
+def procedencia_con_vinculo_mo2(
+    *,
+    mo2_dir: pathlib.Path,
+    outgoing_manual_runtime_root: pathlib.Path | None,
+    base: str = "hitl:user-authorized",
+    transition_policy: BinderTransitionPolicy = BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+) -> str:
+    """Procedencia de una aprobación FIXTURE que liga la instancia ``mo2_dir`` y su INI ACTUAL.
+
+    Las aprobaciones del contrato P7-A5 (política Stock o runtime saliente) deben comprometer instancia +
+    identidad + INI + política + runtime saliente (``mo2_authorization``). Las fixtures que llaman al binder
+    directo lo declaran con esto en vez de saltarse el chequeo; se llama DESPUÉS de dejar el INI en el estado
+    a aprobar. Es una función del módulo y no un método porque el repo tiene más de una ``RigStockManual``.
+    """
+    from sky_claw.local.frozen_runtime.mo2_authorization import (
+        IDENTIDAD_AUTORIZADA,
+        calcular_token_mo2,
+        segmento_de_procedencia,
+    )
+
+    token = calcular_token_mo2(
+        mo2_instance_dir=mo2_dir,
+        mo2_instance_identity=IDENTIDAD_AUTORIZADA,
+        mo2_ini_sha256=hashlib.sha256((mo2_dir / "modorganizer.ini").read_bytes()).hexdigest(),
+        transition_policy=transition_policy,
+        outgoing_manual_runtime_root=outgoing_manual_runtime_root,
+    )
+    return f"{base}:{segmento_de_procedencia(token)}"
 
 
 def crear_generation_steam(storage: pathlib.Path, managed_source: pathlib.Path) -> tuple[str, pathlib.Path]:

@@ -63,6 +63,7 @@ from sky_claw.local.runtime_vault.runtime_observation import (
     FreshRuntimeObservation,
     RuntimeObservationError,
 )
+from tests._rig_p7_a5 import procedencia_con_vinculo_mo2
 from tests.test_frozen_runtime_p5c1_mo2_clone_binder import (
     _crear_config_toml,
     _preparar_aprobacion,
@@ -1095,6 +1096,9 @@ def test_p1_a_binder_transmite_politica_y_ejecuta_migracion(tmp_path: pathlib.Pa
         rig.storage,
         target_generation_id=rig.generation_id,
         target_clone_id=rig.clone_id,
+        approval_provenance=procedencia_con_vinculo_mo2(
+            mo2_dir=rig.mo2_active_global, outgoing_manual_runtime_root=rig.manual_runtime
+        ),
         runtime_setup_id=clone_rec.verified_runtime_setup_id or "setup-skse-clean",
     )
 
@@ -1156,6 +1160,9 @@ def test_integral_transicion_con_rollback_restaura_bytes_exactos(tmp_path: pathl
         rig.storage,
         target_generation_id=rig.generation_id,
         target_clone_id=rig.clone_id,
+        approval_provenance=procedencia_con_vinculo_mo2(
+            mo2_dir=rig.mo2_active_global, outgoing_manual_runtime_root=rig.manual_runtime
+        ),
         runtime_setup_id=clone_rec.verified_runtime_setup_id or "setup-skse-clean",
     )
 
@@ -1328,6 +1335,9 @@ def test_p1_retorno_idempotente_no_se_emite_con_ejecutables_incoherentes(tmp_pat
         rig.storage,
         target_generation_id=rig.generation_id,
         target_clone_id=rig.clone_id,
+        approval_provenance=procedencia_con_vinculo_mo2(
+            mo2_dir=rig.mo2_active_global, outgoing_manual_runtime_root=rig.manual_runtime
+        ),
         runtime_setup_id=clone_rec.verified_runtime_setup_id or "setup-skse-clean",
     )
 
@@ -1424,6 +1434,9 @@ def test_p1_retorno_idempotente_opt_in_exito_con_ejecutables_coherentes(tmp_path
         rig.storage,
         target_generation_id=rig.generation_id,
         target_clone_id=rig.clone_id,
+        approval_provenance=procedencia_con_vinculo_mo2(
+            mo2_dir=rig.mo2_active_global, outgoing_manual_runtime_root=rig.manual_runtime
+        ),
         runtime_setup_id=clone_rec.verified_runtime_setup_id or "setup-skse-clean",
     )
 
@@ -1610,6 +1623,9 @@ def test_adversarial_modificacion_ini_tras_liberar_exclusion(
         rig.storage,
         target_generation_id=rig.generation_id,
         target_clone_id=rig.clone_id,
+        approval_provenance=procedencia_con_vinculo_mo2(
+            mo2_dir=rig.mo2_active_global, outgoing_manual_runtime_root=rig.manual_runtime
+        ),
         runtime_setup_id=clone_rec.verified_runtime_setup_id or "setup-skse-clean",
     )
 
@@ -1712,6 +1728,9 @@ def test_p1_bytes_bajo_exclusion_none_bloquea_falso_exito_ante_modificacion_exte
         rig.storage,
         target_generation_id=rig.generation_id,
         target_clone_id=rig.clone_id,
+        approval_provenance=procedencia_con_vinculo_mo2(
+            mo2_dir=rig.mo2_active_global, outgoing_manual_runtime_root=rig.manual_runtime
+        ),
         runtime_setup_id=clone_rec.verified_runtime_setup_id or "setup-skse-clean",
     )
 
@@ -1817,6 +1836,9 @@ def test_p1_bytes_bajo_exclusion_none_sin_modificacion_externa_falla_fail_closed
         rig.storage,
         target_generation_id=rig.generation_id,
         target_clone_id=rig.clone_id,
+        approval_provenance=procedencia_con_vinculo_mo2(
+            mo2_dir=rig.mo2_active_global, outgoing_manual_runtime_root=rig.manual_runtime
+        ),
         runtime_setup_id=clone_rec.verified_runtime_setup_id or "setup-skse-clean",
     )
 
@@ -1894,6 +1916,9 @@ def test_p1_noop_no_bloquea_si_ini_no_fue_modificado_incluso_sin_bytes_bajo_excl
         rig.storage,
         target_generation_id=rig.generation_id,
         target_clone_id=rig.clone_id,
+        approval_provenance=procedencia_con_vinculo_mo2(
+            mo2_dir=rig.mo2_active_global, outgoing_manual_runtime_root=rig.manual_runtime
+        ),
         runtime_setup_id=clone_rec.verified_runtime_setup_id or "setup-skse-clean",
     )
 
