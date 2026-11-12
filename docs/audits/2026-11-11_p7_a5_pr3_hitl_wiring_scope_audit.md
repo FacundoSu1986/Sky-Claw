@@ -82,6 +82,11 @@ la emisión está cerrada y este módulo es el único emisor; el cierre definiti
 un campo nuevo (schema v3) o verificar la procedencia en el binder, y **ambos son
 cambios de la puerta productiva** que este PR no hace.
 
+> **Actualización 2026-11-12:** el binder ahora verifica por su cuenta el vínculo con la instancia y el INI
+> aprobados (segmento `mo2auth=` de `approval_provenance`, sin esquema nuevo). Ver
+> [`2026-11-12_p7_authorization_boundary.md`](2026-11-12_p7_authorization_boundary.md). Este párrafo se
+> conserva como estaba al momento de la auditoría.
+
 ## 5. Escenarios adversariales obligatorios (cobertura)
 
 | Escenario exigido | Cómo se demuestra |
@@ -139,6 +144,7 @@ MO2 cuyo INI se apunte a C. Mitigación: la instancia (ruta normalizada + SHA-25
 INI + gamePath observado + config persistido + política + ancla A1 + destino) entra en
 `approval_provenance`, que es parte del digest aprobado, y el cableado la re-verifica
 antes de emitir y antes de ejecutar. Residuo: llamadores directos del binder (R-1).
+*(Cerrado el 2026-11-12: ver [`2026-11-12_p7_authorization_boundary.md`](2026-11-12_p7_authorization_boundary.md).)*
 
 ### F-06 — El binder declaraba una reanudación que no siempre existe (MEDIO, corregido en el cableado)
 El mensaje de `BinderLockUnavailableError` dice «reintentar con `transition_id=…`
