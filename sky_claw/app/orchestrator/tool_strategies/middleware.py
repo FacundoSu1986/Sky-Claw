@@ -61,6 +61,9 @@ DESTRUCTIVE_TOOL_PATTERNS: frozenset[str] = frozenset(
         # PR-5 grass cache: el precache muta el árbol MO2 (clon + mod de
         # config) y lanza el juego en crash-loop durante horas.
         "generate_grass_cache",
+        # ADR 0018: la admisión copia el plugin y sus masters al laboratorio del
+        # xEdit Bridge. MO2 no se toca, pero se escriben archivos: requiere aprobación.
+        "admitir_plugin_nativo",
         # Nombre real de la strategy (resolve_conflict_patch.py define
         # name="resolve_conflict_with_patch"); el alias viejo sin "_with"
         # nunca matcheó y dejaba la tool de xEdit SIN gate HITL.

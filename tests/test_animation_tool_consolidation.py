@@ -140,7 +140,10 @@ LAMBDAS_QUE_IGNORAN_UN_PARAMETRO: dict[str, set[str]] = {}
 #: con nombre), no una muestra: agregar una tool al registro rompe el ancla hasta
 #: que alguien confirme que su lambda reenvía lo que declara.
 TOOLS_CON_LAMBDA_EN_EL_REGISTRY: set[str] = {
+    # ADR 0018: xEdit Bridge (hermanas del dispatcher de la GUI; reenvían plugin y timeout).
+    "admitir_plugin_nativo",
     "analyze_esp_conflicts",
+    "auditar_plugin_nativo",
     "check_load_order",
     "close_game",
     "detect_conflicts",
