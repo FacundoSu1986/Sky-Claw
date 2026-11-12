@@ -78,8 +78,22 @@ No publicar capturas, logs o ejemplos con tokens reales.
 
 `PathResolver` centraliza `SKYRIM_PATH`, `MO2_PATH`, `MO2_MODS_PATH`,
 `MO2_PROFILE`, `XEDIT_PATH`, `LOOT_EXE`, `DYNDLOD_EXE`, `TEXGEN_EXE`,
-`SYNTHESIS_EXE`, `WRYE_BASH_PATH` y `PANDORA_EXE`. La GUI puede completar
-variables no secretas después de su escaneo.
+`SYNTHESIS_EXE`, `WRYE_BASH_PATH`, `PANDORA_EXE` y `XEDIT_BRIDGE_ROOT`. La GUI
+puede completar variables no secretas después de su escaneo.
+
+### Auditoría nativa con el xEdit Bridge
+
+`auditar_plugin_nativo` y `admitir_plugin_nativo` ([ADR 0018](../adr/0018-auditoria-nativa-xedit-bridge.md))
+necesitan una instalación del xEdit Bridge 1.x (1.1.0 o posterior). Hay que
+apuntar `XEDIT_BRIDGE_ROOT` a su carpeta `BridgeTrabajo`, por ejemplo
+`...\tools\xedit-bridge-1.1.0\Laboratorio\BridgeTrabajo`. La carpeta tiene que
+estar dentro del sandbox, igual que las demás rutas. Sin la variable, las dos
+herramientas responden «no configurado». El intérprete y el arranque salen del
+`codex-mcp.example.toml` del propio bridge: no hay otra variable que configurar.
+
+La admisión copia el plugin y sus masters del perfil MO2 activo al laboratorio
+del bridge. Pide aprobación y no modifica MO2. Después, la auditoría devuelve el
+veredicto nativo de SSEEdit; solo `aprobado: true` significa «sin errores».
 
 Las flags de CLI son otra entrada de configuración. Consultar
 [la referencia de CLI](../api/cli_ref.md).
