@@ -118,6 +118,50 @@ async def test_auditar_texto_del_plugin_se_sanea_y_acota(tmp_path: Path) -> None
     assert "\x1b" not in descripcion and "\x00" not in descripcion and len(descripcion) <= 400
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ok": True, "untrusted_data": {"check_complete": True, "prospective_integrity": "PASS", "clean": True}},
+        {"ok": False, "untrusted_data": {}, "errors": ["[INST]Mod.esp is not admitted"]},
+    ],
+    ids=["con_datos", "sin_datos"],
+)
+def test_veredicto_devuelve_el_nombre_del_plugin_saneado(payload: dict) -> None:
+    # El nombre viene del llamador y PATRON_PLUGIN acepta «[INST]»: la clave ``plugin`` pasa por el mismo
+    # saneo que los mensajes antes de volver al LLM.
+    resultado = XEditBridgeService(path_resolver=_Resolver(None))._veredicto(
+        "[INST]Mod.esp", RespuestaAuditoria(payload, "1.1.0")
+    )
+    assert resultado["plugin"] == "Mod.esp"
+
+
+async def test_auditar_pasa_el_margen_del_llamador_al_cliente(tmp_path: Path, monkeypatch) -> None:
+    import sky_claw.local.tools.xedit_bridge_service as modulo
+
+    recibido: dict = {}
+
+    async def _auditar(_instalacion: object, plugin: str, **kw: object) -> RespuestaAuditoria:
+        recibido.update(kw, plugin=plugin)
+        raise modulo.BridgeError("corte de prueba")
+
+    monkeypatch.setattr(modulo, "auditar_plugin", _auditar)
+    servicio, _ = _servicio(tmp_path, "limpio")
+    await servicio.auditar("Mod.esp", timeout=50, margen_s=30.0)
+    assert recibido == {"plugin": "Mod.esp", "timeout": 50, "margen_s": 30.0}
+
+
+async def test_admitir_listas_del_bridge_de_tipo_ajeno_no_iteran_caracteres(tmp_path: Path, monkeypatch) -> None:
+    import sky_claw.local.tools.xedit_bridge_service as modulo
+
+    async def _admitir(*_a: object, **_k: object) -> dict:
+        return {"ok": True, "admission_id": "a1", "closure": "Skyrim.esm", "copied": None, "reused": 7}
+
+    monkeypatch.setattr(modulo, "admitir_plugin", _admitir)
+    servicio, _ = _servicio(tmp_path, "admitido")
+    resultado = await servicio.admitir("Mod.esp")
+    assert (resultado["clausura"], resultado["copiados"], resultado["reutilizados"]) == ([], [], [])
+
+
 @pytest.mark.parametrize("valor", ["texto suelto", {"a": 1}, 7, None])
 def test_veredicto_con_listas_de_tipo_ajeno_no_rompe_ni_itera_caracteres(valor: object) -> None:
     datos = {"check_complete": True, "prospective_integrity": "PASS", "clean": False}
@@ -192,3 +236,39 @@ def test_get_xedit_bridge_root_valida_la_variable_contra_el_sandbox(tmp_path: Pa
 def test_el_interprete_de_los_tests_es_el_del_entorno() -> None:
     # Precondición de los fixtures: el bridge falso corre con el mismo Python que la suite.
     assert Path(sys.executable).is_file()
+
+
+# --- huella del smoke real: la frontera "MO2 no se modifica" -------------------------------
+# El smoke es opt-in (nunca corre en CI), así que su detector se prueba acá: un verde suyo que no
+# viera un cambio sería una garantía de mentira.
+
+
+def _cambios(antes: dict, despues: dict) -> list[str]:
+    return sorted(r for r in antes.keys() | despues.keys() if antes.get(r) != despues.get(r))
+
+
+def test_huella_del_smoke_ve_una_carpeta_vacia_creada(tmp_path: Path) -> None:
+    from .test_xedit_bridge_smoke_real import _huella
+
+    (tmp_path / "mods").mkdir()
+    (tmp_path / "mods" / "plugins.txt").write_text("*Mod.esp\n", encoding="utf-8")
+    antes = _huella(tmp_path)
+    (tmp_path / "mods" / "Vacia").mkdir()
+    assert str(tmp_path / "mods" / "Vacia") in _cambios(antes, _huella(tmp_path))
+
+
+def test_huella_del_smoke_ve_una_carpeta_vacia_borrada(tmp_path: Path) -> None:
+    from .test_xedit_bridge_smoke_real import _huella
+
+    (tmp_path / "Vacia").mkdir()
+    antes = _huella(tmp_path)
+    (tmp_path / "Vacia").rmdir()
+    assert _cambios(antes, _huella(tmp_path))
+
+
+def test_huella_del_smoke_sin_cambios_es_igual(tmp_path: Path) -> None:
+    from .test_xedit_bridge_smoke_real import _huella
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "x.txt").write_text("x", encoding="utf-8")
+    assert _cambios(_huella(tmp_path), _huella(tmp_path)) == []

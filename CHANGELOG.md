@@ -11,10 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Auditoría nativa de plugins con el xEdit Bridge ([ADR 0018](docs/adr/0018-auditoria-nativa-xedit-bridge.md)).**
   - Dos herramientas, en la GUI (`tool_dispatcher`) y en el agente LLM (`AsyncToolRegistry`), sobre el mismo `XEditBridgeService`:
     - `auditar_plugin_nativo`: chequeo `-CheckForErrors` de SSEEdit sobre la copia admitida. Es de lectura y no pide aprobación.
-    - `admitir_plugin_nativo`: copia el plugin y sus masters, resueltos con la precedencia de MO2, al laboratorio del bridge. Pide aprobación humana (gate HITL en la GUI, `HITLGuard` explícito en el agente) y no modifica MO2.
+    - `admitir_plugin_nativo`: copia el plugin y sus masters, resueltos con la precedencia de MO2, al laboratorio del bridge. Pide aprobación humana (gate HITL en la GUI, `HITLGuard` explícito en el agente) y no modifica MO2. El pedido muestra el nombre entero y con los caracteres invisibles escapados (`nombre_visible`).
+  - **Agente LLM y el plazo del router (120 s, que cancela la tool):** la auditoría vence antes por su cuenta (motor ≤ 80 s más 30 s de margen). La admisión corre como trabajo en segundo plano, como `generate_lods`: responde enseguida, y el pedido de aprobación y el aviso de fin viajan por el canal del guard. El `AppContext` registra su cierre. El resultado de la auditoría se poda para que entre en el recorte del router (`MAX_TOOL_RESULT_CHARS`) como JSON válido.
   - **Cliente:** el bridge se lanza como proceso aparte, por MCP stdio, una sesión por llamada, con timeout y Job kill-on-close.
-    - El arranque (comando, args, cwd y env) se lee completo del `codex-mcp.example.toml` del bridge. La instalación se configura con una sola variable, `XEDIT_BRIDGE_ROOT`, validada contra el sandbox.
-    - Versión fijada a `>=1.1.0,<2`. Todo error falla cerrado.
+    - El arranque (comando, args, cwd y env) se lee completo del `codex-mcp.example.toml` del bridge: los args tienen que ser exactamente los que se ejecutan y el cwd, la propia raíz. La instalación se configura con una sola variable, `XEDIT_BRIDGE_ROOT`, validada contra el sandbox.
+    - Versión fijada a `>=1.1.0,<2`. Todo error falla cerrado, también una respuesta malformada o un `ok` que no es booleano.
   - **Veredicto:** `success` indica que la auditoría es confiable (completa, integridad `PASS`, sin recortar), y solo `aprobado` habilita tratar el plugin como sin errores. Los textos del plugin se sanean y se acotan.
   - **MO2:** `PathResolutionService.get_mo2_instance_ini_dir()` entrega la carpeta del `ModOrganizer.ini` del que Sky-Claw derivó la instancia (global o portable), para que el bridge lea ese mismo INI y no la instalación ni una copia vieja en la raíz de datos.
   - **`run_capture`:** acepta `input_bytes` (stdin) y `env`; sin ellos el comportamiento no cambia.

@@ -132,13 +132,19 @@ class XEditAnalysisParams(pydantic.BaseModel):
     plugins: list[str] = pydantic.Field(min_length=1, max_length=50)
 
 
+#: Timeout máximo del motor del bridge en el agente LLM. Más el margen del agente
+#: (``xedit_bridge_tools.MARGEN_LLM_S``) tiene que vencer ANTES que el round del router
+#: (``DEFAULT_TOOL_ROUND_TIMEOUT``), que cancela la tool. La GUI no tiene ese corte y admite 120.
+TIMEOUT_MAXIMO_LLM = 80
+
+
 class AuditarPluginNativoParams(pydantic.BaseModel):
     """Parámetros del tool LLM ``auditar_plugin_nativo`` (xEdit Bridge, ADR 0018; read-only)."""
 
     model_config = pydantic.ConfigDict(strict=True, extra="forbid")
 
     plugin: str = pydantic.Field(min_length=5, max_length=255, pattern=PATRON_PLUGIN)
-    timeout: int | None = pydantic.Field(default=None, ge=5, le=120)
+    timeout: int | None = pydantic.Field(default=None, ge=5, le=TIMEOUT_MAXIMO_LLM)
 
 
 class AdmitirPluginNativoParams(pydantic.BaseModel):
@@ -508,6 +514,7 @@ __all__ = [
     "SearchModParams",
     "SearchNexusParams",
     "SetupToolsParams",
+    "TIMEOUT_MAXIMO_LLM",
     "ToggleModParams",
     "UninstallModParams",
     "XEditAnalysisParams",

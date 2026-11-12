@@ -95,6 +95,11 @@ La admisión copia el plugin y sus masters del perfil MO2 activo al laboratorio
 del bridge. Pide aprobación y no modifica MO2. Después, la auditoría devuelve el
 veredicto nativo de SSEEdit; solo `aprobado: true` significa «sin errores».
 
+Desde Telegram o `/api/chat`, la admisión corre en segundo plano: el agente
+responde enseguida y el pedido de aprobación llega por el mismo canal. Cuando la
+copia termina, Sky-Claw avisa, y recién entonces conviene auditar. Ahí la
+auditoría admite un timeout de motor de hasta 80 s; desde la GUI, de hasta 120 s.
+
 Las flags de CLI son otra entrada de configuración. Consultar
 [la referencia de CLI](../api/cli_ref.md).
 

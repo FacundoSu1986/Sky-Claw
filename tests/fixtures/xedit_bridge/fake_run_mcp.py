@@ -79,6 +79,10 @@ def _payload():
             }
         ]
     cuerpo = {"ok": ok, "duration_s": 1.0, "notice": "untrusted plugin data", "untrusted_data": datos}
+    if ESCENARIO == "ok_ausente":
+        del cuerpo["ok"]
+    elif ESCENARIO == "ok_no_bool":
+        cuerpo["ok"] = "true"
     if errores:
         cuerpo["errors"] = errores
     if not ok and datos:
@@ -108,6 +112,8 @@ for linea in sys.stdin:
         }
         if ESCENARIO == "sin_server_info":
             resultado.pop("serverInfo")
+        if ESCENARIO == "init_result_no_objeto":
+            resultado = ["xedit-bridge", "1.1.0"]
         respuesta = {"jsonrpc": "2.0", "id": mensaje["id"], "result": resultado}
     elif ESCENARIO == "error_rpc":
         respuesta = {"jsonrpc": "2.0", "id": mensaje["id"], "error": {"code": -32602, "message": "invalid arguments"}}
@@ -115,10 +121,19 @@ for linea in sys.stdin:
         CONFIG.with_name("recibido.json").write_text(json.dumps(mensaje["params"]), encoding="utf-8")
         cuerpo = _payload()
         contenido = [{"type": "text", "text": json.dumps(cuerpo, indent=2)}]
-        es_error = not cuerpo["ok"]
+        # El bridge real cumple isError == not ok; sin un ok booleano, el fake declara un error.
+        es_error = cuerpo.get("ok") is not True
         if ESCENARIO == "is_error_incoherente":
             es_error = not es_error  # viola el invariante del bridge: isError == not ok
-        respuesta = {"jsonrpc": "2.0", "id": mensaje["id"], "result": {"content": contenido, "isError": es_error}}
+        contenido = {
+            "contenido_nulo": [None],
+            "contenido_no_lista": "texto suelto",
+            "texto_no_str": [{"type": "text", "text": 5}],
+        }.get(ESCENARIO, contenido)
+        resultado = {"content": contenido, "isError": es_error}
+        if ESCENARIO == "result_no_objeto":
+            resultado = [contenido]
+        respuesta = {"jsonrpc": "2.0", "id": mensaje["id"], "result": resultado}
     sys.stdout.write(json.dumps(respuesta) + "\n")
     sys.stdout.flush()
 

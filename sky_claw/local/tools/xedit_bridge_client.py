@@ -17,7 +17,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 from sky_claw.local.tools._process import run_capture
@@ -35,10 +35,40 @@ TIMEOUT_MINIMO, TIMEOUT_MAXIMO = 5, 120
 #: superficies (``schemas.py`` y ``tool_strategies``); sintaxis válida para ``re`` y para Pydantic.
 PATRON_PLUGIN = r"^[^\\/:*?\"<>|\x00-\x1f]+\.(?:[eE][sS][mMpPlL])$"
 _PLUGIN = re.compile(PATRON_PLUGIN)
+#: Largo máximo del nombre tal como lo ve el operador (con sus escapes): tiene que entrar ENTERO en
+#: el pedido de aprobación de las dos superficies (el gate de la GUI acota su detalle a 800).
+LARGO_MAXIMO_NOMBRE_VISIBLE = 400
+_INTERPRETE_WINDOWS = re.compile(r"python(?:\d+(?:\.\d+)*)?w?\.exe", re.IGNORECASE)
+_INTERPRETE_POSIX = re.compile(r"python(?:\d+(?:\.\d+)*)?")
 
 
 class BridgeError(RuntimeError):
     """Falla del bridge o del protocolo. Nunca es un veredicto sobre el plugin auditado."""
+
+
+def _es_interprete_python(comando: PurePath, *, windows: bool) -> bool:
+    """``comando`` es un intérprete Python absoluto: ``python*.exe`` en Windows, ``python*`` en POSIX."""
+    patron = _INTERPRETE_WINDOWS if windows else _INTERPRETE_POSIX
+    return comando.is_absolute() and patron.fullmatch(comando.name) is not None
+
+
+def nombre_visible(plugin: str) -> str:
+    """``plugin`` tal como tiene que verlo el operador al aprobar: completo y sin ambigüedad.
+
+    ``PATRON_PLUGIN`` acepta caracteres que no se ven o engañan a la vista: formato Unicode (un
+    override de dirección como U+202E reordena lo que se muestra), espacios de ancho cero, NBSP y
+    controles C1. Todo carácter no imprimible se muestra escapado (``\\u202e``); como el patrón
+    prohíbe la barra invertida, un escape nunca se confunde con texto del nombre. El nombre que se
+    ejecuta NO cambia. Uno que no entra entero en el pedido se rechaza: no se aprueba a ciegas.
+    """
+    visible = "".join(
+        c if c.isprintable() else (f"\\u{ord(c):04x}" if ord(c) <= 0xFFFF else f"\\U{ord(c):08x}") for c in plugin
+    )
+    if len(visible) > LARGO_MAXIMO_NOMBRE_VISIBLE:
+        raise ValueError(
+            f"el nombre del plugin no se puede mostrar entero para aprobarlo ({len(visible)} caracteres visibles)"
+        )
+    return visible
 
 
 @dataclass(frozen=True)
@@ -62,34 +92,40 @@ class InstalacionBridge:
         """Instalación a partir de su carpeta ``BridgeTrabajo``, lanzada como el propio bridge declara.
 
         El instalador del bridge escribe en ``codex-mcp.example.toml`` el arranque exacto: comando
-        (Python 3.11 del sistema, fuera del sandbox de Sky-Claw), args y env. Leerlo de ahí evita una
-        segunda variable de entorno —una segunda fuente de verdad— y que ese intérprete tenga que
-        saltarse el ``PathValidator``. Se adopta COMPLETO (el cwd declarado es la propia raíz): tomar
-        solo una parte lanzaría el bridge distinto de como se validó. Se exige que el TOML describa
-        ESTA instalación.
+        (Python 3.11 del sistema, fuera del sandbox de Sky-Claw), args, cwd y env. Leerlo de ahí evita
+        una segunda variable de entorno —una segunda fuente de verdad— y que ese intérprete tenga que
+        saltarse el ``PathValidator``. Se adopta COMPLETO: los args declarados tienen que ser
+        EXACTAMENTE los que Sky-Claw ejecuta (:meth:`comando`) y el cwd, si se declara, la propia raíz.
+        Tomar solo una parte lanzaría el bridge distinto de como se validó.
         """
         import tomllib
 
         toml = raiz / "codex-mcp.example.toml"
         try:
             servidor = tomllib.loads(toml.read_text(encoding="utf-8"))["mcp_servers"]["xedit_bridge_local"]
-            comando, args = Path(servidor["command"]), [Path(a) for a in servidor["args"]]
-            entorno = servidor.get("env", {})
+            comando, args = Path(servidor["command"]), servidor["args"]
+            cwd, entorno = servidor.get("cwd"), servidor.get("env", {})
         except (OSError, KeyError, TypeError, ValueError) as exc:
             raise BridgeError(f"no se pudo leer el intérprete del xEdit Bridge desde {toml}: {exc}") from exc
         if not isinstance(entorno, dict) or not all(
             isinstance(clave, str) and isinstance(valor, str) for clave, valor in entorno.items()
         ):
             raise BridgeError(f"el env de {toml} no es un mapa de texto a texto")
-        if len(args) < 4 or args[3] != raiz / "run_mcp.py":
-            raise BridgeError(f"{toml} describe otra instalación del bridge, no {raiz}")
-        if (
-            not comando.is_absolute()
-            or not comando.name.lower().startswith("python")
-            or comando.suffix.lower() != ".exe"
-        ):
+        if not _es_interprete_python(comando, windows=os.name == "nt"):
             raise BridgeError(f"el comando del xEdit Bridge no es un intérprete Python absoluto: {comando}")
         instalacion = cls(python=comando, raiz=raiz, entorno=dict(entorno))
+        esperados = [Path(a) for a in instalacion.comando("run_mcp.py")[1:]]
+        if (
+            not isinstance(args, list)
+            or not all(isinstance(a, str) for a in args)
+            or [Path(a) for a in args] != esperados
+        ):
+            raise BridgeError(
+                f"{toml} describe otra instalación del bridge o un arranque distinto del que se ejecuta "
+                f"(se esperaba {[str(a) for a in esperados]})"
+            )
+        if cwd is not None and (not isinstance(cwd, str) or Path(cwd) != raiz):
+            raise BridgeError(f"el cwd de {toml} no es la raíz de esta instalación ({raiz}): {cwd!r}")
         instalacion.validar()
         return instalacion
 
@@ -223,28 +259,46 @@ async def auditar_plugin(
     for respuesta in (inicio, llamada):
         if "error" in respuesta:
             raise BridgeError(f"error JSON-RPC del xEdit Bridge: {respuesta['error']}")
-    info = (inicio.get("result") or {}).get("serverInfo") or {}
+    # Toda forma inesperada es BridgeError: un AttributeError/TypeError atravesaría el servicio, que solo
+    # convierte BridgeError y ValueError en un resultado success=False.
+    info = _objeto(_objeto(inicio.get("result")).get("serverInfo"))
     if info.get("name") != NOMBRE_SERVIDOR:
         raise BridgeError(f"el servidor no es el xEdit Bridge: {info.get('name')!r}")
     version = str(info.get("version"))
     if not VERSION_MINIMA <= _version(version) < VERSION_TOPE:
         raise BridgeError(f"versión del xEdit Bridge no soportada: {version} (se requiere >=1.1.0 y <2)")
-    resultado = llamada.get("result") or {}
-    contenido = resultado.get("content") or []
-    es_error = resultado.get("isError")
-    if not isinstance(es_error, bool) or len(contenido) != 1 or contenido[0].get("type") != "text":
+    resultado = llamada.get("result")
+    if not isinstance(resultado, dict):
+        raise BridgeError("respuesta de xedit_check con forma inesperada")
+    contenido, es_error = resultado.get("content"), resultado.get("isError")
+    if (
+        not isinstance(es_error, bool)
+        or not isinstance(contenido, list)
+        or len(contenido) != 1
+        or not isinstance(contenido[0], dict)
+        or contenido[0].get("type") != "text"
+        or not isinstance(contenido[0].get("text"), str)
+    ):
         raise BridgeError("respuesta de xedit_check con forma inesperada")
     try:
         payload = json.loads(contenido[0]["text"])
-    except (json.JSONDecodeError, TypeError) as exc:
+    except json.JSONDecodeError as exc:
         raise BridgeError("el resultado de xedit_check no es JSON") from exc
     if not isinstance(payload, dict):
         raise BridgeError("el resultado de xedit_check no es un objeto")
+    ok = payload.get("ok")
+    if not isinstance(ok, bool):
+        raise BridgeError("el resultado de xedit_check no trae un ok booleano: no hay veredicto")
     # Contrato del bridge (mcp_server._text_result): isError == not ok. Un veredicto negativo (chequeo
     # incompleto, plugin no admitido) viaja con isError=true y SE LEE; la incoherencia es un protocolo roto.
-    if es_error is (payload.get("ok") is True):
+    if es_error is ok:
         raise BridgeError("respuesta de xedit_check incoherente: isError no coincide con ok")
     return RespuestaAuditoria(payload=payload, version=version)
+
+
+def _objeto(valor: Any) -> dict[str, Any]:
+    """Un objeto JSON del protocolo; cualquier otra forma cuenta como vacío (y falla en la validación)."""
+    return valor if isinstance(valor, dict) else {}
 
 
 async def admitir_plugin(
@@ -281,11 +335,13 @@ async def admitir_plugin(
 
 
 __all__ = [
+    "LARGO_MAXIMO_NOMBRE_VISIBLE",
     "PATRON_PLUGIN",
     "BridgeError",
     "InstalacionBridge",
     "RespuestaAuditoria",
     "admitir_plugin",
     "auditar_plugin",
+    "nombre_visible",
     "validar_plugin",
 ]

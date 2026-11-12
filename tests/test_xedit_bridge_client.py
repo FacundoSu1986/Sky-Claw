@@ -11,27 +11,33 @@ import json
 import os
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
 from sky_claw.local.tools.xedit_bridge_client import (
+    LARGO_MAXIMO_NOMBRE_VISIBLE,
     BridgeError,
     InstalacionBridge,
+    _es_interprete_python,
     admitir_plugin,
     auditar_plugin,
+    nombre_visible,
     validar_plugin,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "xedit_bridge"
 
 
-def _toml(raiz: Path, python: str, raiz_args: Path | None = None) -> str:
+def _toml(raiz: Path, python: str, raiz_args: Path | None = None, *, args: str | None = None, cwd: str = "") -> str:
+    # Misma forma que el codex-mcp.example.toml que escribe el instalador real del bridge (con su cwd).
     otra = raiz_args or raiz
+    args = args or f"['-I', '-S', '-B', '{otra / 'run_mcp.py'}', '{otra / 'config.json'}']"
     return (
         "[mcp_servers.xedit_bridge_local]\n"
         f"command = '{python}'\n"
-        f"args = ['-I', '-S', '-B', '{otra / 'run_mcp.py'}', '{otra / 'config.json'}']\n"
+        f"args = {args}\n"
+        f"cwd = '{cwd or otra}'\n"
         "enabled = false\n"
     )
 
@@ -85,7 +91,9 @@ def test_desde_raiz_env_que_no_es_texto_es_rechazado(tmp_path: Path, env: str) -
 
 
 @pytest.mark.parametrize(("script", "registro"), [("mcp", "entorno_mcp.json"), ("admit", "entorno_admit.json")])
-async def test_el_bridge_corre_con_el_cwd_y_el_env_de_su_toml(tmp_path: Path, script: str, registro: str) -> None:
+async def test_auditar_y_admitir_plugin_corren_con_el_cwd_y_el_env_del_toml(
+    tmp_path: Path, script: str, registro: str
+) -> None:
     # El TOML es la ÚNICA fuente del arranque: comando, args, cwd y env. Adoptar solo una parte
     # haría que Sky-Claw lance el bridge distinto de como el propio bridge lo validó.
     raiz = _raiz(tmp_path, "admitido" if script == "admit" else "limpio")
@@ -117,6 +125,55 @@ def test_desde_raiz_toml_de_otra_instalacion_es_rechazado(tmp_path: Path) -> Non
         InstalacionBridge.desde_raiz(raiz)
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        # otra config: el bridge correría con una configuración distinta de la declarada y validada
+        "['-I', '-S', '-B', '{raiz}/run_mcp.py', '{otra}/config.json']",
+        "['-I', '-S', '-B', '{raiz}/run_mcp.py', '{raiz}/config.json', '--debug']",
+        "['-S', '-B', '{raiz}/run_mcp.py', '{raiz}/config.json']",
+        "['-I', '-S', '-X', '{raiz}/run_mcp.py', '{raiz}/config.json']",
+        "['-I', '-S', '-B', '{raiz}/run_mcp.py', 7]",
+    ],
+)
+def test_desde_raiz_args_distintos_del_arranque_que_se_ejecuta_son_rechazados(tmp_path: Path, args: str) -> None:
+    # Sky-Claw lanza ``comando("run_mcp.py")``: el TOML tiene que declarar EXACTAMENTE ese vector, no
+    # solo el script en args[3]. Si no, el bridge correría distinto de como se validó.
+    raiz = _raiz(tmp_path, "limpio")
+    declarado = args.replace("{raiz}", raiz.as_posix()).replace("{otra}", (tmp_path / "Otra").as_posix())
+    (raiz / "codex-mcp.example.toml").write_text(_toml(raiz, sys.executable, args=declarado), encoding="utf-8")
+    with pytest.raises(BridgeError):
+        InstalacionBridge.desde_raiz(raiz)
+
+
+def test_desde_raiz_cwd_ajeno_a_la_instalacion_es_rechazado(tmp_path: Path) -> None:
+    raiz = _raiz(tmp_path, "limpio")
+    toml = _toml(raiz, sys.executable, cwd=str(tmp_path / "Otra"))
+    (raiz / "codex-mcp.example.toml").write_text(toml, encoding="utf-8")
+    with pytest.raises(BridgeError, match="cwd"):
+        InstalacionBridge.desde_raiz(raiz)
+
+
+@pytest.mark.parametrize(
+    ("comando", "windows", "esperado"),
+    [
+        (PureWindowsPath("C:/Python311/python.exe"), True, True),
+        (PureWindowsPath("C:/Python311/python3.11.exe"), True, True),
+        (PureWindowsPath("C:/Python311/python"), True, False),
+        (PureWindowsPath("C:/Python311/python_malo.exe"), True, False),
+        (PureWindowsPath("python.exe"), True, False),
+        (PurePosixPath("/usr/bin/python3"), False, True),
+        (PurePosixPath("/opt/venv/bin/python3.11"), False, True),
+        (PurePosixPath("/usr/bin/python.exe"), False, False),
+        (PurePosixPath("bin/python3"), False, False),
+        (PurePosixPath("/usr/bin/sh"), False, False),
+    ],
+)
+def test_es_interprete_python_segun_el_sistema(comando: PureWindowsPath, windows: bool, esperado: bool) -> None:
+    # El bridge declara un python.exe en Windows; en POSIX (CI y desarrollo) el intérprete no lleva sufijo.
+    assert _es_interprete_python(comando, windows=windows) is esperado
+
+
 @pytest.mark.parametrize("comando", ["relativo\\python.exe", "C:\\no-existe\\python.exe", "__cmd__"])
 def test_desde_raiz_comando_que_no_es_un_python_valido_es_rechazado(tmp_path: Path, comando: str) -> None:
     raiz = _raiz(tmp_path, "limpio")
@@ -143,11 +200,40 @@ def test_validar_plugin_ruta_o_extension_invalida_es_rechazado(nombre: str) -> N
         validar_plugin(nombre)
 
 
-def test_instalacion_incompleta_falla_cerrada(tmp_path: Path) -> None:
+def test_validar_instalacion_incompleta_falla_cerrada(tmp_path: Path) -> None:
     bridge = _bridge(tmp_path, "limpio")
     (bridge.raiz / "run_admit.py").unlink()
     with pytest.raises(BridgeError, match="run_admit.py"):
         bridge.validar()
+
+
+# --- nombre visible: lo que el operador aprueba es lo que se ejecuta ----------------------
+
+
+def test_nombre_visible_de_un_nombre_comun_es_el_mismo() -> None:
+    assert nombre_visible("Perfil Ñandú - Mod's [v1.2].esp") == "Perfil Ñandú - Mod's [v1.2].esp"
+
+
+@pytest.mark.parametrize(
+    ("nombre", "visible"),
+    [
+        # U+202E (override de dirección) mostraría «Mod[U+202E]pse.esl» como si terminara en otra cosa.
+        ("Mod‮pse.esl", "Mod\\u202epse.esl"),
+        ("Mod​.esp", "Mod\\u200b.esp"),  # espacio de ancho cero: dos nombres idénticos a la vista
+        ("Mod A.esp", "Mod\\u00a0A.esp"),  # NBSP: se ve igual que un espacio
+        ("Mod\x85.esp", "Mod\\u0085.esp"),  # control C1, que PATRON_PLUGIN no excluye
+        ("Mod\U000e0041.esp", "Mod\\U000e0041.esp"),  # etiqueta Unicode invisible, fuera del BMP
+    ],
+)
+def test_nombre_visible_escapa_lo_que_no_se_ve(nombre: str, visible: str) -> None:
+    assert validar_plugin(nombre) == nombre, "el nombre es válido: lo que cambia es solo cómo se muestra"
+    assert nombre_visible(nombre) == visible
+
+
+def test_nombre_visible_que_no_entra_entero_en_el_pedido_es_rechazado() -> None:
+    # Un nombre que no se puede mostrar completo no se puede aprobar a conciencia.
+    with pytest.raises(ValueError, match="no se puede mostrar"):
+        nombre_visible("​" * (LARGO_MAXIMO_NOMBRE_VISIBLE // 6 + 1) + ".esp")
 
 
 # --- auditoría por MCP --------------------------------------------------------------------
@@ -180,7 +266,25 @@ async def test_auditar_plugin_veredicto_negativo_viaja_con_is_error_y_se_lee(tmp
     assert respuesta.payload["untrusted_data"]["check_complete"] is False
 
 
-@pytest.mark.parametrize("escenario", ["json_malformado", "error_rpc", "exit_no_cero", "is_error_incoherente"])
+@pytest.mark.parametrize(
+    "escenario",
+    [
+        "json_malformado",
+        "error_rpc",
+        "exit_no_cero",
+        "is_error_incoherente",
+        # Formas inesperadas: toda una BridgeError, nunca un AttributeError/TypeError que atraviese el
+        # servicio (que solo convierte BridgeError y ValueError en success=False).
+        "contenido_nulo",
+        "contenido_no_lista",
+        "texto_no_str",
+        "result_no_objeto",
+        "init_result_no_objeto",
+        # Sin un ok booleano no hay veredicto: isError=true con ok ausente no es un "negativo legible".
+        "ok_ausente",
+        "ok_no_bool",
+    ],
+)
 async def test_auditar_plugin_protocolo_roto_falla_cerrado(tmp_path: Path, escenario: str) -> None:
     with pytest.raises(BridgeError):
         await auditar_plugin(_bridge(tmp_path, escenario), "Mod.esp", timeout=30)
@@ -192,7 +296,7 @@ async def test_auditar_plugin_servidor_colgado_vence_y_no_queda_vivo(tmp_path: P
 
 
 @pytest.mark.parametrize("error", [PermissionError("acceso denegado"), OSError("sin returncode")])
-async def test_un_error_del_sistema_al_lanzar_es_bridge_error(
+async def test_auditar_plugin_error_del_sistema_al_lanzar_es_bridge_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: OSError
 ) -> None:
     # Cualquier OSError del lanzamiento (no solo el ejecutable ausente) es una falla del bridge, nunca una

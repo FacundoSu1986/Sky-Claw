@@ -22,6 +22,7 @@ from typing import Any, Protocol
 
 from sky_claw.app.security.sanitize import sanitize_for_prompt
 from sky_claw.local.tools.xedit_bridge_client import (
+    MARGEN_TIMEOUT_S,
     BridgeError,
     InstalacionBridge,
     RespuestaAuditoria,
@@ -35,6 +36,7 @@ logger = logging.getLogger("SkyClaw.XEditBridge")
 TIMEOUT_POR_DEFECTO = 60
 LIMITE_HALLAZGOS = 50
 _LARGO_TEXTO = 300
+_LARGO_NOMBRE = 255
 _CAMPOS_HALLAZGO = ("signature", "formid", "record_name", "path", "description")
 
 
@@ -72,12 +74,20 @@ class XEditBridgeService:
             )
         return InstalacionBridge.desde_raiz(raiz)
 
-    async def auditar(self, plugin: str, timeout: int | None = None) -> dict[str, Any]:
-        """Chequeo nativo de SSEEdit sobre la copia admitida de ``plugin``."""
-        base: dict[str, Any] = {"plugin": _texto(plugin, 120), "aprobado": False}
+    async def auditar(
+        self, plugin: str, timeout: int | None = None, *, margen_s: float = MARGEN_TIMEOUT_S
+    ) -> dict[str, Any]:
+        """Chequeo nativo de SSEEdit sobre la copia admitida de ``plugin``.
+
+        ``margen_s`` se suma al timeout del motor para el plazo total del proceso; una superficie con su
+        propio plazo (el round del router del agente) pasa uno menor para vencer antes que él.
+        """
+        base: dict[str, Any] = {"plugin": _texto(plugin, _LARGO_NOMBRE), "aprobado": False}
         try:
             validar_plugin(plugin)
-            respuesta = await auditar_plugin(self._instalacion(), plugin, timeout=timeout or TIMEOUT_POR_DEFECTO)
+            respuesta = await auditar_plugin(
+                self._instalacion(), plugin, timeout=timeout or TIMEOUT_POR_DEFECTO, margen_s=margen_s
+            )
         except (BridgeError, ValueError) as exc:
             logger.warning("Auditoría nativa sin veredicto para %r: %s", plugin, exc)
             return {**base, "success": False, "message": _texto(exc)}
@@ -98,7 +108,7 @@ class XEditBridgeService:
                 else f"el xEdit Bridge no auditó {plugin}: {error}"
             )
             return {
-                "plugin": plugin,
+                "plugin": _texto(plugin, _LARGO_NOMBRE),
                 "success": False,
                 "message": _texto(mensaje),
                 "aprobado": False,
@@ -114,7 +124,7 @@ class XEditBridgeService:
             {campo: _texto(h[campo]) for campo in _CAMPOS_HALLAZGO if isinstance(h, dict) and h.get(campo) is not None}
             for h in hallazgos_crudos[:LIMITE_HALLAZGOS]
         ]
-        fallas = [_texto(f, 200) for f in _lista(datos.get("execution_failures"))[:10]]
+        fallas = [_texto(f) for f in _lista(datos.get("execution_failures"))[:10]]
         # De la causa más específica a la más general: el bridge marca un recorte también como incompleto.
         if confiable:
             mensaje = ""
@@ -127,7 +137,7 @@ class XEditBridgeService:
                 "; ".join(fallas) or "el chequeo no terminó de forma verificable"
             )
         return {
-            "plugin": plugin,
+            "plugin": _texto(plugin, _LARGO_NOMBRE),
             "success": confiable,
             "message": mensaje,
             "aprobado": payload.get("ok") is True and confiable and limpio,
@@ -152,7 +162,7 @@ class XEditBridgeService:
 
         Solo debe llamarse después de una aprobación humana: la impone cada superficie.
         """
-        base: dict[str, Any] = {"plugin": _texto(plugin, 120)}
+        base: dict[str, Any] = {"plugin": _texto(plugin, _LARGO_NOMBRE)}
         # El bridge re-deriva la instancia (base, mods, perfiles, juego) de su ModOrganizer.ini: se le
         # pasa la carpeta del MISMO INI que usa Sky-Claw, no la instalación (que en MO2 2.4+ no tiene INI)
         # ni la raíz de datos (que puede guardar una copia vieja).
@@ -176,10 +186,10 @@ class XEditBridgeService:
             "success": True,
             "message": "",
             "admission_id": datos.get("admission_id"),
-            "clausura": [_texto(n, 120) for n in datos.get("closure") or []],
-            "copiados": [_texto(n, 120) for n in datos.get("copied") or []],
-            "reutilizados": [_texto(n, 120) for n in datos.get("reused") or []],
-            "reemplazados": [_texto(n, 120) for n in datos.get("replaced") or []],
+            "clausura": [_texto(n, _LARGO_NOMBRE) for n in _lista(datos.get("closure"))],
+            "copiados": [_texto(n, _LARGO_NOMBRE) for n in _lista(datos.get("copied"))],
+            "reutilizados": [_texto(n, _LARGO_NOMBRE) for n in _lista(datos.get("reused"))],
+            "reemplazados": [_texto(n, _LARGO_NOMBRE) for n in _lista(datos.get("replaced"))],
             "siguiente": "auditar_plugin_nativo",
         }
 

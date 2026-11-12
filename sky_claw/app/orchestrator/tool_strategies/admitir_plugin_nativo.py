@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from sky_claw.local.tools.xedit_bridge_client import PATRON_PLUGIN
+from sky_claw.local.tools.xedit_bridge_client import PATRON_PLUGIN, nombre_visible
 
 if TYPE_CHECKING:
     from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
@@ -38,12 +38,16 @@ class AdmitirPluginNativoStrategy:
         self.service = service
 
     def validate_for_approval(self, payload_dict: dict[str, Any]) -> None:
-        AdmitirPluginNativoParams(**payload_dict)
+        # Un nombre que no se puede mostrar entero al operador no se aprueba (ValueError antes del pedido).
+        nombre_visible(AdmitirPluginNativoParams(**payload_dict).plugin)
 
     def describe_for_approval(self, payload_dict: dict[str, Any]) -> str:
-        params = AdmitirPluginNativoParams(**payload_dict)
+        # El nombre va primero, entero y con lo invisible escapado (U+202E reordenaría lo que se ve): el gate
+        # acota el detalle a 800 caracteres y ``nombre_visible`` garantiza que este texto entra sin cortarlo.
+        # Se ejecuta el nombre real (``execute``), no el visible.
+        visible = nombre_visible(AdmitirPluginNativoParams(**payload_dict).plugin)
         return (
-            f"Admitir {params.plugin} en el xEdit Bridge: copia el plugin y sus masters, resueltos del perfil "
+            f"Admitir {visible} en el xEdit Bridge: copia el plugin y sus masters, resueltos del perfil "
             "activo de MO2, al laboratorio del bridge para auditarlo. MO2 y el juego no se modifican."
         )
 

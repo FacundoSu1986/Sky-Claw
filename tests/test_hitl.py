@@ -194,8 +194,9 @@ class TestHitlProducerRequestIds:
     _EXPECTED_PRODUCERS = {
         "sky_claw/app/agent/tools/nexus_tools.py": {"download_mod": 1},
         "sky_claw/app/agent/tools/system_tools.py": {"install_mod_from_archive": 1},
-        # ADR 0018: aprobación de la admisión al laboratorio del xEdit Bridge (superficie LLM).
-        "sky_claw/app/agent/tools/xedit_bridge_tools.py": {"admitir_plugin_nativo": 1},
+        # ADR 0018: aprobación de la admisión al laboratorio del xEdit Bridge (superficie LLM; la pide
+        # el trabajo en segundo plano de la admisión, fuera del round del router).
+        "sky_claw/app/agent/tools/xedit_bridge_tools.py": {"_pedir_aprobacion_de_admision": 1},
         "sky_claw/app/orchestrator/dyndolod_desatendido_hitl.py": {
             "aprobar_configuracion": 1,
             "aprobar_modal": 1,
@@ -220,7 +221,7 @@ class TestHitlProducerRequestIds:
     _EXPECTED_PREFIXES = {
         ("sky_claw/app/agent/tools/nexus_tools.py", "download_mod"): "nexus-download",
         ("sky_claw/app/agent/tools/system_tools.py", "install_mod_from_archive"): "mod-install",
-        ("sky_claw/app/agent/tools/xedit_bridge_tools.py", "admitir_plugin_nativo"): "xedit-bridge-admit",
+        ("sky_claw/app/agent/tools/xedit_bridge_tools.py", "_pedir_aprobacion_de_admision"): "xedit-bridge-admit",
         ("sky_claw/app/orchestrator/dyndolod_desatendido_hitl.py", "aprobar_configuracion"): "dyndolod-desatendido",
         ("sky_claw/app/orchestrator/dyndolod_desatendido_hitl.py", "aprobar_modal"): "dyndolod-modal",
         (

@@ -43,15 +43,23 @@ HALLAZGOS_ESPERADOS = {"RetreteVIP.esl": 0, "HDD_Spike.esp": 3}
 _LOCALAPPDATA_REAL = os.environ.get("LOCALAPPDATA", "")
 
 
-def _huella(*raices: Path) -> dict[str, tuple[int, int]]:
-    """``ruta -> (tamaño, mtime_ns)`` de cada archivo, sin seguir enlaces ni leer contenido."""
-    huella: dict[str, tuple[int, int]] = {}
+def _huella(*raices: Path) -> dict[str, tuple[bool, int, int]]:
+    """``ruta -> (es_carpeta, tamaño, mtime_ns)`` de cada carpeta y archivo, sin seguir enlaces ni leer contenido.
+
+    Las carpetas cuentan: una carpeta vacía creada (o borrada) dentro de la instancia no cambia ningún
+    archivo, pero sí aparece como entrada nueva y mueve el mtime de su carpeta madre. ``os.walk`` no
+    entra en enlaces a carpetas y ``lstat`` no los sigue.
+    """
+    huella: dict[str, tuple[bool, int, int]] = {}
     for raiz in raices:
-        for carpeta, _subcarpetas, archivos in os.walk(raiz):
-            for nombre in archivos:
+        info = os.lstat(raiz)
+        huella[str(raiz)] = (True, 0, info.st_mtime_ns)
+        for carpeta, subcarpetas, archivos in os.walk(raiz):
+            for nombre in (*subcarpetas, *archivos):
                 ruta = os.path.join(carpeta, nombre)
                 info = os.lstat(ruta)
-                huella[ruta] = (info.st_size, info.st_mtime_ns)
+                es_carpeta = nombre in subcarpetas
+                huella[ruta] = (es_carpeta, 0 if es_carpeta else info.st_size, info.st_mtime_ns)
     return huella
 
 
