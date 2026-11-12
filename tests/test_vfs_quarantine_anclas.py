@@ -21,17 +21,23 @@ RAIZ = pathlib.Path(__file__).resolve().parent.parent
 _MUTADORES = (".unlink", ".write_text", ".write_bytes", "os.replace")
 
 
-def _funciones_que_mutan(ruta: pathlib.Path, *, referencia: str) -> set[str]:
-    """Funciones del archivo cuyo cuerpo menciona ``referencia`` y además escribe o borra algo."""
+def _funciones_que_mutan(
+    ruta: pathlib.Path, *, referencia: str | None, mutadores: tuple[str, ...] = _MUTADORES
+) -> set[str]:
+    """Funciones del archivo que escriben o borran algo y, si hay ``referencia``, la mencionan en su cuerpo.
+
+    ``referencia=None`` no filtra por nombre: sirve cuando el mutador recibe la ruta por parámetro (una función que
+    borra ``path`` no menciona ``rutas.lock`` aunque lo borre).
+    """
     fuente = ruta.read_text(encoding="utf-8")
-    arbol = ast.parse(fuente)
-    return {
-        nodo.name
-        for nodo in ast.walk(arbol)
-        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and referencia in (segmento := ast.get_source_segment(fuente, nodo) or "")
-        and any(m in segmento for m in _MUTADORES)
-    }
+    encontradas: set[str] = set()
+    for nodo in ast.walk(ast.parse(fuente)):
+        if not isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        segmento = ast.get_source_segment(fuente, nodo) or ""
+        if (referencia is None or referencia in segmento) and any(m in segmento for m in mutadores):
+            encontradas.add(nodo.name)
+    return encontradas
 
 
 def test_los_caminos_que_mutan_el_marcador_de_cuarentena_estan_congelados() -> None:
@@ -47,6 +53,61 @@ def test_los_caminos_que_mutan_el_marcador_de_cuarentena_estan_congelados() -> N
         "release_quarantine",  # liberación con un broker vivo
     }
     assert en_la_superficie_de_operador == {"liberar_cuarentena"}  # liberación SIN broker vivo
+
+
+def test_los_caminos_que_mutan_el_lock_de_instancia_estan_congelados() -> None:
+    """La cuarentena también vive en el lock (envenenado u huérfano): quien lo escriba o borre es un mutador más.
+
+    Review CodeRabbit del PR #904: el ancla del marcador no miraba el lock, así que un escritor nuevo de lock cambiaba
+    el estado de cuarentena sin entrar al conjunto congelado.
+    """
+    en_el_broker = _funciones_que_mutan(
+        RAIZ / "sky_claw/local/mo2/vfs_broker.py",
+        referencia="_instance_lock_path",
+        mutadores=(*_MUTADORES, "os.open"),
+    )
+    # Sin filtrar por nombre: ``_borrar_si_no_cambio`` borra el ``path`` que le pasan.
+    en_la_superficie_de_operador = _funciones_que_mutan(RAIZ / "sky_claw/local/mo2/vfs_quarantine.py", referencia=None)
+
+    assert en_el_broker == {
+        "_acquire_instance_file_lock",  # crea el lock (O_EXCL) y reclama el huérfano
+        "_load_quarantine",  # reclamación de lock huérfano al arrancar
+        "_quarantine_instance",  # envenena el lock si no pudo escribir el marcador (escritor 1)
+        "_reconciliar_lock_de_instancia_limpio",  # reescribe la identidad limpia del dueño
+        "_release_instance_file_lock",  # lo retiene envenenado al cerrar (escritor 2) o lo borra
+        "release_quarantine",  # liberación con un broker vivo
+    }
+    assert en_la_superficie_de_operador == {"_borrar_si_no_cambio", "liberar_cuarentena"}
+
+
+def test_los_dos_escritores_del_lock_envenenado_guardan_la_identidad_del_dueno() -> None:
+    """Un lock envenenado sin ``create_time`` no puede distinguir al dueño de un PID reciclado: todo sitio lo guarda."""
+    arbol = ast.parse((RAIZ / "sky_claw/local/mo2/vfs_broker.py").read_text(encoding="utf-8"))
+    envenenados = [
+        {k.value for k in nodo.keys if isinstance(k, ast.Constant)}
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Dict)
+        and any(isinstance(k, ast.Constant) and k.value == "quarantined" for k in nodo.keys)
+    ]
+
+    assert len(envenenados) == 2, "los escritores del lock envenenado cambiaron: revisar este ancla y el liberador"
+    assert all("create_time" in claves for claves in envenenados)
+
+
+def test_quien_muestra_como_liberar_la_cuarentena_conoce_la_raiz_de_mo2() -> None:
+    """Sin ``--mo2-root`` el comando apunta a otra instancia: nadie fuera de ``vfs_quarantine`` usa la constante sin raíz."""
+    usos = {
+        ruta.relative_to(RAIZ).as_posix()
+        for ruta in sorted((RAIZ / "sky_claw").rglob("*.py"))
+        if ruta.name != "vfs_quarantine.py"
+        and any(
+            (isinstance(n, ast.Name) and n.id == "COMO_LIBERAR")
+            or (isinstance(n, ast.alias) and n.name == "COMO_LIBERAR")
+            for n in ast.walk(ast.parse(ruta.read_text(encoding="utf-8")))
+        )
+    }
+
+    assert usos == set()
 
 
 def _sitios_con_ruta_del_estado() -> dict[str, int]:
@@ -105,8 +166,8 @@ def test_el_gestor_de_lods_de_produccion_recibe_la_consulta_de_cuarentena() -> N
         assert "consultar_cuarentena" in {kw.arg for kw in llamada.keywords}
 
 
-def _contexto_con(broker: object) -> types.SimpleNamespace:
-    return types.SimpleNamespace(vfs_broker=broker)
+def _contexto_con(broker: object, mo2_install_dir: pathlib.Path | None = None) -> types.SimpleNamespace:
+    return types.SimpleNamespace(vfs_broker=broker, mo2_install_dir=mo2_install_dir)
 
 
 def test_el_contexto_traduce_la_cuarentena_del_broker_para_el_agente() -> None:
@@ -119,6 +180,18 @@ def test_el_contexto_traduce_la_cuarentena_del_broker_para_el_agente() -> None:
         "razon": "terminalidad desconocida",
         "como_liberar": vfs_quarantine.COMO_LIBERAR,
     }
+
+
+def test_el_contexto_indica_la_raiz_de_mo2_de_la_sesion_en_el_comando_para_liberar() -> None:
+    broker = types.SimpleNamespace(quarantine_reason="terminalidad desconocida")
+    raiz = pathlib.Path("D:/Juegos/MO2-no-config")
+
+    estado = AppContext._estado_de_cuarentena_vfs(_contexto_con(broker, raiz))  # type: ignore[arg-type]
+
+    assert estado is not None
+    assert estado["como_liberar"] == vfs_quarantine.como_liberar(raiz)
+    assert f'--mo2-root "{raiz}"' in estado["como_liberar"]
+    assert "--mo2-root" not in vfs_quarantine.COMO_LIBERAR
 
 
 def test_el_contexto_sin_cuarentena_o_sin_broker_no_informa_nada() -> None:

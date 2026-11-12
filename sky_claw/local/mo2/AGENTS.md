@@ -79,9 +79,15 @@ raíz.
   cerrar) y borrar solo una no alcanza: el próximo arranque reclama el lock huérfano y la reimpone.
   `vfs_quarantine.py` contesta «¿está en cuarentena y por qué?» y la libera (`--mode vfs-quarantine`); para decidir si
   un lock está huérfano reusa `vfs_broker.lock_de_instancia_tiene_dueno_vivo`, la ÚNICA definición (el broker la usa
-  para reclamar): no la copies. Exige evidencia no vacía, se niega con un dueño vivo del lock (un broker vivo la
+  para reclamar), y para el dueño de un lock envenenado `vfs_broker.proceso_dueno_sigue_vivo` (PID **y** `create_time`:
+  un PID reciclado por otro proceso no es el dueño; un lock antiguo sin `create_time` se asume vivo): no las copies.
+  Los DOS escritores del lock envenenado guardan `create_time` (lo ancla un test por AST). Exige evidencia no vacía, se niega con un dueño vivo del lock (un broker vivo la
   volvería a persistir desde su memoria), borra el lock —releído y sin cambios— ANTES que el marcador (un fallo a mitad
-  deja siempre cuarentena entera) y registra `CRITICAL`. Todo escritor nuevo del estado de cuarentena es un mutador más:
+  deja siempre cuarentena entera) y registra `CRITICAL`. **Límite conocido:** entre la relectura y el `unlink` del lock
+  queda una ventana mínima en la que un broker que arranque justo entonces podría reclamar el huérfano; es la misma
+  ventana de `_acquire_instance_file_lock` (reclamo = `unlink` + `O_EXCL`, sin mutex entre procesos), por eso el
+  procedimiento pide cerrar Sky-Claw antes. Cerrarla de verdad exige que el broker participe de un protocolo de lock
+  distinto: no se arregla desde el liberador. Todo escritor nuevo del estado de cuarentena es un mutador más:
   tiene que entrar al conjunto congelado. Anclas: `tests/test_vfs_quarantine.py` (fabrica cada estado con el broker REAL
   y exige que lo que dice el módulo coincida con lo que el broker hace al arrancar) y
   `tests/test_vfs_quarantine_anclas.py` (enumera por AST quién muta el marcador/lock, los sitios que arman la ruta de

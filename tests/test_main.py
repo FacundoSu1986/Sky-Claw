@@ -376,7 +376,7 @@ class TestVfsQuarantine:
         assert exc_info.value.code == 2
 
     @pytest.mark.asyncio
-    async def test_el_modo_no_arranca_app_context(self, tmp_path: pathlib.Path) -> None:
+    async def test_main_modo_vfs_quarantine_no_arranca_app_context(self, tmp_path: pathlib.Path) -> None:
         """Arrancar ``AppContext`` levantaría el broker y tomaría el lock que este modo necesita ver libre."""
         with (
             patch("sky_claw.__main__._run_vfs_quarantine", new_callable=AsyncMock) as modo,
@@ -402,6 +402,35 @@ class TestVfsQuarantine:
         assert "EN CUARENTENA" in texto
         assert "job-9" in texto and "terminalidad desconocida" in texto
         assert "--vfs-quarantine-action release" in texto and "--vfs-evidence" in texto
+        # El comando para liberar apunta a la MISMA instancia que se está mirando (la raíz de ``--mo2-root``).
+        assert f'--mo2-root "{pathlib.Path(args.mo2_root).resolve()}"' in texto
+
+    @pytest.mark.asyncio
+    async def test_release_sobre_otra_raiz_avisa_de_la_instancia_que_si_esta_en_cuarentena(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Con la raíz equivocada ``release`` no encuentra nada: antes callaba mientras la instancia real seguía aislada."""
+        en_cuarentena = self._args(tmp_path)
+        state_dir = self._dejar_en_cuarentena(tmp_path, monkeypatch, en_cuarentena)
+        otra_raiz = _parse_args(
+            [
+                "--mode",
+                "vfs-quarantine",
+                "--mo2-root",
+                str(tmp_path / "OtroMO2"),
+                "--vfs-quarantine-action",
+                "release",
+                "--vfs-evidence",
+                "revisé el proceso",
+            ]
+        )
+
+        with caplog.at_level(logging.INFO, logger="sky_claw"):
+            estado = await _run_vfs_quarantine(otra_raiz)
+
+        assert estado.en_cuarentena is False
+        texto = "\n".join(r.getMessage() for r in caplog.records)
+        assert state_dir.name in texto and "pasá su --mo2-root" in texto
 
     @pytest.mark.asyncio
     async def test_status_sin_cuarentena_lo_dice(

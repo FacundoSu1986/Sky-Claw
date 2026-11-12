@@ -89,6 +89,32 @@ def vfs_instance_id(mo2_root: pathlib.Path) -> str:
     return f"mo2-{digest}"
 
 
+def proceso_dueno_sigue_vivo(pid: int, create_time_esperado: object) -> bool:
+    """¿El proceso ``pid`` sigue siendo el dueño original (mismo PID Y misma identidad)?
+
+    Conservadora: ante la duda, el dueño está vivo. ``create_time_esperado`` es el ``create_time`` que el dueño
+    registró en el lock; sin él (lock antiguo) no se puede probar que el PID cambió de dueño y se asume vivo.
+    """
+    if pid == os.getpid():
+        return True
+    # Liveness vía psutil + create_time, NO os.kill(pid, 0): en Windows os.kill
+    # sobre un PID reciclado por un proceso protegido del SO lanza un SystemError
+    # irrecuperable (OSError con excepción C sin traducir), y un PID simplemente
+    # reusado se leería como "vivo" y el lock jamás se reclamaría (deadlock de
+    # arranque tras un crash del broker). create_time da la identidad estable del
+    # proceso, mismo patrón que vfs.MO2Controller._kill_process_tree (review #302).
+    try:
+        create_time = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return False  # el dueño murió: PID libre → lock reclamable
+    except psutil.Error:
+        return True  # no verificable (AccessDenied/…): conservador, no robar el lock
+    # Vivo salvo que el create_time registrado no coincida (PID reusado por otro
+    # proceso ⇒ el dueño original ya murió). Un lock antiguo sin create_time
+    # (None) no dispara la reclamación: se trata como vivo (conservador).
+    return not (isinstance(create_time_esperado, (int, float)) and create_time != create_time_esperado)
+
+
 def lock_de_instancia_tiene_dueno_vivo(lock_path: pathlib.Path) -> bool:
     """¿El lock de instancia en ``lock_path`` pertenece a un proceso que sigue vivo?
 
@@ -105,25 +131,7 @@ def lock_de_instancia_tiene_dueno_vivo(lock_path: pathlib.Path) -> bool:
     pid = raw.get("pid") if isinstance(raw, dict) else None
     if type(pid) is not int or pid <= 0:
         return True
-    if pid == os.getpid():
-        return True
-    expected_create_time = raw.get("create_time") if isinstance(raw, dict) else None
-    # Liveness vía psutil + create_time, NO os.kill(pid, 0): en Windows os.kill
-    # sobre un PID reciclado por un proceso protegido del SO lanza un SystemError
-    # irrecuperable (OSError con excepción C sin traducir), y un PID simplemente
-    # reusado se leería como "vivo" y el lock jamás se reclamaría (deadlock de
-    # arranque tras un crash del broker). create_time da la identidad estable del
-    # proceso, mismo patrón que vfs.MO2Controller._kill_process_tree (review #302).
-    try:
-        create_time = psutil.Process(pid).create_time()
-    except psutil.NoSuchProcess:
-        return False  # el dueño murió: PID libre → lock reclamable
-    except psutil.Error:
-        return True  # no verificable (AccessDenied/…): conservador, no robar el lock
-    # Vivo salvo que el create_time registrado no coincida (PID reusado por otro
-    # proceso ⇒ el dueño original ya murió). Un lock antiguo sin create_time
-    # (None) no dispara la reclamación: se trata como vivo (conservador).
-    return not (isinstance(expected_create_time, (int, float)) and create_time != expected_create_time)
+    return proceso_dueno_sigue_vivo(pid, raw.get("create_time") if isinstance(raw, dict) else None)
 
 
 class VfsBrokerError(RuntimeError):
@@ -371,6 +379,7 @@ class VfsExecutionBroker:
                 poison_payload = json.dumps(
                     {
                         "pid": os.getpid(),
+                        "create_time": self._create_time_propio(),
                         "session_id": self._session_id,
                         "quarantined": True,
                         "quarantine_reason": f"emergencia fail-closed por falla de persistencia: {reason}",
@@ -382,21 +391,26 @@ class VfsExecutionBroker:
             except Exception:
                 pass
 
+    @staticmethod
+    def _create_time_propio() -> float | None:
+        """``create_time`` de este proceso (``None`` si psutil no lo puede leer): su identidad contra el reciclado de PID."""
+        try:
+            create_time: float | None = psutil.Process(os.getpid()).create_time()
+        except psutil.Error:
+            return None
+        return create_time
+
     def _crear_payload_de_identidad(self) -> bytes:
         """Crea el payload JSON de identidad del proceso dueño del lock (pid, session_id, create_time).
 
         create_time proporciona identidad estable contra el reciclado de PID del SO,
         manejando psutil.Error de forma homogénea tanto en adquisición como en reconciliación.
         """
-        try:
-            own_create_time: float | None = psutil.Process(os.getpid()).create_time()
-        except psutil.Error:
-            own_create_time = None
         return json.dumps(
             {
                 "pid": os.getpid(),
                 "session_id": self._session_id,
-                "create_time": own_create_time,
+                "create_time": self._create_time_propio(),
             },
             sort_keys=True,
         ).encode("utf-8")
@@ -550,6 +564,7 @@ class VfsExecutionBroker:
                 poison_payload = json.dumps(
                     {
                         "pid": os.getpid(),
+                        "create_time": self._create_time_propio(),
                         "session_id": self._session_id,
                         "quarantined": True,
                         "quarantine_reason": f"emergencia fail-closed retenida: {self._quarantine_reason}",

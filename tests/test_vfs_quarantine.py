@@ -19,6 +19,7 @@ import subprocess
 import sys
 from typing import Any
 
+import psutil
 import pytest
 
 from sky_claw.local.mo2 import vfs_quarantine
@@ -358,3 +359,111 @@ async def test_liberar_registra_critical_con_la_evidencia_y_el_estado_previo(
     texto = registros[0].getMessage()
     assert "verificado: no queda ningún LODGen.exe" in texto
     assert "job-77" in texto
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Review CodeRabbit del PR #904: timestamp irrepresentable y PID reciclado del lock envenenado
+# --------------------------------------------------------------------------------------------------------------------
+
+
+async def test_un_timestamp_irrepresentable_no_impide_ni_leer_ni_liberar(tmp_path: pathlib.Path) -> None:
+    """Un entero JSON mayor que un float no puede abortar la lectura: el broker igual trata el marcador como cuarentena."""
+    state_dir = tmp_path / "estado"
+    await _con_marcador(state_dir)
+    marcador = rutas_de_estado(state_dir, _INSTANCIA).marcador
+    crudo = json.loads(marcador.read_text(encoding="utf-8"))
+    crudo["timestamp"] = 10**400  # float(10**400) lanza OverflowError
+    marcador.write_text(json.dumps(crudo), encoding="utf-8")
+
+    estado = leer_estado_de_cuarentena(state_dir, _INSTANCIA)
+
+    assert estado.en_cuarentena is True
+    assert estado.desde is None, "un momento irrepresentable es metadato ausente, no un error"
+    liberar_cuarentena(state_dir, _INSTANCIA, evidencia="el marcador tenía un timestamp absurdo")
+    assert leer_estado_de_cuarentena(state_dir, _INSTANCIA).en_cuarentena is False
+
+
+@pytest.fixture
+def proceso_vivo():
+    """Un proceso ajeno que sigue vivo mientras dura el test (en cualquier SO)."""
+    proceso = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])  # noqa: S603 -- intérprete propio
+    try:
+        yield proceso
+    finally:
+        proceso.kill()
+        proceso.wait()
+
+
+def _envenenar_a_mano(state_dir: pathlib.Path, **campos: Any) -> None:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    cuerpo = {"quarantined": True, "quarantine_reason": "falla de persistencia", "job_id": "job-p", "session_id": "s"}
+    cuerpo.update(campos)
+    rutas_de_estado(state_dir, _INSTANCIA).lock.write_text(json.dumps(cuerpo), encoding="utf-8")
+
+
+def test_un_pid_reciclado_por_otro_proceso_no_cuenta_como_dueno_del_lock_envenenado(
+    tmp_path: pathlib.Path, proceso_vivo: subprocess.Popen[bytes]
+) -> None:
+    """El broker murió, el SO reutilizó su PID para un proceso ajeno: ese proceso no es el dueño y la cuarentena se libera."""
+    state_dir = tmp_path / "estado"
+    de_otro = psutil.Process(proceso_vivo.pid).create_time() - 5000.0  # el dueño original nació mucho antes
+    _envenenar_a_mano(state_dir, pid=proceso_vivo.pid, create_time=de_otro)
+
+    estado = leer_estado_de_cuarentena(state_dir, _INSTANCIA)
+
+    assert estado.origen is OrigenDeCuarentena.LOCK_ENVENENADO
+    assert estado.dueno_vivo is False
+    liberar_cuarentena(state_dir, _INSTANCIA, evidencia="el PID del lock pertenece hoy a otro proceso")
+    assert not rutas_de_estado(state_dir, _INSTANCIA).lock.exists()
+
+
+def test_el_dueno_verdadero_del_lock_envenenado_sigue_bloqueando_la_liberacion(
+    tmp_path: pathlib.Path, proceso_vivo: subprocess.Popen[bytes]
+) -> None:
+    """Control positivo del test de arriba: con el MISMO create_time el proceso es el dueño y no se libera."""
+    state_dir = tmp_path / "estado"
+    _envenenar_a_mano(state_dir, pid=proceso_vivo.pid, create_time=psutil.Process(proceso_vivo.pid).create_time())
+
+    assert leer_estado_de_cuarentena(state_dir, _INSTANCIA).dueno_vivo is True
+    with pytest.raises(CuarentenaNoLiberableError, match=str(proceso_vivo.pid)):
+        liberar_cuarentena(state_dir, _INSTANCIA, evidencia="intento con el dueño verdadero vivo")
+
+
+def test_un_lock_envenenado_antiguo_sin_create_time_sigue_siendo_conservador(
+    tmp_path: pathlib.Path, proceso_vivo: subprocess.Popen[bytes]
+) -> None:
+    """Sin identidad registrada no se puede probar que el PID cambió de dueño: se asume vivo (como el resto del broker)."""
+    state_dir = tmp_path / "estado"
+    _envenenar_a_mano(state_dir, pid=proceso_vivo.pid)
+
+    assert leer_estado_de_cuarentena(state_dir, _INSTANCIA).dueno_vivo is True
+
+
+async def test_los_dos_escritores_del_lock_envenenado_registran_la_identidad_del_proceso(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hay DOS sitios que envenenan el lock (al poner la cuarentena y al cerrar reteniéndolo): ambos guardan create_time."""
+    state_dir = tmp_path / "estado"
+    lock = rutas_de_estado(state_dir, _INSTANCIA).lock
+    esperado = psutil.Process(os.getpid()).create_time()
+    broker = _broker(state_dir)
+    await broker.start()
+    real_replace = os.replace
+
+    def _replace_que_falla(src: Any, dst: Any) -> None:
+        if "quarantine" in pathlib.Path(dst).name:
+            raise OSError("fallo simulado de E/S al persistir la cuarentena")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _replace_que_falla)
+    broker._quarantine_instance("job-id", "falla de persistencia")
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    al_poner = json.loads(lock.read_text(encoding="utf-8"))
+    await broker.close()
+    al_cerrar = json.loads(lock.read_text(encoding="utf-8"))
+
+    assert al_poner["quarantine_reason"].startswith("emergencia fail-closed por falla de persistencia")
+    assert al_cerrar["quarantine_reason"].startswith("emergencia fail-closed retenida")
+    assert al_poner["create_time"] == pytest.approx(esperado)
+    assert al_cerrar["create_time"] == pytest.approx(esperado)

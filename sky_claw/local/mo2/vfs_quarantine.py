@@ -26,18 +26,33 @@ import pathlib
 from dataclasses import dataclass
 from typing import Any
 
-import psutil
-
-from sky_claw.local.mo2.vfs_broker import VfsBrokerError, lock_de_instancia_tiene_dueno_vivo
+from sky_claw.local.mo2.vfs_broker import (
+    VfsBrokerError,
+    lock_de_instancia_tiene_dueno_vivo,
+    proceso_dueno_sigue_vivo,
+)
 
 logger = logging.getLogger(__name__)
 
-#: El procedimiento para el operador, en UN solo lugar: lo muestran ``--mode vfs-quarantine`` y ``lods_status``.
-COMO_LIBERAR = (
+_PASOS_PREVIOS_A_LIBERAR = (
     "Cerrá Sky-Claw, confirmá en el Administrador de tareas que no queda vivo ningún proceso del job (el worker "
     "SkyClawApp.exe --vfs-worker ni la herramienta que lanzó: TexGen, DynDOLOD, LODGen…) y corré "
-    '--mode vfs-quarantine --vfs-quarantine-action release --vfs-evidence "<qué verificaste>"'
 )
+
+
+def como_liberar(mo2_root: pathlib.Path | None = None) -> str:
+    """El procedimiento para el operador, en UN solo lugar: lo muestran ``--mode vfs-quarantine`` y ``lods_status``.
+
+    La instancia sale de ``--mo2-root``: con la raíz de la sesión que quedó en cuarentena el comando apunta a ESA
+    instancia, y no a la que el modo elegiría por defecto (otra raíz → otro directorio de estado → «nada que liberar»
+    mientras la instancia real sigue aislada). ``None`` solo cuando quien muestra el texto no conoce la raíz.
+    """
+    raiz = "" if mo2_root is None else f' --mo2-root "{mo2_root}"'
+    return f'{_PASOS_PREVIOS_A_LIBERAR}--mode vfs-quarantine{raiz} --vfs-quarantine-action release --vfs-evidence "<qué verificaste>"'
+
+
+#: El mismo procedimiento sin raíz (compatibilidad); quien conozca la raíz usa :func:`como_liberar`.
+COMO_LIBERAR = como_liberar()
 _RAZON_SIN_DATO = "terminalidad indeterminada previa"
 _RAZON_MARCADOR_ILEGIBLE = "marcador de cuarentena presente pero ilegible (fail-closed)"
 _RAZON_LOCK_ENVENENADO = "envenenamiento fail-closed"
@@ -103,6 +118,16 @@ def _como_pid(valor: object) -> int | None:
     return valor if type(valor) is int and valor > 0 else None
 
 
+def _como_momento(valor: object) -> float | None:
+    """El ``timestamp`` del marcador como float; ``None`` si falta o no es representable (p. ej. un entero gigante)."""
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        return None
+    try:
+        return float(valor)
+    except OverflowError:
+        return None
+
+
 def _inspeccionar_lock(lock: pathlib.Path) -> _Lock | None:
     """Lee el lock sin escribir. ``None`` si no existe. Ante lo ilegible, el dueño se da por vivo (conservador)."""
     try:
@@ -119,8 +144,10 @@ def _inspeccionar_lock(lock: pathlib.Path) -> _Lock | None:
         return _Lock(contenido=contenido, envenenado=False, pid=None, dueno_vivo=True, crudo={})
     pid = _como_pid(crudo.get("pid"))
     if crudo.get("quarantined"):
-        # El lock envenenado no guarda ``create_time``: «vivo» es que el PID exista (conservador ante un PID reciclado).
-        vivo = True if pid is None else psutil.pid_exists(pid)
+        # El broker nunca reclama un lock envenenado, pero el operador sí puede liberarlo si su dueño murió. El dueño
+        # se identifica por PID Y ``create_time`` (un PID reciclado por otro proceso no es el dueño); un lock
+        # antiguo sin ``create_time`` queda conservador: se asume vivo.
+        vivo = True if pid is None else proceso_dueno_sigue_vivo(pid, crudo.get("create_time"))
         return _Lock(contenido=contenido, envenenado=True, pid=pid, dueno_vivo=vivo, crudo=crudo)
     return _Lock(
         contenido=contenido,
@@ -138,7 +165,6 @@ def _leer(state_dir: pathlib.Path, instance_id: str) -> tuple[EstadoDeCuarentena
     dueno_vivo = lock is not None and lock.dueno_vivo
 
     def _estado(origen: OrigenDeCuarentena | None, datos: dict[str, Any], razon: str | None) -> EstadoDeCuarentena:
-        momento = datos.get("timestamp")
         return EstadoDeCuarentena(
             instance_id=instance_id,
             state_dir=state_dir,
@@ -147,7 +173,7 @@ def _leer(state_dir: pathlib.Path, instance_id: str) -> tuple[EstadoDeCuarentena
             job_id=datos.get("job_id") if isinstance(datos.get("job_id"), str) else None,
             error_type=datos.get("error_type") if isinstance(datos.get("error_type"), str) else None,
             detalle=datos.get("detail") if isinstance(datos.get("detail"), str) else None,
-            desde=float(momento) if isinstance(momento, (int, float)) and not isinstance(momento, bool) else None,
+            desde=_como_momento(datos.get("timestamp")),
             pid_dueno=pid_dueno,
             dueno_vivo=dueno_vivo,
         )

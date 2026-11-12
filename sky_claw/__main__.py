@@ -383,6 +383,19 @@ async def _run_vfs_health(args: argparse.Namespace) -> None:
         await broker.close()
 
 
+def _avisar_de_otras_instancias_en_cuarentena(
+    con_cuarentena: list[EstadoDeCuarentena], instance_id: str, base: pathlib.Path
+) -> None:
+    """Avisa de las instancias en cuarentena que NO son la de ``--mo2-root``: con otra raíz, ``release`` no encuentra nada."""
+    for otra in (e for e in con_cuarentena if e.instance_id != instance_id):
+        logger.warning(
+            "Otra instancia bajo %s está EN CUARENTENA: %s (job=%s). Si es la de tu MO2, pasá su --mo2-root",
+            base,
+            otra.instance_id,
+            otra.job_id,
+        )
+
+
 async def _run_vfs_quarantine(args: argparse.Namespace) -> EstadoDeCuarentena:
     """H-4: informa o libera la cuarentena persistida del broker VFS, sin arrancar el daemon.
 
@@ -392,7 +405,7 @@ async def _run_vfs_quarantine(args: argparse.Namespace) -> EstadoDeCuarentena:
     """
     from sky_claw.local.mo2.vfs_broker import vfs_instance_id
     from sky_claw.local.mo2.vfs_quarantine import (
-        COMO_LIBERAR,
+        como_liberar,
         leer_estado_de_cuarentena,
         liberar_cuarentena,
         listar_instancias_con_cuarentena,
@@ -406,6 +419,10 @@ async def _run_vfs_quarantine(args: argparse.Namespace) -> EstadoDeCuarentena:
         previo = await asyncio.to_thread(liberar_cuarentena, state_dir, instance_id, evidencia=args.vfs_evidence or "")
         if previo.en_cuarentena:
             logger.info("Cuarentena de la instancia %s liberada: ya se puede arrancar Sky-Claw", instance_id)
+        else:
+            _avisar_de_otras_instancias_en_cuarentena(
+                await asyncio.to_thread(listar_instancias_con_cuarentena, base), instance_id, base
+            )
         return previo
 
     estado = await asyncio.to_thread(leer_estado_de_cuarentena, state_dir, instance_id)
@@ -419,17 +436,12 @@ async def _run_vfs_quarantine(args: argparse.Namespace) -> EstadoDeCuarentena:
             estado.razon,
             "sí" if estado.dueno_vivo else "no",
         )
-        logger.warning("Para liberarla: %s", COMO_LIBERAR)
+        logger.warning("Para liberarla: %s", como_liberar(pathlib.Path(args.mo2_root).resolve()))
     else:
         logger.info("Instancia %s sin cuarentena persistida", instance_id)
-    otras = [e for e in await asyncio.to_thread(listar_instancias_con_cuarentena, base) if e.instance_id != instance_id]
-    for otra in otras:
-        logger.warning(
-            "Otra instancia bajo %s está EN CUARENTENA: %s (job=%s). Si es la de tu MO2, pasá su --mo2-root",
-            base,
-            otra.instance_id,
-            otra.job_id,
-        )
+    _avisar_de_otras_instancias_en_cuarentena(
+        await asyncio.to_thread(listar_instancias_con_cuarentena, base), instance_id, base
+    )
     return estado
 
 
