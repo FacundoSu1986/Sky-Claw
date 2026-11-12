@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Cliente:** el bridge se lanza como proceso aparte, por MCP stdio, una sesión por llamada, con timeout y Job kill-on-close.
     - El arranque (comando, args, cwd y env) se lee completo del `codex-mcp.example.toml` del bridge: los args tienen que ser exactamente los que se ejecutan y el cwd, la propia raíz. La instalación se configura con una sola variable, `XEDIT_BRIDGE_ROOT`, validada contra el sandbox.
     - Versión fijada a `>=1.1.0,<2`. Todo error falla cerrado, también una respuesta malformada o un `ok` que no es booleano.
+    - La ruta del bridge tiene que caer dentro del sandbox, que define `install_dir` de `config.toml` (gana sobre `--install-dir`). Documentado en la guía de configuración.
   - **Veredicto:** `success` indica que la auditoría es confiable (completa, integridad `PASS`, sin recortar), y solo `aprobado` habilita tratar el plugin como sin errores. Los textos del plugin se sanean y se acotan.
   - **MO2:** `PathResolutionService.get_mo2_instance_ini_dir()` entrega la carpeta del `ModOrganizer.ini` del que Sky-Claw derivó la instancia (global o portable), para que el bridge lea ese mismo INI y no la instalación ni una copia vieja en la raíz de datos.
   - **`run_capture`:** acepta `input_bytes` (stdin) y `env`; sin ellos el comportamiento no cambia.

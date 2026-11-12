@@ -91,6 +91,18 @@ estar dentro del sandbox, igual que las demás rutas. Sin la variable, las dos
 herramientas responden «no configurado». El intérprete y el arranque salen del
 `codex-mcp.example.toml` del propio bridge: no hay otra variable que configurar.
 
+**El sandbox lo define `install_dir`.** Su valor por defecto es `C:\Modding`, y
+el `install_dir` de `config.toml` **gana** sobre `--install-dir`. Si el bridge
+está en otra unidad, la app lo rechaza y las herramientas responden «no
+configurado», aunque `XEDIT_BRIDGE_ROOT` esté bien. Hay que fijar en
+`config.toml` una carpeta que contenga al bridge, por ejemplo
+`install_dir = "G:/Modding/SSEDIT"`. Ese valor reemplaza al anterior como raíz
+permitida, y es también donde Sky-Claw instala las herramientas que descarga.
+Ejemplo verificado de punta a punta con Telegram: `config.toml` con
+`telegram_chat_id` (tu ID de usuario, no el del bot), `llm_provider` e
+`install_dir`, el token del bot en el llavero y `XEDIT_BRIDGE_ROOT` en el
+entorno del proceso.
+
 La admisión copia el plugin y sus masters del perfil MO2 activo al laboratorio
 del bridge. Pide aprobación y no modifica MO2. Después, la auditoría devuelve el
 veredicto nativo de SSEEdit; solo `aprobado: true` significa «sin errores».
