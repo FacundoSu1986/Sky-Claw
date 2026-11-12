@@ -140,7 +140,11 @@ async def test_el_latido_real_entrega_el_progreso_en_cada_intervalo(tmp_path: pa
     assert {p.tool_name for p in recibidos} == {"TexGen"}
     assert recibidos[0].log_bytes == 3
     tiempos = [p.elapsed_seconds for p in recibidos]
-    assert tiempos == sorted(tiempos) and tiempos[0] > 0
+    # El primer latido puede medir 0.0: el reloj monotónico de Windows avanza de a ~15,6 ms y el primer intervalo es de
+    # 10 ms (CI de Windows py3.11, PR #905). Lo que se exige es que no retroceda y que el tiempo corra de verdad: el
+    # último latido, tras 150 ms de proceso, no puede ser 0.
+    assert tiempos == sorted(tiempos)
+    assert tiempos[-1] > 0
 
 
 async def test_sin_callback_la_corrida_es_la_de_siempre(tmp_path: pathlib.Path) -> None:
