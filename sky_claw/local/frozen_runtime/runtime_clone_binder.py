@@ -141,6 +141,11 @@ from sky_claw.local.frozen_runtime.surface_census import (
     CENSO_ESCRITORES_GAME_DIR,
     CLASES_DE_SUPERFICIE,
 )
+from sky_claw.local.frozen_runtime.transition_abandonment import (
+    AbandonoCorruptoError,
+    AbandonoTransicionInvalidoError,
+    registro_de_abandono,
+)
 from sky_claw.local.local_config import persistir_campo
 
 logger = logging.getLogger(__name__)
@@ -159,6 +164,7 @@ __all__ = [
     "BinderResult",
     "BinderRollbackError",
     "BinderRollbackFailedError",
+    "BinderTransicionAbandonadaError",
     "BinderVerificationError",
     "actualizar_game_path_en_ini",
     "codificar_qt_byte_array",
@@ -189,6 +195,14 @@ class BinderApprovalError(BinderError):
 
 class BinderVerificationError(BinderError):
     """Fallo en la verificación física de superficies (readback del INI o POST verify)."""
+
+
+class BinderTransicionAbandonadaError(BinderApprovalError):
+    """La transición fue ABANDONADA por su dueño: no se reanuda ni se publica su PENDING.
+
+    Se levanta bajo el ``participant_lock`` y ANTES de revalidar, capturar el snapshot o publicar el
+    ``PENDING``: no hay superficie mutada ni journal que deshacer. La aprobación sigue CONSUMED (single-use).
+    """
 
 
 class BinderEscrituraIniError(BinderError):
@@ -941,6 +955,23 @@ def ejecutar_transicion_binder(
 
     with handle_lock as handle:
         handle.assert_owned()
+
+        # 5.0 — Abandono, BAJO el lock. El diagnóstico de ``reanudar`` corre sin lock: otra sesión puede
+        # abandonar esta transición entre ese diagnóstico y esta línea, y el tombstone CONSUMED sigue
+        # siendo válido, así que sin esta mirada la transición abandonada mutaría superficies y llegaría a
+        # FINALIZED. El lock del abandono sólo excluye si TODOS los que reanudan lo consultan en SU sección
+        # crítica (Codex P1 sobre #909). Ocurre antes de revalidar y de publicar el PENDING.
+        try:
+            abandono = registro_de_abandono(storage_path, t_id)
+        except (AbandonoCorruptoError, AbandonoTransicionInvalidoError, OSError) as exc:
+            raise BinderApprovalError(
+                f"no se pudo descartar que la transición {t_id!r} esté abandonada ({exc}): fail-closed"
+            ) from exc
+        if abandono is not None:
+            raise BinderTransicionAbandonadaError(
+                f"la transición {t_id!r} fue abandonada por su dueño (aprobación {abandono.approval_seq} CONSUMED): "
+                "no se reanuda. Hay que presentar una transición NUEVA"
+            )
 
         # 5.1 — Revalidación bajo la sección crítica (FIX 6)
         _preflight_lock, bytes_ini_revalidado = _revalidar_bajo_lock(

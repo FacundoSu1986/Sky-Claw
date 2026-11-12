@@ -120,12 +120,14 @@ from sky_claw.local.frozen_runtime.provisioning import (
     verificar_runtime_setup,
 )
 from sky_claw.local.frozen_runtime.root_lock import canonical_root_key
+from sky_claw.local.frozen_runtime.runtime_clone_binder import BinderTransicionAbandonadaError
 from sky_claw.local.frozen_runtime.storage import (
     approvals_state_dir,
     issuances_state_dir,
     recovery_state_dir,
     transition_journal_path,
 )
+from sky_claw.local.frozen_runtime.transition_abandonment import registro_de_abandono
 from tests._rig_p7_a5 import (
     RigStockManual,
     aplicar_parche_identidad_pe,
@@ -2094,6 +2096,67 @@ class TestAbandonoStoreYParserEnPosix:
                         llamadores.add((ruta.name, funcion.name))
         assert llamadores == {("autorizacion_hitl_transicion.py", "reanudar")}
 
+    def test_57_registro_de_abandono_distingue_no_abandonada_de_ilegible(self, tmp_path: pathlib.Path) -> None:
+        """``None`` sólo cuando NO hay registro; uno ilegible o ajeno levanta (el binder falla cerrado)."""
+        raiz = tmp_path / "root"
+        (raiz / "state").mkdir(parents=True)
+        root_id = canonical_root_key(raiz)[0]
+
+        assert registro_de_abandono(raiz, _UUID_A) is None  # store ausente
+        assert registro_de_abandono(raiz, "no-es-uuid") is None  # no puede haberse abandonado
+        assert registro_de_abandono(raiz, "../../escape") is None  # y no toca el disco
+
+        ruta = storage.abandoned_transition_record_path(raiz, _UUID_A)
+        _escribir_registro_abandono(ruta, _payload_abandono_valido(root_id=root_id))
+        registro = registro_de_abandono(raiz, _UUID_A)
+        assert registro is not None and registro.transition_id == _UUID_A
+
+        ruta.write_text("{ no es json", encoding="utf-8")
+        with pytest.raises(AbandonoCorruptoError):
+            registro_de_abandono(raiz, _UUID_A)
+
+        _escribir_registro_abandono(ruta, _payload_abandono_valido(root_id="otro-root"))
+        with pytest.raises(AbandonoTransicionInvalidoError, match="no coincide con el esperado"):
+            registro_de_abandono(raiz, _UUID_A)
+
+    def test_58_ancla_el_binder_mira_el_abandono_bajo_su_lock_antes_de_mutar(self) -> None:
+        """Codex P1 sobre #909: el abandono se consulta DENTRO de la sección crítica del binder.
+
+        El diagnóstico de ``reanudar`` no tiene lock, así que la mirada que cuenta es la del binder. Se
+        verifica por AST: ``registro_de_abandono`` va dentro del ``with handle_lock`` y ANTES de la
+        revalidación, del snapshot y del ``PENDING`` (que es donde empieza a haber estado que deshacer).
+        """
+        fuente = (RAIZ_REPO / "sky_claw" / "local" / "frozen_runtime" / "runtime_clone_binder.py").read_text(
+            encoding="utf-8"
+        )
+        arbol = ast.parse(fuente)
+        funcion = next(
+            n for n in ast.walk(arbol) if isinstance(n, ast.FunctionDef) and n.name == "ejecutar_transicion_binder"
+        )
+        seccion = next(
+            n
+            for n in ast.walk(funcion)
+            if isinstance(n, ast.With)
+            and any(isinstance(i.context_expr, ast.Name) and i.context_expr.id == "handle_lock" for i in n.items)
+        )
+
+        def _linea(nombre: str) -> int:
+            lineas = [
+                n.lineno
+                for n in ast.walk(seccion)
+                if isinstance(n, ast.Call)
+                and (
+                    (isinstance(n.func, ast.Name) and n.func.id == nombre)
+                    or (isinstance(n.func, ast.Attribute) and n.func.attr == nombre)
+                )
+            ]
+            assert lineas, f"{nombre} no se llama dentro del with handle_lock del binder"
+            return min(lineas)
+
+        abandono = _linea("registro_de_abandono")
+        for posterior in ("_revalidar_bajo_lock", "capturar_registro", "_crear_pendiente_locked", "_start_next_locked"):
+            assert abandono < _linea(posterior), f"el abandono debe mirarse antes de {posterior}"
+
 
 def _dejar_consumida_sin_pending(
     rig: RigStockManual, monkeypatch: pytest.MonkeyPatch
@@ -2190,3 +2253,37 @@ class TestAbandonoEndurecidoExtremoAExtremo:
         assert segundo == primero
         assert segundo.motivo == "motivo original"
         assert ruta.read_bytes() == bytes_originales
+
+    def test_59_un_abandono_intercalado_entre_el_diagnostico_y_el_lock_aborta_la_reanudacion(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Codex P1 sobre #909: ``reanudar`` diagnostica SIN lock; otra sesión abandona en el medio.
+
+        El abandono se ejecuta de verdad (toma y suelta el lock) justo antes de que el binder tome el
+        suyo. El tombstone CONSUMED sigue siendo válido, así que sin la mirada bajo lock la transición
+        abandonada mutaría superficies y llegaría a FINALIZED.
+        """
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion, trans_id = _dejar_consumida_sin_pending(rig, monkeypatch)
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.REANUDABLE
+
+        original = binder_module._verificar_aprobacion_consumida_durable
+
+        def _abandona_y_sigue(*args: object, **kwargs: object) -> object:
+            sesion.abandonar(transition_id=trans_id, identidad=_identidad_telegram(), motivo="abandono en carrera")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(binder_module, "_verificar_aprobacion_consumida_durable", _abandona_y_sigue)
+        huellas_previas = _huellas(rig)
+
+        with pytest.raises(BinderTransicionAbandonadaError, match="fue abandonada"):
+            sesion.reanudar(transition_id=trans_id)
+
+        assert _huellas(rig) == huellas_previas  # ninguna superficie mutada
+        assert journal_module.cargar_journal_transicion(rig.storage).disposition in (
+            journal_module.JournalDisposition.ABSENT,
+            journal_module.JournalDisposition.NONE,
+        )  # ningún PENDING publicado
+        assert not list(recovery_state_dir(rig.storage).glob("*.json"))
+        assert journal_module.derivar_historial_finalizados(rig.storage).registros == ()  # nunca llegó a FINALIZED
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
