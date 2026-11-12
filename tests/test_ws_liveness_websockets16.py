@@ -34,6 +34,7 @@ if not hasattr(_ast_module, "ASTGuardian"):
 sys.modules["ast_guardian"] = _ast_module
 
 from sky_claw.app.comms import frontend_bridge as fb  # noqa: E402
+from sky_claw.app.comms._transport import enviar_si_conectado  # noqa: E402
 from sky_claw.app.comms.ws_daemon import TelegramDaemon  # noqa: E402
 
 _RAIZ = pathlib.Path(__file__).resolve().parent.parent
@@ -166,6 +167,55 @@ async def test_daemon_tolera_el_cierre_concurrente_del_socket(cliente: Any) -> N
     daemon.router.chat = chat
     # Act / Assert: ni el progreso, ni la respuesta, ni el handler de error propagan.
     await daemon._inject_to_router(_comando())
+
+
+async def test_daemon_el_error_del_router_con_el_socket_ya_cerrado_no_propaga(cliente: Any) -> None:
+    # Arrange: la combinación que el handler de error debe tolerar — el router
+    # falla Y el gateway ya cerró, así que avisar el error también encuentra el socket cerrado.
+    daemon = _daemon(cliente)
+
+    async def chat(*_args: Any, **_kw: Any) -> str:
+        await cliente.close()
+        raise RuntimeError("falla del proveedor")
+
+    daemon.router.chat = chat
+    # Act / Assert: ni el error original ni el aviso fallido escapan del handler.
+    await daemon._inject_to_router(_comando())
+
+
+# ── Contrato del helper aislado ─────────────────────────────────────────────
+
+
+class _SocketQueFalla:
+    """Socket mínimo cuyo ``send`` lanza la excepción dada (no inventa ``.open``)."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    async def send(self, _raw: str) -> None:
+        raise self._error
+
+
+async def test_enviar_si_conectado_devuelve_true_si_envio_y_false_si_no_pudo(
+    gateway: tuple[str, asyncio.Queue[dict[str, Any]]], cliente: Any
+) -> None:
+    # Arrange
+    _, recibidos = gateway
+    # Act / Assert: abierto -> True y el frame llega; ausente -> False; cerrado -> False.
+    assert await enviar_si_conectado(cliente, json.dumps({"k": 1})) is True
+    assert await _siguiente(recibidos) == {"k": 1}
+    assert await enviar_si_conectado(None, "x") is False
+    await cliente.close()
+    assert await enviar_si_conectado(cliente, "x") is False
+
+
+async def test_enviar_si_conectado_no_traga_la_cancelacion_ni_otros_errores_de_transporte() -> None:
+    # Arrange / Act / Assert: solo ConnectionClosed se tolera; el resto propaga.
+    # (CancelledError es BaseException en 3.8+: ningún ``except Exception`` del llamador la atrapa.)
+    with pytest.raises(asyncio.CancelledError):
+        await enviar_si_conectado(_SocketQueFalla(asyncio.CancelledError()), "x")
+    with pytest.raises(RuntimeError):
+        await enviar_si_conectado(_SocketQueFalla(RuntimeError("transporte")), "x")
 
 
 # ── FrontendBridge (hermano: misma API, otro archivo) ───────────────────────
