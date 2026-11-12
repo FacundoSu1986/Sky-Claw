@@ -467,3 +467,44 @@ async def test_los_dos_escritores_del_lock_envenenado_registran_la_identidad_del
     assert al_cerrar["quarantine_reason"].startswith("emergencia fail-closed retenida")
     assert al_poner["create_time"] == pytest.approx(esperado)
     assert al_cerrar["create_time"] == pytest.approx(esperado)
+
+
+def test_el_pid_de_este_proceso_con_otra_identidad_no_es_el_dueno_del_lock_envenenado(tmp_path: pathlib.Path) -> None:
+    """Review CodeRabbit #904: si el SO le da al comando de liberar el PID del broker muerto, ese PID ya no es el dueño."""
+    state_dir = tmp_path / "estado"
+    propio = psutil.Process(os.getpid()).create_time()
+    _envenenar_a_mano(state_dir, pid=os.getpid(), create_time=propio - 5000.0)
+
+    estado = leer_estado_de_cuarentena(state_dir, _INSTANCIA)
+
+    assert estado.dueno_vivo is False
+    liberar_cuarentena(state_dir, _INSTANCIA, evidencia="el PID del lock pertenece hoy a este mismo comando")
+
+
+def test_el_pid_de_este_proceso_con_su_identidad_o_sin_ella_sigue_siendo_conservador(tmp_path: pathlib.Path) -> None:
+    """Control positivo del test de arriba: misma identidad → dueño vivo; lock antiguo sin ``create_time`` → conservador."""
+    propio = psutil.Process(os.getpid()).create_time()
+    con_identidad = tmp_path / "con"
+    sin_identidad = tmp_path / "sin"
+    _envenenar_a_mano(con_identidad, pid=os.getpid(), create_time=propio)
+    _envenenar_a_mano(sin_identidad, pid=os.getpid())
+
+    assert leer_estado_de_cuarentena(con_identidad, _INSTANCIA).dueno_vivo is True
+    assert leer_estado_de_cuarentena(sin_identidad, _INSTANCIA).dueno_vivo is True
+
+
+def test_un_lock_normal_con_el_pid_propio_y_otra_identidad_se_considera_huerfano(tmp_path: pathlib.Path) -> None:
+    """La misma definición de «dueño» sirve al lock sin envenenar: el broker y el liberador no pueden discrepar."""
+    state_dir = tmp_path / "estado"
+    state_dir.mkdir()
+    lock = rutas_de_estado(state_dir, _INSTANCIA).lock
+    propio = psutil.Process(os.getpid()).create_time()
+    lock.write_text(
+        json.dumps({"pid": os.getpid(), "session_id": "s", "create_time": propio - 5000.0}), encoding="utf-8"
+    )
+
+    assert leer_estado_de_cuarentena(state_dir, _INSTANCIA).origen is OrigenDeCuarentena.LOCK_HUERFANO
+
+    lock.write_text(json.dumps({"pid": os.getpid(), "session_id": "s", "create_time": propio}), encoding="utf-8")
+
+    assert leer_estado_de_cuarentena(state_dir, _INSTANCIA).origen is None

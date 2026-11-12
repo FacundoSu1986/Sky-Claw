@@ -383,14 +383,12 @@ async def _run_vfs_health(args: argparse.Namespace) -> None:
         await broker.close()
 
 
-def _avisar_de_otras_instancias_en_cuarentena(
-    con_cuarentena: list[EstadoDeCuarentena], instance_id: str, base: pathlib.Path
-) -> None:
+def _avisar_de_otras_instancias_en_cuarentena(con_cuarentena: list[EstadoDeCuarentena], instance_id: str) -> None:
     """Avisa de las instancias en cuarentena que NO son la de ``--mo2-root``: con otra raíz, ``release`` no encuentra nada."""
     for otra in (e for e in con_cuarentena if e.instance_id != instance_id):
         logger.warning(
-            "Otra instancia bajo %s está EN CUARENTENA: %s (job=%s). Si es la de tu MO2, pasá su --mo2-root",
-            base,
+            "Otra instancia está EN CUARENTENA en %s: %s (job=%s). Si es la de tu MO2, pasá su --mo2-root",
+            otra.state_dir,
             otra.instance_id,
             otra.job_id,
         )
@@ -421,7 +419,7 @@ async def _run_vfs_quarantine(args: argparse.Namespace) -> EstadoDeCuarentena:
             logger.info("Cuarentena de la instancia %s liberada: ya se puede arrancar Sky-Claw", instance_id)
         else:
             _avisar_de_otras_instancias_en_cuarentena(
-                await asyncio.to_thread(listar_instancias_con_cuarentena, base), instance_id, base
+                await asyncio.to_thread(listar_instancias_con_cuarentena, base), instance_id
             )
         return previo
 
@@ -440,7 +438,7 @@ async def _run_vfs_quarantine(args: argparse.Namespace) -> EstadoDeCuarentena:
     else:
         logger.info("Instancia %s sin cuarentena persistida", instance_id)
     _avisar_de_otras_instancias_en_cuarentena(
-        await asyncio.to_thread(listar_instancias_con_cuarentena, base), instance_id, base
+        await asyncio.to_thread(listar_instancias_con_cuarentena, base), instance_id
     )
     return estado
 

@@ -431,6 +431,7 @@ class TestVfsQuarantine:
         assert estado.en_cuarentena is False
         texto = "\n".join(r.getMessage() for r in caplog.records)
         assert state_dir.name in texto and "pasá su --mo2-root" in texto
+        assert str(state_dir) in texto, "el aviso nombra el directorio de ESA instancia, no la carpeta común"
 
     @pytest.mark.asyncio
     async def test_status_sin_cuarentena_lo_dice(

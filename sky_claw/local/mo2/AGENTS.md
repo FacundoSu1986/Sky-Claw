@@ -80,7 +80,7 @@ raíz.
   `vfs_quarantine.py` contesta «¿está en cuarentena y por qué?» y la libera (`--mode vfs-quarantine`); para decidir si
   un lock está huérfano reusa `vfs_broker.lock_de_instancia_tiene_dueno_vivo`, la ÚNICA definición (el broker la usa
   para reclamar), y para el dueño de un lock envenenado `vfs_broker.proceso_dueno_sigue_vivo` (PID **y** `create_time`:
-  un PID reciclado por otro proceso no es el dueño; un lock antiguo sin `create_time` se asume vivo): no las copies.
+  un PID reciclado por otro proceso —incluido el de quien consulta— no es el dueño; un lock antiguo sin `create_time` se asume vivo): no las copies.
   Los DOS escritores del lock envenenado guardan `create_time` (lo ancla un test por AST). Exige evidencia no vacía, se niega con un dueño vivo del lock (un broker vivo la
   volvería a persistir desde su memoria), borra el lock —releído y sin cambios— ANTES que el marcador (un fallo a mitad
   deja siempre cuarentena entera) y registra `CRITICAL`. **Límite conocido:** entre la relectura y el `unlink` del lock

@@ -95,8 +95,9 @@ def proceso_dueno_sigue_vivo(pid: int, create_time_esperado: object) -> bool:
     Conservadora: ante la duda, el dueño está vivo. ``create_time_esperado`` es el ``create_time`` que el dueño
     registró en el lock; sin él (lock antiguo) no se puede probar que el PID cambió de dueño y se asume vivo.
     """
-    if pid == os.getpid():
-        return True
+    # Sin atajo para el PID propio: el SO puede haberle dado a ESTE proceso el PID de un dueño que ya murió (reciclado), y
+    # entonces el ``create_time`` registrado no coincide con el propio y el dueño original no está vivo. Con identidad
+    # igual (o sin ella, en un lock antiguo) sigue siendo «vivo», como antes.
     # Liveness vía psutil + create_time, NO os.kill(pid, 0): en Windows os.kill
     # sobre un PID reciclado por un proceso protegido del SO lanza un SystemError
     # irrecuperable (OSError con excepción C sin traducir), y un PID simplemente
