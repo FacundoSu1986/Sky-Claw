@@ -25,10 +25,11 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 
-from sky_claw.app.security.links import link_kind_or_raise
+from sky_claw.app.security.links import ContencionFisicaVioladaError, exigir_contencion_fisica, link_kind_or_raise
 from sky_claw.local.frozen_runtime.errors import FrozenRuntimeStorageError
-from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace
+from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace, exigir_namespace_escribible
 from sky_claw.local.frozen_runtime.state import STATE_FILE_NAME, write_json_atomic
 from sky_claw.local.frozen_runtime.storage_models import (
     StorageAdmissionResult,
@@ -149,15 +150,47 @@ def abandoned_transitions_state_dir(root: pathlib.Path) -> pathlib.Path:
     return state_dir(root) / "abandoned_transitions"
 
 
+#: ``transition_id`` canónico del subsistema: UUID v4 en minúsculas (el journal lo exige). Es la ÚNICA
+#: forma que se acepta como nombre de archivo del store de abandonos: cualquier otra (``..``, separadores,
+#: ``:``, nombres reservados de Windows) queda fuera por construcción en vez de listarse como prohibida.
+_PATRON_TRANSITION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+
+
 def abandoned_transition_record_path(root: pathlib.Path, transition_id: str) -> pathlib.Path:
-    """Ruta al registro JSON de abandono de una transición consumida."""
+    """Ruta al registro JSON de abandono de una transición consumida.
+
+    Falla cerrado si ``transition_id`` no es un UUID v4 canónico: el id se interpola en un nombre de
+    archivo, y sin esta puerta un ``../`` escaparía del store.
+    """
+    if not isinstance(transition_id, str) or _PATRON_TRANSITION_ID.fullmatch(transition_id) is None:
+        raise FrozenRuntimeStorageError(
+            f"transition_id inválido para el registro de abandono (se exige UUID v4 canónico): {transition_id!r}"
+        )
     return abandoned_transitions_state_dir(root) / f"{transition_id}.json"
 
 
 def asegurar_directorio_abandonos(root: pathlib.Path) -> pathlib.Path:
-    """Crea el directorio de transiciones abandonadas bajo las admisiones del storage."""
+    """Admite fail-closed y crea ``state/abandoned_transitions/`` (hermano de ``_exigir_candidates_state_dir``).
+
+    El namespace del ANCESTRO se verifica ANTES del ``mkdir``: si ``state/`` fue reemplazado por un
+    junction y la hoja todavía no existe, ``mkdir(parents=True)`` crearía el directorio en el destino
+    EXTERNO (Codex sobre #682). Un ``mkdir`` desnudo repetiría ese defecto en este store.
+    """
     directorio = abandoned_transitions_state_dir(root)
-    directorio.mkdir(parents=True, exist_ok=True)
+    try:
+        exigir_contencion_fisica(pathlib.Path(root), state_dir(root), exigir_existencia=True)
+    except ContencionFisicaVioladaError as exc:
+        raise FrozenRuntimeStorageError(f"el namespace de estado no cuelga físicamente de '{root}': {exc}") from exc
+    exigir_namespace_escribible(state_dir(root))
+    admision = admitir_directorio_storage(directorio)
+    if not admision.success:
+        raise FrozenRuntimeStorageError(f"el store de abandonos fue rechazado: {admision.message}")
+    if not directorio.exists():
+        try:
+            directorio.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise FrozenRuntimeStorageError(f"no se pudo crear el store de abandonos '{directorio}': {exc}") from exc
+    exigir_namespace_escribible(directorio)
     return directorio
 
 

@@ -77,6 +77,8 @@ from sky_claw.local.frozen_runtime.autorizacion_hitl_transicion import (
     SesionTransicionGoldenMaster,
     TransicionEnCursoError,
     TransicionYaActivaError,
+    _calcular_digest_abandono,
+    _cargar_abandonos,
     _registros_de_clones,
     abandonar_transicion_consumida,
     cargar_registro_abandono,
@@ -101,6 +103,7 @@ from sky_claw.local.frozen_runtime.errors import (
     ApprovalMaxIssuedError,
     ConsentimientoDuplicadoError,
     FrozenRuntimeLockBusyError,
+    FrozenRuntimeStorageError,
     IdentidadPropietarioNoVerificadaError,
     SesionConsentimientoNoCoincideError,
     SuperficieSinIdentidadVerificadaError,
@@ -1420,9 +1423,12 @@ class TestExtremoAExtremo:
         trans_id = tombstone.consumed_by_transition_id
         assert trans_id is not None
 
-        # Modificación de evidencia para detonar deadlock (preservando CRLF)
+        # Modificación de evidencia para detonar deadlock. El separador sale del propio INI (CRLF en
+        # Windows, LF en POSIX): mezclar clases de salto de línea hace que el binder falle cerrado por otra causa.
         ini_path = rig.mo2_active_global / "modorganizer.ini"
-        ini_path.write_bytes(ini_path.read_bytes() + b"\r\n# mutacion de evidencia\r\n")
+        ini_previo = ini_path.read_bytes()
+        salto = b"\r\n" if b"\r\n" in ini_previo else b"\n"
+        ini_path.write_bytes(ini_previo + salto + b"# mutacion de evidencia" + salto)
 
         # Comprobar que reanudar falla y preparar está bloqueada
         with pytest.raises(EvidenciaTransicionError):
@@ -1578,6 +1584,13 @@ class TestExtremoAExtremo:
 
         with pytest.raises(AbandonoTransicionInvalidoError, match="no se encontró ninguna aprobación consumida"):
             sesion.abandonar(
+                transition_id="9b2f6c1e-3d4a-4e5f-8a6b-7c8d9e0f1a2b",  # UUID v4 canónico, sin tombstone
+                identidad=_identidad_telegram(),
+                motivo="intento invalido",
+            )
+
+        with pytest.raises(AbandonoTransicionInvalidoError, match="no es un UUID válido"):
+            sesion.abandonar(
                 transition_id="trans_inexistente_12345",
                 identidad=_identidad_telegram(),
                 motivo="intento invalido",
@@ -1592,7 +1605,7 @@ class TestExtremoAExtremo:
 
         with pytest.raises(AbandonoTransicionInvalidoError, match="se exige un motivo no vacío"):
             sesion.abandonar(
-                transition_id="trans_valida",
+                transition_id="9b2f6c1e-3d4a-4e5f-8a6b-7c8d9e0f1a2b",
                 identidad=_identidad_telegram(),
                 motivo="",
             )
@@ -1907,3 +1920,273 @@ def resultado_transicion(rig: RigStockManual) -> str:
     snapshot = journal_module.cargar_journal_transicion(rig.storage)
     assert snapshot.journal is not None
     return snapshot.journal.transition_id
+
+
+# ===========================================================================
+# ENDURECIMIENTO DEL ABANDONO (revisión adversarial del hotfix)
+# ===========================================================================
+
+_UUID_A = "9b2f6c1e-3d4a-4e5f-8a6b-7c8d9e0f1a2b"
+_UUID_B = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+
+def _payload_abandono_valido(**cambios: object) -> dict[str, object]:
+    """Registro de abandono v1 bien formado y con el digest RECOMPUTADO tras aplicar ``cambios``."""
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "root_id": "root-de-prueba",
+        "transition_id": _UUID_A,
+        "approval_id": "approval-1",
+        "approval_seq": 1,
+        "scope_digest": "a" * 64,
+        "propietario_sujeto": str(OPERADOR),
+        "propietario_superficie": "telegram",
+        "propietario_sesion": str(OPERADOR),
+        "propietario_mecanismo": "telegram_from_id",
+        "motivo": "motivo de prueba",
+        "abandonado_en_ns": 123456,
+    }
+    payload.update(cambios)
+    payload["record_digest"] = _calcular_digest_abandono(payload)
+    return payload
+
+
+def _escribir_registro_abandono(ruta: pathlib.Path, payload: dict[str, object]) -> None:
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+
+class TestAbandonoStoreYParserEnPosix:
+    """Contratos del store y del parser que NO necesitan el binder: corren también fuera de Windows."""
+
+    @pytest.mark.parametrize(
+        "transition_id",
+        [
+            "../../escape",
+            "..\\escape",
+            "a/b",
+            "C:evil",
+            "",
+            "   ",
+            "trans_valida",
+            _UUID_A.upper(),  # no canónico (minúsculas)
+            "6ba7b810-9dad-11d1-80b4-00c04fd430c8",  # UUID v1
+            _UUID_A + "\n",  # `$` de una regex sin fullmatch lo dejaría pasar
+        ],
+    )
+    def test_48_la_ruta_del_registro_solo_acepta_uuid_v4_canonico(
+        self, tmp_path: pathlib.Path, transition_id: str
+    ) -> None:
+        with pytest.raises(FrozenRuntimeStorageError):
+            storage.abandoned_transition_record_path(tmp_path, transition_id)
+
+    def test_48b_un_uuid_v4_canonico_queda_contenido_en_el_store(self, tmp_path: pathlib.Path) -> None:
+        ruta = storage.abandoned_transition_record_path(tmp_path, _UUID_A)
+        assert ruta.parent == storage.abandoned_transitions_state_dir(tmp_path)
+        assert ruta.name == f"{_UUID_A}.json"
+
+    @pytest.mark.parametrize("transition_id", ["../../escape", "a/b", "trans_valida", ""])
+    def test_48c_abandonar_rechaza_ids_no_canonicos_antes_de_tocar_el_disco(
+        self, tmp_path: pathlib.Path, transition_id: str
+    ) -> None:
+        """La validación va ANTES del lock y de cualquier lectura: ni siquiera hace falta un storage."""
+        antes = sorted(p.name for p in tmp_path.rglob("*"))
+        with pytest.raises(AbandonoTransicionInvalidoError):
+            abandonar_transicion_consumida(
+                tmp_path, transition_id=transition_id, identidad=_identidad_telegram(), motivo="intento"
+            )
+        assert sorted(p.name for p in tmp_path.rglob("*")) == antes
+
+    def test_49_el_store_no_se_crea_a_traves_de_un_enlace(self, tmp_path: pathlib.Path) -> None:
+        """Hermano de ``_exigir_candidates_state_dir`` (Codex sobre #682): un enlace NO muta fuera del root."""
+        raiz = tmp_path / "root"
+        externo = tmp_path / "externo"
+        (raiz / "state").mkdir(parents=True)
+        externo.mkdir()
+        try:
+            (raiz / "state" / "abandoned_transitions").symlink_to(externo, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("el SO no permite crear symlinks sin privilegios")
+        with pytest.raises(FrozenRuntimeStorageError):
+            storage.asegurar_directorio_abandonos(raiz)
+        assert list(externo.iterdir()) == []
+
+    def test_49b_state_redirigido_no_hace_mkdir_en_el_destino_externo(self, tmp_path: pathlib.Path) -> None:
+        raiz = tmp_path / "root"
+        externo = tmp_path / "externo"
+        raiz.mkdir()
+        externo.mkdir()
+        try:
+            (raiz / "state").symlink_to(externo, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("el SO no permite crear symlinks sin privilegios")
+        with pytest.raises(FrozenRuntimeStorageError):
+            storage.asegurar_directorio_abandonos(raiz)
+        assert list(externo.iterdir()) == []
+
+    @pytest.mark.parametrize(
+        ("cambios", "motivo_del_rechazo"),
+        [
+            ({"approval_seq": "1"}, "entero positivo"),  # str() / int() habrían coercionado
+            ({"approval_seq": True}, "entero positivo"),  # bool es int en Python
+            ({"approval_seq": 0}, "entero positivo"),
+            ({"abandonado_en_ns": -5}, "entero positivo"),
+            ({"motivo": "   "}, "string no vacío"),
+            ({"root_id": 12345}, "string no vacío"),
+            ({"propietario_sujeto": None}, "string no vacío"),
+            ({"transition_id": "../../escape"}, "UUID"),
+            ({"schema_version": True}, "versión de schema"),
+        ],
+    )
+    def test_50_un_registro_con_tipos_invalidos_es_corrupto_aunque_su_digest_cierre(
+        self, tmp_path: pathlib.Path, cambios: dict[str, object], motivo_del_rechazo: str
+    ) -> None:
+        """El digest está RECOMPUTADO: lo que falla es el tipo, no el sello. Y sale como error del dominio."""
+        ruta = tmp_path / "registro.json"
+        _escribir_registro_abandono(ruta, _payload_abandono_valido(**cambios))
+        with pytest.raises(AbandonoCorruptoError, match=motivo_del_rechazo):
+            cargar_registro_abandono(ruta)
+
+    def test_50b_el_esquema_es_cerrado(self, tmp_path: pathlib.Path) -> None:
+        ruta = tmp_path / "registro.json"
+        _escribir_registro_abandono(ruta, _payload_abandono_valido(campo_extra="x"))
+        with pytest.raises(AbandonoCorruptoError, match="esquema cerrado"):
+            cargar_registro_abandono(ruta)
+
+        faltante = _payload_abandono_valido()
+        del faltante["motivo"]
+        _escribir_registro_abandono(ruta, faltante)
+        with pytest.raises(AbandonoCorruptoError, match="esquema cerrado"):
+            cargar_registro_abandono(ruta)
+
+    def test_50c_un_registro_valido_round_trip(self, tmp_path: pathlib.Path) -> None:
+        ruta = tmp_path / "registro.json"
+        _escribir_registro_abandono(ruta, _payload_abandono_valido())
+        registro = cargar_registro_abandono(ruta, expected_root_id="root-de-prueba")
+        assert registro.transition_id == _UUID_A
+        assert registro.approval_seq == 1
+
+    def test_51_el_diagnostico_falla_cerrado_ante_un_registro_con_nombre_ajeno(self, tmp_path: pathlib.Path) -> None:
+        """Un registro válido COPIADO bajo el nombre de otra transición no la resuelve."""
+        raiz = tmp_path / "root"
+        (raiz / "state").mkdir(parents=True)
+        root_id = canonical_root_key(raiz)[0]
+        ruta_ajena = storage.abandoned_transition_record_path(raiz, _UUID_B)
+        _escribir_registro_abandono(ruta_ajena, _payload_abandono_valido(root_id=root_id, transition_id=_UUID_A))
+        with pytest.raises(AbandonoCorruptoError, match="no coinciden"):
+            _cargar_abandonos(raiz)
+
+    def test_52_ancla_la_unica_via_de_reanudacion_pasa_por_el_diagnostico(self) -> None:
+        """ENUMERA (no muestrea) quién llama al binder con ``aprobacion_consumida=``.
+
+        El abandono sólo lo honra ``diagnosticar_estado_durable``, así que toda vía que reanude una
+        aprobación consumida SIN pasar por ``SesionTransicionGoldenMaster.reanudar`` podría reanudar una
+        transición ya abandonada. Un llamador nuevo rompe esta ancla hasta que se le decida su receta.
+        """
+        llamadores: set[tuple[str, str]] = set()
+        for ruta in sorted((RAIZ_REPO / "sky_claw").rglob("*.py")):
+            arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+            for funcion in ast.walk(arbol):
+                if not isinstance(funcion, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                for nodo in ast.walk(funcion):
+                    if isinstance(nodo, ast.Call) and any(k.arg == "aprobacion_consumida" for k in nodo.keywords):
+                        llamadores.add((ruta.name, funcion.name))
+        assert llamadores == {("autorizacion_hitl_transicion.py", "reanudar")}
+
+
+def _dejar_consumida_sin_pending(
+    rig: RigStockManual, monkeypatch: pytest.MonkeyPatch
+) -> tuple[SesionTransicionGoldenMaster, str]:
+    """Aprobación CONSUMED y journal sin PENDING (el fallo se inyecta entre el burn y el PENDING)."""
+    from sky_claw.local.frozen_runtime import binder_recovery as recovery
+
+    sesion = _sesion(rig)
+    _, entregar = _recolector()
+    _habilitar_emision(monkeypatch)
+    solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
+    consentimiento = sesion.decidir_y_emitir(
+        solicitud=solicitud, decision=DecisionConsentimiento.APROBAR, identidad=_identidad_telegram()
+    )
+    assert consentimiento is not None
+    original = recovery.capturar_registro
+    monkeypatch.setattr(
+        recovery, "capturar_registro", lambda *a, **k: (_ for _ in ()).throw(recovery.RecuperacionError("fail"))
+    )
+    with pytest.raises(Exception):  # noqa: B017 — el fallo lo clasifica el binder
+        sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+    monkeypatch.setattr(recovery, "capturar_registro", original)
+    trans_id = derivar_autoridad_aprobacion(rig.storage).tombstones[0].consumed_by_transition_id
+    assert trans_id is not None
+    return sesion, trans_id
+
+
+@SOLO_WINDOWS
+class TestAbandonoEndurecidoExtremoAExtremo:
+    def test_53_solo_el_dueno_que_autorizo_la_aprobacion_puede_abandonar(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Hermano de #373: una identidad VERIFICADA pero ajena a la aprobación no es el dueño."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion, trans_id = _dejar_consumida_sin_pending(rig, monkeypatch)
+
+        otro_operador = OPERADOR + 1
+        identidad_ajena = verificar_identidad_telegram(
+            {"from": {"id": otro_operador}, "chat": {"id": otro_operador, "type": "private"}},
+            operador_configurado=otro_operador,
+        )
+        with pytest.raises(AbandonoTransicionInvalidoError, match="no es la del dueño"):
+            sesion.abandonar(transition_id=trans_id, identidad=identidad_ajena, motivo="no soy el dueño")
+
+        assert not storage.abandoned_transition_record_path(rig.storage, trans_id).exists()
+        assert diagnosticar_estado_durable(rig.storage).estado is not EstadoDurable.LIMPIO
+
+        # El dueño verdadero sí puede: el rechazo anterior no dejó estado que lo bloquee.
+        registro = sesion.abandonar(transition_id=trans_id, identidad=_identidad_telegram(), motivo="dueño")
+        assert registro.propietario_sujeto == str(OPERADOR)
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
+
+    def test_54_ids_con_path_traversal_no_escapan_del_store(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion, _ = _dejar_consumida_sin_pending(rig, monkeypatch)
+        fuera = tmp_path / "evil.json"
+        for malicioso in ("../../evil", "..\\..\\evil", f"../{_UUID_A}", "a/b"):
+            with pytest.raises(AbandonoTransicionInvalidoError):
+                sesion.abandonar(transition_id=malicioso, identidad=_identidad_telegram(), motivo="intento")
+        assert not fuera.exists()
+        assert not list(storage.abandoned_transitions_state_dir(rig.storage).glob("*"))
+
+    def test_55_un_registro_presente_con_otro_id_interno_no_se_sobrescribe(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """El registro es INMUTABLE: si el archivo ya está y no es de esta transición, falla cerrado."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion, trans_id = _dejar_consumida_sin_pending(rig, monkeypatch)
+        ruta = storage.abandoned_transition_record_path(rig.storage, trans_id)
+        root_id = canonical_root_key(rig.storage)[0]
+        _escribir_registro_abandono(ruta, _payload_abandono_valido(root_id=root_id, transition_id=_UUID_B))
+        antes = ruta.read_bytes()
+
+        with pytest.raises(AbandonoCorruptoError, match="no coinciden"):
+            sesion.abandonar(transition_id=trans_id, identidad=_identidad_telegram(), motivo="intento de pisar")
+
+        assert ruta.read_bytes() == antes
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.REQUIERE_DUENO
+
+    def test_56_el_replay_idempotente_conserva_el_registro_original(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Un reintento con OTRO motivo devuelve el registro original: la evidencia no se reescribe."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion, trans_id = _dejar_consumida_sin_pending(rig, monkeypatch)
+        primero = sesion.abandonar(transition_id=trans_id, identidad=_identidad_telegram(), motivo="motivo original")
+        ruta = storage.abandoned_transition_record_path(rig.storage, trans_id)
+        bytes_originales = ruta.read_bytes()
+
+        segundo = sesion.abandonar(transition_id=trans_id, identidad=_identidad_telegram(), motivo="otro motivo")
+
+        assert segundo == primero
+        assert segundo.motivo == "motivo original"
+        assert ruta.read_bytes() == bytes_originales
