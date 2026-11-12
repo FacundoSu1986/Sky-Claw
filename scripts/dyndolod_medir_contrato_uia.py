@@ -28,10 +28,16 @@ una persona con el informe del rig en la mano, en un PR que además actualiza el
 
 * Se probó con una GUI SIMULADA derivada del propio contrato congelado. Que la GUI real de Alpha-209 produzca el mismo
   resultado es el smoke del rig, y no está medido.
-* El texto de un diálogo se busca como el nombre de algún control o como el título de la ventana; es un criterio de
-  este script, no algo que se haya medido en Windows real.
-* Un diálogo que no coincide queda ``NO_OBSERVADO`` con lo que se vio, no ``DIFIERE``: no se puede distinguir «cambió»
-  de «no se capturó ese momento».
+* **Cada captura se clasifica como lo hace el driver de producción** (``clasificar_pantalla``): diálogos primero (la marca
+  ``#32770`` puede ser una ventana de nivel superior o un descendiente de otra), instrucción = EXACTAMENTE un
+  ``MainInstruction``, botones = ``Button`` de la clase contractual, y las acciones del contrato tienen que resolver a UN
+  solo elemento. El script no puede importar al driver (es la superficie que actúa), así que esa lógica está duplicada acá
+  y un test de PARIDAD compara ambas sobre casos enumerados: si el driver cambia, ese test lo dice.
+* Se toma **una captura por momento y con a lo sumo un diálogo a la vez** (como en una corrida real); el diagnóstico
+  agrega las capturas, y un cambio de título o de propiedades entre capturas no cuenta como dos ventanas simultáneas.
+* Un diálogo que no se reconoce queda ``NO_OBSERVADO`` con lo que se vio, no ``DIFIERE``: desde afuera no se distingue
+  «el diálogo cambió» de «no se capturó ese momento».
+* No se mide si un control está HABILITADO (el puerto de lectura no lo expone); el driver sí lo exige para actuar.
 """
 
 from __future__ import annotations
@@ -43,10 +49,15 @@ import json
 import ntpath
 import pathlib
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 
-from sky_claw.local.tools.dyndolod_uia_contrato import CONTRATOS_DE_UI, ContratoDeUIHerramienta
+from sky_claw.local.tools.dyndolod_uia_contrato import (
+    CONTRATOS_DE_UI,
+    MARCAS_DEL_DIALOGO_DE_TAREA,
+    ContextoDeAccion,
+    ContratoDeUIHerramienta,
+)
 from sky_claw.local.tools.dyndolod_uia_preflight import (
     TOOLS_OBSERVABLES,
     ControlObservado,
@@ -242,10 +253,10 @@ def medir(
     )
 
 
-def fusionar(mediciones: Sequence[Medicion]) -> Medicion:
-    """Une las ventanas de varios momentos (reposo, modal de arranque, diálogo terminal) de UN mismo build."""
+def exigir_mismo_build(mediciones: Sequence[Medicion]) -> Medicion:
+    """Verifica que todas las capturas son de UN mismo build; devuelve la primera (para el encabezado)."""
     if not mediciones:
-        raise MedicionError("no hay mediciones que fusionar")
+        raise MedicionError("no hay mediciones que diagnosticar")
     base = mediciones[0]
     for otra in mediciones[1:]:
         if (otra.tool, otra.exe_sha256, otra.modo_de_juego) != (base.tool, base.exe_sha256, base.modo_de_juego):
@@ -254,24 +265,85 @@ def fusionar(mediciones: Sequence[Medicion]) -> Medicion:
                 f"{(base.tool, base.exe_sha256[:12], base.modo_de_juego)} vs "
                 f"{(otra.tool, otra.exe_sha256[:12], otra.modo_de_juego)}"
             )
-    vistas: list[VentanaMedida] = []
-    for medicion in mediciones:
-        for ventana in medicion.ventanas:
-            if ventana not in vistas:
-                vistas.append(ventana)
-    ordenadas = sorted(vistas, key=lambda v: (v.class_name, v.titulo, v.controles))
-    return Medicion(
-        tool=base.tool,
-        exe_sha256=base.exe_sha256,
-        modo_de_juego=base.modo_de_juego,
-        etiqueta="+".join(m.etiqueta for m in mediciones),
-        ventanas=tuple(ordenadas),
+    return base
+
+
+# ---------------------------------------------------------------------------
+# Clasificación de UNA captura: la misma que hace el driver de producción
+# ---------------------------------------------------------------------------
+
+#: Vocabulario de ``TipoDePantalla`` del driver. Un test compara ``tipo`` con el del driver real.
+SIN_VENTANA = "SIN_VENTANA"
+CARGANDO = "CARGANDO"
+ASISTENTE = "ASISTENTE"
+MODAL_CONOCIDO = "MODAL_CONOCIDO"
+DIALOGO_TERMINAL = "DIALOGO_TERMINAL"
+DIALOGO_DESCONOCIDO = "DIALOGO_DESCONOCIDO"
+AMBIGUA = "AMBIGUA"
+
+
+@dataclass(frozen=True, slots=True)
+class PantallaMedida:
+    """Qué muestra la GUI en UNA captura y la evidencia numérica que sostiene cada pieza del contrato.
+
+    Los contadores son cuántos elementos resuelve cada selector EN esa captura; ``None`` si la captura no es del tipo en
+    que ese selector se evalúa (los de la ventana principal se evalúan sin diálogo; los de un diálogo, con uno).
+    """
+
+    etiqueta: str
+    tipo: str
+    detalle: str = ""
+    modal: str | None = None
+    instruccion: str | None = None
+    botones: tuple[tuple[str, str], ...] = ()
+    acciones_duplicadas: tuple[str, ...] = ()
+    n_principales: int | None = None
+    n_outputs: int | None = None
+    inicio: int | None = None
+    previa: int | None = None
+    accion_del_dialogo: int | None = None
+
+
+def _es_marca_de_dialogo(control: ControlMedido) -> bool:
+    return (
+        control.tipo_de_control == MARCAS_DEL_DIALOGO_DE_TAREA["tipo_de_control"]
+        and control.class_name == MARCAS_DEL_DIALOGO_DE_TAREA["class_name"]
     )
 
 
-# ---------------------------------------------------------------------------
-# Diagnóstico contra un contrato congelado
-# ---------------------------------------------------------------------------
+def _marcas_de_dialogo(ventana: VentanaMedida) -> int:
+    """Marcas ``#32770`` de una ventana: las anidadas entre sus descendientes, más ella misma si es de esa clase."""
+    propias = sum(1 for control in ventana.controles if _es_marca_de_dialogo(control))
+    if ventana.class_name == MARCAS_DEL_DIALOGO_DE_TAREA["class_name"]:
+        propias += 1
+    return propias
+
+
+def _instruccion_del_dialogo(ventana: VentanaMedida) -> str | None:
+    """La instrucción si hay EXACTAMENTE un ``MainInstruction``; si no, ``None``."""
+    instrucciones = [
+        control.nombre
+        for control in ventana.controles
+        if control.automation_id == MARCAS_DEL_DIALOGO_DE_TAREA["automation_id_instruccion"]
+    ]
+    return instrucciones[0] if len(instrucciones) == 1 else None
+
+
+def _botones_del_dialogo(ventana: VentanaMedida) -> tuple[tuple[str, str], ...]:
+    """Los botones del diálogo: ``Button`` de la CLASE contractual (otra clase no es un botón del diálogo)."""
+    clase = MARCAS_DEL_DIALOGO_DE_TAREA["class_name_boton"]
+    return tuple(
+        (c.nombre, c.automation_id)
+        for c in ventana.controles
+        if c.tipo_de_control == "Button" and c.class_name == clase
+    )
+
+
+def _resolver(selector: CriteriosDeControl, ventana: VentanaMedida) -> int:
+    """Cuántos controles resuelve el selector. Un selector vacío no resuelve a ninguno (nunca a «todos»)."""
+    if selector.esta_vacio():
+        return 0
+    return sum(1 for c in ventana.controles if selector.coincide(_como_observado(c)))
 
 
 def _como_observado(control: ControlMedido) -> ControlObservado:
@@ -285,90 +357,230 @@ def _como_observado(control: ControlMedido) -> ControlObservado:
     )
 
 
-def _cuantos_resuelven(selector: CriteriosDeControl, ventana: VentanaMedida) -> int:
-    return sum(1 for c in ventana.controles if selector.coincide(_como_observado(c)))
+def _acciones_duplicadas(
+    contrato: ContratoDeUIHerramienta, ventana: VentanaMedida, contexto: ContextoDeAccion
+) -> tuple[str, ...]:
+    return tuple(
+        accion.id
+        for accion in contrato.todas_las_acciones()
+        if accion.contexto is contexto and _resolver(accion.selector, ventana) > 1
+    )
 
 
-def _chequeo_de_selector(nombre: str, selector: CriteriosDeControl, principal: VentanaMedida | None) -> Chequeo:
-    if principal is None:
-        return Chequeo(nombre, Estado.NO_OBSERVADO, "sin ventana principal contra la que resolver el selector")
-    n = _cuantos_resuelven(selector, principal)
-    if n == 1:
-        return Chequeo(nombre, Estado.COINCIDE, f"el selector resuelve a un único control ({selector.describir()})")
-    if n == 0:
-        return Chequeo(nombre, Estado.DIFIERE, f"el selector no resuelve a ningún control ({selector.describir()})")
-    return Chequeo(nombre, Estado.DIFIERE, f"el selector es ambiguo: resuelve a {n} controles ({selector.describir()})")
+def clasificar_captura(contrato: ContratoDeUIHerramienta, medicion: Medicion) -> PantallaMedida:
+    """Clasifica UNA captura contra el contrato, en el mismo orden y con los mismos criterios que el driver.
+
+    Diálogos primero: si hay un ``#32770`` en el árbol la pantalla es ese diálogo, haya o no asistente detrás. Dos marcas
+    son ambiguas. Un diálogo se reconoce por instrucción EXACTA + botones requeridos de la clase contractual. Sin
+    diálogo: exactamente una ventana de la clase del contrato con exactamente un Output es el asistente.
+    """
+    etiqueta = medicion.etiqueta
+    if not medicion.ventanas:
+        return PantallaMedida(etiqueta, SIN_VENTANA, "el proceso no tiene ventanas top-level")
+    con_dialogo = [v for v in medicion.ventanas if _marcas_de_dialogo(v)]
+    marcas = sum(_marcas_de_dialogo(v) for v in con_dialogo)
+    if marcas > 1:
+        return PantallaMedida(
+            etiqueta, AMBIGUA, f"{marcas} diálogos #32770 simultáneos: repetí la captura con uno solo"
+        )
+    if marcas == 1:
+        ventana = con_dialogo[0]
+        instruccion = _instruccion_del_dialogo(ventana)
+        botones = _botones_del_dialogo(ventana)
+        duplicadas = _acciones_duplicadas(contrato, ventana, ContextoDeAccion.DIALOGO)
+        if duplicadas:
+            return PantallaMedida(
+                etiqueta,
+                AMBIGUA,
+                f"acciones de diálogo con más de un candidato: {sorted(duplicadas)}",
+                instruccion=instruccion,
+                botones=botones,
+                acciones_duplicadas=duplicadas,
+            )
+        modales = [m for m in contrato.modales_conocidos if m.firma.coincide(instruccion, botones)]
+        es_terminal = contrato.dialogo_terminal.coincide(instruccion, botones)
+        if len(modales) + int(es_terminal) > 1:
+            return PantallaMedida(
+                etiqueta,
+                AMBIGUA,
+                "el diálogo coincide con más de una firma del contrato",
+                instruccion=instruccion,
+                botones=botones,
+            )
+        if modales:
+            return PantallaMedida(
+                etiqueta,
+                MODAL_CONOCIDO,
+                modal=modales[0].id,
+                instruccion=instruccion,
+                botones=botones,
+                accion_del_dialogo=_resolver(modales[0].accion_continuar.selector, ventana),
+            )
+        if es_terminal:
+            return PantallaMedida(
+                etiqueta,
+                DIALOGO_TERMINAL,
+                instruccion=instruccion,
+                botones=botones,
+                accion_del_dialogo=_resolver(contrato.accion_terminal.selector, ventana),
+            )
+        return PantallaMedida(
+            etiqueta,
+            DIALOGO_DESCONOCIDO,
+            "diálogo sin firma en el contrato del build",
+            instruccion=instruccion,
+            botones=botones,
+        )
+    principales = [v for v in medicion.ventanas if v.class_name == contrato.clase_ventana_principal]
+    if not principales:
+        return PantallaMedida(etiqueta, CARGANDO, "todavía no existe la ventana contractual", n_principales=0)
+    if len(principales) > 1:
+        return PantallaMedida(
+            etiqueta,
+            AMBIGUA,
+            f"{len(principales)} ventanas {contrato.clase_ventana_principal}",
+            n_principales=len(principales),
+        )
+    ventana = principales[0]
+    salidas = _resolver(contrato.selector_output, ventana)
+    if salidas == 0:
+        return PantallaMedida(
+            etiqueta, CARGANDO, "la ventana contractual no expone el campo Output", n_principales=1, n_outputs=0
+        )
+    inicio = _resolver(contrato.accion_inicio.selector, ventana)
+    previa = _resolver(contrato.accion_previa.selector, ventana) if contrato.accion_previa is not None else None
+    if salidas > 1:
+        return PantallaMedida(
+            etiqueta, AMBIGUA, f"{salidas} candidatos al campo Output", n_principales=1, n_outputs=salidas
+        )
+    duplicadas = _acciones_duplicadas(contrato, ventana, ContextoDeAccion.VENTANA_PRINCIPAL)
+    if duplicadas:
+        return PantallaMedida(
+            etiqueta,
+            AMBIGUA,
+            f"acciones de la ventana con más de un candidato: {sorted(duplicadas)}",
+            n_principales=1,
+            n_outputs=1,
+            inicio=inicio,
+            previa=previa,
+            acciones_duplicadas=duplicadas,
+        )
+    return PantallaMedida(etiqueta, ASISTENTE, n_principales=1, n_outputs=1, inicio=inicio, previa=previa)
 
 
-def _botones(ventana: VentanaMedida) -> set[tuple[str, str]]:
-    return {(c.nombre, c.automation_id) for c in ventana.controles if c.tipo_de_control == "Button"}
+# ---------------------------------------------------------------------------
+# Diagnóstico contra un contrato congelado (sobre las clasificaciones, nunca sobre una mezcla de ventanas)
+# ---------------------------------------------------------------------------
 
 
-def _tiene_el_texto(ventana: VentanaMedida, texto: str) -> bool:
-    return ventana.titulo == texto or any(c.nombre == texto for c in ventana.controles)
+def _agregar_conteos(nombre: str, conteos: list[int], *, que: str) -> Chequeo:
+    """Un selector que se evalúa en varias capturas: coincide si resuelve a UNO en alguna y a más de uno en ninguna."""
+    if not conteos:
+        return Chequeo(nombre, Estado.NO_OBSERVADO, f"ninguna captura permite evaluar {que}")
+    if any(n > 1 for n in conteos):
+        return Chequeo(nombre, Estado.DIFIERE, f"{que} es ambiguo: resuelve a más de un control en alguna captura")
+    if any(n == 1 for n in conteos):
+        return Chequeo(nombre, Estado.COINCIDE, f"{que} resuelve a un único control")
+    return Chequeo(nombre, Estado.DIFIERE, f"{que} no resuelve a ningún control en las capturas donde correspondía")
+
+
+def _chequeo_de_ventana_principal(
+    contrato: ContratoDeUIHerramienta, capturas: Sequence[Medicion], pantallas: Sequence[PantallaMedida]
+) -> Chequeo:
+    nombre = "ventana_principal"
+    conteos = [p.n_principales for p in pantallas if p.n_principales is not None]
+    if not conteos:
+        return Chequeo(nombre, Estado.NO_OBSERVADO, "no hay una captura sin diálogo donde buscarla")
+    if any(n > 1 for n in conteos):
+        return Chequeo(
+            nombre,
+            Estado.DIFIERE,
+            f"hay más de una ventana de clase {contrato.clase_ventana_principal!r} en una misma captura",
+        )
+    if any(n == 1 for n in conteos):
+        return Chequeo(nombre, Estado.COINCIDE, f"hay una ventana de clase {contrato.clase_ventana_principal!r}")
+    vistas = sorted(
+        {
+            v.class_name
+            for m, p in zip(capturas, pantallas, strict=True)
+            if p.n_principales is not None
+            for v in m.ventanas
+        }
+    ) or ["(ninguna)"]
+    return Chequeo(
+        nombre,
+        Estado.DIFIERE,
+        f"ninguna ventana de clase {contrato.clase_ventana_principal!r}; clases vistas: {', '.join(vistas)}",
+    )
 
 
 def _chequeo_de_dialogo(
-    nombre: str, instruccion: str, botones: frozenset[tuple[str, str]], otras: Iterable[VentanaMedida]
+    nombre: str, tipo: str, modal: str | None, accion_id: str, pantallas: Sequence[PantallaMedida]
 ) -> Chequeo:
-    vistas = list(otras)
-    for ventana in vistas:
-        if _tiene_el_texto(ventana, instruccion) and botones <= _botones(ventana):
-            return Chequeo(nombre, Estado.COINCIDE, f"hay un diálogo con la instrucción {instruccion!r} y sus botones")
-    if not vistas:
-        return Chequeo(nombre, Estado.NO_OBSERVADO, "no hay otra ventana medida: falta la instantánea de este momento")
-    clases = sorted({f"{v.class_name}/{v.titulo!r}" for v in vistas})
+    propias = [p for p in pantallas if p.tipo == tipo and p.modal == modal]
+    if any(accion_id in p.acciones_duplicadas for p in pantallas):
+        return Chequeo(nombre, Estado.DIFIERE, f"la acción {accion_id!r} resuelve a más de un control en el diálogo")
+    if propias:
+        if any(p.accion_del_dialogo != 1 for p in propias):
+            return Chequeo(
+                nombre,
+                Estado.DIFIERE,
+                f"el diálogo se reconoce pero la acción {accion_id!r} no resuelve a un único control",
+            )
+        return Chequeo(
+            nombre,
+            Estado.COINCIDE,
+            f"hay un diálogo con la instrucción y los botones del contrato, y la acción {accion_id!r} resuelve a uno",
+        )
+    vistos = sorted(
+        {f"{p.tipo}({p.instruccion!r})" for p in pantallas if p.n_principales is None and p.tipo != SIN_VENTANA}
+    ) or ["ninguno"]
     return Chequeo(
-        nombre,
-        Estado.NO_OBSERVADO,
-        f"ninguna de las otras ventanas medidas coincide ({', '.join(clases)}): puede ser otro momento o un cambio",
+        nombre, Estado.NO_OBSERVADO, f"ninguna captura muestra este diálogo; diálogos vistos: {', '.join(vistos)}"
     )
 
 
 def diagnosticar(
-    medicion: Medicion, contrato: ContratoDeUIHerramienta, *, directorio_del_exe: pathlib.Path | None
+    capturas: Sequence[Medicion], contrato: ContratoDeUIHerramienta, *, directorio_del_exe: pathlib.Path | None
 ) -> Diagnostico:
-    """Para cada pieza de ``contrato``: ¿vale en el build medido?
+    """Para cada pieza de ``contrato``: ¿vale en el build medido? Cada captura se clasifica como el driver.
 
     El veredicto es ``compatible`` SOLO si todas coinciden. Que algo no se haya observado no se rellena con un «sí».
     """
-    chequeos: list[Chequeo] = []
-    candidatas = [v for v in medicion.ventanas if v.class_name == contrato.clase_ventana_principal]
-    principal: VentanaMedida | None = None
-    if len(candidatas) == 1:
-        principal = candidatas[0]
+    exigir_mismo_build(capturas)
+    pantallas = [clasificar_captura(contrato, m) for m in capturas]
+    chequeos: list[Chequeo] = [_chequeo_de_ventana_principal(contrato, capturas, pantallas)]
+    con_principal = [p for p in pantallas if p.n_principales == 1]
+    if not con_principal:
         chequeos.append(
-            Chequeo(
-                "ventana_principal", Estado.COINCIDE, f"hay una ventana de clase {contrato.clase_ventana_principal!r}"
-            )
-        )
-    elif not candidatas:
-        vistas = sorted({v.class_name for v in medicion.ventanas}) or ["(ninguna)"]
-        chequeos.append(
-            Chequeo(
-                "ventana_principal",
-                Estado.DIFIERE,
-                f"ninguna ventana de clase {contrato.clase_ventana_principal!r}; clases vistas: {', '.join(vistas)}",
-            )
+            Chequeo("selector_output", Estado.NO_OBSERVADO, "sin una captura con la ventana principal única")
         )
     else:
         chequeos.append(
-            Chequeo(
-                "ventana_principal",
-                Estado.DIFIERE,
-                f"hay {len(candidatas)} ventanas de clase {contrato.clase_ventana_principal!r}: no se sabe cuál es",
+            _agregar_conteos("selector_output", [p.n_outputs or 0 for p in con_principal], que="el selector de Output")
+        )
+    asistentes = [p for p in pantallas if p.n_principales == 1 and p.n_outputs == 1 and p.inicio is not None]
+    chequeos.append(
+        _agregar_conteos(
+            "accion_inicio", [p.inicio for p in asistentes if p.inicio is not None], que="la acción de inicio"
+        )
+    )
+    if contrato.accion_previa is not None:
+        chequeos.append(
+            _agregar_conteos(
+                "accion_previa", [p.previa for p in asistentes if p.previa is not None], que="la acción previa"
             )
         )
-    chequeos.append(_chequeo_de_selector("selector_output", contrato.selector_output, principal))
-    chequeos.append(_chequeo_de_selector("accion_inicio", contrato.accion_inicio.selector, principal))
-    if contrato.accion_previa is not None:
-        chequeos.append(_chequeo_de_selector("accion_previa", contrato.accion_previa.selector, principal))
-
-    otras = [v for v in medicion.ventanas if v is not principal]
-    terminal = contrato.dialogo_terminal
-    chequeos.append(_chequeo_de_dialogo("dialogo_terminal", terminal.instruccion, terminal.botones, otras))
+    chequeos.append(
+        _chequeo_de_dialogo("dialogo_terminal", DIALOGO_TERMINAL, None, contrato.accion_terminal.id, pantallas)
+    )
     for modal in contrato.modales_conocidos:
-        chequeos.append(_chequeo_de_dialogo(f"modal:{modal.id}", modal.firma.instruccion, modal.firma.botones, otras))
+        chequeos.append(
+            _chequeo_de_dialogo(f"modal:{modal.id}", MODAL_CONOCIDO, modal.id, modal.accion_continuar.id, pantallas)
+        )
+    for pantalla in pantallas:
+        if pantalla.tipo == AMBIGUA and pantalla.n_principales is None and not pantalla.acciones_duplicadas:
+            chequeos.append(Chequeo(f"captura:{pantalla.etiqueta}", Estado.NO_OBSERVADO, pantalla.detalle))
 
     if directorio_del_exe is None:
         chequeos.append(Chequeo("preset", Estado.NO_OBSERVADO, "no se indicó el directorio del ejecutable (--exe)"))
@@ -476,10 +688,10 @@ def _cmd_medir(args: argparse.Namespace) -> int:
 
 def _cmd_diagnosticar(args: argparse.Namespace) -> int:
     mediciones = [de_json(pathlib.Path(ruta).read_text(encoding="utf-8")) for ruta in args.informes]
-    medicion = fusionar(mediciones)
+    medicion = exigir_mismo_build(mediciones)
     contrato = _contrato_de_referencia(medicion.tool, args.contra_sha)
     directorio = pathlib.Path(args.exe).parent if args.exe else None
-    diagnostico = diagnosticar(medicion, contrato, directorio_del_exe=directorio)
+    diagnostico = diagnosticar(mediciones, contrato, directorio_del_exe=directorio)
     print(f"build medido: {medicion.tool} sha256={medicion.exe_sha256} modo={medicion.modo_de_juego}")
     print(f"contrato de referencia: {contrato.tool} {contrato.version} sha256={contrato.exe_sha256}")
     print(diagnostico.resumen())

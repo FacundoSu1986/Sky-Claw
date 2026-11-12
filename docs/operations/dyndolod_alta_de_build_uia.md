@@ -51,7 +51,9 @@ rig, en el PR del alta.
 ## Procedimiento
 
 La UI de estas herramientas cambia de ventana durante una corrida (ventana principal, aviso de arranque, diálogo
-terminal), así que se toma **una instantánea por momento** y después se las diagnostica juntas.
+terminal), así que se toma **una instantánea por momento y con a lo sumo un diálogo abierto** (como en una corrida
+real) y después se las diagnostica juntas. Cada captura se clasifica como lo hace el driver de producción; una
+captura con dos diálogos a la vez no cuenta como evidencia (el diagnóstico la marca y hay que repetirla).
 
 **1. Reposo.** Con la herramienta recién abierta, sin tocar nada:
 
@@ -90,8 +92,11 @@ Con `--exigir-compatible` el comando sale con código 3 si el veredicto no es `c
 | `difiere` | Al menos una pieza no coincide (selector que ya no resuelve o resuelve a más de un control, ventana principal con otra clase, preset ausente) | El detalle dice cuál. Es un build nuevo con UI distinta: hace falta medirlo entero |
 | `incompleto` | Nada difiere, pero falta observar algo (típicamente un diálogo) | Tomá la instantánea que falta. **Nunca** se interpreta como «sí» |
 
-Un diálogo que no coincide queda `no_observado` y no `difiere`: desde afuera no se distingue «el diálogo cambió» de «no se
-capturó ese momento». El detalle lista las ventanas que sí se vieron.
+Un diálogo que no se reconoce queda `no_observado` y no `difiere`: desde afuera no se distingue «el diálogo cambió» de «no se
+capturó ese momento». El detalle lista los diálogos que sí se vieron. «Se reconoce» es lo mismo que exige el driver:
+exactamente **un** `MainInstruction` con la instrucción del contrato, los botones requeridos **de clase `CCPushButton`** y
+una acción que resuelva a **un solo** elemento (si resuelve a más de uno, el veredicto es `difiere`: el driver lo rechazaría).
+El diálogo puede ser una ventana de nivel superior o estar anidado en la ventana principal.
 
 ## Cómo se da de alta de verdad
 
@@ -108,7 +113,9 @@ El diagnóstico es la evidencia, no el alta. El alta es un PR que:
 - **Que la GUI real de Alpha-209 produzca el mismo informe** que la GUI simulada derivada del contrato. Es el primer
   paso del rig: correr los pasos 1 a 4 sobre el build congelado y esperar `compatible`. Si no da `compatible`, la
   herramienta o el contrato tienen un defecto y hay que entenderlo antes de usarla con un build nuevo.
-- **El criterio de «instrucción de un diálogo»**: el script la busca como el nombre de algún control o como el título de la
-  ventana. Es un criterio de la herramienta, no algo medido en Windows real.
+- **La clasificación está duplicada del driver.** El script de medición no puede importar al driver (es la superficie que
+  actúa), así que repite su criterio y un test de paridad enumerado las compara; que ambas coincidan sobre una GUI
+  simulada no prueba que coincidan sobre la GUI real: es lo que debe mostrar el primer paso del rig.
+- **No se mide si un control está habilitado**: el puerto de lectura no lo expone y el driver sí lo exige para actuar.
 - Un `AutomationId` puede cambiar entre lanzamientos (el rig T5A lo midió inestable para el campo Output): el informe los
   registra, pero el contrato de Output se apoya en la clase, no en el id.
