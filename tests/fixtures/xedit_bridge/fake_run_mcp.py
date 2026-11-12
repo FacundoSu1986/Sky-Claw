@@ -134,6 +134,12 @@ for linea in sys.stdin:
         if ESCENARIO == "result_no_objeto":
             resultado = [contenido]
         respuesta = {"jsonrpc": "2.0", "id": mensaje["id"], "result": resultado}
+    # ids que JSON-RPC no admite (solo texto, número o null): una lista u objeto no es clave de dict, y un
+    # ``true`` en Python es igual a 1, el id de ``initialize``.
+    if ESCENARIO in ("id_lista", "id_objeto") and metodo == "tools/call":
+        respuesta["id"] = [] if ESCENARIO == "id_lista" else {}
+    if ESCENARIO == "id_bool" and metodo == "initialize":
+        respuesta["id"] = True
     sys.stdout.write(json.dumps(respuesta) + "\n")
     sys.stdout.flush()
 

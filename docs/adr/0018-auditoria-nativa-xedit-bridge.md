@@ -44,10 +44,14 @@ Este ADR decide cómo lo consume Sky-Claw.
     «tiempo límite»; nunca es una cancelación muda.
   - La admisión espera una decisión humana (hasta 300 s) y copia (hasta 900 s), así que es un
     **trabajo en segundo plano**, como `generate_lods`: responde enseguida con un `trabajo_id`. El
-    pedido y el aviso de fin viajan por el canal del guard (`notify_operator`). Hay un trabajo a la
-    vez. Una auditoría del mismo plugin con la admisión en curso lo dice, en vez de responder «no
-    admitido». El `AppContext` arma el gestor y registra su `cerrar()` en el cleanup: un apagado
-    cancela la admisión viva, y la cancelación mata el proceso del bridge.
+    pedido y el aviso de fin viajan por el canal del guard (`notify_operator`): el canal HITL del
+    operador (Telegram), no `/api/chat`.
+  - Hay una admisión a la vez. El gestor sigue toda tarea sin terminar, también un aviso de fin
+    pendiente, para que `cerrar()` la cancele.
+  - Una auditoría del mismo plugin con la admisión en curso lo dice, en vez de responder «no
+    admitido».
+  - El `AppContext` arma el gestor y registra su `cerrar()` en el cleanup: un apagado cancela la
+    admisión viva, y la cancelación mata el proceso del bridge.
   - El router recorta el resultado a `MAX_TOOL_RESULT_CHARS` por posición, así que el handler poda
     hallazgos hasta `PRESUPUESTO_RESULTADO_LLM` para que el JSON llegue válido, con
     `hallazgos_omitidos` y `log_path`.
@@ -57,8 +61,8 @@ Este ADR decide cómo lo consume Sky-Claw.
   solo «Modo local», que elige el operador, la auto-aprueba.
 - **El operador aprueba lo que se ejecuta.** `PATRON_PLUGIN` acepta caracteres que no se ven o
   engañan a la vista: formato Unicode (U+202E reordena lo que se muestra), espacios de ancho cero,
-  NBSP y controles C1. Los dos pedidos muestran el nombre **entero** con `nombre_visible`, que los
-  escapa (`‮`). El nombre que se ejecuta no cambia. Un nombre que no entra entero en el pedido
+  NBSP, controles C1 y los ignorables por defecto que Python da por imprimibles (U+034F). Los dos pedidos muestran el nombre **entero** con `nombre_visible`, que los
+  escapa (`\u202e`). El nombre que se ejecuta no cambia. Un nombre que no entra entero en el pedido
   se rechaza antes de pedir la aprobación.
 - Las dos superficies delegan en el mismo `XEditBridgeService`. Ancla:
   `tests/test_xedit_bridge_superficies.py`. Enumera las tools del bridge y exige que cada una

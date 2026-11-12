@@ -86,7 +86,11 @@ class XEditBridgeService:
         try:
             validar_plugin(plugin)
             respuesta = await auditar_plugin(
-                self._instalacion(), plugin, timeout=timeout or TIMEOUT_POR_DEFECTO, margen_s=margen_s
+                # ``is None``, no ``or``: un 0 explícito tiene que llegar a la validación de rango y rechazarse.
+                self._instalacion(),
+                plugin,
+                timeout=TIMEOUT_POR_DEFECTO if timeout is None else timeout,
+                margen_s=margen_s,
             )
         except (BridgeError, ValueError) as exc:
             logger.warning("Auditoría nativa sin veredicto para %r: %s", plugin, exc)

@@ -40,6 +40,32 @@ _PLUGIN = re.compile(PATRON_PLUGIN)
 LARGO_MAXIMO_NOMBRE_VISIBLE = 400
 _INTERPRETE_WINDOWS = re.compile(r"python(?:\d+(?:\.\d+)*)?w?\.exe", re.IGNORECASE)
 _INTERPRETE_POSIX = re.compile(r"python(?:\d+(?:\.\d+)*)?")
+#: ``Default_Ignorable_Code_Point`` de Unicode (DerivedCoreProperties.txt): no se muestran, aunque Python
+#: da por imprimibles a varios (marcas Mn como el COMBINING GRAPHEME JOINER, letras de relleno Lo).
+_IGNORABLES_POR_DEFECTO = (
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+
+
+def _es_ignorable(c: str) -> bool:
+    punto = ord(c)
+    return any(desde <= punto <= hasta for desde, hasta in _IGNORABLES_POR_DEFECTO)
 
 
 class BridgeError(RuntimeError):
@@ -56,13 +82,17 @@ def nombre_visible(plugin: str) -> str:
     """``plugin`` tal como tiene que verlo el operador al aprobar: completo y sin ambigüedad.
 
     ``PATRON_PLUGIN`` acepta caracteres que no se ven o engañan a la vista: formato Unicode (un
-    override de dirección como U+202E reordena lo que se muestra), espacios de ancho cero, NBSP y
-    controles C1. Todo carácter no imprimible se muestra escapado (``\\u202e``); como el patrón
+    override de dirección como U+202E reordena lo que se muestra), espacios de ancho cero, NBSP,
+    controles C1 y los ignorables por defecto que Python da por imprimibles (U+034F). Todo carácter
+    no imprimible o ignorable se muestra escapado (``\\u202e``); como el patrón
     prohíbe la barra invertida, un escape nunca se confunde con texto del nombre. El nombre que se
     ejecuta NO cambia. Uno que no entra entero en el pedido se rechaza: no se aprueba a ciegas.
     """
     visible = "".join(
-        c if c.isprintable() else (f"\\u{ord(c):04x}" if ord(c) <= 0xFFFF else f"\\U{ord(c):08x}") for c in plugin
+        c
+        if c.isprintable() and not _es_ignorable(c)
+        else (f"\\u{ord(c):04x}" if ord(c) <= 0xFFFF else f"\\U{ord(c):08x}")
+        for c in plugin
     )
     if len(visible) > LARGO_MAXIMO_NOMBRE_VISIBLE:
         raise ValueError(
@@ -250,7 +280,12 @@ async def auditar_plugin(
             raise BridgeError("el xEdit Bridge devolvió una línea que no es JSON-RPC") from exc
         if not isinstance(respuesta, dict) or respuesta.get("jsonrpc") != "2.0":
             raise BridgeError("el xEdit Bridge devolvió una respuesta JSON-RPC inválida")
-        respuestas[respuesta.get("id")] = respuesta
+        ident = respuesta.get("id")
+        # JSON-RPC solo admite texto, número o null. Una lista u objeto no es clave de dict (TypeError), y un
+        # bool se confundiría con un número (True == 1, el id de ``initialize``).
+        if isinstance(ident, bool) or not (ident is None or isinstance(ident, (int, str))):
+            raise BridgeError(f"el xEdit Bridge devolvió un id JSON-RPC inválido ({type(ident).__name__})")
+        respuestas[ident] = respuesta
     if codigo != 0:
         raise BridgeError(f"el xEdit Bridge terminó con código {codigo}: {stderr.strip()[-300:]}")
     inicio, llamada = respuestas.get(1), respuestas.get(2)

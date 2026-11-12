@@ -91,11 +91,11 @@ def _json_acotado(resultado: dict[str, Any], limite: int = PRESUPUESTO_RESULTADO
             resultado[contador] = int(resultado.get(contador) or 0) + 1
             texto = json.dumps(resultado)
     if len(texto) > limite:
-        return _fallo(
-            "el resultado de la auditoría nativa no entra en la respuesta: revisá el log del bridge",
-            aprobado=False,
-            log_path=sanitize_for_prompt(str(resultado.get("log_path") or ""), max_length=500),
-        )
+        mensaje = "el resultado de la auditoría nativa no entra en la respuesta: revisá el log del bridge"
+        log_path = sanitize_for_prompt(str(resultado.get("log_path") or ""), max_length=500)
+        fallo = _fallo(mensaje, aprobado=False, log_path=log_path)
+        # Se mide DESPUÉS de serializar: json.dumps escapa lo no-ASCII (un emoji ocupa 12 caracteres).
+        return fallo if len(fallo) <= limite else _fallo(mensaje, aprobado=False)
     return texto
 
 
@@ -205,6 +205,9 @@ class GestorDeAdmisionesNativas:
     def __init__(self, *, notificar: Callable[[str], Awaitable[None]] | None = None) -> None:
         self._notificar = notificar
         self._actual: TrabajoDeAdmision | None = None
+        # Toda tarea sin terminar, no solo la actual: una admisión queda en estado terminal ANTES de que
+        # termine su aviso de fin, y si entra otra en esa ventana, la anterior no puede quedar huérfana.
+        self._tareas: set[asyncio.Task[None]] = set()
 
     @property
     def actual(self) -> TrabajoDeAdmision | None:
@@ -241,6 +244,8 @@ class GestorDeAdmisionesNativas:
         trabajo.tarea = asyncio.create_task(
             self._correr(trabajo, service, hitl, perfil), name=f"xedit-bridge-{trabajo.id}"
         )
+        self._tareas.add(trabajo.tarea)
+        trabajo.tarea.add_done_callback(self._tareas.discard)
         self._actual = trabajo
         return {
             "success": True,
@@ -307,22 +312,23 @@ class GestorDeAdmisionesNativas:
             logger.warning("no se pudo avisar al operador del fin de la admisión", exc_info=True)
 
     async def cerrar(self) -> None:
-        """Shutdown: cancela la admisión viva y espera a que su proceso termine."""
-        trabajo = self._actual
-        if trabajo is None or trabajo.tarea is None or trabajo.tarea.done():
-            return
-        trabajo.tarea.cancel()
-        try:
-            await trabajo.tarea
-        except asyncio.CancelledError:
-            # Se absorbe solo la cancelación pedida acá; si cancelaron a quien cierra, es suya y se propaga.
-            actual = asyncio.current_task()
-            if actual is not None and actual.cancelling():
-                raise
-        except Exception:  # noqa: BLE001 -- shutdown best-effort
-            logger.warning("la admisión remota terminó con error durante el cierre", exc_info=True)
+        """Shutdown: cancela TODA tarea sin terminar (la admisión viva y avisos pendientes) y las espera."""
+        pendientes = [tarea for tarea in self._tareas if not tarea.done()]
+        for tarea in pendientes:
+            tarea.cancel()
+        for tarea in pendientes:
+            try:
+                await tarea
+            except asyncio.CancelledError:
+                # Se absorbe solo la cancelación pedida acá; si cancelaron a quien cierra, es suya y se propaga.
+                actual = asyncio.current_task()
+                if actual is not None and actual.cancelling():
+                    raise
+            except Exception:  # noqa: BLE001 -- shutdown best-effort
+                logger.warning("una admisión remota terminó con error durante el cierre", exc_info=True)
         # Una task cancelada ANTES de entrar a `_correr` nunca ejecuta su handler. No-op si ya cerró.
-        await self._registrar_cancelacion(trabajo)
+        if self._actual is not None:
+            await self._registrar_cancelacion(self._actual)
 
 
 __all__ = [

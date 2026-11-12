@@ -119,10 +119,10 @@ async def test_admitir_describe_for_approval_muestra_el_nombre_sin_formato_invis
     # U+202E reordena lo que se ve: el operador aprobaría un nombre distinto del que se ejecuta.
     servicio = _servicio()
     estrategia = AdmitirPluginNativoStrategy(service=servicio)
-    texto = estrategia.describe_for_approval({"plugin": "Mod‮pse.esl"})
-    assert "‮" not in texto and "Mod\\u202epse.esl" in texto
-    await estrategia.execute({"plugin": "Mod‮pse.esl"})
-    servicio.admitir.assert_awaited_once_with("Mod‮pse.esl")  # se ejecuta el nombre real
+    texto = estrategia.describe_for_approval({"plugin": "Mod\u202epse.esl"})
+    assert "\u202e" not in texto and "Mod\\u202epse.esl" in texto
+    await estrategia.execute({"plugin": "Mod\u202epse.esl"})
+    servicio.admitir.assert_awaited_once_with("Mod\u202epse.esl")  # se ejecuta el nombre real
 
 
 def test_admitir_describe_for_approval_muestra_el_nombre_entero_dentro_del_detalle_del_gate() -> None:
@@ -135,7 +135,7 @@ def test_admitir_describe_for_approval_muestra_el_nombre_entero_dentro_del_detal
 
 def test_admitir_validate_for_approval_rechaza_un_nombre_que_no_se_puede_mostrar_entero() -> None:
     with pytest.raises(ValueError, match="no se puede mostrar"):
-        AdmitirPluginNativoStrategy(service=_servicio()).validate_for_approval({"plugin": "​" * 70 + ".esp"})
+        AdmitirPluginNativoStrategy(service=_servicio()).validate_for_approval({"plugin": "\u200b" * 70 + ".esp"})
 
 
 async def test_estrategias_delegan_al_servicio() -> None:
@@ -500,3 +500,53 @@ def test_cada_tool_del_bridge_existe_en_las_dos_superficies(registro: AsyncToolR
     assert publicadas == HERRAMIENTAS_DEL_BRIDGE, (
         "una tool nueva del bridge tiene que sumarse acá y en las dos superficies"
     )
+
+
+async def test_cerrar_espera_tambien_la_tarea_anterior_que_todavia_esta_avisando() -> None:
+    # La admisión pasa a estado terminal ANTES de que termine su aviso de fin: si entra otra admisión en esa
+    # ventana, la tarea anterior no puede quedar huérfana; ``cerrar()`` la cancela y la espera también.
+    servicio = _servicio()
+    aviso_colgado: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    avisos: list[str] = []
+
+    async def _notificar(mensaje: str) -> None:
+        avisos.append(mensaje)
+        if len(avisos) == 1:
+            await aviso_colgado  # el primer aviso (fin de la primera admisión) no termina
+
+    gestor = GestorDeAdmisionesNativas(notificar=_notificar)
+    await admitir_plugin_nativo(servicio, _hitl(Decision.APPROVED), "Mod.esp", admisiones=gestor)
+    assert gestor.actual is not None and gestor.actual.tarea is not None
+    primera = gestor.actual.tarea
+    for _ in range(50):
+        if avisos:
+            break
+        await asyncio.sleep(0)
+    assert gestor.actual.estado == "exitosa" and not primera.done(), "precondición: terminal, aviso pendiente"
+
+    hitl, _decision = _hitl_pendiente()
+    salida = json.loads(await admitir_plugin_nativo(servicio, hitl, "Otro.esp", admisiones=gestor))
+    assert salida["success"] is True, "la primera ya terminó: se puede lanzar otra"
+    await asyncio.sleep(0)
+
+    await gestor.cerrar()
+    assert primera.done(), "cerrar() tiene que cancelar y esperar también la tarea anterior"
+    assert gestor.actual.tarea is not None and gestor.actual.tarea.done()
+    assert gestor.actual.estado == "cancelada"
+
+
+async def test_auditar_handler_fallback_con_unicode_tambien_entra_en_el_limite() -> None:
+    # El fallback acotaba ``log_path`` ANTES de serializar: ``json.dumps`` escapa cada emoji a 12 caracteres,
+    # así que 500 emojis daban más de 6000 y el router volvía a recortar a JSON inválido. Se mide DESPUÉS.
+    servicio = _servicio()
+    servicio.auditar.return_value = {
+        "success": True,
+        "message": "",
+        "aprobado": True,
+        "hallazgos": [],
+        "log_path": chr(0x1F600) * 500,
+    }
+    texto = await auditar_plugin_nativo(servicio, "Mod.esp")
+    assert len(texto) <= PRESUPUESTO_RESULTADO_LLM
+    salida = json.loads(texto)
+    assert (salida["success"], salida["aprobado"]) == (False, False)

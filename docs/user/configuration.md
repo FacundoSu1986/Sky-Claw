@@ -96,9 +96,12 @@ del bridge. Pide aprobación y no modifica MO2. Después, la auditoría devuelve
 veredicto nativo de SSEEdit; solo `aprobado: true` significa «sin errores».
 
 Desde Telegram o `/api/chat`, la admisión corre en segundo plano: el agente
-responde enseguida y el pedido de aprobación llega por el mismo canal. Cuando la
-copia termina, Sky-Claw avisa, y recién entonces conviene auditar. Ahí la
-auditoría admite un timeout de motor de hasta 80 s; desde la GUI, de hasta 120 s.
+responde enseguida con un `trabajo_id`. El pedido de aprobación y el aviso de
+fin **no** viajan por `/api/chat`: llegan por el canal HITL del operador, el bot
+de Telegram con el chat del operador configurado. Sin ese canal, la admisión se
+deniega y no se copia nada. Cuando llega el aviso de fin, conviene auditar.
+Desde el agente, la auditoría admite un timeout de motor de hasta 80 s; desde la
+GUI, de hasta 120 s.
 
 Las flags de CLI son otra entrada de configuración. Consultar
 [la referencia de CLI](../api/cli_ref.md).

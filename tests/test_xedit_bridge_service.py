@@ -272,3 +272,13 @@ def test_huella_del_smoke_sin_cambios_es_igual(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "x.txt").write_text("x", encoding="utf-8")
     assert _cambios(_huella(tmp_path), _huella(tmp_path)) == []
+
+
+async def test_auditar_timeout_cero_explicito_se_valida_y_no_se_reemplaza(tmp_path: Path) -> None:
+    # ``timeout or DEFECTO`` convertía un 0 explícito en 60: el valor fuera de rango tiene que llegar a la
+    # validación del cliente y rechazarse sin lanzar el bridge.
+    servicio, raiz = _servicio(tmp_path, "limpio")
+    resultado = await servicio.auditar("Mod.esp", timeout=0)
+    assert resultado["success"] is False and "timeout" in resultado["message"]
+    assert not (raiz / "recibido.json").exists()
+    _cumple_contrato(resultado)

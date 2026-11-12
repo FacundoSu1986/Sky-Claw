@@ -218,9 +218,9 @@ def test_nombre_visible_de_un_nombre_comun_es_el_mismo() -> None:
     ("nombre", "visible"),
     [
         # U+202E (override de dirección) mostraría «Mod[U+202E]pse.esl» como si terminara en otra cosa.
-        ("Mod‮pse.esl", "Mod\\u202epse.esl"),
-        ("Mod​.esp", "Mod\\u200b.esp"),  # espacio de ancho cero: dos nombres idénticos a la vista
-        ("Mod A.esp", "Mod\\u00a0A.esp"),  # NBSP: se ve igual que un espacio
+        ("Mod\u202epse.esl", "Mod\\u202epse.esl"),
+        ("Mod\u200b.esp", "Mod\\u200b.esp"),  # espacio de ancho cero: dos nombres idénticos a la vista
+        ("Mod\u00a0A.esp", "Mod\\u00a0A.esp"),  # NBSP: se ve igual que un espacio
         ("Mod\x85.esp", "Mod\\u0085.esp"),  # control C1, que PATRON_PLUGIN no excluye
         ("Mod\U000e0041.esp", "Mod\\U000e0041.esp"),  # etiqueta Unicode invisible, fuera del BMP
     ],
@@ -233,7 +233,7 @@ def test_nombre_visible_escapa_lo_que_no_se_ve(nombre: str, visible: str) -> Non
 def test_nombre_visible_que_no_entra_entero_en_el_pedido_es_rechazado() -> None:
     # Un nombre que no se puede mostrar completo no se puede aprobar a conciencia.
     with pytest.raises(ValueError, match="no se puede mostrar"):
-        nombre_visible("​" * (LARGO_MAXIMO_NOMBRE_VISIBLE // 6 + 1) + ".esp")
+        nombre_visible("\u200b" * (LARGO_MAXIMO_NOMBRE_VISIBLE // 6 + 1) + ".esp")
 
 
 # --- auditoría por MCP --------------------------------------------------------------------
@@ -359,3 +359,36 @@ async def test_admitir_plugin_colgado_vence(tmp_path: Path) -> None:
 async def test_admitir_plugin_perfil_inseguro_es_rechazado(tmp_path: Path, perfil: str) -> None:
     with pytest.raises(ValueError):
         await admitir_plugin(_bridge(tmp_path, "admitido"), Path("G:/MO2"), perfil, "Mod.esp")
+
+
+# --- revisión 2 (#912): ignorables por defecto e ids JSON-RPC ------------------------------
+
+
+@pytest.mark.parametrize(
+    ("nombre", "visible"),
+    [
+        ("Mod\u034f.esp", "Mod\\u034f.esp"),  # COMBINING GRAPHEME JOINER: ignorable al mostrar
+        ("Mod\u115f.esp", "Mod\\u115f.esp"),  # relleno hangul (letra vacia a la vista)
+        ("Mod\ufe0f.esp", "Mod\\ufe0f.esp"),  # selector de variación
+        ("Mod\U000e0100.esp", "Mod\\U000e0100.esp"),  # selector de variación suplementario
+    ],
+)
+def test_nombre_visible_escapa_los_ignorables_por_defecto_aunque_python_los_imprima(nombre: str, visible: str) -> None:
+    # Python los da por imprimibles, pero Unicode los marca Default_Ignorable: no se ven. Con U+034F, el nombre
+    # se mostraría idéntico a «Mod.esp» mientras se aprueba otro plugin.
+    assert nombre.isprintable(), "precondición: isprintable() solo no alcanza"
+    assert validar_plugin(nombre) == nombre
+    assert nombre_visible(nombre) == visible
+
+
+def test_nombre_visible_mide_el_limite_despues_de_escapar_los_ignorables() -> None:
+    with pytest.raises(ValueError, match="no se puede mostrar"):
+        nombre_visible("\u034f" * (LARGO_MAXIMO_NOMBRE_VISIBLE // 6 + 1) + ".esp")
+
+
+@pytest.mark.parametrize("escenario", ["id_lista", "id_objeto", "id_bool"])
+async def test_auditar_plugin_id_jsonrpc_de_tipo_ajeno_falla_cerrado(tmp_path: Path, escenario: str) -> None:
+    # Un id lista u objeto no es clave de dict (TypeError, que atravesaría el servicio); un id ``true`` se
+    # confundiría con el 1 de ``initialize`` (True == 1 en Python). JSON-RPC solo admite texto, número o null.
+    with pytest.raises(BridgeError, match="id"):
+        await auditar_plugin(_bridge(tmp_path, escenario), "Mod.esp", timeout=30)
