@@ -204,16 +204,28 @@ def _version(texto: Any) -> tuple[int, int, int]:
     return int(partes[0]), int(partes[1]), int(partes[2])
 
 
-def _decodificar(salida: bytes) -> str:
-    # run_mcp.py fija UTF-8; run_admit.py imprime con la codificación de consola (cp1252) cuando es un pipe.
+def _decodificar(salida: bytes, *, utf8_estricto: bool = False) -> str:
+    """Decodifica la salida del bridge.
+
+    ``run_mcp.py`` fija UTF-8 en su protocolo: con ``utf8_estricto`` un byte inválido es un bridge roto
+    (``BridgeError``), nunca un texto «arreglado» con reemplazos. ``run_admit.py`` imprime con la
+    codificación de la consola (cp1252) cuando su salida es un pipe, así que ahí se admite el respaldo.
+    """
     try:
         return salida.decode("utf-8")
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as exc:
+        if utf8_estricto:
+            raise BridgeError("la salida del protocolo MCP del xEdit Bridge no es UTF-8 válido") from exc
         return salida.decode("cp1252", errors="replace")
 
 
 async def _ejecutar(
-    instalacion: InstalacionBridge, comando: list[str], *, timeout: float, entrada: bytes | None = None
+    instalacion: InstalacionBridge,
+    comando: list[str],
+    *,
+    timeout: float,
+    entrada: bytes | None = None,
+    utf8_estricto: bool = False,
 ) -> tuple[str, str, int]:
     entorno = {**os.environ, **instalacion.entorno} if instalacion.entorno else None
     try:
@@ -226,7 +238,7 @@ async def _ejecutar(
         ) from exc
     except OSError as exc:  # ejecutable ausente, acceso denegado, estado indeterminado de run_capture
         raise BridgeError(f"no se pudo lanzar el xEdit Bridge: {exc}") from exc
-    return _decodificar(stdout), _decodificar(stderr), codigo
+    return _decodificar(stdout, utf8_estricto=utf8_estricto), _decodificar(stderr), codigo
 
 
 async def auditar_plugin(
@@ -269,6 +281,7 @@ async def auditar_plugin(
         instalacion.comando("run_mcp.py"),
         timeout=timeout + margen_s,
         entrada=entrada,
+        utf8_estricto=True,
     )
     respuestas: dict[Any, dict[str, Any]] = {}
     for linea in stdout.splitlines():
@@ -285,6 +298,10 @@ async def auditar_plugin(
         # bool se confundiría con un número (True == 1, el id de ``initialize``).
         if isinstance(ident, bool) or not (ident is None or isinstance(ident, (int, str))):
             raise BridgeError(f"el xEdit Bridge devolvió un id JSON-RPC inválido ({type(ident).__name__})")
+        # Dos respuestas con el mismo id: la segunda pisaría a la primera. (Los errores sin id, ``null``, sí
+        # pueden repetirse: no son respuestas a una llamada.)
+        if ident is not None and ident in respuestas:
+            raise BridgeError(f"el xEdit Bridge devolvió dos respuestas con el mismo id JSON-RPC ({ident!r})")
         respuestas[ident] = respuesta
     if codigo != 0:
         raise BridgeError(f"el xEdit Bridge terminó con código {codigo}: {stderr.strip()[-300:]}")

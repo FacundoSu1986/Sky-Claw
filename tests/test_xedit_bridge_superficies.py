@@ -32,11 +32,12 @@ from sky_claw.app.orchestrator.tool_strategies.auditar_plugin_nativo import Audi
 from sky_claw.app.orchestrator.tool_strategies.base import ApprovalPayloadDescriber, ApprovalPayloadValidator
 from sky_claw.app.orchestrator.tool_strategies.middleware import DESTRUCTIVE_TOOL_PATTERNS, HitlGateMiddleware
 from sky_claw.app.security.hitl import Decision
-from sky_claw.local.tools.xedit_bridge_service import TIMEOUT_POR_DEFECTO
+from sky_claw.local.tools.xedit_bridge_service import TIMEOUT_POR_DEFECTO, ContextoAdmision
 from tests._orchestration_dispatcher_dependencies import crear_dependencias_desde_doble
 
 HERRAMIENTAS_DEL_BRIDGE = frozenset({"auditar_plugin_nativo", "admitir_plugin_nativo"})
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
+CONTEXTO = ContextoAdmision(pathlib.Path("C:/MO2/Instancia"), "prueva huevo 3")
 
 
 def _servicio() -> MagicMock:
@@ -46,6 +47,7 @@ def _servicio() -> MagicMock:
         return_value={"success": True, "message": "", "admission_id": "adm-1", "clausura": ["Skyrim.esm", "Mod.esp"]}
     )
     servicio.perfil_activo = MagicMock(return_value="prueva huevo 3")
+    servicio.contexto_de_admision = MagicMock(return_value=CONTEXTO)
     return servicio
 
 
@@ -122,7 +124,7 @@ async def test_admitir_describe_for_approval_muestra_el_nombre_sin_formato_invis
     texto = estrategia.describe_for_approval({"plugin": "Mod\u202epse.esl"})
     assert "\u202e" not in texto and "Mod\\u202epse.esl" in texto
     await estrategia.execute({"plugin": "Mod\u202epse.esl"})
-    servicio.admitir.assert_awaited_once_with("Mod\u202epse.esl")  # se ejecuta el nombre real
+    servicio.admitir.assert_awaited_once_with("Mod\u202epse.esl", contexto=CONTEXTO)  # se ejecuta el nombre real
 
 
 def test_admitir_describe_for_approval_muestra_el_nombre_entero_dentro_del_detalle_del_gate() -> None:
@@ -143,7 +145,7 @@ async def test_estrategias_delegan_al_servicio() -> None:
     await AuditarPluginNativoStrategy(service=servicio).execute({"plugin": "Mod.esp", "timeout": 90})
     await AdmitirPluginNativoStrategy(service=servicio).execute({"plugin": "Mod.esp"})
     servicio.auditar.assert_awaited_once_with("Mod.esp", timeout=90)
-    servicio.admitir.assert_awaited_once_with("Mod.esp")
+    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=None)
 
 
 @pytest.mark.parametrize(
@@ -314,7 +316,7 @@ async def test_admitir_handler_responde_sin_esperar_la_decision_del_operador() -
 
     decision.set_result(Decision.APPROVED)
     await _terminar(gestor)
-    servicio.admitir.assert_awaited_once_with("Mod.esp")
+    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO)
     assert gestor.actual is not None and gestor.actual.estado == "exitosa"
     assert len(avisos) == 1 and "Mod.esp" in avisos[0] and "auditar_plugin_nativo" in avisos[0]
 
@@ -352,7 +354,7 @@ async def test_admitir_pedido_muestra_el_nombre_entero_y_sin_formato_invisible(n
     await _terminar(gestor)
     razon = hitl.request_approval.await_args.kwargs["reason"]
     assert visible in razon and "\u202e" not in razon
-    servicio.admitir.assert_awaited_once_with(nombre)
+    servicio.admitir.assert_awaited_once_with(nombre, contexto=CONTEXTO)
 
 
 async def test_admitir_nombre_que_no_se_puede_mostrar_no_pide_aprobacion() -> None:
@@ -447,7 +449,7 @@ async def test_registro_cablea_resolver_y_hitl_de_la_sesion(
     await _terminar(gestor)
     assert construidos == [resolver], "el servicio tiene que usar el MISMO resolver que la GUI"
     hitl.request_approval.assert_awaited_once()
-    servicio.admitir.assert_awaited_once_with("Mod.esp")
+    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO)
 
     # La auditoría del registro llega al servicio con el margen del agente, no con el de la GUI.
     await registro.execute("auditar_plugin_nativo", {"plugin": "Mod.esp"})
@@ -550,3 +552,30 @@ async def test_auditar_handler_fallback_con_unicode_tambien_entra_en_el_limite()
     assert len(texto) <= PRESUPUESTO_RESULTADO_LLM
     salida = json.loads(texto)
     assert (salida["success"], salida["aprobado"]) == (False, False)
+
+
+# --- revisión adversarial externa (#912): lo aprobado es el contexto exacto de la admisión -------
+
+
+async def test_admitir_el_pedido_muestra_el_contexto_y_se_copia_con_el_capturado_al_pedir() -> None:
+    # El contexto se captura UNA vez, al pedir la aprobación, y es el que se muestra y el que se verifica al copiar;
+    # si el vigente es otro, el servicio rechaza (probado en test_xedit_bridge_service).
+    otro = ContextoAdmision(pathlib.Path("C:/MO2/Otra"), "otro perfil")
+    servicio, hitl, (gestor, _) = _servicio(), _hitl(Decision.APPROVED), _gestor()
+    servicio.contexto_de_admision = MagicMock(side_effect=[CONTEXTO, otro])
+    await admitir_plugin_nativo(servicio, hitl, "Mod.esp", admisiones=gestor)
+    await _terminar(gestor)
+    razon = hitl.request_approval.await_args.kwargs["reason"]
+    assert "Instancia" in razon and "prueva huevo 3" in razon and "Otra" not in razon
+    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO)
+
+
+async def test_gui_el_pedido_muestra_el_contexto_y_la_ejecucion_lo_verifica() -> None:
+    servicio = _servicio()
+    estrategia = AdmitirPluginNativoStrategy(service=servicio)
+    texto = estrategia.describe_for_approval({"plugin": "Mod.esp"})
+    assert "Instancia" in texto and "prueva huevo 3" in texto
+    await estrategia.execute({"plugin": "Mod.esp"})
+    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO)
+    await estrategia.execute({"plugin": "Mod.esp"})  # el contexto aprobado se consume: no se reutiliza
+    assert servicio.admitir.await_args.kwargs["contexto"] is None

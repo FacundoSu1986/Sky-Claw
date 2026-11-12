@@ -41,7 +41,7 @@ from sky_claw.local.tools.xedit_bridge_client import nombre_visible, validar_plu
 
 if TYPE_CHECKING:
     from sky_claw.app.security.hitl import HITLGuard
-    from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
+    from sky_claw.local.tools.xedit_bridge_service import ContextoAdmision, XEditBridgeService
 
 logger = logging.getLogger(__name__)
 
@@ -143,15 +143,15 @@ async def admitir_plugin_nativo(
         return _fallo(f"no se lanzó la admisión: {exc}")
 
 
-async def _pedir_aprobacion_de_admision(hitl: HITLGuard, visible: str, perfil: str) -> Decision:
-    """Pedido de aprobación de la admisión: el nombre ENTERO y como lo ve el operador.
+async def _pedir_aprobacion_de_admision(hitl: HITLGuard, visible: str, contexto: ContextoAdmision) -> Decision:
+    """Pedido de aprobación de la admisión: el nombre ENTERO y el contexto EXACTO, como los ve el operador.
 
     Misma categoría que el gate de la GUI (``tool_execution``): las dos superficies piden lo mismo y
     solo el «Modo local», elegido por el operador, la auto-aprueba.
     """
     return await hitl.request_approval(
         request_id=new_hitl_request_id("xedit-bridge-admit"),
-        reason=f"Admitir {visible} (perfil MO2 «{perfil}») en el laboratorio del xEdit Bridge",
+        reason=f"Admitir {visible} ({contexto.resumen()}) en el laboratorio del xEdit Bridge",
         detail=(
             "Copia el plugin y sus masters, resueltos con la precedencia de MO2, a la carpeta "
             "Admitidos del bridge. MO2 y el juego solo se leen; no se modifica ningún archivo suyo."
@@ -168,6 +168,8 @@ class TrabajoDeAdmision:
     plugin: str
     visible: str
     iniciado_en: float
+    #: Lo que se le mostró al operador: es lo que ``service.admitir`` verifica después de la aprobación.
+    contexto: ContextoAdmision
     estado: EstadoDeAdmision = "esperando_aprobacion"
     terminado_en: float | None = None
     resultado: dict[str, Any] | None = None
@@ -237,13 +239,15 @@ class GestorDeAdmisionesNativas:
                 "trabajo_id": vivo.id,
                 "estado": vivo.estado,
             }
-        perfil = sanitize_for_prompt(service.perfil_activo(), max_length=120)
+        # El contexto se captura UNA vez: es el que ve el operador y el que se verifica al copiar.
         trabajo = TrabajoDeAdmision(
-            id=f"admision-{next(_IDS)}", plugin=plugin, visible=visible, iniciado_en=time.time()
+            id=f"admision-{next(_IDS)}",
+            plugin=plugin,
+            visible=visible,
+            iniciado_en=time.time(),
+            contexto=service.contexto_de_admision(),
         )
-        trabajo.tarea = asyncio.create_task(
-            self._correr(trabajo, service, hitl, perfil), name=f"xedit-bridge-{trabajo.id}"
-        )
+        trabajo.tarea = asyncio.create_task(self._correr(trabajo, service, hitl), name=f"xedit-bridge-{trabajo.id}")
         self._tareas.add(trabajo.tarea)
         trabajo.tarea.add_done_callback(self._tareas.discard)
         self._actual = trabajo
@@ -259,11 +263,9 @@ class GestorDeAdmisionesNativas:
             ),
         }
 
-    async def _correr(
-        self, trabajo: TrabajoDeAdmision, service: XEditBridgeService, hitl: HITLGuard, perfil: str
-    ) -> None:
+    async def _correr(self, trabajo: TrabajoDeAdmision, service: XEditBridgeService, hitl: HITLGuard) -> None:
         try:
-            decision = await _pedir_aprobacion_de_admision(hitl, trabajo.visible, perfil)
+            decision = await _pedir_aprobacion_de_admision(hitl, trabajo.visible, trabajo.contexto)
             if decision is not Decision.APPROVED:
                 logger.warning("Admisión de %s no aprobada: %s", trabajo.visible, decision.value)
                 trabajo.estado = "rechazada"
@@ -275,7 +277,7 @@ class GestorDeAdmisionesNativas:
                 }
             else:
                 trabajo.estado = "en_curso"
-                resultado = await service.admitir(trabajo.plugin)
+                resultado = await service.admitir(trabajo.plugin, contexto=trabajo.contexto)
         except asyncio.CancelledError:
             await self._registrar_cancelacion(trabajo)
             raise

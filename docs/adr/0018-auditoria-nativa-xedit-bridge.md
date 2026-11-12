@@ -46,8 +46,14 @@ Este ADR decide cómo lo consume Sky-Claw.
     **trabajo en segundo plano**, como `generate_lods`: responde enseguida con un `trabajo_id`. El
     pedido y el aviso de fin viajan por el canal del guard (`notify_operator`): el canal HITL del
     operador (Telegram), no `/api/chat`.
-  - Hay una admisión a la vez. El gestor sigue toda tarea sin terminar, también un aviso de fin
-    pendiente, para que `cerrar()` la cancele.
+  - Hay una admisión a la vez **por el agente**: el gestor rechaza una segunda mientras hay una en
+    curso, y sigue toda tarea sin terminar, también un aviso de fin pendiente, para que `cerrar()`
+    la cancele.
+  - **Entre superficies, el que serializa es el bridge.** La GUI no comparte ese gestor, pero
+    `run_admit.py` toma un mutex de proceso sobre el laboratorio (`admission.py`, `ProcessMutex`,
+    espera de hasta 120 s): dos admisiones simultáneas, de la GUI y del agente, o incluso de dos
+    procesos, se ejecutan una detrás de la otra, y si la segunda no obtiene el mutex a tiempo
+    falla con un error limpio. No hay escritura concurrente en el laboratorio.
   - Una auditoría del mismo plugin con la admisión en curso lo dice, en vez de responder «no
     admitido».
   - El `AppContext` arma el gestor y registra su `cerrar()` en el cleanup: un apagado cancela la
@@ -64,6 +70,12 @@ Este ADR decide cómo lo consume Sky-Claw.
   NBSP, controles C1 y los ignorables por defecto que Python da por imprimibles (U+034F). Los dos pedidos muestran el nombre **entero** con `nombre_visible`, que los
   escapa (`\u202e`). El nombre que se ejecuta no cambia. Un nombre que no entra entero en el pedido
   se rechaza antes de pedir la aprobación.
+- **Lo que se aprueba es el contexto exacto, y se verifica al copiar.** El pedido muestra también
+  el perfil y la instancia MO2 (la carpeta de su INI) de los que se copiaría (`ContextoAdmision`). Se
+  captura una sola vez, al pedir la aprobación, y `service.admitir` lo compara con el vigente después
+  de la decisión: si la instancia o el perfil cambiaron durante la espera, no se copia nada y el
+  mensaje pide volver a solicitar la admisión. Vale para las dos superficies: el agente lo guarda en
+  el trabajo y la GUI lo guarda al describir el pedido.
 - Las dos superficies delegan en el mismo `XEditBridgeService`. Ancla:
   `tests/test_xedit_bridge_superficies.py`. Enumera las tools del bridge y exige que cada una
   exista en el registro y en el dispatcher.
@@ -94,6 +106,8 @@ Todo falla cerrado con `BridgeError`, que nunca es un veredicto sobre el plugin.
 - una respuesta con otra forma: `result` o `content` que no son objeto o lista, o un contenido que no
   es un único texto;
 - un `ok` que no es booleano, o un `isError` que no coincide con `ok`;
+- dos respuestas con el mismo id, o una salida del protocolo que no es UTF-8 válido (`run_mcp.py` lo
+  fija; no hay respaldo a otra codificación, que sí tiene la salida de `run_admit.py`);
 - un exit code distinto de 0;
 - un timeout.
 
@@ -138,6 +152,11 @@ Ninguna forma inesperada se escapa como `AttributeError` o `TypeError`: el servi
   y respuesta sin recortar. Un plugin con errores auditado por completo es `success=True`.
 - `aprobado` = `ok` ∧ confiable ∧ `clean`. Es el **único** campo que permite tratar un plugin como
   sin errores.
+- **Un veredicto incoherente no aprueba.** «Aprobado» es la decisión de seguridad de la herramienta
+  y no se deriva de un solo campo: si el bridge dice `clean=true` y a la vez informa errores
+  nativos, hallazgos o fallas de ejecución, el resultado es `success=false`, `aprobado=false` y el
+  mensaje dice «incoherente». Es defensa en profundidad: el bridge no debería producir eso, y
+  Sky-Claw no convierte una contradicción en una aprobación.
 - Todo texto que sale del plugin (registros, rutas, descripciones) pasa por `sanitize_for_prompt`
   y se acota. Se informan hasta 50 hallazgos; el resto se cuenta en `hallazgos_omitidos`.
 - `run_id` y `log_path` permiten ir al log crudo del bridge.

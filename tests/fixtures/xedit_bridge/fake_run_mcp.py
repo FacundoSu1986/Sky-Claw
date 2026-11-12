@@ -140,7 +140,16 @@ for linea in sys.stdin:
         respuesta["id"] = [] if ESCENARIO == "id_lista" else {}
     if ESCENARIO == "id_bool" and metodo == "initialize":
         respuesta["id"] = True
+    if ESCENARIO == "utf8_invalido" and metodo == "tools/call":
+        # Un byte que no es UTF-8 dentro de un JSON válido: solo un decodificador estricto lo detecta.
+        crudo = json.dumps(respuesta).encode("utf-8").replace(b"run.log", b"run" + bytes([233]) + b".log")
+        sys.stdout.flush()
+        sys.stdout.buffer.write(crudo + b"\n")
+        sys.stdout.buffer.flush()
+        continue
     sys.stdout.write(json.dumps(respuesta) + "\n")
+    if ESCENARIO == "id_duplicado" and metodo == "tools/call":
+        sys.stdout.write(json.dumps(respuesta) + "\n")  # misma id dos veces
     sys.stdout.flush()
 
 sys.exit(3 if ESCENARIO == "exit_no_cero" else 0)

@@ -17,6 +17,7 @@ Contrato de resultado (``success``/``message``, ver ``tool_result.py``):
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -53,6 +54,23 @@ def _texto(valor: Any, largo: int = _LARGO_TEXTO) -> str:
 def _lista(valor: Any) -> list[Any]:
     """Un campo de lista del bridge; cualquier otro tipo cuenta como vacío (nunca se itera un str)."""
     return valor if isinstance(valor, list) else []
+
+
+@dataclass(frozen=True)
+class ContextoAdmision:
+    """De DÓNDE se copia una admisión: la instancia MO2 (carpeta de su INI) y el perfil.
+
+    Es lo que el operador aprueba. Se captura al pedir la aprobación y se pasa a :meth:`XEditBridgeService.admitir`,
+    que lo compara con el contexto vigente al copiar: si cambió durante la espera, no se copia nada.
+    """
+
+    ini_dir: Path | None
+    perfil: str
+
+    def resumen(self) -> str:
+        """Texto para el operador: el perfil y la instancia exactos de los que se copiaría."""
+        instancia = f"«{self.ini_dir.name}» ({self.ini_dir})" if self.ini_dir is not None else "sin instancia MO2"
+        return f"perfil «{self.perfil}» de la instancia MO2 {instancia}"
 
 
 class XEditBridgeService:
@@ -121,9 +139,21 @@ class XEditBridgeService:
         completo = datos.get("check_complete") is True
         integridad = datos.get("prospective_integrity")
         recortado = datos.get("truncated") is True
-        confiable = completo and integridad == "PASS" and not recortado
         limpio = datos.get("clean") is True
         hallazgos_crudos = _lista(datos.get("findings"))
+        # «Aprobado» es la decisión de seguridad de la herramienta: no se deriva de un solo campo. Un ``clean``
+        # que contradice los contadores, los hallazgos o las fallas de ejecución es un resultado incoherente,
+        # y un resultado incoherente no es confiable ni aprueba (defensa en profundidad frente al bridge).
+        contador = datos.get("native_counter_records")
+        con_errores = isinstance(contador, int) and not isinstance(contador, bool) and contador > 0
+        incoherencias = []
+        if limpio and con_errores:
+            incoherencias.append(f"clean=true con {contador} errores nativos")
+        if limpio and hallazgos_crudos:
+            incoherencias.append(f"clean=true con {len(hallazgos_crudos)} hallazgos")
+        if limpio and _lista(datos.get("execution_failures")):
+            incoherencias.append("clean=true con fallas de ejecución")
+        confiable = completo and integridad == "PASS" and not recortado and not incoherencias
         hallazgos = [
             {campo: _texto(h[campo]) for campo in _CAMPOS_HALLAZGO if isinstance(h, dict) and h.get(campo) is not None}
             for h in hallazgos_crudos[:LIMITE_HALLAZGOS]
@@ -132,6 +162,8 @@ class XEditBridgeService:
         # De la causa más específica a la más general: el bridge marca un recorte también como incompleto.
         if confiable:
             mensaje = ""
+        elif incoherencias:
+            mensaje = "resultado incoherente del bridge, no se aprueba: " + "; ".join(incoherencias)
         elif recortado:
             mensaje = "respuesta del bridge recortada: revisar el log crudo en log_path"
         elif integridad != "PASS":
@@ -161,16 +193,32 @@ class XEditBridgeService:
             "no_admitido": False,
         }
 
-    async def admitir(self, plugin: str) -> dict[str, Any]:
+    def contexto_de_admision(self) -> ContextoAdmision:
+        """El contexto del que se copiaría hoy: instancia MO2 (carpeta del INI) y perfil activo."""
+        return ContextoAdmision(self._rutas.get_mo2_instance_ini_dir(), self._rutas.get_active_profile())
+
+    async def admitir(self, plugin: str, *, contexto: ContextoAdmision | None = None) -> dict[str, Any]:
         """Copia ``plugin`` y sus masters del MO2 de Sky-Claw al laboratorio del bridge (MO2 no se toca).
 
-        Solo debe llamarse después de una aprobación humana: la impone cada superficie.
+        Solo debe llamarse después de una aprobación humana: la impone cada superficie. ``contexto`` es el que
+        se mostró al operador al pedirla: si el vigente es otro, no se copia nada (la aprobación era para ese).
         """
         base: dict[str, Any] = {"plugin": _texto(plugin, _LARGO_NOMBRE)}
         # El bridge re-deriva la instancia (base, mods, perfiles, juego) de su ModOrganizer.ini: se le
         # pasa la carpeta del MISMO INI que usa Sky-Claw, no la instalación (que en MO2 2.4+ no tiene INI)
         # ni la raíz de datos (que puede guardar una copia vieja).
-        mo2 = self._rutas.get_mo2_instance_ini_dir()
+        vigente = self.contexto_de_admision()
+        if contexto is not None and contexto != vigente:
+            logger.warning("Admisión de %r cancelada: el contexto cambió (%s -> %s)", plugin, contexto, vigente)
+            return {
+                **base,
+                "success": False,
+                "message": (
+                    f"el contexto de MO2 cambió durante la espera de la aprobación (se aprobó {contexto.resumen()}; "
+                    f"ahora es {vigente.resumen()}): no se copió nada, volvé a pedir la admisión"
+                ),
+            }
+        mo2 = vigente.ini_dir
         if mo2 is None:
             return {
                 **base,
@@ -178,7 +226,7 @@ class XEditBridgeService:
                 "message": "MO2 no configurado: no se encontró el ModOrganizer.ini de la instancia activa",
             }
         try:
-            datos = await admitir_plugin(self._instalacion(), mo2, self._rutas.get_active_profile(), plugin)
+            datos = await admitir_plugin(self._instalacion(), mo2, vigente.perfil, plugin)
         except (BridgeError, ValueError) as exc:
             logger.warning("Admisión de %r no realizada: %s", plugin, exc)
             return {**base, "success": False, "message": _texto(exc)}
@@ -198,4 +246,4 @@ class XEditBridgeService:
         }
 
 
-__all__ = ["LIMITE_HALLAZGOS", "XEditBridgeService"]
+__all__ = ["LIMITE_HALLAZGOS", "ContextoAdmision", "XEditBridgeService"]

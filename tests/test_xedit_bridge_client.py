@@ -392,3 +392,11 @@ async def test_auditar_plugin_id_jsonrpc_de_tipo_ajeno_falla_cerrado(tmp_path: P
     # confundiría con el 1 de ``initialize`` (True == 1 en Python). JSON-RPC solo admite texto, número o null.
     with pytest.raises(BridgeError, match="id"):
         await auditar_plugin(_bridge(tmp_path, escenario), "Mod.esp", timeout=30)
+
+
+@pytest.mark.parametrize("escenario", ["id_duplicado", "utf8_invalido"])
+async def test_auditar_plugin_salida_mcp_inconsistente_falla_cerrado(tmp_path: Path, escenario: str) -> None:
+    # Dos respuestas con el mismo id (la segunda pisaría a la primera) y bytes que no son UTF-8 dentro de un JSON
+    # válido (el respaldo a cp1252 los «arreglaba» con reemplazos). run_mcp.py fija UTF-8: lo demás es un bridge roto.
+    with pytest.raises(BridgeError):
+        await auditar_plugin(_bridge(tmp_path, escenario), "Mod.esp", timeout=30)

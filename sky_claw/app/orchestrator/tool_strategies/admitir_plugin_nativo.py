@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sky_claw.local.tools.xedit_bridge_client import PATRON_PLUGIN, nombre_visible
 
 if TYPE_CHECKING:
-    from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
+    from sky_claw.local.tools.xedit_bridge_service import ContextoAdmision, XEditBridgeService
 
 
 class AdmitirPluginNativoParams(BaseModel):
@@ -36,6 +36,8 @@ class AdmitirPluginNativoStrategy:
 
     def __init__(self, service: XEditBridgeService) -> None:
         self.service = service
+        #: Contexto que se le mostró al operador, por plugin: ``execute`` lo consume y el servicio lo verifica.
+        self._mostrados: dict[str, ContextoAdmision] = {}
 
     def validate_for_approval(self, payload_dict: dict[str, Any]) -> None:
         # Un nombre que no se puede mostrar entero al operador no se aprueba (ValueError antes del pedido).
@@ -44,13 +46,18 @@ class AdmitirPluginNativoStrategy:
     def describe_for_approval(self, payload_dict: dict[str, Any]) -> str:
         # El nombre va primero, entero y con lo invisible escapado (U+202E reordenaría lo que se ve): el gate
         # acota el detalle a 800 caracteres y ``nombre_visible`` garantiza que este texto entra sin cortarlo.
-        # Se ejecuta el nombre real (``execute``), no el visible.
-        visible = nombre_visible(AdmitirPluginNativoParams(**payload_dict).plugin)
+        # Se ejecuta el nombre real (``execute``), no el visible. Después va el contexto EXACTO (perfil e
+        # instancia MO2), que se guarda para verificarlo al copiar: lo aprobado es eso, no «el perfil activo».
+        plugin = AdmitirPluginNativoParams(**payload_dict).plugin
+        visible = nombre_visible(plugin)
+        contexto = self.service.contexto_de_admision()
+        self._mostrados[plugin.casefold()] = contexto
         return (
-            f"Admitir {visible} en el xEdit Bridge: copia el plugin y sus masters, resueltos del perfil "
-            "activo de MO2, al laboratorio del bridge para auditarlo. MO2 y el juego no se modifican."
+            f"Admitir {visible} ({contexto.resumen()}) en el xEdit Bridge: copia el plugin y sus masters al "
+            "laboratorio del bridge para auditarlo. MO2 y el juego no se modifican."
         )
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         params = AdmitirPluginNativoParams(**payload_dict)
-        return await self.service.admitir(params.plugin)
+        contexto = self._mostrados.pop(params.plugin.casefold(), None)
+        return await self.service.admitir(params.plugin, contexto=contexto)

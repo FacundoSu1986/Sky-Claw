@@ -282,3 +282,50 @@ async def test_auditar_timeout_cero_explicito_se_valida_y_no_se_reemplaza(tmp_pa
     assert resultado["success"] is False and "timeout" in resultado["message"]
     assert not (raiz / "recibido.json").exists()
     _cumple_contrato(resultado)
+
+
+# --- revisión adversarial externa (#912): veredicto coherente y contexto de admisión -----------
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"native_counter_records": 3},
+        {"findings": [{"signature": "LVLI", "description": "x"}]},
+        {"execution_failures": ["Error al procesar registros"]},
+    ],
+    ids=["contador", "hallazgos", "fallas_de_ejecucion"],
+)
+def test_veredicto_con_clean_contradictorio_no_es_confiable_ni_aprueba(extra: dict) -> None:
+    # Un bridge (o un intermediario) que dice clean=true y a la vez informa errores no puede producir una
+    # aprobación: «aprobado» es la decisión de seguridad de la herramienta y no se deriva de un solo campo.
+    datos = {"check_complete": True, "prospective_integrity": "PASS", "truncated": False, "clean": True, **extra}
+    resultado = XEditBridgeService(path_resolver=_Resolver(None))._veredicto(
+        "Mod.esp", RespuestaAuditoria({"ok": True, "untrusted_data": datos}, "1.1.0")
+    )
+    assert (resultado["success"], resultado["aprobado"]) == (False, False)
+    assert "incoherente" in resultado["message"]
+
+
+async def test_admitir_con_el_contexto_autorizado_copia(tmp_path: Path) -> None:
+    servicio, _ = _servicio(tmp_path, "admitido", mo2=Path("C:/MO2/A"), perfil="P1")
+    autorizado = servicio.contexto_de_admision()
+    resultado = await servicio.admitir("Mod.esp", contexto=autorizado)
+    assert resultado["success"] is True
+    _cumple_contrato(resultado)
+
+
+@pytest.mark.parametrize("cambio", ["mo2", "perfil"])
+async def test_admitir_con_el_contexto_cambiado_durante_la_espera_no_copia(tmp_path: Path, cambio: str) -> None:
+    # Lo que el operador aprobó fue «este perfil de ESTA instancia»: si cualquiera de los dos cambia mientras
+    # se espera la decisión, no se copia nada.
+    servicio, raiz = _servicio(tmp_path, "admitido", mo2=Path("C:/MO2/A"), perfil="P1")
+    autorizado = servicio.contexto_de_admision()
+    if cambio == "mo2":
+        servicio._rutas.mo2 = Path("C:/MO2/B")
+    else:
+        servicio._rutas.perfil = "P2"
+    resultado = await servicio.admitir("Mod.esp", contexto=autorizado)
+    assert resultado["success"] is False and "cambió" in resultado["message"]
+    assert not (raiz / "admit_args.json").exists()
+    _cumple_contrato(resultado)
