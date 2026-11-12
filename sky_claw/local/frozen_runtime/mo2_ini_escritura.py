@@ -49,9 +49,16 @@ import tempfile
 from collections.abc import Callable
 from typing import Protocol
 
-from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import leer_game_path_de_mo2
+from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
+    leer_ejecutables_de_mo2,
+    leer_game_path_de_mo2,
+)
 from sky_claw.local.frozen_runtime.effective_runtime.models import ObservationState
 from sky_claw.local.frozen_runtime.errors import FrozenRuntimeError
+from sky_claw.local.frozen_runtime.mo2_executables_plan import (
+    MutacionCampoEjecutable,
+    PlanMigracionEjecutablesMO2,
+)
 
 __all__ = [
     "EscrituraIniNoVerificadaError",
@@ -249,7 +256,23 @@ def _reemplazar_valor(linea: str, valor: str) -> str:
     return f"{cuerpo[: indice + 1]}{valor}{terminador}"
 
 
-def _construir_lineas(texto: str, valor: str, formato: FormatoIni) -> tuple[list[str], tuple[int, ...]]:
+def _normalizar_mutaciones(
+    plan: PlanMigracionEjecutablesMO2 | tuple[MutacionCampoEjecutable, ...] | list[MutacionCampoEjecutable] | None,
+) -> tuple[MutacionCampoEjecutable, ...]:
+    """Extrae la tupla de mutaciones de un plan o iterable de mutaciones."""
+    if plan is None:
+        return ()
+    if hasattr(plan, "mutaciones"):
+        return tuple(plan.mutaciones)
+    return tuple(plan)
+
+
+def _construir_lineas(
+    texto: str,
+    valor: str,
+    formato: FormatoIni,
+    mutaciones: tuple[MutacionCampoEjecutable, ...] = (),
+) -> tuple[list[str], tuple[int, ...]]:
     """Devuelve las líneas modificadas y los índices de las líneas tocadas.
 
     Los índices son la única forma de verificar después que la edición fue
@@ -259,8 +282,15 @@ def _construir_lineas(texto: str, valor: str, formato: FormatoIni) -> tuple[list
     lineas = texto.split("\n")
     en_general = False
     seccion_general_vista = False
+    game_path_encontrado = False
+    en_custom_executables = False
+    seccion_custom_vista = False
+    claves_custom_vistas: set[str] = set()
     tocadas: list[int] = []
     salida: list[str] = []
+
+    mutaciones_map = {f"{m.index}\\{m.campo}".lower(): m.valor_nuevo for m in mutaciones}
+    mutaciones_aplicadas: set[str] = set()
 
     for linea in lineas:
         encabezado = _es_encabezado(linea)
@@ -268,17 +298,43 @@ def _construir_lineas(texto: str, valor: str, formato: FormatoIni) -> tuple[list
             if encabezado == "General":
                 en_general = True
                 seccion_general_vista = True
+                en_custom_executables = False
                 salida.append(linea)
                 continue
-            if en_general and not tocadas:
+            if en_general and not game_path_encontrado:
                 tocadas.append(len(salida))
                 salida.append(_con_terminador(f"gamePath={valor}", formato))
+                game_path_encontrado = True
             en_general = False
+            if encabezado.lower() == "customexecutables":
+                if seccion_custom_vista:
+                    raise FormatoIniNoAdmitidoError(f"Sección [{encabezado}] duplicada en INI")
+                seccion_custom_vista = True
+                en_custom_executables = True
+            else:
+                en_custom_executables = False
 
-        if en_general and not tocadas and _es_game_path(linea):
-            tocadas.append(len(salida))
-            salida.append(_reemplazar_valor(linea, valor))
+        if en_general and not game_path_encontrado and _es_game_path(linea):
+            game_path_encontrado = True
+            nueva_linea = _reemplazar_valor(linea, valor)
+            if nueva_linea != linea:
+                tocadas.append(len(salida))
+            salida.append(nueva_linea)
             continue
+
+        if en_custom_executables and "=" in linea:
+            clave, _, _ = linea.partition("=")
+            clave_norm = clave.strip().lower()
+            if clave_norm in claves_custom_vistas:
+                raise FormatoIniNoAdmitidoError(f"Clave duplicada en [customExecutables]: '{clave.strip()}'")
+            claves_custom_vistas.add(clave_norm)
+            if clave_norm in mutaciones_map:
+                nueva_linea = _reemplazar_valor(linea, mutaciones_map[clave_norm])
+                if nueva_linea != linea:
+                    tocadas.append(len(salida))
+                salida.append(nueva_linea)
+                mutaciones_aplicadas.add(clave_norm)
+                continue
 
         salida.append(linea)
 
@@ -288,20 +344,24 @@ def _construir_lineas(texto: str, valor: str, formato: FormatoIni) -> tuple[list
         # dejaría un LF suelto en un INI CRLF (CodeRabbit sobre #843).
         salida.insert(0, "[General]" + ("\r" if formato.crlf else ""))
         salida.insert(1, _con_terminador(f"gamePath={valor}", formato))
-        tocadas = [0, 1]
-    elif en_general and not tocadas:
+        tocadas = [0, 1] + [i + 2 for i in tocadas]
+    elif en_general and not game_path_encontrado:
         # [General] era la última sección: se agrega al final de ella.
         if salida and salida[-1] == "":
             # El archivo termina con salto de línea: la línea nueva va ANTES del
             # último elemento vacío para no dejar un renglón en blanco de más.
-            tocadas = [len(salida) - 1]
+            tocadas.append(len(salida) - 1)
             salida.insert(len(salida) - 1, _con_terminador(f"gamePath={valor}", formato))
         else:
             salida[-1] = _con_terminador(salida[-1], formato)
-            tocadas = [len(salida)]
+            tocadas.append(len(salida))
             salida.append(f"gamePath={valor}")
 
-    return salida, tuple(tocadas)
+    if len(mutaciones_aplicadas) != len(mutaciones_map):
+        faltantes = sorted(set(mutaciones_map.keys()) - mutaciones_aplicadas)
+        raise EscrituraIniNoVerificadaError(f"no se encontraron las entradas de ejecutables para mutar: {faltantes}")
+
+    return salida, tuple(sorted(tocadas))
 
 
 def _verificar_preservacion(
@@ -309,6 +369,7 @@ def _verificar_preservacion(
     despues: list[str],
     *,
     tocadas: tuple[int, ...],
+    mutaciones: tuple[MutacionCampoEjecutable, ...] = (),
 ) -> None:
     """Comprueba que la edición se limitó a las líneas declaradas.
 
@@ -316,29 +377,34 @@ def _verificar_preservacion(
     normalizó un salto, reordenó una clave o perdió una línea, el resto de la
     lista deja de ser idéntica al original.
     """
+    if despues == antes:
+        return
+
     if not tocadas:
         raise EscrituraIniNoVerificadaError("verificación de preservación: la edición no tocó ninguna línea")
 
+    mutaciones_claves = {f"{m.index}\\{m.campo}".lower() for m in mutaciones}
+
     if len(despues) == len(antes):
         # REEMPLAZO en el lugar: sólo pueden diferir las líneas declaradas, y
-        # tanto la versión previa como la nueva tienen que ser gamePath.
-        #
-        # ``despues == antes`` es un NO-OP legítimo: el valor ya era el pedido.
-        # Antes se rechazaba, así que llamar dos veces al escritor con la misma
-        # ruta fallaba en la segunda (Codex sobre #843) y la rama de idempotencia
-        # de ``actualizar_game_path_en_ini`` era inalcanzable.
-        if despues == antes:
-            return
+        # tanto la versión previa como la nueva tienen que ser gamePath o mutación de ejecutable.
         distintas = [indice for indice, (a, d) in enumerate(zip(antes, despues, strict=True)) if a != d]
         if distintas != list(tocadas):
             raise EscrituraIniNoVerificadaError(
                 f"verificación de preservación: se esperaba modificar {list(tocadas)} y se modificó {distintas}"
             )
         for indice in tocadas:
-            if not _es_game_path(antes[indice]) or not _es_game_path(despues[indice]):
-                raise EscrituraIniNoVerificadaError(
-                    f"verificación de preservación: la línea {indice} no es gamePath en ambos lados"
-                )
+            linea_a = antes[indice]
+            linea_d = despues[indice]
+            if _es_game_path(linea_a) and _es_game_path(linea_d):
+                continue
+            clave_a, _, _ = linea_a.partition("=")
+            clave_d, _, _ = linea_d.partition("=")
+            if clave_a.strip().lower() in mutaciones_claves and clave_a.strip().lower() == clave_d.strip().lower():
+                continue
+            raise EscrituraIniNoVerificadaError(
+                f"verificación de preservación: la línea {indice} no es gamePath ni ejecutable mutado"
+            )
         return
 
     # INSERCIÓN: quitando las líneas declaradas, el resto tiene que ser el original.
@@ -352,12 +418,22 @@ def _verificar_preservacion(
         linea = despues[indice]
         if _es_game_path(linea) or _es_encabezado(linea) == "General":
             continue
+        clave, _, _ = linea.partition("=")
+        if clave.strip().lower() in mutaciones_claves:
+            continue
         raise EscrituraIniNoVerificadaError(
-            f"verificación de preservación: la línea {indice} no es gamePath ni [General] ({linea!r})"
+            f"verificación de preservación: la línea {indice} no es gamePath, [General] ni ejecutable mutado ({linea!r})"
         )
 
 
-def prever_bytes(contenido: bytes, nuevo_game_path: str | pathlib.Path) -> bytes:
+def prever_bytes(
+    contenido: bytes,
+    nuevo_game_path: str | pathlib.Path,
+    plan_ejecutables: PlanMigracionEjecutablesMO2
+    | tuple[MutacionCampoEjecutable, ...]
+    | list[MutacionCampoEjecutable]
+    | None = None,
+) -> bytes:
     """Bytes que ``actualizar_game_path_en_ini`` escribiría sobre *contenido*.
 
     Es una función PURA sobre el contenido previo y no toca el disco. Existe por
@@ -373,15 +449,16 @@ def prever_bytes(contenido: bytes, nuevo_game_path: str | pathlib.Path) -> bytes
 
     Raises:
         FormatoIniNoAdmitidoError: el formato no se admite.
-        EscrituraIniNoVerificadaError: la edición no se limitó a ``gamePath``.
+        EscrituraIniNoVerificadaError: la edición no se limitó a ``gamePath`` o ejecutables aprobados.
     """
+    mutaciones = _normalizar_mutaciones(plan_ejecutables)
     formato = admitir_formato_ini(contenido)
     cuerpo = contenido[len(_BOM_UTF8) :] if formato.tiene_bom else contenido
     texto = cuerpo.decode("utf-8", "surrogateescape")
     valor = codificar_qt_byte_array(nuevo_game_path)
     lineas_antes = texto.split("\n")
-    lineas_despues, tocadas = _construir_lineas(texto, valor, formato)
-    _verificar_preservacion(lineas_antes, lineas_despues, tocadas=tocadas)
+    lineas_despues, tocadas = _construir_lineas(texto, valor, formato, mutaciones=mutaciones)
+    _verificar_preservacion(lineas_antes, lineas_despues, tocadas=tocadas, mutaciones=mutaciones)
     nuevo_cuerpo = "\n".join(lineas_despues).encode("utf-8", "surrogateescape")
     return (_BOM_UTF8 if formato.tiene_bom else b"") + nuevo_cuerpo
 
@@ -389,8 +466,13 @@ def prever_bytes(contenido: bytes, nuevo_game_path: str | pathlib.Path) -> bytes
 def actualizar_game_path_en_ini(
     ini_path: pathlib.Path,
     nuevo_game_path: str | pathlib.Path,
+    *,
+    plan_ejecutables: PlanMigracionEjecutablesMO2
+    | tuple[MutacionCampoEjecutable, ...]
+    | list[MutacionCampoEjecutable]
+    | None = None,
 ) -> None:
-    """Actualiza ``gamePath`` bajo ``[General]`` preservando el resto byte a byte.
+    """Actualiza ``gamePath`` bajo ``[General]`` y [customExecutables] preservando el resto byte a byte.
 
     Orden de operaciones, deliberado:
 
@@ -403,14 +485,14 @@ def actualizar_game_path_en_ini(
        ventana es la que MO2 puede llenar (CodeRabbit sobre #843).
     4. **Escritura atómica**: temporal en el MISMO directorio, ``fsync``,
        ``os.replace``.
-    5. **Readback con el lector de MO2**: si no devuelve la ruta pedida, se
-       levanta ``EscrituraIniNoVerificadaError``. Un escritor que no verifica su
-       propio readback no escribe: publica una intención.
+    5. **Readback con el lector de MO2**: si no devuelve la ruta pedida o los
+       ejecutables mutados difieren, se levanta ``EscrituraIniNoVerificadaError``.
 
     Raises:
         FormatoIniNoAdmitidoError: el archivo no existe o su formato no se admite.
         EscrituraIniNoVerificadaError: la preservación, la re-lectura o el readback fallaron.
     """
+    mutaciones = _normalizar_mutaciones(plan_ejecutables)
     ruta = pathlib.Path(os.path.abspath(os.fspath(ini_path)))
     try:
         contenido = ruta.read_bytes()
@@ -419,7 +501,10 @@ def actualizar_game_path_en_ini(
     except OSError as exc:
         raise FormatoIniNoAdmitidoError(f"modorganizer.ini no se pudo leer ({ruta}): {exc}") from exc
 
-    bytes_finales = prever_bytes(contenido, nuevo_game_path)
+    if mutaciones:
+        bytes_finales = prever_bytes(contenido, nuevo_game_path, plan_ejecutables=mutaciones)
+    else:
+        bytes_finales = prever_bytes(contenido, nuevo_game_path)
 
     if bytes_finales != contenido:
         # Cierre de la ventana lectura→reemplazo DENTRO del escritor. El binder
@@ -447,6 +532,20 @@ def actualizar_game_path_en_ini(
             f"verificación post-escritura de modorganizer.ini: se escribió {esperado!r} y el lector "
             f"devolvió state={evidencia.state.value} path={evidencia.path!r} ({evidencia.detail})"
         )
+
+    if mutaciones:
+        exes = {e.index: e for e in leer_ejecutables_de_mo2(ruta)}
+        for m in mutaciones:
+            exe = exes.get(m.index)
+            if exe is None:
+                raise EscrituraIniNoVerificadaError(
+                    f"verificación post-escritura: ejecutable {m.index} no encontrado tras escribir"
+                )
+            actual_val = exe.binary if m.campo == "binary" else exe.working_directory
+            if actual_val != m.valor_nuevo:
+                raise EscrituraIniNoVerificadaError(
+                    f"verificación post-escritura: ejecutable {m.index}\\{m.campo} se esperaba {m.valor_nuevo!r} y se leyó {actual_val!r}"
+                )
 
 
 def _escribir_atomico(ruta: pathlib.Path, contenido: bytes) -> None:
@@ -496,6 +595,10 @@ def actualizar_game_path_por_handle(
     retenido: IniRetenido,
     nuevo_game_path: str | pathlib.Path,
     *,
+    plan_ejecutables: PlanMigracionEjecutablesMO2
+    | tuple[MutacionCampoEjecutable, ...]
+    | list[MutacionCampoEjecutable]
+    | None = None,
     al_escribir: Callable[[], None] | None = None,
 ) -> bytes:
     """Hermano de :func:`actualizar_game_path_en_ini` para un INI ya retenido.
@@ -522,6 +625,7 @@ def actualizar_game_path_por_handle(
     Args:
         retenido: handle con exclusión de mutación ya establecida.
         nuevo_game_path: ruta que debe quedar en ``gamePath``.
+        plan_ejecutables: plan o mutaciones a aplicar a ``[customExecutables]``.
         al_escribir: se invoca INMEDIATAMENTE antes de mutar el archivo, y sólo
             si se va a mutar. El binder lo usa para marcar «esta transición
             intentó escribir» sin tener que adivinar: entre el inicio de esta
@@ -537,8 +641,12 @@ def actualizar_game_path_por_handle(
         FormatoIniNoAdmitidoError: el contenido retenido no tiene un formato admitido.
         EscrituraIniNoVerificadaError: la preservación o el readback fallaron.
     """
+    mutaciones = _normalizar_mutaciones(plan_ejecutables)
     contenido = retenido.leer_bytes()
-    bytes_finales = prever_bytes(contenido, nuevo_game_path)
+    if mutaciones:
+        bytes_finales = prever_bytes(contenido, nuevo_game_path, plan_ejecutables=mutaciones)
+    else:
+        bytes_finales = prever_bytes(contenido, nuevo_game_path)
 
     if bytes_finales == contenido:
         # El valor ya era el pedido. No se escribe: escribir cambiaría el mtime

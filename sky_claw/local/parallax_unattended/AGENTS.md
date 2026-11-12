@@ -37,6 +37,24 @@ también mira el primero. Medido en el rig real: con `--incluir-revision`, ocho 
 `veredicto: REVIEW` quedaron `estado: ESCRITA`, `conteos.EN_REVISION` dio 0 y el proceso salió
 0. Esta capa contesta la pregunta que faltaba.
 
+## Cómo se usa (el único punto de entrada)
+
+`decidir_corrida(ruta_informe, raiz_de_salida)` (`corrida.py`) lee el JSON **en el borde** y ejecuta
+`dictar → auditar → combinar`; `python -m sky_claw.local.parallax_unattended <informe> <raiz_de_salida>` imprime el
+veredicto y sale con `codigo_de_salida`. **No recompongas la secuencia a mano**: saltearse `combinar` deja un lote
+`PASS` con artefactos planos. El ancla `test_nadie_fuera_de_la_capa_recompone_la_secuencia_a_mano` lo verifica por AST, y
+`test_decidir_corrida_compone_dictar_auditar_combinar_una_vez_y_en_ese_orden` congela el orden.
+
+- Las dos rutas son explícitas: el generador prohíbe que el informe viva DENTRO de la raíz de salida.
+- Un informe ilegible (ausente, no UTF-8, JSON roto, que no es un objeto, con claves repetidas, `NaN`/`Infinity` o BOM)
+  es `INCONSISTENTE` con `FORMA_INVALIDA`; nunca una excepción ni un `PASS`.
+- Códigos de salida: `0` PASS, `1` FAIL, `2` INCONSISTENTE, `3` REVIEW (los de `CODIGOS_DE_SALIDA`) y `64`
+  (`CODIGO_DE_USO_INCORRECTO`) para argumentos mal pasados, que no se confunde con ningún veredicto. No hay `--help`
+  a propósito: saldría 0 y una tubería mal configurada lo leería como `PASS`; el error de uso imprime la ayuda.
+- La salida escapa lo no imprimible (rutas y detalle vienen de un archivo no confiable) y no cambia el código si la
+  consola no puede codificar el texto.
+- No agrega motivos ni veredictos: reutiliza el vocabulario cerrado de `veredicto.py`.
+
 ## Lo que el informe tiene que traer (y qué pasa si falta)
 
 - `omitidas_al_enumerar` (lista de textos): lo que la enumeración dejó afuera. **Obligatorio**:
@@ -55,7 +73,10 @@ también mira el primero. Medido en el rig real: con `--incluir-revision`, ocho 
 
 - `PASS` es **inalcanzable** con el generador vigente: sin umbrales calibrados todo archivo sale
   `REVIEW`. No se "arregla" acá; se documenta.
-- No hay punto de entrada de producción (nada importa esta capa ni hay `python -m`).
+- **Sigue sin cablearse a la GUI ni al agente LLM.** Existe el punto de entrada (ver "Cómo se usa"), pero
+  ningún módulo fuera de la capa lo llama: `test_hoy_ningun_modulo_fuera_de_la_capa_la_consume_y_el_censo_esta_congelado`
+  congela ese censo en vacío. Cablearlo es una decisión aparte y, si se hace, va a las DOS superficies (GUI
+  `SupervisorAgent` → `tool_dispatcher` y agente `AsyncToolRegistry` → `LLMRouter`) y se enumera con un test.
 - La desviación estándar del auditor es global: un relieve que ocupa una fracción chica de la
   textura puede quedar enmascarado.
 - `dictar` y `auditar` validan cada uno la matriz `(estado, efecto)`; el ancla

@@ -97,6 +97,10 @@ from sky_claw.local.frozen_runtime.membership import (
     DirectoryMembershipError,
     capturar_membership_directorios,
 )
+from sky_claw.local.frozen_runtime.mo2_executables_plan import (
+    PlanMigracionEjecutablesMO2,
+    planificar_migracion_ejecutables,
+)
 from sky_claw.local.frozen_runtime.models import (
     DiscoveryState,
     ManagedSourceDiscoveryResult,
@@ -326,6 +330,7 @@ class BinderPreflightAssessment:
     outgoing_manual_runtime_root: pathlib.Path | None = None
     stock_reference_digest: str | None = None
     mo2_instance_identity_state: Mo2InstanceIdentityState | None = None
+    plan_migracion_ejecutables: PlanMigracionEjecutablesMO2 | None = None
     assessed_at_ns: int = 0
     notes: tuple[str, ...] = ()
 
@@ -2029,6 +2034,7 @@ def evaluar_binder_preflight(
                     f"Config.skyrim_path ('{config_skyrim_path}')"
                 )
 
+    plan_ejecutables: PlanMigracionEjecutablesMO2 | None = None
     if coherencia_fail is None and game_path_obs_str is not None and ejecutables_mo2:
         lanzadores_fuera = _lanzadores_del_juego_fuera_de(game_path_obs_str, ejecutables_mo2)
         if lanzadores_fuera:
@@ -2041,13 +2047,25 @@ def evaluar_binder_preflight(
             transition_policy is BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION
             or outgoing_manual_runtime_root is not None
         ):
-            exes_steam = _ejecutables_dependientes_de_steam(ejecutables_mo2, ms_root_resolved)
-            if exes_steam:
-                coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
-                coherencia_detail = (
-                    "entradas en [customExecutables] siguen dependiendo de rutas administradas por Steam: "
-                    + "; ".join(exes_steam)
+            if clone_root is not None:
+                outgoing_root = manual_resolved or pathlib.Path(game_path_obs_str)
+                plan_ejecutables = planificar_migracion_ejecutables(
+                    ejecutables=ejecutables_mo2,
+                    outgoing_runtime_root=outgoing_root,
+                    target_clone_root=clone_root,
+                    managed_source_root=ms_root_resolved,
                 )
+                if plan_ejecutables.bloqueado:
+                    coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
+                    coherencia_detail = "; ".join(plan_ejecutables.motivos_bloqueo)
+            else:
+                exes_steam = _ejecutables_dependientes_de_steam(ejecutables_mo2, ms_root_resolved)
+                if exes_steam:
+                    coherencia_fail = PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED
+                    coherencia_detail = (
+                        "entradas en [customExecutables] siguen dependiendo de rutas administradas por Steam: "
+                        + "; ".join(exes_steam)
+                    )
 
     if coherencia_fail is not None:
         checks_map[PreflightCheckCode.CONFIG_COHERENCE] = PreflightCheckResult(
@@ -2126,6 +2144,7 @@ def evaluar_binder_preflight(
         outgoing_manual_runtime_root=manual_resolved,
         stock_reference_digest=stock_digest_verificado,
         mo2_instance_identity_state=mo2_ident.state,
+        plan_migracion_ejecutables=plan_ejecutables,
         assessed_at_ns=sello,
         notes=tuple(notes_list),
     )

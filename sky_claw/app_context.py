@@ -2123,6 +2123,15 @@ class AppContext:
             self.lod_jobs = lod_jobs
             self._push_startup_cleanup(lod_jobs.cerrar)
 
+            # ADR 0018: la admisión al xEdit Bridge desde el agente espera una decisión
+            # humana y copia hasta 900 s, más que el round del router (120 s): corre como
+            # trabajo en segundo plano y avisa por el MISMO canal del guard. Su cleanup
+            # cancela una admisión viva al apagar (la cancelación mata el proceso del bridge).
+            from sky_claw.app.agent.tools.xedit_bridge_tools import GestorDeAdmisionesNativas
+
+            admisiones_nativas = GestorDeAdmisionesNativas(notificar=hitl.notify_operator)
+            self._push_startup_cleanup(admisiones_nativas.cerrar)
+
             tool_registry = AsyncToolRegistry(
                 registry=self.database.registry,
                 mo2=mo2,
@@ -2154,6 +2163,7 @@ class AppContext:
                 session_id=session_id,
                 mo2_profile=active_profile,
                 lod_jobs=lod_jobs,
+                admisiones_nativas=admisiones_nativas,
                 # ADR 0016 (H-1, PR B): el MISMO resolver que arma el dispatcher de la
                 # GUI. Sin esto la etapa 6 asistida del agente LLM no puede ubicar el
                 # `plugins.txt` del perfil ni la superposición del artefacto.

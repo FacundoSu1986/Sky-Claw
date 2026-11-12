@@ -42,12 +42,35 @@ Este registro es un **subordinado** del journal, no un segundo FSM:
   su lugar y la clasificación del journal queda para ``journal.reconciliar_journal``,
   que es su dueño. El resultado declara ``requiere_dueno=True``.
 
-Alcance de la garantía (declarado, no insinuado)
-------------------------------------------------
-``PROCESS_CRASH_RECOVERY = DEMONSTRATED`` (tests de reinicio con contexto nuevo).
-``POWER_LOSS_GUARANTEE = NOT_CLAIMED``: se usa el mismo ``os.replace`` atómico
-del resto del paquete, sin WAL ni ``fsync`` de directorio, igual que
-``state.write_json_atomic``.
+Alcance de la garantía y taxonomía de recuperación (P7-A5 PR 2)
+----------------------------------------------------------------
+1. Rollback en proceso con autoría conocida:
+   Ocurre en el mismo proceso del binder al interceptar un fallo antes de FINALIZE.
+   Cuenta con evidencia viva de autoría (``ini_escritura_intentada`` y huella
+   ``bytes_tras_escritura_ini`` bajo exclusión OS). Si los bytes actuales coinciden
+   con lo escrito bajo exclusión, restaura atómicamente el estado original desde el
+   snapshot durable. Si difieren (modificación externa concurrente), rechaza la
+   autoría, no sobrescribe el archivo en disco y preserva evidencia forense.
+
+2. Recuperación en frío sin autoría demostrable:
+   Ocurre en un proceso nuevo tras reinicio o corte abrupto. Al carecer de contexto
+   en memoria (``escritura_intentada is None``), opera fail-closed: cualquier
+   contenido divergente del snapshot se clasifica como ``escritura_ajena = True``,
+   no se sobrescribe en disco, se preserva copia en ``recovery_evidence/<tid>/``
+   y se emite ``requiere_dueno = True``.
+
+3. Intervención explícita del propietario:
+   Las divergencias no atribuibles o estados pendientes no se resuelven a ciegas.
+   El operador audita la evidencia forense y decide si fuerza la restauración
+   del baseline (``escritura_intentada=True``) o adopta el estado en disco
+   mediante ``journal.reconciliar_journal()``.
+
+4. Garantías de corte eléctrico no establecidas:
+   ``POWER_LOSS_GUARANTEE = NOT_CLAIMED``. La recuperación está demostrada frente
+   a caídas de proceso (``PROCESS_CRASH_RECOVERY = DEMONSTRATED``) mediante
+   ``os.replace`` atómico en el mismo volumen. No se reclama durabilidad ante
+   pérdida de suministro eléctrico o caídas del kernel (sin WAL ni fsync a nivel
+   de hardware/directorio).
 """
 
 from __future__ import annotations
@@ -209,6 +232,7 @@ class RegistroRecuperacion:
     #: segundo caso pisaría una escritura ajena.
     desired_previsto_generation: str | None = None
     desired_previsto_clone: str | None = None
+    plan_ejecutables_mutaciones: tuple[dict[str, object], ...] | None = None
 
     def superficie(self, kind: str) -> SuperficieCapturada | None:
         return next((s for s in self.superficies if s.kind == kind), None)
@@ -300,6 +324,7 @@ def capturar_registro(
     mo2_ini_path: pathlib.Path,
     config_path: pathlib.Path | None,
     environ_skyrim_path: str | None,
+    plan_ejecutables: object = None,
     clock_ns: object = time.time_ns,
 ) -> RegistroRecuperacion:
     """Construye el registro con los bytes REALES de cada superficie.
@@ -314,6 +339,34 @@ def capturar_registro(
         _capturar_bytes(_KIND_ACTIVE, active_state_path(storage_root)),
         _capturar_environ(environ_skyrim_path),
     )
+
+    mutaciones_serializadas: tuple[dict[str, object], ...] | None = None
+    if plan_ejecutables is not None:
+        if hasattr(plan_ejecutables, "serializar"):
+            mutaciones_serializadas = tuple(plan_ejecutables.serializar())
+        elif hasattr(plan_ejecutables, "mutaciones"):
+            mutaciones_serializadas = tuple(
+                {
+                    "index": m.index,
+                    "campo": m.campo,
+                    "valor_previo": m.valor_previo,
+                    "valor_nuevo": m.valor_nuevo,
+                }
+                for m in plan_ejecutables.mutaciones
+            )
+        elif isinstance(plan_ejecutables, (tuple, list)):
+            mutaciones_serializadas = tuple(
+                {
+                    "index": m.index,
+                    "campo": m.campo,
+                    "valor_previo": m.valor_previo,
+                    "valor_nuevo": m.valor_nuevo,
+                }
+                if hasattr(m, "index")
+                else dict(m)
+                for m in plan_ejecutables
+            )
+
     return RegistroRecuperacion(
         schema_version=SCHEMA_VERSION,
         transition_id=transition_id,
@@ -328,6 +381,7 @@ def capturar_registro(
         updated_at_ns=sello,
         desired_previsto_generation=target_generation_id,
         desired_previsto_clone=target_clone_id,
+        plan_ejecutables_mutaciones=mutaciones_serializadas,
     )
 
 
@@ -337,7 +391,7 @@ def capturar_registro(
 
 
 def _serializar(registro: RegistroRecuperacion) -> dict[str, object]:
-    return {
+    salida: dict[str, object] = {
         "schema_version": registro.schema_version,
         "transition_id": registro.transition_id,
         "journal_revision": registro.journal_revision,
@@ -361,6 +415,9 @@ def _serializar(registro: RegistroRecuperacion) -> dict[str, object]:
             for s in registro.superficies
         ],
     }
+    if registro.plan_ejecutables_mutaciones is not None:
+        salida["plan_ejecutables_mutaciones"] = list(registro.plan_ejecutables_mutaciones)
+    return salida
 
 
 def _parsear(payload: object, *, ruta: pathlib.Path) -> RegistroRecuperacion:
@@ -418,6 +475,42 @@ def _parsear(payload: object, *, ruta: pathlib.Path) -> RegistroRecuperacion:
     for campo in ("transition_id", "operation", "target_clone_id", "target_generation_id", "expected_effective_path"):
         if not isinstance(payload.get(campo), str):
             raise RegistroCorruptoError(f"{ruta}: falta '{campo}'")
+    mut_raw = payload.get("plan_ejecutables_mutaciones")
+    mut_tuple: tuple[dict[str, object], ...] | None = None
+    if mut_raw is not None:
+        if not isinstance(mut_raw, list):
+            raise RegistroCorruptoError(f"{ruta}: 'plan_ejecutables_mutaciones' debe ser una lista")
+        claves_validas = frozenset({"index", "campo", "valor_previo", "valor_nuevo"})
+        campos_validos = frozenset({"binary", "workingDirectory", "arguments"})
+        mut_list: list[dict[str, object]] = []
+        pares_vistos: set[tuple[int, str]] = set()
+        for idx_m, item in enumerate(mut_raw):
+            if not isinstance(item, dict):
+                raise RegistroCorruptoError(f"{ruta}: mutación {idx_m} no es un objeto")
+            claves = set(item.keys())
+            faltantes = claves_validas - claves
+            if faltantes:
+                raise RegistroCorruptoError(f"{ruta}: mutación {idx_m} tiene campos faltantes: {faltantes}")
+            sobrantes = claves - claves_validas
+            if sobrantes:
+                raise RegistroCorruptoError(f"{ruta}: mutación {idx_m} tiene campos sobrantes: {sobrantes}")
+            idx = item["index"]
+            if not isinstance(idx, int) or isinstance(idx, bool) or idx < 1:
+                raise RegistroCorruptoError(f"{ruta}: mutación {idx_m} tiene 'index' inválido: {idx!r}")
+            campo = item["campo"]
+            if not isinstance(campo, str) or campo not in campos_validos:
+                raise RegistroCorruptoError(f"{ruta}: mutación {idx_m} tiene 'campo' inválido: {campo!r}")
+            if not isinstance(item["valor_previo"], str) or not isinstance(item["valor_nuevo"], str):
+                raise RegistroCorruptoError(
+                    f"{ruta}: mutación {idx_m} tiene valor no string en valor_previo/valor_nuevo"
+                )
+            par = (idx, campo)
+            if par in pares_vistos:
+                raise RegistroCorruptoError(f"{ruta}: mutación duplicada para el índice {idx} y campo '{campo}'")
+            pares_vistos.add(par)
+            mut_list.append(dict(item))
+        mut_tuple = tuple(mut_list)
+
     return RegistroRecuperacion(
         schema_version=SCHEMA_VERSION,
         transition_id=str(payload["transition_id"]),
@@ -438,6 +531,7 @@ def _parsear(payload: object, *, ruta: pathlib.Path) -> RegistroRecuperacion:
         desired_previsto_clone=(
             payload["desired_previsto_clone"] if isinstance(payload.get("desired_previsto_clone"), str) else None
         ),
+        plan_ejecutables_mutaciones=mut_tuple,
     )
 
 
@@ -773,13 +867,29 @@ def _coincide_con_lo_escrito(
         previos = superficie.bytes_previos()
         if previos is None:
             return False
+        from sky_claw.local.frozen_runtime.mo2_executables_plan import MutacionCampoEjecutable
         from sky_claw.local.frozen_runtime.mo2_ini_escritura import (
             FormatoIniNoAdmitidoError,
             prever_bytes,
         )
 
+        mutaciones_plan: tuple[MutacionCampoEjecutable, ...] = ()
+        if registro.plan_ejecutables_mutaciones:
+            mutaciones_plan = tuple(
+                MutacionCampoEjecutable(
+                    index=int(str(d["index"])),
+                    campo=str(d["campo"]),
+                    valor_previo=str(d.get("valor_previo", "")),
+                    valor_nuevo=str(d["valor_nuevo"]),
+                )
+                for d in registro.plan_ejecutables_mutaciones
+            )
+
         try:
-            previsto = prever_bytes(previos, esperado)
+            if mutaciones_plan:
+                previsto = prever_bytes(previos, esperado, plan_ejecutables=mutaciones_plan)
+            else:
+                previsto = prever_bytes(previos, esperado)
         except (FormatoIniNoAdmitidoError, RecuperacionError, ValueError):
             return False
         if previsto == actuales:

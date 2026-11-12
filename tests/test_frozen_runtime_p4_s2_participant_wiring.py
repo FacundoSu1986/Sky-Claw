@@ -385,6 +385,7 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         ("state.py", "write_json_atomic"),
         ("state.py", "_save_frozen_runtime_state_locked"),
         ("storage.py", "_initialize_frozen_runtime_storage_locked"),
+        ("storage.py", "asegurar_directorio_abandonos"),
         ("candidates.py", "_exigir_candidates_state_dir"),
         ("candidates.py", "_reservar_candidate_id"),
         ("candidates.py", "_persistir_metadata"),
