@@ -18,6 +18,7 @@ from sky_claw.app.comms._transport import (
     AuthError,
     assert_safe_ws_url,
     authenticated_connect,
+    enviar_si_conectado,
 )
 from sky_claw.app.security.auth_token_manager import AuthTokenManager
 
@@ -244,28 +245,26 @@ class TelegramDaemon:
             is_safe = await self.guardian.execute_audit("telegram_payload", text)
             if not is_safe:
                 logger.warning("🚫 Auditoría AST falló. Comando descartado por políticas Zero-Trust.")
-                if self.ws and getattr(self.ws, "open", False):
-                    err_msg = json.dumps(
-                        {
-                            "id": str(uuid.uuid4()),
-                            "type": "error",
-                            "payload": {"text": "🛡️ Sistema: Payload inyectado fue bloqueado preventivamente."},
-                        }
-                    )
-                    await self.ws.send(err_msg)
+                err_msg = json.dumps(
+                    {
+                        "id": str(uuid.uuid4()),
+                        "type": "error",
+                        "payload": {"text": "🛡️ Sistema: Payload inyectado fue bloqueado preventivamente."},
+                    }
+                )
+                await enviar_si_conectado(self.ws, err_msg)
                 return
 
             # 100% async non-blocking injection with telemetry
             async def _progress_callback(status: str, progress: int):
-                if self.ws and self.ws.open:
-                    telemetry = {
-                        "id": str(uuid.uuid4()),
-                        "type": "telemetry",
-                        "status": status,
-                        "progress": progress,
-                        "metadata": {"reply_to": msg_id},
-                    }
-                    await self.ws.send(json.dumps(telemetry))
+                telemetry = {
+                    "id": str(uuid.uuid4()),
+                    "type": "telemetry",
+                    "status": status,
+                    "progress": progress,
+                    "metadata": {"reply_to": msg_id},
+                }
+                await enviar_si_conectado(self.ws, json.dumps(telemetry))
 
             response = await self.router.chat(
                 text,
@@ -276,19 +275,18 @@ class TelegramDaemon:
             )
 
             # Construct standard 2026 response payload
-            if self.ws and self.ws.open:
-                res_payload = {
-                    "id": str(uuid.uuid4()),
-                    "type": "response",
-                    "action": "reply",
-                    "payload": {"text": response},
-                    "metadata": {
-                        "reply_to": msg_id,
-                        "channel": "telegram",
-                        "processed_at": time.time(),
-                    },
-                }
-                await self.ws.send(json.dumps(res_payload))
+            res_payload = {
+                "id": str(uuid.uuid4()),
+                "type": "response",
+                "action": "reply",
+                "payload": {"text": response},
+                "metadata": {
+                    "reply_to": msg_id,
+                    "channel": "telegram",
+                    "processed_at": time.time(),
+                },
+            }
+            if await enviar_si_conectado(self.ws, json.dumps(res_payload)):
                 logger.info(f"📤 Respuesta enviada al Gateway (ID Relacionado: {msg_id})")
 
             # ── NEW: Broadcast to NiceGUI UI clients ──
@@ -304,12 +302,11 @@ class TelegramDaemon:
 
         except Exception as e:
             logger.exception(f"❌ Error en Bridge Agent (Injection Layer): {e}")
-            if self.ws and self.ws.open:
-                err_payload = {
-                    "type": "error",
-                    "payload": {"text": f"SISTEMA: Error en procesamiento del comando: {e!s}"},
-                }
-                await self.ws.send(json.dumps(err_payload))
+            err_payload = {
+                "type": "error",
+                "payload": {"text": f"SISTEMA: Error en procesamiento del comando: {e!s}"},
+            }
+            await enviar_si_conectado(self.ws, json.dumps(err_payload))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
