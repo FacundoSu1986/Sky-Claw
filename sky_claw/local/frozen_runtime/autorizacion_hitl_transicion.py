@@ -74,11 +74,14 @@ Discrepancias resueltas (ver ``docs/audits/2026-11-11_p7_a5_pr3_hitl_wiring_scop
    scope compromete. Además rechaza el bootstrap vacío cuando el runtime saliente
    está dentro de una superficie gestionada: ahí el vacío sería una mentira.
 2. **El scope no liga la instancia de MO2.** No se agrega un campo (esquema
-   cerrado, digest congelado). La instancia entra en ``approval_provenance`` y el
-   cableado la re-verifica antes de emitir y antes de ejecutar. Residual
-   declarado: un llamador **directo** del binder que no pase por acá no la
-   verifica; hoy es inalcanzable en producción porque la emisión está cerrada y
-   este módulo es el único emisor.
+   cerrado, digest congelado). La instancia y el INI entran en
+   ``approval_provenance`` —que el digest del scope compromete— como un segmento
+   verificable ``mo2auth=<sha256>`` (``mo2_authorization``), y **el binder lo
+   verifica por su cuenta** contra el witness durable, antes de quemar la
+   aprobación y de nuevo bajo el ``participant_lock``. Este módulo ya no es el
+   único que protege: un llamador directo del binder, o un tercero que cambia el
+   INI entre la aprobación y la lectura del binder, es rechazado ahí (cierra el
+   residual R-1 y la ventana del INI aprobado, Codex sobre #908).
 3. **Un fallo con el journal ``PENDING`` no se reanuda.** El burn-first gasta la
    aprobación antes de crear el ``PENDING``; si el fallo ocurre después, la
    aprobación es terminal y el journal exige al dueño. Este módulo **no**
@@ -150,6 +153,7 @@ from sky_claw.local.frozen_runtime.journal import (
     derivar_historial_finalizados,
     digest_canonico,
 )
+from sky_claw.local.frozen_runtime.mo2_authorization import calcular_token_mo2, segmento_de_procedencia
 from sky_claw.local.frozen_runtime.owner_consent import (
     DecisionConsentimiento,
     IdentidadPropietario,
@@ -750,9 +754,20 @@ def derivar_evidencia_transicion(
             "mutación sobre un INI que no se puede describir"
         )
     try:
-        ini_sha256 = digest_canonico({"ini_bytes_sha256": _sha256_archivo(ini_path)})
+        ini_bytes_sha256 = _sha256_archivo(ini_path)
     except OSError as exc:
         raise EvidenciaTransicionError(f"no se pudo leer {ini_path}: {exc}") from exc
+    ini_sha256 = digest_canonico({"ini_bytes_sha256": ini_bytes_sha256})
+    # Vínculo que el BINDER verifica por su cuenta (``mo2_authorization``): instancia + identidad + bytes
+    # completos del INI + política + runtime saliente. Entra a ``approval_provenance`` y por lo tanto al digest
+    # del scope que el propietario aprueba; sin esto la verificación vivía sólo en este adaptador.
+    mo2_auth_token = calcular_token_mo2(
+        mo2_instance_dir=mo2_dir,
+        mo2_instance_identity=preflight.mo2_instance_identity_state,
+        mo2_ini_sha256=ini_bytes_sha256,
+        transition_policy=transition_policy,
+        outgoing_manual_runtime_root=outgoing_manual_runtime_root,
+    )
 
     source_activation = _activacion_de_origen(
         storage_root=storage_path,
@@ -827,6 +842,7 @@ def derivar_evidencia_transicion(
             f"to={_segmento(registro.clone_id)}@{_segmento(registro.source_generation_id)}",
             f"tree={observado_arbol.digest[:16]}",
             f"setup={_segmento(registro.verified_runtime_setup_id)}",
+            segmento_de_procedencia(mo2_auth_token),
         )
     )
     provenance = _procedencia(
