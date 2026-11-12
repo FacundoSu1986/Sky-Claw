@@ -4,6 +4,10 @@ Esta capa **consume artefactos** —el informe del generador y los archivos de s
 importa nada de ``sky_claw.local.native_parallax``: el generador puede cambiar por dentro sin
 redefinir en silencio qué significa "listo" (ver ``AGENTS.md``).
 
+**El punto de entrada es ``decidir_corrida(ruta_informe, raiz_de_salida)``** (o
+``python -m sky_claw.local.parallax_unattended <informe> <raiz>``): lee el informe en el borde y ejecuta la
+secuencia completa. No se recompone a mano; un test lo ancla por AST.
+
 El orden de uso en una corrida desatendida es siempre el mismo, y las piezas no son
 intercambiables:
 
@@ -31,6 +35,7 @@ from .auditor import (
     codigos,
 )
 from .composicion import combinar
+from .corrida import decidir_corrida
 from .veredicto import (
     CODIGOS_DE_SALIDA,
     EFECTOS_CONOCIDOS,
@@ -75,5 +80,6 @@ __all__ = [
     "codigo_de_salida",
     "codigos",
     "combinar",
+    "decidir_corrida",
     "dictar",
 ]
