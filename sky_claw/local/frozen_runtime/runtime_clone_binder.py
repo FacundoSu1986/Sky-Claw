@@ -108,6 +108,13 @@ from sky_claw.local.frozen_runtime.journal import (
     exigir_proyeccion_ligada,
     proyectar_propuesta,
 )
+from sky_claw.local.frozen_runtime.mo2_authorization import (
+    Mo2AuthorizationError,
+    calcular_token_mo2,
+    es_vinculo_obligatorio,
+    token_comprometido,
+    verificar_vinculo,
+)
 from sky_claw.local.frozen_runtime.mo2_executables_plan import (
     PlanMigracionEjecutablesMO2,
 )
@@ -141,6 +148,11 @@ from sky_claw.local.frozen_runtime.surface_census import (
     CENSO_ESCRITORES_GAME_DIR,
     CLASES_DE_SUPERFICIE,
 )
+from sky_claw.local.frozen_runtime.transition_abandonment import (
+    AbandonoCorruptoError,
+    AbandonoTransicionInvalidoError,
+    registro_de_abandono,
+)
 from sky_claw.local.local_config import persistir_campo
 
 logger = logging.getLogger(__name__)
@@ -149,6 +161,7 @@ __all__ = [
     "CENSO_ESCRITORES_GAME_DIR",
     "CLASES_DE_SUPERFICIE",
     "BinderApprovalError",
+    "BinderAutorizacionMo2Error",
     "BinderCasError",
     "BinderError",
     "BinderEscrituraIniError",
@@ -159,6 +172,7 @@ __all__ = [
     "BinderResult",
     "BinderRollbackError",
     "BinderRollbackFailedError",
+    "BinderTransicionAbandonadaError",
     "BinderVerificationError",
     "actualizar_game_path_en_ini",
     "codificar_qt_byte_array",
@@ -189,6 +203,24 @@ class BinderApprovalError(BinderError):
 
 class BinderVerificationError(BinderError):
     """Fallo en la verificación física de superficies (readback del INI o POST verify)."""
+
+
+class BinderAutorizacionMo2Error(BinderApprovalError):
+    """La aprobación no liga la instancia o el INI de MO2 que el binder observa (R-1 y el INI aprobado).
+
+    Se levanta ANTES de quemar la aprobación cuando la divergencia ya es visible, y de nuevo bajo el
+    ``participant_lock`` antes del snapshot y del ``PENDING``: no queda superficie mutada ni journal que
+    deshacer. Si ocurre bajo el lock, la aprobación ya estaba CONSUMED y la transición queda abandonable
+    (``abandonar_transicion_consumida``); si ocurre antes del burn, la aprobación sigue ISSUED.
+    """
+
+
+class BinderTransicionAbandonadaError(BinderApprovalError):
+    """La transición fue ABANDONADA por su dueño: no se reanuda ni se publica su PENDING.
+
+    Se levanta bajo el ``participant_lock`` y ANTES de revalidar, capturar el snapshot o publicar el
+    ``PENDING``: no hay superficie mutada ni journal que deshacer. La aprobación sigue CONSUMED (single-use).
+    """
 
 
 class BinderEscrituraIniError(BinderError):
@@ -611,6 +643,105 @@ def _verificar_destino_de_la_aprobacion(
 
 
 # ---------------------------------------------------------------------------
+# Vínculo de la aprobación con la instancia y el INI de MO2
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _VinculoMo2Aprobado:
+    """Lo que la aprobación DURABLE compromete sobre la instancia y el INI de MO2."""
+
+    token: str | None
+    obligatorio: bool
+    approval_seq: int
+
+
+def _resolver_vinculo_mo2(
+    storage_path: pathlib.Path,
+    *,
+    approval_seq: int,
+    approval_scope_digest: str,
+    transicion_p7_a5: bool,
+) -> _VinculoMo2Aprobado:
+    """Lee el vínculo del WITNESS durable: nada de lo que aporta el llamador decide qué se aprobó.
+
+    ``propuesta.scope.approval_provenance`` es del llamador; el witness es lo que el ledger emitió y cuyo
+    digest se recomputa al leerlo. Si el witness no liga el digest que se presenta, no hay autoridad que
+    consumir.
+    """
+    try:
+        autoridad = derivar_autoridad_aprobacion(storage_path)
+    except FrozenRuntimeError as exc:
+        raise BinderAutorizacionMo2Error(
+            f"no se pudo leer la autoridad durable para verificar el vínculo con MO2: {exc}"
+        ) from exc
+    witness = next((w for w in autoridad.witnesses if w.approval_seq == approval_seq), None)
+    if witness is None:
+        raise BinderAutorizacionMo2Error(f"no hay witness de emisión para approval_seq={approval_seq}")
+    if witness.approval_scope_digest != approval_scope_digest:
+        raise BinderAutorizacionMo2Error(
+            "el witness de la aprobación no liga el digest del scope que se presenta: la autoridad durable no "
+            "coincide con lo que el llamador dice haber aprobado"
+        )
+    procedencia = witness.scope_payload.get("approval_provenance")
+    if not isinstance(procedencia, str):
+        raise BinderAutorizacionMo2Error("el witness no trae un approval_provenance legible")
+    try:
+        token = token_comprometido(procedencia)
+    except Mo2AuthorizationError as exc:
+        raise BinderAutorizacionMo2Error(str(exc)) from exc
+    return _VinculoMo2Aprobado(
+        token=token,
+        obligatorio=es_vinculo_obligatorio(
+            solicitud_binding_presente=witness.solicitud_binding is not None,
+            transicion_p7_a5=transicion_p7_a5,
+        ),
+        approval_seq=approval_seq,
+    )
+
+
+def _exigir_vinculo_mo2(
+    vinculo: _VinculoMo2Aprobado,
+    *,
+    mo2_dir: pathlib.Path,
+    identidad: object,
+    ini_sha256: str,
+    transition_policy: BinderTransitionPolicy,
+    outgoing_manual_runtime_root: pathlib.Path | None,
+    etapa: str,
+) -> None:
+    """``INI_VALIDADO_POR_BINDER == INI_COMPROMETIDO_EN_APROBACION`` (y la misma instancia).
+
+    ``ini_sha256`` es la huella de los bytes que ESTE binder leyó, y ``identidad`` el estado que su propio
+    preflight observó: se recomputa el token desde la observación del consumidor y se compara contra el
+    comprometido por la aprobación.
+    """
+    try:
+        observado = calcular_token_mo2(
+            mo2_instance_dir=mo2_dir,
+            mo2_instance_identity=identidad if identidad is not None else "unknown",
+            mo2_ini_sha256=ini_sha256,
+            transition_policy=transition_policy,
+            outgoing_manual_runtime_root=outgoing_manual_runtime_root,
+        )
+        verificado = verificar_vinculo(
+            token_aprobado=vinculo.token,
+            token_observado=observado,
+            obligatorio=vinculo.obligatorio,
+            etapa=etapa,
+        )
+    except Mo2AuthorizationError as exc:
+        raise BinderAutorizacionMo2Error(str(exc)) from exc
+    if not verificado:
+        logger.warning(
+            "binder: la aprobación seq=%s no liga la instancia ni el INI de MO2 (legacy sin vínculo, no "
+            "obligatorio para esta operación) [%s]",
+            vinculo.approval_seq,
+            etapa,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Coordinador Transaccional Principal
 # ---------------------------------------------------------------------------
 
@@ -879,6 +1010,36 @@ def ejecutar_transicion_binder(
         )
 
     # -------------------------------------------------------------------------
+    # FASE 2.5 — Vínculo con la instancia y el INI de MO2, ANTES de quemar
+    # -------------------------------------------------------------------------
+    # El INI que ESTE binder leyó (``ini_sha_inicial``) es el ancla de toda su cadena posterior
+    # (revalidación bajo lock → snapshot → huella bajo exclusión). Si no es el que el propietario aprobó,
+    # nada de lo que sigue lo repara: cada eslabón compara contra esa misma primera lectura. Por eso se
+    # contrasta acá contra lo que la aprobación DURABLE compromete, antes de gastarla.
+    if ya_consumida:
+        assert aprobacion_consumida is not None
+        _seq_vinculo, _digest_vinculo = aprobacion_consumida.approval_seq, aprobacion_consumida.scope_digest
+    else:
+        assert propuesta is not None
+        _seq_vinculo = propuesta.scope.approval_seq
+        _digest_vinculo = propuesta.scope.approval_scope_digest
+    vinculo_mo2 = _resolver_vinculo_mo2(
+        storage_path,
+        approval_seq=_seq_vinculo,
+        approval_scope_digest=_digest_vinculo,
+        transicion_p7_a5=es_transicion_con_ejecutables,
+    )
+    _exigir_vinculo_mo2(
+        vinculo_mo2,
+        mo2_dir=mo2_dir,
+        identidad=preflight.mo2_instance_identity_state,
+        ini_sha256=ini_sha_inicial,
+        transition_policy=transition_policy,
+        outgoing_manual_runtime_root=outgoing_manual_runtime_root,
+        etapa="antes del burn",
+    )
+
+    # -------------------------------------------------------------------------
     # FASE 3 — Sonda del lock ANTES de quemar la aprobación
     # -------------------------------------------------------------------------
     # El store de recuperación tiene que existir en TODAS las ramas de
@@ -942,6 +1103,23 @@ def ejecutar_transicion_binder(
     with handle_lock as handle:
         handle.assert_owned()
 
+        # 5.0 — Abandono, BAJO el lock. El diagnóstico de ``reanudar`` corre sin lock: otra sesión puede
+        # abandonar esta transición entre ese diagnóstico y esta línea, y el tombstone CONSUMED sigue
+        # siendo válido, así que sin esta mirada la transición abandonada mutaría superficies y llegaría a
+        # FINALIZED. El lock del abandono sólo excluye si TODOS los que reanudan lo consultan en SU sección
+        # crítica (Codex P1 sobre #909). Ocurre antes de revalidar y de publicar el PENDING.
+        try:
+            abandono = registro_de_abandono(storage_path, t_id)
+        except (AbandonoCorruptoError, AbandonoTransicionInvalidoError, OSError) as exc:
+            raise BinderApprovalError(
+                f"no se pudo descartar que la transición {t_id!r} esté abandonada ({exc}): fail-closed"
+            ) from exc
+        if abandono is not None:
+            raise BinderTransicionAbandonadaError(
+                f"la transición {t_id!r} fue abandonada por su dueño (aprobación {abandono.approval_seq} CONSUMED): "
+                "no se reanuda. Hay que presentar una transición NUEVA"
+            )
+
         # 5.1 — Revalidación bajo la sección crítica (FIX 6)
         _preflight_lock, bytes_ini_revalidado = _revalidar_bajo_lock(
             storage_path=storage_path,
@@ -958,6 +1136,19 @@ def ejecutar_transicion_binder(
             stock_source_root=stock_source_root,
             approved_stock_reference_digest=approved_stock_reference_digest,
             approved_stock_reference_digest_file=approved_stock_reference_digest_file,
+        )
+
+        # 5.1b — El vínculo se vuelve a exigir BAJO el lock, con lo que la revalidación acaba de observar: la
+        # identidad de la instancia puede cambiar entre el preflight inicial y acá (global → portable sigue
+        # siendo «activa» para el preflight) y el INI revalidado es el que el snapshot y la exclusión usan.
+        _exigir_vinculo_mo2(
+            vinculo_mo2,
+            mo2_dir=mo2_dir,
+            identidad=_preflight_lock.mo2_instance_identity_state,
+            ini_sha256=recovery.huella(bytes_ini_revalidado),
+            transition_policy=transition_policy,
+            outgoing_manual_runtime_root=outgoing_manual_runtime_root,
+            etapa="bajo el lock",
         )
 
         # 5.2 — Snapshot durable (FIX 3). Se CAPTURA antes del PENDING para que un
@@ -1058,6 +1249,26 @@ def ejecutar_transicion_binder(
                         "modorganizer.ini cambió entre el snapshot durable y la exclusión: "
                         f"no se muta una superficie cuya identidad no liga ({exc})"
                     ) from exc
+                # El vínculo con lo APROBADO, sobre los bytes que la exclusión retiene: es el último control
+                # antes de escribir y no depende de que los eslabones previos (primera lectura → revalidación
+                # → snapshot) sigan siendo transitivos. Con el handle retenido nadie más puede escribir, así
+                # que lo que se compara acá es exactamente lo que se va a mutar. Todavía no se intentó escribir
+                # (``ini_escritura_intentada`` sigue en ``False``): el rollback no atribuye el INI a la transición.
+                try:
+                    ini_sha_bajo_exclusion = exclusion.huella()
+                except Mo2IniExclusionError as exc:
+                    raise BinderVerificationError(
+                        f"no se pudo leer modorganizer.ini bajo la exclusión para verificar el vínculo: {exc}"
+                    ) from exc
+                _exigir_vinculo_mo2(
+                    vinculo_mo2,
+                    mo2_dir=mo2_dir,
+                    identidad=_preflight_lock.mo2_instance_identity_state,
+                    ini_sha256=ini_sha_bajo_exclusion,
+                    transition_policy=transition_policy,
+                    outgoing_manual_runtime_root=outgoing_manual_runtime_root,
+                    etapa="bajo la exclusión",
+                )
                 try:
                     if _preflight_lock.plan_migracion_ejecutables:
                         actualizar_game_path_por_handle(

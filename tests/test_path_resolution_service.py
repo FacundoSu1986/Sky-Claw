@@ -610,6 +610,61 @@ class TestGetMo2ModsPathDeInstancia:
 
         assert _mismo_path(resultado, exe_dir / "mods")
 
+    # --- get_mo2_instance_ini_dir (ADR 0018: el xEdit Bridge re-deriva la instancia de su INI) ---
+
+    def test_ini_dir_de_instancia_global_es_la_de_localappdata_no_la_de_datos(
+        self,
+        path_resolver: PathResolutionService,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """El layout real de MO2 2.4+: INI global en LOCALAPPDATA y una copia VIEJA en la raíz de datos.
+
+        Pasarle al bridge la raíz de datos lo haría leer la copia vieja; la instalación (``ModOrganizer.exe``)
+        ni siquiera tiene INI. Lo correcto es la carpeta del INI del que Sky-Claw derivó la instancia.
+        """
+        exe_dir, dir_de_instancia, _mods, local_app_data = self._montar_instancia_global(tmp_path)
+        (dir_de_instancia / "modorganizer.ini").write_text(_texto_ini_mo2(), encoding="utf-8")  # copia vieja
+
+        with patch.dict(os.environ, {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(local_app_data)}, clear=True):
+            resultado = path_resolver.get_mo2_instance_ini_dir()
+
+        assert resultado is not None
+        assert _mismo_path(resultado, (local_app_data / "ModOrganizer" / "SkyrimSE").resolve())
+
+    def test_ini_dir_portable_es_la_instalacion(
+        self,
+        path_resolver: PathResolutionService,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        exe_dir = tmp_path / "MO2Portable"
+        (exe_dir / "mods").mkdir(parents=True)
+        (exe_dir / "ModOrganizer.exe").write_bytes(b"fake exe")
+        (exe_dir / "ModOrganizer.ini").write_text(_texto_ini_mo2(), encoding="utf-8")
+
+        with patch.dict(os.environ, {"MO2_PATH": str(exe_dir)}, clear=True):
+            resultado = path_resolver.get_mo2_instance_ini_dir()
+
+        assert resultado is not None and _mismo_path(resultado, exe_dir.resolve())
+
+    def test_ini_dir_con_datos_fuera_del_sandbox_es_none(self, tmp_path: pathlib.Path) -> None:
+        """La raíz de datos que declara el INI tiene que estar en el sandbox, igual que para operar sobre ella."""
+        exe_dir, _datos, _mods, local_app_data = self._montar_instancia_global(tmp_path)
+        resolver = PathResolutionService(path_validator=PathValidator(roots=[exe_dir]), profile_name="TestProfile")
+
+        with patch.dict(os.environ, {"MO2_PATH": str(exe_dir), "LOCALAPPDATA": str(local_app_data)}, clear=True):
+            assert resolver.get_mo2_instance_ini_dir() is None
+
+    def test_ini_dir_de_mo2_path_de_datos_sin_ini_es_none(
+        self,
+        path_resolver: PathResolutionService,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        datos = tmp_path / "SoloDatos"
+        (datos / "mods").mkdir(parents=True)
+
+        with patch.dict(os.environ, {"MO2_PATH": str(datos), "LOCALAPPDATA": str(tmp_path / "vacio")}, clear=True):
+            assert path_resolver.get_mo2_instance_ini_dir() is None
+
     def test_t3_mod_directory_explicito(
         self,
         path_resolver: PathResolutionService,
@@ -2219,6 +2274,14 @@ class TestAnclaSemanticaDeRaicesMo2:
     RAW_INSTALL_FOR_LSTAT (``get_mo2_path_raw``): solo xedit (VFS lstat sobre
     install). Los preflights migrados usan la raíz de datos validada como raw
     (no existe representación cruda sin resolver de la metadata).
+
+    INSTANCE_INI_DIR (``get_mo2_instance_ini_dir``): carpeta del ``ModOrganizer.ini``
+    del que Sky-Claw derivó la instancia, para consumidores EXTERNOS que la
+    re-derivan desde su INI.
+
+    - xedit_bridge_service (ADR 0018): ``run_admit.py --mo2`` del xEdit Bridge lee
+      base/mods/perfiles/juego del INI. Ni la instalación (sin INI en MO2 2.4+) ni la
+      raíz de datos (puede tener una copia vieja) sirven.
     """
 
     #: Módulo → n.º de llamadas a ``get_mo2_path()`` (INSTALL/CAPABILITY).
@@ -2293,6 +2356,11 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/local/tools/xedit_service.py": 1,
     }
 
+    #: Módulo → n.º de llamadas a ``get_mo2_instance_ini_dir()`` (INI de la instancia).
+    _INSTANCE_INI_DIR: dict[str, int] = {
+        "sky_claw/local/tools/xedit_bridge_service.py": 1,
+    }
+
     #: Módulo → n.º de guards ``has_explicit_mo2_install_selection()``.
     _SENAL_EXPLICITA: dict[str, int] = {
         "sky_claw/app/orchestrator/preview/chain_preview_service.py": 1,
@@ -2348,6 +2416,7 @@ class TestAnclaSemanticaDeRaicesMo2:
                 "get_mo2_mods_path",
                 "get_mo2_mods_path_best_effort",
                 "get_mo2_mods_path_para_destino",
+                "get_mo2_instance_ini_dir",
             },
         )
 
@@ -2390,6 +2459,10 @@ class TestAnclaSemanticaDeRaicesMo2:
             "Cambió el inventario de la señal explícita. Todo fallback a "
             "detect_mo2_path() debe consultarla: un hint inválido no habilita "
             "detectar otra instalación."
+        )
+        assert _por_atributo("get_mo2_instance_ini_dir") == self._INSTANCE_INI_DIR, (
+            "Cambió el inventario de get_mo2_instance_ini_dir(). Es SOLO para consumidores externos que "
+            "re-derivan la instancia de su INI; dentro de Sky-Claw se usan los accessors de datos/mods."
         )
 
 

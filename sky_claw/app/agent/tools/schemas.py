@@ -19,6 +19,7 @@ import pydantic
 from pydantic import field_validator
 
 from sky_claw.config import SystemPaths
+from sky_claw.local.tools.xedit_bridge_client import PATRON_PLUGIN
 
 from .xedit_policy import XEditAgentScriptName
 
@@ -129,6 +130,32 @@ class XEditAnalysisParams(pydantic.BaseModel):
     script_name: XEditAgentScriptName
     # SEGURIDAD: limita el tamaño del argv que terminará recibiendo SSEEdit.exe.
     plugins: list[str] = pydantic.Field(min_length=1, max_length=50)
+
+
+#: Timeout máximo del motor del bridge en el agente LLM. Más el margen del agente
+#: (``xedit_bridge_tools.MARGEN_LLM_S``) tiene que vencer ANTES que el round del router
+#: (``DEFAULT_TOOL_ROUND_TIMEOUT``), que cancela la tool. La GUI no tiene ese corte y admite 120.
+TIMEOUT_MAXIMO_LLM = 80
+
+
+class AuditarPluginNativoParams(pydantic.BaseModel):
+    """Parámetros del tool LLM ``auditar_plugin_nativo`` (xEdit Bridge, ADR 0018; read-only)."""
+
+    model_config = pydantic.ConfigDict(strict=True, extra="forbid")
+
+    plugin: str = pydantic.Field(min_length=5, max_length=255, pattern=PATRON_PLUGIN)
+    timeout: int | None = pydantic.Field(default=None, ge=5, le=TIMEOUT_MAXIMO_LLM)
+
+
+class AdmitirPluginNativoParams(pydantic.BaseModel):
+    """Parámetros del tool LLM ``admitir_plugin_nativo``: solo el plugin.
+
+    MO2 y el perfil los pone Sky-Claw desde su configuración; el LLM no elige de dónde se copia.
+    """
+
+    model_config = pydantic.ConfigDict(strict=True, extra="forbid")
+
+    plugin: str = pydantic.Field(min_length=5, max_length=255, pattern=PATRON_PLUGIN)
 
 
 class DownloadModParams(pydantic.BaseModel):
@@ -474,7 +501,9 @@ class UninstallModParams(pydantic.BaseModel):
 
 
 __all__ = [
+    "AdmitirPluginNativoParams",
     "AnalyzeConflictsParams",
+    "AuditarPluginNativoParams",
     "BodySlideBatchParams",
     "DownloadModParams",
     "GenerateBashedPatchParams",
@@ -485,6 +514,7 @@ __all__ = [
     "SearchModParams",
     "SearchNexusParams",
     "SetupToolsParams",
+    "TIMEOUT_MAXIMO_LLM",
     "ToggleModParams",
     "UninstallModParams",
     "XEditAnalysisParams",

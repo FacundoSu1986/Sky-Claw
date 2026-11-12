@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
+import re
 import sqlite3
 
 import aiosqlite
@@ -234,6 +235,35 @@ async def test_mig506_01_db_actual_preserva_absorciones(tmp_path: pathlib.Path) 
     assert res_at == "2026-08-20 12:00:00"
 
 
+async def _resoluciones_d4(db_file: pathlib.Path) -> list[tuple[int, str, str, int | None, str]]:
+    """Contenido durable COMPLETO de ``artifact_evidence_resolutions``, en orden determinista.
+
+    Devuelve ``(transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at)``
+    ordenado por ``(transaction_id, artifact_path)``. Usa una conexión nueva a disco: ve lo
+    persistido, no lo que un journal tenga en memoria. Contar filas no alcanza para congelar
+    el contrato D4 (#516): una fila con otro kind, handoff o timestamp pasaría el conteo.
+    """
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute(
+            "SELECT transaction_id, artifact_path, resolution_kind, handoff_id, resolved_at "
+            "FROM artifact_evidence_resolutions ORDER BY transaction_id, artifact_path"
+        ) as cur,
+    ):
+        return [(int(f[0]), str(f[1]), str(f[2]), f[3], str(f[4])) for f in await cur.fetchall()]
+
+
+async def _absorbed_at_legacy(db_file: pathlib.Path) -> str:
+    """``absorbed_at`` de la única absorción legacy de la DB: de ahí hereda D4 su ``resolved_at``."""
+    async with (
+        aiosqlite.connect(str(db_file)) as conn,
+        conn.execute("SELECT absorbed_at FROM orphan_evidence_absorptions") as cur,
+    ):
+        filas = await cur.fetchall()
+    assert len(filas) == 1, "el escenario debe tener exactamente una absorción legacy"
+    return str(filas[0][0])
+
+
 @pytest.mark.asyncio
 async def test_mig506_02_migracion_idempotente(tmp_path: pathlib.Path) -> None:
     """MIG506-02: Reabrir el OperationJournal múltiples veces no duplica filas ni produce errores."""
@@ -250,18 +280,15 @@ async def test_mig506_02_migracion_idempotente(tmp_path: pathlib.Path) -> None:
             "VALUES (1, 'c:/mods/texgen', 1)"
         )
         await conn.commit()
+    absorbed_at = await _absorbed_at_legacy(db_file)
 
     for _ in range(3):
         j = OperationJournal(db_file)
         await j.open()
         await j.close()
 
-    async with (
-        aiosqlite.connect(str(db_file)) as conn,
-        conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur,
-    ):
-        (conteo,) = await cur.fetchone()
-    assert conteo == 1
+    # Contenido exacto (no sólo el conteo): la absorción legacy se migró una vez y con su timestamp histórico.
+    assert await _resoluciones_d4(db_file) == [(1, "c:/mods/texgen", "absorbed_by_handoff", 1, absorbed_at)]
 
 
 @pytest.mark.asyncio
@@ -504,23 +531,37 @@ async def test_mig506_09_db_ya_migrada_reopen_idempotente(tmp_path: pathlib.Path
         await conn.execute("INSERT INTO stale_pending_sweep_receipts (transaction_id, state) VALUES (1, 'unresolved')")
         await conn.commit()
 
-    # 1. Primera migración
+    # 1. Primera migración + NO_ARTIFACT; foto del contenido durable ANTES del reopen
     j1 = OperationJournal(db_file)
     await j1.open()
     await j1.resolver_evidencia_como_no_artifact("c:/mods/dyndolod", [1])
     await j1.close()
+    antes = await _resoluciones_d4(db_file)
 
     # 2. Reopen
     j2 = OperationJournal(db_file)
     await j2.open()
     await j2.close()
+    despues = await _resoluciones_d4(db_file)
 
-    async with (
-        aiosqlite.connect(str(db_file)) as conn,
-        conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur,
-    ):
-        (conteo,) = await cur.fetchone()
-    assert conteo == 2
+    # 3. El reopen no muta NADA, timestamp runtime de NO_ARTIFACT incluido (se compara contra la
+    #    foto previa: no se hardcodea la hora actual).
+    assert despues == antes, "el reopen no debe alterar ninguna columna de las resoluciones"
+
+    # 4. Contenido exacto de las dos resoluciones, ordenado por (transaction_id, artifact_path)
+    objetivo_no_artifact, _ = _canonica_y_prefijo("c:/mods/dyndolod")
+    assert [fila[:4] for fila in despues] == sorted(
+        [
+            (1, "c:/mods/texgen", "absorbed_by_handoff", 1),
+            (1, objetivo_no_artifact, "no_artifact_demonstrated", None),
+        ],
+        key=lambda fila: (fila[0], fila[1]),
+    )
+    por_kind = {fila[2]: fila for fila in despues}
+    assert por_kind["absorbed_by_handoff"][4] == "2026-08-26 10:00:00", "hereda el absorbed_at histórico"
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", por_kind["no_artifact_demonstrated"][4]), (
+        "NO_ARTIFACT lleva un timestamp runtime con el formato de datetime('now')"
+    )
 
 
 @pytest.mark.asyncio
@@ -613,6 +654,7 @@ async def test_mig506_11_concurrent_open_legacy_db(tmp_path: pathlib.Path) -> No
             "VALUES (1, 'c:/mods/texgen', 1)"
         )
         await conn.commit()
+    absorbed_at = await _absorbed_at_legacy(db_file)
 
     mgr1 = DatabaseLifecycleManager()
     mgr2 = DatabaseLifecycleManager()
@@ -621,10 +663,9 @@ async def test_mig506_11_concurrent_open_legacy_db(tmp_path: pathlib.Path) -> No
 
     try:
         await asyncio.gather(j1.open(), j2.open())
-        async with aiosqlite.connect(str(db_file)) as conn:
-            async with conn.execute("SELECT COUNT(*) FROM artifact_evidence_resolutions") as cur:
-                (conteo,) = await cur.fetchone()
-            assert conteo == 1, "D4 debe aparecer una sola vez con backfill completo"
+        assert await _resoluciones_d4(db_file) == [(1, "c:/mods/texgen", "absorbed_by_handoff", 1, absorbed_at)], (
+            "D4 debe aparecer una sola vez, con backfill completo y el timestamp histórico"
+        )
     finally:
         await asyncio.gather(mgr1.shutdown_all(), mgr2.shutdown_all())
 
