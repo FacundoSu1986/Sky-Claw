@@ -280,7 +280,8 @@ class ApprovalScope:
     approval_seq: int
     #: 13 — SHA-256 del scope sin este campo.
     approval_scope_digest: str
-    #: 14 — referencia opaca a la superficie emisora + id de solicitud.
+    #: 14 — referencia a la superficie emisora + id de solicitud. Puede llevar UN segmento verificable
+    #: ``mo2auth=<sha256>`` que el binder exige y recomputa (``mo2_authorization``); el resto es opaco.
     approval_provenance: str
 
 

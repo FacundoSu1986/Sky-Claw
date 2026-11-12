@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from sky_claw.local.tools.pandora_service import PandoraPipelineService
     from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
     from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
+    from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
     from sky_claw.local.tools.xedit_service import XEditPipelineService
 
 
@@ -68,6 +69,8 @@ class OrchestrationDispatcherDependencies:
     default_profile_getter: Callable[[], str]
     preview_service_provider: Callable[[], ChainPreviewService]
     raices_mo2_provider: Callable[[], RaicesDeInstanciaMO2]
+    #: ADR 0018: auditoría nativa con el xEdit Bridge. Construirlo no toca el bridge.
+    xedit_bridge_service: XEditBridgeService
     #: D-3: el canal por el que el operador de la GUI confirma lanzar la etapa 9 en modo ASISTIDO sin las etapas
     #: previas. ``None`` = no hay a quién preguntarle: la corrida asistida con etapas faltantes se corta.
     aprobar_sin_etapas_previas: AprobadorDeEtapasPrevias | None = None

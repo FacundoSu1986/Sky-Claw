@@ -97,6 +97,18 @@ async def test_dyndolod_service_runner_no_disponible_cumple_contrato() -> None:
     _assert_contract_error(result, "DYNDLOD_EXE no configurado")
 
 
+async def test_xedit_bridge_service_no_configurado_cumple_contrato() -> None:
+    from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
+
+    resolver = MagicMock()
+    resolver.get_xedit_bridge_root.return_value = None
+    resolver.get_mo2_instance_ini_dir.return_value = None
+    service = XEditBridgeService(path_resolver=resolver)
+
+    _assert_contract_error(await service.auditar("Mod.esp"), "XEDIT_BRIDGE_ROOT")
+    _assert_contract_error(await service.admitir("Mod.esp"), "MO2 no configurado")
+
+
 async def test_xedit_quick_auto_clean_sin_masters_es_exito_con_message_vacio(tmp_path) -> None:
     """Éxito sin DLC para limpiar: message vacío (contrato); el detalle va en logs."""
     from sky_claw.local.tools.xedit_service import XEditPipelineService

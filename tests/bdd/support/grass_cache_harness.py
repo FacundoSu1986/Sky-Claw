@@ -40,6 +40,8 @@ SUPERFICIE_DISPATCHER_DEPENDENCIES = frozenset(
         "synthesis_flow_provider",
         "synthesis_service_factory",
         "wrye_bash_pipeline",
+        # ADR 0018: auditoría nativa con el xEdit Bridge.
+        "xedit_bridge_service",
         "xedit_service",
     }
 )
