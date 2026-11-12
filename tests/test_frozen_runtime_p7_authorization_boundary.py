@@ -476,6 +476,27 @@ _SHA_A = "a" * 64
 _SHA_B = "b" * 64
 
 
+def _llamadores_de(arbol: ast.AST, nombre: str) -> set[str]:
+    """Funciones de ``arbol`` que invocan ``nombre`` por atributo, por nombre directo o por alias importado."""
+    nombres_locales = {nombre}
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.ImportFrom):
+            nombres_locales.update(a.asname for a in nodo.names if a.name == nombre and a.asname)
+    llamadores: set[str] = set()
+    for funcion in ast.walk(arbol):
+        if not isinstance(funcion, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for nodo in ast.walk(funcion):
+            if not isinstance(nodo, ast.Call):
+                continue
+            destino = nodo.func
+            if (isinstance(destino, ast.Attribute) and destino.attr == nombre) or (
+                isinstance(destino, ast.Name) and destino.id in nombres_locales
+            ):
+                llamadores.add(funcion.name)
+    return llamadores
+
+
 def _token(**cambios: object) -> str:
     base: dict[str, object] = {
         "mo2_instance_dir": pathlib.Path("/mo2/instancia"),
@@ -582,6 +603,22 @@ class TestContratoDelVinculo:
             assert clave_de_ruta(entrada) == _clave(entrada) == binder_module._norm(entrada), entrada
         assert clave_de_ruta(None) is None and _clave(None) is None and binder_module._norm(None) is None
 
+    def test_40b_el_censo_de_llamadores_ve_importaciones_directas_y_alias(self) -> None:
+        """El censo de ``test_40`` no puede mirar sólo ``obj.emisor(...)``: un módulo que haga
+        ``from ...approval import emisor`` (o con alias) y lo llame por nombre tendría un segundo llamador
+        invisible y el ancla pasaría igual. Se ejerce el predicado sobre fuentes sintéticas."""
+        nombre = "_emitir_aprobacion_bajo_lock"
+        casos = {
+            "atributo": f"def f(m):\n    m.{nombre}(1)\n",
+            "nombre directo": f"from x import {nombre}\ndef f():\n    {nombre}(1)\n",
+            "alias": f"from x import {nombre} as emitir\ndef f():\n    emitir(1)\n",
+            "alias de módulo": f"import x as y\ndef f():\n    y.{nombre}(1)\n",
+        }
+        for etiqueta, fuente in casos.items():
+            assert _llamadores_de(ast.parse(fuente), nombre) == {"f"}, etiqueta
+        # Una función ajena que no lo llama no entra al censo.
+        assert _llamadores_de(ast.parse("def g():\n    otra(1)\n"), nombre) == set()
+
     def test_40_la_unica_via_de_emision_con_binding_justifica_tolerar_el_legacy_sin_vinculo(self) -> None:
         """La ausencia del vínculo sólo se tolera sin binding y sin P7-A5. Eso es defendible porque las
         aprobaciones sin binding sólo salen de fixtures: ``emitir_aprobacion`` siempre levanta y el emisor
@@ -590,16 +627,8 @@ class TestContratoDelVinculo:
         llamadores: set[tuple[str, str]] = set()
         for ruta in sorted((RAIZ_REPO / "sky_claw").rglob("*.py")):
             arbol = ast.parse(ruta.read_text(encoding="utf-8"))
-            for funcion in ast.walk(arbol):
-                if not isinstance(funcion, ast.FunctionDef | ast.AsyncFunctionDef):
-                    continue
-                for nodo in ast.walk(funcion):
-                    if (
-                        isinstance(nodo, ast.Call)
-                        and isinstance(nodo.func, ast.Attribute)
-                        and nodo.func.attr == "_emitir_aprobacion_bajo_lock"
-                    ):
-                        llamadores.add((ruta.name, funcion.name))
+            for funcion in _llamadores_de(arbol, "_emitir_aprobacion_bajo_lock"):
+                llamadores.add((ruta.name, funcion))
         assert llamadores == {("owner_consent.py", "emitir_aprobacion_autorizada")}
 
     def test_41_el_binder_exige_el_vinculo_antes_del_burn_bajo_el_lock_y_bajo_la_exclusion(self) -> None:

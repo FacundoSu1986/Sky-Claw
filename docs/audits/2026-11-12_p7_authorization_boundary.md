@@ -133,8 +133,9 @@ Esto es la segunda opción que dejaba escrita la auditoría anterior («verifica
 4. **La identidad en el token es redundante hoy** con el preflight (`is_active ⇒ ACTIVE_GLOBAL`). Se compromete igual para que la aprobación no dependa de que el preflight siga igual; `test_b3_7` la prueba en el binder.
 5. **Rutas léxicas, no físicas.** `clave_de_ruta` normaliza lexicalmente (igual que el binder y el adaptador). Dos rutas distintas a la misma instancia física (junction) producen tokens distintos: se **rechaza** (falla cerrado), nunca se acepta de más.
 6. **Un cambio legítimo del INI entre la aprobación y la ejecución se rechaza** (p. ej. MO2 reescribiendo su INI): el propietario debe volver a aprobar. Es el comportamiento buscado.
-7. **Rechazo `bajo el lock` o `bajo la exclusión` tras el burn** deja la aprobación `CONSUMED` sin `FINALIZED`: la transición queda resumible o abandonable (#909), no se pierde ni se reutiliza.
-8. `approval_provenance` deja de ser una referencia puramente opaca: lleva **un** segmento con gramática definida y verificada. Documentado en `mo2_authorization` y en el adaptador.
+7. **Rechazo `bajo el lock` tras el burn** deja la aprobación `CONSUMED` sin `PENDING` (ocurre antes de publicarlo): la transición queda resumible o abandonable (#909), no se pierde ni se reutiliza.
+8. **Rechazo `bajo la exclusión` tras el burn** ocurre DESPUÉS de publicar el `PENDING`: el rollback restaura las superficies pero no toca el journal, que queda en `PENDING`. Su clasificación corresponde al dueño del journal (`journal.reconciliar_journal`); `recuperar_transicion_interrumpida` no lo escribe.
+9. `approval_provenance` deja de ser una referencia puramente opaca: lleva **un** segmento con gramática definida y verificada. Documentado en `mo2_authorization` y en el adaptador.
 
 ## 9. Compuertas que no se tocaron
 
