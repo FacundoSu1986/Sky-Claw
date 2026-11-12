@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from sky_claw.local.tools.pandora_service import PandoraPipelineService
     from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
     from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
+    from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
     from sky_claw.local.tools.xedit_service import XEditPipelineService
 
 
@@ -67,6 +68,8 @@ class OrchestrationDispatcherDependencies:
     default_profile_getter: Callable[[], str]
     preview_service_provider: Callable[[], ChainPreviewService]
     raices_mo2_provider: Callable[[], RaicesDeInstanciaMO2]
+    #: ADR 0018: auditoría nativa con el xEdit Bridge. Construirlo no toca el bridge.
+    xedit_bridge_service: XEditBridgeService
 
 
 def build_preview_chain_service_provider(
