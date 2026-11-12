@@ -34,7 +34,9 @@ from .lod_tools import generate_lods, lods_status
 from .nexus_tools import download_mod, search_nexus
 from .parallax_tools import diagnosticar_parallax_perfil, evaluar_parallax_elegibilidad
 from .schemas import (
+    AdmitirPluginNativoParams,
     AnalyzeConflictsParams,
+    AuditarPluginNativoParams,
     BodySlideBatchParams,
     DiagnosticarParallaxParams,
     DownloadModParams,
@@ -68,6 +70,7 @@ from .system_tools import (
     toggle_mod,
     uninstall_mod,
 )
+from .xedit_bridge_tools import admitir_plugin_nativo, auditar_plugin_nativo
 from .xedit_readonly_tool import run_xedit_script
 
 logger = logging.getLogger(__name__)
@@ -156,9 +159,14 @@ class AsyncToolRegistry:
         # que la GUI. Sin él la fase falla cerrado con `SinRutasResolubles` — que es lo
         # honesto, y sigue siendo preferible a que este path vuelva al camino headless.
         path_resolver: Any | None = None,
+        # ADR 0018: gestor de las admisiones al xEdit Bridge en segundo plano (esperan una
+        # decisión humana y copian hasta 900 s, más que el round del router). Lo arma el
+        # AppContext con el aviso del guard y su cleanup; None = la admisión falla cerrada.
+        admisiones_nativas: Any | None = None,
     ) -> None:
         self._registry = registry
         self._lod_jobs = lod_jobs
+        self._admisiones_nativas = admisiones_nativas
         self._mo2 = mo2
         self._sync_engine = sync_engine
         self._loot_exe = loot_exe or pathlib.Path("loot.exe")
@@ -191,6 +199,17 @@ class AsyncToolRegistry:
         self._path_resolver = path_resolver
         self._tools: dict[str, ToolDescriptor] = {}
         self._register_builtins()
+
+    def _xedit_bridge_service(self) -> Any:
+        """``XEditBridgeService`` sobre el MISMO resolver que la GUI, o ``None`` sin resolver.
+
+        Se arma por llamada: es stateless y construirlo no toca el bridge (ADR 0018).
+        """
+        if self._path_resolver is None:
+            return None
+        from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
+
+        return XEditBridgeService(path_resolver=self._path_resolver)
 
     def _resolve_gateway(self) -> Any:
         """Resolve the active NetworkGateway using a best-effort fallback chain.
@@ -522,6 +541,33 @@ class AsyncToolRegistry:
             params_model=XEditAnalysisParams,
             fn=lambda script_name, plugins: run_xedit_script(self._xedit_runner, script_name, plugins),
         )
+        # ADR 0018: auditoría nativa con el xEdit Bridge. Hermanas GUI en tool_strategies/
+        # (auditar_plugin_nativo, admitir_plugin_nativo); el ancla es test_xedit_bridge_superficies.
+        # La auditoría vence antes que el round del router; la admisión es un trabajo en segundo plano.
+        self._tools["auditar_plugin_nativo"] = ToolDescriptor(
+            name="auditar_plugin_nativo",
+            description=(
+                "Chequeo nativo de errores de SSEEdit sobre la copia admitida de un plugin (read-only). "
+                "Solo 'aprobado' permite tratarlo como sin errores; si no está admitido, usá admitir_plugin_nativo."
+            ),
+            params_model=AuditarPluginNativoParams,
+            fn=lambda plugin, timeout=None: auditar_plugin_nativo(
+                self._xedit_bridge_service(), plugin, timeout, admisiones=self._admisiones_nativas
+            ),
+        )
+        self._tools["admitir_plugin_nativo"] = ToolDescriptor(
+            name="admitir_plugin_nativo",
+            description=(
+                "Copia un plugin del perfil MO2 activo y sus masters al laboratorio del xEdit Bridge para "
+                "auditarlo, como trabajo en segundo plano: responde enseguida con un trabajo_id. El operador "
+                "aprueba por su canal y recibe el aviso al terminar; recién entonces usá auditar_plugin_nativo. "
+                "MO2 no se modifica."
+            ),
+            params_model=AdmitirPluginNativoParams,
+            fn=lambda plugin: admitir_plugin_nativo(
+                self._xedit_bridge_service(), self._hitl, plugin, admisiones=self._admisiones_nativas
+            ),
+        )
         self._tools["preview_mod_installer"] = ToolDescriptor(
             name="preview_mod_installer",
             description="Preview FOMOD options for a mod archive.",
@@ -730,8 +776,10 @@ class AsyncToolRegistry:
 
 
 __all__ = [
+    "AdmitirPluginNativoParams",
     "AnalyzeConflictsParams",
     "AsyncToolRegistry",
+    "AuditarPluginNativoParams",
     "BodySlideBatchParams",
     "DiagnosticarParallaxParams",
     "DownloadModParams",
@@ -750,7 +798,9 @@ __all__ = [
     "ToolDescriptor",
     "UninstallModParams",
     "XEditAnalysisParams",
+    "admitir_plugin_nativo",
     "analyze_esp_conflicts",
+    "auditar_plugin_nativo",
     "check_load_order",
     "close_game",
     "detect_conflicts",

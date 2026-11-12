@@ -174,12 +174,16 @@ class MetadataInstanciaMO2:
     un ``MO2_PATH`` explícito con semántica de datos).
     ``mod_directory_declarado`` indica si ``mod_directory`` estuvo explícitamente
     presente en la sección ``[Settings]`` del INI.
+    ``ini`` es el ``ModOrganizer.ini`` del que se derivó (portable o global);
+    ``None`` cuando no hubo INI (``mo2_path_datos``). Lo consume quien re-deriva la
+    instancia desde su INI —el xEdit Bridge, ADR 0018— para que lea ESE archivo.
     """
 
     raiz_datos: pathlib.Path
     mods: pathlib.Path
     origen: str
     mod_directory_declarado: bool = False
+    ini: pathlib.Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,6 +317,7 @@ def descubrir_metadata_instancia_mo2(
                 mods=_canonicalizar(metadata.mods),
                 origen="portable",
                 mod_directory_declarado=metadata.mod_directory_declarado,
+                ini=_canonicalizar(ini_portable),
             )
 
     # 2. Deferencia: un MO2_PATH explícito con semántica de datos (sin exe,
@@ -380,6 +385,7 @@ def descubrir_metadata_instancia_mo2(
         mods=_canonicalizar(metadata.mods),
         origen="global",
         mod_directory_declarado=metadata.mod_directory_declarado,
+        ini=_canonicalizar(ini_global),
     )
 
 
@@ -767,6 +773,7 @@ class PathResolutionService:
             mods=mods_validado,
             origen=metadata.origen,
             mod_directory_declarado=metadata.mod_directory_declarado,
+            ini=metadata.ini,
         )
 
     @staticmethod
@@ -1183,6 +1190,27 @@ class PathResolutionService:
             return install_dir
         return None
 
+    def get_mo2_instance_ini_dir(self) -> pathlib.Path | None:
+        """Carpeta del ``ModOrganizer.ini`` del que Sky-Claw deriva la instancia MO2 activa.
+
+        Para consumidores externos que re-derivan la instancia desde su INI (el xEdit Bridge,
+        ADR 0018): pasarles ESTA carpeta hace que lean el mismo INI que Sky-Claw —el global de
+        ``%LOCALAPPDATA%\\ModOrganizer`` o el portable junto al ejecutable—, nunca una copia vieja en
+        la raíz de datos ni la instalación (``get_mo2_path``), que en MO2 2.4+ no tiene INI.
+
+        Exige la misma validación que la raíz de datos: la base y los mods que declara el INI
+        tienen que caer en el sandbox. ``None`` sin INI conocido (p. ej. ``MO2_PATH`` de datos), con
+        la metadata rechazada o fuera del sandbox.
+        """
+        try:
+            metadata = self._metadata_de_instancia(self._directorio_instalacion_mo2())
+        except RuntimeError as exc:
+            logger.warning("Metadata de instancia MO2 no utilizable (%s); sin carpeta de INI.", exc)
+            return None
+        if metadata is None or metadata.ini is None:
+            return None
+        return metadata.ini.parent
+
     def get_mo2_instance_data_root_estricto(self) -> pathlib.Path | None:
         """Raíz de DATOS de la instancia MO2 estricta (falla cerrado ante metadata corrupta).
 
@@ -1362,6 +1390,14 @@ class PathResolutionService:
     def get_xedit_path(self) -> pathlib.Path | None:
         """Resuelve XEDIT_PATH desde entorno validado."""
         return self.validate_env_path(os.environ.get("XEDIT_PATH", ""), "XEDIT_PATH")
+
+    def get_xedit_bridge_root(self) -> pathlib.Path | None:
+        """Resuelve XEDIT_BRIDGE_ROOT (carpeta ``BridgeTrabajo`` del xEdit Bridge) desde entorno validado.
+
+        Única fuente de la instalación (ADR 0018): el intérprete se lee del propio bridge, no de
+        otra variable. Vacía o fuera del sandbox = no configurado, sin fallback.
+        """
+        return self.validate_env_path(os.environ.get("XEDIT_BRIDGE_ROOT", ""), "XEDIT_BRIDGE_ROOT")
 
     def get_wrye_bash_path(self) -> pathlib.Path | None:
         """Resuelve WRYE_BASH_PATH desde entorno validado."""

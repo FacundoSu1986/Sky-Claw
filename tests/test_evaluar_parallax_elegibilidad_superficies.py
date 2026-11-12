@@ -400,7 +400,11 @@ def _muchas_texturas(raiz: pathlib.Path, cuantas: int) -> None:
 
 
 def _literales_de_recorte_del_router() -> list[int]:
-    """Los topes con que ``LLMRouter`` recorta el resultado de una tool antes de dárselo al modelo (``len(resultado) > N``)."""
+    """Los topes con que ``LLMRouter`` recorta el resultado de una tool antes de dárselo al modelo (``len(resultado) > N``).
+
+    ``N`` puede ser un literal o una constante del módulo (``MAX_TOOL_RESULT_CHARS``, ADR 0018): se resuelven las dos
+    formas, así un literal nuevo en otro camino del router tampoco se escapa. Lo reusa el ancla del xEdit Bridge.
+    """
     import ast
 
     from sky_claw.app.agent import router
@@ -408,17 +412,23 @@ def _literales_de_recorte_del_router() -> list[int]:
     arbol = ast.parse(pathlib.Path(router.__file__).read_text(encoding="utf-8"))
     topes: list[int] = []
     for nodo in ast.walk(arbol):
-        if (
+        if not (
             isinstance(nodo, ast.Compare)
             and isinstance(nodo.left, ast.Call)
             and isinstance(nodo.left.func, ast.Name)
             and nodo.left.func.id == "len"
             and isinstance(nodo.ops[0], ast.Gt)
-            and isinstance(nodo.comparators[0], ast.Constant)
-            and isinstance(nodo.comparators[0].value, int)
-            and nodo.comparators[0].value >= 1000
         ):
-            topes.append(nodo.comparators[0].value)
+            continue
+        comparado = nodo.comparators[0]
+        if isinstance(comparado, ast.Constant):
+            tope = comparado.value
+        elif isinstance(comparado, ast.Name):
+            tope = getattr(router, comparado.id, None)
+        else:
+            continue
+        if isinstance(tope, int) and not isinstance(tope, bool) and tope >= 1000:
+            topes.append(tope)
     return topes
 
 

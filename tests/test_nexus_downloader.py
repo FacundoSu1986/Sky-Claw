@@ -1103,7 +1103,8 @@ class TestDownloadModSchema:
         # #661: generate_lods + lods_status (etapa 9 desde la superficie remota): 20 -> 22.
         # NP-A0h: diagnosticar_parallax_perfil (diagnóstico del perfil de MO2 para parallax nativo): 22 -> 23.
         # NP-A0k: evaluar_parallax_elegibilidad (elegibilidad de las salidas del generador nativo de parallax): 23 -> 24.
-        assert len(tool_registry.tools) == 24
+        # ADR 0018: auditar_plugin_nativo + admitir_plugin_nativo (xEdit Bridge): 24 -> 26.
+        assert len(tool_registry.tools) == 26
 
 
 # ---------------------------------------------------------------------------
