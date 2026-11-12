@@ -627,12 +627,14 @@ class TestContratoG1EvidenciaDerivada:
             environ=rig.environ,
             probes=rig.probes_globales_activos(),
         )
-        _, entregar = _recolector()
+        entregadas, entregar = _recolector()
         _habilitar_emision(monkeypatch)
 
         with pytest.raises(EvidenciaTransicionError, match="se exige config_path"):
             sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
 
+        # Rechazo ANTES de presentar: nada llegó al propietario (ancla el «antes de presentar»)
+        assert entregadas == []
         # Ninguna aprobación fue emitida ni quedó registrada en el ledger
         autoridad = derivar_autoridad_aprobacion(rig.storage)
         assert len(autoridad.witnesses) == 0
@@ -2157,11 +2159,78 @@ class TestAbandonoStoreYParserEnPosix:
         for posterior in ("_revalidar_bajo_lock", "capturar_registro", "_crear_pendiente_locked", "_start_next_locked"):
             assert abandono < _linea(posterior), f"el abandono debe mirarse antes de {posterior}"
 
+    def test_60_un_store_ilegible_no_se_lee_como_vacio(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CodeRabbit sobre #909: ``Path.glob`` suprime ``PermissionError`` en 3.11 y lee un store ilegible
+        como vacío, con lo que una transición abandonada volvería a ser reanudable. ``iterdir`` propaga."""
+        raiz = tmp_path / "root"
+        (raiz / "state").mkdir(parents=True)
+        storage.asegurar_directorio_abandonos(raiz)
+        store = storage.abandoned_transitions_state_dir(raiz)
+        original = pathlib.Path.iterdir
+
+        def _iterdir_denegado(self: pathlib.Path):
+            if self == store:
+                raise PermissionError("listado denegado")
+            return original(self)
+
+        monkeypatch.setattr(pathlib.Path, "iterdir", _iterdir_denegado)
+        with pytest.raises(PermissionError):
+            _cargar_abandonos(raiz)
+
+    def test_61_los_registros_enlazados_se_rechazan_antes_de_leerse(self, tmp_path: pathlib.Path) -> None:
+        """Mismas reglas de admisión que los lectores de approval/journal: nada se lee a través de un enlace."""
+        raiz = tmp_path / "root"
+        (raiz / "state").mkdir(parents=True)
+        storage.asegurar_directorio_abandonos(raiz)
+        root_id = canonical_root_key(raiz)[0]
+        externo = tmp_path / "externo.json"
+        _escribir_registro_abandono(externo, _payload_abandono_valido(root_id=root_id))
+        ruta = storage.abandoned_transition_record_path(raiz, _UUID_A)
+        try:
+            ruta.symlink_to(externo)
+        except (OSError, NotImplementedError):
+            pytest.skip("el SO no permite crear symlinks sin privilegios")
+
+        # El contenido externo es VÁLIDO (root, tipos y digest): lo único que lo frena es el enlace.
+        with pytest.raises(AbandonoCorruptoError, match="enlace"):
+            cargar_registro_abandono(ruta, expected_root_id=root_id)
+        with pytest.raises(AbandonoCorruptoError, match="enlace"):
+            registro_de_abandono(raiz, _UUID_A)
+        with pytest.raises(AbandonoCorruptoError, match="enlace"):
+            _cargar_abandonos(raiz)
+
+    def test_61b_un_store_enlazado_se_rechaza_en_las_rutas_de_lectura(self, tmp_path: pathlib.Path) -> None:
+        raiz = tmp_path / "root"
+        externo = tmp_path / "externo"
+        (raiz / "state").mkdir(parents=True)
+        externo.mkdir()
+        root_id = canonical_root_key(raiz)[0]
+        _escribir_registro_abandono(externo / f"{_UUID_A}.json", _payload_abandono_valido(root_id=root_id))
+        try:
+            (raiz / "state" / "abandoned_transitions").symlink_to(externo, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("el SO no permite crear symlinks sin privilegios")
+
+        with pytest.raises(AbandonoCorruptoError, match="rechazado"):
+            _cargar_abandonos(raiz)
+        with pytest.raises(AbandonoCorruptoError, match="rechazado"):
+            registro_de_abandono(raiz, _UUID_A)
+
 
 def _dejar_consumida_sin_pending(
     rig: RigStockManual, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[SesionTransicionGoldenMaster, str]:
     """Aprobación CONSUMED y journal sin PENDING (el fallo se inyecta entre el burn y el PENDING)."""
+    sesion, trans_id, _solicitud, _consentimiento = _dejar_consumida_sin_pending_completo(rig, monkeypatch)
+    return sesion, trans_id
+
+
+def _dejar_consumida_sin_pending_completo(
+    rig: RigStockManual, monkeypatch: pytest.MonkeyPatch
+) -> tuple[SesionTransicionGoldenMaster, str, object, object]:
+    """Igual que ``_dejar_consumida_sin_pending`` y devuelve además lo que la sesión retiene (EMITIDA)."""
     from sky_claw.local.frozen_runtime import binder_recovery as recovery
 
     sesion = _sesion(rig)
@@ -2181,7 +2250,7 @@ def _dejar_consumida_sin_pending(
     monkeypatch.setattr(recovery, "capturar_registro", original)
     trans_id = derivar_autoridad_aprobacion(rig.storage).tombstones[0].consumed_by_transition_id
     assert trans_id is not None
-    return sesion, trans_id
+    return sesion, trans_id, solicitud, consentimiento
 
 
 @SOLO_WINDOWS
@@ -2287,3 +2356,53 @@ class TestAbandonoEndurecidoExtremoAExtremo:
         assert not list(recovery_state_dir(rig.storage).glob("*.json"))
         assert journal_module.derivar_historial_finalizados(rig.storage).registros == ()  # nunca llegó a FINALIZED
         assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
+
+    def test_62_un_registro_existente_que_no_liga_la_aprobacion_no_cuenta_como_abandono(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """CodeRabbit sobre #909: root y transition_id correctos pero OTRA terna de aprobación.
+
+        El diagnóstico rechaza esa terna y deja la transición reanudable, así que devolver "éxito" sería un
+        abandono que no abandona. Falla cerrado y el archivo no se toca.
+        """
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion, trans_id = _dejar_consumida_sin_pending(rig, monkeypatch)
+        ruta = storage.abandoned_transition_record_path(rig.storage, trans_id)
+        root_id = canonical_root_key(rig.storage)[0]
+        _escribir_registro_abandono(
+            ruta, _payload_abandono_valido(root_id=root_id, transition_id=trans_id, approval_id="otra-aprobacion")
+        )
+        antes = ruta.read_bytes()
+
+        with pytest.raises(AbandonoCorruptoError, match="no liga la aprobación consumida"):
+            sesion.abandonar(transition_id=trans_id, identidad=_identidad_telegram(), motivo="reintento")
+
+        assert ruta.read_bytes() == antes
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.REANUDABLE
+
+    def test_63_reintentar_ejecutar_tras_abandonar_no_ejecuta_la_transicion_abandonada(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """CodeRabbit sobre #909, SEGUNDA ruta de autorización (propuesta + consentimiento retenidos).
+
+        Tras un fallo pre-PENDING la sesión queda EMITIDA. Si el dueño abandona SIN cambiar la evidencia, el
+        diagnóstico pasa a LIMPIO y un ``ejecutar()`` reintentado con la solicitud y el consentimiento que la
+        sesión retiene pasa todas sus guardas. El binder consume la aprobación de forma idempotente, así que
+        sólo la mirada bajo su lock puede frenarlo.
+        """
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sesion, trans_id, solicitud, consentimiento = _dejar_consumida_sin_pending_completo(rig, monkeypatch)
+        sesion.abandonar(transition_id=trans_id, identidad=_identidad_telegram(), motivo="abandono sin tocar evidencia")
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
+        huellas_previas = _huellas(rig)
+
+        with pytest.raises(BinderTransicionAbandonadaError, match="fue abandonada"):
+            sesion.ejecutar(solicitud=solicitud, consentimiento=consentimiento)
+
+        assert _huellas(rig) == huellas_previas
+        assert journal_module.cargar_journal_transicion(rig.storage).disposition in (
+            journal_module.JournalDisposition.ABSENT,
+            journal_module.JournalDisposition.NONE,
+        )
+        assert not list(recovery_state_dir(rig.storage).glob("*.json"))
+        assert journal_module.derivar_historial_finalizados(rig.storage).registros == ()

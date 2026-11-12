@@ -7,6 +7,11 @@ lo mira al diagnosticar (sin lock), así que entre ese diagnóstico y el lock de
 abandonar; por eso el binder lo vuelve a mirar dentro de su sección crítica
 (:func:`registro_de_abandono`), y por eso el lector tiene que ser importable desde el binder sin ciclo.
 Ancla: ``tests/test_frozen_runtime_p7_a5_pr3_hitl_wiring.py`` (intercalado real entre diagnóstico y lock).
+
+Durabilidad: igual que el resto del subsistema (``approval.py``, ``binder_recovery.py``),
+``POWER_LOSS_GUARANTEE = NOT_CLAIMED`` y ``DIRECTORY_FSYNC = NOT_CLAIMED``: ``os.replace`` y el ``fsync`` del
+archivo son lo máximo que se afirma. Perder un registro tras un corte de energía deja la transición
+BLOQUEADA (el lado seguro) y el abandono es idempotente: el dueño lo reitera.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ import pathlib
 import uuid
 from collections.abc import Mapping
 
+from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime import storage
 from sky_claw.local.frozen_runtime.errors import FrozenRuntimeError
 from sky_claw.local.frozen_runtime.journal import digest_canonico
@@ -116,6 +122,29 @@ def _entero_del_registro(contenido: Mapping[str, object], campo: str, ruta: path
     return valor
 
 
+def _exigir_store_admitido(dir_abandonos: pathlib.Path) -> bool:
+    """``True`` si el store existe y es un directorio real, ``False`` si está ausente.
+
+    Un enlace/reparse, un archivo en su lugar o un directorio no inspeccionable levantan: no se lee a través
+    de un namespace redirigido. Mismas reglas de admisión que los lectores de ``approval.py`` y ``journal.py``.
+    """
+    admision = storage.admitir_directorio_storage(dir_abandonos)
+    if not admision.success:
+        raise AbandonoCorruptoError(f"el store de abandonos fue rechazado: {admision.message}")
+    return dir_abandonos.is_dir()
+
+
+def _exigir_registro_sin_enlace(ruta: pathlib.Path) -> None:
+    try:
+        tipo = link_kind_or_raise(ruta)
+    except OSError as exc:
+        raise AbandonoCorruptoError(f"no se pudo inspeccionar el registro de abandono {ruta}: {exc}") from exc
+    if tipo is not None:
+        raise AbandonoCorruptoError(
+            f"el registro de abandono {ruta} es un enlace/reparse ({tipo}): no se lee a través de él (fail-closed)"
+        )
+
+
 def cargar_registro_abandono(
     ruta: pathlib.Path,
     *,
@@ -128,6 +157,7 @@ def cargar_registro_abandono(
     que un llamador que sólo atrapa errores del dominio dejaría escapar.
     """
     p = pathlib.Path(ruta)
+    _exigir_registro_sin_enlace(p)
     if not p.is_file():
         raise AbandonoTransicionInvalidoError(f"el archivo de registro de abandono no existe: {p}")
     try:
@@ -204,11 +234,16 @@ def _cargar_abandonos(storage_root: pathlib.Path) -> dict[str, RegistroAbandonoT
     podría resolver una transición distinta de la que su nombre anuncia.
     """
     dir_abandonos = storage.abandoned_transitions_state_dir(storage_root)
-    if not dir_abandonos.is_dir():
+    if not _exigir_store_admitido(dir_abandonos):
         return {}
     esperado_root = canonical_root_key(storage_root)[0]
     registros: dict[str, RegistroAbandonoTransicion] = {}
-    for ruta in sorted(dir_abandonos.glob("*.json")):
+    # ``iterdir`` y no ``glob``: en Python 3.11 ``Path.glob`` SUPRIME ``PermissionError`` durante la
+    # enumeración, y un store ilegible se leería como vacío (la transición abandonada volvería a ser
+    # reanudable). ``iterdir`` propaga el error al ``except OSError`` del diagnóstico (CodeRabbit sobre #909).
+    for ruta in sorted(dir_abandonos.iterdir()):
+        if ruta.suffix != ".json":
+            continue
         reg = cargar_registro_abandono(ruta, expected_root_id=esperado_root)
         if ruta.stem != reg.transition_id:
             raise AbandonoCorruptoError(
@@ -231,7 +266,10 @@ def registro_de_abandono(storage_root: pathlib.Path, transition_id: str) -> Regi
         t_id = _exigir_transition_id_canonico(transition_id)
     except AbandonoTransicionInvalidoError:
         return None
+    if not _exigir_store_admitido(storage.abandoned_transitions_state_dir(storage_root)):
+        return None
     ruta = storage.abandoned_transition_record_path(storage_root, t_id)
+    _exigir_registro_sin_enlace(ruta)
     if not ruta.is_file():
         return None
     registro = cargar_registro_abandono(ruta, expected_root_id=canonical_root_key(storage_root)[0])

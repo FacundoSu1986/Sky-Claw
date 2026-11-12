@@ -1001,6 +1001,18 @@ def abandonar_transicion_consumida(
         # 2. Idempotencia: el registro existente se valida y se devuelve; jamás se sobrescribe.
         registro_existente = registro_de_abandono(storage_path, t_id)
         if registro_existente is not None:
+            # El digest sólo prueba que el registro es coherente consigo mismo, no que resuelva ESTA
+            # aprobación: el diagnóstico compara esta misma terna y, si no coincide, deja la transición
+            # reanudable. Devolver "éxito" acá sería un abandono que no abandona (CodeRabbit sobre #909).
+            if (registro_existente.approval_id, registro_existente.approval_seq, registro_existente.scope_digest) != (
+                tombstone.approval_id,
+                int(tombstone.approval_seq),
+                tombstone.approval_scope_digest,
+            ):
+                raise AbandonoCorruptoError(
+                    f"el registro de abandono existente de {t_id!r} no liga la aprobación consumida (approval_id, "
+                    "approval_seq y scope_digest no coinciden con el tombstone): no se devuelve ni se sobrescribe"
+                )
             return registro_existente
 
         # 3. Journal: rechazar si hay PENDING
