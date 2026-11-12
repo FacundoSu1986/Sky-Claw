@@ -460,6 +460,26 @@ class TestVfsQuarantine:
         assert rutas_de_estado(state_dir, state_dir.name).marcador.exists()
 
     @pytest.mark.asyncio
+    async def test_main_release_rechazado_termina_con_mensaje_limpio_y_codigo_1_sin_traceback(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Un rechazo ESPERADO (sin evidencia, dueño vivo, disco) no es un fallo del proceso: el operador necesita el
+        motivo, no un traceback bajo «Fallo no manejado» (review PR-Agent #904)."""
+        from sky_claw.local.mo2.vfs_quarantine import rutas_de_estado
+
+        args = self._args(tmp_path, "--vfs-quarantine-action", "release")  # sin --vfs-evidence
+        state_dir = self._dejar_en_cuarentena(tmp_path, monkeypatch, args)
+
+        with caplog.at_level(logging.INFO, logger="sky_claw"), pytest.raises(SystemExit) as salida:
+            await _main(args)
+
+        assert salida.value.code == 1
+        rechazos = [r for r in caplog.records if "evidencia" in r.getMessage()]
+        assert rechazos, "el motivo del rechazo llega al operador"
+        assert all(r.exc_info is None for r in rechazos), "sin traceback: es un rechazo esperado, no un fallo"
+        assert rutas_de_estado(state_dir, state_dir.name).marcador.exists(), "no se tocó nada"
+
+    @pytest.mark.asyncio
     async def test_release_con_evidencia_libera(self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from sky_claw.local.mo2.vfs_quarantine import leer_estado_de_cuarentena
 

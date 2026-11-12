@@ -70,4 +70,4 @@ libre). La instancia sale de `--mo2-root`, igual que `install-vfs-bridge`; `stat
 instancias en cuarentena que encuentre bajo `vfs_bridge`. `release` exige `--vfs-evidence`, se niega si hay un
 broker vivo dueño del lock (hay que cerrar Sky-Claw antes) y limpia las tres formas persistidas de la
 cuarentena —marcador, lock envenenado y lock huérfano—, porque borrar solo el marcador haría que el próximo
-arranque reclame el lock huérfano y vuelva a aislar la instancia. Ancla: `tests/test_vfs_quarantine.py`.
+arranque reclame el lock huérfano y vuelva a aislar la instancia. Un rechazo (sin evidencia, dueño vivo o error de disco) no es un fallo del proceso: sale con código `1` y el motivo en el log, sin traceback, y la instancia sigue aislada. Ancla: `tests/test_vfs_quarantine.py`.

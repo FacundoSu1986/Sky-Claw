@@ -459,7 +459,15 @@ async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> N
         await _run_vfs_health(args)
         return
     if args.mode == "vfs-quarantine":
-        await _run_vfs_quarantine(args)
+        from sky_claw.local.mo2.vfs_quarantine import CuarentenaNoLiberableError
+
+        try:
+            await _run_vfs_quarantine(args)
+        except CuarentenaNoLiberableError as exc:
+            # Rechazo ESPERADO (sin evidencia, dueño vivo, disco que falla): la instancia sigue aislada y el operador
+            # necesita el motivo, no un traceback bajo «Fallo no manejado en el proceso principal».
+            logger.error("No se liberó la cuarentena: %s", exc)
+            sys.exit(1)
         return
     if args.mode == "oneshot" and not args.command:
         logger.error("Oneshot mode requires a command argument.")
