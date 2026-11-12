@@ -481,8 +481,14 @@ class TestDestructiveToolPatterns:
             "quick_auto_clean",
             "resolve_conflict_with_patch",
             "generate_grass_cache",
+            # ADR 0018: copia archivos al laboratorio del xEdit Bridge.
+            "admitir_plugin_nativo",
         }
         assert expected == DESTRUCTIVE_TOOL_PATTERNS
+
+    def test_auditar_plugin_nativo_not_destructive(self) -> None:
+        """ADR 0018: la auditoría nativa es de lectura sobre la copia ya admitida."""
+        assert "auditar_plugin_nativo" not in DESTRUCTIVE_TOOL_PATTERNS
 
     def test_generate_bashed_patch_not_destructive(self) -> None:
         """ADR 0016 §7: tras retirar execute_pipeline (#862), ambas fases asistidas son

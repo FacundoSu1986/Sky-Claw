@@ -338,6 +338,35 @@ detenerse y restaurar desde backup, **no** editar el JSON a mano.
 - **Crash/kill testing:** SÓLO en entorno desechable (storage y árboles sintéticos
   en `%TEMP%`/`tmp_path`), nunca sobre instalaciones reales.
 
+### 8.1 Taxonomía de recuperación y rollback del binder (P7-A5 PR 2)
+
+El subsistema transaccional distingue cuatro cuadrantes operativos rigurosos para la gestión de anomalías:
+
+1. **Rollback en proceso con autoría conocida:**
+   - Ocurre dentro del ciclo de vida del mismo proceso cuando se intercepta un fallo antes de `FINALIZE` (p. ej. error de preflight bajo lock, fallo en persistencia de config o divergencia de readback tras liberar la exclusión).
+   - El binder conserva en memoria la evidencia de autoría (`ini_escritura_intentada` y la huella `ini_bytes_tras_escritura` leída bajo el handle de exclusión OS).
+   - **Guard fail-closed de evidencia suficiente:** si la transición mutó el INI pero no se pudo obtener `ini_bytes_tras_escritura` bajo exclusión, el binder aborta con `BinderVerificationError` antes de CAS/FINALIZE. La autoría se degrada a desconocida (`ini_escritura_intentada = None`), impidiendo falsos éxitos ante mutaciones ajenas no comprobables.
+   - Si el disco refleja exactamente lo escrito por la transición o un prefijo rasgado propio, restaura atómicamente el estado previo desde el snapshot durable.
+   - Si se detecta mutación externa posterior a la liberación de exclusión, rechaza la autoría, no sobrescribe el archivo en disco y bifurca a preservación forense.
+
+2. **Recuperación en frío sin autoría demostrable:**
+   - Ocurre al invocar `recuperar_transicion_interrumpida()` desde un proceso nuevo tras reinicio, crash inesperado o terminación abrupta.
+   - Al carecer de contexto volátil de autoría (`escritura_intentada is None`), el mecanismo opera **fail-closed**.
+   - Cualquier archivo cuyo contenido difiera del snapshot inicial es clasificado como `escritura_ajena = True`.
+   - **No se sobrescribe a ciegas el archivo en disco.** El contenido divergente se preserva en `storage/recovery_evidence/<transition_id>/` y se emite `requiere_dueno = True`.
+
+3. **Intervención explícita del propietario:**
+   - Ni el binder ni la recuperación automática resuelven escrituras ajenas sin autorización humana.
+   - Ante clasificaciones de `escritura_ajena` o journals en `PENDING_*`, el propietario debe auditar la evidencia forense archivada.
+   - Opciones soberanas del operador:
+     a) Descartar la mutación ajena y forzar restauración del baseline pasando `escritura_intentada=True`.
+     b) Adoptar el estado existente en disco y sincronizar la FSM mediante `journal.reconciliar_journal()`.
+
+4. **Garantías de corte eléctrico no establecidas:**
+   - `POWER_LOSS_GUARANTEE = NOT_CLAIMED`.
+   - El sistema garantiza y verifica recuperación ante caídas de proceso (`PROCESS_CRASH_RECOVERY = DEMONSTRATED`) mediante `os.replace` atómico dentro del mismo volumen.
+   - **No se promete ni reclama durabilidad ante cortes de energía o caídas del kernel** (sin WAL transaccional, sin `fsync` a nivel de directorio ni barreras de caché en controlador físico).
+
 ## 9. Después del Clone: uso con MO2 (fases posteriores, no este runbook)
 
 1. **A5 (binder):** registrar `Desired Runtime` y repuntar `gamePath` de MO2 con
@@ -350,6 +379,33 @@ detenerse y restaurar desde backup, **no** editar el JSON a mano.
      (`MO2_INSTANCE_IDENTITY`), manteniendo `STRICT_PROVIDER_IDLE` por defecto y
      `EMISION_PRODUCTIVA_HABILITADA = False`. La migración transaccional de
      `[customExecutables]` y la habilitación productiva pertenecen a PRs posteriores.
+   - **Nota P7-A5 PR 3 (cableado, emisión todavía cerrada):** el consumidor
+     autorizado existe desde el 2026-11-11
+     (`sky_claw/local/frozen_runtime/autorizacion_hitl_transicion.py`) y expone
+     `HITL_PRODUCTIVE = WIRED_BUT_GATED`. Estado real de cada gate:
+     `EMISION_PRODUCTIVA_HABILITADA = False`,
+     `TRANSPORT_ADAPTER = NOT_WIRED` (no hay entrega ni decisión por Telegram
+     todavía), `PRIMERA_TRANSICION_REAL = NOT_EXECUTED`,
+     `CANDIDATE_OBJECT = NOT_CREATED`,
+     `REANUDACION_POST_PENDING = REQUIERE_DUENO`.
+     **Corrección de este runbook (§9.1):** el requisito de A5 **no** es
+     uniformemente «Steam IDLE». Bajo `STRICT_PROVIDER_IDLE` (por defecto) Steam
+     debe estar IDLE; bajo `STOCK_INDEPENDENT_TRANSITION` se admite Steam
+     **ACTIVE** siempre que haya digest externo A1 aprobado, procedencia Stock v2
+     y se conserven las comprobaciones de independencia física del Clone (un
+     hardlink sigue bloqueando). La política efectiva que se aprueba viaja en el
+     `approval_provenance` de la aprobación.
+     **Reanudación:** si un fallo ocurre **antes** de publicar el `PENDING`, la
+     misma aprobación consumida completa la transición
+     (`reanudar(transition_id)`) — y sólo si el estado actual sigue coincidiendo
+     campo por campo con lo que el propietario aprobó (instancia de MO2, hash
+     del INI, política, procedencia); si algo cambió, se rechaza.
+     Si el `PENDING` ya está publicado, la aprobación está gastada y el caso
+     requiere al dueño: `reanudar` en ese estado es **sólo diagnóstico y no
+     escribe nada**, y la recuperación se pide explícitamente
+     (`binder_recovery.recuperar_transicion_interrumpida` +
+     `journal.reconciliar_journal` + nueva aprobación). No existe re-emisión
+     automática.
 2. **P7-A … P7-G (ver §10).** Hasta que A5 no se ejecute efectivamente, el inspector P7 seguirá
    `BLOCKED` (`listo_para_p7=False`: `desired_runtime`/`clone_record`/`version.skyrim`/`mo2.game_path`).
 

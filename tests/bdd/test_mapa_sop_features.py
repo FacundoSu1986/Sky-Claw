@@ -35,6 +35,8 @@ MAPA_SOP_ACCEPTANCE: dict[str, str | None] = {
     "generate_animations": PENDIENTE,
     "quick_auto_clean": PENDIENTE,
     "resolve_conflict_with_patch": PENDIENTE,
+    # ADR 0018: copia al laboratorio del xEdit Bridge (no escribe en MO2). Sin acceptance todavía.
+    "admitir_plugin_nativo": PENDIENTE,
 }
 
 

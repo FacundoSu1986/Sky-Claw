@@ -61,6 +61,7 @@ from sky_claw.local.tools.loot_service import LootSortingService
 from sky_claw.local.tools.pandora_service import PandoraPipelineService
 from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
 from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
+from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
 from sky_claw.local.tools.xedit_service import XEditPipelineService
 
 if TYPE_CHECKING:
@@ -378,6 +379,8 @@ def build_orchestration_composition(
         preview_service_provider=preview_chain_service_provider,
         # NP-A0h: las MISMAS raíces que arma AppContext para el MO2Controller del agente LLM (un solo resolver).
         raices_mo2_provider=path_resolver.raices_de_instancia_mo2,
+        # ADR 0018: el mismo resolver que usa el agente LLM; construirlo no exige el bridge presente.
+        xedit_bridge_service=XEditBridgeService(path_resolver=path_resolver),
     )
 
     # ------------------------------------------------------------------

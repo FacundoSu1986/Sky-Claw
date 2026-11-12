@@ -24,6 +24,7 @@ import contextlib
 import logging
 import subprocess
 import sys
+from collections.abc import Mapping
 from typing import Any
 
 logger = logging.getLogger("SkyClaw.Process")
@@ -99,6 +100,8 @@ async def run_capture(
     *,
     timeout: float,
     cwd: str | None = None,
+    input_bytes: bytes | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[bytes, bytes, int]:
     """Run *args* to completion, capturing stdout/stderr under *timeout*.
 
@@ -114,6 +117,14 @@ async def run_capture(
         Seconds before the run is aborted (the process is killed first).
     cwd:
         Working directory for the child, or ``None``.
+    input_bytes:
+        Bytes enviados por stdin antes de cerrarlo (p. ej. las líneas JSON-RPC de
+        un servidor MCP por stdio). ``None`` conserva el comportamiento previo:
+        no se abre un pipe de stdin.
+    env:
+        Entorno COMPLETO del hijo (reemplaza al heredado: el caller que quiera sumar
+        variables parte de ``os.environ``). ``None`` conserva el comportamiento
+        previo: el hijo hereda el entorno de Sky-Claw.
 
     Returns
     -------
@@ -135,6 +146,10 @@ async def run_capture(
         kwargs["creationflags"] = _CREATE_NO_WINDOW
     if cwd is not None:
         kwargs["cwd"] = cwd
+    if input_bytes is not None:
+        kwargs["stdin"] = asyncio.subprocess.PIPE
+    if env is not None:
+        kwargs["env"] = dict(env)
 
     proc: asyncio.subprocess.Process | None = None
     completed = False
@@ -153,7 +168,8 @@ async def run_capture(
         # el árbol al cerrar los handles del proceso, incluso si Python nunca
         # llega a este `finally`. No-op fuera de Windows.
         job = assign_kill_on_close_job(proc.pid)
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        comunicar = proc.communicate(input=input_bytes) if input_bytes is not None else proc.communicate()
+        stdout, stderr = await asyncio.wait_for(comunicar, timeout=timeout)
         if proc.returncode is None:
             # No debería pasar nunca en asyncio real (communicate() espera a que
             # el proceso salga antes de retornar); si pasa, es un estado

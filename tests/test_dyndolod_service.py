@@ -3061,6 +3061,7 @@ _SERVICIOS_SIN_COBERTURA = {
     "synthesis_service.py": "etapa 7; solo prosa (stage 7)",
     "vramr_service.py": "etapa SIN DETERMINAR; no marca la etapa de ninguna forma",
     "xedit_service.py": "etapa 1; solo prosa QuickAutoClean (stage 1)",
+    "xedit_bridge_service.py": "SIN ETAPA: auditoría nativa a pedido (ADR 0018), fuera de las etapas del SOP",
 }
 
 
