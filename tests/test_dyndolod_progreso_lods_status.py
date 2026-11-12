@@ -6,7 +6,8 @@ un consumidor nuevo (o el de la GUI) rompe el ancla hasta que alguien decide su 
 
 Reglas ancladas:
 
-- ``progreso`` aparece solo mientras el trabajo está vivo, aunque el servicio todavía guarde un snapshot;
+- ``progreso`` aparece solo mientras la corrida DEL trabajo está ``en_curso``, aunque el servicio guarde un snapshot
+  (antes de lanzarla sería el de otra corrida; después de terminar, el rastro de algo que ya acabó);
 - sin snapshot, sin servicio o con un proveedor que falla, ``lods_status`` responde igual y sin ``progreso``;
 - son hechos de la muestra (tamaño del log, segundos sin cambios) más cuán vieja es la muestra: un latido que dejó de
   llegar también es información. No hay un veredicto «colgado».
@@ -84,9 +85,20 @@ def test_sin_log_el_progreso_informa_solo_el_tiempo() -> None:
     assert progreso["transcurrido_segundos"] == 3725.5
 
 
-@pytest.mark.parametrize("vivo", ["iniciado", "esperando_aprobacion", "en_curso"])
-def test_todo_estado_vivo_con_muestra_la_expone(vivo: str) -> None:
-    assert "progreso" in _gestor_con_trabajo(vivo, _servicio_con(_muestra())).estado()
+def test_el_progreso_se_expone_solo_cuando_la_corrida_del_trabajo_esta_en_curso() -> None:
+    assert "progreso" in _gestor_con_trabajo("en_curso", _servicio_con(_muestra())).estado()
+
+
+@pytest.mark.parametrize("sin_corrida", ["iniciado", "esperando_aprobacion"])
+def test_antes_de_que_el_trabajo_lance_su_corrida_el_snapshot_no_es_suyo(sin_corrida: str) -> None:
+    """Review CodeRabbit #905: mientras espera la aprobación no hay corrida de ESTE trabajo; un snapshot del servicio
+    sería el de una corrida directa (GUI) y se le atribuiría al trabajo remoto."""
+    gestor = _gestor_con_trabajo(sin_corrida, _servicio_con(_muestra()))
+
+    estado = gestor.estado()
+
+    assert estado["estado"] == sin_corrida
+    assert "progreso" not in estado
 
 
 # ---------------------------------------------------------------------------

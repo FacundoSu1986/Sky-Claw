@@ -880,6 +880,11 @@ MARCADORES_DE_COMPLETITUD: dict[str, tuple[str, ...]] = {
 #: `Critical: DynDOLOD.DLL is corrupt` — un terminal disfrazado de ruido, que con
 #: artefacto presente y marcador daba verde. Exentar de más es la dirección que
 #: produce falsos VERDES, así que cada exención dice su categoría completa.
+#: Plazo para entregar UNA muestra de progreso al observador (H-11). Entregar es publicar un snapshot y un evento
+#: en memoria: tarda milisegundos. Si no vuelve en este plazo, se abandona esa muestra y el latido sigue.
+_PLAZO_DEL_AVISO_DE_PROGRESO_S = 5.0
+
+
 NO_FATALES_DEL_DOMINIO: tuple[tuple[str, ...], ...] = (
     ("Deleted reference",),
     ("Unresolved FormID",),
@@ -4896,15 +4901,24 @@ class DynDOLODRunner:
         """Entrega la muestra del latido al observador, best-effort: su falla NO cambia la corrida (H-11).
 
         El latido corre en su propia tarea y la limpieza la cancela al terminar el proceso, así que un observador
-        que no vuelve no retrasa el fin de la corrida. La cancelación se propaga; cualquier otra falla (el bus
+        que no vuelve no retrasa el fin de la corrida, y su entrega tiene un plazo
+        (``_PLAZO_DEL_AVISO_DE_PROGRESO_S``) para no frenar los latidos siguientes. La cancelación se propaga; cualquier otra falla (el bus
         caído, un snapshot que no se pudo armar) se registra y el latido sigue con el próximo intervalo.
         """
         aviso = self._on_progress
         if aviso is None:
             return
-        try:
+
+        async def _medir_y_entregar() -> None:
             progreso = await asyncio.to_thread(self._medir_progreso, tool_name, elapsed_seconds)
             await aviso(progreso)
+
+        try:
+            # Acotado: un observador (o un ``stat`` sobre un disco de red caído) que no vuelve dejaría al latido sin
+            # llegar a su próximo ``sleep`` ni a su próximo log durante horas. Al vencer, ``wait_for`` cancela la entrega
+            # y levanta ``TimeoutError``, que cae en el ``except Exception`` de abajo (se registra y el latido sigue).
+            # La cancelación EXTERNA (la limpieza de la corrida) atraviesa ``wait_for`` y se propaga abajo.
+            await asyncio.wait_for(_medir_y_entregar(), timeout=_PLAZO_DEL_AVISO_DE_PROGRESO_S)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 -- observador best-effort: nunca decide ni rompe la corrida

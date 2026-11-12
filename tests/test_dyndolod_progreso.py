@@ -66,7 +66,12 @@ def _runner(tmp_path: pathlib.Path, *, on_progress=None, intervalo: float = 0.01
 
 
 async def _correr(runner: DynDOLODRunner, proc: _ProcesoLento, tool: str = "TexGen"):
-    with mock.patch.object(ddl.asyncio, "create_subprocess_exec", mock.AsyncMock(return_value=proc)):
+    with (
+        mock.patch.object(ddl.asyncio, "create_subprocess_exec", mock.AsyncMock(return_value=proc)),
+        # El proceso es falso (pid 4242): sin esto, en Windows el helper real asignaría al Job el proceso VIVO cuyo
+        # PID coincide (OpenProcess ignora los dos bits bajos) y ``close_job`` lo mataría (review CodeRabbit #905).
+        mock.patch.object(ddl, "assign_kill_on_close_job", return_value=None),
+    ):
         return await runner._execute_process(  # noqa: SLF001 -- el seam bajo prueba ES privado
             executable=pathlib.Path(f"{tool}x64.exe"),
             args=["-sse"],
@@ -193,3 +198,42 @@ async def test_un_callback_que_cuelga_no_retrasa_el_fin_de_la_corrida(tmp_path: 
 
     assert codigo == 0
     assert time.monotonic() - inicio < 5
+
+
+async def test_un_callback_que_cuelga_una_vez_no_apaga_los_latidos_siguientes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review CodeRabbit #905: un observador pendiente frenaba el latido para siempre (en una corrida de horas, sin logs)."""
+    monkeypatch.setattr(ddl, "_PLAZO_DEL_AVISO_DE_PROGRESO_S", 0.03)
+    llamadas: list[float] = []
+
+    async def cuelga_la_primera_vez(progreso: ProgresoDeHerramienta) -> None:
+        llamadas.append(progreso.elapsed_seconds)
+        if len(llamadas) == 1:
+            await asyncio.sleep(3600)
+
+    runner = _runner(tmp_path, on_progress=cuelga_la_primera_vez)
+
+    _stdout, _stderr, codigo, _duracion = await asyncio.wait_for(_correr(runner, _ProcesoLento(0.4)), timeout=10)
+
+    assert codigo == 0
+    assert len(llamadas) >= 3, "tras el plazo del primer aviso el latido sigue con los intervalos siguientes"
+
+
+async def test_la_cancelacion_externa_atraviesa_el_plazo_del_aviso(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El plazo acota la entrega del aviso; no puede tragarse la cancelación de quien detiene la corrida."""
+    monkeypatch.setattr(ddl, "_PLAZO_DEL_AVISO_DE_PROGRESO_S", 30.0)
+
+    async def colgado(_progreso: ProgresoDeHerramienta) -> None:
+        await asyncio.sleep(3600)
+
+    runner = _runner(tmp_path, on_progress=colgado)
+    tarea = asyncio.create_task(runner._reportar_progreso("TexGen", 1.0))  # noqa: SLF001
+    await asyncio.sleep(0.05)
+
+    tarea.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=5)

@@ -315,9 +315,12 @@ class GestorDeTrabajosDeLods:
         if self._actual is None:
             return {"success": True, "message": "", "estado": "sin_trabajos"}
         datos: dict[str, Any] = {"success": True, "message": "", **self._actual.resumen()}
-        # H-11: solo mientras el trabajo está vivo. Un snapshot que el servicio aún conserve tras el fin de la
-        # corrida no es progreso: es el rastro de algo que ya terminó.
-        if self.en_curso():
+        # H-11: solo mientras la corrida DE ESTE trabajo está en curso. Antes de lanzarla (``iniciado``,
+        # ``esperando_aprobacion``) el snapshot del servicio sería el de otra corrida (p. ej. una directa desde la GUI) y
+        # se le atribuiría al trabajo; después de terminar, es el rastro de algo que ya acabó. Límite conocido: el
+        # snapshot no lleva la identidad de la corrida, así que una corrida directa que se superponga con una ``en_curso``
+        # de este trabajo no se distingue (el lock transaccional de la instancia impide que dos corridas avancen a la vez).
+        if self._actual.estado == "en_curso":
             progreso = self._progreso_del_servicio()
             if progreso is not None:
                 datos["progreso"] = progreso
