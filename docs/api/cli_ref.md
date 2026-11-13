@@ -24,13 +24,15 @@ ancla `tests/test_cli_help_defaults.py`.
 
 | Opción | Valores o default | Uso |
 |---|---|---|
-| `--mode` | `cli`, `telegram`, `oneshot`, `gui`, `security`, `install-vfs-bridge`, `vfs-health` | Selecciona el modo |
+| `--mode` | `cli`, `telegram`, `oneshot`, `gui`, `security`, `install-vfs-bridge`, `vfs-health`, `vfs-quarantine` | Selecciona el modo |
 | `--provider` | `anthropic`, `deepseek`, `openai`, `ollama`; default: config o `deepseek` | Proveedor LLM |
 | `--mo2-root` | config o `C:\MO2Portable` | Instancia portable |
 | `--skyrim-path` | config o vacío | Instalación; obligatoria para `vfs-health` |
 | `--profile` | `MO2_PROFILE` o `Default` | Perfil MO2 de **toda** la sesión |
 | `--vfs-profile` | `Default` | Perfil de la sonda `vfs-health` únicamente |
 | `--vfs-timeout` | `30.0` segundos | Timeout del worker VFS |
+| `--vfs-quarantine-action` | `status` (default) o `release` | Solo `vfs-quarantine`: informar o liberar la cuarentena |
+| `--vfs-evidence` | vacío | Solo `vfs-quarantine release`: qué verificaste; es obligatoria y queda en el log como `CRITICAL` |
 | `--db-path` | `mod_registry.db` | Registry principal |
 | `--loot-exe` | config o `loot.exe` | LOOT CLI |
 | `--webhook-host` | `127.0.0.1` | Parámetro conservado para modo Telegram |
@@ -62,3 +64,10 @@ congelado; `SKYCLAW_ALLOW_DEV_WORKER=1` sólo habilita la vía de desarrollo.
 
 `vfs-health` exige `ModOrganizer.exe`, un `Data` válido, perfil explícito y un
 bridge disponible. El éxito de la sonda debe incluir la atestación del canary.
+
+`vfs-quarantine` no arranca el daemon (arrancarlo tomaría el lock de la instancia que este modo necesita ver
+libre). La instancia sale de `--mo2-root`, igual que `install-vfs-bridge`; `status` además lista las
+instancias en cuarentena que encuentre bajo `vfs_bridge`. `release` exige `--vfs-evidence`, se niega si hay un
+broker vivo dueño del lock (hay que cerrar Sky-Claw antes) y limpia las tres formas persistidas de la
+cuarentena —marcador, lock envenenado y lock huérfano—, porque borrar solo el marcador haría que el próximo
+arranque reclame el lock huérfano y vuelva a aislar la instancia. Un rechazo (sin evidencia, dueño vivo o error de disco) no es un fallo del proceso: sale con código `1` y el motivo en el log, sin traceback, y la instancia sigue aislada. Ancla: `tests/test_vfs_quarantine.py`.

@@ -712,3 +712,46 @@ def test_la_gui_no_intercepta_la_categoria_desatendida():
     fuente = (RAIZ / "sky_claw" / "app" / "gui" / "controllers" / "ritual_runner.py").read_text(encoding="utf-8")
     assert "CATEGORIA_DYNDOLOD_DESATENDIDO" not in fuente
     assert "dyndolod_desatendido" not in fuente
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# H-4: el estado de la cuarentena del broker VFS es visible desde ``lods_status`` (superficie del agente)
+# --------------------------------------------------------------------------------------------------------------------
+
+_CUARENTENA_ACTIVA = {"activa": True, "razon": "terminalidad desconocida", "como_liberar": "cerrá Sky-Claw y liberala"}
+
+
+def test_estado_incluye_la_cuarentena_del_vfs_cuando_esta_activa():
+    gestor = GestorDeTrabajosDeLods(proveedor_de_servicio=lambda: None, consultar_cuarentena=lambda: _CUARENTENA_ACTIVA)
+
+    estado = gestor.estado()
+
+    assert estado["estado"] == "sin_trabajos"
+    assert estado["cuarentena_vfs"] == _CUARENTENA_ACTIVA
+
+
+@pytest.mark.parametrize("consulta", [None, lambda: None])
+def test_estado_no_agrega_la_clave_sin_cuarentena(consulta):
+    """Aditivo: sin cuarentena el contrato de ``lods_status`` no cambia (la paridad GUI/agente se compara por claves)."""
+    gestor = GestorDeTrabajosDeLods(proveedor_de_servicio=lambda: None, consultar_cuarentena=consulta)
+
+    assert "cuarentena_vfs" not in gestor.estado()
+
+
+def test_si_la_consulta_de_cuarentena_falla_estado_responde_igual(caplog):
+    def consulta_rota():
+        raise RuntimeError("el broker no responde")
+
+    gestor = GestorDeTrabajosDeLods(proveedor_de_servicio=lambda: None, consultar_cuarentena=consulta_rota)
+
+    estado = gestor.estado()
+
+    assert estado["success"] is True and "cuarentena_vfs" not in estado
+
+
+async def test_lods_status_del_agente_devuelve_la_cuarentena():
+    gestor = GestorDeTrabajosDeLods(proveedor_de_servicio=lambda: None, consultar_cuarentena=lambda: _CUARENTENA_ACTIVA)
+
+    respuesta = json.loads(await lods_status(gestor))
+
+    assert respuesta["cuarentena_vfs"]["activa"] is True
