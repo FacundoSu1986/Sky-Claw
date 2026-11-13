@@ -528,6 +528,34 @@ async def test_un_modo_invalido_lo_rechaza_el_servicio_no_el_guard():
     servicio.execute.assert_awaited_once_with(interaction_mode="unattended")
 
 
+#: Valores de ``interaction_mode`` que NO son un modo del contrato (``None`` explícito incluido: «ausente» es la
+#: ausencia de la clave, no un ``None``). Los rechaza el servicio antes de cualquier efecto; la guard no les pregunta
+#: nada al operador porque ninguna aprobación puede volver ejecutable una petición que el servicio va a rechazar.
+_MODOS_INVALIDOS = [None, "unattended", "ASISTIDO", "", 1, True]
+
+
+@pytest.mark.parametrize("modo", _MODOS_INVALIDOS, ids=repr)
+async def test_un_modo_invalido_con_etapas_faltantes_no_le_pregunta_al_operador(modo):
+    servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)
+    aprobador = _Aprobador(ResultadoConfirmacion.APROBADA)
+
+    await GenerateLodsStrategy(servicio, aprobar_sin_etapas_previas=aprobador).execute({"interaction_mode": modo})
+
+    assert aprobador.llamadas == []
+    servicio.verificar_etapas_previas.assert_not_called()
+    servicio.execute.assert_awaited_once_with(interaction_mode=modo)
+
+
+async def test_sin_la_clave_el_modo_es_el_asistido_por_defecto_y_la_guard_pregunta():
+    servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)
+    aprobador = _Aprobador(ResultadoConfirmacion.DENEGADA)
+
+    await GenerateLodsStrategy(servicio, aprobar_sin_etapas_previas=aprobador).execute({"preset": "Medium"})
+
+    assert len(aprobador.llamadas) == 1
+    servicio.execute.assert_not_awaited()
+
+
 def _superficies_que_reenvian_el_modo() -> set[str]:
     """Módulos de producción que llevan ``interaction_mode`` hasta un ``.execute(...)``.
 

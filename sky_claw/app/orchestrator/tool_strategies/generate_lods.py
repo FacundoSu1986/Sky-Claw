@@ -32,6 +32,12 @@ _VALID_LOD_KEYS = {"preset", "run_texgen", "create_snapshot", "texgen_args", "dy
 _EXTRA_DE_LA_ETAPA = {"pipeline_stage": 9, "tx_id": None}
 
 
+#: «El payload no trae ``interaction_mode``»: distinto de un ``None`` explícito, que NO es un modo del contrato y lo
+#: rechaza el servicio (review CodeRabbit, #906). Sin el centinela, ``None`` valía «ausente» y la guard le preguntaba
+#: al operador —hasta el plazo— por una petición que ninguna aprobación puede volver ejecutable.
+_SIN_MODO: Any = object()
+
+
 class GenerateLodsStrategy:
     name = "generate_lods"
 
@@ -57,7 +63,7 @@ class GenerateLodsStrategy:
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         filtered = self._filter_payload(payload_dict)
-        modo = filtered.get("interaction_mode")
+        modo = filtered.get("interaction_mode", _SIN_MODO)
         if _pide_modo_asistido(modo):
             # D-3 (decisión del owner, 2026-11-11, que revirtió la exclusión anterior de SOP §5.2): la corrida
             # ASISTIDA de la GUI también verifica las etapas 6–8 y, si faltan, necesita la confirmación del
@@ -156,8 +162,9 @@ class GenerateLodsStrategy:
 
 
 def _pide_modo_asistido(valor: object) -> bool:
-    """``True`` para un modo ASISTIDO válido o ausente (el default); un valor inválido lo rechaza el servicio."""
-    if valor is None:
+    """``True`` para un modo ASISTIDO válido o con la clave ausente (el default); un valor inválido —``None`` explícito
+    incluido— lo rechaza el servicio."""
+    if valor is _SIN_MODO:
         return True
     try:
         return modo_de_interaccion_desde(valor) is ModoDeInteraccion.ASISTIDO
@@ -166,8 +173,8 @@ def _pide_modo_asistido(valor: object) -> bool:
 
 
 def _pide_modo_desatendido(valor: object) -> bool:
-    """``True`` sólo para un modo DESATENDIDO válido; un valor inválido lo rechaza el servicio."""
-    if valor is None:
+    """``True`` sólo para un modo DESATENDIDO válido; un valor inválido (o la clave ausente) no lo es."""
+    if valor is _SIN_MODO:
         return False
     try:
         return modo_de_interaccion_desde(valor) is ModoDeInteraccion.DESATENDIDO
