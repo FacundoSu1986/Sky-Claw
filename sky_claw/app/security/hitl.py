@@ -46,6 +46,13 @@ CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA = "dyndolod_configuracion_lista"
 #: cae al canal REMOTO del guard —Telegram—, que es exactamente para quien existe.
 CATEGORIA_DYNDOLOD_DESATENDIDO = "dyndolod_desatendido"
 
+#: Confirmación del operador de la GUI para lanzar la etapa 9 en modo ASISTIDO aunque falten etapas previas
+#: (D-3, SOP §5.2). Categoría PROPIA y no la del override remoto porque el destinatario es el opuesto: acá el
+#: operador está frente a la GUI, así que ``make_gui_hitl_notify`` la estaciona como modal con su dueño; con
+#: ``dyndolod_desatendido`` la pregunta se habría ido a Telegram y, sin Telegram, esperaría hasta el plazo. Tampoco
+#: se auto-aprueba nunca en «Modo local»: una confirmación que se contesta sola es de adorno.
+CATEGORIA_DYNDOLOD_ETAPAS_PREVIAS_ASISTIDO = "dyndolod_etapas_previas_asistido"
+
 
 class Decision(enum.Enum):
     """Operator decision for a pending HITL prompt."""
