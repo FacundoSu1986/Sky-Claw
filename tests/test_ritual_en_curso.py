@@ -214,3 +214,67 @@ def test_despachar_resume_cierra_el_toast_y_transporta_el_payload(monkeypatch: p
     assert store.get(rr.STORE_KEY_RITUAL_FEEDBACK) is None
     assert llamadas == [("wrye_bash", {"fase": "verificar"})]
     assert llamadas[0][1] is not accion["payload"], "el payload viaja copiado"
+
+
+def test_despachar_resume_no_consume_la_accion_antes_de_que_el_runner_la_acepte(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Si el runner rechaza el resume (single-flight tomado, daemon no listo), la acción sigue ahí.
+
+    El dispatcher NO limpia el resultado propio: lo hace ``run_ritual`` después de
+    sus guards. Limpiarlo antes dejaba al operador sin «Ya construí el parche —
+    verificar» tras un click rechazado, obligándolo a repetir la fase 1.
+    """
+    store = ReactiveStore()
+    resultado = {"success": False, "pendiente": True, "message": "falta tu parte", "artefacto": "Bashed Patch, 0.esp"}
+    rr.publicar_resultado_de_ritual(store, tool_key="wrye_bash", resultado=resultado, tab_id="pestaña")
+    accion = rr.resolve_ritual_resume_action(store, "pestaña")
+    assert accion is not None
+    monkeypatch.setattr(fd, "get_store", lambda: store)
+    monkeypatch.setattr(fd, "current_tab_id", lambda: "pestaña")
+    monkeypatch.setitem(fd._RITUAL_RESUME_CALLBACKS, "resume", lambda tool, payload: None)  # runner que rechaza
+
+    fd._despachar_resume(accion)
+
+    assert rr.resolve_ritual_resume_action(store, "pestaña") == accion
+
+
+async def test_un_resume_rechazado_por_single_flight_conserva_la_accion() -> None:
+    """La otra mitad: ``run_ritual_resume`` rechazado por el guard no toca el resultado propio."""
+    store = ReactiveStore()
+    resultado = {"success": False, "pendiente": True, "message": "falta tu parte", "artefacto": "Bashed Patch, 0.esp"}
+    rr.publicar_resultado_de_ritual(store, tool_key="wrye_bash", resultado=resultado, tab_id="pestaña")
+    accion = rr.resolve_ritual_resume_action(store, "pestaña")
+    assert accion is not None
+    rr._marcar_en_curso(store, "dyndolod", rr.FASE_EJECUTANDO)
+
+    await rr.run_ritual_resume(
+        "wrye_bash",
+        payload=dict(accion["payload"]),
+        supervisor=_SupervisorEspia(store),
+        store=store,
+        auto_approve=False,
+        tab_id="pestaña",
+    )
+
+    assert rr.resolve_ritual_resume_action(store, "pestaña") == accion
+    assert store.get(rr.STORE_KEY_RITUAL_FEEDBACK)["type"] == "warning"
+
+
+def test_el_handshake_de_la_pestana_refresca_modal_y_grilla() -> None:
+    """Tras un F5 el primer render no tiene ``tab_id``: todo lo que se resuelve por dueño se re-renderiza al conectar.
+
+    Enumera los refreshables que leen estado con dueño de pestaña en el shell
+    (modal HITL y grilla de rituales): los dos tienen que estar en el hook.
+    """
+    arbol = ast.parse((_GUI / "views" / "forge_dashboard.py").read_text(encoding="utf-8"))
+    hook = next(n for n in arbol.body if isinstance(n, ast.FunctionDef) and n.name == "_refrescar_al_conectar")
+    refrescados = {
+        nodo.func.value.id
+        for nodo in ast.walk(hook)
+        if isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and nodo.func.attr == "refresh"
+        and isinstance(nodo.func.value, ast.Name)
+    }
+    assert refrescados == {"_hitl_modal_panel", "_rituales"}

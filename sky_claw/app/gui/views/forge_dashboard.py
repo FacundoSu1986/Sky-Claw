@@ -27,7 +27,6 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     RITUAL_TOOL_MAP,
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
-    clear_ritual_result_owned,
     diagnostico_parallax_de,
     limpiar_diagnostico_parallax,
     lineas_del_diagnostico_parallax,
@@ -776,6 +775,18 @@ def _hitl_modal_visible(pending: dict[str, Any] | None, active_section: str) -> 
     return bool(pending) and active_section != "Downloads"
 
 
+def _refrescar_al_conectar() -> None:
+    """Handler del handshake: re-renderiza TODO lo que el shell resuelve por dueño de pestaña.
+
+    Antes del handshake ``current_tab_id()`` es ``None``, así que el primer render
+    tras un F5 no ve ni la aprobación HITL ni la acción de resume que le pertenecen
+    a esta pestaña. El modal y la grilla de rituales son los dos refreshables que
+    leen ese estado (ancla que los enumera en test_ritual_en_curso.py).
+    """
+    _hitl_modal_panel.refresh()
+    _rituales.refresh()
+
+
 def _refrescar_hitl_al_conectar() -> None:
     """Re-renderiza el modal HITL cuando la pestaña completa su handshake.
 
@@ -798,7 +809,7 @@ def _refrescar_hitl_al_conectar() -> None:
         if client_storage.get(_HITL_RECONNECT_HOOK_KEY):
             return
         client_storage[_HITL_RECONNECT_HOOK_KEY] = True
-        ui.context.client.on_connect(_hitl_modal_panel.refresh)
+        ui.context.client.on_connect(_refrescar_al_conectar)
 
 
 @ui.refreshable
@@ -884,16 +895,17 @@ def _resume_disponible() -> bool:
 def _despachar_resume(accion: dict[str, Any]) -> None:
     """ÚNICO camino por el que la vista despacha una acción de resume (toast y tarjeta).
 
-    Cierra el aviso y consume el resultado PROPIO antes de despachar —el run nuevo
-    publica el suyo— y transporta ``tool_key``/``payload`` tal como los derivó el
+    Cierra el aviso y transporta ``tool_key``/``payload`` tal como los derivó el
     seam de ownership: la vista no decide qué intención se despacha (F-001), y el
     ``tool_key`` sale del envelope de la corrida, nunca de un literal (R-005).
     """
     fn = _RITUAL_RESUME_CALLBACKS.get("resume")
     # El payload viaja tal como lo derivó el seam (ancla AST en test_resume_etapa6_asistida.py).
     payload_de_la_accion = dict(accion.get("payload") or {})
+    # Cierra el aviso, pero NO consume el resultado propio: eso lo hace
+    # ``run_ritual`` después de sus guards. Si el runner rechaza el resume
+    # (single-flight tomado, daemon no listo) la acción tiene que seguir ahí.
     get_store().set(STORE_KEY_RITUAL_FEEDBACK, None)
-    clear_ritual_result_owned(get_store(), current_tab_id())
     if callable(fn):
         fn(str(accion.get("tool_key", "")), payload_de_la_accion)
 
