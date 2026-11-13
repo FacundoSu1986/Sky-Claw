@@ -187,9 +187,9 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     .sc-identity-text { display: none; }
 }
 
-/* Input del Asistente sobre pergamino: el placeholder de Quasar es un gris
-   pensado para fondo blanco y sobre el lavado del pergamino se perdía. */
-.sc-chat-input .q-field__native::placeholder { color: rgba(74, 56, 30, 0.6) !important; font-style: italic; }
+/* Input del Asistente sobre la superficie oscura del tema: mismo placeholder
+   tenue que los campos del wizard. */
+.sc-chat-input .q-field__native::placeholder { color: rgba(219, 196, 161, 0.4) !important; font-style: italic; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
     4. HEADER — idem: el dintel del Forge ya está emitido por el shell

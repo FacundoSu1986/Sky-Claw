@@ -818,28 +818,52 @@ def _hitl_modal_panel() -> None:
     request_id = str(pending.get("request_id", ""))
     reason = str(pending.get("reason", "") or "Esta acción requiere tu aprobación.")
     detail = str(pending.get("detail", "") or "")
+    # La categoría matiza el modal: una descarga es salida a internet (frost) y
+    # muestra su origen; el resto es una acción sobre el juego (ámbar). La
+    # etiqueta de texto es la señal; el color sólo la acompaña.
+    es_descarga = str(pending.get("category", "")) == "download" or bool(pending.get("url"))
+    banda, rotulo = (FROST, "DESCARGA DE RED") if es_descarga else ("#e0a13c", "ACCIÓN SOBRE TU INSTALACIÓN")
+    url = str(pending.get("url", "") or "")
+    # El tip tiene que ser cierto para ESTA solicitud: «Modo local» no aprueba descargas.
+    tip = (
+        "Tip: para no confirmar las descargas que iniciás vos con «Instalar», Ajustes → Aprobaciones."
+        if es_descarga
+        else "Tip: activá «Modo local» (F8) para no aprobar cada acción mientras estés en la PC; "
+        "para dejarlo fijo, Ajustes → Aprobaciones."
+    )
     overlay = (
         "position:fixed; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center;"
         "background:rgba(7,9,12,.72); backdrop-filter:blur(3px);"
     )
     card = (
-        "max-width:460px; width:90%; padding:24px 26px; border-radius:6px; color:#e8e2d4;"
-        "background:linear-gradient(168deg, rgba(30,22,14,.98), rgba(14,10,7,.99)); border:1px solid rgba(200,168,106,.4);"
+        "position:relative; overflow:hidden; max-width:520px; width:90%; padding:26px 26px 22px; border-radius:6px; color:#e8e2d4;"
+        "background:linear-gradient(168deg, rgba(26,32,40,.98), rgba(11,14,19,.99)); border:1px solid rgba(200,168,106,.4);"
         "box-shadow:0 30px 70px -20px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.05);"
     )
+    # Lo técnico (qué tool, sobre qué, desde dónde) va en una caja mono aparte del
+    # motivo: se escanea de un vistazo y no compite con la prosa.
+    lineas_tecnicas = "".join(
+        f'<div style="color:{color};">{_e(texto)}</div>'
+        for texto, color in ((detail, "#b8b1a0"), (url, FROST))
+        if texto
+    )
     detail_html = (
-        f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:#8a8270; margin-bottom:16px; word-break:break-word;\">{_e(detail)}</div>"
-        if detail
+        "<div style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; line-height:1.55; margin-bottom:16px;"
+        " padding:9px 11px; border-radius:4px; background:rgba(0,0,0,.34); border:1px solid rgba(200,168,106,.16);"
+        f' word-break:break-word;">{lineas_tecnicas}</div>'
+        if lineas_tecnicas
         else '<div style="margin-bottom:16px;"></div>'
     )
     with ui.element("div").style(overlay), ui.element("div").style(card):
         ui.html(
+            f'<div style="position:absolute; left:0; right:0; top:0; height:3px; background:{banda};"></div>'
+            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; letter-spacing:.14em; color:{banda}; margin-bottom:8px;\">{rotulo}</div>"
             '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">'
             f'<span style="color:#ecd9a8; display:inline-flex;" aria-hidden="true">{_ICON_SHIELD_CHECK}</span>'
             "<span style=\"font-family:'Cinzel',serif; font-weight:700; font-size:15px; letter-spacing:.1em; color:#f1e6cf;\">APROBACIÓN REQUERIDA</span></div>"
             f"<div style=\"font-family:'EB Garamond',serif; font-size:14px; line-height:1.5; color:#d8cfba; margin-bottom:8px;\">{_e(reason)}</div>"
             f"{detail_html}"
-            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#857c69; margin-bottom:14px;\">Tip: activá «Modo local» (F8) para no aprobar cada acción mientras estés en la PC; para dejarlo fijo, Ajustes → Aprobaciones.</div>"
+            f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#857c69; margin-bottom:14px;\">{_e(tip)}</div>"
         )
         with ui.element("div").style("display:flex; gap:11px; justify-content:flex-end;"):
             deny = ui.element("button").classes("sc-btn sc-btn--danger").style("padding:9px 18px;")
@@ -1236,7 +1260,7 @@ def _stats(active: int, pending: int, conflicts: int, storage: float) -> None:
         (_STAT_RUNES["mods"], ACCENT, "MODS ACTIVOS", f"{active}", "", "guardando Tamriel"),
         (_STAT_RUNES["pending"], ACCENT, "PENDIENTES", f"{pending}", "", "esperan renovación"),
         (_STAT_RUNES["conflicts"], RED, "CONFLICTOS", f"{conflicts}", "", "requieren tu juicio"),
-        (_STAT_RUNES["space"], FROST, "ESPACIO", f"{storage:.1f}", "GB", "de 200 GB en disco"),
+        (_STAT_RUNES["space"], FROST, "ESPACIO", f"{storage:.1f}", "GB", "en mods activos"),
     ]
     cards = ""
     for rune, tone, label, value, unit, sub in defs:
@@ -1559,19 +1583,21 @@ def _mod_row(idx: int, m: dict[str, Any], on_mod: Callable | None) -> None:
 def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks: dict[str, Callable]) -> None:
     sec = (
         "position:relative; border-radius:5px; overflow:hidden; display:flex; flex-direction:column;"
-        "background:linear-gradient(180deg, rgba(244,232,206,.62), rgba(226,206,168,.5)), url('/assets/parchment.png') center/cover, #d8bf98;"
-        " border:2px solid #5c4a2a;"
-        "box-shadow:0 20px 44px -20px rgba(0,0,0,.85), inset 0 0 60px rgba(70,48,20,.35);"
+        # Superficie oscura del tema (vidrio y acero): el pergamino claro era la única
+        # pieza clara del shell y rompía el contraste del modo oscuro.
+        "background:linear-gradient(168deg, rgba(26,32,40,.9), rgba(11,14,19,.95));"
+        " border:1px solid rgba(200,168,106,.26);"
+        "box-shadow:0 20px 44px -20px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04);"
     )
     with ui.element("section").style(sec):
         ui.html(
-            '<div style="position:absolute; inset:5px; border:1px solid rgba(92,74,42,.35); pointer-events:none; border-radius:3px;"></div>'
-            '<div style="position:relative; display:flex; align-items:center; gap:12px; padding:15px 18px; border-bottom:1px solid rgba(92,74,42,.45); background:linear-gradient(180deg, rgba(92,74,42,.22), transparent);">'
+            '<div style="position:absolute; inset:5px; border:1px solid rgba(200,168,106,.08); pointer-events:none; border-radius:3px;"></div>'
+            '<div style="position:relative; display:flex; align-items:center; gap:12px; padding:15px 18px; border-bottom:1px solid rgba(200,168,106,.16); background:linear-gradient(180deg, rgba(200,168,106,.07), transparent);">'
             '<div style="width:40px; height:40px; flex-shrink:0; border-radius:50%; display:flex; align-items:center; justify-content:center; background:radial-gradient(circle at 50% 35%, #3a2c1a, #16100a); border:1.5px solid #c8a86a; box-shadow:0 0 12px rgba(200,168,106,.45);">'
             '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#ecd9a8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 0 1 10 10c0 5.5-4.5 10-10 10S2 17.5 2 12"/><path d="M12 7v5"/><path d="M12 16h.01"/></svg></div>'
-            '<div style="flex:1;"><div style="font-family:\'Cinzel\',serif; font-weight:700; font-size:15px; letter-spacing:.06em; color:#2c2016;">Asistente Arcano</div>'
-            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#6b5536;\">Forjado con DeepSeek</div></div>"
-            '<span style="font-family:\'Noto Sans Runic\',serif; font-size:15px; color:#5c4a2a; opacity:.85;" aria-hidden="true">ᚺᚢᛗ</span></div>'
+            '<div style="flex:1;"><div style="font-family:\'Cinzel\',serif; font-weight:700; font-size:15px; letter-spacing:.06em; color:#ecdfc2;">Asistente Arcano</div>'
+            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#8a8068;\">Consejero de la forja</div></div>"
+            '<span style="font-family:\'Noto Sans Runic\',serif; font-size:15px; color:#c8a86a; opacity:.7;" aria-hidden="true">ᚺᚢᛗ</span></div>'
         )
         # Messages
         with (
@@ -1587,26 +1613,28 @@ def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks
                 _chat_bubble(str(c.get("content", "")), is_user=bool(c.get("is_user", False)))
             if is_thinking:
                 ui.html(
-                    "<div style=\"display:flex; align-items:center; gap:8px; color:#6b5536; font-family:'EB Garamond',serif; font-style:italic; font-size:13px;\">"
+                    "<div style=\"display:flex; align-items:center; gap:8px; color:#a39a85; font-family:'EB Garamond',serif; font-style:italic; font-size:13px;\">"
                     '<span style="display:inline-flex; gap:3px;">'
-                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s infinite;"></span>'
-                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s .2s infinite;"></span>'
-                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s .4s infinite;"></span></span>'
+                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#c8a86a; animation:scBlink 1.2s infinite;"></span>'
+                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#c8a86a; animation:scBlink 1.2s .2s infinite;"></span>'
+                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#c8a86a; animation:scBlink 1.2s .4s infinite;"></span></span>'
                     "Consultando los pergaminos…</div>"
                 )
         # Input row
         with ui.element("div").style(
-            "position:relative; display:flex; gap:9px; padding:13px 16px; border-top:1px solid rgba(92,74,42,.45);"
+            "position:relative; display:flex; gap:9px; padding:13px 16px; border-top:1px solid rgba(200,168,106,.16);"
         ):
             on_send = _cb(callbacks, "on_send_message")
             chat_input = (
                 ui.input(placeholder="Habla, y escucharé…")
                 .classes("sc-chat-input")
-                .props('dense borderless input-style="color:#2c2016; font-family:EB Garamond,serif; font-size:14.5px"')
+                .props(
+                    'dense borderless dark input-style="color:#e8e2d4; font-family:EB Garamond,serif; font-size:14.5px"'
+                )
                 .style(
                     "flex:1; padding:4px 13px;"
-                    "background:rgba(255,252,244,.58); border:1px solid rgba(92,74,42,.5); border-radius:5px;"
-                    "box-shadow:inset 0 1px 3px rgba(70,48,20,.25);"
+                    "background:rgba(0,0,0,.34); border:1px solid rgba(200,168,106,.26); border-radius:5px;"
+                    "box-shadow:inset 0 2px 6px rgba(0,0,0,.45);"
                 )
             )
 
@@ -1632,33 +1660,33 @@ def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks
             chat_input.on("keydown.enter", _send)
             sb = ui.element("button").style(
                 "width:44px; flex-shrink:0; display:flex; align-items:center; justify-content:center; cursor:pointer;"
-                "background:linear-gradient(180deg,#5c4a2a,#3e321d); border:1px solid #2a2012; border-radius:5px; box-shadow:inset 0 1px 0 rgba(255,255,255,.12);"
+                "background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1px solid #f6e6bd; border-radius:5px; box-shadow:inset 0 1px 0 rgba(255,255,255,.12);"
             )
             sb.on("click", _send)
             with sb:
                 ui.html(
-                    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#f0e4cc" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
+                    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#1c130a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
                 )
 
 
 def _chat_bubble(text: str, is_user: bool) -> None:
     if is_user:
         wrap = "display:flex; justify-content:flex-end;"
-        who, who_color, who_align = "TÚ", "#6b5536", "text-align:right;"
+        who, who_color, who_align = "TÚ", "#a39a85", "text-align:right;"
         bubble = (
-            "background:linear-gradient(180deg, rgba(98,78,44,.96), rgba(74,58,32,.96)); color:#f6eedb;"
-            " border-radius:9px 9px 2px 9px; box-shadow:0 3px 8px -3px rgba(40,26,10,.55);"
+            "background:rgba(200,168,106,.14); color:#f1e6cf; border:1px solid rgba(200,168,106,.32);"
+            " border-radius:9px 9px 2px 9px;"
         )
     else:
         wrap = "display:flex; justify-content:flex-start;"
-        who, who_color, who_align = "ASISTENTE", "#7a5f30", ""
+        who, who_color, who_align = "ASISTENTE", "#c8a86a", ""
         bubble = (
-            "background:rgba(255,251,242,.78); color:#2c2016; border:1px solid rgba(92,74,42,.32);"
-            " border-radius:9px 9px 9px 2px; box-shadow:0 2px 6px -3px rgba(70,48,20,.4);"
+            "background:rgba(255,255,255,.045); color:#d8cfba; border:1px solid rgba(255,255,255,.09);"
+            " border-radius:9px 9px 9px 2px;"
         )
     ui.html(
         f'<div style="{wrap}"><div style="max-width:82%;">'
-        f"<div style=\"font-family:'Cinzel',serif; font-size:9.5px; letter-spacing:.12em; color:{who_color}; margin-bottom:4px; {who_align}\">{who}</div>"
+        f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; letter-spacing:.1em; color:{who_color}; margin-bottom:4px; {who_align}\">{who}</div>"
         f"<div style=\"padding:9px 13px; font-family:'EB Garamond',serif; font-size:14px; line-height:1.45; {bubble}\">{_e(text)}</div></div></div>"
     )
 
