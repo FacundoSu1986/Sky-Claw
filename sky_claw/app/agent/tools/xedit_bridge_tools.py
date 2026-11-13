@@ -256,9 +256,13 @@ class GestorDeAdmisionesNativas:
             "estado": trabajo.estado,
             "trabajo_id": trabajo.id,
             "plugin": _nombre(plugin),
+            # ``estado`` es el INICIAL, no un veredicto: el pedido ya se le mandó al operador (#919).
+            "aprobacion_solicitada": True,
             "instrucciones": (
-                "El operador recibe por este canal el pedido de aprobación; sin su aprobación no se copia "
-                "nada. Sky-Claw avisa cuando la admisión termina; después, auditar_plugin_nativo."
+                "El pedido de aprobación YA se le mandó al operador por este canal; 'esperando_aprobacion' es "
+                "el estado inicial, no significa que falte pedirla. No vuelvas a pedirla ni consultes el estado: "
+                "sin su aprobación no se copia nada y Sky-Claw avisa cuando la admisión termina; después, "
+                "auditar_plugin_nativo."
             ),
         }
 
