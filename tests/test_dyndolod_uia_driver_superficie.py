@@ -125,16 +125,35 @@ def test_ninguna_primitiva_de_inyeccion_win32_vive_en_el_paquete():
     assert culpables == {}
 
 
+def _modulos_importados(arbol: ast.AST) -> set[str]:
+    """Todo módulo que el árbol importa, con su nombre COMPLETO, por cualquiera de las formas de importar.
+
+    Mirar solo ``ImportFrom.module`` deja pasar dos: ``import a.b.c`` (``ast.Import``) y ``from a.b import c``, que
+    importa ``a.b.c`` pero cuyo ``module`` es ``a.b`` y el módulo real está en los ``names`` (review CodeRabbit #907).
+    """
+    modulos: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            modulos.update(alias.name for alias in nodo.names)
+        elif isinstance(nodo, ast.ImportFrom) and nodo.module:
+            modulos.add(nodo.module)
+            modulos.update(f"{nodo.module}.{alias.name}" for alias in nodo.names if alias.name != "*")
+    return modulos
+
+
+def _importa_al_driver(arbol: ast.AST) -> bool:
+    return any("dyndolod_uia_driver" in modulo for modulo in _modulos_importados(arbol))
+
+
 @pytest.mark.parametrize(
     "modulo",
     ["dyndolod_uia_preflight.py", "dyndolod_uia_windows.py", "dyndolod_uia_gate.py", "dyndolod_uia_helper.py"],
 )
 def test_la_superficie_read_only_no_importa_al_driver(modulo):
-    arbol = ast.parse((PAQUETE / "local" / "tools" / modulo).read_text(encoding="utf-8"))
-    for nodo in ast.walk(arbol):
-        if isinstance(nodo, ast.ImportFrom) and nodo.module:
-            assert "dyndolod_uia_driver" not in nodo.module
-            assert "dyndolod_uia_contrato" not in nodo.module
+    # El hermano del chequeo de los scripts: los módulos de solo lectura del paquete, con el MISMO detector de formas.
+    importados = _modulos_importados(ast.parse((PAQUETE / "local" / "tools" / modulo).read_text(encoding="utf-8")))
+    assert not any("dyndolod_uia_driver" in m for m in importados), sorted(importados)
+    assert not any("dyndolod_uia_contrato" in m for m in importados), sorted(importados)
 
 
 def test_el_backend_no_importa_comtypes_en_tope_de_modulo():
@@ -312,3 +331,95 @@ async def test_el_helper_lee_el_pedido_y_el_canal_se_borra(tmp_path):
     directorio, tipo = registro.read_text(encoding="utf-8").split("|")
     assert tipo == "OBSERVAR"
     assert not pathlib.Path(directorio).exists()
+
+
+# ---------------------------------------------------------------------------
+# Los scripts de MEDICIÓN (H-8): solo lectura, y la familia está enumerada
+# ---------------------------------------------------------------------------
+
+SCRIPTS = RAIZ / "scripts"
+#: Los scripts que importan la superficie UIA. Congelado por igualdad: uno nuevo rompe el ancla hasta que se audita.
+SCRIPTS_QUE_TOCAN_LA_SUPERFICIE_UIA = {"dyndolod_medir_contrato_uia.py"}
+#: Lo que un script de medición puede pedirle al puerto de observación: solo enumerar ventanas y controles.
+METODOS_DE_LECTURA_PERMITIDOS_AL_SCRIPT = {"ventanas_de_proceso", "controles_de_ventana"}
+#: Todos los métodos del puerto ``ObservadorUIA`` (tres, los tres de lectura).
+METODOS_DEL_PUERTO = {"ventanas_de_proceso", "controles_de_ventana", "leer_valor"}
+
+
+def _scripts_que_importan_la_superficie_uia(directorio: pathlib.Path = SCRIPTS) -> set[str]:
+    encontrados: set[str] = set()
+    for archivo in sorted(directorio.glob("*.py")):
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+        if any(modulo.startswith("sky_claw.local.tools.dyndolod_uia_") for modulo in _modulos_importados(arbol)):
+            encontrados.add(archivo.name)
+    return encontrados
+
+
+def test_los_scripts_que_tocan_la_superficie_uia_estan_congelados():
+    assert _scripts_que_importan_la_superficie_uia() == SCRIPTS_QUE_TOCAN_LA_SUPERFICIE_UIA
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS_QUE_TOCAN_LA_SUPERFICIE_UIA))
+def test_un_script_de_medicion_no_nombra_ninguna_primitiva_que_actue_ni_importa_al_driver(script):
+    nombres = _nombres_de_codigo(SCRIPTS / script)
+    assert "ventanas_de_proceso" in nombres, "el detector no ve nada: el ancla pasaría vacía"
+    prohibidas = PRIMITIVAS_MUTANTES | PRIMITIVAS_WIN32_PROHIBIDAS | PRIMITIVAS_AUTORIZADAS
+    assert nombres & prohibidas == set(), sorted(nombres & prohibidas)
+    arbol = ast.parse((SCRIPTS / script).read_text(encoding="utf-8"))
+    assert not _importa_al_driver(arbol), sorted(m for m in _modulos_importados(arbol) if "dyndolod_uia_driver" in m)
+
+
+@pytest.mark.parametrize("script", sorted(SCRIPTS_QUE_TOCAN_LA_SUPERFICIE_UIA))
+def test_un_script_de_medicion_solo_le_pide_al_puerto_enumerar_ventanas_y_controles(script):
+    arbol = ast.parse((SCRIPTS / script).read_text(encoding="utf-8"))
+    llamados = {
+        n.func.attr
+        for n in ast.walk(arbol)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in METODOS_DEL_PUERTO
+    }
+    assert llamados == METODOS_DE_LECTURA_PERMITIDOS_AL_SCRIPT
+
+
+# --- Review CodeRabbit #907: el detector tiene que ver TODAS las formas de importar ---------------------------------
+
+FORMAS_DE_IMPORTAR_EL_DRIVER = {
+    "from_modulo": "from sky_claw.local.tools.dyndolod_uia_driver import clasificar_pantalla",
+    "import_modulo": "import sky_claw.local.tools.dyndolod_uia_driver",
+    "import_como": "import sky_claw.local.tools.dyndolod_uia_driver as driver",
+    "from_paquete": "from sky_claw.local.tools import dyndolod_uia_driver",
+    "from_paquete_como": "from sky_claw.local.tools import dyndolod_uia_driver as driver",
+    "from_paquete_varios": "from sky_claw.local.tools import dyndolod_uia_windows, dyndolod_uia_driver",
+}
+FORMAS_DE_IMPORTAR_LA_SUPERFICIE = {
+    "from_modulo": "from sky_claw.local.tools.dyndolod_uia_windows import construir_observador_windows",
+    "import_modulo": "import sky_claw.local.tools.dyndolod_uia_windows",
+    "from_paquete": "from sky_claw.local.tools import dyndolod_uia_windows",
+}
+
+
+@pytest.mark.parametrize("fuente", FORMAS_DE_IMPORTAR_EL_DRIVER.values(), ids=FORMAS_DE_IMPORTAR_EL_DRIVER.keys())
+def test_el_detector_ve_el_driver_importado_de_cualquier_forma(fuente):
+    assert _importa_al_driver(ast.parse(fuente))
+
+
+@pytest.mark.parametrize(
+    "fuente",
+    [
+        "import os",
+        "from sky_claw.local.tools import dyndolod_uia_windows",
+        "from sky_claw.local.tools.dyndolod_uia_preflight import X",
+    ],
+)
+def test_el_detector_no_confunde_la_superficie_de_lectura_con_el_driver(fuente):
+    assert not _importa_al_driver(ast.parse(fuente))
+
+
+@pytest.mark.parametrize(
+    "fuente", FORMAS_DE_IMPORTAR_LA_SUPERFICIE.values(), ids=FORMAS_DE_IMPORTAR_LA_SUPERFICIE.keys()
+)
+def test_el_ancla_de_la_familia_ve_un_script_nuevo_que_importa_la_superficie_de_cualquier_forma(tmp_path, fuente):
+    """Un script nuevo que importe la superficie UIA por cualquiera de las formas rompe el congelamiento."""
+    (tmp_path / "nuevo.py").write_text(fuente + "\n", encoding="utf-8")
+    (tmp_path / "ajeno.py").write_text("import os\n", encoding="utf-8")
+
+    assert _scripts_que_importan_la_superficie_uia(tmp_path) == {"nuevo.py"}
