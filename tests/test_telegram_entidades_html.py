@@ -128,3 +128,26 @@ async def test_process_bg_entrega_la_respuesta_sin_el_bloque_de_razonamiento() -
     await handler._process_bg(5, "/start", 1)
 
     sender.send.assert_awaited_once_with(5, "Hola, soy Sky-Claw")
+
+
+async def test_el_reintento_en_texto_plano_descuenta_el_cooldown_ya_consumido() -> None:
+    """Codex P2 sobre #922: el reintento no puede reiniciar el presupuesto de espera de ``send()``."""
+    sender, _gateway = _sender()
+    presupuestos: list[float | None] = []
+    acumulado: list[float] = []
+
+    async def _enviar_falso(endpoint: str, chat_id: int, make_kwargs: Any, **kw: Any) -> Any:
+        presupuestos.append(kw["presupuesto_cooldown"])
+        if len(presupuestos) == 1:
+            kw["on_cooldown_sleep"](30.0)  # el intento HTML durmió 30 s de flood-control
+            raise TelegramEntitiesError("400 entidades")
+        kw["on_cooldown_sleep"](10.0)
+        return "ok"
+
+    sender._enviar = _enviar_falso  # type: ignore[method-assign]
+
+    resultado = await sender._send_chunk(1, "x", presupuesto_cooldown=90.0, on_cooldown_sleep=acumulado.append)
+
+    assert resultado == "ok"
+    assert presupuestos == [90.0, 60.0]  # 90 - 30 ya consumidos
+    assert acumulado == [30.0, 10.0]  # el acumulador de send() ve las dos esperas

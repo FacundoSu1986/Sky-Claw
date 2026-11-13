@@ -548,13 +548,23 @@ class TelegramSender:
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
 
+        # Lo que durmió el intento HTML por flood-control: el reintento en texto plano lo descuenta, para que
+        # el fallback no reinicie el presupuesto acumulado de ``send()`` (Codex P2 sobre #922).
+        dormido_en_html = 0.0
+
+        def _contar_cooldown(dormido: float) -> None:
+            nonlocal dormido_en_html
+            dormido_en_html += dormido
+            if on_cooldown_sleep is not None:
+                on_cooldown_sleep(dormido)
+
         try:
             return await self._enviar(
                 "sendMessage",
                 chat_id,
                 lambda: {"json": payload},
                 presupuesto_cooldown=presupuesto_cooldown,
-                on_cooldown_sleep=on_cooldown_sleep,
+                on_cooldown_sleep=_contar_cooldown,
             )
         except TelegramEntitiesError:
             # El texto trae HTML ajeno (p. ej. ``<thought>`` del modelo): se entrega igual, en texto plano,
@@ -565,8 +575,10 @@ class TelegramSender:
                 "sendMessage",
                 chat_id,
                 lambda: {"json": plano},
-                presupuesto_cooldown=presupuesto_cooldown,
-                on_cooldown_sleep=on_cooldown_sleep,
+                presupuesto_cooldown=(
+                    max(0.0, presupuesto_cooldown - dormido_en_html) if presupuesto_cooldown is not None else None
+                ),
+                on_cooldown_sleep=_contar_cooldown,
             )
 
     async def send_document(
