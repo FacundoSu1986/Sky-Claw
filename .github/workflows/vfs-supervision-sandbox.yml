@@ -17,6 +17,7 @@ on:
       - "scripts/windows_job_probe.py"
       - "scripts/windows_onefile_census.py"
       - "scripts/windows_spawn_origin.py"
+      - "scripts/registrar_sha256_ejecutable.py"
       - "tests/test_windows_onefile_census.py"
       - "tests/test_vfs_job_identity*.py"
       - "tests/test_vfs_arranque.py"
@@ -109,6 +110,9 @@ jobs:
       - name: SkyClawApp.exe real (pyinstaller sky_claw.spec) - construir
         if: ${{ !cancelled() }}
         run: pyinstaller sky_claw.spec --clean
+      - name: SkyClawApp.exe real - registrar el SHA-256 del ejecutable construido
+        if: ${{ !cancelled() }}
+        run: python scripts/registrar_sha256_ejecutable.py registrar dist/SkyClawApp.exe --json sandbox_min/resultados_sha256.json
       - name: SkyClawApp.exe CONGELADO - identidad del Job de punta a punta (assign a tiempo y assign tardío)
         if: ${{ !cancelled() }}
         env:
@@ -139,6 +143,10 @@ jobs:
           '--arg=--vfs-probe-child' '--arg={probe_file}' '--arg={probe_sha}'
           --retardos 1,2,3 --repeticiones 3 --ventana 40 --terminar-tras 0.5 --json sandbox_min\resultados_censo_real_terminado.json
 
+      - name: SkyClawApp.exe real - verificar que el ejecutable probado es el mismo que se hasheó
+        if: ${{ !cancelled() }}
+        run: python scripts/registrar_sha256_ejecutable.py verificar sandbox_min/resultados_sha256.json dist/SkyClawApp.exe
+
       - name: Resumen compacto (lo que importa, al final del log)
         if: always()
         run: |
@@ -151,6 +159,7 @@ jobs:
           foreach ($f in @('sandbox_min\resultados_censo_min.json','sandbox_min\resultados_censo_real.json','sandbox_min\resultados_censo_real_terminado.json')) {
             if (Test-Path $f) { Write-Output "=== $f ==="; python -m scripts.windows_onefile_census --resumir $f }
           }
+          if (Test-Path sandbox_min\resultados_sha256.json) { Write-Output "=== SHA-256 del ejecutable probado ==="; Get-Content sandbox_min\resultados_sha256.json }
           if (Test-Path sandbox_min\resultados_origen.json) {
             Write-Output "=== origen de los procesos del arranque ==="
             python -m scripts.windows_spawn_origin --resumir sandbox_min\resultados_origen.json

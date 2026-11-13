@@ -36,7 +36,11 @@ import keyring
 import websockets
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
-from sky_claw.app.comms._transport import DEFAULT_MAX_MESSAGE_BYTES, assert_safe_ws_url
+from sky_claw.app.comms._transport import (
+    DEFAULT_MAX_MESSAGE_BYTES,
+    assert_safe_ws_url,
+    enviar_si_conectado,
+)
 from sky_claw.config import Config
 
 if TYPE_CHECKING:
@@ -76,8 +80,6 @@ class WebSocketClient(Protocol):
     Ensures type safety when working with asyncio websockets,
     preventing Any-type abuse and catching interface mismatches early.
     """
-
-    open: bool
 
     async def send(self, data: str) -> None:
         """Send a message through the WebSocket."""
@@ -754,24 +756,20 @@ class FrontendBridge:
     async def _send(self, payload: dict[str, Any]) -> None:
         """Send a JSON payload through the WebSocket.
 
-        Checks that WebSocket is open before sending to prevent
-        AttributeError and connection errors.
+        Tolerates a missing or already-closed WebSocket (see
+        ``enviar_si_conectado``) instead of probing ``.open``, which
+        websockets 16 no longer exposes.
 
         Args:
             payload: Dictionary to send as JSON
 
-        Invariant: Only sends if WebSocket connection is open (I3 fix).
+        Invariant: never probes ``.open``; a closed socket is a no-op (I3 fix).
         """
-        # ── WebSocket open check (I3 fix: explicit check) ──
-        if self.ws and self.ws.open:
-            try:
-                await self.ws.send(json.dumps(payload))
-            except ConnectionClosed:
-                logger.debug("WebSocket cerrado al intentar enviar")
-            except Exception as exc:
-                logger.error("Error enviando por WebSocket: %s", exc)
-        else:
-            logger.debug("WebSocket no está disponible para envío")
+        # websockets 16 no expone ``.open``: se intenta enviar y se tolera el cierre.
+        try:
+            await enviar_si_conectado(self.ws, json.dumps(payload))
+        except Exception as exc:
+            logger.error("Error enviando por WebSocket: %s", exc)
 
     async def _send_config_result(self, msg_id: str, success: bool, message: str) -> None:
         """Send a CONFIG_UPDATED response to the frontend.
