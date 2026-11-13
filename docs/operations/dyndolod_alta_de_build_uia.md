@@ -55,9 +55,12 @@ terminal), así que se toma **una instantánea por momento y con a lo sumo un di
 real) y después se las diagnostica juntas. Cada captura se clasifica como lo hace el driver de producción; una
 captura con dos diálogos a la vez no cuenta como evidencia (el diagnóstico la marca y hay que repetirla).
 
-**1. Reposo.** Con la herramienta recién abierta, sin tocar nada:
+**1. Reposo.** Con la herramienta recién abierta, sin tocar nada. La carpeta de los informes tiene que **existir** antes
+de medir (el script no la crea: se niega **antes** de medir si falta, porque perder una medición al guardarla sería lo
+peor):
 
 ```bash
+mkdir C:\informes
 python -m scripts.dyndolod_medir_contrato_uia medir --tool DynDOLOD --exe "D:\Tools\DynDOLOD\DynDOLODx64.exe" --modo SSE --etiqueta reposo --salida "C:\informes\dyndolod_reposo.json"
 ```
 
@@ -82,6 +85,10 @@ python -m scripts.dyndolod_medir_contrato_uia diagnosticar --contra-sha b67625eb
 ```
 
 `--exe` es el ejecutable del build medido: su directorio se usa para comprobar que existe el preset que el contrato espera.
+El script **calcula su `sha256` y lo compara con el de los informes**: si `--exe` es otro build, o el mismo ejecutable
+reemplazado por una actualización después de medir, se niega con «no es el ejecutable medido» (el preset de un build no
+avala a otro). Se compara con el hash de la **medición**, no con el del contrato congelado: medir un build distinto del
+congelado es justamente el caso de uso. Un informe sin un `exe_sha256` válido (64 dígitos hexadecimales) tampoco se acepta.
 Con `--exigir-compatible` el comando sale con código 3 si el veredicto no es `compatible` (útil en un script).
 
 ## Cómo leer el veredicto
@@ -93,7 +100,9 @@ Con `--exigir-compatible` el comando sale con código 3 si el veredicto no es `c
 | `incompleto` | Nada difiere, pero falta observar algo (típicamente un diálogo) | Tomá la instantánea que falta. **Nunca** se interpreta como «sí» |
 
 Un diálogo que no se reconoce queda `no_observado` y no `difiere`: desde afuera no se distingue «el diálogo cambió» de «no se
-capturó ese momento». El detalle lista los diálogos que sí se vieron. «Se reconoce» es lo mismo que exige el driver:
+capturó ese momento». El detalle lista los diálogos que sí se vieron. Una captura de un diálogo que ningún contrato
+reconoce **impide el `compatible` aunque estén todos los conocidos** (el driver no sabría qué hacer con él): aparece como una
+pieza `captura:<etiqueta>` en `no_observado`, con la instrucción que se vio. «Se reconoce» es lo mismo que exige el driver:
 exactamente **un** `MainInstruction` con la instrucción del contrato, los botones requeridos **de clase `CCPushButton`** y
 una acción que resuelva a **un solo** elemento (si resuelve a más de uno, el veredicto es `difiere`: el driver lo rechazaría).
 El diálogo puede ser una ventana de nivel superior o estar anidado en la ventana principal.

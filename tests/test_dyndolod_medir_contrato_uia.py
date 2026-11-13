@@ -679,3 +679,118 @@ def test_el_json_de_una_medicion_es_estable_y_se_puede_releer(exe) -> None:
     crudo = json.loads(texto)
     assert crudo["esquema"] == medir.ESQUEMA
     assert crudo["medicion"]["exe_sha256"] == SHA_DEL_EXE
+
+
+# --- Revisión de CodeRabbit (#907) ------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("anidado", [False, True], ids=["nivel_superior", "anidado"])
+@pytest.mark.parametrize("contrato", CONTRATOS, ids=lambda c: c.tool)
+def test_un_dialogo_desconocido_capturado_impide_el_compatible_aunque_esten_todos_los_conocidos(
+    tmp_path, contrato, anidado
+) -> None:
+    """Con TODAS las capturas conocidas más un diálogo sin firma, el driver no sabría qué hacer con ese diálogo.
+
+    Antes la captura desconocida solo aparecía en el diagnóstico si faltaba algún diálogo conocido; con el set completo el
+    veredicto salía ``compatible`` y la captura desaparecía.
+    """
+    desconocido = FirmaDeDialogo(
+        instruccion="Un diálogo que ningún contrato conoce", botones=frozenset({("Aceptar", "")})
+    )
+    capturas = [
+        *_capturas(contrato, anidado=anidado),
+        ("dialogo-desconocido", _captura(contrato, desconocido, anidado=anidado)),
+    ]
+
+    diagnostico = _diagnosticar(tmp_path, contrato, capturas)
+
+    assert diagnostico.veredicto is not medir.Veredicto.COMPATIBLE, diagnostico.resumen()
+    assert any(
+        c.nombre == "captura:dialogo-desconocido" and c.estado is medir.Estado.NO_OBSERVADO
+        for c in diagnostico.chequeos
+    ), diagnostico.resumen()
+
+
+def _diagnosticar_por_cli(exe_medido: pathlib.Path, exe_del_diagnostico: pathlib.Path, tmp_path, contrato) -> int:
+    informes = _informes(tmp_path, exe_medido, contrato, _capturas(contrato))
+    argv = ["diagnosticar", "--contra-sha", contrato.exe_sha256, "--exe", str(exe_del_diagnostico), *informes]
+    return medir.main(argv)
+
+
+def test_el_diagnostico_se_niega_si_el_exe_indicado_no_es_el_ejecutable_medido(tmp_path, capsys) -> None:
+    """El preset se busca junto a ``--exe``: si ese ``--exe`` es OTRO build, su preset avalaría un build que no es."""
+    contrato = next(c for c in CONTRATOS if c.tool == "DynDOLOD")
+    medido = _con_preset(tmp_path / "medido", contrato)
+    otro = _con_preset(tmp_path / "otro", contrato)
+    otro.write_bytes(b"otro-build-distinto")  # tiene el preset, pero no es el ejecutable que se midió
+
+    assert _diagnosticar_por_cli(medido, medido, tmp_path, contrato) == 0, "control positivo: el mismo exe se acepta"
+    capsys.readouterr()
+    codigo = _diagnosticar_por_cli(medido, otro, tmp_path, contrato)
+
+    assert codigo == medir.SALIDA_ERROR
+    assert "no es el ejecutable medido" in capsys.readouterr().err
+
+
+def test_el_diagnostico_se_niega_si_el_exe_fue_reemplazado_en_la_misma_ruta(tmp_path, capsys) -> None:
+    """Una actualización que pisa el ejecutable en el mismo lugar: el hash ya no es el de la medición."""
+    contrato = next(c for c in CONTRATOS if c.tool == "DynDOLOD")
+    exe_ = _con_preset(tmp_path, contrato)
+    informes = _informes(tmp_path, exe_, contrato, _capturas(contrato))
+    exe_.write_bytes(b"build-actualizado-sobre-la-misma-ruta")
+
+    codigo = medir.main(["diagnosticar", "--contra-sha", contrato.exe_sha256, "--exe", str(exe_), *informes])
+
+    assert codigo == medir.SALIDA_ERROR
+    assert "no es el ejecutable medido" in capsys.readouterr().err
+
+
+def test_medir_con_la_carpeta_de_salida_inexistente_falla_antes_de_medir(tmp_path, exe, monkeypatch, capsys) -> None:
+    """Medir es lo caro (una GUI abierta y preparada); perder la medición al escribir sería lo peor."""
+    medido: list[bool] = []
+    contrato = next(c for c in CONTRATOS if c.tool == "DynDOLOD")
+    monkeypatch.setattr(medir, "_observador_real", lambda: medido.append(True) or _captura(contrato))
+    monkeypatch.setattr(medir, "LocalizadorPsutil", lambda: _localizador(exe))
+    salida = tmp_path / "no-existe" / "med.json"
+
+    codigo = medir.main(["medir", "--tool", "DynDOLOD", "--exe", str(exe), "--modo", "SSE", "--salida", str(salida)])
+
+    assert codigo == medir.SALIDA_ERROR
+    assert medido == [], "no se mide si el informe no se va a poder guardar"
+    assert "carpeta" in capsys.readouterr().err and not salida.parent.exists()
+
+
+def _informe_con_sha(exe_, sha: object) -> str:
+    contrato = next(c for c in CONTRATOS if c.tool == "DynDOLOD")
+    crudo = json.loads(medir.a_json(_medir(exe_, _captura(contrato))))
+    crudo["medicion"]["exe_sha256"] = sha
+    return json.dumps(crudo)
+
+
+@pytest.mark.parametrize(
+    "invalido",
+    [None, 12345, "", "abc", "g" * 64, "a" * 63, "a" * 65, ["a" * 64]],
+    ids=["null", "entero", "vacio", "corto", "no_hex", "63", "65", "lista"],
+)
+def test_un_informe_sin_el_hash_valido_del_build_se_rechaza_al_cargarlo(exe, invalido) -> None:
+    """Sin identidad de build válida, ``exigir_mismo_build`` aceptaría informes de cualquier build (todos ``None``)."""
+    with pytest.raises(medir.MedicionError, match="exe_sha256"):
+        medir.de_json(_informe_con_sha(exe, invalido))
+
+
+def test_un_informe_con_el_hash_en_mayusculas_se_normaliza(exe) -> None:
+    assert medir.de_json(_informe_con_sha(exe, SHA_DEL_EXE.upper())).exe_sha256 == SHA_DEL_EXE
+
+
+def test_el_cli_no_diagnostica_informes_sin_hash_de_build(tmp_path, exe, capsys) -> None:
+    contrato = next(c for c in CONTRATOS if c.tool == "DynDOLOD")
+    informes = []
+    for i in range(2):
+        archivo = tmp_path / f"sin-hash{i}.json"
+        archivo.write_text(_informe_con_sha(exe, None), encoding="utf-8")
+        informes.append(str(archivo))
+
+    codigo = medir.main(["diagnosticar", "--contra-sha", contrato.exe_sha256, *informes])
+
+    assert codigo == medir.SALIDA_ERROR
+    assert "exe_sha256" in capsys.readouterr().err

@@ -48,6 +48,7 @@ import hashlib
 import json
 import ntpath
 import pathlib
+import re
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
@@ -74,6 +75,9 @@ from sky_claw.local.tools.dyndolod_uia_windows import construir_observador_windo
 
 #: Versión del esquema del informe. Un informe de otra versión no se interpreta: se rechaza.
 ESQUEMA = 1
+
+#: Un SHA-256 en hexadecimal: la identidad de build de un informe tiene que ser esto y nada más.
+_SHA256_HEX = re.compile(r"[0-9a-fA-F]{64}")
 
 #: Código de salida cuando se pidió ``--exigir-compatible`` y el veredicto no lo es.
 SALIDA_NO_COMPATIBLE = 3
@@ -581,6 +585,14 @@ def diagnosticar(
     for pantalla in pantallas:
         if pantalla.tipo == AMBIGUA and pantalla.n_principales is None and not pantalla.acciones_duplicadas:
             chequeos.append(Chequeo(f"captura:{pantalla.etiqueta}", Estado.NO_OBSERVADO, pantalla.detalle))
+        elif pantalla.tipo == DIALOGO_DESCONOCIDO:
+            # Un diálogo que el contrato no reconoce y que el driver no sabría resolver: aunque estén TODOS los
+            # conocidos, no puede quedar fuera del diagnóstico ni dar «compatible» (review CodeRabbit #907).
+            chequeos.append(
+                Chequeo(
+                    f"captura:{pantalla.etiqueta}", Estado.NO_OBSERVADO, f"{pantalla.detalle}: {pantalla.instruccion!r}"
+                )
+            )
 
     if directorio_del_exe is None:
         chequeos.append(Chequeo("preset", Estado.NO_OBSERVADO, "no se indicó el directorio del ejecutable (--exe)"))
@@ -617,9 +629,14 @@ def de_json(texto: str) -> Medicion:
         if crudo["esquema"] != ESQUEMA:
             raise MedicionError(f"informe de esquema {crudo['esquema']!r}; este script entiende el {ESQUEMA}")
         m = crudo["medicion"]
+        sha = m["exe_sha256"]
+        if not isinstance(sha, str) or _SHA256_HEX.fullmatch(sha) is None:
+            # Sin una identidad de build válida, ``exigir_mismo_build`` aceptaría informes de cualquier build (todos
+            # ``None`` serían «el mismo») y un diagnóstico completo podría salir compatible sin saber de qué build es.
+            raise MedicionError(f"el informe no tiene un exe_sha256 válido (64 dígitos hexadecimales): {sha!r}")
         return Medicion(
             tool=m["tool"],
-            exe_sha256=m["exe_sha256"],
+            exe_sha256=sha.lower(),
             modo_de_juego=m["modo_de_juego"],
             etiqueta=m["etiqueta"],
             ventanas=tuple(
@@ -669,6 +686,11 @@ def _cmd_medir(args: argparse.Namespace) -> int:
     salida = pathlib.Path(args.salida) if args.salida else None
     if salida is not None:
         _salida_valida(salida, exe)
+        if not salida.parent.is_dir():
+            raise MedicionError(
+                f"la carpeta de salida {salida.parent} no existe: creala antes de medir "
+                "(si no, la medición se perdería recién al guardarla)"
+            )
     medicion = medir(
         exe=exe,
         tool=args.tool,
@@ -686,11 +708,28 @@ def _cmd_medir(args: argparse.Namespace) -> int:
     return 0
 
 
+def _directorio_del_ejecutable_medido(ruta: str, medicion: Medicion) -> pathlib.Path:
+    """La carpeta donde buscar el preset, SOLO si ``ruta`` es el ejecutable que se midió.
+
+    El preset avala al build que vive junto a él: con un ``--exe`` de otro build (o con el mismo ejecutable pisado por
+    una actualización) el chequeo del preset pasaría sobre un build que no es el medido. Se compara con el hash de la
+    MEDICIÓN y no con el del contrato de referencia: medir un build distinto del congelado es justamente el caso de uso.
+    """
+    exe = pathlib.Path(ruta)
+    sha = _sha256_del_archivo(exe)
+    if sha != medicion.exe_sha256:
+        raise MedicionError(
+            f"--exe ({exe}) no es el ejecutable medido: su sha256 es {sha[:12]}… y el informe midió "
+            f"{medicion.exe_sha256[:12]}…; el preset de un build no avala a otro"
+        )
+    return exe.parent
+
+
 def _cmd_diagnosticar(args: argparse.Namespace) -> int:
     mediciones = [de_json(pathlib.Path(ruta).read_text(encoding="utf-8")) for ruta in args.informes]
     medicion = exigir_mismo_build(mediciones)
     contrato = _contrato_de_referencia(medicion.tool, args.contra_sha)
-    directorio = pathlib.Path(args.exe).parent if args.exe else None
+    directorio = _directorio_del_ejecutable_medido(args.exe, medicion) if args.exe else None
     diagnostico = diagnosticar(mediciones, contrato, directorio_del_exe=directorio)
     print(f"build medido: {medicion.tool} sha256={medicion.exe_sha256} modo={medicion.modo_de_juego}")
     print(f"contrato de referencia: {contrato.tool} {contrato.version} sha256={contrato.exe_sha256}")
