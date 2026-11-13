@@ -405,6 +405,100 @@ async def test_la_cancelacion_del_aprobador_se_propaga_y_no_se_traga():
     servicio.execute.assert_not_awaited()
 
 
+def _registros_de_la_etapa(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelno >= logging.WARNING and getattr(r, "pipeline_stage", None) == 9]
+
+
+@pytest.mark.parametrize(
+    ("construir", "payload"),
+    [
+        pytest.param(
+            lambda s: GenerateLodsStrategy(s, aprobar_sin_etapas_previas=_Aprobador(ResultadoConfirmacion.DENEGADA)),
+            {},
+            id="asistido-denegado",
+        ),
+        pytest.param(lambda s: GenerateLodsStrategy(s), {}, id="asistido-sin-canal"),
+        pytest.param(
+            lambda s: GenerateLodsStrategy(s, aprobar_sin_etapas_previas=_Aprobador(RuntimeError("el canal explotó"))),
+            {},
+            id="asistido-canal-roto",
+        ),
+        pytest.param(lambda s: GenerateLodsStrategy(s), {"interaction_mode": "desatendido"}, id="desatendido"),
+    ],
+)
+async def test_un_intento_bloqueado_deja_un_solo_registro_de_fallo_de_la_etapa_con_tx_id(construir, payload, caplog):
+    """SOP §5 regla 5: se loguea UNA vez, donde se decide el desenlace, y con ``tx_id`` (``None``: no hay TX aún).
+
+    Un canal que explota no suma un segundo registro de la etapa: su traceback viaja en el registro del desenlace.
+    """
+    servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)
+
+    with caplog.at_level(logging.WARNING):
+        resultado = await construir(servicio).execute(payload)
+
+    assert resultado["success"] is False
+    registros = _registros_de_la_etapa(caplog)
+    assert len(registros) == 1, [r.getMessage() for r in registros]
+    assert "tx_id" in vars(registros[0]) and registros[0].tx_id is None
+
+
+async def test_el_traceback_del_canal_roto_no_se_pierde_al_loguear_una_sola_vez(caplog):
+    servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)
+    estrategia = GenerateLodsStrategy(servicio, aprobar_sin_etapas_previas=_Aprobador(RuntimeError("el canal explotó")))
+
+    with caplog.at_level(logging.WARNING):
+        await estrategia.execute({})
+
+    (registro,) = _registros_de_la_etapa(caplog)
+    assert registro.exc_info is not None and isinstance(registro.exc_info[1], RuntimeError)
+
+
+async def test_el_override_aprobado_tambien_lleva_tx_id(caplog):
+    servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)
+    estrategia = GenerateLodsStrategy(servicio, aprobar_sin_etapas_previas=_Aprobador(ResultadoConfirmacion.APROBADA))
+
+    with caplog.at_level(logging.WARNING):
+        await estrategia.execute({})
+
+    (registro,) = _registros_de_la_etapa(caplog)
+    assert "tx_id" in vars(registro) and registro.tx_id is None
+
+
+def test_todo_registro_con_etapa_de_la_strategy_lleva_tx_id():
+    """Enumera por AST cada ``logger.*`` con ``extra`` en ``generate_lods.py``: los de la etapa llevan ``tx_id``.
+
+    El ancla de ``test_dyndolod_service.py`` solo mira el servicio; este es su hermano para la strategy, y se
+    cierra por enumeración (no por muestreo): un registro nuevo con etapa y sin ``tx_id`` rompe el test. El
+    ``extra`` puede ser un literal o un nombre de módulo que apunte a un literal (``_EXTRA_DE_LA_ETAPA``).
+    """
+    archivo = RAIZ / "sky_claw" / "app" / "orchestrator" / "tool_strategies" / "generate_lods.py"
+    arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+    literales: dict[str, ast.Dict] = {
+        n.targets[0].id: n.value
+        for n in arbol.body
+        if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) and isinstance(n.value, ast.Dict)
+    }
+
+    def claves_de(valor: ast.expr) -> set[str]:
+        if isinstance(valor, ast.Name):
+            valor = literales.get(valor.id, ast.Dict(keys=[], values=[]))
+        if not isinstance(valor, ast.Dict):
+            return set()
+        return {k.value for k in valor.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+
+    con_etapa: list[int] = []
+    for nodo in ast.walk(arbol):
+        if not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Attribute)):
+            continue
+        if not (isinstance(nodo.func.value, ast.Name) and nodo.func.value.id == "logger"):
+            continue
+        for kw in nodo.keywords:
+            if kw.arg == "extra" and "pipeline_stage" in (claves := claves_de(kw.value)):
+                con_etapa.append(nodo.lineno)
+                assert "tx_id" in claves, f"generate_lods.py:{nodo.lineno}: registro con pipeline_stage sin tx_id"
+    assert con_etapa, "no se detectó ningún registro con pipeline_stage: el ancla quedaría vacía"
+
+
 async def test_el_desatendido_del_dispatcher_no_usa_el_override_del_asistido():
     """El override de la GUI es del modo ASISTIDO: el desatendido sigue cortando sin preguntar (sin canal remoto)."""
     servicio = _servicio_con_evidencia(_FALTA_UNA_ETAPA)

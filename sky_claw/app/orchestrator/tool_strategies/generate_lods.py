@@ -26,6 +26,12 @@ AprobadorDeEtapasPrevias = Callable[[tuple[str, ...]], Awaitable[ResultadoConfir
 _VALID_LOD_KEYS = {"preset", "run_texgen", "create_snapshot", "texgen_args", "dyndolod_args", "interaction_mode"}
 
 
+#: Cada registro de esta strategy es de la etapa 9 y ocurre ANTES de que el servicio abra una transacción, así que su
+#: ``tx_id`` es ``None`` (valor honesto para «sin TX», no ausencia de la clave: SOP §5 regla 5; ancla en
+#: ``tests/test_etapas_previas_lods.py::test_todo_registro_con_etapa_de_la_strategy_lleva_tx_id``).
+_EXTRA_DE_LA_ETAPA = {"pipeline_stage": 9, "tx_id": None}
+
+
 class GenerateLodsStrategy:
     name = "generate_lods"
 
@@ -71,7 +77,7 @@ class GenerateLodsStrategy:
                     + "; ".join(faltantes)
                     + ". Completalas, o corré la etapa 9 en modo asistido."
                 )
-                logger.warning("%s", mensaje, extra={"pipeline_stage": 9})
+                logger.warning("%s", mensaje, extra=_EXTRA_DE_LA_ETAPA)
                 return {
                     "success": False,
                     "message": mensaje,
@@ -91,12 +97,12 @@ class GenerateLodsStrategy:
         faltantes = await etapas_previas_faltantes(self.service.verificar_etapas_previas)
         if not faltantes:
             return None
-        decision = await self._pedir_confirmacion_sin_etapas_previas(faltantes)
+        decision, falla_del_canal = await self._pedir_confirmacion_sin_etapas_previas(faltantes)
         if decision is ResultadoConfirmacion.APROBADA:
             logger.warning(
                 "etapa 9 asistida lanzada por override del operador con etapas previas faltantes (SOP §5.2): %s",
                 "; ".join(faltantes),
-                extra={"pipeline_stage": 9},
+                extra=_EXTRA_DE_LA_ETAPA,
             )
             return None
         mensaje = (
@@ -104,7 +110,15 @@ class GenerateLodsStrategy:
             + "; ".join(faltantes)
             + ". Completalas, o confirmá en la ventana de aprobación que querés seguir igual."
         )
-        logger.warning("%s (confirmación: %s)", mensaje, decision.value, extra={"pipeline_stage": 9})
+        # SOP §5 regla 5: UN registro por intento bloqueado, acá donde se decide el desenlace. Si el canal falló,
+        # su traceback viaja en este mismo registro (``exc_info``) en vez de en uno propio de la etapa.
+        logger.warning(
+            "%s (confirmación: %s)",
+            mensaje,
+            decision.value,
+            exc_info=falla_del_canal,
+            extra=_EXTRA_DE_LA_ETAPA,
+        )
         return {
             "success": False,
             "message": mensaje,
@@ -115,22 +129,23 @@ class GenerateLodsStrategy:
             "interaction_mode": ModoDeInteraccion.ASISTIDO.value,
         }
 
-    async def _pedir_confirmacion_sin_etapas_previas(self, faltantes: tuple[str, ...]) -> ResultadoConfirmacion:
-        """Le pregunta al operador. Fail-closed: sin canal, o con un canal que explota, es «no disponible»."""
+    async def _pedir_confirmacion_sin_etapas_previas(
+        self, faltantes: tuple[str, ...]
+    ) -> tuple[ResultadoConfirmacion, Exception | None]:
+        """Le pregunta al operador. Fail-closed: sin canal, o con un canal que explota, es «no disponible».
+
+        No loguea: devuelve la falla del canal (si la hubo) para que el guard la registre junto con el desenlace,
+        en un único registro de la etapa (SOP §5 regla 5, «log once»).
+        """
         aprobar = self._aprobar_sin_etapas_previas
         if aprobar is None:
-            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE, None
         try:
-            return await aprobar(faltantes)
+            return await aprobar(faltantes), None
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 -- canal humano: cualquier falla es «no disponible», nunca «sí»
-            logger.warning(
-                "el canal de confirmación de las etapas previas falló: la etapa 9 asistida no arranca",
-                exc_info=True,
-                extra={"pipeline_stage": 9},
-            )
-            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE
+        except Exception as exc:  # noqa: BLE001 -- canal humano: cualquier falla es «no disponible», nunca «sí»
+            return ResultadoConfirmacion.CANAL_NO_DISPONIBLE, exc
 
     def _filter_payload(self, payload_dict: dict[str, Any], *, warn: bool = True) -> dict[str, Any]:
         filtered = {key: value for key, value in payload_dict.items() if key in _VALID_LOD_KEYS}
