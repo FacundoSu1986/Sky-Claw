@@ -237,3 +237,43 @@ class DynDOLODPipelineCompletedPayload(BaseModel):
     def to_log_dict(self) -> dict[str, object]:
         """Serialización compatible con el sistema de logging estructurado."""
         return self.model_dump()
+
+
+class DynDOLODPipelineProgressPayload(BaseModel):
+    """Payload inmutable para el evento ``pipeline.dyndolod.progress`` (H-11).
+
+    Publicado por :class:`DynDOLODPipelineService` en cada latido de TexGen/DynDOLOD, entre ``started`` y
+    ``completed``. La etapa 9 dura horas: sin esto no había forma de distinguir «generando» de «colgado».
+    Son HECHOS medidos, no un veredicto: el umbral de «sin actividad» lo juzga quien consume el evento.
+
+    Attributes:
+        tool_name: Fase vista desde el runner (``TexGen``/``DynDOLOD``).
+        elapsed_seconds: Segundos desde que arrancó el proceso de esa herramienta.
+        log_path: Log de la herramienta que se midió; ``None`` si todavía no existe o no se puede leer. Bajo USVFS
+            el archivo puede aparecer en otra capa y quedar siempre en ``None`` (no medido en un rig).
+        log_bytes: Tamaño actual de ese log; ``None`` si no hay log.
+        log_idle_seconds: Segundos desde la última modificación del log (nunca negativo); ``None`` si no hay log.
+            Un valor que crece mientras ``elapsed_seconds`` crece es la señal de «no escribe hace rato».
+        sampled_at: Timestamp de la muestra (epoch float, autogenerado). Permite a un consumidor saber cuán vieja
+            es la última muestra: un latido que dejó de llegar también es información.
+
+    Bases de tiempo (límite conocido): ``elapsed_seconds`` es de reloj MONOTÓNICO (inmune a ajustes del reloj del
+    sistema); ``log_idle_seconds`` y ``sampled_at`` son de reloj de PARED, porque la única fecha que el sistema de
+    archivos da del log es su ``mtime``, que es de pared, y una edad de muestra que se publica y se compara entre
+    procesos también lo es. Un salto del reloj durante la corrida (NTP, cambio manual) corre esas dos edades por el
+    tamaño del salto sin tocar a ``elapsed_seconds``. No se compara una con la otra para decidir «colgado»: el
+    criterio robusto es que ``log_bytes`` CREZCA entre muestras, que no depende de ningún reloj.
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    tool_name: str
+    elapsed_seconds: float
+    log_path: str | None = None
+    log_bytes: int | None = None
+    log_idle_seconds: float | None = None
+    sampled_at: float = Field(default_factory=time.time)
+
+    def to_log_dict(self) -> dict[str, object]:
+        """Serialización compatible con el sistema de logging estructurado."""
+        return self.model_dump()
