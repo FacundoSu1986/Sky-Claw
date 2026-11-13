@@ -625,6 +625,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GUI/LLM y sin cambios a la CLI pública del helper (contrato §11.4).
 
 ### Security
+- **OpenTelemetry sube al piso `>=1.45.2` por CVE-2026-126360 (`opentelemetry-api <=1.45.1`).** `pip-audit --strict` del job «Security Scan» detectó el aviso nuevo sobre `opentelemetry-api==1.45.1` y dejó en rojo a todos los PRs y a `main` (el lock es el mismo para todos). Se sube el piso en los tres paquetes declarados de `pyproject.toml` y se regeneran los TRES locks (`requirements.lock`, `requirements-native-parallax.lock`, `uv.lock`) con `--upgrade-package` solo sobre la familia: se mueven exactamente `opentelemetry-api`, `-sdk`, `-exporter-otlp-proto-grpc`, `-exporter-otlp-proto-common`, `-proto` (1.45.1 → 1.45.2), `-exporter-otlp-common` y `-semantic-conventions` (0.66b1 → 0.66b2), y ninguna otra dependencia. El ancla `test_opentelemetry_piso_de_seguridad_declarado_y_bloqueado` sube su piso a 1.45.2 y trata 1.45.1 como la versión vulnerable. Verificado con `pip-audit` sobre los dos `requirements*.lock`: antes, 1 vulnerabilidad (la de este aviso); después, ninguna.
 - **`multidict` 6.7.1 → 6.9.1 (CVE-2026-104874)** — aviso que
   `pip-audit --strict --skip-editable -r requirements.lock` empezó a marcar
   en el gate "Security Scan". Dependencia transitiva vía `aiohttp`/`yarl`;
