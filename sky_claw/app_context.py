@@ -65,6 +65,7 @@ from sky_claw.local.mo2.brokered_loot import (
 )
 from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker, vfs_instance_id
+from sky_claw.local.mo2.vfs_quarantine import como_liberar
 from sky_claw.local.tools.dyndolod_workspace import construir_coordinacion_de_etapa9
 from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
 
@@ -2138,6 +2139,7 @@ class AppContext:
                 proveedor_de_servicio=lambda: self.servicio_de_etapa9,
                 notificar=hitl.notify_operator,
                 aprobar_sin_etapas_previas=AprobadorDesatendidoHITL(hitl_guard=hitl).aprobar_sin_etapas_previas,
+                consultar_cuarentena=self._estado_de_cuarentena_vfs,
             )
             self.lod_jobs = lod_jobs
             self._push_startup_cleanup(lod_jobs.cerrar)
@@ -2283,6 +2285,14 @@ class AppContext:
         finally:
             if self.polling is polling:
                 self.polling = None
+
+    def _estado_de_cuarentena_vfs(self) -> dict[str, Any] | None:
+        """H-4: la cuarentena del broker VFS tal como la ve el agente en ``lods_status`` (``None`` si no hay)."""
+        broker = self.vfs_broker
+        razon = None if broker is None else broker.quarantine_reason
+        if razon is None:
+            return None
+        return {"activa": True, "razon": razon, "como_liberar": como_liberar(self.mo2_install_dir)}
 
     async def _close_vfs_broker(self, broker: VfsExecutionBroker) -> None:
         """Cierra IPC VFS y retira referencias publicadas por esta generacion."""
