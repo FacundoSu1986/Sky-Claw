@@ -20,10 +20,11 @@ import json
 import pathlib
 import time
 import types
+import typing
 
 import pytest
 
-from sky_claw.app.agent.tools.lod_tools import GestorDeTrabajosDeLods, TrabajoDeLods, lods_status
+from sky_claw.app.agent.tools.lod_tools import EstadoDeTrabajo, GestorDeTrabajosDeLods, TrabajoDeLods, lods_status
 from sky_claw.app.core.event_payloads import DynDOLODPipelineProgressPayload
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
@@ -148,6 +149,85 @@ async def test_el_handler_del_agente_serializa_el_progreso() -> None:
     respuesta = json.loads(await lods_status(gestor))
 
     assert respuesta["progreso"]["herramienta"] == "DynDOLOD"
+
+
+# ---------------------------------------------------------------------------
+# Con la cuarentena del broker (#904): dos campos aditivos de la MISMA respuesta
+# ---------------------------------------------------------------------------
+#
+# ``progreso`` (#905) cuelga de la rama «hay trabajo» y ``cuarentena_vfs`` (#904) de la respuesta entera. Cada PR por
+# separado cubría su campo; el árbol fusionado es el que tiene que cumplir las dos reglas a la vez.
+
+_CUARENTENA = {"activa": True, "razon": "terminalidad desconocida", "como_liberar": "cerrá Sky-Claw y liberala"}
+
+
+def _gestor_con_cuarentena(estado: str | None, *, servicio: object | None = None, cuarentena: object = _CUARENTENA):
+    gestor = GestorDeTrabajosDeLods(proveedor_de_servicio=lambda: servicio, consultar_cuarentena=lambda: cuarentena)  # type: ignore[arg-type,return-value]
+    if estado is not None:
+        gestor._actual = TrabajoDeLods(  # noqa: SLF001
+            id="lods-q",
+            parametros={},
+            iniciado_en=time.time() - 60,
+            estado=estado,  # type: ignore[arg-type]
+        )
+    return gestor
+
+
+def test_un_trabajo_en_curso_informa_el_progreso_y_la_cuarentena_a_la_vez() -> None:
+    gestor = _gestor_con_cuarentena("en_curso", servicio=_servicio_con(_muestra()))
+
+    estado = gestor.estado()
+
+    assert estado["progreso"]["herramienta"] == "DynDOLOD"
+    assert estado["cuarentena_vfs"] == _CUARENTENA
+
+
+@pytest.mark.parametrize("estado_del_trabajo", typing.get_args(EstadoDeTrabajo))
+def test_la_cuarentena_se_informa_en_todos_los_estados_y_el_progreso_solo_en_curso(estado_del_trabajo: str) -> None:
+    """Enumera los estados del trabajo: ninguno puede perder ``cuarentena_vfs`` ni ganar un ``progreso`` ajeno."""
+    gestor = _gestor_con_cuarentena(estado_del_trabajo, servicio=_servicio_con(_muestra()))
+
+    estado = gestor.estado()
+
+    assert estado["cuarentena_vfs"] == _CUARENTENA
+    assert ("progreso" in estado) is (estado_del_trabajo == "en_curso")
+
+
+def test_sin_ningun_trabajo_la_cuarentena_se_informa_igual() -> None:
+    estado = _gestor_con_cuarentena(None, servicio=_servicio_con(_muestra())).estado()
+
+    assert estado["estado"] == "sin_trabajos"
+    assert estado["cuarentena_vfs"] == _CUARENTENA
+    assert "progreso" not in estado
+
+
+def test_una_consulta_de_cuarentena_rota_no_apaga_el_progreso(caplog: pytest.LogCaptureFixture) -> None:
+    def rota() -> object:
+        raise RuntimeError("no se pudo leer el estado del broker")
+
+    gestor = GestorDeTrabajosDeLods(
+        proveedor_de_servicio=lambda: _servicio_con(_muestra()),
+        consultar_cuarentena=rota,  # type: ignore[arg-type]
+    )
+    gestor._actual = TrabajoDeLods(id="lods-r", parametros={}, iniciado_en=time.time(), estado="en_curso")  # noqa: SLF001
+
+    estado = gestor.estado()
+
+    assert estado["progreso"]["herramienta"] == "DynDOLOD"
+    assert "cuarentena_vfs" not in estado
+
+
+def test_un_progreso_roto_no_apaga_la_cuarentena() -> None:
+    def proveedor_roto() -> object:
+        raise RuntimeError("el servicio no está listo")
+
+    gestor = GestorDeTrabajosDeLods(proveedor_de_servicio=proveedor_roto, consultar_cuarentena=lambda: _CUARENTENA)
+    gestor._actual = TrabajoDeLods(id="lods-p", parametros={}, iniciado_en=time.time(), estado="en_curso")  # noqa: SLF001
+
+    estado = gestor.estado()
+
+    assert estado["cuarentena_vfs"] == _CUARENTENA
+    assert "progreso" not in estado
 
 
 # ---------------------------------------------------------------------------
