@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import configparser
+import contextlib
 import enum
 import hashlib
 import logging
@@ -23,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -883,6 +885,60 @@ MARCADORES_DE_COMPLETITUD: dict[str, tuple[str, ...]] = {
 #: Plazo para entregar UNA muestra de progreso al observador (H-11). Entregar es publicar un snapshot y un evento
 #: en memoria: tarda milisegundos. Si no vuelve en este plazo, se abandona esa muestra y el latido sigue.
 _PLAZO_DEL_AVISO_DE_PROGRESO_S = 5.0
+
+
+class _MedicionUnicaEnVuelo:
+    """Corre UNA medición bloqueante en un hilo daemon, con a lo sumo una en vuelo (H-11).
+
+    Al vencer el plazo de ``_reportar_progreso`` se cancela el ``await`` pero NO el hilo que ya estaba corriendo. Con
+    ``asyncio.to_thread`` un ``stat`` colgado (disco de red caído) sumaba un hilo del executor POR DEFECTO por latido (uno por
+    minuto, durante horas) y, al agotarse, todo otro ``to_thread`` de la app quedaba esperando detrás (review CodeRabbit
+    #905). Acá, mientras una medición no vuelve, las siguientes se OMITEN (``None``): lo peor que hace un ``stat`` colgado
+    es ocupar un solo hilo, y las muestras se reanudan solas cuando vuelve (la edad de la última muestra, a la vista en
+    ``lods_status``, ya cuenta que dejaron de llegar).
+
+    La bandera se limpia en el propio hilo, que SIEMPRE arranca (no hay cola): ninguna cancelación previa al arranque puede
+    dejarla pegada. Es un hilo daemon y sin pool: no hay ciclo de vida que cerrar y un ``stat`` colgado no bloquea el cierre
+    del proceso.
+    """
+
+    def __init__(self) -> None:
+        self._candado = threading.Lock()
+        self._en_vuelo = False
+
+    async def medir(self, funcion: Callable[..., Any], *args: Any) -> Any | None:
+        """Resultado de ``funcion(*args)``, o ``None`` si hay otra medición todavía en vuelo (se omite esta)."""
+        with self._candado:
+            if self._en_vuelo:
+                logger.debug("medición de progreso omitida: la anterior sigue en vuelo")
+                return None
+            self._en_vuelo = True
+        bucle = asyncio.get_running_loop()
+        futuro: asyncio.Future[Any] = bucle.create_future()
+
+        def _entregar(resultado: Any, error: BaseException | None) -> None:
+            if futuro.done():  # el await ya se canceló (venció el plazo): nadie espera este resultado
+                return
+            if error is not None:
+                futuro.set_exception(error)
+            else:
+                futuro.set_result(resultado)
+
+        def _trabajo() -> None:
+            resultado: Any = None
+            error: BaseException | None = None
+            try:
+                resultado = funcion(*args)
+            except BaseException as exc:  # noqa: BLE001 -- el hilo no propaga: se lo entrega a quien espera
+                error = exc
+            finally:
+                with self._candado:
+                    self._en_vuelo = False
+            with contextlib.suppress(RuntimeError):  # el bucle ya cerró: nadie espera el resultado
+                bucle.call_soon_threadsafe(_entregar, resultado, error)
+
+        threading.Thread(target=_trabajo, name="skyclaw-progreso", daemon=True).start()
+        return await futuro
 
 
 NO_FATALES_DEL_DOMINIO: tuple[tuple[str, ...], ...] = (
@@ -2303,6 +2359,7 @@ class DynDOLODRunner:
         # H-11: quién recibe la muestra de cada latido. ``None`` = nadie (tests, uso directo): el latido sigue
         # solo escribiendo al logger, como siempre.
         self._on_progress = on_progress
+        self._medicion_de_progreso = _MedicionUnicaEnVuelo()
         # Guard de runtime además del tipo: el runner corre con mypy exento, así
         # que un caller sin anotaciones podría pasar ``None`` — y ese ``None``
         # volvería a ser el default silencioso que este constructor eliminó. La
@@ -4902,15 +4959,19 @@ class DynDOLODRunner:
 
         El latido corre en su propia tarea y la limpieza la cancela al terminar el proceso, así que un observador
         que no vuelve no retrasa el fin de la corrida, y su entrega tiene un plazo
-        (``_PLAZO_DEL_AVISO_DE_PROGRESO_S``) para no frenar los latidos siguientes. La cancelación se propaga; cualquier otra falla (el bus
-        caído, un snapshot que no se pudo armar) se registra y el latido sigue con el próximo intervalo.
+        (``_PLAZO_DEL_AVISO_DE_PROGRESO_S``) para no frenar los latidos siguientes. La medición del log tiene a lo sumo
+        UNA en vuelo (``_MedicionUnicaEnVuelo``): un ``stat`` colgado no acumula hilos ni agota el executor por defecto. La
+        cancelación se propaga; cualquier otra falla (el bus caído, un snapshot que no se pudo armar) se registra y el
+        latido sigue con el próximo intervalo.
         """
         aviso = self._on_progress
         if aviso is None:
             return
 
         async def _medir_y_entregar() -> None:
-            progreso = await asyncio.to_thread(self._medir_progreso, tool_name, elapsed_seconds)
+            progreso = await self._medicion_de_progreso.medir(self._medir_progreso, tool_name, elapsed_seconds)
+            if progreso is None:  # la medición anterior sigue en vuelo (``stat`` colgado): esta muestra se omite
+                return
             await aviso(progreso)
 
         try:

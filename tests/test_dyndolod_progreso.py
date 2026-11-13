@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import pathlib
+import threading
 import time
 from unittest import mock
 from unittest.mock import MagicMock
@@ -237,3 +238,113 @@ async def test_la_cancelacion_externa_atraviesa_el_plazo_del_aviso(
 
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(tarea, timeout=5)
+
+
+def _hilos_del_executor_por_defecto() -> int:
+    """Tope de hilos del executor por defecto de asyncio (``min(32, cpu + 4)``): lo que un goteo de hilos colgados agota."""
+    return min(32, (os.cpu_count() or 1) + 4)
+
+
+async def test_un_stat_colgado_ocupa_un_solo_hilo_y_no_agota_el_executor_por_defecto(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review CodeRabbit #905: al vencer el plazo se cancela el ``await`` pero NO el hilo que ya estaba corriendo.
+
+    Con ``to_thread`` cada latido (uno por minuto, durante horas) sumaba un hilo al executor por defecto mientras el disco
+    siguiera colgado; al agotarse, TODO otro ``to_thread`` de la app quedaba esperando detrás. Ahora hay a lo sumo UNA
+    medición en vuelo: mientras no vuelve, las siguientes se omiten. Y ese hilo es daemon: ``tests/conftest.py`` falla la
+    sesión (código 3) con cualquier hilo no-daemon vivo al final, y un ``stat`` colgado no debe bloquear el cierre.
+    """
+    monkeypatch.setattr(ddl, "_PLAZO_DEL_AVISO_DE_PROGRESO_S", 0.01)
+    liberar = threading.Event()
+    iniciadas: list[float] = []
+
+    def colgada(tool_name: str, elapsed_seconds: float) -> ProgresoDeHerramienta:
+        iniciadas.append(elapsed_seconds)
+        liberar.wait(timeout=30)
+        return ProgresoDeHerramienta(tool_name=tool_name, elapsed_seconds=elapsed_seconds)
+
+    runner = _runner(tmp_path, on_progress=lambda _p: asyncio.sleep(0))
+    monkeypatch.setattr(runner, "_medir_progreso", colgada)
+
+    try:
+        for latido in range(_hilos_del_executor_por_defecto() + 8):  # más latidos que hilos tiene el executor
+            await runner._reportar_progreso("TexGen", float(latido))  # noqa: SLF001
+
+        assert len(iniciadas) == 1, "una medición colgada no puede lanzar otra mientras no vuelva"
+        hilos = [h for h in threading.enumerate() if h.name == "skyclaw-progreso"]
+        assert len(hilos) == 1 and hilos[0].daemon, (
+            "un solo hilo de medición y daemon (no bloquea el cierre del proceso)"
+        )
+        # El executor por defecto sigue libre para el resto de la app (persistencia de config, post-checks, etc.).
+        assert await asyncio.wait_for(asyncio.to_thread(lambda: "libre"), timeout=5) == "libre"
+    finally:
+        liberar.set()
+
+
+async def test_la_medicion_se_reanuda_cuando_el_disco_vuelve(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Degradar es omitir muestras mientras el ``stat`` no vuelve; no es apagar el progreso para el resto de la corrida."""
+    monkeypatch.setattr(ddl, "_PLAZO_DEL_AVISO_DE_PROGRESO_S", 0.05)
+    liberar = threading.Event()
+    llamadas = 0
+
+    def cuelga_la_primera_vez(tool_name: str, elapsed_seconds: float) -> ProgresoDeHerramienta:
+        nonlocal llamadas
+        llamadas += 1
+        if llamadas == 1:
+            liberar.wait(timeout=30)
+        return ProgresoDeHerramienta(tool_name=tool_name, elapsed_seconds=elapsed_seconds)
+
+    entregas: list[ProgresoDeHerramienta] = []
+
+    async def alerta(progreso: ProgresoDeHerramienta) -> None:
+        entregas.append(progreso)
+
+    runner = _runner(tmp_path, on_progress=alerta)
+    monkeypatch.setattr(runner, "_medir_progreso", cuelga_la_primera_vez)
+
+    try:
+        await runner._reportar_progreso("TexGen", 1.0)  # noqa: SLF001 -- el hilo queda colgado: no hay entrega
+        assert entregas == []
+        liberar.set()
+        for latido in range(2, 200):  # el hilo termina en milisegundos: se sondea sin depender del reloj
+            await runner._reportar_progreso("TexGen", float(latido))  # noqa: SLF001
+            if entregas:
+                break
+            await asyncio.sleep(0.02)
+    finally:
+        liberar.set()
+
+    assert entregas, "tras volver el disco las muestras vuelven a llegar"
+
+
+async def test_una_medicion_que_falla_libera_el_turno_de_la_siguiente(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """La bandera «una en vuelo» se limpia en el hilo aunque la medición lance: una falla no apaga el progreso para siempre."""
+    llamadas = 0
+
+    def falla_la_primera_vez(tool_name: str, elapsed_seconds: float) -> ProgresoDeHerramienta:
+        nonlocal llamadas
+        llamadas += 1
+        if llamadas == 1:
+            raise RuntimeError("el stat falló de una forma inesperada")
+        return ProgresoDeHerramienta(tool_name=tool_name, elapsed_seconds=elapsed_seconds)
+
+    entregas: list[ProgresoDeHerramienta] = []
+
+    async def alerta(progreso: ProgresoDeHerramienta) -> None:
+        entregas.append(progreso)
+
+    runner = _runner(tmp_path, on_progress=alerta)
+    monkeypatch.setattr(runner, "_medir_progreso", falla_la_primera_vez)
+
+    with caplog.at_level(logging.WARNING, logger=ddl.logger.name):
+        await runner._reportar_progreso("TexGen", 1.0)  # noqa: SLF001 -- la falla se registra y no se propaga
+        await runner._reportar_progreso("TexGen", 2.0)  # noqa: SLF001
+
+    assert llamadas == 2, "la segunda medición corre: la falla de la primera no dejó la bandera pegada"
+    assert [p.elapsed_seconds for p in entregas] == [2.0]
+    assert any("progreso" in r.getMessage().lower() for r in caplog.records)
