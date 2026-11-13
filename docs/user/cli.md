@@ -34,6 +34,12 @@ worker+nieto. Ambos requieren parámetros y precondiciones adicionales
 documentados en [CLI de referencia](../api/cli_ref.md) y
 [validación real](../operations/real_rig_validation.md).
 
+Si el broker perdió la certeza de que un proceso terminó, deja la instancia en
+**cuarentena** y la mantiene entre reinicios. `vfs-quarantine` muestra por qué
+(`--vfs-quarantine-action status`, el valor por defecto) y la levanta con
+`--vfs-quarantine-action release --vfs-evidence "<qué verificaste>"`, solo con
+Sky-Claw cerrado. Detalle en [CLI de referencia](../api/cli_ref.md).
+
 ## Salida y diagnóstico
 
 En el REPL (`--mode cli`), escribir `exit`, `quit` o `salir` cierra la sesión;

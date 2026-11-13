@@ -145,6 +145,8 @@ class GestorDeTrabajosDeLods:
     superficie de avisos del guard: best-effort, nunca decide el resultado.
     ``aprobar_sin_etapas_previas`` es el override humano del guard de etapas
     previas; ``None`` significa que no hay a quién preguntar y se corta.
+    ``consultar_cuarentena`` devuelve el estado de la cuarentena del broker VFS (o ``None``) para que
+    ``lods_status`` lo informe: el gestor no conoce al broker.
     """
 
     def __init__(
@@ -153,8 +155,10 @@ class GestorDeTrabajosDeLods:
         proveedor_de_servicio: Callable[[], Any | None],
         notificar: Callable[[str], Awaitable[None]] | None = None,
         aprobar_sin_etapas_previas: AprobadorDeEtapasPrevias | None = None,
+        consultar_cuarentena: Callable[[], dict[str, Any] | None] | None = None,
     ) -> None:
         self._proveedor = proveedor_de_servicio
+        self._consultar_cuarentena = consultar_cuarentena
         self._notificar = notificar
         self._aprobar_sin_etapas_previas = aprobar_sin_etapas_previas
         self._actual: TrabajoDeLods | None = None
@@ -313,8 +317,23 @@ class GestorDeTrabajosDeLods:
 
     def estado(self) -> dict[str, Any]:
         if self._actual is None:
-            return {"success": True, "message": "", "estado": "sin_trabajos"}
-        return {"success": True, "message": "", **self._actual.resumen()}
+            respuesta: dict[str, Any] = {"success": True, "message": "", "estado": "sin_trabajos"}
+        else:
+            respuesta = {"success": True, "message": "", **self._actual.resumen()}
+        # Aditivo: sin cuarentena el contrato no cambia. Best-effort: una consulta rota nunca tumba ``lods_status``.
+        cuarentena = self._cuarentena_del_vfs()
+        if cuarentena is not None:
+            respuesta["cuarentena_vfs"] = cuarentena
+        return respuesta
+
+    def _cuarentena_del_vfs(self) -> dict[str, Any] | None:
+        if self._consultar_cuarentena is None:
+            return None
+        try:
+            return self._consultar_cuarentena()
+        except Exception:  # noqa: BLE001 -- consulta best-effort
+            logger.warning("no se pudo consultar la cuarentena del broker VFS", exc_info=True)
+            return None
 
     async def cerrar(self) -> None:
         """Shutdown: cancela el trabajo vivo y espera a que el pipeline limpie."""
