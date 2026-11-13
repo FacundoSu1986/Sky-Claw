@@ -150,6 +150,50 @@ async def test_terminar_la_corrida_descarta_su_progreso() -> None:
     assert servicio.progreso_actual is None
 
 
+async def test_la_corrida_descarta_el_progreso_rancio_antes_del_preflight() -> None:
+    """Review PR-Agent #905: ``lods_status`` atribuye el snapshot al trabajo ``en_curso``.
+
+    El gestor marca ``en_curso`` y llama a ``execute`` sin ningún ``await`` en medio, pero ``_publish_started`` (que
+    también descarta el snapshot) llega recién DESPUÉS del preflight, que es un ``await``. Si una corrida anterior no
+    llegó a limpiar su rastro, durante ese preflight se vería como progreso del trabajo nuevo. ``execute`` lo descarta
+    de forma síncrona, ANTES del primer ``await``.
+    """
+    visto_en_el_preflight: list[object] = []
+
+    class _PreflightEnRojo:
+        async def run(self) -> MagicMock:
+            visto_en_el_preflight.append(servicio.progreso_actual)
+            return MagicMock(blocks_mutations=True, checks=[])
+
+    servicio = DynDOLODPipelineService(
+        lock_manager=AsyncMock(),
+        snapshot_manager=AsyncMock(),
+        journal=AsyncMock(),
+        path_resolver=MagicMock(),
+        event_bus=_bus(),
+        mo2_profile="Default",
+        preflight=_PreflightEnRojo(),  # type: ignore[arg-type]
+    )
+    await servicio._al_progresar(_muestra())  # noqa: SLF001 -- el rastro de una corrida que no se limpió
+    assert servicio.progreso_actual is not None
+
+    resultado = await servicio.execute()
+
+    assert resultado["reason"] == "PreflightBlocked"
+    assert visto_en_el_preflight == [None]
+
+
+async def test_un_preview_no_borra_el_progreso_de_una_corrida_viva(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El preview (``dry_run``) es de solo lectura: no puede dejar sin muestra a la corrida que está en curso."""
+    servicio = _servicio(_bus())
+    monkeypatch.setattr(servicio, "_preview", AsyncMock(return_value={"success": True, "message": ""}))
+    await servicio._al_progresar(_muestra())  # noqa: SLF001
+
+    await servicio.execute(dry_run=True)
+
+    assert servicio.progreso_actual is not None
+
+
 # ---------------------------------------------------------------------------
 # El cableado: sin esto nada de lo anterior llega a producción
 # ---------------------------------------------------------------------------

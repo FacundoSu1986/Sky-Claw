@@ -1479,6 +1479,13 @@ class DynDOLODPipelineService:
         workspace = self._workspace
         lease_de_workspace: OwnershipDeWorkspaceVivo | None = workspace.ownership if workspace is not None else None
 
+        # H-11: el progreso es de UNA corrida, y ``lods_status`` se lo atribuye al trabajo ``en_curso``. El gestor marca
+        # ``en_curso`` y llama a ``execute`` sin ningún ``await`` en medio, pero ``_publish_started`` (que también lo
+        # descarta) llega recién DESPUÉS del preflight, que sí es un ``await``: si una corrida anterior no llegó a limpiar
+        # su rastro, ahí se vería como progreso de esta. Se descarta ya, de forma síncrona. Va DESPUÉS del preview: un
+        # ``dry_run`` es de solo lectura y no puede dejar sin muestra a una corrida que está en curso.
+        self._progreso_actual = None
+
         # Preflight brutal ANTES de tocar nada (T-16c·3): un semáforo ROJO (p. ej.
         # el dir de salida sin permisos) cancela el run de 30+ min / GBs sin adquirir
         # el lock, abrir transacción, ni publicar el evento de inicio. Amarillo/verde

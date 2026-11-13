@@ -256,6 +256,13 @@ class DynDOLODPipelineProgressPayload(BaseModel):
             Un valor que crece mientras ``elapsed_seconds`` crece es la señal de «no escribe hace rato».
         sampled_at: Timestamp de la muestra (epoch float, autogenerado). Permite a un consumidor saber cuán vieja
             es la última muestra: un latido que dejó de llegar también es información.
+
+    Bases de tiempo (límite conocido): ``elapsed_seconds`` es de reloj MONOTÓNICO (inmune a ajustes del reloj del
+    sistema); ``log_idle_seconds`` y ``sampled_at`` son de reloj de PARED, porque la única fecha que el sistema de
+    archivos da del log es su ``mtime``, que es de pared, y una edad de muestra que se publica y se compara entre
+    procesos también lo es. Un salto del reloj durante la corrida (NTP, cambio manual) corre esas dos edades por el
+    tamaño del salto sin tocar a ``elapsed_seconds``. No se compara una con la otra para decidir «colgado»: el
+    criterio robusto es que ``log_bytes`` CREZCA entre muestras, que no depende de ningún reloj.
     """
 
     model_config = ConfigDict(frozen=True, strict=True)
