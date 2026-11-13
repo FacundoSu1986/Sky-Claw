@@ -379,6 +379,9 @@ class Config:
             "telegram_bot_token": "",
             "telegram_chat_id": "",
             "first_run": True,
+            # «Modo local» por defecto de la GUI: el operador eligió no confirmar cada
+            # ritual. Fail-closed: sólo el booleano True arma la auto-aprobación.
+            "gui_auto_approve_rituals": False,
         }
 
     def _load_from_file(self) -> None:

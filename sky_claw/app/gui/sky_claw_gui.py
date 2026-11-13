@@ -62,7 +62,9 @@ from sky_claw.app.gui.state import ReactiveStore, get_store
 from sky_claw.app.gui.task_tracking import create_tracked_task, drain_tracked_tasks
 from sky_claw.app.gui.views import render_dashboard
 from sky_claw.app.gui.views.forge_dashboard import (
+    CONFIG_KEY_MODO_LOCAL_DEFECTO,
     STORE_KEY_ENV,
+    STORE_KEY_MODO_LOCAL_DEFECTO,
     _hitl_modal_panel,
     _parallax_diagnostico_panel,
     _ritual_feedback_panel,
@@ -468,6 +470,29 @@ def _ensure_identity_loaded(config_path: Path) -> None:
     store.set(_IDENTITY_LOADED_KEY, True)
 
 
+def cargar_modo_local_defecto(config_path: Path, store: ReactiveStore, *, forzar: bool = False) -> None:
+    """Publica en el store la preferencia «Modo local por defecto» del TOML.
+
+    Una lectura por proceso (``main_page`` re-renderiza seguido y no debe releer
+    el disco cada vez); ``forzar=True`` tras guardar Ajustes. Fail-closed: si la
+    config no se puede leer, o el valor no es exactamente ``True``, queda en
+    ``False`` y los rituales siguen pidiendo confirmación.
+    """
+    if not forzar and store.get(STORE_KEY_MODO_LOCAL_DEFECTO) is not None:
+        return
+    armado = False
+    try:
+        armado = Config(config_path)._data.get(CONFIG_KEY_MODO_LOCAL_DEFECTO) is True
+    except Exception:
+        logger.exception("No se pudo leer la preferencia de Modo local desde %s; se pide confirmación", config_path)
+    store.set(STORE_KEY_MODO_LOCAL_DEFECTO, armado)
+
+
+#: Texto → booleano de la preferencia en el payload de Ajustes. Vocabulario
+#: cerrado: cualquier otro valor se rechaza antes de persistir nada.
+_MODO_LOCAL_DEFECTO_VALORES: dict[str, bool] = {"true": True, "false": False}
+
+
 def save_settings(
     config_path: Path,
     payload: dict[str, str],
@@ -493,6 +518,15 @@ def save_settings(
     error = validate_credentials(provider, api_key, telegram_token, telegram_chatid, require_api_key=False)
     if error is not None:
         return error
+
+    # Preferencia «Modo local por defecto»: ausente = no cambiar; presente = sólo
+    # "true"/"false". Se valida ANTES de tocar keyring o TOML.
+    modo_local_defecto: bool | None = None
+    if CONFIG_KEY_MODO_LOCAL_DEFECTO in payload:
+        crudo = str(payload.get(CONFIG_KEY_MODO_LOCAL_DEFECTO) or "").strip().lower()
+        if crudo not in _MODO_LOCAL_DEFECTO_VALORES:
+            return "Valor no válido para la aprobación automática de rituales"
+        modo_local_defecto = _MODO_LOCAL_DEFECTO_VALORES[crudo]
 
     # Cambiar a un provider cloud requiere su clave: la tipeada ahora o el slot
     # {provider}_api_key ya guardado. Sin esto, AppContext caería a la
@@ -548,6 +582,8 @@ def save_settings(
             cfg._data["user_display_name"] = name
         if role:
             cfg._data["user_role"] = role
+        if modo_local_defecto is not None:
+            cfg._data[CONFIG_KEY_MODO_LOCAL_DEFECTO] = modo_local_defecto
         cfg.save()
     except Exception as exc:
         logger.exception("Error guardando configuración de Ajustes")
@@ -581,11 +617,12 @@ def _build_settings_data(config_path: Path) -> dict[str, Any]:
     import keyring
 
     app_state = get_app_state_instance()
-    provider, chat_id = "deepseek", ""
+    provider, chat_id, modo_local_defecto = "deepseek", "", False
     try:
         cfg = Config(config_path)
         provider = str(cfg._data.get("llm_provider") or "deepseek")
         chat_id = str(cfg._data.get("telegram_chat_id") or "")
+        modo_local_defecto = cfg._data.get(CONFIG_KEY_MODO_LOCAL_DEFECTO) is True
     except Exception:
         logger.exception("No se pudo leer la config para Ajustes; se muestran defaults")
 
@@ -606,6 +643,7 @@ def _build_settings_data(config_path: Path) -> dict[str, Any]:
         "identity": {"name": app_state.user_display_name, "role": app_state.user_role},
         "provider": provider,
         "telegram_chat_id": chat_id,
+        "modo_local_defecto": modo_local_defecto,
         "key_status": key_status,
     }
 
@@ -976,6 +1014,8 @@ def main_page() -> None:
         if error is not None:
             ui.notify(error, type="negative")
             return
+        # Antes del refresh: el toggle del header se re-renderiza leyendo el store.
+        cargar_modo_local_defecto(runtime.config_path, get_store(), forzar=True)
         main_page.refresh()
 
         # Hot-reload del proveedor LLM: si el daemon ya tiene router vivo, se
@@ -1004,6 +1044,7 @@ def main_page() -> None:
     # A3: identidad del header data-driven desde el estado, sembrado desde el
     # TOML la primera vez (editable en Ajustes).
     _ensure_identity_loaded(runtime.config_path)
+    cargar_modo_local_defecto(runtime.config_path, get_store())
     app_state = get_app_state_instance()
     identity = {"name": app_state.user_display_name, "role": app_state.user_role}
 

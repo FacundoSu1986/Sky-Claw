@@ -81,6 +81,11 @@ STORE_KEY_GPU = "sys_gpu"
 STORE_KEY_RAM = "sys_ram"
 # EnvironmentSnapshot produced by EnvironmentScanner.scan() at startup.
 STORE_KEY_ENV = "environment_snapshot"
+# Preferencia persistida «Modo local por defecto» (Ajustes → ``config.toml``).
+# La publica ``sky_claw_gui.cargar_modo_local_defecto`` y su ÚNICO lector de
+# decisión es ``modo_local_enabled`` (ancla AST en test_modo_local_persistente.py).
+CONFIG_KEY_MODO_LOCAL_DEFECTO = "gui_auto_approve_rituals"
+STORE_KEY_MODO_LOCAL_DEFECTO = "modo_local_defecto"
 
 # Heartbeat (seconds) for the component-level live refresh of the Vitalidad bars
 # and the header HUD. A ``ui.timer`` re-renders ONLY those two containers at this
@@ -395,8 +400,15 @@ def render_forge_dashboard(
         # dispara el refresh. Re-renderizar al conectar recupera el modal en vez
         # de dejar la aprobación huérfana hasta su timeout.
         _refrescar_hitl_al_conectar()
-        _ritual_feedback_panel()
-        _ritual_preflight_panel()
+        # Pila de avisos: un solo ancla fija y los paneles apilados en flujo. Con
+        # dos ``position:fixed`` a offsets fijos (22px / 96px) un toast de varias
+        # líneas quedaba debajo del semáforo de preflight.
+        with ui.element("div").style(
+            "position:fixed; right:22px; bottom:22px; z-index:1000; width:min(520px, calc(100vw - 44px));"
+            "display:flex; flex-direction:column; align-items:stretch; pointer-events:none;"
+        ):
+            _ritual_preflight_panel()
+            _ritual_feedback_panel()
         _parallax_diagnostico_panel()
         _sidebar(active, conflicts, pending, active_section, callbacks, connected)
         with ui.element("div").style(
@@ -617,9 +629,23 @@ def modo_local_enabled() -> bool:
     context — e.g. unit tests or a background task (Codex review on #211).
     """
     try:
-        return bool(app.storage.client.get(CLIENT_KEY_AUTO_APPROVE, False))
+        sesion = app.storage.client.get(CLIENT_KEY_AUTO_APPROVE)
     except Exception:
         return False
+    return resolver_modo_local(sesion, get_store().get(STORE_KEY_MODO_LOCAL_DEFECTO))
+
+
+def resolver_modo_local(sesion: object, defecto: object) -> bool:
+    """Seam puro: la elección explícita de la sesión gana; si no hay, la preferencia persistida.
+
+    ``sesion`` es lo que el toggle (F8) escribió en ESTA conexión, o ``None`` si
+    el operador no lo tocó. ``defecto`` es la preferencia de Ajustes. Sólo el
+    booleano ``True`` arma la auto-aprobación: cualquier otro valor —ausente,
+    string, número— deja el gate pidiendo confirmación (fail-closed).
+    """
+    if sesion is not None:
+        return sesion is True
+    return defecto is True
 
 
 def tab_id_de(client: object) -> str | None:
@@ -791,7 +817,7 @@ def _hitl_modal_panel() -> None:
             "<span style=\"font-family:'Cinzel',serif; font-weight:700; font-size:15px; letter-spacing:.1em; color:#f1e6cf;\">APROBACIÓN REQUERIDA</span></div>"
             f"<div style=\"font-family:'EB Garamond',serif; font-size:14px; line-height:1.5; color:#d8cfba; margin-bottom:8px;\">{_e(reason)}</div>"
             f"{detail_html}"
-            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#857c69; margin-bottom:14px;\">Tip: activá «Modo local» (F8) para no aprobar cada acción mientras estés en la PC.</div>"
+            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#857c69; margin-bottom:14px;\">Tip: activá «Modo local» (F8) para no aprobar cada acción mientras estés en la PC; para dejarlo fijo, Ajustes → Aprobaciones.</div>"
         )
         with ui.element("div").style("display:flex; gap:11px; justify-content:flex-end;"):
             deny = ui.element("button").classes("sc-btn sc-btn--danger").style("padding:9px 18px;")
@@ -821,7 +847,7 @@ def _ritual_feedback_panel() -> None:
     kind = str(fb.get("type", "info"))
     accent = {"positive": GREEN, "negative": RED, "warning": "#e0b341"}.get(kind, ACCENT)
     wrap = (
-        "position:fixed; right:22px; bottom:22px; z-index:1000; max-width:420px; display:flex; align-items:flex-start; gap:10px;"
+        "margin-top:10px; pointer-events:auto; display:flex; align-items:flex-start; gap:10px;"
         "padding:13px 15px; border-radius:5px; color:#e8e2d4;"
         f"background:linear-gradient(168deg, rgba(30,22,14,.97), rgba(14,10,7,.98)); border:1px solid {accent};"
         "box-shadow:0 18px 40px -18px rgba(0,0,0,.85);"
@@ -829,7 +855,7 @@ def _ritual_feedback_panel() -> None:
     with ui.element("div").style(wrap):
         ui.html(
             f'<span style="width:8px; height:8px; margin-top:5px; flex-shrink:0; border-radius:50%; background:{accent}; box-shadow:0 0 7px {accent};"></span>'
-            f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:13px; line-height:1.4;\">{_e(text)}</span>"
+            f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:14px; line-height:1.5;\">{_e(text)}</span>"
         ).style(_FRAGMENTO)
         # F-001: la acción de Resume se deriva del dict ESTRUCTURAL del último
         # resultado — el panel no parsea el message ni decide por strings.
@@ -903,10 +929,7 @@ def _ritual_preflight_panel() -> None:
     report = get_store().get(STORE_KEY_RITUAL_PREFLIGHT)
     if not report:
         return
-    wrap = (
-        "position:fixed; right:22px; bottom:96px; z-index:1000; max-width:420px;"
-        "display:flex; align-items:flex-start; gap:8px;"
-    )
+    wrap = "margin-top:10px; pointer-events:auto; display:flex; align-items:flex-start; gap:8px;"
     with ui.element("div").style(wrap):
         with ui.element("div").style("flex:1; min-width:0;"):
             create_preflight_panel(report)
@@ -1122,8 +1145,8 @@ def _filigrana_esquina(pos: str, espejo: str) -> str:
 
 def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
     sec = (
-        "position:relative; overflow:hidden; border-radius:5px; min-height:354px; display:flex; align-items:flex-end;"
-        "padding:38px 40px; margin-bottom:26px; border:1px solid rgba(200,168,106,.3);"
+        "position:relative; overflow:hidden; border-radius:5px; min-height:236px; display:flex; align-items:flex-end;"
+        "padding:26px 36px; margin-bottom:22px; border:1px solid rgba(200,168,106,.3);"
         "box-shadow:0 26px 60px -24px rgba(0,0,0,.85), inset 0 0 90px rgba(0,0,0,.45);"
     )
     with ui.element("section").style(sec):
@@ -1146,11 +1169,11 @@ def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
         )
         with ui.element("div").style("position:relative; z-index:2; max-width:680px;"):
             ui.html(
-                '<div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">'
+                '<div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">'
                 '<span style="height:1px; width:34px; background:linear-gradient(90deg,transparent,#c8a86a);"></span>'
                 '<span style="font-family:\'Noto Sans Runic\',serif; font-size:14px; letter-spacing:.42em; color:#ecd9a8; opacity:.85; text-shadow:0 0 12px rgba(200,168,106,.45);" aria-hidden="true">ᛞᚱᚪᚷᚩᚾᛒᚩᚱᚾ</span></div>'
-                '<div style="filter:drop-shadow(0 3px 14px rgba(0,0,0,.7));"><h1 style="margin:0; font-family:\'Cinzel\',serif; font-weight:900; font-size:52px; line-height:1.0; letter-spacing:.03em; background:linear-gradient(178deg,#f7ecce 8%,#e3c98f 48%,#a47f48 100%); -webkit-background-clip:text; background-clip:text; color:transparent;">SALVE,<br>DOVAHKIIN</h1></div>'
-                f'<p style="margin:16px 0 26px; max-width:520px; font-family:\'EB Garamond\',serif; font-size:17px; line-height:1.55; color:#d8cfba;">Tu forja está despierta. <span style="color:#ecd9a8; font-weight:600;">{_e(active)} mods</span> montan guardia sobre Tamriel y el orden de carga aguarda tu palabra.</p>'
+                '<div style="filter:drop-shadow(0 3px 14px rgba(0,0,0,.7));"><h1 style="margin:0; font-family:\'Cinzel\',serif; font-weight:900; font-size:clamp(28px,3.1vw,40px); line-height:1.05; letter-spacing:.03em; background:linear-gradient(178deg,#f7ecce 8%,#e3c98f 48%,#a47f48 100%); -webkit-background-clip:text; background-clip:text; color:transparent;">SALVE, DOVAHKIIN</h1></div>'
+                f'<p style="margin:10px 0 18px; max-width:560px; font-family:\'EB Garamond\',serif; font-size:15.5px; line-height:1.5; color:#d8cfba;">Tu forja está despierta. <span style="color:#ecd9a8; font-weight:600;">{_e(active)} mods</span> montan guardia sobre Tamriel y el orden de carga aguarda tu palabra.</p>'
             )
             with ui.element("div").style("display:flex; flex-wrap:wrap; align-items:center; gap:18px;"):
                 ui.html(_integridad_html(conflicts)).style(_FRAGMENTO)
@@ -1313,7 +1336,7 @@ def _ritual_card(
             f"<div style=\"margin-top:3px; font-family:'Cinzel',serif; font-weight:600; font-size:14.5px; letter-spacing:.03em; color:#ecdfc2; line-height:1.2;\">{_e(r['label'])}</div>"
             f"<div style=\"flex:1; font-family:'EB Garamond',serif; font-size:13px; line-height:1.42; color:#9b927e;\">{_e(r['desc'])}</div>"
             f'<div style="display:flex; align-items:center; gap:7px; padding-top:2px;"><span style="width:7px; height:7px; border-radius:50%; background:{status_dot}; box-shadow:0 0 6px {status_dot};"></span>'
-            f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:12px; color:{status_color};\">{status_label}</span></div>"
+            f"<span style=\"flex:1; font-family:'Spline Sans Mono',monospace; font-size:11px; letter-spacing:.02em; color:{status_color};\">{status_label}</span></div>"
         ).style(_FRAGMENTO)
         b = ui.element("button").style(
             f"margin-top:2px; padding:8px 10px; cursor:pointer; font-family:'Cinzel',serif; font-size:11.5px; font-weight:600;"
@@ -1449,7 +1472,7 @@ def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks
             ui.element("div")
             .classes("sc-scroll")
             .style(
-                "position:relative; flex:1; min-height:212px; max-height:300px; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:13px;"
+                "position:relative; flex:1; min-height:212px; max-height:420px; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:13px;"
             )
         ):
             if not chat_messages:
@@ -1799,7 +1822,7 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
 
     panel = (
         "display:flex; flex-direction:column; gap:14px; padding:20px 22px; margin-bottom:18px; border-radius:5px;"
-        "background:rgba(62,39,35,.3); border:1px solid rgba(200,168,106,.25);"
+        "max-width:760px; background:rgba(62,39,35,.3); border:1px solid rgba(200,168,106,.25);"
     )
 
     def _text_field(key: str, label: str, value: str = "", hint: str = "", password: bool = False) -> None:
@@ -1860,12 +1883,31 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
             hint="Vaciar para quitar el destino de notificaciones",
         )
 
+    # ── Aprobaciones (preferencia persistida de «Modo local») ──
+    with ui.element("section").style(panel):
+        ui.html(f'<span style="{_LBL}">APROBACIONES</span>')
+        aprobaciones_toggle = (
+            ui.toggle(
+                {False: "Confirmar cada ritual", True: "Aprobar rituales automáticamente"},
+                value=settings.get("modo_local_defecto") is True,
+            )
+            .classes("sc-toggle")
+            .props("unelevated toggle-color=sc-tema toggle-text-color=sc-tema")
+            .style("align-self:flex-start;")
+        )
+        ui.html(
+            f'<span style="{_HINT}">Arranca cada sesión de esta PC en «Modo local» (F8 lo alterna al vuelo). '
+            "Siempre piden confirmación: descargas de red, promoción de un sandbox y la configuración "
+            "de TexGen/DynDOLOD. No afecta a Telegram ni al agente.</span>"
+        )
+
     # ── Guardar ──
     if on_save is not None:
 
         def _collect_and_save(_: Any = None) -> None:
             payload = {key: str(inp.value or "") for key, inp in inputs.items()}
             payload["llm_provider"] = str(provider_toggle.value or "")
+            payload[CONFIG_KEY_MODO_LOCAL_DEFECTO] = "true" if aprobaciones_toggle.value is True else "false"
             on_save(payload)
 
         btn = (
