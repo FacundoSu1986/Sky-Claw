@@ -323,3 +323,63 @@ def test_el_armado_de_descargas_del_gui_sale_de_su_unico_seam() -> None:
         if kw.arg == "auto_approve_downloads"
     ]
     assert fuentes == ["descargas_auto_enabled()"], fuentes
+
+
+async def test_una_descarga_ajena_no_se_auto_aprueba_mientras_la_gui_esta_armada(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """De punta a punta por el puente REAL: mismo ``notify``, mismos getters que cablea el bootloader.
+
+    Mientras ``run_ritual_install`` corre con la preferencia de descargas armada,
+    una solicitud ``download`` que llega desde OTRA task (el agente LLM o Telegram
+    usando el mismo ``HITLGuard``) se parkea para confirmación manual; la del
+    propio instalador se auto-aprueba. Es la composición de las dos mitades que
+    los tests de arriba verifican por separado.
+    """
+    monkeypatch.setenv("LOOT_EXE", "")
+    aprobadas: list[str] = []
+    parkeadas: list[str] = []
+
+    async def _responder(request_id: str, aprobado: bool) -> None:
+        aprobadas.append(request_id)
+
+    from sky_claw.app.gui.controllers.ritual_runner import (
+        ritual_auto_approve_armed,
+        ritual_tab_id,
+    )
+
+    notify = make_gui_hitl_notify(
+        respond=_responder,
+        set_pending=lambda payload: parkeadas.append(str(payload["request_id"])),
+        auto_approve_getter=ritual_auto_approve_armed,
+        tab_id_getter=ritual_tab_id,
+        auto_approve_downloads_getter=ritual_auto_approve_descargas_armed,
+        delegate=None,
+    )
+
+    def _descarga(request_id: str) -> SimpleNamespace:
+        return SimpleNamespace(request_id=request_id, category="download", reason="", detail="", url="https://x/y")
+
+    instalador_armado = asyncio.Event()
+    ajena_termino = asyncio.Event()
+
+    async def _ensure_loot(install_dir: object, session: object) -> object:
+        instalador_armado.set()
+        await ajena_termino.wait()
+        await notify(_descarga("del-instalador"))
+        return SimpleNamespace(exe_path="C:/Modding/LOOT/loot.exe", verification=None)
+
+    async def _agente() -> None:
+        await instalador_armado.wait()
+        await notify(_descarga("del-agente"))
+        ajena_termino.set()
+
+    contexto = SimpleNamespace(
+        tools_installer=SimpleNamespace(ensure_loot=_ensure_loot), install_dir="C:/Modding", session="sess"
+    )
+    agente = asyncio.create_task(_agente())
+    await run_ritual_install("loot", app_context=contexto, store=ReactiveStore(), auto_approve_downloads=True)
+    await agente
+
+    assert parkeadas == ["del-agente"], "la descarga del agente tiene que pedir confirmación"
+    assert aprobadas == ["del-instalador"], "sólo la del instalador de la GUI se auto-aprueba"
