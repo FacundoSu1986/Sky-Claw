@@ -392,6 +392,18 @@ def _truncate_approval_detail(detail: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _duplicate_execution_result(tool_name: str) -> dict[str, Any]:
+    """Resultado canónico de un duplicado rechazado (pre-check y acquire fallido)."""
+    return {
+        "status": "error",
+        "reason": "DuplicateExecution",
+        "details": (
+            f"Tool '{tool_name}' is already executing with the same "
+            f"arguments. Wait for the current execution to finish."
+        ),
+    }
+
+
 class IdempotencyMiddleware:
     """Rejects duplicate concurrent executions of the same tool+payload.
 
@@ -418,17 +430,16 @@ class IdempotencyMiddleware:
         # This avoids creating a PENDING task that can't transition to FAILED.
         key = self._sm.guard.make_key(strategy.name, payload_dict)
         if self._sm.guard.is_active(key):
-            return {
-                "status": "error",
-                "reason": "DuplicateExecution",
-                "details": (
-                    f"Tool '{strategy.name}' is already executing with the same "
-                    f"arguments. Wait for the current execution to finish."
-                ),
-            }
+            return _duplicate_execution_result(strategy.name)
 
         task = self._sm.create_task(strategy.name, payload_dict)
-        self._sm.acquire_idempotency(task.task_id)
+        # #575 §1: el pre-check de arriba no es atómico con este acquire (hoy no hay
+        # ``await`` entre ambos, pero una reentrancia, un hilo o un ``await`` futuro
+        # abren la ventana). Si la key ya tiene otro dueño, NO se ejecuta el tool: y la
+        # task PENDING se descarta porque ``PENDING → FAILED`` no es transición válida.
+        if not self._sm.acquire_idempotency(task.task_id):
+            self._sm.discard_pending(task.task_id)
+            return _duplicate_execution_result(strategy.name)
         self._sm.transition(task.task_id, "RUNNING")
         try:
             result = await next_call()
