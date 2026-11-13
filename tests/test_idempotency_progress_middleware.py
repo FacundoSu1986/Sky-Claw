@@ -244,6 +244,110 @@ class TestIdempotencyMiddleware:
         assert tasks[0].state == "FAILED"
         assert tasks[0].error_message == "Invalid result type: list"
 
+    # -- #575 ítem 1: el resultado de ``acquire_idempotency()`` se comprueba --------------------------
+    #
+    # Hoy ``is_active`` y ``acquire`` no tienen un ``await`` en medio, así que el pre-check atrapa al
+    # duplicado y el ``acquire`` nunca falla. La defensa tiene que valer igual si una modificación futura
+    # (reentrancia, threads, un ``await``) deja rancio al pre-check: se simula con un ``is_active`` que
+    # miente. El ``acquire`` de la guard es la fuente de verdad.
+
+    @pytest.mark.asyncio
+    async def test_acquire_rechazado_no_llega_a_la_cadena_ni_deja_task_huerfano(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: la key ya la tiene OTRA ejecución y el pre-check no la ve
+        sm = ToolStateMachine()
+        mw = IdempotencyMiddleware(state_machine=sm)
+        strategy = _make_strategy("generate_lods")
+        payload = {"profile": "Default"}
+        clave = sm.guard.make_key("generate_lods", payload)
+        assert sm.guard.acquire(clave, "task_ajena") is True
+        monkeypatch.setattr(sm.guard, "is_active", lambda _clave: False)
+        llamadas = 0
+
+        async def cadena_interna() -> dict[str, Any]:
+            nonlocal llamadas
+            llamadas += 1
+            return {"status": "success"}
+
+        # Act
+        resultado = await mw(strategy, payload, cadena_interna)
+
+        # Assert
+        assert resultado["status"] == "error"
+        assert resultado["reason"] == "DuplicateExecution"
+        assert llamadas == 0, "la cadena interna corrió aunque el acquire fue rechazado"
+        assert sm.active_task_count == 0, "quedó un TaskRecord activo (huérfano)"
+        # Rechazar no libera el lock: sigue siendo de su dueño.
+        assert sm.guard.acquire(clave, "task_intrusa") is False
+
+    @pytest.mark.asyncio
+    async def test_dos_ejecuciones_concurrentes_con_precheck_rancio_solo_una_llega_a_la_cadena(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: mismo tool+payload, pre-check rancio para las dos
+        sm = ToolStateMachine()
+        mw = IdempotencyMiddleware(state_machine=sm)
+        strategy = _make_strategy("generate_lods")
+        payload = {"profile": "Default"}
+        monkeypatch.setattr(sm.guard, "is_active", lambda _clave: False)
+        dentro = asyncio.Event()
+        liberar = asyncio.Event()
+        llegadas = 0
+
+        async def cadena_interna() -> dict[str, Any]:
+            nonlocal llegadas
+            llegadas += 1
+            if llegadas == 1:
+                dentro.set()
+                await liberar.wait()
+            return {"status": "success"}
+
+        async def segunda_ejecucion() -> dict[str, Any]:
+            await dentro.wait()  # la primera ya adquirió la key y está dentro de la cadena
+            try:
+                return await mw(strategy, payload, cadena_interna)
+            finally:
+                liberar.set()
+
+        # Act
+        primera, segunda = await asyncio.wait_for(
+            asyncio.gather(mw(strategy, payload, cadena_interna), segunda_ejecucion()),
+            timeout=5,
+        )
+
+        # Assert
+        assert llegadas == 1, "las dos ejecuciones llegaron a la cadena interna"
+        assert primera == {"status": "success"}
+        assert segunda["status"] == "error"
+        assert segunda["reason"] == "DuplicateExecution"
+        assert sm.active_task_count == 0
+
+    @pytest.mark.asyncio
+    async def test_los_dos_caminos_de_rechazo_devuelven_el_mismo_contrato(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hermano en el mismo archivo: el rechazo del pre-check y el del ``acquire`` no pueden divergir."""
+        # Arrange
+        payload = {"x": 1}
+        strategy = _make_strategy("list_mods")
+        next_call = await _make_next_call({"status": "success"})
+
+        sm_precheck = ToolStateMachine()
+        sm_precheck.guard.acquire(sm_precheck.guard.make_key("list_mods", payload), "task_ajena")
+
+        sm_acquire = ToolStateMachine()
+        sm_acquire.guard.acquire(sm_acquire.guard.make_key("list_mods", payload), "task_ajena")
+        monkeypatch.setattr(sm_acquire.guard, "is_active", lambda _clave: False)
+
+        # Act
+        por_precheck = await IdempotencyMiddleware(state_machine=sm_precheck)(strategy, payload, next_call)
+        por_acquire = await IdempotencyMiddleware(state_machine=sm_acquire)(strategy, payload, next_call)
+
+        # Assert
+        assert por_precheck["reason"] == "DuplicateExecution"
+        assert por_acquire == por_precheck
+
 
 # ------------------------------------------------------------------
 # ProgressMiddleware

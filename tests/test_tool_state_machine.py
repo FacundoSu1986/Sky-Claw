@@ -295,6 +295,69 @@ class TestIdempotencyIntegration:
 
 
 # ------------------------------------------------------------------
+# ToolStateMachine — discard_pending (#575 ítem 1)
+# ------------------------------------------------------------------
+
+
+class TestDiscardPending:
+    """``discard_pending`` descarta un task que nunca llegó a ejecutar.
+
+    Existe porque ``PENDING → FAILED`` es una transición inválida a propósito
+    (``test_pending_to_failed``): un ``acquire_idempotency`` rechazado dejaba el
+    ``TaskRecord`` PENDING colgado para siempre, y ``cleanup_terminal`` solo barre terminales.
+    """
+
+    def test_descarta_un_task_pendiente(self) -> None:
+        sm = ToolStateMachine()
+        task = sm.create_task("tool", {"x": 1})
+
+        sm.discard_pending(task.task_id)
+
+        assert sm.get_task(task.task_id) is None
+        assert sm.active_task_count == 0
+
+    def test_no_libera_el_lock_de_otro_owner(self) -> None:
+        sm = ToolStateMachine()
+        dueno = sm.create_task("tool", {"x": 1})
+        assert sm.acquire_idempotency(dueno.task_id) is True
+        intruso = sm.create_task("tool", {"x": 1})
+        assert sm.acquire_idempotency(intruso.task_id) is False
+
+        sm.discard_pending(intruso.task_id)
+
+        assert sm.guard.is_active(dueno.idempotency_key) is True
+        assert sm.get_task(dueno.task_id) is not None
+
+    @pytest.mark.parametrize("estado", ["RUNNING", "COMPLETED", "FAILED", "AWAITING_OPERATOR"])
+    def test_rechaza_un_task_que_ya_no_esta_pendiente(self, estado: str) -> None:
+        sm = ToolStateMachine()
+        task = sm.create_task("tool", {})
+        sm.transition(task.task_id, "RUNNING")
+        if estado != "RUNNING":
+            sm.transition(task.task_id, estado)
+
+        with pytest.raises(InvalidTransitionError, match="PENDING"):
+            sm.discard_pending(task.task_id)
+
+        assert sm.get_task(task.task_id) is not None
+
+    def test_rechaza_un_task_esperando_aprobacion(self) -> None:
+        sm = ToolStateMachine()
+        task = sm.create_task("tool", {}, initial_state="AWAITING_APPROVAL")
+
+        with pytest.raises(InvalidTransitionError, match="PENDING"):
+            sm.discard_pending(task.task_id)
+
+        assert sm.get_task(task.task_id) is not None
+
+    def test_task_inexistente_lanza_keyerror(self) -> None:
+        sm = ToolStateMachine()
+
+        with pytest.raises(KeyError, match="Task not found"):
+            sm.discard_pending("ghost_task")
+
+
+# ------------------------------------------------------------------
 # ToolStateMachine — Task management
 # ------------------------------------------------------------------
 

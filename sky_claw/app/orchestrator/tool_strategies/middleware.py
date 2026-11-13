@@ -392,6 +392,22 @@ def _truncate_approval_detail(detail: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _duplicate_execution_result(tool_name: str) -> dict[str, Any]:
+    """Resultado de rechazo por ejecución duplicada.
+
+    Lo comparten el pre-check y el ``acquire`` fallido de ``IdempotencyMiddleware``: son dos caminos
+    al mismo rechazo y no pueden devolver contratos distintos.
+    """
+    return {
+        "status": "error",
+        "reason": "DuplicateExecution",
+        "details": (
+            f"Tool '{tool_name}' is already executing with the same "
+            f"arguments. Wait for the current execution to finish."
+        ),
+    }
+
+
 class IdempotencyMiddleware:
     """Rejects duplicate concurrent executions of the same tool+payload.
 
@@ -418,17 +434,18 @@ class IdempotencyMiddleware:
         # This avoids creating a PENDING task that can't transition to FAILED.
         key = self._sm.guard.make_key(strategy.name, payload_dict)
         if self._sm.guard.is_active(key):
-            return {
-                "status": "error",
-                "reason": "DuplicateExecution",
-                "details": (
-                    f"Tool '{strategy.name}' is already executing with the same "
-                    f"arguments. Wait for the current execution to finish."
-                ),
-            }
+            return _duplicate_execution_result(strategy.name)
 
         task = self._sm.create_task(strategy.name, payload_dict)
-        self._sm.acquire_idempotency(task.task_id)
+        # #575 ítem 1: el ``acquire`` de la guard es la fuente de verdad; el pre-check de arriba solo
+        # evita crear el record en el caso normal. Hoy no hay ``await`` entre los dos, pero si una
+        # modificación futura (reentrancia, threads) los separa, ignorar el ``False`` dejaría correr un
+        # duplicado de una operación mutante. Anclado por ``test_idempotency_acquire_anclas.py``.
+        if not self._sm.acquire_idempotency(task.task_id):
+            # PENDING no puede pasar a FAILED: se descarta para no dejar un TaskRecord huérfano. La
+            # guard no se libera: ese lock es de la otra ejecución.
+            self._sm.discard_pending(task.task_id)
+            return _duplicate_execution_result(strategy.name)
         self._sm.transition(task.task_id, "RUNNING")
         try:
             result = await next_call()

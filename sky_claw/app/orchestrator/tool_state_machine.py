@@ -384,6 +384,31 @@ class ToolStateMachine:
             raise KeyError(f"Task not found: {task_id}")
         return self._guard.acquire(task.idempotency_key, task_id)
 
+    def discard_pending(self, task_id: str) -> None:
+        """Descarta un task PENDING que nunca llegó a ejecutar (#575 ítem 1).
+
+        ``PENDING → FAILED`` es una transición inválida a propósito, así que un task cuyo
+        ``acquire_idempotency`` fue rechazado no tiene cómo terminar: quedaría PENDING para siempre
+        (``active_task_count`` lo contaría y ``cleanup_terminal`` solo barre terminales). No ejecutó
+        nada, así que no hay resultado que registrar: se descarta.
+
+        No toca la guard. El ``acquire`` falló, de modo que el lock es de OTRA ejecución y liberarlo
+        habilitaría un duplicado.
+
+        Raises:
+            KeyError: si ``task_id`` no existe.
+            InvalidTransitionError: si el task no está en PENDING (ya empezó, terminó o espera
+                aprobación).
+        """
+        current = self._tasks.get(task_id)
+        if current is None:
+            raise KeyError(f"Task not found: {task_id}")
+        if current.state != "PENDING":
+            raise InvalidTransitionError(
+                f"Only a PENDING task can be discarded, got {current.state} (task={task_id}, tool={current.tool_name})"
+            )
+        del self._tasks[task_id]
+
     def cleanup_terminal(self, max_age_seconds: float = 3600.0) -> int:
         """Remove terminal (completed/failed/awaiting-operator) tasks older than max_age_seconds.
 
