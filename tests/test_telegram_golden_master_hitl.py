@@ -550,7 +550,7 @@ class TestSeguridadIdentidadReplayYSesion:
         def _decidir_lento(self, *, solicitud, decision, identidad):
             invocaciones["conteo"] += 1
             barrera_entrada.set()
-            assert liberar_worker.wait(timeout=5.0)
+            assert liberar_worker.wait(timeout=15.0)
             return original(self, solicitud=solicitud, decision=decision, identidad=identidad)
 
         monkeypatch.setattr(SesionTransicionGoldenMaster, "decidir_y_emitir", _decidir_lento)
@@ -563,7 +563,7 @@ class TestSeguridadIdentidadReplayYSesion:
 
             # Primer clic entra al worker y queda bloqueado antes de terminar
             await polling._process_raw_update(_update_callback(201, cb_approve, message_id=msg_id))
-            await asyncio.to_thread(barrera_entrada.wait, 5.0)
+            assert await asyncio.to_thread(barrera_entrada.wait, 15.0)
 
             # Segundo clic (doble clic con update_id nuevo) + /gm_preparar concurrente deben rechazarse al instante
             await polling._process_raw_update(_update_callback(202, cb_approve, message_id=msg_id))
@@ -645,7 +645,7 @@ class TestConcurrenciaCancelacionYDesconexion:
         def _preparar_lento(self, *, identidad, entregar, transition_id=None):
             adentro.set()
             try:
-                assert soltar.wait(timeout=5.0)
+                assert soltar.wait(timeout=15.0)
                 return original_preparar(self, identidad=identidad, entregar=entregar, transition_id=transition_id)
             finally:
                 salio.set()
@@ -654,7 +654,7 @@ class TestConcurrenciaCancelacionYDesconexion:
         coord, _webhook, _polling, _sender, _router = _construir_entorno(rig)
         try:
             tarea = asyncio.create_task(coord.procesar_actualizacion(_update_texto(400, "/gm_preparar")))
-            await asyncio.to_thread(adentro.wait, 5.0)
+            assert await asyncio.to_thread(adentro.wait, 15.0)
 
             # Verificar que el event loop NO está bloqueado mientras el worker corre
             latidos = 0
@@ -719,17 +719,22 @@ class TestConcurrenciaCancelacionYDesconexion:
         envio_iniciado = asyncio.Event()
 
         async def _send_eterno(chat_id: int, text: str, reply_markup: dict | None = None, **_kw: object):
+            assert reply_markup is not None, f"se esperaba entrega de presentación interactiva, no {text!r}"
             envio_iniciado.set()
             await asyncio.Future()
 
         sender.send = AsyncMock(side_effect=_send_eterno)
         coord, _webhook, polling, _sender, _router = _construir_entorno(rig, sender=sender)
-        await polling._process_raw_update(_update_texto(440, "/gm_preparar"))
-        await asyncio.wait_for(envio_iniciado.wait(), timeout=3.0)
+        try:
+            await polling._process_raw_update(_update_texto(440, "/gm_preparar"))
+            # RigStockManual + hashing + preflight pueden exceder 3s bajo carga Windows/CI antes de enviar
+            await asyncio.wait_for(envio_iniciado.wait(), timeout=15.0)
 
-        # cerrar() cancela la entrega en vuelo y termina rápido sin deadlock
-        await asyncio.wait_for(coord.cerrar(), timeout=3.0)
-        assert coord.tiene_solicitud_abierta is False
+            # cerrar() cancela la entrega en vuelo y termina rápido sin deadlock ni esperar delivery_timeout (20s)
+            await asyncio.wait_for(coord.cerrar(), timeout=3.0)
+            assert coord.tiene_solicitud_abierta is False
+        finally:
+            await coord.cerrar()
 
     @pytest.mark.asyncio
     async def test_desconexion_post_decision_en_envio_final_libera_single_flight(

@@ -390,10 +390,15 @@ El subsistema transaccional distingue cuatro cuadrantes operativos rigurosos par
    - **Nota P7-A5 PR 3 / PR 4 (cableado y transporte Telegram, emisión cerrada):**
      - **PR 3 + #909 + #914 (consumidor autorizado):** desde 2026-11-11 existe
        `sky_claw/local/frozen_runtime/autorizacion_hitl_transicion.py`
-       (`HITL_PRODUCTIVE = WIRED_BUT_GATED`), ampliado con #909 (`mo2auth` +
-       digest de `config.toml`) y #914 (`a076ec2ce5f5b437fac76e0879d42cb3bcf5a242`:
-       evidencia de config, diagnóstico y `abandonar_transicion_consumida`
-       pre-PENDING).
+       (`HITL_PRODUCTIVE = WIRED_BUT_GATED`), ampliado con **#909**
+       (`2146a27f82de1651cd431d0508ac818502d54a2c`: evidencia de config con
+       `config_path`/`skyrim_path` obligatorio, diagnóstico y
+       `abandonar_transicion_consumida` pre-PENDING en
+       `transition_abandonment.py`) y **#914**
+       (`a076ec2ce5f5b437fac76e0879d42cb3bcf5a242`: vínculo criptográfico
+       `mo2auth=<sha256>` en `mo2_authorization.py` que liga instancia,
+       identidad, bytes completos de `modorganizer.ini`, política y runtime
+       saliente en `ejecutar()` y `reanudar()`).
      - **PR 4 (adaptador de transporte Telegram):**
        `sky_claw/app/comms/golden_master_hitl.py` cablea el protocolo sobre
        `TelegramWebhook`, `TelegramPolling`, `TelegramSender` y
