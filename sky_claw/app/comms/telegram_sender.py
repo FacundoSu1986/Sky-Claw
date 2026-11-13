@@ -308,6 +308,27 @@ class TelegramSendError(Exception):
     """Raised when a Telegram sendMessage call fails."""
 
 
+class TelegramEntidadesError(TelegramSendError):
+    """HTTP 400 «can't parse entities»: el texto trae marcado que Telegram no admite.
+
+    Subclase de :class:`TelegramSendError`: quien no la distinga sigue viendo un
+    fallo duro. ``send`` la usa para reintentar UNA vez como texto plano (#918): el
+    modelo abre a veces con ``<thought>`` y un log de herramienta trae ``<Error: …>``;
+    ambos rompen el modo HTML, y perder la respuesta entera es peor que mostrarla sin
+    formato.
+    """
+
+
+def _es_error_de_entidades(cuerpo: str) -> bool:
+    """¿El cuerpo de un 400 es el rechazo de Telegram por entidades/etiquetas inválidas?"""
+    try:
+        datos = json.loads(cuerpo)
+    except ValueError:
+        return False
+    descripcion = datos.get("description") if isinstance(datos, dict) else None
+    return isinstance(descripcion, str) and "can't parse entities" in descripcion.lower()
+
+
 class TelegramRateLimitError(TelegramSendError):
     """Flood-control de Telegram (HTTP 429) que no se pudo absorber con reintentos.
 
@@ -519,18 +540,48 @@ class TelegramSender:
         presupuesto_cooldown: float | None = _MAX_COOLDOWN_TOTAL_TEXTO_SEGUNDOS,
         on_cooldown_sleep: Callable[[float], None] | None = None,
     ) -> TelegramMessage:
-        """Send a single message chunk via the Telegram API."""
+        """Send a single message chunk via the Telegram API.
+
+        Si Telegram rechaza el marcado (400 «can't parse entities»), reintenta UNA vez
+        el mismo texto sin ``parse_mode`` (#918). El reintento conserva chat, texto y
+        ``reply_markup``, comparte el presupuesto de cooldown del intento original y
+        no encadena más: un segundo fallo se propaga tal cual.
+        """
         payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode or "HTML"}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
 
-        return await self._enviar(
-            "sendMessage",
-            chat_id,
-            lambda: {"json": payload},
-            presupuesto_cooldown=presupuesto_cooldown,
-            on_cooldown_sleep=on_cooldown_sleep,
-        )
+        dormido_total = 0.0
+
+        def _acumular_cooldown(dormido: float) -> None:
+            nonlocal dormido_total
+            dormido_total += dormido
+            if on_cooldown_sleep is not None:
+                on_cooldown_sleep(dormido)
+
+        try:
+            return await self._enviar(
+                "sendMessage",
+                chat_id,
+                lambda: {"json": payload},
+                presupuesto_cooldown=presupuesto_cooldown,
+                on_cooldown_sleep=_acumular_cooldown,
+            )
+        except TelegramEntidadesError:
+            logger.warning(
+                "Telegram sendMessage: 400 por entidades en chat %d; reintento como texto plano sin formato",
+                chat_id,
+            )
+            payload_plano = {clave: valor for clave, valor in payload.items() if clave != "parse_mode"}
+            return await self._enviar(
+                "sendMessage",
+                chat_id,
+                lambda: {"json": payload_plano},
+                presupuesto_cooldown=(
+                    max(0.0, presupuesto_cooldown - dormido_total) if presupuesto_cooldown is not None else None
+                ),
+                on_cooldown_sleep=on_cooldown_sleep,
+            )
 
     async def send_document(
         self,
@@ -740,6 +791,8 @@ class TelegramSender:
         """Valida una respuesta no limitada y registra el envío en el rate limit local."""
         if resp.status != 200:
             body = await resp.text()
+            if resp.status == 400 and _es_error_de_entidades(body):
+                raise TelegramEntidadesError(f"Telegram API returned {resp.status}: {body}")
             raise TelegramSendError(f"Telegram API returned {resp.status}: {body}")
 
         try:
