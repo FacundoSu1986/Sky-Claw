@@ -20,6 +20,7 @@ import pathlib
 from typing import Any
 
 import keyring
+import keyring.errors
 
 from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.config import SystemPaths
@@ -83,12 +84,36 @@ def _safe_keyring_get(name: str) -> str | None:
     ``keyring.get_password`` raises. Returning None lets the tool reach its
     graceful "key not configured" JSON instead of surfacing an internal failure
     to the router (Codex P2). Mirrors the fallible keyring handling in config.py.
+
+    #575 §2: el llamador sigue viendo ``None`` en todos los casos, pero el log ya
+    distingue «no configurado» de «el backend falló»:
+
+    - secreto inexistente (el backend devuelve ``None``): sin warning.
+    - ``NoKeyringError``: WARNING «no hay backend».
+    - ``KeyringError`` / ``OSError``: WARNING con el nombre de la clase.
+    - cualquier otra excepción: ERROR. Se sigue degradando a ``None`` porque el backend
+      de Windows relanza ``pywintypes.error`` sin envolver (no es ``OSError`` ni
+      ``KeyringError``) y propagarlo regresaría el «error interno» al router, pero ya
+      no se confunde con un secreto ausente.
+
+    Los logs llevan SOLO el nombre de la clase: ni el mensaje ni el traceback de la
+    excepción, porque el de un backend puede arrastrar datos sensibles.
     """
     try:
         return keyring.get_password("sky_claw", name)
-    except Exception:  # noqa: BLE001 — any keyring/backend error means "unset"
-        logger.warning("keyring read failed for %r; treating as unset", name)
-        return None
+    except keyring.errors.NoKeyringError:
+        logger.warning("keyring: no hay backend disponible; %r se trata como no configurado", name)
+    except (keyring.errors.KeyringError, OSError) as exc:
+        logger.warning(
+            "keyring: el backend falló (%s) al leer %r; se trata como no configurado", type(exc).__name__, name
+        )
+    except Exception as exc:  # noqa: BLE001 — último recurso, distinguible por nivel ERROR (ver docstring)
+        logger.error(
+            "keyring: error inesperado del backend (%s) al leer %r; se trata como no configurado",
+            type(exc).__name__,
+            name,
+        )
+    return None
 
 
 class AsyncToolRegistry:
