@@ -294,8 +294,16 @@ async def test_el_dispatcher_lanza_la_corrida_desatendida_con_las_etapas_complet
 
 
 _FALTA_UNA_ETAPA = EvidenciaDeEtapasPrevias(faltantes=("etapa 6: falta",))
-_PAYLOADS_ASISTIDOS = [{"preset": "Medium"}, {"preset": "Medium", "interaction_mode": "asistido"}]
-_IDS_ASISTIDOS = ["sin_modo", "asistido_explicito"]
+#: «Continuar DynDOLOD» (``run_texgen=False``) entra por el MISMO dispatcher y la MISMA strategy que la corrida
+#: completa: el guard no mira ``run_texgen``. Va en la enumeración (no en un caso aparte) para que cada contrato
+#: de abajo —denegado, sin canal, aprobado, etapas completas— valga también para el resume.
+_PAYLOADS_ASISTIDOS = [
+    {"preset": "Medium"},
+    {"preset": "Medium", "interaction_mode": "asistido"},
+    {"run_texgen": False},
+    {"preset": "Medium", "run_texgen": False, "interaction_mode": "asistido"},
+]
+_IDS_ASISTIDOS = ["sin_modo", "asistido_explicito", "continuar_sin_modo", "continuar_asistido_explicito"]
 
 
 class _Aprobador:
