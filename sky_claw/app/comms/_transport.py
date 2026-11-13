@@ -23,15 +23,19 @@ assert_safe_ws_url(url, *, allow_plaintext_loopback=True)
     Validate a WebSocket URL and return it unchanged.
 authenticated_connect(url, *, auth_token, token_dir, require_auth, ...)
     Validate URL, attach bearer token, return a ``websockets.connect`` context.
+enviar_si_conectado(ws, raw)
+    Send on a client socket tolerating a missing or already-closed connection.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import logging
 from typing import Any
 from urllib.parse import urlparse
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 
 from sky_claw.app.security.auth_token_manager import AuthTokenManager
 
@@ -41,7 +45,10 @@ __all__ = [
     "InsecureTransportError",
     "assert_safe_ws_url",
     "authenticated_connect",
+    "enviar_si_conectado",
 ]
+
+logger = logging.getLogger(__name__)
 
 #: Cap for a single inbound WS frame (DoS hardening). The websockets library
 #: default is an implicit 1 MiB; tool reports (conflictos, dry-run diffs) can
@@ -229,3 +236,26 @@ def authenticated_connect(
         additional_headers=headers or None,
         **connect_kwargs,
     )
+
+
+async def enviar_si_conectado(ws: Any, raw: str) -> bool:
+    """Envía *raw* por *ws* tolerando un socket ausente o ya cerrado.
+
+    ``websockets`` 16 (el pin de ``requirements.lock``) ya no expone ``.open``
+    en ``ClientConnection``: la liveness no se consulta, se intenta ``send()``
+    y se atiende ``ConnectionClosed``. Es la única pieza que conoce ese
+    contrato; los clientes WS la usan en vez de sondear el socket (un sondeo
+    previo además dejaría una ventana entre el chequeo y el envío).
+
+    Devuelve ``True`` si el frame se envió y ``False`` si no había socket o
+    estaba cerrado. Otros errores de transporte se propagan al llamador.
+    """
+    if ws is None:
+        logger.debug("Sin socket WS: mensaje descartado")
+        return False
+    try:
+        await ws.send(raw)
+    except ConnectionClosed:
+        logger.debug("Socket WS cerrado al enviar: mensaje descartado")
+        return False
+    return True

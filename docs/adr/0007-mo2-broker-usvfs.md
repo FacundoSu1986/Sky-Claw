@@ -193,6 +193,12 @@ nunca `<MO2>/overwrite` como path.
 - Operaciones worker `health` y `loot_sort`.
 - Modos de operador `install-vfs-bridge` y `vfs-health` sin arrancar el daemon
   completo.
+- Modo de operador `vfs-quarantine` (`status` / `release`), también sin arrancar
+  el daemon: lee la cuarentena persistida y la libera con evidencia explicita y
+  solo si no hay un dueño vivo del lock. Cubre las tres formas persistidas
+  (marcador, lock envenenado y lock huerfano) porque borrar solo el marcador no
+  alcanza: el proximo arranque reclamaria el lock y volveria a aislar la
+  instancia. `lods_status` del agente expone `cuarentena_vfs` cuando existe.
 - LOOT es el primer ritual productivo migrado en sus dos entry points: agente
   lock-only y Supervisor GUI con preview pre-HITL.
 - El guard evita que esos paths reconstruyan un `LOOTRunner` standalone.

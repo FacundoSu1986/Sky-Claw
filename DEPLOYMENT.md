@@ -80,6 +80,12 @@ Smoke obligatorio en la instalacion real (primero un perfil descartable):
 6. Inyectar un fallo despues de escritura y comparar byte a byte el target
    restaurado.
 
+Si una corrida deja la instancia en cuarentena (el broker perdio la certeza de que
+el job termino), no se borran dotfiles a mano: con Sky-Claw cerrado y comprobado en
+el Administrador de tareas que no queda ningun proceso del job, correr
+`python -m sky_claw --mode vfs-quarantine --mo2-root "D:\MO2Portable"` para ver el
+motivo y luego `--vfs-quarantine-action release --vfs-evidence "<que verificaste>"`.
+
 Este smoke no se sustituye por pytest/PyInstaller: depende de la version real
 de MO2 y USVFS. La decision completa esta en
 [`docs/adr/0007-mo2-broker-usvfs.md`](docs/adr/0007-mo2-broker-usvfs.md).
