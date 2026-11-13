@@ -245,6 +245,101 @@ class TestIdempotencyMiddleware:
         assert tasks[0].error_message == "Invalid result type: list"
 
 
+class _MaquinaConRival(ToolStateMachine):
+    """Simula la ventana ``is_active`` → ``acquire_idempotency`` (#575 §1).
+
+    Hoy no hay ningún ``await`` entre el pre-check y el acquire, así que esa ventana no
+    se abre en el flujo asyncio actual. Esta subclase la fuerza de forma determinista:
+    justo después de crear la task, un rival toma la key (lo que haría una reentrancia,
+    un hilo o un ``await`` agregado a esa secuencia en el futuro).
+    """
+
+    def create_task(
+        self,
+        tool_name: str,
+        payload: dict[str, Any],
+        *,
+        initial_state: str = "PENDING",
+    ) -> Any:
+        record = super().create_task(tool_name, payload, initial_state=initial_state)
+        self.guard.acquire(record.idempotency_key, "rival")
+        return record
+
+
+class TestIdempotencyAcquireRechazado:
+    """#575 §1: el ``bool`` de ``acquire_idempotency()`` no puede ignorarse."""
+
+    @pytest.mark.asyncio
+    async def test_acquire_rechazado_no_ejecuta_el_inner_chain(self) -> None:
+        # Arrange
+        sm = _MaquinaConRival()
+        mw = IdempotencyMiddleware(state_machine=sm)
+        inner = AsyncMock(return_value={"status": "success"})
+
+        # Act
+        result = await mw(_make_strategy("list_mods"), {"x": 1}, inner)
+
+        # Assert: duplicado rechazado con el mismo contrato que el pre-check
+        assert result["status"] == "error"
+        assert result["reason"] == "DuplicateExecution"
+        inner.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_acquire_rechazado_no_deja_task_huerfana(self) -> None:
+        # Arrange
+        sm = _MaquinaConRival()
+        mw = IdempotencyMiddleware(state_machine=sm)
+
+        # Act
+        await mw(_make_strategy("list_mods"), {"x": 1}, AsyncMock(return_value={"status": "success"}))
+
+        # Assert: ninguna task queda PENDING/activa ni registrada
+        assert sm.active_task_count == 0
+        assert sm._tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_acquire_rechazado_conserva_el_lock_del_rival(self) -> None:
+        # Arrange
+        sm = _MaquinaConRival()
+        mw = IdempotencyMiddleware(state_machine=sm)
+        key = sm.guard.make_key("list_mods", {"x": 1})
+
+        # Act
+        await mw(_make_strategy("list_mods"), {"x": 1}, AsyncMock(return_value={"status": "success"}))
+
+        # Assert: el rechazado no libera la key que pertenece a otro dueño
+        assert sm.guard.is_active(key)
+
+    @pytest.mark.asyncio
+    async def test_dos_ejecuciones_concurrentes_solo_una_llega_al_inner_chain(self) -> None:
+        # Arrange
+        sm = ToolStateMachine()
+        mw = IdempotencyMiddleware(state_machine=sm)
+        strategy = _make_strategy("list_mods")
+        payload = {"x": 1}
+        llamadas = 0
+        liberar = asyncio.Event()
+
+        async def inner() -> dict[str, Any]:
+            nonlocal llamadas
+            llamadas += 1
+            await liberar.wait()
+            return {"status": "success"}
+
+        # Act
+        primera = asyncio.create_task(mw(strategy, payload, inner))
+        await asyncio.sleep(0)  # la primera toma la key y queda en RUNNING
+        segunda = await mw(strategy, payload, inner)
+        liberar.set()
+        resultado_primera = await primera
+
+        # Assert
+        assert llamadas == 1
+        assert resultado_primera == {"status": "success"}
+        assert segunda["reason"] == "DuplicateExecution"
+        assert sm.active_task_count == 0
+
+
 # ------------------------------------------------------------------
 # ProgressMiddleware
 # ------------------------------------------------------------------
