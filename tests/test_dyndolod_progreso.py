@@ -20,6 +20,7 @@ import os
 import pathlib
 import threading
 import time
+from collections.abc import Callable
 from unittest import mock
 from unittest.mock import MagicMock
 
@@ -240,6 +241,14 @@ async def test_la_cancelacion_externa_atraviesa_el_plazo_del_aviso(
         await asyncio.wait_for(tarea, timeout=5)
 
 
+async def _esperar(condicion: Callable[[], bool], *, plazo_s: float = 5.0) -> None:
+    """Espera una condición con cota y SIN hilos (no usa el executor): para señales de otro hilo."""
+    limite = time.monotonic() + plazo_s
+    while not condicion():
+        assert time.monotonic() < limite, "la condición no se cumplió dentro de la cota"
+        await asyncio.sleep(0.005)
+
+
 def _hilos_del_executor_por_defecto() -> int:
     """Tope de hilos del executor por defecto de asyncio (``min(32, cpu + 4)``): lo que un goteo de hilos colgados agota."""
     return min(32, (os.cpu_count() or 1) + 4)
@@ -257,10 +266,12 @@ async def test_un_stat_colgado_ocupa_un_solo_hilo_y_no_agota_el_executor_por_def
     """
     monkeypatch.setattr(ddl, "_PLAZO_DEL_AVISO_DE_PROGRESO_S", 0.01)
     liberar = threading.Event()
+    arranco = threading.Event()
     iniciadas: list[float] = []
 
     def colgada(tool_name: str, elapsed_seconds: float) -> ProgresoDeHerramienta:
         iniciadas.append(elapsed_seconds)
+        arranco.set()
         liberar.wait(timeout=30)
         return ProgresoDeHerramienta(tool_name=tool_name, elapsed_seconds=elapsed_seconds)
 
@@ -271,6 +282,9 @@ async def test_un_stat_colgado_ocupa_un_solo_hilo_y_no_agota_el_executor_por_def
         for latido in range(_hilos_del_executor_por_defecto() + 8):  # más latidos que hilos tiene el executor
             await runner._reportar_progreso("TexGen", float(latido))  # noqa: SLF001
 
+        # El tiempo no prueba que el hilo ya corre (con 10 ms de plazo puede no haber entrado a ``colgada`` todavía, y
+        # el conteo daría 0 aunque la exclusión sea correcta): se espera la señal de arranque, con cota.
+        await _esperar(arranco.is_set)
         assert len(iniciadas) == 1, "una medición colgada no puede lanzar otra mientras no vuelva"
         hilos = [h for h in threading.enumerate() if h.name == "skyclaw-progreso"]
         assert len(hilos) == 1 and hilos[0].daemon, (
@@ -346,5 +360,40 @@ async def test_una_medicion_que_falla_libera_el_turno_de_la_siguiente(
         await runner._reportar_progreso("TexGen", 2.0)  # noqa: SLF001
 
     assert llamadas == 2, "la segunda medición corre: la falla de la primera no dejó la bandera pegada"
+    assert [p.elapsed_seconds for p in entregas] == [2.0]
+    assert any("progreso" in r.getMessage().lower() for r in caplog.records)
+
+
+async def test_si_el_hilo_no_arranca_la_bandera_no_queda_pegada(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review CodeRabbit #905: ``Thread.start()`` puede fallar (sin recursos) y entonces NO hay hilo que limpie la bandera.
+
+    Sin liberarla ahí, todas las mediciones siguientes se omitirían para siempre, aunque los recursos se recuperen.
+    """
+    real_start = threading.Thread.start
+    intentos = 0
+
+    def start_que_falla_la_primera_vez(self: threading.Thread) -> None:
+        nonlocal intentos
+        if self.name == "skyclaw-progreso":
+            intentos += 1
+            if intentos == 1:
+                raise RuntimeError("can't start new thread")
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start_que_falla_la_primera_vez)
+    entregas: list[ProgresoDeHerramienta] = []
+
+    async def alerta(progreso: ProgresoDeHerramienta) -> None:
+        entregas.append(progreso)
+
+    runner = _runner(tmp_path, on_progress=alerta)
+
+    with caplog.at_level(logging.WARNING, logger=ddl.logger.name):
+        await runner._reportar_progreso("TexGen", 1.0)  # noqa: SLF001 -- la falla se registra y no se propaga
+        await runner._reportar_progreso("TexGen", 2.0)  # noqa: SLF001
+
+    assert intentos == 2, "el segundo latido sí intenta medir: la bandera no quedó pegada"
     assert [p.elapsed_seconds for p in entregas] == [2.0]
     assert any("progreso" in r.getMessage().lower() for r in caplog.records)

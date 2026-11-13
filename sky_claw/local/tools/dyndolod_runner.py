@@ -937,7 +937,14 @@ class _MedicionUnicaEnVuelo:
             with contextlib.suppress(RuntimeError):  # el bucle ya cerró: nadie espera el resultado
                 bucle.call_soon_threadsafe(_entregar, resultado, error)
 
-        threading.Thread(target=_trabajo, name="skyclaw-progreso", daemon=True).start()
+        try:
+            threading.Thread(target=_trabajo, name="skyclaw-progreso", daemon=True).start()
+        except BaseException:
+            # El hilo no llegó a existir (p. ej. «can't start new thread» sin recursos): nadie va a limpiar la bandera y
+            # las mediciones siguientes se omitirían para siempre, aunque los recursos se recuperen (review CodeRabbit #905).
+            with self._candado:
+                self._en_vuelo = False
+            raise
         return await futuro
 
 
