@@ -1096,6 +1096,8 @@ def main_page() -> None:
         resolved_conflicts=get_store().get("resolved_conflicts_list") or [],
         settings=_build_settings_data(runtime.config_path) if active_section == "Settings" else None,
         downloads=downloads,
+        # El perfil sobre el que operan los rituales de ESTA sesión (no el del escaneo).
+        perfil_mo2=getattr(runtime.app_context, "mo2_profile", None),
     )
 
 

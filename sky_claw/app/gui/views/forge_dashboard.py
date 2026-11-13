@@ -362,6 +362,7 @@ def render_forge_dashboard(
     settings: dict[str, Any] | None = None,
     downloads: dict[str, Any] | None = None,
     resolved_conflicts: list[dict[str, Any]] | None = None,
+    perfil_mo2: str | None = None,
 ) -> None:
     """Render the full Forge shell (sidebar + header + scroll content).
 
@@ -422,7 +423,7 @@ def render_forge_dashboard(
             _ritual_preflight_panel()
             _ritual_feedback_panel()
         _parallax_diagnostico_panel()
-        _sidebar(active, conflicts, pending, active_section, callbacks, connected)
+        _sidebar(active, conflicts, pending, active_section, callbacks, connected, perfil_mo2)
         with ui.element("div").style(
             "position:relative; z-index:2; flex:1; min-width:0; min-height:0; display:flex; flex-direction:column;"
         ):
@@ -464,7 +465,13 @@ def _safe(stats: dict[str, Any], key: str) -> float:
 
 # ── SIDEBAR ────────────────────────────────────────────────────────────────────
 def _sidebar(
-    active: int, conflicts: int, pending: int, section: str, callbacks: dict[str, Callable], connected: bool
+    active: int,
+    conflicts: int,
+    pending: int,
+    section: str,
+    callbacks: dict[str, Callable],
+    connected: bool,
+    perfil_mo2: str | None = None,
 ) -> None:
     aside = (
         "position:relative; z-index:3; width:266px; flex-shrink:0; display:flex; flex-direction:column;"
@@ -507,6 +514,9 @@ def _sidebar(
             "<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#8a927f; margin-top:1px;\">ws://localhost:8765</div>"
             "</div></div>"
         )
+        perfil_html = _perfil_mo2_html(perfil_mo2)
+        if perfil_html:
+            ui.html(perfil_html)
         ui.html(
             '<div style="display:flex; align-items:center; justify-content:center; gap:.7em; margin:14px 18px 6px; color:#c8a86a; opacity:.85;'
             ' font-family:\'Noto Sans Runic\',serif; font-size:13px; letter-spacing:.5em; text-shadow:0 0 10px rgba(200,168,106,.45);" aria-hidden="true">ᚠ&nbsp;ᚱ&nbsp;ᚷ</div>'
@@ -521,6 +531,25 @@ def _sidebar(
                 _nav_item(item, item["key"] == section, counts.get(item["key"]), on_nav)
         # Vitality
         _vitals()
+
+
+def _perfil_mo2_html(perfil: str | None) -> str:
+    """Seam puro: el perfil de MO2 sobre el que opera ESTA sesión, o ``""`` si no se conoce.
+
+    Es el perfil de la sesión (``AppContext.mo2_profile``, el que usan los
+    rituales), no el del escaneo de arranque. Sin dato no se dibuja nada: un
+    «Default» inventado le nombraría al operador un perfil que quizá no es.
+    """
+    nombre = str(perfil or "").strip()
+    if not nombre:
+        return ""
+    return (
+        '<div style="margin:8px 18px 0; padding:8px 12px; display:flex; align-items:baseline; gap:9px;'
+        ' background:rgba(0,0,0,.28); border:1px solid rgba(200,168,106,.18); border-radius:4px;">'
+        "<span style=\"flex-shrink:0; font-family:'Spline Sans Mono',monospace; font-size:9.5px; letter-spacing:.14em; color:#8a7f6a;\">PERFIL MO2</span>"
+        f"<span style=\"flex:1; min-width:0; font-family:'Spline Sans Mono',monospace; font-size:11.5px; color:#e6dcc4;"
+        f' overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{_e(nombre)}">{_e(nombre)}</span></div>'
+    )
 
 
 def _nav_item(item: dict[str, str], is_active: bool, count: int | None, on_nav: Callable | None) -> None:
@@ -812,6 +841,50 @@ def _refrescar_hitl_al_conectar() -> None:
         ui.context.client.on_connect(_refrescar_al_conectar)
 
 
+def _es_descarga(pending: dict[str, Any]) -> bool:
+    """Una solicitud es egress de red por categoría o —envelope legacy sin categoría— por traer URL."""
+    return str(pending.get("category", "")) == "download" or bool(pending.get("url"))
+
+
+def _hitl_solicitud_html(pending: dict[str, Any]) -> str:
+    """Seam puro: el cuerpo de UNA solicitud HITL, igual en toda superficie que la muestre.
+
+    Lo consumen el modal global y la Puerta de Descargas (ancla que enumera los
+    llamadores en test_pantallas_forge.py): antes cada uno armaba su HTML y el
+    modal no mostraba el origen de la descarga.
+
+    * Banda + rótulo de categoría: una descarga es salida a internet (frost); el
+      resto, una acción sobre la instalación (ámbar). El rótulo es la señal y el
+      color sólo lo acompaña. La banda es ``position:absolute``: el contenedor
+      que la reciba tiene que ser ``position:relative``.
+    * Motivo en prosa y, aparte, lo técnico (detalle y URL) en una caja mono que
+      se escanea de un vistazo. Todo escapado: son textos que eligió un tercero.
+    """
+    reason = str(pending.get("reason", "") or "Esta acción requiere tu aprobación.")
+    banda, rotulo = (FROST, "DESCARGA DE RED") if _es_descarga(pending) else ("#e0a13c", "ACCIÓN SOBRE TU INSTALACIÓN")
+    lineas_tecnicas = "".join(
+        f'<div style="color:{color};">{_e(texto)}</div>'
+        for texto, color in (
+            (str(pending.get("detail", "") or ""), "#b8b1a0"),
+            (str(pending.get("url", "") or ""), FROST),
+        )
+        if texto
+    )
+    caja_tecnica = (
+        "<div style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; line-height:1.55; margin-bottom:16px;"
+        " padding:9px 11px; border-radius:4px; background:rgba(0,0,0,.34); border:1px solid rgba(200,168,106,.16);"
+        f' word-break:break-word;">{lineas_tecnicas}</div>'
+        if lineas_tecnicas
+        else '<div style="margin-bottom:16px;"></div>'
+    )
+    return (
+        f'<div style="position:absolute; left:0; right:0; top:0; height:3px; background:{banda};"></div>'
+        f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; letter-spacing:.14em; color:{banda}; margin-bottom:8px;\">{rotulo}</div>"
+        f"<div style=\"font-family:'EB Garamond',serif; font-size:14px; line-height:1.5; color:#d8cfba; margin-bottom:8px;\">{_e(reason)}</div>"
+        f"{caja_tecnica}"
+    )
+
+
 @ui.refreshable
 def _hitl_modal_panel() -> None:
     """Overlay asking the operator to approve/deny a destructive Ritual.
@@ -827,18 +900,10 @@ def _hitl_modal_panel() -> None:
     if not _hitl_modal_visible(pending, str(get_store().get("active_section") or "")):
         return
     request_id = str(pending.get("request_id", ""))
-    reason = str(pending.get("reason", "") or "Esta acción requiere tu aprobación.")
-    detail = str(pending.get("detail", "") or "")
-    # La categoría matiza el modal: una descarga es salida a internet (frost) y
-    # muestra su origen; el resto es una acción sobre el juego (ámbar). La
-    # etiqueta de texto es la señal; el color sólo la acompaña.
-    es_descarga = str(pending.get("category", "")) == "download" or bool(pending.get("url"))
-    banda, rotulo = (FROST, "DESCARGA DE RED") if es_descarga else ("#e0a13c", "ACCIÓN SOBRE TU INSTALACIÓN")
-    url = str(pending.get("url", "") or "")
     # El tip tiene que ser cierto para ESTA solicitud: «Modo local» no aprueba descargas.
     tip = (
         "Tip: para no confirmar las descargas que iniciás vos con «Instalar», Ajustes → Aprobaciones."
-        if es_descarga
+        if _es_descarga(pending)
         else "Tip: activá «Modo local» (F8) para no aprobar cada acción mientras estés en la PC; "
         "para dejarlo fijo, Ajustes → Aprobaciones."
     )
@@ -851,29 +916,12 @@ def _hitl_modal_panel() -> None:
         "background:linear-gradient(168deg, rgba(26,32,40,.98), rgba(11,14,19,.99)); border:1px solid rgba(200,168,106,.4);"
         "box-shadow:0 30px 70px -20px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.05);"
     )
-    # Lo técnico (qué tool, sobre qué, desde dónde) va en una caja mono aparte del
-    # motivo: se escanea de un vistazo y no compite con la prosa.
-    lineas_tecnicas = "".join(
-        f'<div style="color:{color};">{_e(texto)}</div>'
-        for texto, color in ((detail, "#b8b1a0"), (url, FROST))
-        if texto
-    )
-    detail_html = (
-        "<div style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; line-height:1.55; margin-bottom:16px;"
-        " padding:9px 11px; border-radius:4px; background:rgba(0,0,0,.34); border:1px solid rgba(200,168,106,.16);"
-        f' word-break:break-word;">{lineas_tecnicas}</div>'
-        if lineas_tecnicas
-        else '<div style="margin-bottom:16px;"></div>'
-    )
     with ui.element("div").style(overlay), ui.element("div").style(card):
         ui.html(
-            f'<div style="position:absolute; left:0; right:0; top:0; height:3px; background:{banda};"></div>'
-            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; letter-spacing:.14em; color:{banda}; margin-bottom:8px;\">{rotulo}</div>"
             '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">'
             f'<span style="color:#ecd9a8; display:inline-flex;" aria-hidden="true">{_ICON_SHIELD_CHECK}</span>'
             "<span style=\"font-family:'Cinzel',serif; font-weight:700; font-size:15px; letter-spacing:.1em; color:#f1e6cf;\">APROBACIÓN REQUERIDA</span></div>"
-            f"<div style=\"font-family:'EB Garamond',serif; font-size:14px; line-height:1.5; color:#d8cfba; margin-bottom:8px;\">{_e(reason)}</div>"
-            f"{detail_html}"
+            f"{_hitl_solicitud_html(pending)}"
             f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#857c69; margin-bottom:14px;\">{_e(tip)}</div>"
         )
         with ui.element("div").style("display:flex; gap:11px; justify-content:flex-end;"):
@@ -1723,20 +1771,12 @@ def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable], sea
     """
     from .mod_list import build_mod_list
 
-    with ui.element("div").style("display:flex; align-items:center; gap:16px; margin-bottom:14px;"):
-        ui.html(
-            "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">ARSENAL DE LA FORJA</h2>"
-        )
-        # El separador es un hijo DIRECTO del flex (ui.element, no dentro del
-        # ui.html) para que flex:1 lo estire y empuje el botón a la derecha
-        # (review Copilot #228: un <span flex:1> embebido en ui.html no aplica).
-        ui.element("div").style(
-            "flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"
-        )
-        # Chequeo on-demand de actualizaciones en Nexus → reactiva el badge del
-        # sidebar (pending_updates). Espejo de "Detectar disputas" de Conflictos.
-        on_check = _cb(callbacks, "on_check_updates")
-        if on_check is not None:
+    # El título de la sección ya lo da el header del shell: acá sólo va la acción.
+    # Chequeo on-demand de actualizaciones en Nexus → reactiva el badge del
+    # sidebar (pending_updates). Espejo de "Detectar disputas" de Conflictos.
+    on_check = _cb(callbacks, "on_check_updates")
+    if on_check is not None:
+        with ui.element("div").style("display:flex; justify-content:flex-end; margin-bottom:6px;"):
             upd_btn = (
                 ui.element("button")
                 .classes("sc-btn sc-btn--gold")
@@ -1778,7 +1818,7 @@ def _conflicts_screen(
     resolved = resolved or []
     with ui.element("div").style("display:flex; align-items:center; gap:16px; margin-bottom:14px;"):
         ui.html(
-            "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">DISPUTAS EN LA FORJA</h2>"
+            "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">SIN RESOLVER</h2>"
             f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:12px; color:{RED_SOFT};\">◆ {len(conflicts)}</span>"
             '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span>'
         ).style(_FRAGMENTO)
@@ -1867,12 +1907,12 @@ def _conflict_row(c: dict[str, Any], on_resolve: Callable | None) -> None:
     )
     with ui.element("div").style(row):
         ui.html(
-            f'<span style="width:9px; height:9px; border-radius:50%; background:{RED}; box-shadow:0 0 9px {RED}; flex-shrink:0;"></span>'
+            f'<span style="color:{RED}; font-size:12px; flex-shrink:0;" aria-hidden="true">◆</span>'
             '<div style="flex:1; min-width:0;">'
             f"<div style=\"font-family:'Cinzel',serif; font-size:14px; color:#f1e6cf;\">{_e(c.get('mod_a', '?'))}"
             f'<span style="color:{RED_SOFT}; display:inline-flex; align-items:center; vertical-align:-2px; margin:0 4px;" aria-hidden="true">{_ICON_SWORDS}</span>'
             f"{_e(c.get('mod_b', '?'))}</div>"
-            f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#8a7f6a; margin-top:2px;\">{_e(subtitle)}</div>"
+            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#8a7f6a; margin-top:3px;\">{_e(subtitle)}</div>"
             "</div>"
         ).style(_FRAGMENTO)
         if on_resolve is not None:
@@ -1895,7 +1935,7 @@ def _open_resolve_dialog(c: dict[str, Any], on_resolve: Callable) -> None:
     cid = c.get("id")
     card = (
         "min-width:420px; max-width:92vw; padding:22px 24px; border-radius:6px; color:#e8e2d4;"
-        "background:linear-gradient(168deg, rgba(30,22,14,.98), rgba(14,10,7,.99)); border:1px solid rgba(200,168,106,.4);"
+        "background:linear-gradient(168deg, rgba(26,32,40,.98), rgba(11,14,19,.99)); border:1px solid rgba(200,168,106,.4);"
     )
     with ui.dialog() as dialog, ui.element("div").style(card):
         ui.html(
@@ -1947,6 +1987,61 @@ _LBL = "font-family:'Cinzel',serif; font-size:11px; font-weight:600; letter-spac
 _HINT = "font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#8a7f6a;"
 
 
+def _entorno_secciones(snapshot: Any) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Seam puro: lo que el escaneo de entorno encontró, como secciones de ``(etiqueta, valor)``.
+
+    Sin snapshot real devuelve ``[]`` —no se afirma nada antes del primer
+    escaneo—; con snapshot, lo que NO se detectó se dice explícitamente en vez
+    de omitirse. ``getattr`` defensivo: la store puede traer objetos que no son
+    snapshots (tests, arranque).
+    """
+    tools = getattr(snapshot, "tools", None)
+    if not isinstance(tools, dict):
+        return []
+    skyrim = getattr(snapshot, "skyrim", None)
+    mo2 = getattr(snapshot, "mo2", None)
+    filas_skyrim = (
+        [
+            ("Edición", str(getattr(skyrim.edition, "value", skyrim.edition))),
+            ("Versión", str(skyrim.version) or "No detectada"),
+            ("Ruta", str(skyrim.path)),
+        ]
+        if skyrim is not None
+        else [("Estado", "No detectado")]
+    )
+    filas_mo2 = (
+        [("Ruta", str(mo2.path)), ("Perfiles", ", ".join(str(p) for p in mo2.profiles) or "Ninguno")]
+        if mo2 is not None
+        else [("Estado", "No detectado")]
+    )
+    filas_tools = [(str(t.name), str(t.exe_path)) for t in tools.values()]
+    filas_tools += [(str(m.name), "No detectada") for m in getattr(snapshot, "missing", None) or []]
+    return [
+        ("SKYRIM", filas_skyrim),
+        ("MOD ORGANIZER 2", filas_mo2),
+        ("HERRAMIENTAS", filas_tools or [("Estado", "Ninguna detectada")]),
+    ]
+
+
+def _entorno_html(secciones: list[tuple[str, list[tuple[str, str]]]]) -> str:
+    """Seam puro: las secciones del entorno como HTML (rutas en mono, todo escapado)."""
+    bloques = ""
+    for titulo, filas in secciones:
+        filas_html = "".join(
+            '<div style="display:flex; gap:12px; padding:3px 0;">'
+            f"<span style=\"flex:0 0 96px; font-family:'EB Garamond',serif; font-size:12.5px; color:#8a7f6a;\">{_e(etiqueta)}</span>"
+            f"<span style=\"flex:1; min-width:0; font-family:'Spline Sans Mono',monospace; font-size:11px; color:#d8cfba; word-break:break-all;\">{_e(valor)}</span>"
+            "</div>"
+            for etiqueta, valor in filas
+        )
+        bloques += (
+            '<div style="margin-top:14px;">'
+            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; letter-spacing:.14em; color:#b8a87e; margin-bottom:4px;\">{_e(titulo)}</div>"
+            f"{filas_html}</div>"
+        )
+    return bloques
+
+
 def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -> None:
     """Pantalla de Ajustes: identidad + proveedor IA + claves (persistidas).
 
@@ -1959,12 +2054,6 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
     key_status: dict[str, bool] = settings.get("key_status") or {}
     on_save = _cb(callbacks, "on_settings_save")
     inputs: dict[str, Any] = {}
-
-    ui.html(
-        '<div style="display:flex; align-items:center; gap:16px; margin-bottom:18px;">'
-        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">CÁMARA DE AJUSTES</h2>"
-        '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
-    )
 
     panel = (
         "display:flex; flex-direction:column; gap:14px; padding:20px 22px; margin-bottom:18px; border-radius:5px;"
@@ -2078,6 +2167,16 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
             ui.html("Guardar Ajustes")
         btn.on("click", _collect_and_save)
 
+    # ── Entorno detectado (sólo lectura) ──
+    entorno = _entorno_html(_entorno_secciones(get_store().get(STORE_KEY_ENV)))
+    if entorno:
+        with ui.element("section").style(panel + "margin-top:22px;"):
+            ui.html(
+                f'<span style="{_LBL}">ENTORNO DETECTADO</span>'
+                f'<div style="{_HINT} margin-top:3px;">Sólo lectura: lo que encontró el escaneo de arranque.</div>'
+                f"{entorno}"
+            )
+
 
 _STATUS_COLORS = {"ok": GREEN, "success": GREEN, "registered": GREEN, "failed": RED, "error": RED}
 
@@ -2110,30 +2209,21 @@ def _downloads_screen(downloads: dict[str, Any], callbacks: dict[str, Callable])
     # ── Puerta de aprobación ──
     ui.html(
         '<div style="display:flex; align-items:center; gap:16px; margin-bottom:14px;">'
-        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">PUERTA DE APROBACIÓN</h2>"
+        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">SOLICITUD PENDIENTE</h2>"
         '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
     )
     if pending:
         card = (
-            "display:flex; flex-direction:column; gap:10px; padding:18px 20px; margin-bottom:22px; border-radius:5px;"
-            "background:rgba(62,39,35,.4); border:1px solid rgba(200,168,106,.45); box-shadow:0 0 18px rgba(200,168,106,.18);"
+            "position:relative; overflow:hidden; display:flex; flex-direction:column; max-width:760px;"
+            " padding:22px 22px 18px; margin-bottom:22px; border-radius:5px;"
+            "background:linear-gradient(168deg, rgba(26,32,40,.9), rgba(11,14,19,.95)); border:1px solid rgba(200,168,106,.4);"
         )
         with ui.element("div").style(card):
-            url = str(pending.get("url") or "")
-            url_html = (
-                f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:11.5px; color:#86b9d4;"
-                f' word-break:break-all;">{_e(url)}</div>'
-                if url
-                else ""
-            )
-            ui.html(
-                f"<div style=\"font-family:'Cinzel',serif; font-size:14px; color:#f1e6cf;\">{_e(pending.get('reason', 'Descarga pendiente'))}</div>"
-                f"<div style=\"font-family:'EB Garamond',serif; font-size:12.5px; color:#b8b1a0;\">{_e(pending.get('detail', ''))}</div>"
-                f"{url_html}"
-            )
+            # Misma solicitud, mismo dibujo que el modal global (seam compartido).
+            ui.html(_hitl_solicitud_html(pending))
             if on_respond is not None:
                 rid = str(pending.get("request_id") or "")
-                with ui.element("div").style("display:flex; gap:12px; margin-top:4px;"):
+                with ui.element("div").style("display:flex; gap:12px; justify-content:flex-end;"):
                     deny = (
                         ui.element("button")
                         .classes("sc-btn sc-btn--danger")
