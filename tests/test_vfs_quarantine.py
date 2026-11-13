@@ -465,8 +465,10 @@ async def test_los_dos_escritores_del_lock_envenenado_registran_la_identidad_del
 
     assert al_poner["quarantine_reason"].startswith("emergencia fail-closed por falla de persistencia")
     assert al_cerrar["quarantine_reason"].startswith("emergencia fail-closed retenida")
-    assert al_poner["create_time"] == pytest.approx(esperado)
-    assert al_cerrar["create_time"] == pytest.approx(esperado)
+    # Igualdad EXACTA (review CodeRabbit #904): con ``pytest.approx`` (rel=1e-6) sobre un epoch de ~1.7e9 se aceptaba una
+    # diferencia de ~1700 s, y el broker trata CUALQUIER diferencia de ``create_time`` como «otro proceso».
+    assert al_poner["create_time"] == esperado
+    assert al_cerrar["create_time"] == esperado
 
 
 def test_el_pid_de_este_proceso_con_otra_identidad_no_es_el_dueno_del_lock_envenenado(tmp_path: pathlib.Path) -> None:
@@ -508,3 +510,36 @@ def test_un_lock_normal_con_el_pid_propio_y_otra_identidad_se_considera_huerfano
     lock.write_text(json.dumps({"pid": os.getpid(), "session_id": "s", "create_time": propio}), encoding="utf-8")
 
     assert leer_estado_de_cuarentena(state_dir, _INSTANCIA).origen is None
+
+
+# ---------------------------------------------------------------------------
+# El comando que se le muestra al operador tiene que poder ejecutarse tal cual (review CodeRabbit #904)
+# ---------------------------------------------------------------------------
+
+_LANZADORES = {True: "SkyClawApp.exe", False: "python -m sky_claw"}
+
+
+@pytest.mark.parametrize("congelado", [True, False], ids=["exe-congelado", "desde-el-codigo"])
+@pytest.mark.parametrize("con_raiz", [True, False], ids=["con-raiz", "sin-raiz"])
+def test_el_comando_para_liberar_empieza_por_el_lanzador_del_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, congelado: bool, con_raiz: bool
+) -> None:
+    """Antes decía «…y corré --mode vfs-quarantine …»: sin ejecutable, el operador no podía correrlo como estaba escrito."""
+    monkeypatch.setattr(sys, "frozen", congelado, raising=False)
+    raiz = tmp_path / "MO2" if con_raiz else None
+
+    texto = vfs_quarantine.como_liberar(raiz)
+
+    comando = texto[texto.index("--mode") - len(_LANZADORES[congelado]) - 1 :]
+    assert comando.startswith(f"{_LANZADORES[congelado]} --mode vfs-quarantine"), texto
+    # El otro lanzador no aparece: se muestra UNO, el que corresponde al runtime que quedó en cuarentena.
+    assert _LANZADORES[not congelado] not in texto.replace("SkyClawApp.exe --vfs-worker", "")
+    assert (f'--mo2-root "{raiz}"' in texto) is con_raiz
+
+
+def test_el_texto_para_liberar_no_deja_un_flag_suelto_tras_el_verbo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cierra la clase: ningún render deja «corré» seguido directamente de un ``--flag`` (comando sin ejecutable)."""
+    for congelado in (True, False):
+        monkeypatch.setattr(sys, "frozen", congelado, raising=False)
+        assert "corré --" not in vfs_quarantine.como_liberar()
+        assert "corré --" not in vfs_quarantine.como_liberar(pathlib.Path("MO2"))

@@ -23,6 +23,7 @@ import enum
 import json
 import logging
 import pathlib
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,15 +41,29 @@ _PASOS_PREVIOS_A_LIBERAR = (
 )
 
 
+def _lanzador() -> str:
+    """Con qué se corre ESTE programa: el ``.exe`` congelado o el módulo desde el código (mismas formas que DEPLOYMENT.md).
+
+    Quien muestra el texto (``--mode vfs-quarantine`` y ``lods_status``) es el mismo runtime que quedó en cuarentena y el
+    que va a liberarla, así que ``sys.frozen`` elige el lanzador correcto sin que el llamador lo conozca.
+    """
+    return "SkyClawApp.exe" if getattr(sys, "frozen", False) else "python -m sky_claw"
+
+
 def como_liberar(mo2_root: pathlib.Path | None = None) -> str:
     """El procedimiento para el operador, en UN solo lugar: lo muestran ``--mode vfs-quarantine`` y ``lods_status``.
 
     La instancia sale de ``--mo2-root``: con la raíz de la sesión que quedó en cuarentena el comando apunta a ESA
     instancia, y no a la que el modo elegiría por defecto (otra raíz → otro directorio de estado → «nada que liberar»
     mientras la instancia real sigue aislada). ``None`` solo cuando quien muestra el texto no conoce la raíz.
+
+    El comando lleva su ejecutable: sin él (``corré --mode …``) el operador no puede correrlo tal como está escrito.
     """
     raiz = "" if mo2_root is None else f' --mo2-root "{mo2_root}"'
-    return f'{_PASOS_PREVIOS_A_LIBERAR}--mode vfs-quarantine{raiz} --vfs-quarantine-action release --vfs-evidence "<qué verificaste>"'
+    return (
+        f"{_PASOS_PREVIOS_A_LIBERAR}{_lanzador()} --mode vfs-quarantine{raiz} "
+        '--vfs-quarantine-action release --vfs-evidence "<qué verificaste>"'
+    )
 
 
 #: El mismo procedimiento sin raíz (compatibilidad); quien conozca la raíz usa :func:`como_liberar`.
