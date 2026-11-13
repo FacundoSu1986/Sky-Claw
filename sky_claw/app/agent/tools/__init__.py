@@ -700,7 +700,13 @@ class AsyncToolRegistry:
         )
         self._tools["lods_status"] = ToolDescriptor(
             name="lods_status",
-            description="Report the state of the current or last stage-9 LOD generation job (read-only).",
+            description=(
+                "Report the state of the current or last stage-9 LOD generation job (read-only). While the job "
+                "runs, 'progreso' gives facts about the tool's latest heartbeat: the tool, seconds elapsed, log "
+                "size, seconds since the log last changed and how old that sample is. A log that has not changed "
+                "for a long while, or a sample that keeps getting older, is a hint the job may be stalled; it is "
+                "not a verdict."
+            ),
             params_model=None,
             fn=lambda: lods_status(self._lod_jobs),
         )

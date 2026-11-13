@@ -4080,6 +4080,16 @@ _REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
         "metodo": "_validar_salida_dyndolod",
         "motivo": "Mismo doble contexto: RuntimeError sondeando el candidato.",
     },
+    "dyndolod_progreso_no_reportado": {
+        "metodo": "_reportar_progreso",
+        "motivo": (
+            "H-11: el latido no pudo entregar la muestra de progreso a su observador (bus caído, "
+            "snapshot que no se armó). Observador best-effort por diseño, el mismo criterio que "
+            "dyndolod_aviso_operador_fallido: el veredicto de la corrida lo dan el exit code, el "
+            "artefacto y el log, no que alguien reciba el progreso. Etiquetarlo contaría como fallo "
+            "de etapa 9 una corrida que puede terminar bien."
+        ),
+    },
 }
 
 #: Cobertura DECLARADA de `dyndolod_runner.py`, con la misma escala que
