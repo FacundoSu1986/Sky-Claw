@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import itertools
 import json
 import logging
 import time
@@ -46,6 +45,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from sky_claw.app.agent.tools.job_ids import nuevo_id_de_trabajo
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
 from sky_claw.local.validators.etapas_previas_lods import etapas_previas_faltantes
 
@@ -69,8 +69,6 @@ MOTIVO_SIN_SERVICIO = (
     "de Sky-Claw (modo GUI) abierta en la PC, que es la que arma el pipeline con su lock y su "
     "workspace. En --mode telegram no hay supervisor de etapa 9."
 )
-
-_IDS = itertools.count(1)
 
 
 @dataclass
@@ -207,7 +205,7 @@ class GestorDeTrabajosDeLods:
                 "interaction_mode": interaction_mode,
             }
             trabajo = TrabajoDeLods(
-                id=f"lods-{next(_IDS)}",
+                id=nuevo_id_de_trabajo("lods"),
                 parametros=parametros,
                 iniciado_en=time.time(),
                 estado="esperando_aprobacion" if faltantes else "iniciado",

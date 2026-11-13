@@ -87,20 +87,20 @@ puede completar variables no secretas después de su escaneo.
 necesitan una instalación del xEdit Bridge 1.x (1.1.0 o posterior). Hay que
 apuntar `XEDIT_BRIDGE_ROOT` a su carpeta `BridgeTrabajo`, por ejemplo
 `...\tools\xedit-bridge-1.1.0\Laboratorio\BridgeTrabajo`. La carpeta tiene que
-estar dentro del sandbox, igual que las demás rutas. Sin la variable, las dos
-herramientas responden «no configurado». El intérprete y el arranque salen del
-`codex-mcp.example.toml` del propio bridge: no hay otra variable que configurar.
+estar dentro del sandbox, pero `XEDIT_BRIDGE_ROOT` **declara su propia raíz**:
+si la variable apunta a un directorio absoluto que existe, Sky-Claw lo suma al
+sandbox **sin reemplazar** las demás raíces ni cambiar `install_dir`. Con eso el
+bridge puede estar en cualquier unidad (p. ej. `G:\Tools\...`) sin tocar
+`config.toml`, y las herramientas que Sky-Claw descarga se siguen instalando donde
+dice `install_dir`. Una variable vacía, relativa, inexistente o que apunta a un
+archivo no agrega nada y las herramientas responden «no configurado». Sin la
+variable, también. El intérprete y el arranque salen del `codex-mcp.example.toml`
+del propio bridge: no hay otra variable que configurar.
 
-**El sandbox lo define `install_dir`.** Su valor por defecto es `C:\Modding`, y
-el `install_dir` de `config.toml` **gana** sobre `--install-dir`. Si el bridge
-está en otra unidad, la app lo rechaza y las herramientas responden «no
-configurado», aunque `XEDIT_BRIDGE_ROOT` esté bien. Hay que fijar en
-`config.toml` una carpeta que contenga al bridge, por ejemplo
-`install_dir = "G:/Modding/SSEDIT"`. Ese valor reemplaza al anterior como raíz
-permitida, y es también donde Sky-Claw instala las herramientas que descarga.
-Ejemplo verificado de punta a punta con Telegram: `config.toml` con
-`telegram_chat_id` (tu ID de usuario, no el del bot), `llm_provider` e
-`install_dir`, el token del bot en el llavero y `XEDIT_BRIDGE_ROOT` en el
+(`install_dir` de `config.toml` sigue ganando sobre `--install-dir`; ya no hace
+falta usarlo para el bridge.) Configuración mínima para Telegram:
+`config.toml` con `telegram_chat_id` (tu ID de usuario, no el del bot),
+`llm_provider`, el token del bot en el llavero y `XEDIT_BRIDGE_ROOT` en el
 entorno del proceso.
 
 La admisión copia el plugin y sus masters del perfil MO2 activo al laboratorio
