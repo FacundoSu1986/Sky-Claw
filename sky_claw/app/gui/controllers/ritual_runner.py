@@ -589,6 +589,44 @@ def clear_ritual_result_owned(store: ReactiveStore, tab_id: str | None) -> None:
 CLIENT_KEY_AUTO_APPROVE = "modo_local"
 #: Single-flight guard: a ritual is dispatching or awaiting approval right now.
 STORE_KEY_RITUAL_IN_FLIGHT = "ritual_in_flight"
+#: Detalle de lo que el single-flight tiene tomado: ``{"tool_key", "fase"}`` o
+#: ``None``. Lo consume la grilla de rituales para pintar «Ejecutando» /
+#: «Instalando» en la tarjeta que corresponde y bloquear las demás.
+STORE_KEY_RITUAL_EN_CURSO = "ritual_en_curso"
+FASE_EJECUTANDO = "ejecutando"
+FASE_INSTALANDO = "instalando"
+
+
+def _marcar_en_curso(store: ReactiveStore, tool_key: str, fase: str) -> None:
+    """Toma el single-flight y publica QUÉ corre. Único escritor, junto a :func:`_liberar_en_curso`.
+
+    El detalle va primero: quien se entera por el booleano ya lo encuentra escrito.
+    """
+    store.set(STORE_KEY_RITUAL_EN_CURSO, {"tool_key": tool_key, "fase": fase})
+    store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
+
+
+def _liberar_en_curso(store: ReactiveStore) -> None:
+    """Suelta el single-flight y su detalle (siempre los dos: ancla AST en test_ritual_en_curso.py)."""
+    store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
+    store.set(STORE_KEY_RITUAL_EN_CURSO, None)
+
+
+def ritual_en_curso(store: ReactiveStore) -> dict[str, str] | None:
+    """Qué tiene tomado el single-flight, o ``None`` si no hay nada corriendo.
+
+    El booleano manda: sin él no hay nada «en curso» aunque quede un detalle
+    huérfano; con él y sin detalle bien formado devuelve claves vacías, para que
+    la vista bloquee sin atribuirle la corrida a ninguna tarjeta.
+    """
+    if not store.get(STORE_KEY_RITUAL_IN_FLIGHT):
+        return None
+    detalle = store.get(STORE_KEY_RITUAL_EN_CURSO)
+    if isinstance(detalle, dict) and isinstance(detalle.get("tool_key"), str) and isinstance(detalle.get("fase"), str):
+        return {"tool_key": detalle["tool_key"], "fase": detalle["fase"]}
+    return {"tool_key": "", "fase": ""}
+
+
 #: Último reporte de preflight (``PreflightReport.to_dict()``) que un dispatch
 #: adjuntó — hoy solo el sort de LOOT lo produce. El panel refrescable
 #: ``_ritual_preflight_panel`` lo renderiza con ``create_preflight_panel`` (T-16b).
@@ -887,7 +925,7 @@ async def run_ritual(
     # click rechazado (single-flight / sin supervisor / ritual no cableado) no
     # consume la acción propia, porque la corrida ni siquiera empieza.
     clear_ritual_result_owned(store, tab_id)
-    store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
+    _marcar_en_curso(store, tool_key, FASE_EJECUTANDO)
     # F1a: un click del operador ES intervención humana — rearmar el
     # cortacircuitos cognitivo del dispatcher antes de despachar, para que
     # repetir el mismo ritual a mano no se confunda con un bucle del agente
@@ -923,7 +961,7 @@ async def run_ritual(
         _gui_pending_request_id.reset(pending_token)
         _ritual_auto_approve.reset(cv_token)  # disarm (scoped a esta task)
         _ritual_tab_id.reset(cid_token)
-        store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
+        _liberar_en_curso(store)
         # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
         if pending_request_id is not None:
             clear_owned_hitl(store, tab_id, request_id=pending_request_id)
@@ -1218,7 +1256,7 @@ async def run_ritual_install(
     session = getattr(app_context, "session", None)
     ensure = getattr(installer, method_name)
 
-    store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
+    _marcar_en_curso(store, tool_key, FASE_INSTALANDO)
     # P1-7: mismo scoping por task que run_ritual. El gate HITL del installer
     # corre inline en esta misma task, así que ve el ContextVar y marca la
     # aprobación de descarga con la pestaña que apretó "Instalar".
@@ -1242,7 +1280,7 @@ async def run_ritual_install(
         _gui_pending_request_id.reset(pending_token)
         _ritual_auto_approve_descargas.reset(descargas_token)  # disarm (scoped a esta task)
         _ritual_tab_id.reset(tab_token)
-        store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
+        _liberar_en_curso(store)
         # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
         if pending_request_id is not None:
             clear_owned_hitl(store, tab_id, request_id=pending_request_id)

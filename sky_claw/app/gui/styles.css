@@ -170,6 +170,11 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
         inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
 
+/* Acción de tarjeta de ritual bloqueada por el single-flight: mismo lenguaje que
+   .sc-btn:disabled (gris por filter, sin arrastrar el texto con opacity). El
+   !important del cursor le gana al cursor:pointer inline del botón. */
+.sc-ritual-btn:disabled { cursor: not-allowed !important; filter: grayscale(0.6) brightness(0.65); }
+
 /* Header en ventanas angostas: título + buscador + clúster derecho no entran
    por debajo de ~1240px y el avatar quedaba recortado. El HUD GPU·CPU es
    redundante con la Vitalidad del sidebar (siempre visible desde que el shell

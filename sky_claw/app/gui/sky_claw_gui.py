@@ -40,7 +40,10 @@ from sky_claw.app.gui.controllers import (
 from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_DIAGNOSTICO_PARALLAX,
     STORE_KEY_PENDING_HITL,
+    STORE_KEY_RITUAL_EN_CURSO,
     STORE_KEY_RITUAL_FEEDBACK,
+    STORE_KEY_RITUAL_IN_FLIGHT,
+    STORE_KEY_RITUAL_LAST_RESULT,
     STORE_KEY_RITUAL_PREFLIGHT,
     resolve_pending_hitl_request,
     resolve_visible_pending_hitl,
@@ -71,6 +74,7 @@ from sky_claw.app.gui.views.forge_dashboard import (
     _parallax_diagnostico_panel,
     _ritual_feedback_panel,
     _ritual_preflight_panel,
+    _rituales,
     current_tab_id,
     descargas_auto_enabled,
     modo_local_enabled,
@@ -1182,6 +1186,12 @@ def setup_app() -> None:
     # a prompt or showing a result never resets the chat input.
     store.subscribe(STORE_KEY_PENDING_HITL, _hitl_modal_panel.refresh)
     store.subscribe(STORE_KEY_RITUAL_FEEDBACK, _ritual_feedback_panel.refresh)
+    # La grilla de rituales también tiene refreshable propio: pinta «Ejecutando» /
+    # «Instalando» y bloquea los botones mientras el single-flight está tomado, y
+    # muestra la acción de resume (Fase 2 de Wrye Bash, handoff de DynDOLOD) en la
+    # tarjeta. Las tres claves la despiertan; ninguna refresca la página.
+    for clave_ritual in (STORE_KEY_RITUAL_IN_FLIGHT, STORE_KEY_RITUAL_EN_CURSO, STORE_KEY_RITUAL_LAST_RESULT):
+        store.subscribe(clave_ritual, _rituales.refresh)
     # T-16b: el semáforo de preflight que el dispatch adjunta se surface en su
     # propio @ui.refreshable, sin resetear el chat (mismo patrón que el toast).
     store.subscribe(STORE_KEY_RITUAL_PREFLIGHT, _ritual_preflight_panel.refresh)

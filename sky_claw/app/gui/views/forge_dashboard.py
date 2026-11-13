@@ -33,6 +33,7 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     lineas_del_diagnostico_parallax,
     resolve_ritual_resume_action,
     resolve_visible_pending_hitl,
+    ritual_en_curso,
 )
 from sky_claw.app.gui.gui_helpers import _FRAGMENTO
 from sky_claw.app.gui.icons import (
@@ -851,6 +852,28 @@ def _hitl_modal_panel() -> None:
                 ui.html("Aprobar")
 
 
+def _resume_disponible() -> bool:
+    """True si el page cableó el callback de resume (sin él no se ofrece el botón)."""
+    return callable(_RITUAL_RESUME_CALLBACKS.get("resume"))
+
+
+def _despachar_resume(accion: dict[str, Any]) -> None:
+    """ÚNICO camino por el que la vista despacha una acción de resume (toast y tarjeta).
+
+    Cierra el aviso y consume el resultado PROPIO antes de despachar —el run nuevo
+    publica el suyo— y transporta ``tool_key``/``payload`` tal como los derivó el
+    seam de ownership: la vista no decide qué intención se despacha (F-001), y el
+    ``tool_key`` sale del envelope de la corrida, nunca de un literal (R-005).
+    """
+    fn = _RITUAL_RESUME_CALLBACKS.get("resume")
+    # El payload viaja tal como lo derivó el seam (ancla AST en test_resume_etapa6_asistida.py).
+    payload_de_la_accion = dict(accion.get("payload") or {})
+    get_store().set(STORE_KEY_RITUAL_FEEDBACK, None)
+    clear_ritual_result_owned(get_store(), current_tab_id())
+    if callable(fn):
+        fn(str(accion.get("tool_key", "")), payload_de_la_accion)
+
+
 @ui.refreshable
 def _ritual_feedback_panel() -> None:
     """Dismissible toast (bottom-right) showing the last Ritual's result.
@@ -885,30 +908,14 @@ def _ritual_feedback_panel() -> None:
         # corrida, nunca de un literal acá (ancla AST en test_resume_hardening).
         accion = resolve_ritual_resume_action(get_store(), current_tab_id())
         if accion is not None:
-            tool_key_de_la_corrida = str(accion.get("tool_key", ""))
             detalle = _e(str(accion.get("detail", "")))
-            resume_fn = _RITUAL_RESUME_CALLBACKS.get("resume")
-
-            payload_de_la_accion = dict(accion.get("payload") or {})
-
-            def _on_resume(_: Any = None, fn: Callable | None = resume_fn) -> None:
-                # Cerrar el toast antes de despachar: el nuevo run publicará su
-                # propio feedback; este quedó consumido por la acción.
-                get_store().set(STORE_KEY_RITUAL_FEEDBACK, None)
-                clear_ritual_result_owned(get_store(), current_tab_id())
-                _ritual_feedback_panel.refresh()
-                # El payload viaja tal como lo derivó el seam: la vista no decide qué
-                # intención se despacha (F-001), sólo transporta.
-                if callable(fn):
-                    fn(tool_key_de_la_corrida, dict(payload_de_la_accion))
-
-            if callable(resume_fn):
+            if _resume_disponible():
                 r = (
                     ui.element("button")
                     .classes("sc-btn sc-btn--gold")
                     .style("margin-top:0; padding:6px 12px; font-size:11px; letter-spacing:.06em;")
                 )
-                r.on("click", _on_resume)
+                r.on("click", lambda _=None, a=accion: _despachar_resume(a))
                 with r:
                     ui.html(str(accion.get("label", "Continuar")))
                 if detalle:
@@ -925,11 +932,12 @@ def _ritual_feedback_panel() -> None:
         )
         x.on(
             "click",
+            # La × cierra el AVISO, no la acción: «Ya construí el parche — verificar»
+            # y «Continuar DynDOLOD» son controles obligatorios del flujo y siguen
+            # disponibles en la tarjeta del ritual hasta que se despachen o una
+            # corrida nueva de esta pestaña los reemplace.
             lambda _=None: (
                 get_store().set(STORE_KEY_RITUAL_FEEDBACK, None),
-                # F-004: el dismiss del resultado accionable respeta el dueño —
-                # una pestaña ajena no desaloja el resultado de otra.
-                clear_ritual_result_owned(get_store(), current_tab_id()),
                 _ritual_feedback_panel.refresh(),
             ),
         )
@@ -1254,6 +1262,37 @@ def _stats(active: int, pending: int, conflicts: int, storage: float) -> None:
 
 
 # ── RITUALES DE LA FORJA ───────────────────────────────────────────────────────
+#: Insignias OPERATIVAS de una tarjeta (lo que está pasando ahora), aparte del
+#: estado de instalación de ``_RITUAL_STATE_STYLE``. Congeladas por igualdad en
+#: test_ritual_en_curso.py. El texto es la señal; el color sólo la matiza.
+_INSIGNIAS_OPERATIVAS: dict[str, dict[str, str]] = {
+    "ejecutando": {"texto": "EJECUTANDO…", "color": FROST},
+    "instalando": {"texto": "INSTALANDO…", "color": FROST},
+    "accion": {"texto": "ACCIÓN REQUERIDA", "color": "#e0a13c"},
+}
+
+
+def _estado_operativo_de_tarjeta(
+    tool_key: str, en_curso: dict[str, str] | None, accion: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Seam puro: qué muestra UNA tarjeta dado lo que corre y la acción pendiente.
+
+    * ``bloqueada``: hay un single-flight tomado (por cualquier tool) — ningún
+      botón de la grilla puede lanzar otro.
+    * ``insignia``: la fase, sólo en la tarjeta de la tool que corre; si no,
+      «acción requerida» cuando la acción de resume es de ESTA tool.
+    * ``accion``: la acción de resume, sólo en la tarjeta de su tool.
+    """
+    propia = accion if accion is not None and accion.get("tool_key") == tool_key else None
+    insignia: str | None = None
+    if en_curso is not None and en_curso.get("tool_key") == tool_key and en_curso.get("fase") in _INSIGNIAS_OPERATIVAS:
+        insignia = en_curso["fase"]
+    elif propia is not None:
+        insignia = "accion"
+    return {"insignia": insignia, "bloqueada": en_curso is not None, "accion": propia}
+
+
+@ui.refreshable
 def _rituales(callbacks: dict[str, Callable]) -> None:
     ui.html(
         '<div style="display:flex; align-items:center; gap:16px; margin-bottom:6px;">'
@@ -1266,11 +1305,21 @@ def _rituales(callbacks: dict[str, Callable]) -> None:
     snapshot = get_store().get(STORE_KEY_ENV)
     on_ritual_run = _cb(callbacks, "on_ritual_run")
     on_ritual_install = _cb(callbacks, "on_ritual_install")
+    # Refreshable propio: el estado «en curso» y la acción de resume cambian sin
+    # re-renderizar la página (que resetearía el input del chat).
+    en_curso = ritual_en_curso(get_store())
+    accion = resolve_ritual_resume_action(get_store(), current_tab_id())
     with ui.element("div").style(
         "display:grid; grid-template-columns:repeat(auto-fill,minmax(232px,1fr)); gap:16px; margin-bottom:32px;"
     ):
         for r in _RITUALS:
-            _ritual_card(r, _ritual_status(snapshot, r["tool"]), on_ritual_run, on_ritual_install)
+            _ritual_card(
+                r,
+                _ritual_status(snapshot, r["tool"]),
+                on_ritual_run,
+                on_ritual_install,
+                _estado_operativo_de_tarjeta(r["tool"], en_curso, accion),
+            )
 
 
 # Per-state chrome for a ritual card. "unknown" = scan hasn't landed yet, so we
@@ -1324,8 +1373,13 @@ def _ritual_card(
     state: str = "unknown",
     on_ritual_run: Callable | None = None,
     on_ritual_install: Callable | None = None,
+    operativo: dict[str, Any] | None = None,
 ) -> None:
     tone = r["tone"]
+    operativo = operativo or {"insignia": None, "bloqueada": False, "accion": None}
+    insignia = _INSIGNIAS_OPERATIVAS.get(operativo["insignia"] or "")
+    bloqueada = bool(operativo["bloqueada"])
+    accion_resume = operativo["accion"]
     style = _RITUAL_STATE_STYLE.get(state, _RITUAL_STATE_STYLE["unknown"])
     deco_opacity = style["deco_opacity"]
     card_border = style["card_border"]
@@ -1359,10 +1413,41 @@ def _ritual_card(
             f'<div style="display:flex; align-items:center; gap:7px; padding-top:2px;"><span style="width:7px; height:7px; border-radius:50%; background:{status_dot}; box-shadow:0 0 6px {status_dot};"></span>'
             f"<span style=\"flex:1; font-family:'Spline Sans Mono',monospace; font-size:11px; letter-spacing:.02em; color:{status_color};\">{status_label}</span></div>"
         ).style(_FRAGMENTO)
-        b = ui.element("button").style(
-            f"margin-top:2px; padding:8px 10px; cursor:pointer; font-family:'Cinzel',serif; font-size:11.5px; font-weight:600;"
-            f"letter-spacing:.1em; background:rgba(0,0,0,.3); border:1px solid; border-radius:4px; {btn_style}"
+        if insignia is not None:
+            # El pulso es decoración (.sc-deco → se apaga con reduced-motion); el
+            # estado lo dice el TEXTO de la insignia.
+            ui.html(
+                f'<div style="display:flex; align-items:center; gap:7px; padding:5px 9px; border-radius:4px;'
+                f' background:rgba(0,0,0,.32); border:1px solid {insignia["color"]}66;">'
+                f'<span class="sc-deco" style="color:{insignia["color"]}; font-size:10px; animation:scPulse 1.6s ease-in-out infinite;" aria-hidden="true">◆</span>'
+                f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:10.5px; letter-spacing:.08em; color:{insignia['color']};\">{insignia['texto']}</span></div>"
+            )
+        if accion_resume is not None and _resume_disponible():
+            # Control obligatorio del flujo (Fase 2 de Wrye Bash / handoff de
+            # DynDOLOD) en un lugar que no se descarta: mismo despachador que el toast.
+            fase2 = ui.element("button").classes("sc-btn sc-btn--gold").style("padding:8px 10px; font-size:11px;")
+            if bloqueada:
+                fase2.props("disabled")
+            fase2.on("click", lambda _=None, a=accion_resume: _despachar_resume(a))
+            with fase2:
+                ui.html(_e(str(accion_resume.get("label", "Continuar"))))
+            detalle_resume = str(accion_resume.get("detail", "") or "")
+            if detalle_resume:
+                ui.html(
+                    f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; line-height:1.4; color:#8a8270; word-break:break-word;\">{_e(detalle_resume)}</div>"
+                )
+        b = (
+            ui.element("button")
+            .classes("sc-ritual-btn")
+            .style(
+                f"margin-top:2px; padding:8px 10px; cursor:pointer; font-family:'Cinzel',serif; font-size:11.5px; font-weight:600;"
+                f"letter-spacing:.1em; background:rgba(0,0,0,.3); border:1px solid; border-radius:4px; {btn_style}"
+            )
         )
+        if bloqueada:
+            # Hay un single-flight tomado: un segundo click sólo devolvería el aviso
+            # «ya hay un ritual en curso». El botón lo dice sin tener que apretarlo.
+            b.props("disabled")
         # Fase 2: an available tool runs for real through the supervisor dispatcher
         # (HITL-gated). Follow-up C: a "missing" tool with an auto-installer downloads
         # it through ToolsInstaller (download approval parks the GUI modal). Tools with
