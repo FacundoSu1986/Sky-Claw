@@ -20,6 +20,10 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from aiohttp import web
 
+from sky_claw.app.comms.golden_master_hitl import (
+    es_callback_golden_master,
+    es_comando_golden_master,
+)
 from sky_claw.app.comms.telegram_sender import TelegramRateLimitError
 from sky_claw.app.security.network_gateway import EgressViolationError, NetworkGatewayTimeoutError
 from sky_claw.logging_config import correlation_id_var
@@ -408,6 +412,7 @@ import html  # noqa: E402
 
 if TYPE_CHECKING:
     from sky_claw.app.agent.router import LLMRouter
+    from sky_claw.app.comms.golden_master_hitl import CoordinadorTelegramGoldenMaster
     from sky_claw.app.comms.telegram_sender import TelegramMessage, TelegramSender
     from sky_claw.app.orchestrator.sync_engine import UpdatePayload
     from sky_claw.app.security.hitl import HITLGuard
@@ -489,12 +494,14 @@ class TelegramWebhook:
         secret_token: str | None = None,
         authorized_user_id: int | None = None,
         hitl_registry: TelegramHITLMessageRegistry | None = None,
+        golden_master_coordinator: CoordinadorTelegramGoldenMaster | None = None,
     ) -> None:
         self._router = router
         self._sender = sender
         self._session = session
         self._hitl = hitl
         self._hitl_registry = hitl_registry
+        self._golden_master = golden_master_coordinator
         self._secret_token = secret_token
         self._seen_updates: collections.OrderedDict[int, None] = collections.OrderedDict()
         self._tasks: set[asyncio.Task[None]] = set()
@@ -617,7 +624,7 @@ class TelegramWebhook:
         # Enruta callbacks por el mismo boundary que los mensajes.
         callback_query = data.get("callback_query")
         if isinstance(callback_query, dict):
-            await self._handle_callback_query(callback_query)
+            await self._handle_callback_query(callback_query, raw_update=data)
             return
 
         # Extrae y valida la forma mínima del mensaje antes de tocar strings.
@@ -659,6 +666,17 @@ class TelegramWebhook:
 
         if not self._validate_private_operator(message):
             logger.warning("Telegram update rechazado: el operador debe usar su chat privado autorizado.")
+            return
+
+        # Aísla comandos Golden Master (/gm*) antes de HITLGuard, /update_mods o LLM.
+        if es_comando_golden_master(raw_text):
+            if self._golden_master is None:
+                await self._sender.send(chat_id, "Adaptador Golden Master no disponible.")
+                return
+            tarea_gm = await self._golden_master.iniciar_comando(data)
+            if tarea_gm is not None:
+                self._tasks.add(tarea_gm)
+                tarea_gm.add_done_callback(self._tasks.discard)
             return
 
         # Intercepta comandos HITL antes de enrutar al LLM. El parser recibe el
@@ -752,7 +770,12 @@ class TelegramWebhook:
             # Un fallo de transporte no revierte una decisión ya comprometida.
             logger.warning("No se pudo confirmar el callback de Telegram %s", callback_id, exc_info=True)
 
-    async def _handle_callback_query(self, query: dict[str, Any]) -> None:
+    async def _handle_callback_query(
+        self,
+        query: dict[str, Any],
+        *,
+        raw_update: dict[str, Any] | None = None,
+    ) -> None:
         """Procesa el clic de un operador en un botón inline (aprobar/denegar)."""
         # Contrato estricto de entrada: _validate_sender y la extracción de
         # chat_id hacen .get() sobre los sub-objetos from, message, chat y
@@ -791,6 +814,19 @@ class TelegramWebhook:
 
         if not data or chat_id is None or message_id is None:
             await self._answer_callback_query_safely(query, text="Invalid callback")
+            return
+
+        # Separa explícitamente callbacks Golden Master (gm:*) del HITLGuard genérico (hitl:*).
+        if es_callback_golden_master(data):
+            if self._golden_master is None:
+                logger.warning("Se recibió callback Golden Master sin coordinador inicializado")
+                await self._answer_callback_query_safely(query, text="Golden Master unavailable")
+                return
+            update_crudo = raw_update if raw_update is not None else {"callback_query": query}
+            tarea_gm = await self._golden_master.iniciar_callback(update_crudo)
+            if tarea_gm is not None:
+                self._tasks.add(tarea_gm)
+                tarea_gm.add_done_callback(self._tasks.discard)
             return
 
         parsed = parse_hitl_callback_data(data)

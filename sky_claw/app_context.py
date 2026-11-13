@@ -18,6 +18,11 @@ import keyring
 from sky_claw.app.agent.providers import ProviderConfigError, create_provider
 from sky_claw.app.agent.router import LLMRouter
 from sky_claw.app.agent.tools_facade import AsyncToolRegistry
+from sky_claw.app.comms.golden_master_hitl import (
+    CoordinadorTelegramGoldenMaster,
+    asegurar_coordinador_golden_master,
+    resolver_objetivo_golden_master_desde_config,
+)
 from sky_claw.app.comms.telegram import (
     TelegramHITLMessageRegistry,
     TelegramWebhook,
@@ -395,6 +400,8 @@ class AppContext:
         # Registry efímero: request_id → mensaje Telegram exacto. Nunca se
         # persiste y se limpia al cerrar la generación de startup.
         self.telegram_hitl_registry = TelegramHITLMessageRegistry()
+        self.golden_master_coordinator: CoordinadorTelegramGoldenMaster | None = None
+        self._golden_master_objetivo: Any = None
         self.router: LLMRouter | None = None
         # F1 (auditoría Zero-Trust 2026-07-18): bóveda de credenciales para el
         # hot-swap Zero-Trust del router. None hasta que start_full la provisione
@@ -770,6 +777,8 @@ class AppContext:
         self.mo2_profile = PERFIL_MO2_POR_DEFECTO
         self.router = None
         self.polling = None
+        self.golden_master_coordinator = None
+        self._golden_master_objetivo = None
         self.hitl = None
         self.sender = None
         self.sync_engine = None
@@ -1442,12 +1451,24 @@ class AppContext:
             masterlist = MasterlistClient(gateway=self.network.gateway, api_key=nexus_key)
 
             sender: TelegramSender | None = None
+            golden_master_coordinator: CoordinadorTelegramGoldenMaster | None = None
+            self._golden_master_objetivo = resolver_objetivo_golden_master_desde_config(
+                local_cfg,
+                config_path=self.config_path,
+            )
             if bot_token:
                 sender = TelegramSender(
                     bot_token=bot_token,
                     gateway=self.network.gateway,
                     session=self.network.session,
                 )
+                golden_master_coordinator = await asegurar_coordinador_golden_master(
+                    self,
+                    sender=sender,
+                    authorized_user_id=operator_chat_id,
+                    local_cfg=local_cfg,
+                )
+                self._push_startup_cleanup(self._cerrar_golden_master, golden_master_coordinator)
 
             hitl: HITLGuard
             full_published = False
@@ -2207,6 +2228,7 @@ class AppContext:
                     hitl=hitl,
                     authorized_user_id=operator_chat_id,
                     hitl_registry=self.telegram_hitl_registry,
+                    golden_master_coordinator=golden_master_coordinator,
                 )
                 polling = TelegramPolling(
                     token=bot_token,
@@ -2256,6 +2278,14 @@ class AppContext:
             await self._start_all_inner()
             return
         await self._run_startup(self._start_all_inner, publishes_full=True)
+
+    async def _cerrar_golden_master(self, coordinador: CoordinadorTelegramGoldenMaster) -> None:
+        """Callback for AsyncExitStack: cierra el coordinador HITL de Golden Master."""
+        try:
+            await coordinador.cerrar()
+        finally:
+            if self.golden_master_coordinator is coordinador:
+                self.golden_master_coordinator = None
 
     async def _stop_polling(self, polling: TelegramPolling) -> None:
         """Callback for AsyncExitStack: stop Telegram polling."""

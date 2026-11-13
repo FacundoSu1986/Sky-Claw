@@ -721,6 +721,7 @@ class FrontendBridge:
             )
 
             # Recreate polling
+            from sky_claw.app.comms.golden_master_hitl import asegurar_coordinador_golden_master
             from sky_claw.app.comms.telegram import TelegramWebhook
             from sky_claw.app.comms.telegram_polling import TelegramPolling
 
@@ -728,6 +729,11 @@ class FrontendBridge:
             # tras el hot-reload. _validate_sender falla cerrado si es None y
             # compara contra el user_id (int), por eso se convierte chat_id.
             authorized_user_id = int(chat_id) if chat_id else None
+            golden_master_coordinator = await asegurar_coordinador_golden_master(
+                self.ctx,
+                sender=self.ctx.sender,
+                authorized_user_id=authorized_user_id,
+            )
             webhook_handler = TelegramWebhook(
                 router=self.ctx.router,
                 sender=self.ctx.sender,
@@ -735,6 +741,7 @@ class FrontendBridge:
                 hitl=self.ctx.hitl,
                 authorized_user_id=authorized_user_id,
                 hitl_registry=self.ctx.telegram_hitl_registry,
+                golden_master_coordinator=golden_master_coordinator,
             )
             self.ctx.polling = TelegramPolling(
                 token=token,

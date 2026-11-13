@@ -5,6 +5,7 @@ import logging
 import sys
 from typing import TYPE_CHECKING
 
+from sky_claw.app.comms.golden_master_hitl import asegurar_coordinador_golden_master
 from sky_claw.app.comms.telegram import TelegramWebhook
 from sky_claw.app.comms.telegram_polling import TelegramPolling
 
@@ -27,6 +28,11 @@ async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
     if ctx.sender is None:
         logger.error("TELEGRAM_BOT_TOKEN required.")
         sys.exit(1)
+    golden_master_coordinator = await asegurar_coordinador_golden_master(
+        ctx,
+        sender=ctx.sender,
+        authorized_user_id=ctx._args.operator_chat_id,
+    )
     # M-4: pasar authorized_user_id. Sin él, _validate_sender falla cerrado
     # (allowed_user_id=None ⇒ rechaza) y bloquea TODOS los approvals HITL en
     # --mode telegram.
@@ -37,6 +43,7 @@ async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
         hitl=ctx.hitl,
         authorized_user_id=ctx._args.operator_chat_id,
         hitl_registry=ctx.telegram_hitl_registry,
+        golden_master_coordinator=golden_master_coordinator,
     )
     polling = TelegramPolling(
         token=ctx.sender._token,
@@ -53,3 +60,4 @@ async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
         pass
     finally:
         await polling.stop()
+        await golden_master_coordinator.cerrar()
