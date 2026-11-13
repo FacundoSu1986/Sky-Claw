@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import itertools
 import json
 import logging
 import time
@@ -34,6 +33,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from sky_claw.app.agent.tools.job_ids import nuevo_id_de_trabajo
 from sky_claw.app.agent.tools.schemas import TIMEOUT_MAXIMO_LLM
 from sky_claw.app.security.hitl import Decision, new_hitl_request_id
 from sky_claw.app.security.sanitize import sanitize_for_prompt
@@ -62,7 +62,6 @@ _PODABLES = (("hallazgos", "hallazgos_omitidos"), ("fallas", "fallas_omitidas"))
 
 EstadoDeAdmision = Literal["esperando_aprobacion", "en_curso", "exitosa", "fallida", "rechazada", "cancelada"]
 _ESTADOS_VIVOS = frozenset({"esperando_aprobacion", "en_curso"})
-_IDS = itertools.count(1)
 
 
 def _fallo(mensaje: str, **extra: Any) -> str:
@@ -241,7 +240,7 @@ class GestorDeAdmisionesNativas:
             }
         # El contexto se captura UNA vez: es el que ve el operador y el que se verifica al copiar.
         trabajo = TrabajoDeAdmision(
-            id=f"admision-{next(_IDS)}",
+            id=nuevo_id_de_trabajo("admision"),
             plugin=plugin,
             visible=visible,
             iniciado_en=time.time(),
