@@ -6,9 +6,12 @@ preferencia persistida sólo cambia el DEFAULT de ese seam.* Por eso:
 
 - no hay un segundo camino de auto-aprobación: el ancla AST enumera TODOS los
   ``auto_approve=`` de ``sky_claw_gui.py`` y exige que sean ese seam;
-- el alcance no crece: lo que nunca se auto-aprueba (descargas, promoción de
-  sandbox, confirmación mid-run de DynDOLOD) lo decide ``make_gui_hitl_notify``
-  por categoría, y acá se enumeran las tres con el getter encendido;
+- «Modo local» no crece: descargas, promoción de sandbox y confirmación mid-run
+  de DynDOLOD no las auto-aprueba, y acá se enumeran las tres con su getter
+  encendido;
+- las descargas tienen su PROPIA preferencia (egress = decisión aparte), armada
+  por ContextVar sólo en la task de ``run_ritual_install``: una descarga pedida
+  por el agente/Telegram corre en otra task y sigue pidiendo confirmación;
 - el default sigue fail-closed: sin preferencia escrita, o con un valor que no
   sea exactamente ``True``, se pide confirmación.
 """
@@ -16,12 +19,17 @@ preferencia persistida sólo cambia el DEFAULT de ese seam.* Por eso:
 from __future__ import annotations
 
 import ast
+import asyncio
 import pathlib
 from types import SimpleNamespace
 
 import pytest
 
-from sky_claw.app.gui.controllers.ritual_runner import make_gui_hitl_notify
+from sky_claw.app.gui.controllers.ritual_runner import (
+    make_gui_hitl_notify,
+    ritual_auto_approve_descargas_armed,
+    run_ritual_install,
+)
 from sky_claw.app.gui.sky_claw_gui import (
     _build_settings_data,
     cargar_modo_local_defecto,
@@ -29,7 +37,10 @@ from sky_claw.app.gui.sky_claw_gui import (
 )
 from sky_claw.app.gui.state.reactive_store import ReactiveStore
 from sky_claw.app.gui.views.forge_dashboard import (
+    CONFIG_KEY_DESCARGAS_AUTO,
     CONFIG_KEY_MODO_LOCAL_DEFECTO,
+    PREFERENCIAS_DE_APROBACION,
+    STORE_KEY_DESCARGAS_AUTO,
     STORE_KEY_MODO_LOCAL_DEFECTO,
     resolver_modo_local,
 )
@@ -176,6 +187,18 @@ def test_la_preferencia_solo_la_lee_el_seam() -> None:
     assert lectores == ["sky_claw_gui.py:cargar_modo_local_defecto", "forge_dashboard.py:modo_local_enabled"]
 
 
+def test_la_preferencia_de_descargas_solo_la_lee_su_seam() -> None:
+    lectores = [
+        f"{ruta.name}:{funcion.name}"
+        for ruta in sorted(_GUI.rglob("*.py"))
+        for funcion in ast.walk(ast.parse(ruta.read_text(encoding="utf-8")))
+        if isinstance(funcion, ast.FunctionDef | ast.AsyncFunctionDef)
+        for nodo in ast.walk(funcion)
+        if isinstance(nodo, ast.Name) and nodo.id == "STORE_KEY_DESCARGAS_AUTO"
+    ]
+    assert lectores == ["forge_dashboard.py:descargas_auto_enabled"]
+
+
 @pytest.mark.parametrize("categoria", ["download", "sandbox_promotion", CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA])
 async def test_lo_que_nunca_se_auto_aprueba_sigue_pidiendo_confirmacion(categoria: str) -> None:
     """Con la preferencia encendida (getter True) estas tres categorías siguen parkeando modal."""
@@ -197,3 +220,106 @@ async def test_lo_que_nunca_se_auto_aprueba_sigue_pidiendo_confirmacion(categori
 
     assert aprobadas == []
     assert [p["request_id"] for p in parkeadas] == ["r1"]
+
+
+# ── Descargas de red: preferencia propia, scoped a la task del instalador ───────
+def test_las_preferencias_de_aprobacion_estan_congeladas() -> None:
+    """Igualdad literal: una preferencia nueva obliga a decidir acá su alcance."""
+    assert PREFERENCIAS_DE_APROBACION == {
+        "gui_auto_approve_rituals": "modo_local_defecto",
+        "gui_auto_approve_downloads": "descargas_auto_defecto",
+    }
+    assert CONFIG_KEY_MODO_LOCAL_DEFECTO in PREFERENCIAS_DE_APROBACION
+    assert PREFERENCIAS_DE_APROBACION[CONFIG_KEY_DESCARGAS_AUTO] == STORE_KEY_DESCARGAS_AUTO
+
+
+@pytest.mark.parametrize("clave", sorted(PREFERENCIAS_DE_APROBACION))
+def test_toda_preferencia_arranca_apagada_y_hace_el_viaje_completo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, clave: str
+) -> None:
+    """Default False → guardar → TOML → store, para CADA preferencia (no sólo la primera)."""
+    _sin_keyring(monkeypatch)
+    ruta = tmp_path / "config.toml"
+    store = ReactiveStore()
+    assert Config(ruta)._data[clave] is False
+
+    assert save_settings(ruta, {"llm_provider": "ollama", clave: "true"}) is None
+    cargar_modo_local_defecto(ruta, store)
+
+    assert Config(ruta)._data[clave] is True
+    for otra, store_key in PREFERENCIAS_DE_APROBACION.items():
+        assert store.get(store_key) is (otra == clave), "encender una no enciende la otra"
+    assert save_settings(ruta, {"llm_provider": "ollama", clave: "quizás"}) is not None
+
+
+async def test_descarga_se_auto_aprueba_solo_con_su_propio_getter() -> None:
+    aprobadas: list[tuple[str, bool]] = []
+    parkeadas: list[dict[str, object]] = []
+
+    async def _responder(request_id: str, aprobado: bool) -> None:
+        aprobadas.append((request_id, aprobado))
+
+    peticion = SimpleNamespace(request_id="d1", category="download", reason="", detail="", url="https://x/y.zip")
+    comun = {"respond": _responder, "set_pending": parkeadas.append, "delegate": None}
+
+    # «Modo local» encendido NO alcanza: sigue siendo egress.
+    await make_gui_hitl_notify(auto_approve_getter=lambda: True, **comun)(peticion)
+    assert (aprobadas, len(parkeadas)) == ([], 1)
+
+    # Su preferencia propia sí, aun con «Modo local» apagado.
+    await make_gui_hitl_notify(auto_approve_getter=lambda: False, auto_approve_downloads_getter=lambda: True, **comun)(
+        peticion
+    )
+    assert (aprobadas, len(parkeadas)) == ([("d1", True)], 1)
+
+
+class _InstaladorEspia:
+    """``ensure_loot`` anota qué ve la task del instalador y qué ve una task ajena."""
+
+    def __init__(self) -> None:
+        self.visto_adentro: bool | None = None
+        self.visto_por_ajena: bool | None = None
+        self.ajena_puede_mirar = asyncio.Event()
+        self.ajena_miro = asyncio.Event()
+
+    async def ensure_loot(self, install_dir: object, session: object) -> object:
+        self.visto_adentro = ritual_auto_approve_descargas_armed()
+        self.ajena_puede_mirar.set()
+        await self.ajena_miro.wait()
+        return SimpleNamespace(exe_path="C:/Modding/LOOT/loot.exe", verification=None)
+
+
+@pytest.mark.parametrize("preferencia", [True, False])
+async def test_el_armado_de_descargas_vive_solo_en_la_task_del_instalador(
+    monkeypatch: pytest.MonkeyPatch, preferencia: bool
+) -> None:
+    """Una descarga del agente/Telegram concurrente (otra task) nunca ve el armado de la GUI."""
+    monkeypatch.setenv("LOOT_EXE", "")
+    espia = _InstaladorEspia()
+    contexto = SimpleNamespace(tools_installer=espia, install_dir="C:/Modding", session="sess")
+
+    async def _task_ajena() -> None:
+        await espia.ajena_puede_mirar.wait()
+        espia.visto_por_ajena = ritual_auto_approve_descargas_armed()
+        espia.ajena_miro.set()
+
+    ajena = asyncio.create_task(_task_ajena())
+    await run_ritual_install("loot", app_context=contexto, store=ReactiveStore(), auto_approve_downloads=preferencia)
+    await ajena
+
+    assert espia.visto_adentro is preferencia
+    assert espia.visto_por_ajena is False
+    assert ritual_auto_approve_descargas_armed() is False, "el armado no sobrevive al instalador"
+
+
+def test_el_armado_de_descargas_del_gui_sale_de_su_unico_seam() -> None:
+    """Enumera TODOS los ``auto_approve_downloads=`` de ``sky_claw_gui.py``."""
+    arbol = ast.parse((_GUI / "sky_claw_gui.py").read_text(encoding="utf-8"))
+    fuentes = [
+        ast.unparse(kw.value)
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Call)
+        for kw in nodo.keywords
+        if kw.arg == "auto_approve_downloads"
+    ]
+    assert fuentes == ["descargas_auto_enabled()"], fuentes

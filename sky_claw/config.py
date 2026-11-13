@@ -382,6 +382,9 @@ class Config:
             # «Modo local» por defecto de la GUI: el operador eligió no confirmar cada
             # ritual. Fail-closed: sólo el booleano True arma la auto-aprobación.
             "gui_auto_approve_rituals": False,
+            # Preferencia APARTE para el egress: auto-aprobar las descargas que el
+            # operador inicia con «Instalar» en la GUI (nunca las del agente/Telegram).
+            "gui_auto_approve_downloads": False,
         }
 
     def _load_from_file(self) -> None:

@@ -62,7 +62,9 @@ from sky_claw.app.gui.state import ReactiveStore, get_store
 from sky_claw.app.gui.task_tracking import create_tracked_task, drain_tracked_tasks
 from sky_claw.app.gui.views import render_dashboard
 from sky_claw.app.gui.views.forge_dashboard import (
+    CONFIG_KEY_DESCARGAS_AUTO,
     CONFIG_KEY_MODO_LOCAL_DEFECTO,
+    PREFERENCIAS_DE_APROBACION,
     STORE_KEY_ENV,
     STORE_KEY_MODO_LOCAL_DEFECTO,
     _hitl_modal_panel,
@@ -70,6 +72,7 @@ from sky_claw.app.gui.views.forge_dashboard import (
     _ritual_feedback_panel,
     _ritual_preflight_panel,
     current_tab_id,
+    descargas_auto_enabled,
     modo_local_enabled,
 )
 from sky_claw.config import Config
@@ -471,7 +474,10 @@ def _ensure_identity_loaded(config_path: Path) -> None:
 
 
 def cargar_modo_local_defecto(config_path: Path, store: ReactiveStore, *, forzar: bool = False) -> None:
-    """Publica en el store la preferencia «Modo local por defecto» del TOML.
+    """Publica en el store TODAS las preferencias de aprobación del TOML.
+
+    Itera ``PREFERENCIAS_DE_APROBACION`` («Modo local por defecto» y descargas):
+    las dos viajan juntas, así que no puede cargarse una y quedar la otra vieja.
 
     Una lectura por proceso (``main_page`` re-renderiza seguido y no debe releer
     el disco cada vez); ``forzar=True`` tras guardar Ajustes. Fail-closed: si la
@@ -480,12 +486,15 @@ def cargar_modo_local_defecto(config_path: Path, store: ReactiveStore, *, forzar
     """
     if not forzar and store.get(STORE_KEY_MODO_LOCAL_DEFECTO) is not None:
         return
-    armado = False
+    datos: dict[str, Any] = {}
     try:
-        armado = Config(config_path)._data.get(CONFIG_KEY_MODO_LOCAL_DEFECTO) is True
+        datos = Config(config_path)._data
     except Exception:
-        logger.exception("No se pudo leer la preferencia de Modo local desde %s; se pide confirmación", config_path)
-    store.set(STORE_KEY_MODO_LOCAL_DEFECTO, armado)
+        logger.exception(
+            "No se pudieron leer las preferencias de aprobación desde %s; se pide confirmación", config_path
+        )
+    for clave_config, clave_store in PREFERENCIAS_DE_APROBACION.items():
+        store.set(clave_store, datos.get(clave_config) is True)
 
 
 #: Texto → booleano de la preferencia en el payload de Ajustes. Vocabulario
@@ -519,14 +528,16 @@ def save_settings(
     if error is not None:
         return error
 
-    # Preferencia «Modo local por defecto»: ausente = no cambiar; presente = sólo
-    # "true"/"false". Se valida ANTES de tocar keyring o TOML.
-    modo_local_defecto: bool | None = None
-    if CONFIG_KEY_MODO_LOCAL_DEFECTO in payload:
-        crudo = str(payload.get(CONFIG_KEY_MODO_LOCAL_DEFECTO) or "").strip().lower()
+    # Preferencias de aprobación: ausente = no cambiar; presente = sólo
+    # "true"/"false". Se validan TODAS antes de tocar keyring o TOML.
+    preferencias: dict[str, bool] = {}
+    for clave in PREFERENCIAS_DE_APROBACION:
+        if clave not in payload:
+            continue
+        crudo = str(payload.get(clave) or "").strip().lower()
         if crudo not in _MODO_LOCAL_DEFECTO_VALORES:
-            return "Valor no válido para la aprobación automática de rituales"
-        modo_local_defecto = _MODO_LOCAL_DEFECTO_VALORES[crudo]
+            return "Valor no válido para las preferencias de aprobación automática"
+        preferencias[clave] = _MODO_LOCAL_DEFECTO_VALORES[crudo]
 
     # Cambiar a un provider cloud requiere su clave: la tipeada ahora o el slot
     # {provider}_api_key ya guardado. Sin esto, AppContext caería a la
@@ -582,8 +593,8 @@ def save_settings(
             cfg._data["user_display_name"] = name
         if role:
             cfg._data["user_role"] = role
-        if modo_local_defecto is not None:
-            cfg._data[CONFIG_KEY_MODO_LOCAL_DEFECTO] = modo_local_defecto
+        for clave, valor in preferencias.items():
+            cfg._data[clave] = valor
         cfg.save()
     except Exception as exc:
         logger.exception("Error guardando configuración de Ajustes")
@@ -617,12 +628,13 @@ def _build_settings_data(config_path: Path) -> dict[str, Any]:
     import keyring
 
     app_state = get_app_state_instance()
-    provider, chat_id, modo_local_defecto = "deepseek", "", False
+    provider, chat_id, modo_local_defecto, descargas_auto = "deepseek", "", False, False
     try:
         cfg = Config(config_path)
         provider = str(cfg._data.get("llm_provider") or "deepseek")
         chat_id = str(cfg._data.get("telegram_chat_id") or "")
         modo_local_defecto = cfg._data.get(CONFIG_KEY_MODO_LOCAL_DEFECTO) is True
+        descargas_auto = cfg._data.get(CONFIG_KEY_DESCARGAS_AUTO) is True
     except Exception:
         logger.exception("No se pudo leer la config para Ajustes; se muestran defaults")
 
@@ -644,6 +656,7 @@ def _build_settings_data(config_path: Path) -> dict[str, Any]:
         "provider": provider,
         "telegram_chat_id": chat_id,
         "modo_local_defecto": modo_local_defecto,
+        "descargas_auto": descargas_auto,
         "key_status": key_status,
     }
 
@@ -803,10 +816,13 @@ def main_page() -> None:
             tool_key,
             app_context=runtime.app_context,
             store=get_store(),
-            # P1-7: la descarga es egress de red y nunca se auto-aprueba, así que
-            # su aprobación también tiene que quedar marcada con la pestaña que
-            # la pidió — si no, era accionable desde cualquier otra.
+            # P1-7: la descarga es egress de red; cuando pide confirmación, tiene
+            # que quedar marcada con la pestaña que la pidió — si no, era
+            # accionable desde cualquier otra.
             tab_id=current_tab_id(),
+            # Preferencia propia de Ajustes (no «Modo local»): se lee acá, en el
+            # click, y run_ritual_install la arma sólo para su task.
+            auto_approve_downloads=descargas_auto_enabled(),
         ),
         name="gui-ritual-install",
     )

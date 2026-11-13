@@ -52,6 +52,22 @@ logger = logging.getLogger(__name__)
 _ritual_auto_approve: contextvars.ContextVar[bool] = contextvars.ContextVar("ritual_auto_approve", default=False)
 
 
+#: Mismo mecanismo que ``_ritual_auto_approve``, para la categoría ``download``:
+#: lo arma sólo ``run_ritual_install`` cuando el operador eligió en Ajustes no
+#: confirmar las descargas que él inicia. Es un ContextVar APARTE a propósito —
+#: «Modo local» no enciende el egress— y scoped a la task: una descarga pedida
+#: por el agente LLM/Telegram corre en otra task (default ``False``) y sigue
+#: parkeando su aprobación.
+_ritual_auto_approve_descargas: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ritual_auto_approve_descargas", default=False
+)
+
+
+def ritual_auto_approve_descargas_armed() -> bool:
+    """True si la task actual es un ``run_ritual_install`` con descargas auto-aprobadas."""
+    return _ritual_auto_approve_descargas.get()
+
+
 def ritual_auto_approve_armed() -> bool:
     """True si el dispatch de la task actual armó auto-approve (Modo local).
 
@@ -675,6 +691,7 @@ def make_gui_hitl_notify(
     set_pending: Callable[[dict[str, Any]], None],
     auto_approve_getter: Callable[[], bool],
     tab_id_getter: Callable[[], str | None] = ritual_tab_id,
+    auto_approve_downloads_getter: Callable[[], bool] = lambda: False,
     delegate: Callable[[Any], Awaitable[None]] | None,
 ) -> Callable[[Any], Awaitable[None]]:
     """Build the GUI's HITL ``notify_fn`` (composes over the original closure).
@@ -684,8 +701,11 @@ def make_gui_hitl_notify(
     ``set_pending`` so the page renders an Aprobar/Denegar modal.
 
     For ``category == "download"`` (the "Instalar" button — Follow-up C) the GUI
-    also parks an Aprobar/Denegar modal, but it is **never** auto-approved by
-    "Modo local": a network download is egress and is always confirmed by hand.
+    also parks an Aprobar/Denegar modal, and it is **never** auto-approved by
+    "Modo local": a network download is egress. It is auto-approved only when
+    ``auto_approve_downloads_getter`` says so — la preferencia APARTE de Ajustes,
+    armada por ContextVar sólo en la task de :func:`run_ritual_install`. El
+    default del getter es ``False``: quien no lo cablea sigue confirmando a mano.
     The parked entry carries the asset ``url`` so the modal can show its origin.
 
     For ``category == "sandbox_promotion"`` (T-27b·2, ADR 0005) the modal is
@@ -770,7 +790,16 @@ def make_gui_hitl_notify(
             _gui_pending_request_id.set(req.request_id)
             return
         if category == "download":
-            # Egress: never auto-approved — always parks a manual Aprobar/Denegar.
+            # Egress: «Modo local» nunca lo auto-aprueba. Sólo la preferencia propia
+            # de descargas, armada para la task del instalador de la GUI.
+            if auto_approve_downloads_getter():
+                logger.info(
+                    "HITL(GUI): auto-approving download %s (preferencia de Ajustes) url=%s",
+                    req.request_id,
+                    getattr(req, "url", "") or "",
+                )
+                await respond(req.request_id, True)
+                return
             set_pending(
                 stamp_hitl_owner(
                     {
@@ -1062,6 +1091,7 @@ async def run_ritual_install(
     app_context: Any,
     store: ReactiveStore,
     tab_id: str | None = None,
+    auto_approve_downloads: bool = False,
 ) -> None:
     """Install a Ritual's tool via ``ToolsInstaller`` and publish feedback to the store.
 
@@ -1070,7 +1100,8 @@ async def run_ritual_install(
     never overlap (both serialize on ``STORE_KEY_RITUAL_IN_FLIGHT``). The download's
     HITL approval is requested by the installer with ``category="download"`` and
     routed to the GUI modal by :func:`make_gui_hitl_notify` — it is never
-    auto-approved by "Modo local".
+    auto-approved by "Modo local". ``auto_approve_downloads`` (la preferencia
+    propia de Ajustes, default ``False``) la auto-aprueba sólo para ESTA task.
 
     P1-7: ``tab_id`` arma el mismo ContextVar que :func:`run_ritual`, así que la
     aprobación de descarga queda marcada con la pestaña que apretó "Instalar".
@@ -1193,6 +1224,7 @@ async def run_ritual_install(
     # aprobación de descarga con la pestaña que apretó "Instalar".
     tab_token = _ritual_tab_id.set(tab_id)
     pending_token = _gui_pending_request_id.set(None)
+    descargas_token = _ritual_auto_approve_descargas.set(auto_approve_downloads is True)
     try:
         if cs_kwargs is not None:
             result = await ensure(install_dir, session, downloader, **cs_kwargs)
@@ -1208,6 +1240,7 @@ async def run_ritual_install(
     finally:
         pending_request_id = _gui_pending_request_id.get()
         _gui_pending_request_id.reset(pending_token)
+        _ritual_auto_approve_descargas.reset(descargas_token)  # disarm (scoped a esta task)
         _ritual_tab_id.reset(tab_token)
         store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
         # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.

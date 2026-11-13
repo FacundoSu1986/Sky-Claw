@@ -86,6 +86,18 @@ STORE_KEY_ENV = "environment_snapshot"
 # decisión es ``modo_local_enabled`` (ancla AST en test_modo_local_persistente.py).
 CONFIG_KEY_MODO_LOCAL_DEFECTO = "gui_auto_approve_rituals"
 STORE_KEY_MODO_LOCAL_DEFECTO = "modo_local_defecto"
+# Preferencia APARTE para las descargas de red (egress): «Modo local»/F8 no la
+# enciende. Único lector de decisión: ``descargas_auto_enabled``.
+CONFIG_KEY_DESCARGAS_AUTO = "gui_auto_approve_downloads"
+STORE_KEY_DESCARGAS_AUTO = "descargas_auto_defecto"
+#: Clave de ``config.toml`` → clave del store, de TODAS las preferencias de
+#: aprobación. Congelada por igualdad literal en test_modo_local_persistente.py:
+#: persistencia, carga y validación iteran esta tabla, así que una preferencia
+#: nueva no puede quedar a medio cablear.
+PREFERENCIAS_DE_APROBACION: dict[str, str] = {
+    CONFIG_KEY_MODO_LOCAL_DEFECTO: STORE_KEY_MODO_LOCAL_DEFECTO,
+    CONFIG_KEY_DESCARGAS_AUTO: STORE_KEY_DESCARGAS_AUTO,
+}
 
 # Heartbeat (seconds) for the component-level live refresh of the Vitalidad bars
 # and the header HUD. A ``ui.timer`` re-renders ONLY those two containers at this
@@ -633,6 +645,15 @@ def modo_local_enabled() -> bool:
     except Exception:
         return False
     return resolver_modo_local(sesion, get_store().get(STORE_KEY_MODO_LOCAL_DEFECTO))
+
+
+def descargas_auto_enabled() -> bool:
+    """True si el operador eligió en Ajustes no confirmar las descargas que él inicia.
+
+    Sólo el booleano ``True`` arma (fail-closed). No hay toggle de sesión: es
+    egress de red y se decide en Ajustes, no con un atajo de teclado.
+    """
+    return get_store().get(STORE_KEY_DESCARGAS_AUTO) is True
 
 
 def resolver_modo_local(sesion: object, defecto: object) -> bool:
@@ -1896,9 +1917,21 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
             .style("align-self:flex-start;")
         )
         ui.html(
-            f'<span style="{_HINT}">Arranca cada sesión de esta PC en «Modo local» (F8 lo alterna al vuelo). '
-            "Siempre piden confirmación: descargas de red, promoción de un sandbox y la configuración "
-            "de TexGen/DynDOLOD. No afecta a Telegram ni al agente.</span>"
+            f'<span style="{_HINT}">Arranca cada sesión de esta PC en «Modo local» (F8 lo alterna al vuelo).</span>'
+        )
+        descargas_toggle = (
+            ui.toggle(
+                {False: "Confirmar cada descarga", True: "Aprobar descargas automáticamente"},
+                value=settings.get("descargas_auto") is True,
+            )
+            .classes("sc-toggle")
+            .props("unelevated toggle-color=sc-tema toggle-text-color=sc-tema")
+            .style("align-self:flex-start;")
+        )
+        ui.html(
+            f'<span style="{_HINT}">Con esto, «Instalar» descarga de internet sin preguntar. Vale sólo para lo que '
+            "iniciás vos desde esta pantalla: las descargas que pida el agente o Telegram siguen pidiendo "
+            "confirmación, igual que la promoción de un sandbox y la configuración de TexGen/DynDOLOD.</span>"
         )
 
     # ── Guardar ──
@@ -1908,6 +1941,7 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
             payload = {key: str(inp.value or "") for key, inp in inputs.items()}
             payload["llm_provider"] = str(provider_toggle.value or "")
             payload[CONFIG_KEY_MODO_LOCAL_DEFECTO] = "true" if aprobaciones_toggle.value is True else "false"
+            payload[CONFIG_KEY_DESCARGAS_AUTO] = "true" if descargas_toggle.value is True else "false"
             on_save(payload)
 
         btn = (
