@@ -316,22 +316,6 @@ class TelegramEntitiesError(TelegramSendError):
     """
 
 
-_RE_BLOQUE_RAZONAMIENTO = re.compile(r"<(thought|think)>.*?</\1>", re.IGNORECASE | re.DOTALL)
-_RE_ETIQUETA_RAZONAMIENTO = re.compile(r"</?(?:thought|think)>", re.IGNORECASE)
-
-
-def quitar_razonamiento(texto: str) -> str:
-    """Saca los bloques ``<thought>``/``<think>`` que algunos modelos anteponen a su respuesta.
-
-    El modo HTML de Telegram rechaza esas etiquetas (#918). Una etiqueta sin cierre se quita sola y
-    conserva el texto. Si el modelo respondió SOLO razonamiento, se devuelve ese contenido sin
-    etiquetas: nunca un mensaje vacío, que Telegram también rechaza.
-    """
-    limpio = _RE_BLOQUE_RAZONAMIENTO.sub("", texto)
-    limpio = _RE_ETIQUETA_RAZONAMIENTO.sub("", limpio).strip()
-    return limpio or _RE_ETIQUETA_RAZONAMIENTO.sub("", texto).strip()
-
-
 class TelegramRateLimitError(TelegramSendError):
     """Flood-control de Telegram (HTTP 429) que no se pudo absorber con reintentos.
 
