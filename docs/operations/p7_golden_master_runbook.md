@@ -440,6 +440,21 @@ El subsistema transaccional distingue cuatro cuadrantes operativos rigurosos par
      (`binder_recovery.recuperar_transicion_interrumpida` +
      `journal.reconciliar_journal` + nueva aprobación). No existe re-emisión
      automática.
+     **Alcance de `EMISION_PRODUCTIVA_HABILITADA`:** gobierna **exclusivamente**
+     la emisión de autorizaciones **nuevas** (`approval.emitir_aprobacion` /
+     `owner_consent.emitir_aprobacion_autorizada`). Mientras permanezca en
+     `False`, cualquier solicitud `/gm_preparar` + Aprobar queda bloqueada sin
+     mutar la autoridad durable; en cambio, las operaciones de diagnóstico,
+     consumo/abandono y recuperación sobre artefactos ya existentes siguen
+     operativas: `/gm_estado` (`diagnosticar_estado_durable`), `/gm_reanudar`
+     pre-PENDING sobre una aprobación ya consumida (`reanudar`),
+     `/gm_abandonar` (`abandonar_transicion_consumida`),
+     `binder_recovery.recuperar_transicion_interrumpida` (restauración de
+     superficies con journal `PENDING`), `journal.reconciliar_journal`,
+     `approval.reconciliar_aprobacion` y `approval.revocar_aprobacion` sobre
+     emisiones previas aún no consumidas (tras `PENDING`, completar una nueva
+     transición sí exige nueva aprobación y queda bloqueado hasta habilitar la
+     bandera).
 2. **P7-A … P7-G (ver §10).** Hasta que A5 no se ejecute efectivamente, el inspector P7 seguirá
    `BLOCKED` (`listo_para_p7=False`: `desired_runtime`/`clone_record`/`version.skyrim`/`mo2.game_path`).
 

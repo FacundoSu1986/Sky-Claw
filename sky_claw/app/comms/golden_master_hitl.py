@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import aiohttp
 
 from sky_claw.app.comms.telegram_sender import (
+    MAX_MESSAGE_LENGTH,
     TelegramMessage,
     TelegramRateLimitError,
     TelegramSender,
@@ -849,13 +850,19 @@ class CoordinadorTelegramGoldenMaster:
         def _entregar(presentacion: PresentacionConsentimiento) -> None:
             if self._cerrado or cancelacion_pedida.is_set():
                 raise EntregaPresentacionError("preparación Golden Master cancelada antes de entregar")
+            # Renderizado fail-closed ANTES de crear/enviar la coroutine: nunca entregar prompt parcial ni botones sin scope íntegro.
+            mensaje_html = _formatear_mensaje_presentacion_desde_pres(presentacion)
             token = secrets.token_urlsafe(16)
             coro = self._sender.send(
                 chat_id,
-                _formatear_mensaje_presentacion_desde_pres(presentacion),
+                mensaje_html,
                 reply_markup=_construir_teclado_golden_master(token),
             )
-            fut = asyncio.run_coroutine_threadsafe(coro, loop)
+            try:
+                fut = asyncio.run_coroutine_threadsafe(coro, loop)
+            except RuntimeError as exc:
+                coro.close()
+                raise EntregaPresentacionError(f"no se pudo agendar la entrega por Telegram: {exc}") from exc
             with self._entregas_lock:
                 if self._cerrado or cancelacion_pedida.is_set():
                     fut.cancel()
@@ -865,14 +872,19 @@ class CoordinadorTelegramGoldenMaster:
                 mensaje = fut.result(timeout=self._delivery_timeout)
             except concurrent.futures.CancelledError as exc:
                 raise EntregaPresentacionError("entrega Golden Master cancelada por cierre") from exc
-            except (*_ERRORES_TRANSPORTE_TELEGRAM, RuntimeError) as exc:
+            except (*_ERRORES_TRANSPORTE_TELEGRAM, TimeoutError, RuntimeError) as exc:
                 raise EntregaPresentacionError(f"fallo al entregar presentación por Telegram: {exc}") from exc
             finally:
                 with self._entregas_lock:
                     self._entregas_en_vuelo.discard(fut)
 
+            msg_id = getattr(mensaje, "message_id", None)
+            if isinstance(msg_id, bool) or not isinstance(msg_id, int) or msg_id <= 0:
+                raise EntregaPresentacionError(
+                    "la entrega por Telegram no devolvió un message_id entero válido (rechazo fail-closed)"
+                )
             entrega_ref["token"] = token
-            entrega_ref["message_id"] = mensaje.message_id
+            entrega_ref["message_id"] = msg_id
 
         try:
             solicitud = await self._ejecutar_en_worker(
@@ -1103,23 +1115,49 @@ class CoordinadorTelegramGoldenMaster:
 
 
 def _formatear_mensaje_presentacion_desde_pres(presentacion: PresentacionConsentimiento) -> str:
-    encabezado = (
+    """Formatea la presentación HITL completa para Telegram o falla cerrado si no cabe íntegra.
+
+    Nunca recorta el cuerpo del ``ApprovalScope`` ni el ``approval_scope_digest``:
+    el propietario no puede recibir botones aprobables sin ver la presentación completa.
+    """
+    solicitud_id = presentacion.solicitud_id.strip()
+    texto = presentacion.texto
+    digest = presentacion.approval_scope_digest.strip()
+    if not solicitud_id or not texto.strip() or not digest:
+        raise EntregaPresentacionError(
+            "presentación Golden Master incompleta (faltan solicitud_id, texto o approval_scope_digest): "
+            "rechazo fail-closed antes de entregar"
+        )
+    if digest not in texto:
+        raise EntregaPresentacionError(
+            "la presentación Golden Master no incluye el approval_scope_digest comprometido en su cuerpo: "
+            "rechazo fail-closed antes de entregar"
+        )
+
+    cuerpo_escapado = _escape_html(texto)
+    solicitud_escapada = _escape_html(solicitud_id)
+    digest_escapado = _escape_html(digest)
+    mensaje = (
         "🛡️ <b>Autorización HITL — Golden Master</b>\n\n"
-        f"<b>Solicitud:</b> <code>{_escape_html(presentacion.solicitud_id)}</code>\n"
+        f"<b>Solicitud:</b> <code>{solicitud_escapada}</code>\n"
         f"<b>Approval seq:</b> <code>{presentacion.approval_seq}</code>\n\n"
-        f"<pre>{_escape_html(presentacion.texto)}</pre>\n\n"
+        f"<pre>{cuerpo_escapado}</pre>\n\n"
         "<i>Confirmá con los botones o respondé <code>/gm_aprobar &lt;id&gt;</code> / "
         "<code>/gm_rechazar &lt;id&gt;</code> / <code>/gm_cancelar &lt;id&gt;</code>.</i>"
     )
-    if len(encabezado) > _TELEGRAM_MAX_CHAR_RESUMEN:
-        cuerpo = _escape_html(presentacion.texto[:2400])
-        return (
-            "🛡️ <b>Autorización HITL — Golden Master</b>\n\n"
-            f"<b>Solicitud:</b> <code>{_escape_html(presentacion.solicitud_id)}</code>\n"
-            f"<b>Approval seq:</b> <code>{presentacion.approval_seq}</code>\n\n"
-            f"<pre>{cuerpo}...</pre>"
+    limite_seguro = min(_TELEGRAM_MAX_CHAR_RESUMEN, MAX_MESSAGE_LENGTH)
+    if (
+        len(mensaje) > limite_seguro
+        or digest_escapado not in mensaje
+        or solicitud_escapada not in mensaje
+        or f"<code>{presentacion.approval_seq}</code>" not in mensaje
+    ):
+        raise EntregaPresentacionError(
+            f"la presentación HITL completa excede el límite seguro de un único mensaje en Telegram "
+            f"({len(mensaje)} > {limite_seguro} caracteres) o perdió campos obligatorios: "
+            "rechazo fail-closed sin truncar para preservar el scope y approval_scope_digest completos"
         )
-    return encabezado
+    return mensaje
 
 
 async def asegurar_coordinador_golden_master(

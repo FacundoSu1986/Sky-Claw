@@ -17,6 +17,7 @@ import ast
 import asyncio
 import dataclasses
 import hashlib
+import html
 import os
 import pathlib
 import threading
@@ -28,8 +29,11 @@ import aiohttp
 import pytest
 
 from sky_claw.app.comms.golden_master_hitl import (
+    _TELEGRAM_MAX_CHAR_RESUMEN,
     CoordinadorTelegramGoldenMaster,
+    EntregaPresentacionError,
     ObjetivoTransicionGoldenMaster,
+    _formatear_mensaje_presentacion_desde_pres,
     asegurar_coordinador_golden_master,
     build_gm_callback_data,
     parse_gm_callback_data,
@@ -40,7 +44,12 @@ from sky_claw.app.comms.telegram import (
     TelegramWebhook,
 )
 from sky_claw.app.comms.telegram_polling import TelegramPolling
-from sky_claw.app.comms.telegram_sender import TelegramMessage, TelegramSendError
+from sky_claw.app.comms.telegram_sender import (
+    TelegramMessage,
+    TelegramRateLimitError,
+    TelegramSendError,
+    TelegramUploadTimeoutError,
+)
 from sky_claw.app.security.hitl import HITLGuard
 from sky_claw.config import Config
 from sky_claw.local.frozen_runtime import approval as approval_module
@@ -48,6 +57,7 @@ from sky_claw.local.frozen_runtime import autorizacion_hitl_transicion as hitl_w
 from sky_claw.local.frozen_runtime import binder_recovery as recovery_module
 from sky_claw.local.frozen_runtime import journal as journal_module
 from sky_claw.local.frozen_runtime import mo2_ini_exclusion
+from sky_claw.local.frozen_runtime import owner_consent as owner_consent_module
 from sky_claw.local.frozen_runtime import runtime_clone_binder as binder_module
 from sky_claw.local.frozen_runtime.approval import (
     ApprovalLifecycle,
@@ -1059,3 +1069,377 @@ class TestFronterasArquitectonicasYSimetria:
         assert ".cerrar()" in (RAIZ_REPO / "sky_claw" / "app" / "modes" / "telegram_mode.py").read_text(
             encoding="utf-8"
         )
+
+
+# ---------------------------------------------------------------------------
+# 7. Presentación completa, truncamiento fail-closed, transporte y cancelación (H-01)
+# ---------------------------------------------------------------------------
+
+
+def _presentacion_prueba(
+    *,
+    solicitud_id: str = "sol-h01",
+    approval_seq: int = 1,
+    digest: str = "digest-critico-al-final-de-presentacion",
+    texto: str | None = None,
+) -> owner_consent_module.PresentacionConsentimiento:
+    cuerpo = texto if texto is not None else f"operation: INITIAL_MIGRATION\napproval_scope_digest: {digest}\n"
+    return owner_consent_module.PresentacionConsentimiento(
+        solicitud_id=solicitud_id,
+        root_id="root-test",
+        superficie=owner_consent_module.SuperficieConsentimiento.TELEGRAM,
+        sesion="telegram:424242:424242",
+        propietario="424242",
+        mecanismo="telegram_private_chat",
+        approval_id="apr-test",
+        approval_seq=approval_seq,
+        approval_scope_digest=digest,
+        approval_provenance="hitl_telegram_private_chat",
+        scope_payload={"operation": "INITIAL_MIGRATION"},
+        ledger_revision_at_proposal=0,
+        presentada_en_ns=1_000_000,
+        texto=cuerpo,
+    )
+
+
+class TestPresentacionCompletaYEntregaFailClosed:
+    @pytest.mark.asyncio
+    async def test_presentacion_normal_incluye_todos_los_campos_y_digest(self, tmp_path: pathlib.Path) -> None:
+        """AAA: una presentación normal se entrega íntegra en un solo mensaje con todos los campos y el digest."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        coord, _webhook, polling, sender, router = _construir_entorno(rig)
+        try:
+            # Act
+            await polling._process_raw_update(_update_texto(700, "/gm_preparar"))
+            await coord.esperar_idle()
+
+            # Assert
+            router.chat.assert_not_awaited()
+            assert coord.tiene_solicitud_abierta is True
+            assert coord._sesion_activa is not None
+            pendientes = coord._sesion_activa.registro.pendientes()
+            assert len(pendientes) == 1
+            pres_original = pendientes[0]
+
+            assert sender.send.await_count == 1
+            call = sender.send.await_args_list[-1]
+            texto_enviado = call.args[1]
+            assert len(texto_enviado) <= _TELEGRAM_MAX_CHAR_RESUMEN
+            assert "...</pre>" not in texto_enviado
+            assert pres_original.solicitud_id in texto_enviado
+            assert f"<code>{pres_original.approval_seq}</code>" in texto_enviado
+            assert pres_original.approval_scope_digest in texto_enviado
+            for linea in pres_original.texto.splitlines():
+                if linea.strip():
+                    assert html.escape(linea, quote=True) in texto_enviado
+            assert "/gm_aprobar" in texto_enviado
+            assert call.kwargs.get("reply_markup") is not None
+        finally:
+            await coord.cerrar()
+
+    def test_formateador_presentacion_larga_rechaza_fail_closed_sin_truncar(self) -> None:
+        """AAA (H-01 unit): superar el límite máximo rechaza fail-closed en lugar de truncar a 2.400 chars."""
+        # Arrange
+        digest = "digest-critico-al-final-de-presentacion"
+        pres_larga = _presentacion_prueba(
+            solicitud_id="sol-h01-larga",
+            digest=digest,
+            texto=("campo_largo: " + ("A" * 3700) + f"\napproval_scope_digest: {digest}\n"),
+        )
+
+        # Act & Assert
+        with pytest.raises(EntregaPresentacionError):
+            _formatear_mensaje_presentacion_desde_pres(pres_larga)
+
+    @pytest.mark.asyncio
+    async def test_presentacion_larga_no_trunca_ni_permite_aprobar_sin_digest_completo(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA (H-01 e2e): exceso de longitud falla cerrado, sin botones ni solicitud aprobable sin digest."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        original_texto = owner_consent_module._texto_de_presentacion
+
+        def _texto_extendido(scope: owner_consent_module.ApprovalScope) -> str:
+            base = original_texto(scope)
+            bloque_largo = "\n".join(f"campo_scope_extra_{idx:02d}: " + ("A" * 120) for idx in range(25))
+            prefijo, sep, cola = base.partition("approval_scope_digest:")
+            if sep:
+                return f"{prefijo}{bloque_largo}\n{sep}{cola}"
+            return f"{base}\n{bloque_largo}"
+
+        monkeypatch.setattr(owner_consent_module, "_texto_de_presentacion", _texto_extendido)
+
+        # Act: intento completo por Telegram con /gm_preparar
+        coord, _webhook, polling, sender, _router = _construir_entorno(rig)
+        try:
+            await polling._process_raw_update(_update_texto(701, "/gm_preparar"))
+            await coord.esperar_idle()
+
+            # Assert fail-closed: nunca se enviaron botones aprobables ni quedó solicitud/autorización abierta
+            assert coord.tiene_solicitud_abierta is False
+            assert coord._sesion_activa is None
+            assert coord._operacion_en_curso is False
+            assert not list(issuances_state_dir(rig.storage).iterdir())
+            autoridad = derivar_autoridad_aprobacion(rig.storage)
+            assert autoridad.witnesses == ()
+            assert autoridad.tombstones == ()
+
+            llamadas_con_botones = [
+                call for call in sender.send.await_args_list if call.kwargs.get("reply_markup") is not None
+            ]
+            assert llamadas_con_botones == []
+            assert sender.send.await_count >= 1
+
+            # Intento de aprobación posterior no muta el INI ni emite witness
+            await polling._process_raw_update(_update_texto(702, "/gm_aprobar sol-inexistente"))
+            await coord.esperar_idle()
+            assert not list(issuances_state_dir(rig.storage).iterdir())
+            evidencia_ini = leer_game_path_de_mo2(rig.mo2_active_global / "modorganizer.ini")
+            assert pathlib.Path(evidencia_ini.path or "").resolve() == rig.manual_runtime.resolve()
+
+            # Recuperabilidad del coordinador: restaurando longitud normal, /gm_preparar vuelve a operar
+            monkeypatch.setattr(owner_consent_module, "_texto_de_presentacion", original_texto)
+            await polling._process_raw_update(_update_texto(703, "/gm_preparar"))
+            await coord.esperar_idle()
+            assert coord.tiene_solicitud_abierta is True
+        finally:
+            await coord.cerrar()
+
+    def test_presentacion_incompleta_sin_digest_o_campos_vacios_rechaza_fail_closed(self) -> None:
+        """AAA: si faltan solicitud_id, texto o approval_scope_digest en el cuerpo, falla cerrado."""
+        # Arrange
+        base = _presentacion_prueba(solicitud_id="sol-ok", digest="abc123digest")
+        incompletas = [
+            dataclasses.replace(base, solicitud_id="   "),
+            dataclasses.replace(base, texto="   "),
+            dataclasses.replace(base, approval_scope_digest=""),
+            dataclasses.replace(base, texto="operation: INITIAL_MIGRATION\n# digest ausente\n"),
+        ]
+
+        # Act & Assert
+        for pres in incompletas:
+            with pytest.raises(EntregaPresentacionError):
+                _formatear_mensaje_presentacion_desde_pres(pres)
+
+    @pytest.mark.parametrize(
+        "efecto_envio",
+        [
+            TelegramSendError("caída de red Telegram"),
+            TelegramRateLimitError("rate limit 429", retry_after=5.0),
+            TelegramUploadTimeoutError("timeout subiendo presentación"),
+            None,
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_error_transporte_y_retorno_invalido_en_entrega_no_dejan_solicitud_ni_autorizacion(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        efecto_envio: object,
+    ) -> None:
+        """AAA: cualquier fallo de entrega (o respuesta inválida) cancela la solicitud y deja cero huérfanos."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        sender = _crear_sender_simulado()
+
+        async def _fallar_primero(
+            chat_id: int, text: str, reply_markup: dict | None = None, **_kwargs: object
+        ) -> object:
+            if reply_markup is not None:
+                if isinstance(efecto_envio, BaseException):
+                    raise efecto_envio
+                return efecto_envio
+            return TelegramMessage(chat_id=chat_id, message_id=900)
+
+        sender.send = AsyncMock(side_effect=_fallar_primero)
+        coord, _webhook, polling, _sender, _router = _construir_entorno(rig, sender=sender)
+        try:
+            # Act
+            await polling._process_raw_update(_update_texto(710, "/gm_preparar"))
+            await coord.esperar_idle()
+
+            # Assert: ninguna solicitud ni autorización queda abierta/huérfana
+            assert coord.tiene_solicitud_abierta is False
+            assert coord._sesion_activa is None
+            assert coord._operacion_en_curso is False
+            assert not list(issuances_state_dir(rig.storage).iterdir())
+            autoridad = derivar_autoridad_aprobacion(rig.storage)
+            assert autoridad.witnesses == ()
+            assert autoridad.tombstones == ()
+
+            # Recuperabilidad tras restablecer el transporte
+            restaurado = _crear_sender_simulado()
+            sender.send = restaurado.send
+            await polling._process_raw_update(_update_texto(711, "/gm_preparar"))
+            await coord.esperar_idle()
+            assert coord.tiene_solicitud_abierta is True
+        finally:
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_cancelacion_en_entrega_no_deja_solicitud_abierta_ni_autorizacion(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: CancelledError y cierre del coordinador en plena entrega cancelan fail-closed sin huérfanos."""
+        # Arrange (caso A: coroutine de envío cancelada)
+        rig_a = RigStockManual(tmp_path / "caso_a", steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        sender_a = _crear_sender_simulado()
+
+        async def _cancelar_envio(
+            chat_id: int, text: str, reply_markup: dict | None = None, **_kwargs: object
+        ) -> TelegramMessage:
+            if reply_markup is not None:
+                raise asyncio.CancelledError()
+            return TelegramMessage(chat_id=chat_id, message_id=910)
+
+        sender_a.send = AsyncMock(side_effect=_cancelar_envio)
+        coord_a, _w_a, polling_a, _s_a, _r_a = _construir_entorno(rig_a, sender=sender_a)
+        try:
+            # Act A
+            await polling_a._process_raw_update(_update_texto(720, "/gm_preparar"))
+            await coord_a.esperar_idle()
+
+            # Assert A
+            assert coord_a.tiene_solicitud_abierta is False
+            assert coord_a._sesion_activa is None
+            assert coord_a._operacion_en_curso is False
+            assert not list(issuances_state_dir(rig_a.storage).iterdir())
+            assert derivar_autoridad_aprobacion(rig_a.storage).witnesses == ()
+        finally:
+            await coord_a.cerrar()
+
+        # Arrange (caso B: envío colgado interrumpido por cerrar())
+        rig_b = RigStockManual(tmp_path / "caso_b", steam_activo=True)
+        sender_b = _crear_sender_simulado()
+        entrega_iniciada = asyncio.Event()
+        entrega_colgada = asyncio.Event()
+
+        async def _envio_lento(
+            chat_id: int, text: str, reply_markup: dict | None = None, **_kwargs: object
+        ) -> TelegramMessage:
+            if reply_markup is not None:
+                entrega_iniciada.set()
+                await entrega_colgada.wait()
+            return TelegramMessage(chat_id=chat_id, message_id=920)
+
+        sender_b.send = AsyncMock(side_effect=_envio_lento)
+        coord_b, _w_b, polling_b, _s_b, _r_b = _construir_entorno(rig_b, sender=sender_b)
+        try:
+            # Act B: lanzar preparación y cerrar mientras _entregar espera en el event loop
+            await polling_b._process_raw_update(_update_texto(721, "/gm_preparar"))
+            await asyncio.wait_for(entrega_iniciada.wait(), timeout=5.0)
+            await coord_b.cerrar()
+
+            # Assert B: nada abierto ni huérfano tras cancelación por shutdown
+            assert coord_b.tiene_solicitud_abierta is False
+            assert coord_b._sesion_activa is None
+            assert not list(issuances_state_dir(rig_b.storage).iterdir())
+            assert derivar_autoridad_aprobacion(rig_b.storage).witnesses == ()
+        finally:
+            await coord_b.cerrar()
+
+
+# ---------------------------------------------------------------------------
+# 8. Alcance de EMISION_PRODUCTIVA_HABILITADA = False sobre recuperación (H-04)
+# ---------------------------------------------------------------------------
+
+
+class TestAlcanceBanderaProductivaYRecuperacion:
+    @SOLO_WINDOWS
+    @pytest.mark.asyncio
+    async def test_reanudar_pre_pending_opera_con_bandera_false_pero_nueva_emision_sigue_bloqueada(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """AAA (H-04): con bandera en False, /gm_reanudar pre-PENDING completa sobre witness ya consumido."""
+        # Arrange: generar crash pre-PENDING histórico y cerrar explícitamente EMISION_PRODUCTIVA_HABILITADA = False
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        tx_id = _simular_crash_pre_pending(rig, monkeypatch)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", False)
+        assert approval_module.EMISION_PRODUCTIVA_HABILITADA is False
+
+        coord, _webhook, polling, sender, _router = _construir_entorno(rig)
+        try:
+            # Act: diagnosticar y reanudar con bandera productiva en False
+            await polling._process_raw_update(_update_texto(800, "/gm_estado"))
+            await coord.esperar_idle()
+            assert "reanudable" in sender.send.await_args_list[-1].args[1].casefold()
+
+            await polling._process_raw_update(_update_texto(801, f"/gm_reanudar {tx_id}"))
+            await coord.esperar_idle()
+
+            # Assert: reanudación completó el switch usando la aprobación ya consumida
+            evidencia_ini = leer_game_path_de_mo2(rig.mo2_active_global / "modorganizer.ini")
+            assert pathlib.Path(evidencia_ini.path or "").resolve() == rig.clone_root.resolve()
+            assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
+            assert exclusion_de_test in {"real", "doble_posix"}
+        finally:
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_abandono_reconciliacion_revocacion_y_recovery_operan_con_bandera_false(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA (H-04): bandera False solo bloquea nuevas emisiones; abandono, recovery, reconciliación y revocación operan."""
+        # Arrange: crash pre-PENDING y retorno explícito a EMISION_PRODUCTIVA_HABILITADA = False
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        tx_id = _simular_crash_pre_pending(rig, monkeypatch)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", False)
+        assert approval_module.EMISION_PRODUCTIVA_HABILITADA is False
+
+        coord, _webhook, polling, sender, _router = _construir_entorno(rig)
+        try:
+            # Act 1: abandono autorizado por Telegram con bandera en False
+            await polling._process_raw_update(_update_texto(810, f"/gm_abandonar {tx_id} rollback operativo"))
+            await coord.esperar_idle()
+            assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
+
+            # Act 2: emisión previa no consumida puede revocarse con bandera en False
+            rig_rev = RigStockManual(tmp_path / "rev_no_consumida", steam_activo=True)
+            monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+            sesion_rev = SesionTransicionGoldenMaster(**_objetivo_desde_rig(rig_rev).to_sesion_kwargs())
+            identidad_rev = verificar_identidad_telegram(
+                {"from": {"id": OPERADOR}, "chat": {"id": OPERADOR, "type": "private"}},
+                operador_configurado=OPERADOR,
+            )
+            sol_rev = sesion_rev.preparar(identidad=identidad_rev, entregar=lambda _p: None)
+            cons_rev = sesion_rev.decidir_y_emitir(
+                solicitud=sol_rev, decision=DecisionConsentimiento.APROBAR, identidad=identidad_rev
+            )
+            assert cons_rev is not None
+            monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", False)
+            witness_rev = derivar_autoridad_aprobacion(rig_rev.storage).witnesses[0]
+            approval_module.revocar_aprobacion(
+                rig_rev.storage,
+                approval_id=witness_rev.approval_id,
+                approval_seq=witness_rev.approval_seq,
+                approval_scope_digest=witness_rev.approval_scope_digest,
+                motivo="revocación con bandera cerrada",
+            )
+            assert len(derivar_autoridad_aprobacion(rig_rev.storage).tombstones) == 1
+
+            # Act 3: primitivas durables de recovery/reconciliación operan con bandera en False
+            rec_recovery = recovery_module.recuperar_transicion_interrumpida(rig.storage)
+            assert rec_recovery.estado is recovery_module.EstadoRecuperacion.SIN_REGISTRO
+            rec_journal = journal_module.reconciliar_journal(rig.storage)
+            assert rec_journal.veredicto is not None
+            rec_aprob = approval_module.reconciliar_aprobacion(rig.storage)
+            assert rec_aprob.veredicto is not None
+
+            # Act 4: emisión nueva por Telegram sigue bloqueada fail-closed con bandera en False
+            antes = derivar_autoridad_aprobacion(rig.storage)
+            await polling._process_raw_update(_update_texto(811, "/gm_preparar"))
+            await coord.esperar_idle()
+            cb_data, msg_id, _sol_id = _extraer_token_de_ultimo_envio(sender, "approve")
+            await polling._process_raw_update(_update_callback(812, cb_data, message_id=msg_id))
+            await coord.esperar_idle()
+
+            despues = derivar_autoridad_aprobacion(rig.storage)
+            assert len(despues.witnesses) == len(antes.witnesses)
+            assert "EMISION_PRODUCTIVA_HABILITADA = False" in sender.send.await_args_list[-1].args[1]
+        finally:
+            await coord.cerrar()
