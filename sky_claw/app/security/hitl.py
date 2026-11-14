@@ -35,7 +35,9 @@ HITL_OBSERVER_TIMEOUT_SECONDS = 2.0
 #: Modo local (``make_gui_hitl_notify``), y auto-aprobar ésta haría que el
 #: operador nunca confirme lo que la categoría significa — el gate final
 #: verificaría una configuración que nadie declaró terminada. Mismo trato que
-#: ``download`` (egress) y ``sandbox_promotion`` (post-run): siempre manual.
+#: ``sandbox_promotion`` (post-run): siempre manual. (``download`` tampoco la
+#: aprueba «Modo local»; sólo su preferencia propia de Ajustes, y sólo para la
+#: descarga que el operador inicia con «Instalar» en la GUI.)
 CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA = "dyndolod_configuracion_lista"
 
 #: Categoría de las aprobaciones de la etapa 9 DESATENDIDA (#661): la

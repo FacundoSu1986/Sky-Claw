@@ -33,6 +33,7 @@ from typing import Any
 import psutil
 import pytest
 
+from sky_claw.local.mo2.bridge_bundle import digest_del_bundle_del_producto
 from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import (
     BridgeCommandError,
     BridgeLaunchController,
@@ -166,6 +167,7 @@ async def _correr(
                 "role": "bridge",
                 "instance_id": "portable-main",
                 "session_id": descriptor["session_id"],
+                "bundle_digest": digest_del_bundle_del_producto(),
             },
             secreto,
         )
