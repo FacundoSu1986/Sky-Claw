@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sky_claw.app.agent.tools.job_ids import nuevo_id_de_trabajo
+from sky_claw.local.tools.dyndolod_progreso import progreso_en_hechos
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
 from sky_claw.local.validators.etapas_previas_lods import etapas_previas_faltantes
 
@@ -348,14 +349,7 @@ class GestorDeTrabajosDeLods:
             muestra = None if servicio is None else getattr(servicio, "progreso_actual", None)
             if muestra is None:
                 return None
-            sin_cambios = muestra.log_idle_seconds
-            return {
-                "herramienta": muestra.tool_name,
-                "transcurrido_segundos": round(muestra.elapsed_seconds, 1),
-                "log_bytes": muestra.log_bytes,
-                "log_sin_cambios_segundos": None if sin_cambios is None else round(sin_cambios, 1),
-                "muestra_hace_segundos": round(max(0.0, time.time() - muestra.sampled_at), 1),
-            }
+            return progreso_en_hechos(muestra, ahora=time.time())
         except Exception:  # noqa: BLE001 -- la consulta de estado nunca se rompe por el progreso
             logger.warning("no se pudo leer el progreso de la etapa 9 para lods_status", exc_info=True)
             return None

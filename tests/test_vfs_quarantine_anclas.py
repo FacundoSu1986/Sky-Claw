@@ -173,7 +173,7 @@ def _contexto_con(broker: object, mo2_install_dir: pathlib.Path | None = None) -
 def test_el_contexto_traduce_la_cuarentena_del_broker_para_el_agente() -> None:
     broker = types.SimpleNamespace(quarantine_reason="terminalidad desconocida")
 
-    estado = AppContext._estado_de_cuarentena_vfs(_contexto_con(broker))  # type: ignore[arg-type]
+    estado = AppContext.estado_de_cuarentena_vfs(_contexto_con(broker))  # type: ignore[arg-type]
 
     assert estado == {
         "activa": True,
@@ -186,7 +186,7 @@ def test_el_contexto_indica_la_raiz_de_mo2_de_la_sesion_en_el_comando_para_liber
     broker = types.SimpleNamespace(quarantine_reason="terminalidad desconocida")
     raiz = pathlib.Path("D:/Juegos/MO2-no-config")
 
-    estado = AppContext._estado_de_cuarentena_vfs(_contexto_con(broker, raiz))  # type: ignore[arg-type]
+    estado = AppContext.estado_de_cuarentena_vfs(_contexto_con(broker, raiz))  # type: ignore[arg-type]
 
     assert estado is not None
     assert estado["como_liberar"] == vfs_quarantine.como_liberar(raiz)
@@ -195,5 +195,5 @@ def test_el_contexto_indica_la_raiz_de_mo2_de_la_sesion_en_el_comando_para_liber
 
 
 def test_el_contexto_sin_cuarentena_o_sin_broker_no_informa_nada() -> None:
-    assert AppContext._estado_de_cuarentena_vfs(_contexto_con(types.SimpleNamespace(quarantine_reason=None))) is None  # type: ignore[arg-type]
-    assert AppContext._estado_de_cuarentena_vfs(_contexto_con(None)) is None  # type: ignore[arg-type]
+    assert AppContext.estado_de_cuarentena_vfs(_contexto_con(types.SimpleNamespace(quarantine_reason=None))) is None  # type: ignore[arg-type]
+    assert AppContext.estado_de_cuarentena_vfs(_contexto_con(None)) is None  # type: ignore[arg-type]

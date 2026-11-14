@@ -1,7 +1,7 @@
 """H-11: ``lods_status`` del agente muestra el progreso del trabajo vivo, sin poder romperse por eso.
 
 La superficie del agente (Telegram / ``/api/chat``) es el único consumidor de ``servicio.progreso_actual`` que existe
-hoy; la GUI se suma en P-3b. Por eso el conjunto de consumidores está CONGELADO por AST al final de este archivo:
+hoy; la GUI se sumó en P-3c-2. Por eso el conjunto de consumidores está CONGELADO por AST al final de este archivo:
 un consumidor nuevo (o el de la GUI) rompe el ancla hasta que alguien decide su receta.
 
 Reglas ancladas:
@@ -234,9 +234,13 @@ def test_un_progreso_roto_no_apaga_la_cuarentena() -> None:
 # Ancla: quién consume el snapshot (instrumento de `RITUAL_TOOL_MAP`)
 # ---------------------------------------------------------------------------
 
-#: Los módulos de producción que LEEN ``progreso_actual``. Hoy, solo la superficie del agente. La GUI (P-3b) lo
-#: agrega acá a propósito: un consumidor nuevo sin decidir su receta rompe este test.
-CONSUMIDORES_DE_PROGRESO_ACTUAL = {"sky_claw/app/agent/tools/lod_tools.py"}
+#: Los módulos de producción que LEEN ``progreso_actual``: la superficie del agente y, desde P-3c-2, la lectura de la GUI
+#: (``etapa9_estado``). Los dos arman los hechos con ``dyndolod_progreso.progreso_en_hechos`` (ancla en
+#: ``tests/test_gui_estado_de_la_etapa9.py``). Un consumidor nuevo sin decidir su receta rompe este test.
+CONSUMIDORES_DE_PROGRESO_ACTUAL = {
+    "sky_claw/app/agent/tools/lod_tools.py",
+    "sky_claw/app/gui/controllers/etapa9_estado.py",
+}
 
 
 def _toca_progreso_actual(arbol: ast.AST) -> bool:

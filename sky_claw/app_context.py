@@ -2196,7 +2196,7 @@ class AppContext:
                 proveedor_de_servicio=lambda: self.servicio_de_etapa9,
                 notificar=hitl.notify_operator,
                 aprobar_sin_etapas_previas=AprobadorDesatendidoHITL(hitl_guard=hitl).aprobar_sin_etapas_previas,
-                consultar_cuarentena=self._estado_de_cuarentena_vfs,
+                consultar_cuarentena=self.estado_de_cuarentena_vfs,
             )
             self.lod_jobs = lod_jobs
             self._push_startup_cleanup(lod_jobs.cerrar)
@@ -2343,8 +2343,8 @@ class AppContext:
             if self.polling is polling:
                 self.polling = None
 
-    def _estado_de_cuarentena_vfs(self) -> dict[str, Any] | None:
-        """H-4: la cuarentena del broker VFS tal como la ve el agente en ``lods_status`` (``None`` si no hay)."""
+    def estado_de_cuarentena_vfs(self) -> dict[str, Any] | None:
+        """H-4: la cuarentena del broker VFS tal como la ven el agente (``lods_status``) y la GUI (``None`` si no hay)."""
         broker = self.vfs_broker
         razon = None if broker is None else broker.quarantine_reason
         if razon is None:
