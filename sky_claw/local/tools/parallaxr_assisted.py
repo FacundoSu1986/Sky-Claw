@@ -137,23 +137,46 @@ def _resolve_path(path: Path, *, strict: bool = False) -> Path:
         raise
 
 
+def _es_error_de_ausencia_sin_anomalias(err: OSError) -> bool:
+    """Indica si el OSError corresponde solo a ausencia conocida y no a un fallo de inspección."""
+    if getattr(err, "winerror", None) in _WINERROR_INSPECTION_FAILURES:
+        return False
+    return err.errno in _ABSENCE_ERRNOS
+
+
+def _verificar_ancestros_sin_fallo_de_inspeccion(path: Path, initial_err: OSError) -> None:
+    """Confirma que la ausencia de path no oculta un ancestro roto, circular o inaccesible."""
+    for ancestor in path.parents:
+        try:
+            ancestor.lstat()
+        except OSError as lstat_err:
+            if not _es_error_de_ausencia_sin_anomalias(lstat_err):
+                raise lstat_err from initial_err
+            continue
+
+        # El ancestro existe en su entrada padre: su stat() y resolución estricta deben tener éxito.
+        try:
+            ancestor.stat()
+            _resolve_path(ancestor, strict=True)
+        except OSError as anc_err:
+            raise anc_err from initial_err
+        return
+
+
 def _stat_mode_fail_closed(path: Path) -> int | None:
     """Obtiene st_mode distinguiendo ausencia real de errores de inspección Windows/POSIX."""
     try:
         return path.stat().st_mode
     except OSError as stat_err:
-        if getattr(stat_err, "winerror", None) in _WINERROR_INSPECTION_FAILURES:
-            raise
-        if stat_err.errno not in _ABSENCE_ERRNOS:
+        if not _es_error_de_ausencia_sin_anomalias(stat_err):
             raise
         try:
             # Un symlink o junction roto falla stat() con ENOENT, pero lstat() confirma que la entrada existe.
             path.lstat()
         except OSError as lstat_err:
-            if getattr(lstat_err, "winerror", None) in _WINERROR_INSPECTION_FAILURES:
+            if not _es_error_de_ausencia_sin_anomalias(lstat_err):
                 raise lstat_err from stat_err
-            if lstat_err.errno not in _ABSENCE_ERRNOS:
-                raise lstat_err from stat_err
+            _verificar_ancestros_sin_fallo_de_inspeccion(path, stat_err)
             return None
         raise
 

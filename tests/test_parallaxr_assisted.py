@@ -1429,6 +1429,107 @@ def test_windows_junction_roto_en_mods_dir_falla_cerrado(tmp_path: Path) -> None
         mod_broken.rmdir()
 
 
+def test_windows_junction_roto_como_mods_dir_y_subruta_no_devuelve_missing(tmp_path: Path) -> None:
+    """Windows real: una junction rota como mods_dir o su subruta no puede clasificarse como MISSING."""
+    if sys.platform != "win32":
+        pytest.skip("Solo reproducible en Windows mediante _winapi.CreateJunction")
+    import _winapi
+
+    destino_borrado = tmp_path / "destino_fantasma"
+    destino_borrado.mkdir()
+    j_broken = tmp_path / "j_broken"
+    _winapi.CreateJunction(str(destino_borrado), str(j_broken))
+    destino_borrado.rmdir()
+
+    try:
+        for mods_dir_roto in (j_broken, j_broken / "sub", j_broken / "a" / "b"):
+            with pytest.raises(ParallaxREvidenceIncompleteError):
+                discover_parallaxr_candidates(mods_dir_roto)
+
+            preflight = run_parallaxr_assisted_preflight(mods_dir_roto)
+            assert preflight.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+            assert preflight.success is False
+            assert preflight.installation is None
+    finally:
+        j_broken.rmdir()
+
+
+def test_subruta_bajo_ancestro_con_winerror3_o_enoent_no_devuelve_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Si stat/lstat en una subruta devuelve ENOENT/WinError 3 por un ancestro fallido, no se degrada a MISSING."""
+    ancestro_bloqueado = tmp_path / "ancestro_bloqueado"
+    ancestro_bloqueado.mkdir()
+    sub_bloqueada = ancestro_bloqueado / "sub"
+
+    real_stat = Path.stat
+    real_lstat = Path.lstat
+
+    def _fnf_win3(target: Path) -> FileNotFoundError:
+        if sys.platform == "win32":
+            return FileNotFoundError(errno.ENOENT, "No se encuentra la ruta especificada", str(target), 3)
+        return FileNotFoundError(errno.ENOENT, "No such file or directory", str(target))
+
+    def stat_ancestro_fallido(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self == sub_bloqueada:
+            raise _fnf_win3(self)
+        if self == ancestro_bloqueado and follow_symlinks:
+            raise PermissionError("ancestro inaccesible")
+        return real_stat(self, follow_symlinks=follow_symlinks)
+
+    def lstat_sub_enoent(self: Path) -> os.stat_result:
+        if self == sub_bloqueada:
+            raise _fnf_win3(self)
+        return real_lstat(self)
+
+    monkeypatch.setattr(Path, "stat", stat_ancestro_fallido)
+    monkeypatch.setattr(Path, "lstat", lstat_sub_enoent)
+
+    with pytest.raises(ParallaxREvidenceIncompleteError):
+        discover_parallaxr_candidates(sub_bloqueada)
+    preflight_bloqueado = run_parallaxr_assisted_preflight(sub_bloqueada)
+    assert preflight_bloqueado.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+    assert preflight_bloqueado.success is False
+    assert preflight_bloqueado.installation is None
+
+    # Caso Windows real con ciclo j1 <-> j2 forzando ENOENT/WinError 3 al descender por j1/sub
+    if sys.platform == "win32":
+        with _arena_bucle_junctions_windows(tmp_path) as (_arena, j1, _j2):
+            sub_ciclo = j1 / "sub"
+
+            def stat_ciclo_win3(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+                if self == sub_ciclo:
+                    raise _fnf_win3(self)
+                return real_stat(self, follow_symlinks=follow_symlinks)
+
+            def lstat_ciclo_win3(self: Path) -> os.stat_result:
+                if self == sub_ciclo:
+                    raise _fnf_win3(self)
+                return real_lstat(self)
+
+            monkeypatch.setattr(Path, "stat", stat_ciclo_win3)
+            monkeypatch.setattr(Path, "lstat", lstat_ciclo_win3)
+
+            with pytest.raises(ParallaxREvidenceIncompleteError):
+                discover_parallaxr_candidates(sub_ciclo)
+            preflight_ciclo = run_parallaxr_assisted_preflight(sub_ciclo)
+            assert preflight_ciclo.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+            assert preflight_ciclo.success is False
+            assert preflight_ciclo.installation is None
+
+    monkeypatch.undo()
+
+    # Control: ausencia real bajo directorio válido o archivo regular sigue devolviendo MISSING
+    archivo_regular = tmp_path / "archivo.txt"
+    archivo_regular.write_bytes(b"no_es_dir")
+    for ruta_ausente in (tmp_path / "no_existe" / "sub", archivo_regular / "sub"):
+        assert discover_parallaxr_candidates(ruta_ausente) == ()
+        preflight_missing = run_parallaxr_assisted_preflight(ruta_ausente)
+        assert preflight_missing.status == ParallaxRAssistedStatus.MISSING
+        assert preflight_missing.success is False
+        assert preflight_missing.installation is None
+
+
 def test_windows_junction_real_fuera_de_mods_dir_es_rechazada(tmp_path: Path) -> None:
     """Windows real: una junction válida que apunta fuera de mods_dir se rechaza por contención sin privilegios."""
     if sys.platform != "win32":
