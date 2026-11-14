@@ -30,6 +30,7 @@ from sky_claw.local.discovery.registry import (
     build_ritual_installer_map,
     build_ritual_tool_map,
 )
+from sky_claw.local.tools.dyndolod_uia_contrato import ModoDeInteraccion
 from sky_claw.local.tools.tool_result import es_etapa_pendiente, normalize_tool_result
 from sky_claw.local.tools.wrye_bash_asistida import (
     BASHED_PATCH_NAME,
@@ -574,6 +575,16 @@ def clear_ritual_result_owned(store: ReactiveStore, tab_id: str | None) -> None:
 #: store. So one window's choice never enables auto-approval for another client
 #: (Codex review on #211).
 CLIENT_KEY_AUTO_APPROVE = "modo_local"
+#: Modo de interacción de la etapa 9 que ESTE cliente eligió en la tarjeta de DynDOLOD (H-12). Misma razón que el Modo
+#: local: es de la conexión, no del store global, y se lee en el click handler (el único punto con contexto de cliente).
+CLIENT_KEY_MODO_DE_INTERACCION = "modo_de_interaccion"
+#: Vocabulario CERRADO del selector: exactamente el del contrato (``ModoDeInteraccion``), nunca uno propio de la GUI.
+MODOS_DE_INTERACCION: tuple[str, ...] = tuple(modo.value for modo in ModoDeInteraccion)
+#: El modo histórico de la GUI (payload vacío ⇒ el servicio usaba ASISTIDO). Lo desconocido cae acá, nunca a otro.
+MODO_DE_INTERACCION_POR_DEFECTO = ModoDeInteraccion.ASISTIDO.value
+#: Rituales cuyo botón «Generar» acepta un modo: los que despachan una strategy con ``interaction_mode`` en sus claves
+#: válidas (hoy solo ``generate_lods``). Un test enumera las strategies por AST y congela esta correspondencia.
+RITUALES_CON_MODO_DE_INTERACCION: frozenset[str] = frozenset({"dyndolod"})
 #: Single-flight guard: a ritual is dispatching or awaiting approval right now.
 STORE_KEY_RITUAL_IN_FLIGHT = "ritual_in_flight"
 #: Último reporte de preflight (``PreflightReport.to_dict()``) que un dispatch
@@ -588,6 +599,29 @@ RITUAL_TOOL_MAP: dict[str, str] = build_ritual_tool_map()
 def ritual_tool_name(tool_key: str) -> str | None:
     """Map a Ritual's scanner tool key to its dispatcher tool name, or ``None``."""
     return RITUAL_TOOL_MAP.get(tool_key)
+
+
+def modo_de_interaccion_o_defecto(valor: object) -> str:
+    """El modo de interacción de ``valor`` si es EXACTAMENTE uno del contrato; si no, el histórico (asistido).
+
+    Solo acepta el ``str`` exacto: un alias, otra capitalización, un bool o el propio enum NO se interpretan. Adivinar
+    ``desatendido`` sería hacer que la GUI mute las ventanas de TexGen/DynDOLOD sin que nadie lo haya pedido.
+    """
+    if isinstance(valor, str) and valor in MODOS_DE_INTERACCION:
+        return valor
+    return MODO_DE_INTERACCION_POR_DEFECTO
+
+
+def payload_de_generar(tool_key: str, modo: object) -> dict[str, Any] | None:
+    """Payload del botón «Generar» de ``tool_key``: lleva el modo elegido, EXPLÍCITO, si el ritual lo admite.
+
+    ``None`` para los demás rituales conserva el contrato histórico (payload vacío, defaults del servicio). Para los que
+    admiten modo, el asistido también viaja explícito: es lo que el servicio ya asumía por omisión, pero así el payload
+    dice lo que el operador eligió y no lo que se infiere de una ausencia.
+    """
+    if tool_key not in RITUALES_CON_MODO_DE_INTERACCION:
+        return None
+    return {"interaction_mode": modo_de_interaccion_o_defecto(modo)}
 
 
 # Follow-up C: Ritual tool key → ``ToolsInstaller`` method for the "Instalar" button.
@@ -1006,11 +1040,18 @@ def _accion_dyndolod(result: dict[str, Any]) -> dict[str, Any] | None:
     texto = texto_accion or ""
     if detail:
         texto = f"{texto_accion} — {detail}" if texto_accion else str(detail)
+    payload: dict[str, Any] = {"run_texgen": False}
+    # «Continuar» es el hermano de «Generar»: también despacha ``generate_lods``. Hereda el modo de la corrida que
+    # produjo el handoff (el servicio lo fija en TODOS sus resultados) para que una corrida desatendida no siga como
+    # asistida. Solo un modo exacto del contrato: sin él se conserva el payload histórico, no se inventa uno.
+    modo = result.get("interaction_mode")
+    if isinstance(modo, str) and modo in MODOS_DE_INTERACCION:
+        payload["interaction_mode"] = modo
     return {
         "tool_key": "dyndolod",
         "label": "Continuar DynDOLOD",
         "detail": texto,
-        "payload": {"run_texgen": False},
+        "payload": payload,
     }
 
 

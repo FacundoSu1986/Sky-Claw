@@ -23,14 +23,18 @@ from nicegui import app, ui
 
 from sky_claw.app.gui.controllers.ritual_runner import (
     CLIENT_KEY_AUTO_APPROVE,
+    CLIENT_KEY_MODO_DE_INTERACCION,
+    MODOS_DE_INTERACCION,
     RITUAL_INSTALLER_MAP,
     RITUAL_TOOL_MAP,
+    RITUALES_CON_MODO_DE_INTERACCION,
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
     clear_ritual_result_owned,
     diagnostico_parallax_de,
     limpiar_diagnostico_parallax,
     lineas_del_diagnostico_parallax,
+    modo_de_interaccion_o_defecto,
     resolve_ritual_resume_action,
     resolve_visible_pending_hitl,
 )
@@ -620,6 +624,66 @@ def modo_local_enabled() -> bool:
         return bool(app.storage.client.get(CLIENT_KEY_AUTO_APPROVE, False))
     except Exception:
         return False
+
+
+def modo_de_interaccion_del_cliente() -> str:
+    """El modo de la etapa 9 que ESTE cliente eligió en la tarjeta de DynDOLOD (H-12); asistido si no eligió.
+
+    Mismo almacén y misma razón que :func:`modo_local_enabled`: ``app.storage.client`` es de la conexión, así que la
+    elección de una ventana no cambia el modo de otra. Sin contexto de cliente (tests, tarea de fondo) o con un valor que
+    no es un modo exacto del contrato, devuelve el histórico (asistido): nunca adivina ``desatendido``.
+    """
+    try:
+        return modo_de_interaccion_o_defecto(app.storage.client.get(CLIENT_KEY_MODO_DE_INTERACCION))
+    except Exception:
+        return modo_de_interaccion_o_defecto(None)
+
+
+def _fijar_modo_de_interaccion(valor: object) -> None:
+    # Suppress: sin contexto de cliente (tests / tarea de fondo) no hay dónde persistir la elección.
+    with contextlib.suppress(Exception):
+        app.storage.client[CLIENT_KEY_MODO_DE_INTERACCION] = modo_de_interaccion_o_defecto(valor)
+
+
+#: Lo que el operador necesita saber para elegir. El desatendido NO usa el modal de esta ventana: sus aprobaciones
+#: (configuración, modal de arranque, etapas previas) viajan por el canal remoto del guard (``CATEGORIA_DYNDOLOD_DESATENDIDO``,
+#: no auto-aprobable); sin canal remoto la corrida se corta, no cae a asistido.
+_AYUDA_DEL_MODO: dict[str, str] = {
+    "asistido": "Vos operás las ventanas de TexGen/DynDOLOD y confirmás aquí.",
+    "desatendido": (
+        "Sky-Claw opera las ventanas por UI Automation. Las aprobaciones llegan por el canal remoto (Telegram), "
+        "no por esta ventana; sin ese canal la corrida se corta."
+    ),
+}
+_ETIQUETA_DEL_MODO: dict[str, str] = {"asistido": "Asistido", "desatendido": "Desatendido"}
+
+
+@ui.refreshable
+def _ayuda_del_modo_de_interaccion() -> None:
+    ui.html(
+        f"<div style=\"font-family:'EB Garamond',serif; font-size:12px; line-height:1.35; color:#8a8068;\">"
+        f"{_e(_AYUDA_DEL_MODO[modo_de_interaccion_del_cliente()])}</div>"
+    ).style(_FRAGMENTO)
+
+
+def _selector_de_modo_de_interaccion() -> None:
+    """Selector de modo de la etapa 9 (H-12): lo lee ``on_ritual_run`` en el click, con el contexto de este cliente."""
+
+    def _al_cambiar(evento: Any) -> None:
+        _fijar_modo_de_interaccion(getattr(evento, "value", None))
+        _ayuda_del_modo_de_interaccion.refresh()
+
+    (
+        ui.toggle(
+            {modo: _ETIQUETA_DEL_MODO[modo] for modo in MODOS_DE_INTERACCION},
+            value=modo_de_interaccion_del_cliente(),
+            on_change=_al_cambiar,
+        )
+        .classes("sc-toggle")
+        # Receta .sc-toggle del tema (mismo seam que el wizard y la Cámara de Ajustes): colores sin clase de Quasar.
+        .props("unelevated dense no-caps size=sm toggle-color=sc-tema toggle-text-color=sc-tema")
+    )
+    _ayuda_del_modo_de_interaccion()
 
 
 def tab_id_de(client: object) -> str | None:
@@ -1315,6 +1379,9 @@ def _ritual_card(
             f'<div style="display:flex; align-items:center; gap:7px; padding-top:2px;"><span style="width:7px; height:7px; border-radius:50%; background:{status_dot}; box-shadow:0 0 6px {status_dot};"></span>'
             f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:12px; color:{status_color};\">{status_label}</span></div>"
         ).style(_FRAGMENTO)
+        # H-12: el modo de la etapa 9 se elige antes de «Ejecutar»; solo se ofrece si el botón va a despachar de verdad.
+        if action == "run" and r["tool"] in RITUALES_CON_MODO_DE_INTERACCION:
+            _selector_de_modo_de_interaccion()
         b = ui.element("button").style(
             f"margin-top:2px; padding:8px 10px; cursor:pointer; font-family:'Cinzel',serif; font-size:11.5px; font-weight:600;"
             f"letter-spacing:.1em; background:rgba(0,0,0,.3); border:1px solid; border-radius:4px; {btn_style}"

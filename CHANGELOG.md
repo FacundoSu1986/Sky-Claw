@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **La GUI elige el modo de interacción de la etapa 9, y «Continuar DynDOLOD» hereda el de la corrida (P-3c, H-12).** Antes la GUI despachaba `generate_lods` con payload vacío, o sea SIEMPRE asistido, sin forma de pedir el desatendido que el agente remoto ya podía pedir.
+  - La tarjeta de DynDOLOD tiene un selector «Asistido / Desatendido» (por conexión, como «Modo local»; default asistido). `on_ritual_run` lo lee en el click, el único punto con contexto de cliente, y despacha `{"interaction_mode": <modo>}` explícito (`ritual_runner.payload_de_generar`); los demás rituales conservan el payload vacío.
+  - Solo se acepta el `str` exacto del contrato (`ModoDeInteraccion`): un alias, otra capitalización, un bool o un valor corrupto en el almacén caen al asistido, nunca a «desatendido».
+  - **Continuar hereda el modo:** `resume_action_from_result` copia `interaction_mode` del resultado que produjo el handoff (el servicio lo fija en todos sus resultados), para que una corrida desatendida no siga como asistida. Sin un modo válido en el resultado conserva el payload histórico.
+  - **El desatendido NO pregunta en esa ventana:** sus aprobaciones (configuración, modal de arranque, etapas previas) viajan por el canal remoto del guard (`CATEGORIA_DYNDOLOD_DESATENDIDO`, no auto-aprobable); sin canal remoto la corrida se corta y no cae a asistido. El texto de ayuda del selector lo dice.
+  - **Tests:** `tests/test_gui_modo_de_interaccion.py` (anclas por AST: los rituales con modo son exactamente los cuya strategy acepta `interaction_mode`; el click handler pasa el payload; el modo se lee solo en el click handler). **No verificado:** el aspecto del selector en un navegador real (la GUI es `sky_claw.app.gui.*`, exenta de mypy; solo se probó la lógica y el contrato de tema).
 - **Auditoría nativa de plugins con el xEdit Bridge ([ADR 0018](docs/adr/0018-auditoria-nativa-xedit-bridge.md)).**
   - Dos herramientas, en la GUI (`tool_dispatcher`) y en el agente LLM (`AsyncToolRegistry`), sobre el mismo `XEditBridgeService`:
     - `auditar_plugin_nativo`: chequeo `-CheckForErrors` de SSEEdit sobre la copia admitida. Es de lectura y no pide aprobación.
