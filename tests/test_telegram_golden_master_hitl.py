@@ -1443,3 +1443,355 @@ class TestAlcanceBanderaProductivaYRecuperacion:
             assert "EMISION_PRODUCTIVA_HABILITADA = False" in sender.send.await_args_list[-1].args[1]
         finally:
             await coord.cerrar()
+
+
+# ---------------------------------------------------------------------------
+# 9. Auditoría adversarial: timeout/cancelación, bots, recarga y AppContext
+# ---------------------------------------------------------------------------
+
+
+class TestAuditoriaAdversarialTransporte:
+    @pytest.mark.asyncio
+    async def test_timeout_en_entrega_cancela_coro_en_vuelo_y_no_entrega_botones_tardios(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: si _entregar vence por delivery_timeout, cancela la coroutine de envío sin botones tardíos."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        sender = _crear_sender_simulado()
+        cancelada = asyncio.Event()
+        entregado_tarde = asyncio.Event()
+
+        async def _send_lento(
+            chat_id: int, text: str, reply_markup: dict | None = None, **_kw: object
+        ) -> TelegramMessage:
+            if reply_markup is not None:
+                try:
+                    await asyncio.sleep(0.5)
+                except asyncio.CancelledError:
+                    cancelada.set()
+                    raise
+                entregado_tarde.set()
+            return TelegramMessage(chat_id=chat_id, message_id=850)
+
+        sender.send = AsyncMock(side_effect=_send_lento)
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+            delivery_timeout=0.05,
+        )
+        try:
+            # Act
+            await coord.procesar_actualizacion(_update_texto(900, "/gm_preparar"))
+            await asyncio.sleep(0.15)
+
+            # Assert
+            assert cancelada.is_set(), "timeout en _entregar debe cancelar fut para no entregar botones tardíos"
+            assert not entregado_tarde.is_set()
+            assert coord.tiene_solicitud_abierta is False
+            assert coord._operacion_en_curso is False
+            assert derivar_autoridad_aprobacion(rig.storage).witnesses == ()
+        finally:
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_timeout_con_carrera_de_envio_completado_retira_botones_y_rechaza_aprobacion(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: si sendMessage terminó justo al vencer el timeout, se invalidan token y botones emitidos."""
+        # Arrange
+        import sky_claw.app.comms.golden_master_hitl as gm_mod
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+            delivery_timeout=1.0,
+        )
+        real_rcts = gm_mod.asyncio.run_coroutine_threadsafe
+
+        class _FutCarreraTimeout:
+            def __init__(self, inner: object) -> None:
+                self._inner = inner
+
+            def cancel(self) -> bool:
+                return self._inner.cancel()  # type: ignore[attr-defined]
+
+            def done(self) -> bool:
+                return self._inner.done()  # type: ignore[attr-defined]
+
+            def cancelled(self) -> bool:
+                return self._inner.cancelled()  # type: ignore[attr-defined]
+
+            def exception(self, timeout: float | None = None) -> BaseException | None:
+                return self._inner.exception(timeout=timeout)  # type: ignore[attr-defined]
+
+            def result(self, timeout: float | None = None) -> object:
+                if timeout == 0:
+                    return self._inner.result(timeout=0)  # type: ignore[attr-defined]
+                # Simula la ventana exacta donde sendMessage ya devolvió message_id pero el caller ve TimeoutError.
+                self._inner.result(timeout=5.0)  # type: ignore[attr-defined]
+                raise TimeoutError("ventana de timeout tras enviar")
+
+        monkeypatch.setattr(
+            gm_mod.asyncio, "run_coroutine_threadsafe", lambda coro, loop: _FutCarreraTimeout(real_rcts(coro, loop))
+        )
+
+        try:
+            # Act
+            await coord.procesar_actualizacion(_update_texto(901, "/gm_preparar"))
+            cb_tardio, msg_id, _sol_id = _extraer_token_de_ultimo_envio(sender, "approve")
+
+            # Assert: botones eliminados (reply_markup=None) y aprobación posterior imposible
+            sender.edit_message.assert_awaited()
+            edit_call = sender.edit_message.await_args_list[-1]
+            assert edit_call.args[1] == msg_id
+            assert edit_call.kwargs.get("reply_markup") is None
+
+            await coord.procesar_actualizacion(_update_callback(902, cb_tardio, message_id=msg_id))
+            assert coord.tiene_solicitud_abierta is False
+            assert derivar_autoridad_aprobacion(rig.storage).witnesses == ()
+        finally:
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_cancelar_tarea_durante_entrega_colgada_desbloquea_rapido(self, tmp_path: pathlib.Path) -> None:
+        """AAA: cancelar la Task durante _entregar colgado aborta la entrega sin esperar 20s de delivery_timeout."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sender = _crear_sender_simulado()
+        envio_iniciado = asyncio.Event()
+        envio_cancelado = asyncio.Event()
+
+        async def _send_colgado(
+            chat_id: int, text: str, reply_markup: dict | None = None, **_kw: object
+        ) -> TelegramMessage:
+            if reply_markup is not None:
+                envio_iniciado.set()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    envio_cancelado.set()
+                    raise
+            return TelegramMessage(chat_id=chat_id, message_id=860)
+
+        sender.send = AsyncMock(side_effect=_send_colgado)
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+            delivery_timeout=20.0,
+        )
+        try:
+            # Act
+            tarea = asyncio.create_task(coord.procesar_actualizacion(_update_texto(903, "/gm_preparar")))
+            await asyncio.wait_for(envio_iniciado.wait(), timeout=5.0)
+            tarea.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(tarea, timeout=5.0)
+
+            # Assert
+            assert envio_cancelado.is_set()
+            assert coord.tiene_solicitud_abierta is False
+            assert coord._operacion_en_curso is False
+        finally:
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_rechaza_bots_spoof_is_bot_via_bot_ediciones_y_envoltorio_malformado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: rechaza from.is_bot (incluidos no-bool), via_bot, edited/channel/business updates y envoltorio roto."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        coord, webhook, _polling, sender, _router = _construir_entorno(rig)
+        try:
+            await webhook.process_update(_update_texto(910, "/gm_preparar"))
+            await coord.esperar_idle()
+            cb_approve, msg_id, solicitud_id = _extraer_token_de_ultimo_envio(sender, "approve")
+            cb_deny, _msg_id2, _ = _extraer_token_de_ultimo_envio(sender, "deny")
+
+            ataques: list[object] = [
+                # Remitente bot explícito o is_bot spoofeado en texto y en callback
+                {
+                    "update_id": 911,
+                    "message": {
+                        "message_id": 1,
+                        "from": {"id": OPERADOR, "is_bot": True},
+                        "chat": {"id": OPERADOR, "type": "private"},
+                        "text": f"/gm_aprobar {solicitud_id}",
+                    },
+                },
+                {
+                    "update_id": 912,
+                    "message": {
+                        "message_id": 2,
+                        "from": {"id": OPERADOR, "is_bot": "false"},
+                        "chat": {"id": OPERADOR, "type": "private"},
+                        "text": f"/gm_aprobar {solicitud_id}",
+                    },
+                },
+                {
+                    "update_id": 913,
+                    "message": {
+                        "message_id": 3,
+                        "from": {"id": OPERADOR, "is_bot": 1},
+                        "chat": {"id": OPERADOR, "type": "private"},
+                        "text": f"/gm_aprobar {solicitud_id}",
+                    },
+                },
+                _update_callback(
+                    914,
+                    cb_approve,
+                    message_id=msg_id,
+                    extra_query={"from": {"id": OPERADOR, "is_bot": True}},
+                ),
+                _update_callback(
+                    915,
+                    cb_approve,
+                    message_id=msg_id,
+                    extra_query={"from": {"id": OPERADOR, "is_bot": "false"}},
+                ),
+                # Comando mediado por inline bot (via_bot)
+                _update_texto(
+                    916,
+                    f"/gm_aprobar {solicitud_id}",
+                    extra_msg={"via_bot": {"id": 777, "is_bot": True}},
+                ),
+                # Ediciones / posts de canal / mensajes de negocio
+                {
+                    "update_id": 917,
+                    "edited_message": {
+                        "message_id": 4,
+                        "from": {"id": OPERADOR, "is_bot": False},
+                        "chat": {"id": OPERADOR, "type": "private"},
+                        "text": f"/gm_aprobar {solicitud_id}",
+                    },
+                },
+                {
+                    "update_id": 918,
+                    "channel_post": {
+                        "message_id": 5,
+                        "from": {"id": OPERADOR, "is_bot": False},
+                        "chat": {"id": OPERADOR, "type": "private"},
+                        "text": f"/gm_aprobar {solicitud_id}",
+                    },
+                },
+                # Contenedor message malformado con atributos suplantados en la raíz
+                {
+                    "update_id": 919,
+                    "message": "corrupto",
+                    "from": {"id": OPERADOR, "is_bot": False},
+                    "chat": {"id": OPERADOR, "type": "private"},
+                    "text": f"/gm_aprobar {solicitud_id}",
+                },
+                # Update no-Mapping pasado directo al coordinador
+                "update-invalido",
+            ]
+
+            # Act
+            for ataque in ataques:
+                if isinstance(ataque, dict):
+                    await webhook.process_update(ataque)
+                await coord.procesar_actualizacion(ataque)  # type: ignore[arg-type]
+                await coord.esperar_idle()
+
+            # Assert: ninguno aprobó ni cerró la sesión legítima abierta
+            assert not list(issuances_state_dir(rig.storage).iterdir())
+            assert coord.tiene_solicitud_abierta is True
+
+            # Control positivo Telegram real: en un callback real, message.from IS nuestro bot (is_bot=True),
+            # mientras que callback_query.from ES el operador humano (is_bot=False). Debe seguir funcionando.
+            await webhook.process_update(
+                _update_callback(
+                    920,
+                    cb_deny,
+                    message_id=msg_id,
+                    extra_query={"from": {"id": OPERADOR, "is_bot": False}},
+                    extra_msg={"from": {"id": 888999, "is_bot": True}},
+                )
+            )
+            await coord.esperar_idle()
+            assert coord.tiene_solicitud_abierta is False
+            assert not list(issuances_state_dir(rig.storage).iterdir())
+        finally:
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_actualizar_transporte_bloquea_admision_durante_recarga_y_app_context_stop_cierra_reload(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """AAA: actualizar_transporte no admite requests con operador viejo mid-reload y AppContext.stop() cierra lo recargado."""
+        import argparse
+
+        from sky_claw.app_context import AppContext
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sender_a = _crear_sender_simulado()
+        edit_entro = asyncio.Event()
+        liberar_edit = asyncio.Event()
+
+        async def _edit_lento(*_args: object, **_kwargs: object) -> None:
+            edit_entro.set()
+            await asyncio.wait_for(liberar_edit.wait(), timeout=5.0)
+
+        sender_a.edit_message = AsyncMock(side_effect=_edit_lento)
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender_a,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+        )
+        # 1) Bloqueo mid-reload
+        await coord.procesar_actualizacion(_update_texto(930, "/gm_preparar"))
+        assert coord.tiene_solicitud_abierta is True
+
+        sender_b = _crear_sender_simulado()
+        recarga = asyncio.create_task(coord.actualizar_transporte(sender=sender_b, operador_autorizado=None))
+        try:
+            await asyncio.wait_for(edit_entro.wait(), timeout=5.0)
+            # Mientras edit_message de la recarga sigue en vuelo, NO debe admitir comandos para el operador anterior
+            tarea_tardia = await coord.iniciar_comando(_update_texto(931, "/gm_estado"))
+            assert tarea_tardia is None
+        finally:
+            liberar_edit.set()
+        await asyncio.wait_for(recarga, timeout=5.0)
+
+        # 2) AppContext.stop() cierra polling y coordinador agregados tras hot-reload (sin start_full con token)
+        args = argparse.Namespace(
+            db_path=str(tmp_path / "app.db"),
+            mo2_root=tmp_path / "MO2",
+            staging_dir=tmp_path / "staging",
+            provider="ollama",
+            operator_chat_id=None,
+            loot_exe=None,
+            install_dir=None,
+            mode="cli",
+        )
+        ctx = AppContext(args)
+        fake_polling = MagicMock()
+        fake_polling.stop = AsyncMock()
+        ctx.polling = fake_polling
+        ctx.golden_master_coordinator = coord
+
+        await ctx.stop()
+        fake_polling.stop.assert_awaited_once()
+        assert coord._cerrado is True
+        assert ctx.polling is None
+        assert ctx.golden_master_coordinator is None
+
+        # 3) Si el polling ya estaba registrado en startup cleanup, stop() no lo detiene dos veces
+        polling_registrado = MagicMock()
+        polling_registrado.stop = AsyncMock()
+        ctx._push_startup_cleanup(ctx._stop_polling, polling_registrado)
+        ctx.polling = polling_registrado
+        ctx._cleanup_polling_registrado = polling_registrado
+        await ctx.stop()
+        polling_registrado.stop.assert_awaited_once()
+        assert ctx.polling is None

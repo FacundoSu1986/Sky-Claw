@@ -114,6 +114,18 @@ _CLAVES_REENVIO_ADICIONALES = (
     "is_automatic_forward",
     "sender_chat",
     "business_connection_id",
+    "via_bot",
+    "sender_business_bot",
+)
+_CLAVES_UPDATE_NO_MENSAJE = (
+    "edited_message",
+    "channel_post",
+    "edited_channel_post",
+    "business_message",
+    "edited_business_message",
+    "deleted_business_messages",
+    "message_reaction",
+    "message_reaction_count",
 )
 _ERRORES_TRANSPORTE_TELEGRAM = (
     TelegramSendError,
@@ -326,13 +338,19 @@ def _validar_forma_privada_strict(raw_update: Mapping[str, object]) -> None:
     """Exige invariantes adicionales de transporte sobre el update crudo de Telegram."""
     if not isinstance(raw_update, Mapping):
         raise IdentidadPropietarioNoVerificadaError("el update de Telegram no es un objeto")
+    for clave_ajena in _CLAVES_UPDATE_NO_MENSAJE:
+        if raw_update.get(clave_ajena) is not None:
+            raise IdentidadPropietarioNoVerificadaError(f"Golden Master rechaza updates de tipo {clave_ajena}")
     if _contiene_senales_de_reenvio_o_canal(raw_update):
         raise IdentidadPropietarioNoVerificadaError("el update contiene marcadores de reenvío o canal externo")
 
     consulta = raw_update.get("callback_query")
+    if consulta is not None and not isinstance(consulta, Mapping):
+        raise IdentidadPropietarioNoVerificadaError("callback_query malformado")
     if isinstance(consulta, Mapping):
         if _contiene_senales_de_reenvio_o_canal(consulta):
             raise IdentidadPropietarioNoVerificadaError("el callback contiene marcadores de reenvío o canal")
+        remitente = consulta.get("from")
         mensaje_cb = consulta.get("message")
         if not isinstance(mensaje_cb, Mapping):
             raise IdentidadPropietarioNoVerificadaError("el callback no trae un mensaje privado asociado")
@@ -342,12 +360,19 @@ def _validar_forma_privada_strict(raw_update: Mapping[str, object]) -> None:
             raise IdentidadPropietarioNoVerificadaError("el mensaje del callback no trae message_id entero")
         chat = mensaje_cb.get("chat")
     else:
+        if "message" in raw_update and not isinstance(raw_update.get("message"), Mapping):
+            raise IdentidadPropietarioNoVerificadaError("el campo 'message' del update está malformado")
         crudo = raw_update.get("message")
         carga = crudo if isinstance(crudo, Mapping) else raw_update
         if _contiene_senales_de_reenvio_o_canal(carga):
             raise IdentidadPropietarioNoVerificadaError("el mensaje contiene marcadores de reenvío o canal")
+        remitente = carga.get("from")
         chat = carga.get("chat")
 
+    if not isinstance(remitente, Mapping):
+        raise IdentidadPropietarioNoVerificadaError("el update no trae remitente")
+    if "is_bot" in remitente and remitente["is_bot"] is not False:
+        raise IdentidadPropietarioNoVerificadaError("Golden Master rechaza remitentes bot o is_bot inválido")
     if not isinstance(chat, Mapping) or chat.get("type") != "private":
         raise IdentidadPropietarioNoVerificadaError("Golden Master exige chat explícitamente de tipo 'private'")
 
@@ -394,6 +419,8 @@ class CoordinadorTelegramGoldenMaster:
         self._worker_fut_activo: asyncio.Future[Any] | None = None
         self._entregas_lock = threading.Lock()
         self._entregas_en_vuelo: set[concurrent.futures.Future[TelegramMessage]] = set()
+        self._recargas_en_curso: int = 0
+        self._reload_lock = asyncio.Lock()
 
     @property
     def tiene_solicitud_abierta(self) -> bool:
@@ -485,6 +512,10 @@ class CoordinadorTelegramGoldenMaster:
                         caller_cancelled = True
                     if cancelacion_event is not None:
                         cancelacion_event.set()
+                        with self._entregas_lock:
+                            entregas = list(self._entregas_en_vuelo)
+                        for entrega_fut in entregas:
+                            entrega_fut.cancel()
                 except Exception as exc:  # noqa: BLE001 - worker_fut ya finalizó; el retorno/propagación ocurre abajo
                     logger.debug("Worker Golden Master finalizó con excepción %s", type(exc).__name__)
                     break
@@ -527,12 +558,17 @@ class CoordinadorTelegramGoldenMaster:
         actualizar_objetivo: bool = False,
     ) -> None:
         """Actualiza sender/operador ante un hot-reload invalidando antes cualquier prompt abierto."""
-        await self.esperar_idle()
-        await self._invalidar_sesion_abierta(motivo="recarga del transporte Telegram")
-        self._sender = sender
-        self._operador_autorizado = operador_autorizado
-        if actualizar_objetivo or objetivo is not None:
-            self._objetivo = objetivo
+        self._recargas_en_curso += 1
+        try:
+            async with self._reload_lock:
+                await self.esperar_idle()
+                await self._invalidar_sesion_abierta(motivo="recarga del transporte Telegram")
+                self._sender = sender
+                self._operador_autorizado = operador_autorizado
+                if actualizar_objetivo or objetivo is not None:
+                    self._objetivo = objetivo
+        finally:
+            self._recargas_en_curso -= 1
 
     async def esperar_idle(self) -> None:
         """Espera de manera determinista a que terminen todas las operaciones en curso."""
@@ -581,6 +617,8 @@ class CoordinadorTelegramGoldenMaster:
 
     async def procesar_actualizacion(self, raw_update: Mapping[str, object]) -> None:
         """Ejecuta y aguarda en línea el manejo completo de un update crudo Golden Master."""
+        if not isinstance(raw_update, Mapping):
+            return
         if isinstance(raw_update.get("callback_query"), Mapping):
             tarea = await self.iniciar_callback(raw_update)
         else:
@@ -590,6 +628,8 @@ class CoordinadorTelegramGoldenMaster:
 
     async def iniciar_callback(self, raw_update: Mapping[str, object]) -> asyncio.Task[None] | None:
         """Valida e inicia en single-flight un callback ``gm:<accion>:<token>``."""
+        if not isinstance(raw_update, Mapping):
+            return None
         query = raw_update.get("callback_query")
         if not isinstance(query, Mapping):
             return None
@@ -614,6 +654,9 @@ class CoordinadorTelegramGoldenMaster:
 
         if self._cerrado:
             await self._responder_callback_seguro(callback_id, text="Adaptador cerrado")
+            return None
+        if self._recargas_en_curso > 0:
+            await self._responder_callback_seguro(callback_id, text="Recarga de transporte en curso")
             return None
         if self._objetivo is None:
             await self._responder_callback_seguro(callback_id, text="Golden Master no configurado")
@@ -649,7 +692,11 @@ class CoordinadorTelegramGoldenMaster:
 
     async def iniciar_comando(self, raw_update: Mapping[str, object]) -> asyncio.Task[None] | None:
         """Valida e inicia en single-flight un comando ``/gm_*`` desde un update crudo."""
+        if not isinstance(raw_update, Mapping):
+            return None
         msg_obj = raw_update.get("message")
+        if "message" in raw_update and not isinstance(msg_obj, Mapping):
+            return None
         msg = msg_obj if isinstance(msg_obj, Mapping) else raw_update
         raw_text = msg.get("text")
         if not es_comando_golden_master(raw_text):
@@ -669,6 +716,9 @@ class CoordinadorTelegramGoldenMaster:
 
         if self._cerrado:
             await self._enviar_seguro(chat_id, "⚠️ Adaptador Golden Master cerrado.")
+            return None
+        if self._recargas_en_curso > 0:
+            await self._enviar_seguro(chat_id, "⏳ Transporte Telegram en recarga; reintentá en unos instantes.")
             return None
         if comando == "/gm" or comando == "/gm_ayuda":
             if resto:
@@ -847,6 +897,18 @@ class CoordinadorTelegramGoldenMaster:
         entrega_ref: dict[str, Any] = {}
         cancelacion_pedida = threading.Event()
 
+        def _capturar_si_respondio(
+            fut_entregada: concurrent.futures.Future[TelegramMessage],
+            token_entregado: str,
+        ) -> None:
+            if not fut_entregada.done() or fut_entregada.cancelled() or fut_entregada.exception() is not None:
+                return
+            entregado = fut_entregada.result(timeout=0)
+            msg_id_tardio = getattr(entregado, "message_id", None)
+            if not isinstance(msg_id_tardio, bool) and isinstance(msg_id_tardio, int) and msg_id_tardio > 0:
+                entrega_ref["token"] = token_entregado
+                entrega_ref["message_id"] = msg_id_tardio
+
         def _entregar(presentacion: PresentacionConsentimiento) -> None:
             if self._cerrado or cancelacion_pedida.is_set():
                 raise EntregaPresentacionError("preparación Golden Master cancelada antes de entregar")
@@ -871,9 +933,17 @@ class CoordinadorTelegramGoldenMaster:
             try:
                 mensaje = fut.result(timeout=self._delivery_timeout)
             except concurrent.futures.CancelledError as exc:
+                fut.cancel()
+                _capturar_si_respondio(fut, token)
                 raise EntregaPresentacionError("entrega Golden Master cancelada por cierre") from exc
             except (*_ERRORES_TRANSPORTE_TELEGRAM, TimeoutError, RuntimeError) as exc:
+                fut.cancel()
+                _capturar_si_respondio(fut, token)
                 raise EntregaPresentacionError(f"fallo al entregar presentación por Telegram: {exc}") from exc
+            except BaseException:
+                fut.cancel()
+                _capturar_si_respondio(fut, token)
+                raise
             finally:
                 with self._entregas_lock:
                     self._entregas_en_vuelo.discard(fut)

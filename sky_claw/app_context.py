@@ -423,6 +423,7 @@ class AppContext:
         self.telegram_hitl_registry = TelegramHITLMessageRegistry()
         self.golden_master_coordinator: CoordinadorTelegramGoldenMaster | None = None
         self._golden_master_objetivo: Any = None
+        self._cleanup_gm_registrado: CoordinadorTelegramGoldenMaster | None = None
         self.router: LLMRouter | None = None
         # F1 (auditoría Zero-Trust 2026-07-18): bóveda de credenciales para el
         # hot-swap Zero-Trust del router. None hasta que start_full la provisione
@@ -430,6 +431,7 @@ class AppContext:
         self.credential_vault: CredentialVault | None = None
         self.sender: TelegramSender | None = None
         self.polling: TelegramPolling | None = None
+        self._cleanup_polling_registrado: TelegramPolling | None = None
         # Motor de sincronización — lo consume el botón "Buscar actualizaciones"
         # de la GUI (detect_pending_updates). None hasta que corra start_full.
         self.sync_engine: SyncEngine | None = None
@@ -798,7 +800,9 @@ class AppContext:
         self.mo2_profile = PERFIL_MO2_POR_DEFECTO
         self.router = None
         self.polling = None
+        self._cleanup_polling_registrado = None
         self.golden_master_coordinator = None
+        self._cleanup_gm_registrado = None
         self._golden_master_objetivo = None
         self.hitl = None
         self.sender = None
@@ -1489,6 +1493,7 @@ class AppContext:
                     authorized_user_id=operator_chat_id,
                     local_cfg=local_cfg,
                 )
+                self._cleanup_gm_registrado = golden_master_coordinator
                 self._push_startup_cleanup(self._cerrar_golden_master, golden_master_coordinator)
 
             hitl: HITLGuard
@@ -2258,6 +2263,7 @@ class AppContext:
                     session=self.network.session,
                     authorized_chat_id=operator_chat_id,
                 )
+                self._cleanup_polling_registrado = polling
                 self._push_startup_cleanup(self._stop_polling, polling)
                 await self._await_startup(polling.start())
                 logger.info("Telegram polling started")
@@ -2307,6 +2313,8 @@ class AppContext:
         finally:
             if self.golden_master_coordinator is coordinador:
                 self.golden_master_coordinator = None
+            if self._cleanup_gm_registrado is coordinador:
+                self._cleanup_gm_registrado = None
 
     async def _stop_polling(self, polling: TelegramPolling) -> None:
         """Callback for AsyncExitStack: stop Telegram polling."""
@@ -2315,6 +2323,8 @@ class AppContext:
         finally:
             if self.polling is polling:
                 self.polling = None
+            if self._cleanup_polling_registrado is polling:
+                self._cleanup_polling_registrado = None
 
     def _estado_de_cuarentena_vfs(self) -> dict[str, Any] | None:
         """H-4: la cuarentena del broker VFS tal como la ve el agente en ``lods_status`` (``None`` si no hay)."""
@@ -2498,6 +2508,18 @@ class AppContext:
                         self._background_tasks.difference_update(done)
 
                     try:
+                        if (
+                            self.golden_master_coordinator is not None
+                            and self.golden_master_coordinator is not self._cleanup_gm_registrado
+                        ):
+                            self._cleanup_gm_registrado = self.golden_master_coordinator
+                            self._push_startup_cleanup(
+                                self._cerrar_golden_master,
+                                self.golden_master_coordinator,
+                            )
+                        if self.polling is not None and self.polling is not self._cleanup_polling_registrado:
+                            self._cleanup_polling_registrado = self.polling
+                            self._push_startup_cleanup(self._stop_polling, self.polling)
                         await self._close_cleanup_generation(
                             timeout_s=self._startup_shutdown_timeout_s,
                         )
