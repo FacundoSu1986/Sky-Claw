@@ -20,7 +20,10 @@ import pathlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from sky_claw.app.security.hitl import CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA
+from sky_claw.app.security.hitl import (
+    CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA,
+    CATEGORIA_DYNDOLOD_ETAPAS_PREVIAS_ASISTIDO,
+)
 from sky_claw.config import GUI_MAX_PENDING_HITL
 from sky_claw.local.discovery.registry import (
     build_ritual_install_env,
@@ -758,6 +761,12 @@ def make_gui_hitl_notify(
     ``tool_execution`` —que sí se auto-aprueba— la convertiría en un trámite
     vacío.
 
+    For ``category == CATEGORIA_DYNDOLOD_ETAPAS_PREVIAS_ASISTIDO`` (D-3) the modal
+    is parked and **never** auto-approved: es la confirmación del operador de la GUI
+    para lanzar la etapa 9 en modo asistido SIN las etapas previas (SOP §5.2). Si
+    cayera a ``delegate`` la pregunta se iría a Telegram, y si se auto-aprobara
+    «Modo local» saltearía el guard por el operador.
+
     Every other category falls through to ``delegate`` (the original Telegram
     closure), so scope approvals keep their existing behaviour.
 
@@ -806,7 +815,7 @@ def make_gui_hitl_notify(
             )
             _gui_pending_request_id.set(req.request_id)
             return
-        if category == CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA:
+        if category in (CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA, CATEGORIA_DYNDOLOD_ETAPAS_PREVIAS_ASISTIDO):
             # T5-v2: confirmación MID-RUN de la configuración de TexGen/DynDOLOD.
             # Siempre modal y **nunca** auto-aprobada por «Modo local»: lo que el
             # operador declara no es "permito ejecutar una tool" (eso ya lo hizo el
@@ -814,6 +823,8 @@ def make_gui_hitl_notify(
             # configurar la GUI y su Output está listo para el gate final". El
             # texto contractual que viaja en `reason` es lo que hace honesta esa
             # declaración; auto-aprobarla la vaciaría.
+            # D-3: la confirmación de seguir en modo ASISTIDO sin las etapas previas
+            # tiene el mismo trato y por el mismo motivo: es del operador, no de «Modo local».
             set_pending(
                 stamp_hitl_owner(
                     {

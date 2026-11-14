@@ -1534,6 +1534,12 @@ async def test_generate_lods_no_puede_inyectar_switches_por_payload(tmp_path: pa
     class _ServicioFalso:
         """Stub del servicio: reenvía al runner como hace `DynDOLODPipelineService`."""
 
+        def verificar_etapas_previas(self) -> Any:
+            """Etapas previas completas: este test es del boundary de ``dyndolod_args``, no del guard (D-3)."""
+            from sky_claw.local.validators.etapas_previas_lods import EvidenciaDeEtapasPrevias  # noqa: PLC0415
+
+            return EvidenciaDeEtapasPrevias(faltantes=())
+
         async def execute(self, **kwargs: Any) -> dict[str, Any]:
             return {
                 "argv": runner._build_xedit_args(kwargs.get("dyndolod_args"), herramienta=HerramientaDynDOLOD.DYNDOLOD)

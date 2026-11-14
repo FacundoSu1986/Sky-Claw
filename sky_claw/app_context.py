@@ -325,6 +325,23 @@ def _mods_candidatos_para_sandbox(mo2_root: pathlib.Path) -> list[pathlib.Path]:
     return candidatos
 
 
+def _raiz_declarada_del_xedit_bridge() -> pathlib.Path | None:
+    """``XEDIT_BRIDGE_ROOT`` si el operador la declaró y apunta a un directorio absoluto existente (#917).
+
+    Es configuración del operador (entorno del proceso), no entrada externa: una raíz declarada a propósito
+    se SUMA al sandbox, sin reemplazar a las demás ni tocar ``install_dir`` (que decide dónde se instalan
+    las herramientas descargadas). Vacía, relativa, inexistente o un archivo = no agrega nada.
+    """
+    valor = os.environ.get("XEDIT_BRIDGE_ROOT", "").strip()
+    if not valor:
+        return None
+    candidata = pathlib.Path(valor)
+    if not candidata.is_absolute():
+        return None
+    resuelta = candidata.resolve(strict=False)
+    return resuelta if resuelta.is_dir() else None
+
+
 def _construir_raices_sandbox(
     mo2_root: pathlib.Path,
     install_dir: pathlib.Path | None,
@@ -347,6 +364,10 @@ def _construir_raices_sandbox(
         roots.append(install_dir)
     if skyrim_path and skyrim_path not in roots:
         roots.append(skyrim_path)
+    # Una sola composición para todos los llamadores (AppContext y el modo VFS de __main__): #917.
+    raiz_bridge = _raiz_declarada_del_xedit_bridge()
+    if raiz_bridge and raiz_bridge not in roots:
+        roots.append(raiz_bridge)
     raiz_instancia = _raiz_datos_instancia_para_sandbox(mo2_root)
     if raiz_instancia and raiz_instancia not in roots:
         roots.append(raiz_instancia)
