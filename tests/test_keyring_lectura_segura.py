@@ -261,13 +261,20 @@ def test_detector_de_try_sin_clasificar_sintetico(fuente: str, esperadas: list[s
 #:
 #: Enumerados por AST, no a mano (la lista manual se había dejado ``_validate_and_save``).
 #: ``save_settings`` aparece dos veces: son dos ``try`` distintos dentro de la misma función.
-#: ``_migrate_and_get`` (``local_config.py``) es el hermano de forma MIXTA
-#: ``(KeyringError, OSError, Exception)``: el detector original lo daba por clasificado.
+#: ``LocalConfig._migrate_and_get`` (``local_config.py``), el hermano de forma MIXTA
+#: ``(KeyringError, OSError, Exception)`` que el detector original no veía, ya está clasificado y salió
+#: de esta lista (con tests de comportamiento en ``test_local_config_keyring_lectura.py``).
+#:
+#: Los que quedan, y por qué siguen acá:
+#: - ``setup_wizard._validate_and_save``: manejador de FRONTERA de UI (muestra el error al usuario con
+#:   ``ui.notify`` en vez de degradar a «no configurado») y no tiene tests de comportamiento; clasificarlo
+#:   sin uno sería inventar el contrato.
+#: - ``sky_claw_gui.py`` y ``app_context.py``: los tocan PR abiertos de otras sesiones (#923, #936, #937,
+#:   #927, #854); se clasifican cuando aterricen para no abrir conflictos.
 _HERMANOS_PENDIENTES = {
     "sky_claw/app/gui/setup_wizard.py": ["_validate_and_save"],
     "sky_claw/app/gui/sky_claw_gui.py": ["_configured", "_on_check_updates", "save_settings", "save_settings"],
     "sky_claw/app_context.py": ["_is_configured", "_read_key"],
-    "sky_claw/local/local_config.py": ["_migrate_and_get"],
 }
 
 
