@@ -320,6 +320,31 @@ class TestDiscardPending:
         assert task_actual is not None
         assert task_actual.state == "RUNNING"
 
+    @pytest.mark.parametrize("estado", ["COMPLETED", "FAILED", "AWAITING_OPERATOR"])
+    def test_rechaza_descartar_una_task_terminal(self, estado: str) -> None:
+        """``discard_pending`` solo vale desde PENDING: ningún estado posterior se borra en silencio."""
+        sm = ToolStateMachine()
+        task = sm.create_task("tool", {"x": 1})
+        sm.acquire_idempotency(task.task_id)
+        sm.transition(task.task_id, "RUNNING")
+        sm.transition(task.task_id, estado)
+
+        with pytest.raises(InvalidTransitionError, match=estado):
+            sm.discard_pending(task.task_id)
+
+        task_actual = sm.get_task(task.task_id)
+        assert task_actual is not None
+        assert task_actual.state == estado
+
+    def test_rechaza_descartar_una_task_esperando_aprobacion(self) -> None:
+        sm = ToolStateMachine()
+        task = sm.create_task("tool", {"x": 1}, initial_state="AWAITING_APPROVAL")
+
+        with pytest.raises(InvalidTransitionError, match="AWAITING_APPROVAL"):
+            sm.discard_pending(task.task_id)
+
+        assert sm.get_task(task.task_id) is not None
+
     def test_task_inexistente_levanta_keyerror(self) -> None:
         sm = ToolStateMachine()
 
