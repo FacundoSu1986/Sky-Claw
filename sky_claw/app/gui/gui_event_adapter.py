@@ -84,7 +84,7 @@ class EventBus:
         self._subscribers_lock = threading.Lock()
         self._event_queue: queue.Queue = queue.Queue()
         self._running = False
-        # True entre un stop() de un bus que había arrancado y el próximo start().
+        # True desde cualquier stop() explícito (haya arrancado o no) hasta el próximo start().
         self._detenido = False
         # Bound at start() to the running loop; None means events are dropped.
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -194,13 +194,11 @@ class EventBus:
         self._processor.start()
 
     def stop(self) -> None:
-        habia_arrancado = self._running
         self._running = False
         if hasattr(self, "_processor") and self._processor is not None:
             self._processor.join(timeout=2.0)
             self._processor = None
-        if habia_arrancado:
-            self._detenido = True
+        self._detenido = True
         pendientes = self._event_queue.qsize()
         if pendientes:
             self._logger.warning(

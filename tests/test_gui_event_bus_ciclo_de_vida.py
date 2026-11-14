@@ -137,6 +137,25 @@ async def test_publicar_tras_stop_avisa_retiene_y_un_start_posterior_lo_entrega(
         await _esperar(lambda: recibidos == [7])
 
 
+def test_publicar_tras_un_stop_avisa_aunque_el_bus_nunca_haya_arrancado(caplog: pytest.LogCaptureFixture) -> None:
+    """Hallazgo de CodeRabbit en #932: el aviso depende de ``stop()``, no de haber arrancado.
+
+    Un bus que nunca arrancó y recibe ``stop()`` queda detenido: un ``publish()`` posterior se
+    retiene y debe avisarlo, igual que el de un bus que sí había arrancado.
+    """
+    with EventBus.aislado() as bus:
+        bus.stop()
+
+        with caplog.at_level(logging.WARNING, logger=_LOGGER):
+            bus.publish(_evento(n=1))
+        # se lee ANTES de salir: al salir, aislado() llama a stop(), que sí avisa del pendiente
+        avisos = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+        assert len(avisos) == 1
+        assert "detenido" in avisos[0]
+        assert bus.pending == 1
+
+
 async def test_publicar_antes_del_primer_start_no_avisa(caplog: pytest.LogCaptureFixture) -> None:
     """Publicar durante el arranque (antes de ``app.on_startup``) es normal, no un aviso."""
     with EventBus.aislado() as bus:
