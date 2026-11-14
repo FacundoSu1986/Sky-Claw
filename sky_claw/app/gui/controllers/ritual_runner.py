@@ -19,6 +19,7 @@ import os
 import pathlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from sky_claw.app.security.hitl import (
     CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA,
@@ -53,6 +54,28 @@ logger = logging.getLogger(__name__)
 #: duración del dispatch del GUI, que auto-aprobaba cualquier tool_execution de
 #: cualquier source concurrente (bypass del gate HITL).
 _ritual_auto_approve: contextvars.ContextVar[bool] = contextvars.ContextVar("ritual_auto_approve", default=False)
+
+
+#: Mismo mecanismo que ``_ritual_auto_approve``, para la categoría ``download``:
+#: lo arma sólo ``run_ritual_install`` cuando el operador eligió en Ajustes no
+#: confirmar las descargas que él inicia. Es un ContextVar APARTE a propósito —
+#: «Modo local» no enciende el egress— y scoped a la task: una descarga pedida
+#: por el agente LLM/Telegram corre en otra task (default ``False``) y sigue
+#: parkeando su aprobación.
+#:
+#: Herencia: ``asyncio.create_task`` copia el contexto de quien lo crea, así que una
+#: task hija creada DENTRO de ``ensure_*`` (el trabajo del propio instalador) hereda el
+#: armado, y una creada fuera —el agente, Telegram, otro click— no lo ve. Eso es lo
+#: pretendido: el permiso es del árbol de tasks de ESA instalación. Anclado por
+#: ``test_las_tasks_hijas_del_instalador_heredan_el_armado_y_las_ajenas_no``.
+_ritual_auto_approve_descargas: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ritual_auto_approve_descargas", default=False
+)
+
+
+def ritual_auto_approve_descargas_armed() -> bool:
+    """True si la task actual es un ``run_ritual_install`` con descargas auto-aprobadas."""
+    return _ritual_auto_approve_descargas.get()
 
 
 def ritual_auto_approve_armed() -> bool:
@@ -576,6 +599,44 @@ def clear_ritual_result_owned(store: ReactiveStore, tab_id: str | None) -> None:
 CLIENT_KEY_AUTO_APPROVE = "modo_local"
 #: Single-flight guard: a ritual is dispatching or awaiting approval right now.
 STORE_KEY_RITUAL_IN_FLIGHT = "ritual_in_flight"
+#: Detalle de lo que el single-flight tiene tomado: ``{"tool_key", "fase"}`` o
+#: ``None``. Lo consume la grilla de rituales para pintar «Ejecutando» /
+#: «Instalando» en la tarjeta que corresponde y bloquear las demás.
+STORE_KEY_RITUAL_EN_CURSO = "ritual_en_curso"
+FASE_EJECUTANDO = "ejecutando"
+FASE_INSTALANDO = "instalando"
+
+
+def _marcar_en_curso(store: ReactiveStore, tool_key: str, fase: str) -> None:
+    """Toma el single-flight y publica QUÉ corre. Único escritor, junto a :func:`_liberar_en_curso`.
+
+    El detalle va primero: quien se entera por el booleano ya lo encuentra escrito.
+    """
+    store.set(STORE_KEY_RITUAL_EN_CURSO, {"tool_key": tool_key, "fase": fase})
+    store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
+
+
+def _liberar_en_curso(store: ReactiveStore) -> None:
+    """Suelta el single-flight y su detalle (siempre los dos: ancla AST en test_ritual_en_curso.py)."""
+    store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
+    store.set(STORE_KEY_RITUAL_EN_CURSO, None)
+
+
+def ritual_en_curso(store: ReactiveStore) -> dict[str, str] | None:
+    """Qué tiene tomado el single-flight, o ``None`` si no hay nada corriendo.
+
+    El booleano manda: sin él no hay nada «en curso» aunque quede un detalle
+    huérfano; con él y sin detalle bien formado devuelve claves vacías, para que
+    la vista bloquee sin atribuirle la corrida a ninguna tarjeta.
+    """
+    if not store.get(STORE_KEY_RITUAL_IN_FLIGHT):
+        return None
+    detalle = store.get(STORE_KEY_RITUAL_EN_CURSO)
+    if isinstance(detalle, dict) and isinstance(detalle.get("tool_key"), str) and isinstance(detalle.get("fase"), str):
+        return {"tool_key": detalle["tool_key"], "fase": detalle["fase"]}
+    return {"tool_key": "", "fase": ""}
+
+
 #: Último reporte de preflight (``PreflightReport.to_dict()``) que un dispatch
 #: adjuntó — hoy solo el sort de LOOT lo produce. El panel refrescable
 #: ``_ritual_preflight_panel`` lo renderiza con ``create_preflight_panel`` (T-16b).
@@ -672,12 +733,21 @@ def preflight_from_result(result: Any) -> dict[str, Any] | None:
     return None
 
 
+def _host_para_log(url: str) -> str:
+    """Host de ``url`` para un log, o ``"?"``: nunca userinfo, ruta ni query (pueden traer secretos)."""
+    try:
+        return urlsplit(url).hostname or "?"
+    except ValueError:
+        return "?"
+
+
 def make_gui_hitl_notify(
     *,
     respond: Callable[[str, bool], Awaitable[None]],
     set_pending: Callable[[dict[str, Any]], None],
     auto_approve_getter: Callable[[], bool],
     tab_id_getter: Callable[[], str | None] = ritual_tab_id,
+    auto_approve_downloads_getter: Callable[[], bool] = lambda: False,
     delegate: Callable[[Any], Awaitable[None]] | None,
 ) -> Callable[[Any], Awaitable[None]]:
     """Build the GUI's HITL ``notify_fn`` (composes over the original closure).
@@ -687,8 +757,11 @@ def make_gui_hitl_notify(
     ``set_pending`` so the page renders an Aprobar/Denegar modal.
 
     For ``category == "download"`` (the "Instalar" button — Follow-up C) the GUI
-    also parks an Aprobar/Denegar modal, but it is **never** auto-approved by
-    "Modo local": a network download is egress and is always confirmed by hand.
+    also parks an Aprobar/Denegar modal, and it is **never** auto-approved by
+    "Modo local": a network download is egress. It is auto-approved only when
+    ``auto_approve_downloads_getter`` says so — la preferencia APARTE de Ajustes,
+    armada por ContextVar sólo en la task de :func:`run_ritual_install`. El
+    default del getter es ``False``: quien no lo cablea sigue confirmando a mano.
     The parked entry carries the asset ``url`` so the modal can show its origin.
 
     For ``category == "sandbox_promotion"`` (T-27b·2, ADR 0005) the modal is
@@ -781,7 +854,18 @@ def make_gui_hitl_notify(
             _gui_pending_request_id.set(req.request_id)
             return
         if category == "download":
-            # Egress: never auto-approved — always parks a manual Aprobar/Denegar.
+            # Egress: «Modo local» nunca lo auto-aprueba. Sólo la preferencia propia
+            # de descargas, armada para la task del instalador de la GUI.
+            if auto_approve_downloads_getter():
+                # Sólo el host: la URL completa puede traer credenciales o tokens en
+                # el userinfo o el query.
+                logger.info(
+                    "HITL(GUI): auto-approving download %s (preferencia de Ajustes) host=%s",
+                    req.request_id,
+                    _host_para_log(getattr(req, "url", "") or ""),
+                )
+                await respond(req.request_id, True)
+                return
             set_pending(
                 stamp_hitl_owner(
                     {
@@ -869,7 +953,7 @@ async def run_ritual(
     # click rechazado (single-flight / sin supervisor / ritual no cableado) no
     # consume la acción propia, porque la corrida ni siquiera empieza.
     clear_ritual_result_owned(store, tab_id)
-    store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
+    _marcar_en_curso(store, tool_key, FASE_EJECUTANDO)
     # F1a: un click del operador ES intervención humana — rearmar el
     # cortacircuitos cognitivo del dispatcher antes de despachar, para que
     # repetir el mismo ritual a mano no se confunda con un bucle del agente
@@ -905,7 +989,7 @@ async def run_ritual(
         _gui_pending_request_id.reset(pending_token)
         _ritual_auto_approve.reset(cv_token)  # disarm (scoped a esta task)
         _ritual_tab_id.reset(cid_token)
-        store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
+        _liberar_en_curso(store)
         # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
         if pending_request_id is not None:
             clear_owned_hitl(store, tab_id, request_id=pending_request_id)
@@ -1073,6 +1157,7 @@ async def run_ritual_install(
     app_context: Any,
     store: ReactiveStore,
     tab_id: str | None = None,
+    auto_approve_downloads: bool = False,
 ) -> None:
     """Install a Ritual's tool via ``ToolsInstaller`` and publish feedback to the store.
 
@@ -1081,7 +1166,8 @@ async def run_ritual_install(
     never overlap (both serialize on ``STORE_KEY_RITUAL_IN_FLIGHT``). The download's
     HITL approval is requested by the installer with ``category="download"`` and
     routed to the GUI modal by :func:`make_gui_hitl_notify` — it is never
-    auto-approved by "Modo local".
+    auto-approved by "Modo local". ``auto_approve_downloads`` (la preferencia
+    propia de Ajustes, default ``False``) la auto-aprueba sólo para ESTA task.
 
     P1-7: ``tab_id`` arma el mismo ContextVar que :func:`run_ritual`, así que la
     aprobación de descarga queda marcada con la pestaña que apretó "Instalar".
@@ -1198,145 +1284,155 @@ async def run_ritual_install(
     session = getattr(app_context, "session", None)
     ensure = getattr(installer, method_name)
 
-    store.set(STORE_KEY_RITUAL_IN_FLIGHT, True)
-    # P1-7: mismo scoping por task que run_ritual. El gate HITL del installer
-    # corre inline en esta misma task, así que ve el ContextVar y marca la
-    # aprobación de descarga con la pestaña que apretó "Instalar".
-    tab_token = _ritual_tab_id.set(tab_id)
-    pending_token = _gui_pending_request_id.set(None)
+    _marcar_en_curso(store, tool_key, FASE_INSTALANDO)
+    # Single-flight tomado desde acá hasta el FINAL de la operación: incluye la
+    # persistencia y la activación en modlist.txt de Community Shaders, que corren
+    # DESPUÉS de ``ensure``. Liberarlo antes dejaba pasar a otro ritual o instalación
+    # mientras ésta todavía escribía el perfil de MO2. El ``finally`` cubre éxito,
+    # fallo y cancelación; el cleanup de la aprobación HITL queda en el interno,
+    # que es donde termina el gate.
     try:
-        if cs_kwargs is not None:
-            result = await ensure(install_dir, session, downloader, **cs_kwargs)
-        else:
-            result = await ensure(install_dir, session)
-    except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
-        logger.exception("Ritual install %s (%s) failed", tool_key, method_name)
+        # P1-7: mismo scoping por task que run_ritual. El gate HITL del installer
+        # corre inline en esta misma task, así que ve el ContextVar y marca la
+        # aprobación de descarga con la pestaña que apretó "Instalar".
+        tab_token = _ritual_tab_id.set(tab_id)
+        pending_token = _gui_pending_request_id.set(None)
+        descargas_token = _ritual_auto_approve_descargas.set(auto_approve_downloads is True)
+        try:
+            if cs_kwargs is not None:
+                result = await ensure(install_dir, session, downloader, **cs_kwargs)
+            else:
+                result = await ensure(install_dir, session)
+        except Exception as exc:  # noqa: BLE001 — fire-and-forget task must not crash the loop
+            logger.exception("Ritual install %s (%s) failed", tool_key, method_name)
+            store.set(
+                STORE_KEY_RITUAL_FEEDBACK,
+                {"text": f"No se pudo instalar «{tool_key}»: {exc}", "type": "negative"},
+            )
+            return
+        finally:
+            pending_request_id = _gui_pending_request_id.get()
+            _gui_pending_request_id.reset(pending_token)
+            _ritual_auto_approve_descargas.reset(descargas_token)  # disarm (scoped a esta task)
+            _ritual_tab_id.reset(tab_token)
+            # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
+            if pending_request_id is not None:
+                clear_owned_hitl(store, tab_id, request_id=pending_request_id)
+
+        # Seed the resolver env var so the just-installed tool can run immediately,
+        # without waiting for the next environment scan to refresh the snapshot.
+        env_name = RITUAL_INSTALL_ENV.get(tool_key)
+        exe_path = getattr(result, "exe_path", None)
+        if env_name and exe_path:
+            os.environ[env_name] = str(exe_path)
+
+        if tool_key == "community_shaders":
+            # Contrato NGIO: activar en modlist.txt del perfil de sesión y persistir
+            # los nombres. Sin `+Nombre` USVFS no monta los mods.
+            mods = list(result) if result is not None else []
+            nombres = [m.mod_name for m in mods]
+            config_path = getattr(app_context, "config_path", None)
+            mo2 = getattr(app_context, "mo2", None)
+            profile = getattr(app_context, "mo2_profile", None)
+            # Sin config_path (boot incompleto) la persistencia NO corre: la
+            # operación también es parcial y se degrada igual que en el camino que
+            # lanza — cubrir solo la excepción dejaba vivo el éxito visual que este
+            # bloque vino a cerrar (review adversarial del PR #445).
+            persistencia_ok = config_path is not None
+            if config_path is not None:
+                try:
+                    from sky_claw.local.local_config import persistir_campo_bloqueante
+
+                    await persistir_campo_bloqueante(config_path, "community_shaders_mods", nombres)
+                except Exception:  # noqa: BLE001 — la instalación ya tuvo éxito; no romper el feedback
+                    logger.exception("No se pudo persistir community_shaders_mods en %s", config_path)
+                    persistencia_ok = False
+
+            activados: list[str] = []
+            activacion_ok = False
+            motivo_activacion = ""
+            if not mods:
+                motivo_activacion = "el instalador no devolvió componentes"
+            elif mo2 is not None and profile:
+                try:
+                    for m in mods:
+                        await mo2.add_mod_to_modlist(m.mod_name, profile=profile)
+                        activados.append(m.mod_name)
+                    activacion_ok = len(activados) == len(mods)
+                    if not activacion_ok:
+                        motivo_activacion = "la activación quedó parcial"
+                except Exception:  # noqa: BLE001 — degradar feedback, no perder el resultado en disco
+                    logger.exception("Activación en modlist falló para Community Shaders (ritual)")
+                    motivo_activacion = "falló la escritura en modlist.txt"
+            else:
+                motivo_activacion = "no hay MO2 o perfil en el contexto de esta sesión"
+
+            if persistencia_ok and activacion_ok:
+                store.set(
+                    STORE_KEY_RITUAL_FEEDBACK,
+                    {
+                        "text": (f"«{tool_key}» instalado y activado en el perfil «{profile}»: {', '.join(nombres)}."),
+                        "type": "positive",
+                    },
+                )
+            else:
+                partes = []
+                if not persistencia_ok:
+                    partes.append("no se pudo persistir la configuración")
+                if not activacion_ok:
+                    partes.append(motivo_activacion or "no se pudo activar en modlist.txt")
+                store.set(
+                    STORE_KEY_RITUAL_FEEDBACK,
+                    {
+                        "text": (
+                            f"«{tool_key}» instalado en disco ({', '.join(nombres) or 'sin componentes'}), "
+                            f"pero {'; '.join(partes)}. Reintentá o activá los mods a mano en MO2."
+                        ),
+                        "type": "warning",
+                    },
+                )
+            return
+
+        # Presencia != compatibilidad probada. `ensure_skse` puede devolver una
+        # instalación que EXISTE en disco pero cuya compatibilidad no se pudo verificar
+        # porque el ejecutable de Skyrim no expone su versión exacta. Colapsar ese estado
+        # en el cartel verde le afirma al operador algo que nadie probó — el mismo falso
+        # positivo que el installer rechazó, una capa más arriba. Se reporta con el
+        # `warning` que la rama de Community Shaders ya usa para una operación que ocurrió
+        # pero no quedó garantizada. `getattr` porque el campo es opcional en
+        # `InstallResult` y los demás `ensure_*` no lo llenan.
+        if getattr(result, "verification", None) is InstallVerification.PRESENT_BUT_UNVERIFIED:
+            # Dos situaciones distintas comparten el estado, y el cartel tiene que
+            # distinguirlas: "no pude probar nada" NO implica "no toqué nada". La
+            # idempotente encontró algo y no escribió; la fresca sin ejecutable descargó y
+            # copió, pero no había runtime contra el cual probar el build. Un texto único
+            # que afirme "no se modificó nada" le miente al operador en la segunda, y esa
+            # mentira lo empuja a reintentar una instalación que ya ocurrió.
+            # `already_existed` es exactamente la dimensión que las separa — por eso vive
+            # aparte de `verification` y acá se leen las dos.
+            if getattr(result, "already_existed", False):
+                aviso = (
+                    f"«{tool_key}» detectado en el directorio del juego, pero no se pudo "
+                    "verificar su compatibilidad: no se pudo leer la versión exacta de "
+                    "Skyrim. No se descargó ni se modificó nada. Comprobá a mano que el "
+                    "build corresponda (https://skse.silverlock.org/)."
+                )
+            else:
+                aviso = (
+                    f"«{tool_key}» quedó instalado, pero su compatibilidad no se pudo "
+                    "verificar: no hay un ejecutable de Skyrim en esa carpeta contra el "
+                    "cual comprobar el build. Verificá a mano que corresponda "
+                    "(https://skse.silverlock.org/)."
+                )
+            store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": aviso, "type": "warning"})
+            return
+
         store.set(
             STORE_KEY_RITUAL_FEEDBACK,
-            {"text": f"No se pudo instalar «{tool_key}»: {exc}", "type": "negative"},
+            {"text": f"«{tool_key}» instalado correctamente.", "type": "positive"},
         )
-        return
     finally:
-        pending_request_id = _gui_pending_request_id.get()
-        _gui_pending_request_id.reset(pending_token)
-        _ritual_tab_id.reset(tab_token)
-        store.set(STORE_KEY_RITUAL_IN_FLIGHT, False)
-        # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
-        if pending_request_id is not None:
-            clear_owned_hitl(store, tab_id, request_id=pending_request_id)
-
-    # Seed the resolver env var so the just-installed tool can run immediately,
-    # without waiting for the next environment scan to refresh the snapshot.
-    env_name = RITUAL_INSTALL_ENV.get(tool_key)
-    exe_path = getattr(result, "exe_path", None)
-    if env_name and exe_path:
-        os.environ[env_name] = str(exe_path)
-
-    if tool_key == "community_shaders":
-        # Contrato NGIO: activar en modlist.txt del perfil de sesión y persistir
-        # los nombres. Sin `+Nombre` USVFS no monta los mods.
-        mods = list(result) if result is not None else []
-        nombres = [m.mod_name for m in mods]
-        config_path = getattr(app_context, "config_path", None)
-        mo2 = getattr(app_context, "mo2", None)
-        profile = getattr(app_context, "mo2_profile", None)
-        # Sin config_path (boot incompleto) la persistencia NO corre: la
-        # operación también es parcial y se degrada igual que en el camino que
-        # lanza — cubrir solo la excepción dejaba vivo el éxito visual que este
-        # bloque vino a cerrar (review adversarial del PR #445).
-        persistencia_ok = config_path is not None
-        if config_path is not None:
-            try:
-                from sky_claw.local.local_config import persistir_campo_bloqueante
-
-                await persistir_campo_bloqueante(config_path, "community_shaders_mods", nombres)
-            except Exception:  # noqa: BLE001 — la instalación ya tuvo éxito; no romper el feedback
-                logger.exception("No se pudo persistir community_shaders_mods en %s", config_path)
-                persistencia_ok = False
-
-        activados: list[str] = []
-        activacion_ok = False
-        motivo_activacion = ""
-        if not mods:
-            motivo_activacion = "el instalador no devolvió componentes"
-        elif mo2 is not None and profile:
-            try:
-                for m in mods:
-                    await mo2.add_mod_to_modlist(m.mod_name, profile=profile)
-                    activados.append(m.mod_name)
-                activacion_ok = len(activados) == len(mods)
-                if not activacion_ok:
-                    motivo_activacion = "la activación quedó parcial"
-            except Exception:  # noqa: BLE001 — degradar feedback, no perder el resultado en disco
-                logger.exception("Activación en modlist falló para Community Shaders (ritual)")
-                motivo_activacion = "falló la escritura en modlist.txt"
-        else:
-            motivo_activacion = "no hay MO2 o perfil en el contexto de esta sesión"
-
-        if persistencia_ok and activacion_ok:
-            store.set(
-                STORE_KEY_RITUAL_FEEDBACK,
-                {
-                    "text": (f"«{tool_key}» instalado y activado en el perfil «{profile}»: {', '.join(nombres)}."),
-                    "type": "positive",
-                },
-            )
-        else:
-            partes = []
-            if not persistencia_ok:
-                partes.append("no se pudo persistir la configuración")
-            if not activacion_ok:
-                partes.append(motivo_activacion or "no se pudo activar en modlist.txt")
-            store.set(
-                STORE_KEY_RITUAL_FEEDBACK,
-                {
-                    "text": (
-                        f"«{tool_key}» instalado en disco ({', '.join(nombres) or 'sin componentes'}), "
-                        f"pero {'; '.join(partes)}. Reintentá o activá los mods a mano en MO2."
-                    ),
-                    "type": "warning",
-                },
-            )
-        return
-
-    # Presencia != compatibilidad probada. `ensure_skse` puede devolver una
-    # instalación que EXISTE en disco pero cuya compatibilidad no se pudo verificar
-    # porque el ejecutable de Skyrim no expone su versión exacta. Colapsar ese estado
-    # en el cartel verde le afirma al operador algo que nadie probó — el mismo falso
-    # positivo que el installer rechazó, una capa más arriba. Se reporta con el
-    # `warning` que la rama de Community Shaders ya usa para una operación que ocurrió
-    # pero no quedó garantizada. `getattr` porque el campo es opcional en
-    # `InstallResult` y los demás `ensure_*` no lo llenan.
-    if getattr(result, "verification", None) is InstallVerification.PRESENT_BUT_UNVERIFIED:
-        # Dos situaciones distintas comparten el estado, y el cartel tiene que
-        # distinguirlas: "no pude probar nada" NO implica "no toqué nada". La
-        # idempotente encontró algo y no escribió; la fresca sin ejecutable descargó y
-        # copió, pero no había runtime contra el cual probar el build. Un texto único
-        # que afirme "no se modificó nada" le miente al operador en la segunda, y esa
-        # mentira lo empuja a reintentar una instalación que ya ocurrió.
-        # `already_existed` es exactamente la dimensión que las separa — por eso vive
-        # aparte de `verification` y acá se leen las dos.
-        if getattr(result, "already_existed", False):
-            aviso = (
-                f"«{tool_key}» detectado en el directorio del juego, pero no se pudo "
-                "verificar su compatibilidad: no se pudo leer la versión exacta de "
-                "Skyrim. No se descargó ni se modificó nada. Comprobá a mano que el "
-                "build corresponda (https://skse.silverlock.org/)."
-            )
-        else:
-            aviso = (
-                f"«{tool_key}» quedó instalado, pero su compatibilidad no se pudo "
-                "verificar: no hay un ejecutable de Skyrim en esa carpeta contra el "
-                "cual comprobar el build. Verificá a mano que corresponda "
-                "(https://skse.silverlock.org/)."
-            )
-        store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": aviso, "type": "warning"})
-        return
-
-    store.set(
-        STORE_KEY_RITUAL_FEEDBACK,
-        {"text": f"«{tool_key}» instalado correctamente.", "type": "positive"},
-    )
+        _liberar_en_curso(store)
 
 
 # ── Diagnóstico del perfil de MO2 para el generador nativo de parallax (NP-A0i, #817) ──
