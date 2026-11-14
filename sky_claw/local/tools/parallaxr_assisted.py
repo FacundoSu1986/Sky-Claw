@@ -15,8 +15,10 @@ Contrato arquitectónico:
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -30,6 +32,8 @@ MANUAL_MODE: Final[str] = "manual_official_entrypoint"
 DEFAULT_INSTRUCTION: Final[str] = "Ejecutá el entrypoint oficial de ParallaxR desde MO2."
 _HASH_CHUNK_SIZE: Final[int] = 65536
 _FINGERPRINT_MAX_ATTEMPTS: Final[int] = 2
+_WINERROR_INSPECTION_FAILURES: Final[frozenset[int]] = frozenset({21, 123, 1921})
+_ABSENCE_ERRNOS: Final[frozenset[int]] = frozenset({errno.ENOENT, errno.ENOTDIR})
 _ItemT = TypeVar("_ItemT")
 
 
@@ -104,24 +108,6 @@ class ParallaxRAssistedPreflight:
     candidate_mod_roots: tuple[Path, ...] = ()
     message: str = ""
 
-    def __post_init__(self) -> None:
-        """Valida consistencia invariante entre status, success, installation y message."""
-        is_ready = self.status == ParallaxRAssistedStatus.READY
-        if self.success != is_ready:
-            raise ValueError(
-                f"Estado inconsistente en preflight: status={self.status.value} requiere success={is_ready}."
-            )
-        if (self.installation is not None) != is_ready:
-            raise ValueError(
-                f"Estado inconsistente en preflight: installation debe informarse solo en READY "
-                f"(status={self.status.value})."
-            )
-        if (self.message == "") != is_ready:
-            raise ValueError(
-                f"Estado inconsistente en preflight: message debe estar vacío solo en READY "
-                f"(status={self.status.value})."
-            )
-
 
 @dataclass(frozen=True, slots=True)
 class ParallaxRManualHandoff:
@@ -140,15 +126,60 @@ class ParallaxRManualHandoff:
     message: str = ""
 
 
+def _resolve_path(path: Path, *, strict: bool = False) -> Path:
+    """Resuelve una ruta acotando la captura de RuntimeError a bucles de symlinks/junctions."""
+    try:
+        return path.resolve(strict=strict)
+    except RuntimeError as err:
+        # En Python 3.11 Windows, Path.resolve() convierte ELOOP/WinError 1921 en RuntimeError("Symlink loop from ...").
+        if "symlink loop" in str(err).lower():
+            raise OSError(errno.ELOOP, "Bucle detectado al resolver la ruta.") from err
+        raise
+
+
+def _stat_mode_fail_closed(path: Path) -> int | None:
+    """Obtiene st_mode distinguiendo ausencia real de errores de inspección Windows/POSIX."""
+    try:
+        return path.stat().st_mode
+    except OSError as stat_err:
+        if getattr(stat_err, "winerror", None) in _WINERROR_INSPECTION_FAILURES:
+            raise
+        if stat_err.errno not in _ABSENCE_ERRNOS:
+            raise
+        try:
+            # Un symlink o junction roto falla stat() con ENOENT, pero lstat() confirma que la entrada existe.
+            path.lstat()
+        except OSError as lstat_err:
+            if getattr(lstat_err, "winerror", None) in _WINERROR_INSPECTION_FAILURES:
+                raise lstat_err from stat_err
+            if lstat_err.errno not in _ABSENCE_ERRNOS:
+                raise lstat_err from stat_err
+            return None
+        raise
+
+
+def _is_accessible_dir(path: Path) -> bool:
+    """Indica si la ruta es un directorio accesible; propaga OSError cuando no puede verificarse."""
+    mode = _stat_mode_fail_closed(path)
+    return mode is not None and stat.S_ISDIR(mode)
+
+
+def _is_accessible_regular_file(path: Path) -> bool:
+    """Indica si la ruta es un archivo regular accesible; propaga OSError cuando no puede verificarse."""
+    mode = _stat_mode_fail_closed(path)
+    return mode is not None and stat.S_ISREG(mode)
+
+
 def _resolve_if_contained(
     child_path: Path,
     parent_dir: Path,
     *,
+    strict: bool = False,
     resolved_parent: Path | None = None,
 ) -> Path | None:
     """Resuelve child_path si permanece contenido en parent_dir; propaga OSError de resolución."""
-    base_parent = resolved_parent if resolved_parent is not None else parent_dir.resolve()
-    resolved_child = child_path.resolve()
+    base_parent = resolved_parent if resolved_parent is not None else _resolve_path(parent_dir, strict=strict)
+    resolved_child = _resolve_path(child_path, strict=strict)
     try:
         if resolved_child.is_relative_to(base_parent):
             return resolved_child
@@ -160,7 +191,7 @@ def _resolve_if_contained(
 def validate_path_containment(child_path: Path, parent_dir: Path) -> bool:
     """Valida que una ruta resuelta permanezca físicamente contenida en el directorio padre."""
     try:
-        return _resolve_if_contained(child_path, parent_dir) is not None
+        return _resolve_if_contained(child_path, parent_dir, strict=False) is not None
     except (ValueError, OSError):
         return False
 
@@ -226,18 +257,30 @@ def _discover_direct_mod_entries(
     """Enumera entradas directas de mods_dir sin convertir errores de E/S en ausencia."""
     items: list[_ItemT] = []
     try:
-        if not mods_dir.exists() or not mods_dir.is_dir():
+        if not _is_accessible_dir(mods_dir):
             return (), True
-        resolved_mods_dir = mods_dir.resolve()
+        resolved_mods_dir = _resolve_path(mods_dir, strict=True)
         for child in sorted(mods_dir.iterdir(), key=lambda p: p.name):
-            if not child.is_dir():
+            if not _is_accessible_dir(child):
+                continue
+            resolved_child = _resolve_if_contained(
+                child,
+                mods_dir,
+                strict=True,
+                resolved_parent=resolved_mods_dir,
+            )
+            if resolved_child is None:
                 continue
             target_candidate = child / target_name
-            if not target_candidate.is_file():
+            if not _is_accessible_regular_file(target_candidate):
                 continue
-            resolved_child = _resolve_if_contained(child, mods_dir, resolved_parent=resolved_mods_dir)
-            resolved_target = _resolve_if_contained(target_candidate, mods_dir, resolved_parent=resolved_mods_dir)
-            if resolved_child is None or resolved_target is None:
+            resolved_target = _resolve_if_contained(
+                target_candidate,
+                mods_dir,
+                strict=True,
+                resolved_parent=resolved_mods_dir,
+            )
+            if resolved_target is None:
                 continue
             items.append(build_item(resolved_target))
     except OSError:
@@ -306,7 +349,7 @@ def run_parallaxr_assisted_preflight(
     Retorna evidencia de instalación, candidatos descubiertos y marcadores de salida existentes.
     """
     try:
-        mods_dir_accessible = mods_dir.exists() and mods_dir.is_dir()
+        mods_dir_accessible = _is_accessible_dir(mods_dir)
     except OSError:
         return ParallaxRAssistedPreflight(
             status=ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
@@ -382,7 +425,7 @@ def run_parallaxr_assisted_preflight(
 
     if explicit_selection is not None:
         try:
-            resolved_selection = explicit_selection.resolve()
+            resolved_selection = _resolve_path(explicit_selection, strict=False)
         except OSError:
             return ParallaxRAssistedPreflight(
                 status=ParallaxRAssistedStatus.INVALID_SELECTION,
