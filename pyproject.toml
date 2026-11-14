@@ -410,6 +410,9 @@ module = [
     # P1 Frozen Runtime: paquete nuevo (models/discovery/observation/stabilization),
     # nace estricto por la misma convención que los módulos nuevos de la lista.
     "sky_claw.local.frozen_runtime.*",
+    # P7-A5 PR 4: adaptador de transporte HITL Golden Master sobre Telegram.
+    # `sky_claw.app.comms.*` está en ignore_errors arriba; opt-in estricto obligatorio.
+    "sky_claw.app.comms.golden_master_hitl",
     "sky_claw.local.parallax_unattended.*",
 ]
 strict = true

@@ -18,6 +18,11 @@ import keyring
 from sky_claw.app.agent.providers import ProviderConfigError, create_provider
 from sky_claw.app.agent.router import LLMRouter
 from sky_claw.app.agent.tools_facade import AsyncToolRegistry
+from sky_claw.app.comms.golden_master_hitl import (
+    CoordinadorTelegramGoldenMaster,
+    asegurar_coordinador_golden_master,
+    resolver_objetivo_golden_master_desde_config,
+)
 from sky_claw.app.comms.telegram import (
     TelegramHITLMessageRegistry,
     TelegramWebhook,
@@ -29,7 +34,7 @@ from sky_claw.app.comms.telegram import (
     terminalize_hitl_message,
     terminalize_unregistered_hitl_message_bounded,
 )
-from sky_claw.app.comms.telegram_polling import TelegramPolling
+from sky_claw.app.comms.telegram_polling import TelegramPolling, normalizar_operador_telegram_estricto
 from sky_claw.app.comms.telegram_sender import TelegramSender
 from sky_claw.app.core.metrics_server import (
     start_metrics_server,
@@ -85,6 +90,83 @@ logger = logging.getLogger("sky_claw")
 
 _T = TypeVar("_T")
 _CleanupCallback = Callable[[], Awaitable[None]]
+
+
+def _es_mock_externo(valor: object) -> bool:
+    """Evita importar ``unittest.mock`` en tiempo de arranque o binarios congelados."""
+    return type(valor).__module__.startswith("unittest.mock")
+
+
+def resolver_operador_telegram_efectivo(
+    *,
+    cli_operator: object = None,
+    config_chat_id: object = None,
+) -> int | None:
+    """Resuelve la única identidad efectiva del operador Telegram (fail-closed).
+
+    Política existente de startup:
+    1. Si ``telegram_chat_id`` está configurado (no vacío), gobierna la
+       identidad efectiva; si su valor es inválido o no positivo, falla cerrado
+       a ``None`` sin degradar silenciosamente a ``--operator-chat-id``.
+    2. Sin ``telegram_chat_id`` configurado, aplica ``--operator-chat-id``
+       validado estrictamente como entero positivo.
+    """
+    config_presente = config_chat_id is not None and (
+        not isinstance(config_chat_id, str) or bool(config_chat_id.strip())
+    )
+    if config_presente:
+        operador_cfg = normalizar_operador_telegram_estricto(config_chat_id)
+        if operador_cfg is None:
+            logger.warning("Invalid telegram_chat_id in config (must be positive int); fail-closed")
+            return None
+        logger.info("Using operator_chat_id from config")
+        return operador_cfg
+
+    if cli_operator is not None:
+        operador_cli = normalizar_operador_telegram_estricto(cli_operator)
+        if operador_cli is None:
+            logger.warning("Invalid operator_chat_id from CLI (must be positive int); fail-closed")
+            return None
+        return operador_cli
+
+    return None
+
+
+def resolver_operador_telegram_desde_contexto(ctx: Any) -> int | None:
+    """Obtiene la identidad efectiva resuelta en ``AppContext`` o la deriva de sus fuentes."""
+    if getattr(ctx, "_operator_chat_id_resuelto", False) is True:
+        return normalizar_operador_telegram_estricto(getattr(ctx, "operator_chat_id", None))
+
+    candidato_ctx = getattr(ctx, "operator_chat_id", None)
+    if not _es_mock_externo(candidato_ctx):
+        operador_ctx = normalizar_operador_telegram_estricto(candidato_ctx)
+        if operador_ctx is not None:
+            return operador_ctx
+
+    args = getattr(ctx, "_args", None)
+    cli_raw = getattr(args, "operator_chat_id", None) if args is not None else None
+    cli_operator = None if _es_mock_externo(cli_raw) else cli_raw
+
+    cfg_obj = getattr(ctx, "config", None)
+    cfg_raw = getattr(cfg_obj, "telegram_chat_id", None) if cfg_obj is not None else None
+    config_chat_id = None if _es_mock_externo(cfg_raw) else cfg_raw
+
+    return resolver_operador_telegram_efectivo(
+        cli_operator=cli_operator,
+        config_chat_id=config_chat_id,
+    )
+
+
+def resolver_operador_telegram_para_recarga(ctx: Any, *, config_chat_id: object) -> int | None:
+    """Resuelve la identidad efectiva para hot-reload preservando CLI si config no define operador."""
+    args = getattr(ctx, "_args", None)
+    cli_raw = getattr(args, "operator_chat_id", None) if args is not None else None
+    cli_operator = None if _es_mock_externo(cli_raw) else cli_raw
+    cfg_val = None if _es_mock_externo(config_chat_id) else config_chat_id
+    return resolver_operador_telegram_efectivo(
+        cli_operator=cli_operator,
+        config_chat_id=cfg_val,
+    )
 
 
 class DecisionDeRecovery(enum.Enum):
@@ -427,13 +509,19 @@ class AppContext:
         # Registry efímero: request_id → mensaje Telegram exacto. Nunca se
         # persiste y se limpia al cerrar la generación de startup.
         self.telegram_hitl_registry = TelegramHITLMessageRegistry()
+        self.golden_master_coordinator: CoordinadorTelegramGoldenMaster | None = None
+        self._golden_master_objetivo: Any = None
+        self._cleanup_gm_registrado: CoordinadorTelegramGoldenMaster | None = None
         self.router: LLMRouter | None = None
         # F1 (auditoría Zero-Trust 2026-07-18): bóveda de credenciales para el
         # hot-swap Zero-Trust del router. None hasta que start_full la provisione
         # (solo si SKYCLAW_VAULT_MASTER_KEY está configurada).
         self.credential_vault: CredentialVault | None = None
         self.sender: TelegramSender | None = None
+        self.operator_chat_id: int | None = None
+        self._operator_chat_id_resuelto: bool = False
         self.polling: TelegramPolling | None = None
+        self._cleanup_polling_registrado: TelegramPolling | None = None
         # Motor de sincronización — lo consume el botón "Buscar actualizaciones"
         # de la GUI (detect_pending_updates). None hasta que corra start_full.
         self.sync_engine: SyncEngine | None = None
@@ -803,8 +891,14 @@ class AppContext:
         self.mo2_profile = PERFIL_MO2_POR_DEFECTO
         self.router = None
         self.polling = None
+        self._cleanup_polling_registrado = None
+        self.golden_master_coordinator = None
+        self._cleanup_gm_registrado = None
+        self._golden_master_objetivo = None
         self.hitl = None
         self.sender = None
+        self.operator_chat_id = None
+        self._operator_chat_id_resuelto = False
         self.sync_engine = None
         self.tools_installer = None
         self.mo2 = None
@@ -1429,14 +1523,10 @@ class AppContext:
 
             nexus_key = local_cfg.nexus_api_key or ""
             bot_token = local_cfg.telegram_bot_token or ""
-            operator_chat_id: int | None = self._args.operator_chat_id
-
-            if local_cfg.telegram_chat_id:
-                try:
-                    operator_chat_id = int(local_cfg.telegram_chat_id)
-                    logger.info("Using operator_chat_id from config")
-                except ValueError:
-                    logger.warning("Invalid telegram_chat_id in config (must be int)")
+            operator_chat_id = resolver_operador_telegram_efectivo(
+                cli_operator=self._args.operator_chat_id,
+                config_chat_id=local_cfg.telegram_chat_id,
+            )
 
             self._push_startup_cleanup(self.database.close)
             await self._await_startup(self.database.initialize())
@@ -1505,12 +1595,25 @@ class AppContext:
             masterlist = MasterlistClient(gateway=self.network.gateway, api_key=nexus_key)
 
             sender: TelegramSender | None = None
+            golden_master_coordinator: CoordinadorTelegramGoldenMaster | None = None
+            self._golden_master_objetivo = resolver_objetivo_golden_master_desde_config(
+                local_cfg,
+                config_path=self.config_path,
+            )
             if bot_token:
                 sender = TelegramSender(
                     bot_token=bot_token,
                     gateway=self.network.gateway,
                     session=self.network.session,
                 )
+                golden_master_coordinator = await asegurar_coordinador_golden_master(
+                    self,
+                    sender=sender,
+                    authorized_user_id=operator_chat_id,
+                    local_cfg=local_cfg,
+                )
+                self._cleanup_gm_registrado = golden_master_coordinator
+                self._push_startup_cleanup(self._cerrar_golden_master, golden_master_coordinator)
 
             hitl: HITLGuard
             full_published = False
@@ -2285,6 +2388,7 @@ class AppContext:
                     hitl=hitl,
                     authorized_user_id=operator_chat_id,
                     hitl_registry=self.telegram_hitl_registry,
+                    golden_master_coordinator=golden_master_coordinator,
                 )
                 polling = TelegramPolling(
                     token=bot_token,
@@ -2293,6 +2397,7 @@ class AppContext:
                     session=self.network.session,
                     authorized_chat_id=operator_chat_id,
                 )
+                self._cleanup_polling_registrado = polling
                 self._push_startup_cleanup(self._stop_polling, polling)
                 await self._await_startup(polling.start())
                 logger.info("Telegram polling started")
@@ -2311,6 +2416,8 @@ class AppContext:
             # PathResolutionService no re-decida vía MO2_PATH/auto-detección.
             self.mo2_install_dir = mo2_root
             self.sender = sender
+            self.operator_chat_id = operator_chat_id
+            self._operator_chat_id_resuelto = True
             self.hitl = hitl
             self.sync_engine = sync_engine
             self.tools_installer = tools_installer
@@ -2335,6 +2442,16 @@ class AppContext:
             return
         await self._run_startup(self._start_all_inner, publishes_full=True)
 
+    async def _cerrar_golden_master(self, coordinador: CoordinadorTelegramGoldenMaster) -> None:
+        """Callback for AsyncExitStack: cierra el coordinador HITL de Golden Master."""
+        try:
+            await coordinador.cerrar()
+        finally:
+            if self.golden_master_coordinator is coordinador:
+                self.golden_master_coordinator = None
+            if self._cleanup_gm_registrado is coordinador:
+                self._cleanup_gm_registrado = None
+
     async def _stop_polling(self, polling: TelegramPolling) -> None:
         """Callback for AsyncExitStack: stop Telegram polling."""
         try:
@@ -2342,6 +2459,8 @@ class AppContext:
         finally:
             if self.polling is polling:
                 self.polling = None
+            if self._cleanup_polling_registrado is polling:
+                self._cleanup_polling_registrado = None
 
     def _estado_de_cuarentena_vfs(self) -> dict[str, Any] | None:
         """H-4: la cuarentena del broker VFS tal como la ve el agente en ``lods_status`` (``None`` si no hay)."""
@@ -2526,6 +2645,18 @@ class AppContext:
                         self._background_tasks.difference_update(done)
 
                     try:
+                        if (
+                            self.golden_master_coordinator is not None
+                            and self.golden_master_coordinator is not self._cleanup_gm_registrado
+                        ):
+                            self._cleanup_gm_registrado = self.golden_master_coordinator
+                            self._push_startup_cleanup(
+                                self._cerrar_golden_master,
+                                self.golden_master_coordinator,
+                            )
+                        if self.polling is not None and self.polling is not self._cleanup_polling_registrado:
+                            self._cleanup_polling_registrado = self.polling
+                            self._push_startup_cleanup(self._stop_polling, self.polling)
                         await self._close_cleanup_generation(
                             timeout_s=self._startup_shutdown_timeout_s,
                         )

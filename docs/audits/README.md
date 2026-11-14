@@ -24,6 +24,7 @@ ejecución. Un hallazgo puede haber sido corregido después. Antes de actuar:
 Archivos actuales:
 
 - `2026-11-12_p7_authorization_boundary.md` (P7: el binder consume una aprobación que liga la instancia y el INI de MO2; cierra el residual R-1 y la ventana del INI aprobado, Codex sobre #908; no habilita la emisión productiva)
+- `2026-11-11_p7_a5_pr3_hitl_wiring_scope_audit.md` (P7-A5 PR 3: auditoría de alcance del consumidor HITL en `autorizacion_hitl_transicion.py`, invariantes de `ApprovalScope` y límite respecto a PR 4)
 - `2026-11-02_fence_de_supervision_del_broker.md` (fence `supervised` del broker MO2/USVFS; dictamen `SUPERVISION_FENCE_SECURITY_HOLD`: la identidad del proceso Python efectivo en onefile no está probada)
 - `2026-11-03_identidad_del_job_onefile.md` (identidad del Job y contención del worker PyInstaller onefile, P2: el worker efectivo se verifica en el Job nombrado antes de hablar con el broker; medición exacta del arranque del `.exe` congelado; dictamen `ONEFILE_CONTAINMENT_READY_FOR_REVIEW` con la evidencia de Windows registrada: **para revisión adversarial, no para merge** ni para levantar la barrera de #854)
 - `2026-10-07_b1_permisos_r_suite.md` (+ `data/` con el registro y su hash)

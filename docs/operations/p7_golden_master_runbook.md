@@ -64,6 +64,14 @@ verifica a tres vías: referencia == sidecar == árbol observado.
 | P6 | Referencia Stock independiente construida, revisada y aprobada (§6, A1) | JSON de referencia + `reference_digest` |
 | P7 | Aprobaciones A1–A4 registradas (§4) | registro de aprobación del propietario |
 
+> **Conciliación operativa 2026-11-07 (A1–A4 ejecutadas, A5/A6 pendientes):**
+> la referencia histórica de P1 (`C:\Users\Facu2\.sky_claw\frozen-runtime`
+> ausente en P7-A0) corresponde al chequeo previo al bootstrap. En las fases
+> A1–A4 ejecutadas el 2026-11-07 quedaron creados la referencia A1, el
+> almacenamiento A2 en `G:\Modding\FrozenRuntime`, la Generation
+> `1.6.1170.0__7949c58cfd27` y el clon `clone-p7-01` en `G:\Modding\FrozenClones\clone-p7-01`.
+> No repetir esas operaciones ni alterar esos artefactos sin nueva aprobación.
+
 ## 3. Elegir storage root y estimar espacio
 
 **Admisión (`admitir_storage_root`):** ruta absoluta; sin symlink/junction/reparse
@@ -379,15 +387,41 @@ El subsistema transaccional distingue cuatro cuadrantes operativos rigurosos par
      (`MO2_INSTANCE_IDENTITY`), manteniendo `STRICT_PROVIDER_IDLE` por defecto y
      `EMISION_PRODUCTIVA_HABILITADA = False`. La migración transaccional de
      `[customExecutables]` y la habilitación productiva pertenecen a PRs posteriores.
-   - **Nota P7-A5 PR 3 (cableado, emisión todavía cerrada):** el consumidor
-     autorizado existe desde el 2026-11-11
-     (`sky_claw/local/frozen_runtime/autorizacion_hitl_transicion.py`) y expone
-     `HITL_PRODUCTIVE = WIRED_BUT_GATED`. Estado real de cada gate:
-     `EMISION_PRODUCTIVA_HABILITADA = False`,
-     `TRANSPORT_ADAPTER = NOT_WIRED` (no hay entrega ni decisión por Telegram
-     todavía), `PRIMERA_TRANSICION_REAL = NOT_EXECUTED`,
-     `CANDIDATE_OBJECT = NOT_CREATED`,
-     `REANUDACION_POST_PENDING = REQUIERE_DUENO`.
+   - **Nota P7-A5 PR 3 / PR 4 (cableado y transporte Telegram, emisión cerrada):**
+     - **PR 3 + #909 + #914 (consumidor autorizado):** desde 2026-11-11 existe
+       `sky_claw/local/frozen_runtime/autorizacion_hitl_transicion.py`
+       (`HITL_PRODUCTIVE = WIRED_BUT_GATED`), ampliado con **#909**
+       (`2146a27f82de1651cd431d0508ac818502d54a2c`: evidencia de config con
+       `config_path`/`skyrim_path` obligatorio, diagnóstico y
+       `abandonar_transicion_consumida` pre-PENDING en
+       `transition_abandonment.py`) y **#914**
+       (`a076ec2ce5f5b437fac76e0879d42cb3bcf5a242`: vínculo criptográfico
+       `mo2auth=<sha256>` en `mo2_authorization.py` que liga instancia,
+       identidad, bytes completos de `modorganizer.ini`, política y runtime
+       saliente en `ejecutar()` y `reanudar()`).
+     - **PR 4 (adaptador de transporte Telegram):**
+       `sky_claw/app/comms/golden_master_hitl.py` cablea el protocolo sobre
+       `TelegramWebhook`, `TelegramPolling`, `TelegramSender` y
+       `owner_consent.verificar_identidad_telegram` desde updates crudos, con
+       coordinador single-flight fuera del event loop en `AppContext`,
+       `telegram_mode` y `frontend_bridge` (`TRANSPORT_ADAPTER = WIRED_BUT_GATED`).
+     - **Estado real de cada gate (vigente):**
+       `EMISION_PRODUCTIVA_HABILITADA = False`,
+       `HITL_PRODUCTIVE = WIRED_BUT_GATED`,
+       `TRANSPORT_ADAPTER = WIRED_BUT_GATED`,
+       `PRIMERA_TRANSICION_REAL = NOT_EXECUTED`,
+       `CANDIDATE_OBJECT = NOT_CREATED`,
+       `REANUDACION_POST_PENDING = REQUIERE_DUENO`,
+       `MODORGANIZER_EXE_COMPAT = NOT_MEASURED_ON_LIVE_MO2` (exclusión Win32
+       `FILE_SHARE_NONE` medida contra agregadores sintéticos; comportamiento
+       de `ModOrganizer.exe` en vivo ante `ERROR_SHARING_VIOLATION` sin medir),
+       `POWER_LOSS_GUARANTEE = NOT_CLAIMED` (#911).
+     - **Restricción `ACTIVE_GLOBAL` vs MO2 portable:** el preflight y la
+       autorización (`evaluar_binder_preflight`, `MO2_INSTANCE_IDENTITY`) exigen
+       que `mo2_instance_dir` coincida con la instancia activa global registrada
+       en HKCU/AppData (`ACTIVE_GLOBAL`); una instancia portable no registrada
+       como activa global queda clasificada `AMBIGUOUS` y falla cerrado en el
+       selector de instancia.
      **Corrección de este runbook (§9.1):** el requisito de A5 **no** es
      uniformemente «Steam IDLE». Bajo `STRICT_PROVIDER_IDLE` (por defecto) Steam
      debe estar IDLE; bajo `STOCK_INDEPENDENT_TRANSITION` se admite Steam
@@ -406,6 +440,21 @@ El subsistema transaccional distingue cuatro cuadrantes operativos rigurosos par
      (`binder_recovery.recuperar_transicion_interrumpida` +
      `journal.reconciliar_journal` + nueva aprobación). No existe re-emisión
      automática.
+     **Alcance de `EMISION_PRODUCTIVA_HABILITADA`:** gobierna **exclusivamente**
+     la emisión de autorizaciones **nuevas** (`approval.emitir_aprobacion` /
+     `owner_consent.emitir_aprobacion_autorizada`). Mientras permanezca en
+     `False`, cualquier solicitud `/gm_preparar` + Aprobar queda bloqueada sin
+     mutar la autoridad durable; en cambio, las operaciones de diagnóstico,
+     consumo/abandono y recuperación sobre artefactos ya existentes siguen
+     operativas: `/gm_estado` (`diagnosticar_estado_durable`), `/gm_reanudar`
+     pre-PENDING sobre una aprobación ya consumida (`reanudar`),
+     `/gm_abandonar` (`abandonar_transicion_consumida`),
+     `binder_recovery.recuperar_transicion_interrumpida` (restauración de
+     superficies con journal `PENDING`), `journal.reconciliar_journal`,
+     `approval.reconciliar_aprobacion` y `approval.revocar_aprobacion` sobre
+     emisiones previas aún no consumidas (tras `PENDING`, completar una nueva
+     transición sí exige nueva aprobación y queda bloqueado hasta habilitar la
+     bandera).
 2. **P7-A … P7-G (ver §10).** Hasta que A5 no se ejecute efectivamente, el inspector P7 seguirá
    `BLOCKED` (`listo_para_p7=False`: `desired_runtime`/`clone_record`/`version.skyrim`/`mo2.game_path`).
 
