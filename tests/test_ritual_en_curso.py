@@ -447,3 +447,129 @@ def test_ningun_await_posterior_a_tomar_el_single_flight_corre_fuera_del_finally
         if isinstance(n, ast.Await) and n.lineno > marca and not (desde <= n.lineno <= hasta)
     ]
     assert afuera == [], f"{lanzador}: await(s) tras tomar el single-flight fuera de su finally (líneas {afuera})"
+
+
+# ── El guard y la toma del single-flight son atómicos respecto del event loop ──
+def _llama_a(nodo: ast.AST, nombre: str) -> bool:
+    return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == nombre for n in ast.walk(nodo))
+
+
+def _es_punto_de_suspension(nodo: ast.AST) -> bool:
+    """Todo lo que cede el control al event loop: ``await``, ``async for``, ``async with`` y comprensiones async."""
+    if isinstance(nodo, ast.Await | ast.AsyncFor | ast.AsyncWith):
+        return True
+    comprension = ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+    return isinstance(nodo, comprension) and any(g.is_async for g in nodo.generators)
+
+
+def test_no_hay_punto_de_suspension_entre_el_guard_y_la_toma_del_single_flight() -> None:
+    """Ancla por AST: entre ``if store.get(STORE_KEY_RITUAL_IN_FLIGHT)`` y ``_marcar_en_curso`` no se cede el loop.
+
+    El single-flight es check-then-set sobre un booleano del store. Es seguro SOLO porque
+    entre el chequeo y la toma no hay ningún punto de suspensión: dos lanzadores corren en el
+    mismo event loop, así que ninguno puede intercalarse ahí. Un ``await`` nuevo en ese tramo
+    (p. ej. resolver algo del daemon antes de tomar) abre una ventana TOCTOU por la que pasan
+    DOS corridas, y ningún test de comportamiento de un solo lanzador la ve.
+
+    Enumera los lanzadores (toda función del módulo que toma el single-flight) y congela el
+    conjunto: un lanzador nuevo rompe esta ancla hasta que su guard quede cubierto.
+    """
+    arbol = ast.parse(pathlib.Path(rr.__file__).read_text(encoding="utf-8"))
+    funciones = [n for n in arbol.body if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)]
+    lanzadores = [f for f in funciones if _llama_a(f, "_marcar_en_curso")]
+    assert {f.name for f in lanzadores} == {"run_ritual", "run_ritual_install"}
+
+    for funcion in lanzadores:
+        guards = [
+            n
+            for n in ast.walk(funcion)
+            if isinstance(n, ast.If)
+            and any(isinstance(c, ast.Name) and c.id == "STORE_KEY_RITUAL_IN_FLIGHT" for c in ast.walk(n.test))
+        ]
+        assert len(guards) == 1, f"{funcion.name} debe tener UN guard del single-flight"
+        marca = next(
+            n.lineno
+            for n in ast.walk(funcion)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_marcar_en_curso"
+        )
+        assert guards[0].lineno < marca, f"{funcion.name}: el guard debe ir ANTES de tomar el single-flight"
+        suspensiones = [
+            n.lineno for n in ast.walk(funcion) if _es_punto_de_suspension(n) and guards[0].lineno <= n.lineno < marca
+        ]
+        assert suspensiones == [], (
+            f"{funcion.name}: punto(s) de suspensión entre el guard y la toma del single-flight "
+            f"(líneas {suspensiones}): abre una ventana TOCTOU"
+        )
+
+
+def test_el_anclaje_detecta_un_await_metido_entre_el_guard_y_la_toma() -> None:
+    """El ancla no es vacua: sobre una función con el ``await`` en ese tramo, la misma consulta lo encuentra."""
+    fuente = (
+        "async def lanzador(store):\n"
+        "    if store.get(STORE_KEY_RITUAL_IN_FLIGHT):\n"
+        "        return\n"
+        "    await algo()\n"
+        "    _marcar_en_curso(store, 'x', 'y')\n"
+    )
+    funcion = ast.parse(fuente).body[0]
+    guard = next(n for n in ast.walk(funcion) if isinstance(n, ast.If))
+    marca = next(n.lineno for n in ast.walk(funcion) if isinstance(n, ast.Call) and _llama_a(n, "_marcar_en_curso"))
+    assert [n.lineno for n in ast.walk(funcion) if _es_punto_de_suspension(n) and guard.lineno <= n.lineno < marca] == [
+        4
+    ]
+
+
+# ── La × del aviso cierra el AVISO, no la acción obligatoria del flujo ──
+def _manejadores_de_click_del_aviso() -> list[ast.Lambda]:
+    arbol = ast.parse((_GUI / "views" / "forge_dashboard.py").read_text(encoding="utf-8"))
+    panel = next(n for n in arbol.body if isinstance(n, ast.FunctionDef) and n.name == "_ritual_feedback_panel")
+    return [
+        c.args[1]
+        for c in ast.walk(panel)
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Attribute)
+        and c.func.attr == "on"
+        and len(c.args) == 2
+        and isinstance(c.args[0], ast.Constant)
+        and c.args[0].value == "click"
+        and isinstance(c.args[1], ast.Lambda)
+    ]
+
+
+def test_la_x_del_aviso_no_consume_la_accion_de_resume(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ejecuta el handler REAL de la × (el lambda del módulo, sin copiarlo) contra un store con una acción pendiente.
+
+    «Ya construí el parche — verificar» y «Continuar DynDOLOD» son controles obligatorios: la ×
+    cierra el aviso (``STORE_KEY_RITUAL_FEEDBACK``) y la acción sigue en la tarjeta. El lambda se
+    localiza por AST y se evalúa en el namespace de la vista con ``get_store`` reemplazado, así
+    que si alguien le agrega ``clear_ritual_result_owned`` (o cualquier escritura de más), cae acá.
+    """
+    manejadores = _manejadores_de_click_del_aviso()
+    despachan = [
+        m for m in manejadores if any(isinstance(n, ast.Name) and n.id == "_despachar_resume" for n in ast.walk(m))
+    ]
+    cierres = [m for m in manejadores if m not in despachan]
+    assert len(manejadores) == 2, "el panel tiene exactamente dos handlers de click: despachar y cerrar"
+    assert len(despachan) == 1
+    assert len(cierres) == 1
+
+    store = ReactiveStore()
+    resultado = {"success": False, "pendiente": True, "message": "falta tu parte", "artefacto": "Bashed Patch, 0.esp"}
+    rr.publicar_resultado_de_ritual(store, tool_key="wrye_bash", resultado=resultado, tab_id="pestaña")
+    store.set(rr.STORE_KEY_RITUAL_FEEDBACK, {"text": "falta tu parte", "type": "warning"})
+    accion = rr.resolve_ritual_resume_action(store, "pestaña")
+    assert accion is not None
+    refrescos: list[int] = []
+    entorno = {
+        **vars(fd),
+        "get_store": lambda: store,
+        "current_tab_id": lambda: "pestaña",
+        "_ritual_feedback_panel": SimpleNamespace(refresh=lambda: refrescos.append(1)),
+    }
+    cerrar = eval(compile(ast.Expression(cierres[0]), "<x_del_aviso>", "eval"), entorno)  # noqa: S307 (lambda del propio módulo)
+
+    cerrar()
+
+    assert store.get(rr.STORE_KEY_RITUAL_FEEDBACK) is None, "la × no cerró el aviso"
+    assert refrescos == [1], "la × debe re-renderizar el panel"
+    assert rr.resolve_ritual_resume_action(store, "pestaña") == accion, "la × consumió la acción de resume"
