@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Backend brokered de TexGen/DynDOLOD seleccionable en producción (E3-R3).** `build_brokered_dyndolod_spawn_strategy` existía pero nadie lo llamaba: la composición aceptaba `dyndolod_spawn_strategy` y `SupervisorAgent` no lo pasaba, así que la etapa 9 corría siempre standalone. Ahora `dyndolod_backend` (`config.toml`, default `standalone`) decide el backend y `resolve_dyndolod_spawn_strategy` arma la strategy en `AppContext` con las raíces del arranque (datos de la instancia MO2, mods, instalación, `<juego>/Data` y los `-o:` por herramienta derivados del workspace). Pedir `brokered` sin poder cumplirlo, con una instancia que no corresponde o con un valor desconocido devuelve un guard que falla cerrado en el spawn y en el gate de handoff: nunca cae a standalone. **`WIRING_SECURITY_HOLD` aplicado en código (`WIRING_RUNTIME_HOLD_ENFORCED`):** la contención del worker en el Job Object (fence de supervisión #856, identidad del Job #860/#872, adopción de descendientes #877) está implementada pero no verificada de punta a punta, así que, mientras la constante interna `_CONTENCION_DEL_WORKER_VERIFICADA` (no configurable) sea `False`, pedir `brokered` devuelve el guard del HOLD ANTES de construir la strategy —aun con broker y rutas válidos—, sin sesión en el broker, sin subprocess local y sin fallback a standalone. No pasa a `True` por fusionar un PR de contención: exige evidencia sobre el binario final en un sandbox Windows y el visto bueno del auditor independiente, en un PR aparte; ver `docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md`.
 - **Auditoría nativa de plugins con el xEdit Bridge ([ADR 0018](docs/adr/0018-auditoria-nativa-xedit-bridge.md)).**
   - Dos herramientas, en la GUI (`tool_dispatcher`) y en el agente LLM (`AsyncToolRegistry`), sobre el mismo `XEditBridgeService`:
     - `auditar_plugin_nativo`: chequeo `-CheckForErrors` de SSEEdit sobre la copia admitida. Es de lectura y no pide aprobación.
@@ -222,6 +223,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 
 ### Fixed
+- **El broker rechaza un MO2 bridge cuyo bundle no es el de esta versión de Sky-Claw (B-1, H-5).** `PROTOCOL_VERSION` no cambió con #856, #860 ni #877, así que un plugin
+  instalado antes de esos fixes seguía conectándose con el bug vivo y sin aviso. Ahora el `hello` del bridge declara el SHA-256 de TODO su bundle (`bundle_digest` en `protocol.py`:
+  rutas relativas y contenido de cada archivo, sin `__pycache__`, bytecode ni la `bridge_config.json` por instancia; un enlace dentro del bundle es un error) y el broker lo compara con el de
+  su propio producto (`bridge_bundle.digest_del_bundle_del_producto`, la misma fuente que usa el instalador). Un bridge sin digest o con otro se rechaza con la instrucción de reinstalar
+  (`--mode install-vfs-bridge`) y reabrir MO2, y ese motivo se agrega al error de `wait_until_ready` en vez de un «no se conectó» sin causa.
+  - El plugin calcula el digest **una vez, al cargar**: tras un reinstall con MO2 abierto, recalcularlo en cada `hello` afirmaría el digest del código nuevo sobre el viejo en ejecución.
+  - El instalador registra `bundle_digest` en `bridge_config.json` y verifica que la copia en staging coincida con la fuente antes de hacer el swap; si no, aborta sin tocar la instalación previa.
+  - `PROTOCOL_VERSION` no cambia: el digest distingue versiones del plugin; la versión del protocolo sigue siendo solo la del formato de los mensajes.
+  - **Actualización coordinada:** un bridge ya instalado deja de conectarse hasta reinstalarlo con la versión que corresponde a este Sky-Claw (la razón queda en el log del broker y en el error de espera).
+  - **Tests:** `tests/test_mo2_bridge_identidad_del_bundle.py`; el ancla enumera todos los archivos del bundle real (uno nuevo entra solo) y el único literal de `hello` del bridge debe declarar el digest. **No verificado:** el smoke en un MO2 real (instalar, alterar un archivo, ver el rechazo, reinstalar y reabrir).
+  - **Fuera de este cambio, con nombre:** la tarjeta de estado de la GUI que muestre la identidad (H-17) va con P-3c.
 - **El MO2 bridge entrega sus eventos en orden aunque el envío falle y tenga que reconectar (B-2, H-14).** Un evento cuyo envío fallaba se re-encolaba al **final** de la cola: con `[launch_ack, worker_exit]` y un fallo en el primero,
   tras reconectar salía `worker_exit` antes que `launch_ack`, y el broker (que arma su máquina de estados con ese orden) veía la salida de un worker que todavía no había confirmado. Ahora el evento que falló vuelve al **frente**
   (`BridgeEventOutbox.requeue_front`) y el drenaje vive en una sola función, `runtime.flush_outbox`, el único consumidor del outbox.

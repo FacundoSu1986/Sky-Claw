@@ -21,6 +21,7 @@ import psutil
 import pytest
 
 from sky_claw.local.mo2 import vfs_broker as vfs_broker_module
+from sky_claw.local.mo2.bridge_bundle import digest_del_bundle_del_producto
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_broker import (
     VfsBrokerError,
@@ -154,6 +155,7 @@ class _BridgeFalso:
                 "role": "bridge",
                 "instance_id": "portable-main",
                 "session_id": descriptor["session_id"],
+                "bundle_digest": digest_del_bundle_del_producto(),
             },
             secret,
         )

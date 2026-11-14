@@ -92,6 +92,17 @@ raíz.
   y exige que lo que dice el módulo coincida con lo que el broker hace al arrancar) y
   `tests/test_vfs_quarantine_anclas.py` (enumera por AST quién muta el marcador/lock, los sitios que arman la ruta de
   estado y que todo `--mode` esté documentado).
+- **El bridge prueba qué bundle EJECUTA y el broker solo acepta el de su producto** (H-5, B-1). `PROTOCOL_VERSION` no
+  distingue versiones del plugin (no cambió con #856, #860 ni #877), así que el `hello` del bridge lleva `bundle_digest`:
+  el SHA-256 de todos los archivos de `plugin_bundle/skyclaw_bridge/` (`protocol.bundle_digest`: ruta relativa + contenido,
+  sin `__pycache__`, bytecode ni la `bridge_config.json` por instancia; un enlace dentro del bundle es un error). Una sola
+  fuente para el producto: `bridge_bundle.digest_del_bundle_del_producto`, que consumen el instalador (registra el digest en
+  `bridge_config.json` y verifica la copia contra la fuente) y el broker (`_verificar_el_bundle_del_bridge`; un bridge sin
+  digest o con otro se rechaza con la instrucción de reinstalar y reabrir MO2). El plugin lo calcula **una vez al cargar el
+  módulo**, nunca por `hello`: un reinstall con MO2 abierto cambia el disco, no el código en ejecución. El `hello` del bridge
+  se arma solo con `runtime.bridge_hello`; el del worker no lleva digest (es el mismo ejecutable que el daemon). Anclas:
+  `tests/test_mo2_bridge_identidad_del_bundle.py` (enumera cada archivo real del bundle y el único literal de `hello`
+  de bridge por AST). Un archivo nuevo en el bundle participa solo; un literal de `hello` nuevo rompe el ancla.
 - **El outbox del bridge se consume en UN solo lugar y un evento que no se pudo enviar vuelve al FRENTE** (H-14, B-2).
   `runtime.flush_outbox` es el único que saca eventos de `BridgeEventOutbox`; si `send` falla, `requeue_front` lo devuelve al
   frente (sin tocar `unfinished_tasks`, para que el apagado lo siga esperando) y el error se propaga. Un `put` de lo que se
