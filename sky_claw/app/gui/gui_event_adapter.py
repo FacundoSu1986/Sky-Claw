@@ -1,4 +1,20 @@
-"""EventBus — sistema de eventos Observer para Sky-Claw GUI."""
+"""EventBus — sistema de eventos Observer para Sky-Claw GUI.
+
+Propiedad y política (#575 §3; anclado en ``tests/test_gui_event_bus_ciclo_de_vida.py``):
+
+- **Singleton deliberado.** ``event_bus`` es el default del composition root: solo
+  ``setup_app`` lo arranca (``app.on_startup(event_bus.start)``) y lo detiene (apagado). El
+  resto publica y se suscribe; los controladores lo reciben por inyección. Para tests,
+  ``EventBus.aislado()`` entrega un bus independiente y restaura el singleton.
+- **Nada se descarta por política.** No hay ``maxsize``: el hilo procesador reenvía cada
+  evento al instante con ``call_soon_threadsafe``, así que la cola propia queda vacía y el
+  backlog real vive en la cola interna del loop; acotar ``_event_queue`` no acotaría la
+  memoria. Y hoy ningún productor publica telemetría de alta frecuencia (el ancla de los
+  tests congela qué tipos publica producción). El día que aparezca uno, hay que decidir la
+  política de overflow, dejando fuera los eventos de control/HITL.
+- **Lo no entregado es ruidoso.** ``stop()`` avisa cuántos eventos quedaron sin entregar y
+  ``publish()`` tras ``stop()`` avisa; ambos se retienen hasta un ``start()`` posterior.
+"""
 
 from __future__ import annotations
 
@@ -7,13 +23,14 @@ import logging
 import queue
 import threading
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 
 class EventType(Enum):
@@ -62,9 +79,35 @@ class EventBus:
         self._subscribers_lock = threading.Lock()
         self._event_queue: queue.Queue = queue.Queue()
         self._running = False
+        # True entre un stop() de un bus que había arrancado y el próximo start().
+        self._detenido = False
         # Bound at start() to the running loop; None means events are dropped.
         self._loop: asyncio.AbstractEventLoop | None = None
         self._logger = logging.getLogger("SkyClaw.EventBus")
+
+    @property
+    def pending(self) -> int:
+        """Eventos publicados que el hilo procesador todavía no tomó (diagnóstico y tests)."""
+        return self._event_queue.qsize()
+
+    @classmethod
+    @contextmanager
+    def aislado(cls) -> Iterator[EventBus]:
+        """Bus nuevo e independiente del singleton, que se restaura al salir (para tests).
+
+        Es la receta soportada para aislar estado: evita que cada test toque
+        ``EventBus._instance`` y ``_subscribers`` a mano. ``stop()`` corre al salir.
+        """
+        with cls._lock:
+            guardada = cls._instance
+            cls._instance = None
+        bus = cls()  # fuera del lock: ``__new__`` lo toma y no es reentrante
+        try:
+            yield bus
+        finally:
+            bus.stop()
+            with cls._lock:
+                cls._instance = guardada
 
     def subscribe(self, event_type: EventType, callback: Callable) -> None:
         with self._subscribers_lock:
@@ -76,6 +119,11 @@ class EventBus:
                 self._subscribers[event_type].remove(callback)
 
     def publish(self, event: SkyClawEvent) -> None:
+        if self._detenido:
+            self._logger.warning(
+                "Bus detenido: el evento %s queda retenido hasta el próximo start()",
+                event.type.value,
+            )
         self._event_queue.put(event)
         self._logger.info("Evento publicado: %s", event.type.value)
 
@@ -129,14 +177,24 @@ class EventBus:
             return
         self._loop = loop
         self._running = True
+        self._detenido = False
         self._processor = threading.Thread(target=self._process_events, daemon=True, name="EventBus-processor")
         self._processor.start()
 
     def stop(self) -> None:
+        habia_arrancado = self._running
         self._running = False
         if hasattr(self, "_processor") and self._processor is not None:
             self._processor.join(timeout=2.0)
             self._processor = None
+        if habia_arrancado:
+            self._detenido = True
+        pendientes = self._event_queue.qsize()
+        if pendientes:
+            self._logger.warning(
+                "EventBus detenido con %d evento(s) sin entregar; quedan retenidos hasta un start()",
+                pendientes,
+            )
 
 
 # Singleton global — importar desde aquí en todo el proyecto
