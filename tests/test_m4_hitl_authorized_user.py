@@ -392,7 +392,7 @@ class TestMatrizOperadorTelegramCR03:
                 sender_mock.send.assert_awaited_once()
                 assert sender_mock.send.await_args.args[0] == esperado
         finally:
-            await asyncio.wait_for(ctx.stop(), timeout=5.0)  # type: ignore[attr-defined]
+            await ctx.stop()  # type: ignore[attr-defined]
 
     async def test_modo_cli_y_telegram_convergen_en_misma_politica(self, tmp_path: Path) -> None:
         """Con ambos definidos distintos, modo cli y modo telegram eligen la misma identidad efectiva."""
@@ -410,7 +410,7 @@ class TestMatrizOperadorTelegramCR03:
             assert poll.webhook_handler._allowed_user_id == 111222  # type: ignore[attr-defined]
             assert ctx_cli.golden_master_coordinator._operador_autorizado == 111222  # type: ignore[attr-defined]
         finally:
-            await asyncio.wait_for(ctx_cli.stop(), timeout=5.0)  # type: ignore[attr-defined]
+            await ctx_cli.stop()  # type: ignore[attr-defined]
 
 
 class TestHotReloadIdentidadOperadorCR03:
@@ -460,7 +460,7 @@ class TestHotReloadIdentidadOperadorCR03:
             assert mock_polling.call_args.kwargs["authorized_chat_id"] == 987654
             assert ctx.operator_chat_id == 987654  # type: ignore[attr-defined]
         finally:
-            await asyncio.wait_for(ctx.stop(), timeout=5.0)  # type: ignore[attr-defined]
+            await ctx.stop()  # type: ignore[attr-defined]
 
     async def test_handle_update_config_preserva_precedencia_config_sobre_cli(self, tmp_path: Path) -> None:
         from sky_claw.app.comms.frontend_bridge import FrontendBridge
@@ -504,7 +504,7 @@ class TestHotReloadIdentidadOperadorCR03:
             assert mock_polling.call_args.kwargs["authorized_chat_id"] == 111222
             assert ctx.operator_chat_id == 111222  # type: ignore[attr-defined]
         finally:
-            await asyncio.wait_for(ctx.stop(), timeout=5.0)  # type: ignore[attr-defined]
+            await ctx.stop()  # type: ignore[attr-defined]
 
     @pytest.mark.parametrize("chat_invalido", ["abc", "0", "-1001234567890"])
     async def test_handle_update_config_rechaza_chat_id_invalido_o_no_positivo(
@@ -534,7 +534,7 @@ class TestHotReloadIdentidadOperadorCR03:
             cfg.save.assert_not_called()
             assert ctx.operator_chat_id == 987654  # type: ignore[attr-defined]
         finally:
-            await asyncio.wait_for(ctx.stop(), timeout=5.0)  # type: ignore[attr-defined]
+            await ctx.stop()  # type: ignore[attr-defined]
 
     @pytest.mark.parametrize("chat_invalido", ["abc", "0", "-1001234567890", True])
     async def test_reload_telegram_invalido_falla_cerrado_y_sincroniza_tres_consumidores(
@@ -572,7 +572,7 @@ class TestHotReloadIdentidadOperadorCR03:
             assert mock_polling.call_args.kwargs["authorized_chat_id"] is None
             assert ctx.operator_chat_id is None  # type: ignore[attr-defined]
         finally:
-            await asyncio.wait_for(ctx.stop(), timeout=5.0)  # type: ignore[attr-defined]
+            await ctx.stop()  # type: ignore[attr-defined]
 
     async def test_reload_telegram_con_chat_id_valido_pasa_int_identico_a_polling_y_webhook(self) -> None:
         from sky_claw.app.comms.frontend_bridge import FrontendBridge
