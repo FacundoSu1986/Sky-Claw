@@ -305,14 +305,16 @@ def test_el_payload_del_resume_llega_al_dispatcher_sin_filtrar_en_la_gui() -> No
     )
 
     # 2. El callback recibe (tool_key, payload) — dos argumentos, el segundo el payload.
-    # Se mira DENTRO de `_on_resume`: el módulo tiene otros `fn(...)` legítimos (el
-    # aprobador de HITL) y buscarlos a nivel módulo mezclaba dos contratos.
+    # Se mira DENTRO de `_despachar_resume` —el único despachador, que comparten el
+    # toast y la tarjeta del ritual (antes era el closure `_on_resume` del toast)—: el
+    # módulo tiene otros `fn(...)` legítimos (el aprobador de HITL) y buscarlos a nivel
+    # módulo mezclaba dos contratos.
     on_resume = [
         nodo
         for nodo in ast.walk(arbol)
-        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)) and nodo.name == "_on_resume"
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)) and nodo.name == "_despachar_resume"
     ]
-    assert len(on_resume) == 1, f"se esperaba UN `_on_resume` en la vista, hay {len(on_resume)}"
+    assert len(on_resume) == 1, f"se esperaba UN `_despachar_resume` en la vista, hay {len(on_resume)}"
     llamadas = [
         nodo for nodo in ast.walk(on_resume[0]) if isinstance(nodo, ast.Call) and getattr(nodo.func, "id", None) == "fn"
     ]
