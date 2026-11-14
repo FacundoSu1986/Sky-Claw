@@ -17,11 +17,15 @@ from unittest.mock import patch
 import pytest
 
 from sky_claw.local.tools.parallaxr_assisted import (
+    ParallaxRAssistedPreflight,
     ParallaxRAssistedStatus,
+    ParallaxREvidenceIncompleteError,
     ParallaxREvidenceUnstableError,
+    ParallaxRInstallationEvidence,
     ParallaxRManualHandoff,
     _FileFingerprintSnapshot,
     _fingerprint_file_consistently,
+    discover_output_markers,
     discover_parallaxr_candidates,
     prepare_parallaxr_manual_handoff,
     run_parallaxr_assisted_preflight,
@@ -867,3 +871,484 @@ def test_preflight_no_modifica_el_disco(tmp_path: Path) -> None:
     after = _snapshot_tree(mods_dir)
 
     assert before == after, "El árbol de archivos sufrió mutaciones durante el preflight!"
+
+
+# =============================================================================
+# 8. FAIL-CLOSED ANTE OBSERVACIÓN INCOMPLETA (ISSUE #667-A)
+# =============================================================================
+
+
+def test_c1_candidato_valido_y_fallo_posterior_no_devuelve_ready_ni_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C1: un candidato válido seguido de OSError en un hermano posterior falla cerrado sin descartar evidencia."""
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "Mod_A"
+    mod_b = mods_dir / "Mod_B"
+    mod_a.mkdir(parents=True)
+    mod_b.mkdir(parents=True)
+    (mod_a / "ParallaxR.BAT").write_bytes(b"@echo mod_a")
+
+    real_is_file = Path.is_file
+    entrypoint_b = mod_b / "ParallaxR.BAT"
+
+    def is_file_con_error_tardio(self: Path) -> bool:
+        if self == entrypoint_b:
+            raise PermissionError("acceso denegado simulado en Mod_B")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file_con_error_tardio)
+
+    with pytest.raises(ParallaxREvidenceIncompleteError) as exc_info:
+        discover_parallaxr_candidates(mods_dir)
+
+    assert not isinstance(exc_info.value, OSError)
+    partial_candidates = exc_info.value.partial_candidates
+    assert (mod_a / "ParallaxR.BAT").resolve() in partial_candidates
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+    assert preflight.status not in (ParallaxRAssistedStatus.READY, ParallaxRAssistedStatus.MISSING)
+    assert preflight.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.candidate_mod_roots == (mod_a.resolve(),)
+    assert preflight.message != ""
+    assert "acceso denegado simulado" not in preflight.message
+
+
+def test_c2_marcadores_observados_y_fallo_posterior_no_ocultan_evidencia(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C2: OSError tras observar un marcador no puede devolver READY ni ocultar marcadores previos."""
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "Mod_A"
+    out_a = mods_dir / "Output_A"
+    out_b = mods_dir / "Output_B"
+    mod_a.mkdir(parents=True)
+    out_a.mkdir(parents=True)
+    out_b.mkdir(parents=True)
+
+    (mod_a / "ParallaxR.BAT").write_bytes(b"@echo mod_a")
+    marker_a = out_a / "ParallaxROutput.tmp"
+    marker_a.write_bytes(b"marcador_a")
+    marker_b = out_b / "ParallaxROutput.tmp"
+
+    real_is_file = Path.is_file
+
+    def is_file_falla_en_out_b(self: Path) -> bool:
+        if self == marker_b:
+            raise OSError("fallo de E/S simulado en Output_B")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file_falla_en_out_b)
+
+    with pytest.raises(ParallaxREvidenceIncompleteError) as exc_info:
+        discover_output_markers(mods_dir)
+
+    partial_markers = exc_info.value.partial_markers
+    assert [m.path for m in partial_markers] == [marker_a.resolve()]
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+    assert preflight.status not in (ParallaxRAssistedStatus.READY, ParallaxRAssistedStatus.MISSING)
+    assert preflight.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.candidate_mod_roots == (mod_a.resolve(),)
+    assert [m.path for m in preflight.existing_output_candidates] == [marker_a.resolve()]
+    assert preflight.message != ""
+    assert "fallo de E/S simulado" not in preflight.message
+
+
+def test_c3_entrypoint_inaccesible_al_capturar_fingerprint_no_degrada_a_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C3: fallo de lectura al capturar el fingerprint del entrypoint no degrada a MISSING ni filtra detalle crudo."""
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "Mod_A"
+    mod_a.mkdir(parents=True)
+    bat = mod_a / "ParallaxR.BAT"
+    bat.write_bytes(b"@echo valido pero protegido")
+
+    real_open = Path.open
+
+    def open_inaccesible(self: Path, *args: object, **kwargs: object) -> object:
+        if self == bat.resolve():
+            raise PermissionError("ruta privada simulada C:/secret/ParallaxR.BAT")
+        return real_open(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "open", open_inaccesible)
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+    assert preflight.status not in (
+        ParallaxRAssistedStatus.MISSING,
+        ParallaxRAssistedStatus.EVIDENCE_UNSTABLE,
+        ParallaxRAssistedStatus.READY,
+    )
+    assert preflight.status.value == "evidence_incomplete"
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.candidate_mod_roots == (mod_a.resolve(),)
+    assert preflight.message != ""
+    assert "ruta privada simulada" not in preflight.message
+    assert "C:/secret" not in preflight.message
+
+
+def test_oserror_antes_del_primer_candidato_falla_cerrado(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un OSError en un directorio previo al primer candidato válido tampoco fabrica MISSING ni READY."""
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "Mod_A"
+    mod_b = mods_dir / "Mod_B"
+    mod_a.mkdir(parents=True)
+    mod_b.mkdir(parents=True)
+    (mod_b / "ParallaxR.BAT").write_bytes(b"@echo mod_b")
+
+    real_is_dir = Path.is_dir
+
+    def is_dir_con_error_previo(self: Path) -> bool:
+        if self == mod_a:
+            raise PermissionError("directorio previo ilegible")
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir_con_error_previo)
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+    assert preflight.status.value == "evidence_incomplete"
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.message != ""
+
+
+def test_oserror_al_enumerar_mods_dir_no_degrada_a_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un OSError en iterdir de mods_dir representa evidencia incompleta, no ausencia de mods."""
+    mods_dir = tmp_path / "mods"
+    mods_dir.mkdir(parents=True)
+
+    real_iterdir = Path.iterdir
+
+    def iterdir_inaccesible(self: Path) -> object:
+        if self == mods_dir:
+            raise PermissionError("sin permisos para listar mods_dir")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir_inaccesible)
+
+    with pytest.raises(RuntimeError):
+        discover_parallaxr_candidates(mods_dir)
+
+    with pytest.raises(RuntimeError):
+        discover_output_markers(mods_dir)
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+    assert preflight.status.value == "evidence_incomplete"
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.message != ""
+
+
+def test_oserror_en_exists_o_is_dir_de_mods_dir_no_degrada_a_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un OSError al inspeccionar la raíz mods_dir no se degrada a MISSING ni eleva sin control."""
+    mods_dir = tmp_path / "mods"
+    mods_dir.mkdir(parents=True)
+
+    real_is_dir = Path.is_dir
+
+    def is_dir_mods_inaccesible(self: Path) -> bool:
+        if self == mods_dir:
+            raise PermissionError("acceso bloqueado a la raíz")
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir_mods_inaccesible)
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+    assert preflight.status.value == "evidence_incomplete"
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.message != ""
+    assert "acceso bloqueado" not in preflight.message
+
+
+def test_oserror_en_contencion_de_segundo_candidato_no_fabrica_unicidad(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un OSError en Path.resolve al validar contención de Mod_B impide declarar único a Mod_A."""
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "Mod_A"
+    mod_b = mods_dir / "Mod_B"
+    mod_a.mkdir(parents=True)
+    mod_b.mkdir(parents=True)
+    (mod_a / "ParallaxR.BAT").write_bytes(b"@echo mod_a")
+    bat_b = mod_b / "ParallaxR.BAT"
+    bat_b.write_bytes(b"@echo mod_b")
+
+    real_resolve = Path.resolve
+
+    def resolve_con_fallo_en_b(self: Path, strict: bool = False) -> Path:
+        if self in (mod_b, bat_b):
+            raise OSError("reparse point ilegible en Mod_B")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve_con_fallo_en_b)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        discover_parallaxr_candidates(mods_dir)
+    assert (mod_a / "ParallaxR.BAT").resolve() in getattr(exc_info.value, "partial_candidates", ())
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+    assert preflight.status.value == "evidence_incomplete"
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.candidate_mod_roots == (mod_a.resolve(),)
+
+
+def test_seleccion_explicita_falla_cerrado_si_descubrimiento_es_incompleto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Aunque el usuario pase explicit_selection hacia Mod_A, una inspección incompleta no puede aprobar READY."""
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "Mod_A"
+    mod_b = mods_dir / "Mod_B"
+    mod_a.mkdir(parents=True)
+    mod_b.mkdir(parents=True)
+    (mod_a / "ParallaxR.BAT").write_bytes(b"@echo mod_a")
+
+    real_is_file = Path.is_file
+    bat_b = mod_b / "ParallaxR.BAT"
+
+    def is_file_con_error_en_b(self: Path) -> bool:
+        if self == bat_b:
+            raise PermissionError("error tardío con selección explícita")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file_con_error_en_b)
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=mod_a)
+    assert preflight.status.value == "evidence_incomplete"
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.candidate_mod_roots == (mod_a.resolve(),)
+
+
+def test_oserror_en_ambos_descubridores_preserva_evidencia_parcial_y_sanitiza_mensaje(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Si fallan ambos descubridores con OSError tras hallazgos válidos, se preserva toda evidencia parcial."""
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "A_Mod"
+    out_a = mods_dir / "B_Output"
+    mod_z = mods_dir / "Z_Blocked"
+    for folder in (mod_a, out_a, mod_z):
+        folder.mkdir(parents=True)
+
+    (mod_a / "ParallaxR.BAT").write_bytes(b"@echo a")
+    marker_a = out_a / "ParallaxROutput.tmp"
+    marker_a.write_bytes(b"out_a")
+
+    real_is_file = Path.is_file
+
+    def is_file_falla_en_z(self: Path) -> bool:
+        if self.parent == mod_z:
+            raise PermissionError("secreto interno Z_Blocked")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file_falla_en_z)
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+    assert preflight.status.value == "evidence_incomplete"
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.candidate_mod_roots == (mod_a.resolve(),)
+    assert [m.path for m in preflight.existing_output_candidates] == [marker_a.resolve()]
+    assert "secreto interno" not in preflight.message
+
+
+def test_preflight_rechaza_contradiccion_entre_status_y_success(tmp_path: Path) -> None:
+    """El contrato estructural de ParallaxRAssistedPreflight rechaza contradicciones status/success/installation/message."""
+    dummy_evidence = ParallaxRInstallationEvidence(
+        mod_root=tmp_path,
+        entrypoint=tmp_path / "ParallaxR.BAT",
+        size_bytes=1,
+        mtime_ns=1,
+        sha256="0" * 64,
+    )
+
+    with pytest.raises(ValueError):
+        ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.READY,
+            success=False,
+            installation=dummy_evidence,
+            message="",
+        )
+
+    with pytest.raises(ValueError):
+        ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.MISSING,
+            success=True,
+            message="inconsistente",
+        )
+
+    with pytest.raises(ValueError):
+        ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.READY,
+            success=True,
+            installation=None,
+            message="",
+        )
+
+    with pytest.raises(ValueError):
+        ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.READY,
+            success=True,
+            installation=dummy_evidence,
+            message="no debería tener error",
+        )
+
+    with pytest.raises(ValueError):
+        ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.MISSING,
+            success=False,
+            message="",
+        )
+
+    with pytest.raises(ValueError):
+        ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
+            success=True,
+            message="inconsistente",
+        )
+
+    with pytest.raises(ValueError):
+        ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
+            success=False,
+            message="",
+        )
+
+
+def test_oserror_al_hashear_marcador_falla_cerrado_preservando_evidencia(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Si falla la lectura de un segundo marcador al capturar su hash, falla cerrado y preserva previos."""
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "A_Mod"
+    out_a = mods_dir / "B_Output"
+    out_b = mods_dir / "C_Output"
+    for folder in (mod_a, out_a, out_b):
+        folder.mkdir(parents=True)
+
+    (mod_a / "ParallaxR.BAT").write_bytes(b"@echo ok")
+    marker_a = out_a / "ParallaxROutput.tmp"
+    marker_a.write_bytes(b"out_a")
+    marker_b = out_b / "ParallaxROutput.tmp"
+    marker_b.write_bytes(b"out_b_protegido")
+
+    real_open = Path.open
+
+    def open_marcador_inaccesible(self: Path, *args: object, **kwargs: object) -> object:
+        if self == marker_b.resolve():
+            raise PermissionError("secreto marcador C_Output")
+        return real_open(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "open", open_marcador_inaccesible)
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+    assert preflight.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.candidate_mod_roots == (mod_a.resolve(),)
+    assert [m.path for m in preflight.existing_output_candidates] == [marker_a.resolve()]
+    assert "secreto marcador" not in preflight.message
+
+
+def test_oserror_antes_del_primer_marcador_no_devuelve_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Un OSError al inspeccionar marcadores antes del primer hallazgo impide devolver READY."""
+    mods_dir = tmp_path / "mods"
+    out_a = mods_dir / "A_OutputBlocked"
+    mod_c = mods_dir / "C_Mod"
+    out_a.mkdir(parents=True)
+    mod_c.mkdir(parents=True)
+    (mod_c / "ParallaxR.BAT").write_bytes(b"@echo c")
+
+    real_is_file = Path.is_file
+    blocked_marker = out_a / "ParallaxROutput.tmp"
+
+    def is_file_error_previo(self: Path) -> bool:
+        if self == blocked_marker:
+            raise PermissionError("marcador previo inaccesible")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file_error_previo)
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+    assert preflight.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.candidate_mod_roots == (mod_c.resolve(),)
+
+
+def test_c4_compatibilidad_escenarios_validos_y_handoff_falla_cerrado(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C4: compatibilidad de ausencia real, vacío, candidato único, ambigüedad, selección explícita y handoff fail-closed."""
+    inexistente = run_parallaxr_assisted_preflight(tmp_path / "no_existe")
+    assert inexistente.status == ParallaxRAssistedStatus.MISSING
+    assert inexistente.success is False
+
+    mods_dir = tmp_path / "mods"
+    mods_dir.mkdir()
+    vacio = run_parallaxr_assisted_preflight(mods_dir)
+    assert vacio.status == ParallaxRAssistedStatus.MISSING
+    assert vacio.success is False
+
+    mod_a = mods_dir / "Mod_A"
+    mod_a.mkdir()
+    (mod_a / "ParallaxR.BAT").write_bytes(b"@echo uno")
+    unico = run_parallaxr_assisted_preflight(mods_dir)
+    assert unico.status == ParallaxRAssistedStatus.READY
+    assert unico.success is True
+    assert unico.message == ""
+
+    mod_b = mods_dir / "Mod_B"
+    mod_b.mkdir()
+    (mod_b / "ParallaxR.BAT").write_bytes(b"@echo dos")
+    ambiguo = run_parallaxr_assisted_preflight(mods_dir)
+    assert ambiguo.status == ParallaxRAssistedStatus.AMBIGUOUS
+    assert ambiguo.success is False
+    with pytest.raises(ValueError):
+        prepare_parallaxr_manual_handoff(ambiguo)
+
+    seleccionado = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=mod_b)
+    assert seleccionado.status == ParallaxRAssistedStatus.READY
+    assert seleccionado.success is True
+    assert seleccionado.installation is not None
+    assert seleccionado.installation.mod_root == mod_b.resolve()
+    handoff = prepare_parallaxr_manual_handoff(seleccionado)
+    assert handoff.sky_claw_launches_process is False
+    assert handoff.direct_helper_invocation is False
+
+    # Evidencia cambiante sigue siendo EVIDENCE_UNSTABLE, distinta de inaccesibilidad
+    with patch(
+        "sky_claw.local.tools.parallaxr_assisted._fingerprint_file_consistently",
+        side_effect=ParallaxREvidenceUnstableError("mutación concurrente"),
+    ):
+        inestable = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=mod_b)
+    assert inestable.status == ParallaxRAssistedStatus.EVIDENCE_UNSTABLE
+    assert inestable.success is False
+    with pytest.raises(ValueError):
+        prepare_parallaxr_manual_handoff(inestable)
+
+    # Ante error de E/S real, no se degrada a EVIDENCE_UNSTABLE ni a MISSING
+    real_is_file = Path.is_file
+
+    def fallo_tardio(self: Path) -> bool:
+        if self == mod_b / "ParallaxR.BAT":
+            raise PermissionError("protegido")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", fallo_tardio)
+    incompleto = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=mod_a)
+    assert incompleto.status.value == "evidence_incomplete"
+    assert incompleto.success is False
+    with pytest.raises(ValueError):
+        prepare_parallaxr_manual_handoff(incompleto)
