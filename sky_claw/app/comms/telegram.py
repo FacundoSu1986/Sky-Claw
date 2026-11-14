@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from aiohttp import web
 
-from sky_claw.app.comms.telegram_sender import TelegramRateLimitError, quitar_razonamiento
+from sky_claw.app.comms.telegram_sender import TelegramRateLimitError
 from sky_claw.app.security.network_gateway import EgressViolationError, NetworkGatewayTimeoutError
 from sky_claw.logging_config import correlation_id_var
 
@@ -698,8 +698,9 @@ class TelegramWebhook:
 
             try:
                 response = await self._router.chat(text, self._session, chat_id=str(chat_id))
-                # Algunos modelos anteponen <thought>…: Telegram lo rechaza en modo HTML (#918).
-                await self._sender.send(chat_id, quitar_razonamiento(response))
+                # El router ya ocultó el razonamiento del modelo (reasoning_filter); si aun así llegara HTML
+                # ajeno, el sender reintenta en texto plano ante el 400 por entidades (#918).
+                await self._sender.send(chat_id, response)
             except Exception as e:
                 logger.exception("Critical Router Failure: %s", e)
                 await self._sender.send(
