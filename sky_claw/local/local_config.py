@@ -71,13 +71,37 @@ class LocalConfig:
     first_run: bool = True
 
     def _migrate_and_get(self, legacy_val: str | None, service_name: str) -> str | None:
-        """Helper to get from keyring, or migrate from legacy base64 if needed."""
+        """Helper to get from keyring, or migrate from legacy base64 if needed.
+
+        #575 §2: el fallo del backend se CLASIFICA en el log (igual que ``_safe_keyring_get``) y
+        SIEMPRE cae al legado base64, para no dejar al usuario sin su clave si el legado sigue en el
+        archivo:
+
+        - secreto inexistente (el backend devuelve ``None``): sin warning.
+        - ``NoKeyringError``: WARNING «no hay backend».
+        - ``KeyringError`` / ``OSError``: WARNING con el nombre de la clase.
+        - cualquier otra excepción (p. ej. ``pywintypes.error``, que el backend de Windows relanza
+          sin envolver): ERROR, para que no se confunda con un secreto ausente.
+
+        Los logs llevan SOLO el nombre de la clase: ni el mensaje ni el traceback, porque el de un
+        backend puede arrastrar datos sensibles.
+        """
         try:
             stored = keyring.get_password("sky_claw", service_name)
             if stored:
                 return stored
-        except (keyring.errors.KeyringError, OSError, Exception) as exc:
-            logger.error("Failed to read from keyring: %s", exc)
+        except keyring.errors.NoKeyringError:
+            logger.warning("keyring: no hay backend disponible; %r se lee del legado", service_name)
+        except (keyring.errors.KeyringError, OSError) as exc:
+            logger.warning(
+                "keyring: el backend falló (%s) al leer %r; se lee del legado", type(exc).__name__, service_name
+            )
+        except Exception as exc:
+            logger.error(
+                "keyring: error inesperado del backend (%s) al leer %r; se lee del legado",
+                type(exc).__name__,
+                service_name,
+            )
 
         # Migration logic
         if legacy_val is None:
@@ -87,8 +111,8 @@ class LocalConfig:
             if decoded:
                 try:
                     keyring.set_password("sky_claw", service_name, decoded)
-                except (keyring.errors.KeyringError, OSError, Exception) as exc:
-                    logger.error("Failed to migrate key to keyring: %s", exc)
+                except Exception as exc:  # migración best-effort: el legado ya se devolvió abajo
+                    logger.error("keyring: no se pudo migrar %r al keyring (%s)", service_name, type(exc).__name__)
             return decoded
         except (ValueError, UnicodeDecodeError) as exc:
             logger.error("Failed to decode legacy key: %s", exc)
