@@ -20,6 +20,7 @@ import pydantic
 
 from sky_claw.app.agent.context_manager import ContextManager
 from sky_claw.app.agent.providers import LLMProvider, create_provider
+from sky_claw.app.agent.reasoning_filter import ocultar_razonamiento, quitar_bloques_de_razonamiento
 from sky_claw.app.agent.semantic_router import SemanticRouter
 from sky_claw.app.agent.token_budget import TokenBudgetManager
 from sky_claw.app.agent.token_circuit_breaker import TokenCircuitBreaker
@@ -677,9 +678,12 @@ class LLMRouter:
                     full_text = "\n".join(
                         block.get("text", "") for block in content_blocks if block.get("type") == "text"
                     )
-                    if has_tool_calls(full_text):
+                    # Una <tool_call> escrita dentro del razonamiento no es una orden: el parser solo ve el
+                    # texto visible (fail-closed). El guardrail de salida y la respuesta siguen usando ``full_text``.
+                    texto_visible = quitar_bloques_de_razonamiento(full_text)
+                    if has_tool_calls(texto_visible):
                         try:
-                            calls = extract_tool_calls(full_text)
+                            calls = extract_tool_calls(texto_visible)
                         except ValueError as exc:
                             xml_tool_parse_error_count += 1
                             if xml_tool_parse_error_count >= MAX_XML_TOOL_RETRIES:
@@ -750,7 +754,7 @@ class LLMRouter:
                             except AgentOrchestrationError as exc:
                                 logger.error("Schema violation in XML tool-calling output: %s", exc)
                                 return "\u26a0\ufe0f La respuesta del modelo no cumple el esquema esperado."
-                        return full_text
+                        return ocultar_razonamiento(full_text)
                 # ── end XML tool-calling branch ─────────────────────────────────────
 
                 if stop_reason != "tool_use":
@@ -768,7 +772,7 @@ class LLMRouter:
                             logger.error("Schema violation in output: %s", exc)
                             return "\u26a0\ufe0f La respuesta del modelo no cumple el esquema esperado."
 
-                    return final_text
+                    return ocultar_razonamiento(final_text)
 
                 # Execute requested tools con integración LCEL.
                 tool_results: list[dict[str, Any]] = []

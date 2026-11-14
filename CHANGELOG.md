@@ -222,6 +222,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 
 ### Fixed
+- **El razonamiento `<thought>`/`<think>` del modelo ya no llega al usuario en ninguna superficie (#918).**
+  El `SYSTEM_PROMPT` pide ese bloque «oculto al usuario», pero nada lo ocultaba: Telegram lo rechazaba como HTML
+  inválido («error interno») y la GUI, la web, el CLI y el WS lo mostraban crudo. `LLMRouter.chat` aplica ahora
+  `ocultar_razonamiento` (`sky_claw/app/agent/reasoning_filter.py`) en sus dos retornos de texto final, después del
+  guardrail de salida, y se retira el filtro propio de Telegram (`quitar_razonamiento`) para que haya un solo dueño.
+  El filtro **falla cerrado**: los bloques se emparejan con una pila (un cierre de otro tipo no cierra el bloque), una
+  apertura sin cierre oculta hasta el final y, si la respuesta era solo razonamiento, se muestra un aviso neutro en
+  vez de su contenido. Las etiquetas dentro de código Markdown también se ocultan (decisión documentada: respetar los
+  backticks abriría un bypass). En el modo de tool calling XML el parser solo ve el texto visible: una `<tool_call>`
+  escrita dentro del razonamiento ya no se ejecuta. El reintento en texto plano del sender ante el 400 por entidades
+  se mantiene como red de seguridad. Anclas: `tests/test_router_oculta_razonamiento.py` (enumera por AST todo `return`
+  de `chat()`) y `test_el_filtro_de_razonamiento_tiene_un_solo_dueno` en `tests/test_reasoning_filter.py`.
 - **Auditoría independiente de la pila del fence VFS (H-01, H-02, H-03; H-04 y H-05 quedan pendientes).** (H-01) El bridge del plugin contiene a los descendientes del worker que alcanza, no solo al proceso que lanzó MO2: tras asignar adopta a los descendientes vivos que no estén en el Job (hasta un punto fijo; si alguno no se puede contener no hay `launch_ack`, y si queda vivo fuera del Job —no se pudo abrir ni terminar— se reporta como terminación y el broker cuarentena la instancia) y emite `worker_exit` solo con el Job vacío confirmado (si no, `bridge_error` de terminación y cuarentena), porque el broker toma `worker_exit` como terminalidad confirmada. (H-02) `--vfs-worker` verifica su Job con un módulo liviano (`vfs_arranque`) ANTES de importar `vfs_worker` (cuyo árbol de imports llega a `platform` → `cmd.exe /c ver`); el aborto por identidad es uno solo para ambos puntos de entrada. (H-03) La limpieza de descendientes tras un fallo de identidad es por PID y no se corta al primer error. El HOLD de seguridad se mantiene y solo lo levanta el auditor independiente; detalle y límites (capa `ctypes` sin medir en Windows) en [docs/audits/2026-11-03_identidad_del_job_onefile.md §12](docs/audits/2026-11-03_identidad_del_job_onefile.md).
 - **La tarjeta de Wrye Bash de la GUI lee su ruta de `config.toml` (`wrye_bash_exe`) como LOOT, xEdit y Pandora (#879).**
   El escáner de la GUI se siembra desde la config (`build_tool_path_cfg_keys`) y recién después exporta lo
