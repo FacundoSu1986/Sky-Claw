@@ -67,6 +67,13 @@ class AdmitirPluginNativoStrategy:
             "laboratorio del bridge para auditarlo. MO2 y el juego no se modifican."
         )
 
+    def clear_approval_preparation(self, payload_dict: dict[str, Any]) -> None:
+        if hitl_invocation_state() is not None:
+            return
+        plugin = payload_dict.get("plugin")
+        if isinstance(plugin, str):
+            self._direct_pendientes.pop(plugin, None)
+
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         params = AdmitirPluginNativoParams(**payload_dict)
         contexto = self._consumir_contexto_autorizado(params.plugin)

@@ -816,3 +816,13 @@ async def test_gui_unattended_sin_aprobacion_tampoco_copia() -> None:
     resultado = await dispatcher.dispatch("admitir_plugin_nativo", {"plugin": "Mod.esp"})
     assert resultado["success"] is False
     servicio.admitir.assert_not_awaited()
+
+
+async def test_gui_directo_abortado_limpia_contexto_pendiente() -> None:
+    servicio = _servicio()
+    estrategia = AdmitirPluginNativoStrategy(service=servicio)
+    estrategia.describe_for_approval({"plugin": "Mod.esp"})
+    estrategia.clear_approval_preparation({"plugin": "Mod.esp"})
+    resultado = await estrategia.execute({"plugin": "Mod.esp"})
+    assert resultado["success"] is False
+    servicio.admitir.assert_not_awaited()

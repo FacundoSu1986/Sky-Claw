@@ -20,7 +20,7 @@ import logging
 import re
 import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Protocol, TypeGuard
 
 from sky_claw.app.security.sanitize import sanitize_for_prompt
@@ -43,7 +43,7 @@ _LARGO_NOMBRE = 255
 _LARGO_RUTA_LOG = 500
 _CAMPOS_HALLAZGO = ("signature", "formid", "record_name", "path", "description")
 _PATRON_IDENTIFICADOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_SALTOS_RE = re.compile(r"[\r\n\t]+")
+_SALTOS_RE = re.compile(r"[\r\n\t\u0085\u2028\u2029]+")
 
 
 class _Rutas(Protocol):
@@ -57,7 +57,8 @@ def _texto(valor: Any, largo: int = _LARGO_TEXTO) -> str:
 
 
 def _texto_una_linea(valor: Any, largo: int = _LARGO_TEXTO) -> str:
-    return _SALTOS_RE.sub(" ", _texto(valor, largo)).strip()
+    en_linea = _SALTOS_RE.sub(" ", _texto(valor, largo))
+    return "".join(c for c in en_linea if unicodedata.category(c) != "Cc").strip()
 
 
 def _lista(valor: Any) -> list[Any]:
@@ -83,7 +84,7 @@ def _validar_identificador(valor: Any) -> str | None:
 
 
 def _tiene_controles_o_formato(valor: str) -> bool:
-    return any(ord(c) < 0x20 or ord(c) == 0x7F or unicodedata.category(c) == "Cf" for c in valor)
+    return any(unicodedata.category(c) in {"Cc", "Cf", "Zl", "Zp"} for c in valor)
 
 
 def _validar_ruta_log(valor: Any) -> str | None:
@@ -92,7 +93,7 @@ def _validar_ruta_log(valor: Any) -> str | None:
         return None
     if not valor.strip() or _tiene_controles_o_formato(valor):
         return None
-    if ".." in valor.replace("\\", "/").split("/"):
+    if ".." in valor.replace("\\", "/").split("/") or ".." in PureWindowsPath(valor).parts:
         return None
     saneado = _texto_una_linea(valor, _LARGO_RUTA_LOG)
     return saneado or None

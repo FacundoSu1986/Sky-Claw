@@ -448,6 +448,7 @@ async def test_xb_sc_03_secretos_canario_del_entorno_no_llegan_al_bridge(
     assert visto["TEMP"] == esperado_temp
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="específico de Windows (variables case-insensitive)")
 async def test_xb_sc_03_override_case_insensitive_de_env_en_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -470,6 +471,7 @@ async def test_xb_sc_03_override_case_insensitive_de_env_en_windows(
 # --- XB-SC-04 & XB-SC-05: contención obligatoria por Job Object y límite de salida ----------
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Objects de Windows")
 @pytest.mark.parametrize("operacion", ["auditar", "admitir"])
 async def test_xb_sc_04_falla_de_job_object_en_windows_aborta_fail_closed(
     tmp_path: Path,

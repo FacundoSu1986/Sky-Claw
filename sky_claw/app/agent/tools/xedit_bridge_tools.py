@@ -286,7 +286,10 @@ class GestorDeAdmisionesNativas:
             raise
         except Exception as exc:  # noqa: BLE001 -- frontera del trabajo: el servicio no debería lanzar
             logger.exception("la admisión remota (%s) lanzó en vez de devolver su resultado", trabajo.id)
-            resultado = {"success": False, "message": f"error inesperado de la admisión: {exc}"}
+            resultado = {
+                "success": False,
+                "message": f"error inesperado de la admisión: {sanitize_for_prompt(str(exc), max_length=300)}",
+            }
         await self._terminar(trabajo, resultado)
 
     async def _terminar(self, trabajo: TrabajoDeAdmision, resultado: dict[str, Any]) -> None:
