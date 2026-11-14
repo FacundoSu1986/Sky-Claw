@@ -591,6 +591,11 @@ def run_nicegui(
             # supervisor sólo enhebra el snapshot para que el pipeline administrado
             # mute el root admitido con su fence.
             dyndolod_workspace=ctx.dyndolod_workspace,
+            # E3-R3: la MISMA strategy que `AppContext` resolvió del config para
+            # esta sesión. El supervisor la lleva al único servicio de etapa 9 que
+            # comparten la GUI (dispatcher) y el agente remoto (`generate_lods`),
+            # así que una sola inyección cubre las dos superficies.
+            dyndolod_spawn_strategy=ctx.dyndolod_spawn_strategy,
             loot_runner=ctx.vfs_loot_runner,
             # La GUI es el path productivo: nunca degrada a un subprocess LOOT
             # standalone si el bridge/broker no quedo disponible.
