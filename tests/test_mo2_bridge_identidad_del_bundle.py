@@ -421,3 +421,35 @@ async def test_si_no_se_puede_calcular_el_digest_del_producto_el_operador_no_ve_
     registros = [r for r in caplog.records if "identidad del bundle" in r.getMessage()]
     assert registros and registros[0].exc_info is not None
     assert "secreto" in str(registros[0].exc_info[1])
+
+
+# ------------------------ todo test que fabrica un hello de bridge para el broker REAL lleva el digest (enumera)
+
+
+def _tests_con_hello_de_bridge_sin_digest() -> set[str]:
+    """Archivos de ``tests/`` con un literal ``{"type": "hello", "role": "bridge", ...}`` SIN la clave ``bundle_digest``."""
+    sin_digest: set[str] = set()
+    for ruta in sorted((RAIZ / "tests").glob("*.py")):
+        for nodo in ast.walk(_arbol(ruta)):
+            if not isinstance(nodo, ast.Dict):
+                continue
+            pares = {
+                clave.value: valor.value
+                for clave, valor in zip(nodo.keys, nodo.values, strict=True)
+                if isinstance(clave, ast.Constant) and isinstance(valor, ast.Constant)
+            }
+            if pares.get("role") == "bridge" and pares.get("type") == "hello" and "bundle_digest" not in pares:
+                # ``**{...}`` y otras formas dinámicas no se resuelven acá: solo literales con la clave escrita
+                claves = {k.value for k in nodo.keys if isinstance(k, ast.Constant)}
+                if "bundle_digest" not in claves:
+                    sin_digest.add(ruta.relative_to(RAIZ).as_posix())
+    return sin_digest
+
+
+def test_todo_hello_de_bridge_de_los_tests_declara_el_digest_salvo_el_de_puro_framing() -> None:
+    """Hermano del hello del plugin: un test nuevo que conecte un «bridge» falso sin digest sería rechazado por el broker.
+
+    Esto le pasó a ``test_vfs_supervision_fence.py`` (entró con #854 después de que B-1 empezara). La única exención es
+    ``test_vfs_ipc.py``: prueba el framing con un diccionario de dos claves y no pasa por el broker.
+    """
+    assert _tests_con_hello_de_bridge_sin_digest() == {"tests/test_vfs_ipc.py"}
