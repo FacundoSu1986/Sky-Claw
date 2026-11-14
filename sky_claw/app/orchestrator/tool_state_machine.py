@@ -359,6 +359,29 @@ class ToolStateMachine:
         )
         return updated
 
+    def discard_pending(self, task_id: str) -> None:
+        """Descarta una task que nunca arrancó (sigue en ``PENDING``).
+
+        ``PENDING → FAILED`` no es una transición válida, así que una task rechazada
+        antes de correr (p. ej. ``acquire_idempotency()`` devolvió ``False``) no tiene
+        otra forma de salir de ``active_task_count``. No toca el ``IdempotencyGuard``:
+        una task ``PENDING`` que perdió el acquire no es dueña de la key, y liberarla
+        pisaría el lock de quien sí lo es.
+
+        Raises:
+            KeyError: si ``task_id`` no existe.
+            InvalidTransitionError: si la task ya salió de ``PENDING``.
+        """
+        current = self._tasks.get(task_id)
+        if current is None:
+            raise KeyError(f"Task not found: {task_id}")
+        if current.state != "PENDING":
+            raise InvalidTransitionError(
+                f"Only PENDING tasks can be discarded: {current.state} (task={task_id}, tool={current.tool_name})"
+            )
+        del self._tasks[task_id]
+        logger.info("ToolStateMachine: %s discarded while PENDING (tool=%s)", task_id, current.tool_name)
+
     def get_task(self, task_id: str) -> TaskRecord | None:
         """Retrieve a task record by ID."""
         return self._tasks.get(task_id)

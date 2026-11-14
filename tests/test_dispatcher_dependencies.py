@@ -36,6 +36,7 @@ _CAMPOS_DEPENDENCIAS = [
     "preview_service_provider",
     "raices_mo2_provider",
     "xedit_bridge_service",
+    "aprobar_sin_etapas_previas",
 ]
 
 _TOOLS = [

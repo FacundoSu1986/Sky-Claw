@@ -184,6 +184,30 @@ def test_la_tabla_tiene_estados_cerrados_y_anclas_externas() -> None:
     assert set(filas) == _ITEMS
 
 
+_FILA_DE_661 = "Etapa 9 desatendida y operable en remoto (#661)"
+_FILA_DE_DEFECTOS = "Etapa 9 desatendida — defectos medidos en la corrida real 2026-10-19 (F1/F2/F3)"
+
+
+def test_la_fila_de_661_repite_el_estado_de_cada_defecto_de_la_fila_f1_f2_f3() -> None:
+    """Las dos filas hablan de los MISMOS defectos del rig y no pueden contradecirse.
+
+    La fila larga de #661 siguió llamando «defectos abiertos» a F1 y F2 (con su mecanismo viejo) cuando la fila
+    F1/F2/F3 ya los declaraba implementados con la validación en rig pendiente: dos descripciones del mismo hecho
+    en dos celdas que nadie comparaba. El estado vive en la fila de los defectos como pares ``Fn_FIX = …`` /
+    ``Fn_RIG = …``; se enumeran de ahí (no de una lista) y la fila de #661 tiene que repetir cada par TAL CUAL,
+    así que cambiar uno solo de los dos lados rompe este test.
+    """
+    filas = _tabla()
+    estados = re.findall(r"F\d_(?:FIX|RIG) = [A-Z_]+", filas[_FILA_DE_DEFECTOS]["Qué falta"])
+
+    assert estados, "la fila de los defectos ya no declara pares Fn_FIX / Fn_RIG: el ancla quedaría vacía"
+    celda_661 = filas[_FILA_DE_661]["Qué falta"]
+    sin_repetir = [estado for estado in estados if estado not in celda_661]
+    assert sin_repetir == [], f"la fila de #661 no repite el estado de la fila F1/F2/F3: {sin_repetir}"
+    assert "no está en `NO_FATALES_DEL_DOMINIO`" not in celda_661
+    assert "aborta sin reintento" not in celda_661
+
+
 def test_el_parser_tolera_espacios_exteriores_en_la_tabla() -> None:
     assert _celdas("  | Ítem | Estado | Cerrado en | Qué falta | Verificado por |   ") == _COLUMNAS
 

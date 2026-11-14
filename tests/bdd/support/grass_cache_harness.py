@@ -22,6 +22,9 @@ from sky_claw.local.tools.grass_cache_service import GrassCacheService
 
 SUPERFICIE_DISPATCHER_DEPENDENCIES = frozenset(
     {
+        # D-3: lo usa solo ``GenerateLodsStrategy`` (confirmación del operador de la GUI si faltan las etapas 6–8). Grass
+        # Cache no lo toca, así que el doble de este harness lo deja en su default (``None``).
+        "aprobar_sin_etapas_previas",
         "default_profile_getter",
         "dyndolod_service",
         "grass_cache_service",

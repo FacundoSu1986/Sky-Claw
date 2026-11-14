@@ -303,6 +303,20 @@ async def test_admitir_handler_sin_gestor_de_trabajos_rechaza_y_no_copia() -> No
     servicio.admitir.assert_not_awaited()
 
 
+async def test_respuesta_inicial_de_admision_no_se_lee_como_no_aprobado() -> None:
+    """#919: ``esperando_aprobacion`` es el estado INICIAL; la respuesta dice que el pedido ya salió."""
+    servicio, (gestor, _avisos) = _servicio(), _gestor()
+    hitl, decision = _hitl_pendiente()
+
+    salida = json.loads(await admitir_plugin_nativo(servicio, hitl, "Mod.esp", admisiones=gestor))
+
+    assert salida["aprobacion_solicitada"] is True
+    instrucciones = salida["instrucciones"].casefold()
+    assert "no vuelvas a pedirla" in instrucciones and "ni consultes el estado" in instrucciones
+    decision.set_result(Decision.DENIED)
+    await _terminar(gestor)
+
+
 async def test_admitir_handler_responde_sin_esperar_la_decision_del_operador() -> None:
     servicio, (gestor, avisos) = _servicio(), _gestor()
     hitl, decision = _hitl_pendiente()

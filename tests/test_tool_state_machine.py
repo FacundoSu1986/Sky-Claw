@@ -294,6 +294,48 @@ class TestIdempotencyIntegration:
         assert sm.acquire_idempotency(task2.task_id) is True
 
 
+class TestDiscardPending:
+    """#575 §1: una task que nunca arrancó se descarta (PENDING → FAILED sigue inválido)."""
+
+    def test_descarta_una_task_pending_y_deja_de_contar_como_activa(self) -> None:
+        sm = ToolStateMachine()
+        task = sm.create_task("tool", {"x": 1})
+        assert sm.active_task_count == 1
+
+        sm.discard_pending(task.task_id)
+
+        assert sm.active_task_count == 0
+        assert sm.get_task(task.task_id) is None
+
+    def test_rechaza_descartar_una_task_que_ya_corre(self) -> None:
+        sm = ToolStateMachine()
+        task = sm.create_task("tool", {"x": 1})
+        sm.acquire_idempotency(task.task_id)
+        sm.transition(task.task_id, "RUNNING")
+
+        with pytest.raises(InvalidTransitionError, match="RUNNING"):
+            sm.discard_pending(task.task_id)
+
+        task_actual = sm.get_task(task.task_id)
+        assert task_actual is not None
+        assert task_actual.state == "RUNNING"
+
+    def test_task_inexistente_levanta_keyerror(self) -> None:
+        sm = ToolStateMachine()
+
+        with pytest.raises(KeyError, match="task_999"):
+            sm.discard_pending("task_999")
+
+    def test_no_libera_el_lock_de_otro_dueno(self) -> None:
+        sm = ToolStateMachine()
+        task = sm.create_task("tool", {"x": 1})
+        sm.guard.acquire(task.idempotency_key, "rival")
+
+        sm.discard_pending(task.task_id)
+
+        assert sm.guard.is_active(task.idempotency_key)
+
+
 # ------------------------------------------------------------------
 # ToolStateMachine — Task management
 # ------------------------------------------------------------------
