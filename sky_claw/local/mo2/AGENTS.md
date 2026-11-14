@@ -92,6 +92,14 @@ raíz.
   y exige que lo que dice el módulo coincida con lo que el broker hace al arrancar) y
   `tests/test_vfs_quarantine_anclas.py` (enumera por AST quién muta el marcador/lock, los sitios que arman la ruta de
   estado y que todo `--mode` esté documentado).
+- **El outbox del bridge se consume en UN solo lugar y un evento que no se pudo enviar vuelve al FRENTE** (H-14, B-2).
+  `runtime.flush_outbox` es el único que saca eventos de `BridgeEventOutbox`; si `send` falla, `requeue_front` lo devuelve al
+  frente (sin tocar `unfinished_tasks`, para que el apagado lo siga esperando) y el error se propaga. Un `put` de lo que se
+  sacó lo mandaría al final y, tras reconectar, `worker_exit` saldría antes que `launch_ack`. Nadie más consume el outbox:
+  `plugin.py` solo lo produce (`put`) o espera (`wait_until_drained`). Anclas: `tests/test_mo2_bridge_orden_de_eventos.py`
+  (reconexión, propiedad con productor concurrente y AST de consumidores). **Cerrar MO2 a mitad de una corrida** puede dejar la
+  instancia en cuarentena (el drenaje del apagado es de 2 s y el broker no puede probar que el worker terminó sin su
+  `worker_exit`): es lo esperado y se libera con `--mode vfs-quarantine`; no lo «arregles» ampliando el plazo.
 - `ganadores.py` (NP-A0d) contesta UNA vez «¿qué capa provee esta ruta virtual en el overlay del perfil?». Recibe `enabled` ya
   normalizado por `vfs_attestation.read_enabled_mods` (no parsea el modlist: un test lo ancla), recorre con
   `links.iter_archivos_propios` (no entra a enlaces), trata `overwrite` como la capa más alta y un `*.mohidden` como ausente, y

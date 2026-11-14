@@ -222,6 +222,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 
 ### Fixed
+- **El MO2 bridge entrega sus eventos en orden aunque el envío falle y tenga que reconectar (B-2, H-14).** Un evento cuyo envío fallaba se re-encolaba al **final** de la cola: con `[launch_ack, worker_exit]` y un fallo en el primero,
+  tras reconectar salía `worker_exit` antes que `launch_ack`, y el broker (que arma su máquina de estados con ese orden) veía la salida de un worker que todavía no había confirmado. Ahora el evento que falló vuelve al **frente**
+  (`BridgeEventOutbox.requeue_front`) y el drenaje vive en una sola función, `runtime.flush_outbox`, el único consumidor del outbox.
+  - Se re-encola ante **cualquier** error del envío y no solo `OSError`/`VfsFrameError`: antes otro error perdía el evento terminal y dejaba la cuenta de pendientes sin saldar (el apagado habría esperado de más o dado el evento por enviado).
+  - El drenaje salió de `plugin.py` (que importa `mobase` y no se puede cargar en tests) a `runtime.py`, así que la reconexión se prueba con un enlace falso que falla y se recupera.
+  - **Cerrar MO2 a mitad de una corrida puede dejar la instancia en cuarentena, y es lo esperado:** el bridge termina el worker y drena su cola hasta 2 s, pero si el broker no alcanza a recibir `worker_exit` no puede probar que el proceso terminó y aísla la instancia (y veta el rollback). Se libera con `--mode vfs-quarantine` (H-4); no es un fallo a corregir en el bridge.
+  - **Actualización coordinada:** el cambio vive en el bundle del plugin; hay que reinstalarlo (`--mode install-vfs-bridge`) y reabrir MO2 para que tenga efecto.
+  - **Tests:** `tests/test_mo2_bridge_orden_de_eventos.py` (reconexión con fallos, productor concurrente con enlace intermitente que exige «lo entregado es exactamente lo producido y en su orden», y anclas por AST: `flush_outbox` es el único que saca eventos y solo él los mete al frente; el plugin solo toca el outbox con `put`/`wait_until_drained`). **No verificado:** una reconexión real contra MO2.
 - **El razonamiento `<thought>`/`<think>` del modelo ya no llega al usuario en ninguna superficie (#918).**
   El `SYSTEM_PROMPT` pide ese bloque «oculto al usuario», pero nada lo ocultaba: Telegram lo rechazaba como HTML
   inválido («error interno») y la GUI, la web, el CLI y el WS lo mostraban crudo. `LLMRouter.chat` aplica ahora

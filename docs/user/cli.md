@@ -40,6 +40,10 @@ Si el broker perdió la certeza de que un proceso terminó, deja la instancia en
 `--vfs-quarantine-action release --vfs-evidence "<qué verificaste>"`, solo con
 Sky-Claw cerrado. Detalle en [CLI de referencia](../api/cli_ref.md).
 
+Cerrar MO2 a mitad de una corrida también puede dejar la instancia en cuarentena: el bridge avisa de la salida del
+worker durante el cierre, pero si el aviso no llega Sky-Claw no puede probar que el proceso terminó. Es lo esperado y se
+libera con el mismo comando, una vez que verificaste que no quedan procesos de la herramienta.
+
 ## Salida y diagnóstico
 
 En el REPL (`--mode cli`), escribir `exit`, `quit` o `salir` cierra la sesión;
