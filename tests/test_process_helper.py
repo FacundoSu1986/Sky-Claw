@@ -15,6 +15,8 @@ kill+reap, plus CancelledError handling). The contract:
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -442,3 +444,228 @@ def test_dyndolod_process_assign_job_contrato_seguro():
     proc_fake.pid = -1
     standalone = _StandaloneDynDOLODProcess(proc_fake)
     assert standalone.assign_job() is None
+
+
+# --- XB-SC-04 & XB-SC-05: require_job y captura acotada (max_output_bytes) -----------------
+
+
+def _pid_vivo_windows(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    if sys.platform != "win32" or pid <= 0:
+        return False
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        codigo = wintypes.DWORD()
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(codigo)):
+            return False
+        return codigo.value == 259  # STILL_ACTIVE
+    finally:
+        k32.CloseHandle(handle)
+
+
+async def test_run_capture_require_job_true_mata_y_falla_cerrado_si_job_es_none(monkeypatch):
+    import sky_claw.local.tools._process as _process
+
+    monkeypatch.setattr(_process.sys, "platform", "win32")
+    proc = _proc(communicate=AsyncMock(return_value=(b"ok", b"")), returncode=0)
+    proc.pid = 4242
+    close_spy = MagicMock()
+    with (
+        patch("asyncio.create_subprocess_exec", return_value=proc),
+        patch.object(_process, "assign_kill_on_close_job", MagicMock(return_value=None)),
+        patch.object(_process, "close_job", close_spy),
+        pytest.raises(OSError, match="Job Object"),
+    ):
+        await run_capture(["tool.exe"], timeout=5.0, require_job=True)
+
+    proc.kill.assert_called_once()
+    proc.wait.assert_awaited()
+    close_spy.assert_called_once_with(None)
+
+
+async def test_run_capture_require_job_true_no_falla_fuera_de_windows(monkeypatch):
+    import sky_claw.local.tools._process as _process
+
+    monkeypatch.setattr(_process.sys, "platform", "linux")
+    proc = _proc(communicate=AsyncMock(return_value=(b"ok", b"")), returncode=0)
+    with patch("asyncio.create_subprocess_exec", return_value=proc):
+        stdout, stderr, rc = await run_capture(["tool"], timeout=5.0, require_job=True)
+    assert (stdout, stderr, rc) == (b"ok", b"", 0)
+
+
+@pytest.mark.parametrize("bad_limit", [0, -1, -4096, True, False])
+async def test_run_capture_rechaza_max_output_bytes_invalido(bad_limit):
+    with patch("asyncio.create_subprocess_exec") as spawner, pytest.raises(ValueError, match="max_output_bytes"):
+        await run_capture(["tool.exe"], timeout=5.0, max_output_bytes=bad_limit)
+    spawner.assert_not_called()
+
+
+@pytest.mark.parametrize("canal", ["stdout", "stderr", "combinado"])
+async def test_run_capture_max_output_bytes_mata_proceso_real_sin_retornar_json_truncado(tmp_path: Path, canal: str):
+    """XB-SC-05: ante exceso en stdout, stderr o la suma de ambos, mata+reap el hijo real
+    y eleva OSError sin entregar salida parcial."""
+    pid_file = tmp_path / "child.pid"
+    if canal == "stdout":
+        emisor = (
+            "sys.stdout.buffer.write(b'{\"ok\": true'); sys.stdout.buffer.flush();"
+            "sys.stdout.buffer.write(b'X' * 131072); sys.stdout.buffer.flush();"
+        )
+    elif canal == "stderr":
+        emisor = "sys.stderr.buffer.write(b'E' * 131072); sys.stderr.buffer.flush();"
+    else:
+        emisor = (
+            "sys.stdout.buffer.write(b'A' * 600); sys.stdout.buffer.flush();"
+            "sys.stderr.buffer.write(b'B' * 600); sys.stderr.buffer.flush();"
+        )
+    codigo = (
+        f"import os, sys, time; from pathlib import Path; "
+        f"Path({repr(str(pid_file))}).write_text(str(os.getpid()), encoding='utf-8'); "
+        f"{emisor} time.sleep(60)"
+    )
+
+    with pytest.raises(OSError, match="límite"):
+        await asyncio.wait_for(
+            run_capture(
+                [sys.executable, "-c", codigo],
+                timeout=15.0,
+                max_output_bytes=1024,
+                require_job=True,
+            ),
+            timeout=10.0,
+        )
+
+    assert pid_file.exists()
+    pid = int(pid_file.read_text(encoding="utf-8"))
+    if sys.platform == "win32":
+        assert not _pid_vivo_windows(pid)
+
+
+async def test_run_capture_acotado_con_stdin_y_salida_valida_sobre_proceso_real():
+    """Con ``input_bytes`` + ``max_output_bytes`` dentro de rango, conserva entrada/salida intactas."""
+    codigo = (
+        "import sys; data = sys.stdin.buffer.read(); "
+        "sys.stdout.buffer.write(data.upper()); sys.stderr.buffer.write(b'ok')"
+    )
+    stdout, stderr, rc = await run_capture(
+        [sys.executable, "-c", codigo],
+        timeout=15.0,
+        input_bytes=b'{"id": 1}\n',
+        max_output_bytes=4096,
+        require_job=True,
+    )
+    assert (stdout, stderr, rc) == (b'{"ID": 1}\n', b"ok", 0)
+
+
+async def test_run_capture_require_job_termina_nieto_huerfano_en_windows(tmp_path: Path):
+    """XB-SC-04: en Windows, al terminar por límite o cancelación un hijo que lanzó un nieto
+    sin heredar pipes, ``close_job`` + ``kill_and_reap`` matan también al nieto."""
+    if sys.platform != "win32":
+        pytest.skip("Job Objects solo existen en Windows")
+    nieto_pid_file = tmp_path / "grandchild.pid"
+    codigo = (
+        "import subprocess, sys, time; from pathlib import Path; "
+        f"p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+        "creationflags=0x08000000); "
+        f"Path({repr(str(nieto_pid_file))}).write_text(str(p.pid), encoding='utf-8'); "
+        "sys.stdout.write('READY\\n'); sys.stdout.flush(); time.sleep(60)"
+    )
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(
+            run_capture(
+                [sys.executable, "-c", codigo],
+                timeout=1.2,
+                max_output_bytes=4096,
+                require_job=True,
+            ),
+            timeout=10.0,
+        )
+
+    assert nieto_pid_file.exists()
+    nieto_pid = int(nieto_pid_file.read_text(encoding="utf-8"))
+    # Esperar brevemente a que el SO termine de desmontar el Job Object.
+    for _ in range(20):
+        if not _pid_vivo_windows(nieto_pid):
+            break
+        await asyncio.sleep(0.05)
+    assert not _pid_vivo_windows(nieto_pid), f"el nieto {nieto_pid} quedó vivo tras cerrar el Job"
+
+
+async def test_run_capture_require_job_termina_nieto_en_salida_normal_y_cancelacion(tmp_path: Path):
+    """XB-SC-04: incluso ante salida normal (rc=0) o cancelación, ``close_job`` y ``kill_and_reap``
+    aniquilan descendientes reparentados en Windows."""
+    if sys.platform != "win32":
+        pytest.skip("Job Objects solo existen en Windows")
+    nieto_normal = tmp_path / "nieto_normal.pid"
+    codigo_normal = (
+        "import subprocess, sys; from pathlib import Path; "
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+        "creationflags=0x08000000); "
+        f"Path({repr(str(nieto_normal))}).write_text(str(p.pid), encoding='utf-8'); "
+        "sys.stdout.write('OK'); sys.stdout.flush()"
+    )
+    out, _err, rc = await run_capture(
+        [sys.executable, "-c", codigo_normal],
+        timeout=15.0,
+        max_output_bytes=4096,
+        require_job=True,
+    )
+    assert (out, rc) == (b"OK", 0)
+    pid_n = int(nieto_normal.read_text(encoding="utf-8"))
+    for _ in range(20):
+        if not _pid_vivo_windows(pid_n):
+            break
+        await asyncio.sleep(0.05)
+    assert not _pid_vivo_windows(pid_n), f"nieto {pid_n} sobrevivió a salida normal del padre"
+
+    nieto_cancel = tmp_path / "nieto_cancel.pid"
+    codigo_cancel = (
+        "import subprocess, sys, time; from pathlib import Path; "
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+        "creationflags=0x08000000); "
+        f"Path({repr(str(nieto_cancel))}).write_text(str(p.pid), encoding='utf-8'); "
+        "time.sleep(60)"
+    )
+    tarea = asyncio.create_task(
+        run_capture(
+            [sys.executable, "-c", codigo_cancel],
+            timeout=30.0,
+            max_output_bytes=4096,
+            require_job=True,
+        )
+    )
+    for _ in range(80):
+        if nieto_cancel.exists() and nieto_cancel.read_text(encoding="utf-8").strip().isdigit():
+            break
+        await asyncio.sleep(0.05)
+    assert nieto_cancel.exists()
+    pid_c = int(nieto_cancel.read_text(encoding="utf-8"))
+    tarea.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+    for _ in range(20):
+        if not _pid_vivo_windows(pid_c):
+            break
+        await asyncio.sleep(0.05)
+    assert not _pid_vivo_windows(pid_c), f"nieto {pid_c} sobrevivió a cancelación"
+
+
+async def test_run_capture_acotado_tolera_hijo_que_sale_sin_leer_stdin():
+    """Si el hijo sale rápido sin leer stdin (``BrokenPipeError``), ``run_capture`` reporta su
+    salida y returncode reales sin romperse en ``_escribir_stdin``."""
+    codigo = "import sys; sys.stdout.write('rapido'); sys.exit(2)"
+    out, _err, rc = await run_capture(
+        [sys.executable, "-c", codigo],
+        timeout=15.0,
+        input_bytes=b"X" * 131072,
+        max_output_bytes=4096,
+    )
+    assert (out, rc) == (b"rapido", 2)

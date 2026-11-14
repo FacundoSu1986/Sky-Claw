@@ -75,7 +75,7 @@ Este ADR decide cómo lo consume Sky-Claw.
   captura una sola vez, al pedir la aprobación, y `service.admitir` lo compara con el vigente después
   de la decisión: si la instancia o el perfil cambiaron durante la espera, no se copia nada y el
   mensaje pide volver a solicitar la admisión. Vale para las dos superficies: el agente lo guarda en
-  el trabajo y la GUI lo guarda al describir el pedido.
+  el trabajo y la GUI lo vincula a cada invocación HITL (`request_id`), rechazando cerrado si falta.
 - Las dos superficies delegan en el mismo `XEditBridgeService`. Ancla:
   `tests/test_xedit_bridge_superficies.py`. Enumera las tools del bridge y exige que cada una
   exista en el registro y en el dispatcher.
@@ -94,7 +94,10 @@ Este ADR decide cómo lo consume Sky-Claw.
 - **Admisión:** `run_admit.py`. Se lee su última línea JSON; un `ok=false` es un rechazo de
   dominio, no una excepción. Su fuente 1.1.0 imprime por stdout esa sola línea; cualquier otra
   salida que no sea JSON falla cerrado.
-- Los dos procesos corren con `run_capture`: Job kill-on-close, timeout y reap. El timeout de la
+- Los dos procesos corren con `run_capture` usando `require_job=True` (en Windows falla cerrado si
+  no puede asignar Job Object `KILL_ON_JOB_CLOSE`, acotado a contención de árbol con micro-ventana
+  residual entre spawn y asignación) y `max_output_bytes=LIMITE_BYTES_SALIDA` (`8 MiB` combinados
+  stdout/stderr; corta sin pasar JSON truncado). El timeout de la
   auditoría es el del motor (5–120 s en la GUI, 5–80 s en el agente) más su margen: 60 s en la GUI,
   30 s en el agente (§2.1). El de la admisión es de 900 s.
 
@@ -126,7 +129,9 @@ Ninguna forma inesperada se escapa como `AttributeError` o `TypeError`: el servi
   - `args` tiene que ser **exactamente** el vector que Sky-Claw ejecuta: `-I -S -B`, el `run_mcp.py`
     y el `config.json` de esta misma raíz. Una config distinta o un flag de más se rechazan.
   - `cwd`, si se declara, tiene que ser la propia raíz.
-  - `env` (sus `TEMP`/`APPDATA` dentro del laboratorio) se suma al entorno heredado.
+  - `env` (sus `TEMP`/`APPDATA` dentro del laboratorio) se suma únicamente a la lista blanca mínima
+    de variables OS/runtime (`VARIABLES_ENTORNO_PERMITIDAS`, override case-insensitive en Windows); no
+    se hereda `os.environ` completo para evitar filtración de secretos al subproceso.
   - Adoptar solo una parte lanzaría el bridge distinto de como el bridge se validó.
 
 ### 2.4 MO2 lo pone Sky-Claw, no el LLM
@@ -148,10 +153,13 @@ Ninguna forma inesperada se escapa como `AttributeError` o `TypeError`: el servi
 
 ### 2.5 Contrato de resultado
 
-- `success` dice que la **auditoría es confiable**: chequeo completo, integridad prospectiva `PASS`
-  y respuesta sin recortar. Un plugin con errores auditado por completo es `success=True`.
+- `success` dice que la **auditoría es confiable**: esquema completo con tipos estrictos (`bool`,
+  enteros `>= 0` sin `bool`, listas válidas, `run_id`/`log_path` sin saltos, controles ni traversal),
+  chequeo completo, integridad prospectiva `PASS`, cero `execution_failures` y respuesta sin
+  recortar. Un plugin con errores auditado por completo es `success=True`.
 - `aprobado` = `ok` ∧ confiable ∧ `clean`. Es el **único** campo que permite tratar un plugin como
-  sin errores.
+  sin errores. Falta de campos o tipos incompatibles en `untrusted_data` fallan cerrado
+  (`success=False`, `aprobado=False`).
 - **Un veredicto incoherente no aprueba.** «Aprobado» es la decisión de seguridad de la herramienta
   y no se deriva de un solo campo: si el bridge dice `clean=true` y a la vez informa errores
   nativos, hallazgos o fallas de ejecución, el resultado es `success=false`, `aprobado=false` y el

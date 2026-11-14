@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from contextvars import ContextVar
 from typing import Any
 
 from sky_claw.app.core.models import CircuitBreakerTrippedError
@@ -46,6 +47,15 @@ logger = logging.getLogger(__name__)
 _MAX_APPROVAL_DETAIL_LENGTH = 800
 _MAX_APPROVAL_VALUE_LENGTH = 120
 _SENSITIVE_KEY_PARTS = frozenset({"api_key", "auth", "credential", "password", "secret", "token"})
+
+#: Estado efímero aislado por invocación del gate HITL (evita colisiones concurrentes entre solicitudes).
+_hitl_invocation_state: ContextVar[dict[str, Any] | None] = ContextVar("_hitl_invocation_state", default=None)
+
+
+def hitl_invocation_state() -> dict[str, Any] | None:
+    """Devuelve el diccionario aislado de la invocación HITL activa en la tarea actual, o ``None``."""
+    return _hitl_invocation_state.get()
+
 
 # ---------------------------------------------------------------------------
 # FASE 1.5.1: Tools that require mandatory human approval before execution.
@@ -282,48 +292,52 @@ class HitlGateMiddleware:
         # request_id único para evitar colisiones cuando dos invocaciones
         # concurrentes de la MISMA tool destructiva con payloads distintos
         # llegan al gate (FASE 1.5.4 hardening: HITL key collision fix).
-        _validate_for_approval(strategy, payload_dict)
-        await _prepare_for_approval(strategy, payload_dict)
+        request_id = f"tool-{strategy.name}-{uuid.uuid4().hex[:12]}"
+        scope_token = _hitl_invocation_state.set({"request_id": request_id})
         try:
-            detail = _describe_for_approval(strategy, payload_dict)
+            _validate_for_approval(strategy, payload_dict)
+            await _prepare_for_approval(strategy, payload_dict)
+            try:
+                detail = _describe_for_approval(strategy, payload_dict)
 
-            request_id = f"tool-{strategy.name}-{uuid.uuid4().hex[:12]}"
-            logger.info(
-                "HitlGateMiddleware: tool '%s' requires human approval (request_id=%s).",
-                strategy.name,
-                request_id,
-            )
-
-            decision = await self._guard.request_approval(
-                request_id=request_id,
-                reason=f"Tool '{strategy.name}' requires human approval before execution.",
-                detail=detail,
-                category="tool_execution",
-            )
-
-            if decision is not Decision.APPROVED:
-                logger.warning(
-                    "HitlGateMiddleware: tool '%s' NOT approved (decision=%s, request_id=%s).",
+                logger.info(
+                    "HitlGateMiddleware: tool '%s' requires human approval (request_id=%s).",
                     strategy.name,
-                    decision.value,
                     request_id,
                 )
-                return {
-                    "status": "error",
-                    "reason": "HITLApprovalDenied",
-                    "details": (
-                        f"Human approval for '{strategy.name}' resolved as '{decision.value}' "
-                        f"(request_id={request_id})."
-                    ),
-                }
 
-            logger.info(
-                "HitlGateMiddleware: tool '%s' APPROVED by human operator.",
-                strategy.name,
-            )
-            return await next_call()
+                decision = await self._guard.request_approval(
+                    request_id=request_id,
+                    reason=f"Tool '{strategy.name}' requires human approval before execution.",
+                    detail=detail,
+                    category="tool_execution",
+                )
+
+                if decision is not Decision.APPROVED:
+                    logger.warning(
+                        "HitlGateMiddleware: tool '%s' NOT approved (decision=%s, request_id=%s).",
+                        strategy.name,
+                        decision.value,
+                        request_id,
+                    )
+                    return {
+                        "status": "error",
+                        "reason": "HITLApprovalDenied",
+                        "details": (
+                            f"Human approval for '{strategy.name}' resolved as '{decision.value}' "
+                            f"(request_id={request_id})."
+                        ),
+                    }
+
+                logger.info(
+                    "HitlGateMiddleware: tool '%s' APPROVED by human operator.",
+                    strategy.name,
+                )
+                return await next_call()
+            finally:
+                _clear_approval_preparation(strategy, payload_dict)
         finally:
-            _clear_approval_preparation(strategy, payload_dict)
+            _hitl_invocation_state.reset(scope_token)
 
 
 def _validate_for_approval(strategy: ToolStrategy, payload_dict: dict[str, Any]) -> None:
@@ -586,4 +600,5 @@ __all__ = [
     "IdempotencyMiddleware",
     "LoopGuardrailMiddleware",
     "ProgressMiddleware",
+    "hitl_invocation_state",
 ]

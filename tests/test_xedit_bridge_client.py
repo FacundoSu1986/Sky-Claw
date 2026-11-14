@@ -400,3 +400,149 @@ async def test_auditar_plugin_salida_mcp_inconsistente_falla_cerrado(tmp_path: P
     # válido (el respaldo a cp1252 los «arreglaba» con reemplazos). run_mcp.py fija UTF-8: lo demás es un bridge roto.
     with pytest.raises(BridgeError):
         await auditar_plugin(_bridge(tmp_path, escenario), "Mod.esp", timeout=30)
+
+
+# --- XB-SC-03: entorno mínimo permitido (sin filtración de secretos de Sky-Claw) ------------
+
+
+@pytest.mark.parametrize(
+    ("script", "con_toml_env", "registro"),
+    [
+        ("mcp", False, "entorno_mcp.json"),
+        ("mcp", True, "entorno_mcp.json"),
+        ("admit", False, "entorno_admit.json"),
+        ("admit", True, "entorno_admit.json"),
+    ],
+)
+async def test_xb_sc_03_secretos_canario_del_entorno_no_llegan_al_bridge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    script: str,
+    con_toml_env: bool,
+    registro: str,
+) -> None:
+    """XB-SC-03: los secretos heredados en ``os.environ`` (con o sin ``[env]`` en el TOML) no
+    se propagan ni a ``run_mcp.py`` ni a ``run_admit.py``, mientras las variables OS permitidas
+    siguen disponibles."""
+    monkeypatch.setenv("SKYCLAW_SECRET_CANARY", "secreto-canario-xedit-bridge")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-canario-no-propagar")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-canario-no-propagar")
+    raiz = _raiz(tmp_path, "admitido" if script == "admit" else "limpio")
+    temporales = tmp_path / "TempLab"
+    if con_toml_env:
+        temporales.mkdir()
+        _con_env(raiz, f"TEMP = '{temporales}'")
+    instalacion = InstalacionBridge.desde_raiz(raiz)
+
+    if script == "mcp":
+        await auditar_plugin(instalacion, "Mod.esp", timeout=10)
+    else:
+        await admitir_plugin(instalacion, tmp_path / "MO2", "Perfil", "Mod.esp")
+
+    visto = json.loads((raiz / registro).read_text(encoding="utf-8"))
+    assert visto["SKYCLAW_SECRET_CANARY"] is None
+    assert visto["OPENAI_API_KEY"] is None
+    assert visto["AWS_SECRET_ACCESS_KEY"] is None
+    assert visto["SYSTEMROOT"] == os.environ.get("SYSTEMROOT")
+    esperado_temp = str(temporales) if con_toml_env else os.environ.get("TEMP")
+    assert visto["TEMP"] == esperado_temp
+
+
+async def test_xb_sc_03_override_case_insensitive_de_env_en_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """En Windows las variables son case-insensitive: un ``Temp`` en el TOML reemplaza ``TEMP``
+    heredado sin duplicar claves ni filtrar secretos no permitidos."""
+    monkeypatch.setenv("SKYCLAW_SECRET_CANARY", "secreto-canario-case")
+    raiz = _raiz(tmp_path, "limpio")
+    temporales = tmp_path / "TempCase"
+    temporales.mkdir()
+    _con_env(raiz, f"Temp = '{temporales}'")
+    instalacion = InstalacionBridge.desde_raiz(raiz)
+
+    await auditar_plugin(instalacion, "Mod.esp", timeout=10)
+
+    visto = json.loads((raiz / "entorno_mcp.json").read_text(encoding="utf-8"))
+    assert visto["TEMP"] == str(temporales)
+    assert visto["SKYCLAW_SECRET_CANARY"] is None
+
+
+# --- XB-SC-04 & XB-SC-05: contención obligatoria por Job Object y límite de salida ----------
+
+
+@pytest.mark.parametrize("operacion", ["auditar", "admitir"])
+async def test_xb_sc_04_falla_de_job_object_en_windows_aborta_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operacion: str,
+) -> None:
+    """XB-SC-04: si falla la asignación de Job Object en Windows, ni auditoría ni admisión
+    dejan correr el bridge sin contención; matan el hijo y elevan ``BridgeError``."""
+    import sky_claw.local.tools._process as _process
+
+    monkeypatch.setattr(_process.sys, "platform", "win32")
+    llamadas_kill = 0
+    original_kill = _process.kill_and_reap
+
+    async def _espia_kill(proc, timeout=_process._REAP_TIMEOUT):
+        nonlocal llamadas_kill
+        llamadas_kill += 1
+        return await original_kill(proc, timeout=timeout)
+
+    monkeypatch.setattr(_process, "assign_kill_on_close_job", lambda _pid: None)
+    monkeypatch.setattr(_process, "kill_and_reap", _espia_kill)
+    instalacion = _bridge(tmp_path, "admitido" if operacion == "admitir" else "limpio")
+
+    with pytest.raises(BridgeError, match="Job"):
+        if operacion == "auditar":
+            await auditar_plugin(instalacion, "Mod.esp", timeout=10)
+        else:
+            await admitir_plugin(instalacion, tmp_path / "MO2", "Perfil", "Mod.esp")
+    assert llamadas_kill >= 1
+
+
+@pytest.mark.parametrize("operacion", ["auditar", "admitir"])
+async def test_xb_sc_05_salida_descontrolada_se_corta_y_nunca_parsea_json_truncado(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operacion: str,
+) -> None:
+    """XB-SC-05: un bridge descontrolado que supere ``LIMITE_BYTES_SALIDA`` se mata antes de
+    acumular memoria o interpretar JSON truncado como válido."""
+    import sky_claw.local.tools.xedit_bridge_client as cliente
+
+    monkeypatch.setattr(cliente, "LIMITE_BYTES_SALIDA", 1024)
+    escenario = "descontrolado_json_truncado" if operacion == "auditar" else "descontrolado"
+    instalacion = _bridge(tmp_path, escenario)
+
+    with pytest.raises(BridgeError, match="límite"):
+        if operacion == "auditar":
+            await auditar_plugin(instalacion, "Mod.esp", timeout=10)
+        else:
+            await admitir_plugin(instalacion, tmp_path / "MO2", "Perfil", "Mod.esp", timeout_s=10)
+
+
+async def test_xb_sc_05_servicio_devuelve_fail_closed_si_salida_supera_limite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sky_claw.local.tools.xedit_bridge_client as cliente
+    from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
+
+    class _Rutas:
+        def __init__(self, r: Path) -> None:
+            self.r = r
+
+        def get_xedit_bridge_root(self) -> Path:
+            return self.r
+
+        def get_mo2_instance_ini_dir(self) -> Path:
+            return tmp_path / "MO2"
+
+        def get_active_profile(self) -> str:
+            return "P"
+
+    monkeypatch.setattr(cliente, "LIMITE_BYTES_SALIDA", 1024)
+    raiz = _raiz(tmp_path, "descontrolado_json_truncado")
+    res = await XEditBridgeService(path_resolver=_Rutas(raiz)).auditar("Mod.esp", timeout=10)
+    assert (res["success"], res["aprobado"]) == (False, False)
+    assert "límite" in res["message"]

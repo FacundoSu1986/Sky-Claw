@@ -143,9 +143,11 @@ def test_admitir_validate_for_approval_rechaza_un_nombre_que_no_se_puede_mostrar
 async def test_estrategias_delegan_al_servicio() -> None:
     servicio = _servicio()
     await AuditarPluginNativoStrategy(service=servicio).execute({"plugin": "Mod.esp", "timeout": 90})
-    await AdmitirPluginNativoStrategy(service=servicio).execute({"plugin": "Mod.esp"})
+    estrategia = AdmitirPluginNativoStrategy(service=servicio)
+    estrategia.describe_for_approval({"plugin": "Mod.esp"})
+    await estrategia.execute({"plugin": "Mod.esp"})
     servicio.auditar.assert_awaited_once_with("Mod.esp", timeout=90)
-    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=None)
+    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO)
 
 
 @pytest.mark.parametrize(
@@ -591,5 +593,226 @@ async def test_gui_el_pedido_muestra_el_contexto_y_la_ejecucion_lo_verifica() ->
     assert "Instancia" in texto and "prueva huevo 3" in texto
     await estrategia.execute({"plugin": "Mod.esp"})
     servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO)
-    await estrategia.execute({"plugin": "Mod.esp"})  # el contexto aprobado se consume: no se reutiliza
-    assert servicio.admitir.await_args.kwargs["contexto"] is None
+    segunda = await estrategia.execute(
+        {"plugin": "Mod.esp"}
+    )  # el contexto aprobado se consume: no se reutiliza ni copia
+    assert segunda["success"] is False and servicio.admitir.await_count == 1
+
+
+# --- XB-SC-02: aislamiento por solicitud HITL en GUI y rechazo sin contexto (RED -> GREEN) ---
+
+
+def _dispatcher_con_servicio(gate: HitlGateMiddleware, servicio: MagicMock):
+    from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+    from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+
+    sup = SupervisorAgent.__new__(SupervisorAgent)
+    sup.scraper = MagicMock()
+    sup.tools = MagicMock()
+    sup.interface = MagicMock()
+    for atributo in (
+        "_loot_service",
+        "_synthesis_service",
+        "_xedit_service",
+        "_dyndolod_service",
+        "_pandora_service",
+        "_grass_cache_service",
+    ):
+        setattr(sup, atributo, MagicMock())
+    sup._xedit_bridge_service = servicio
+    sup.profile_name = "TestProfile"
+    return build_orchestration_dispatcher(crear_dependencias_desde_doble(sup), hitl_gate=gate)
+
+
+async def test_gui_dos_aprobaciones_concurrentes_case_distinto_orden_inverso_conservan_contexto() -> None:
+    ctx_a = ContextoAdmision(pathlib.Path("C:/MO2/A"), "PerfilA")
+    ctx_b = ContextoAdmision(pathlib.Path("C:/MO2/B"), "PerfilB")
+    servicio = _servicio()
+    servicio.contexto_de_admision = MagicMock(side_effect=[ctx_a, ctx_b])
+    registrados: list[tuple[str, object]] = []
+
+    async def _admitir_mock(plugin: str, *, contexto: ContextoAdmision | None = None) -> dict:
+        registrados.append((plugin, contexto))
+        return {"success": True, "message": "", "admission_id": "adm-1", "clausura": [plugin]}
+
+    servicio.admitir = AsyncMock(side_effect=_admitir_mock)
+
+    loop = asyncio.get_running_loop()
+    fut_a: asyncio.Future[Decision] = loop.create_future()
+    fut_b: asyncio.Future[Decision] = loop.create_future()
+    ev_a, ev_b = asyncio.Event(), asyncio.Event()
+    en_espera: list[str] = []
+
+    async def _request_approval(**kw: object) -> Decision:
+        detalle = str(kw.get("detail", ""))
+        if "PerfilA" in detalle:
+            en_espera.append("A")
+            ev_a.set()
+            return await fut_a
+        en_espera.append("B")
+        ev_b.set()
+        return await fut_b
+
+    hitl = MagicMock()
+    hitl.request_approval = AsyncMock(side_effect=_request_approval)
+    dispatcher = _dispatcher_con_servicio(HitlGateMiddleware(hitl_guard=hitl), servicio)
+
+    tarea_a = asyncio.create_task(dispatcher.dispatch("admitir_plugin_nativo", {"plugin": "Mod.esp"}))
+    await asyncio.wait_for(ev_a.wait(), timeout=2.0)
+
+    tarea_b = asyncio.create_task(dispatcher.dispatch("admitir_plugin_nativo", {"plugin": "mod.ESP"}))
+    await asyncio.wait_for(ev_b.wait(), timeout=2.0)
+
+    assert en_espera == ["A", "B"]
+    # Resolución en orden INVERSO: primero aprueba B («mod.ESP»), después A («Mod.esp»).
+    fut_b.set_result(Decision.APPROVED)
+    res_b = await asyncio.wait_for(tarea_b, timeout=2.0)
+    fut_a.set_result(Decision.APPROVED)
+    res_a = await asyncio.wait_for(tarea_a, timeout=2.0)
+
+    assert res_b["success"] is True and res_a["success"] is True
+    assert hitl.request_approval.await_count == 2  # sin pedidos duplicados
+    assert dict(registrados) == {"mod.ESP": ctx_b, "Mod.esp": ctx_a}
+
+
+@pytest.mark.parametrize("decision_a", [Decision.DENIED, Decision.TIMEOUT])
+async def test_gui_concurrencia_denegacion_o_timeout_no_contamina_hermana_ni_copia(decision_a: Decision) -> None:
+    ctx_a = ContextoAdmision(pathlib.Path("C:/MO2/A"), "PerfilA")
+    ctx_b = ContextoAdmision(pathlib.Path("C:/MO2/B"), "PerfilB")
+    servicio = _servicio()
+    # Primero se pide B (ctx_b) y después A (ctx_a): así A pisa _mostrados[casefold] antes de denegarse.
+    servicio.contexto_de_admision = MagicMock(side_effect=[ctx_b, ctx_a])
+    registrados: list[tuple[str, object]] = []
+
+    async def _admitir_mock(plugin: str, *, contexto: ContextoAdmision | None = None) -> dict:
+        registrados.append((plugin, contexto))
+        return {"success": True, "message": "", "admission_id": "adm-1", "clausura": [plugin]}
+
+    servicio.admitir = AsyncMock(side_effect=_admitir_mock)
+
+    loop = asyncio.get_running_loop()
+    fut_a: asyncio.Future[Decision] = loop.create_future()
+    fut_b: asyncio.Future[Decision] = loop.create_future()
+    ev_a, ev_b = asyncio.Event(), asyncio.Event()
+
+    async def _request_approval(**kw: object) -> Decision:
+        detalle = str(kw.get("detail", ""))
+        if "Mod.esp" in detalle:
+            ev_a.set()
+            return await fut_a
+        ev_b.set()
+        return await fut_b
+
+    hitl = MagicMock()
+    hitl.request_approval = AsyncMock(side_effect=_request_approval)
+    dispatcher = _dispatcher_con_servicio(HitlGateMiddleware(hitl_guard=hitl), servicio)
+
+    # B ("mod.ESP") pide primero; A ("Mod.esp") entra después y sobrescribiría _mostrados[casefold] si compartieran clave.
+    tarea_b = asyncio.create_task(dispatcher.dispatch("admitir_plugin_nativo", {"plugin": "mod.ESP"}))
+    await asyncio.wait_for(ev_b.wait(), timeout=2.0)
+    tarea_a = asyncio.create_task(dispatcher.dispatch("admitir_plugin_nativo", {"plugin": "Mod.esp"}))
+    await asyncio.wait_for(ev_a.wait(), timeout=2.0)
+
+    fut_a.set_result(decision_a)
+    res_a = await asyncio.wait_for(tarea_a, timeout=2.0)
+    fut_b.set_result(Decision.APPROVED)
+    res_b = await asyncio.wait_for(tarea_b, timeout=2.0)
+
+    assert res_a["status"] == "error"
+    assert res_b["success"] is True
+    assert registrados == [("mod.ESP", ctx_b)]
+
+
+async def test_gui_cancelacion_durante_espera_no_copia_ni_fuga_contexto_a_otra() -> None:
+    ctx_a = ContextoAdmision(pathlib.Path("C:/MO2/A"), "PerfilA")
+    ctx_b = ContextoAdmision(pathlib.Path("C:/MO2/B"), "PerfilB")
+    servicio = _servicio()
+    servicio.contexto_de_admision = MagicMock(side_effect=[ctx_b, ctx_a])
+    registrados: list[tuple[str, object]] = []
+
+    async def _admitir_mock(plugin: str, *, contexto: ContextoAdmision | None = None) -> dict:
+        registrados.append((plugin, contexto))
+        return {"success": True, "message": "", "admission_id": "adm-1", "clausura": [plugin]}
+
+    servicio.admitir = AsyncMock(side_effect=_admitir_mock)
+
+    loop = asyncio.get_running_loop()
+    fut_a: asyncio.Future[Decision] = loop.create_future()
+    fut_b: asyncio.Future[Decision] = loop.create_future()
+    ev_a, ev_b = asyncio.Event(), asyncio.Event()
+
+    async def _request_approval(**kw: object) -> Decision:
+        detalle = str(kw.get("detail", ""))
+        if "Mod.esp" in detalle:
+            ev_a.set()
+            return await fut_a
+        ev_b.set()
+        return await fut_b
+
+    hitl = MagicMock()
+    hitl.request_approval = AsyncMock(side_effect=_request_approval)
+    dispatcher = _dispatcher_con_servicio(HitlGateMiddleware(hitl_guard=hitl), servicio)
+
+    # B ("mod.ESP") entra primero; A ("Mod.esp") se cancela después (y no puede pisar ni vaciar el contexto de B).
+    tarea_b = asyncio.create_task(dispatcher.dispatch("admitir_plugin_nativo", {"plugin": "mod.ESP"}))
+    await asyncio.wait_for(ev_b.wait(), timeout=2.0)
+    tarea_a = asyncio.create_task(dispatcher.dispatch("admitir_plugin_nativo", {"plugin": "Mod.esp"}))
+    await asyncio.wait_for(ev_a.wait(), timeout=2.0)
+
+    tarea_a.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea_a, timeout=2.0)
+
+    fut_b.set_result(Decision.APPROVED)
+    res_b = await asyncio.wait_for(tarea_b, timeout=2.0)
+    assert res_b["success"] is True
+    assert registrados == [("mod.ESP", ctx_b)]
+
+
+async def test_gui_cambio_de_contexto_despues_de_aprobar_rechaza_y_no_copia(tmp_path: pathlib.Path) -> None:
+    from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
+
+    from .test_xedit_bridge_service import _Resolver
+    from .test_xedit_bridge_service import _servicio as _servicio_real
+
+    servicio_real, raiz = _servicio_real(tmp_path, "admitido", mo2=pathlib.Path("C:/MO2/A"), perfil="PerfilA")
+    assert isinstance(servicio_real, XEditBridgeService)
+
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[Decision] = loop.create_future()
+    en_espera = asyncio.Event()
+
+    async def _request_approval(**_k: object) -> Decision:
+        en_espera.set()
+        return await fut
+
+    hitl = MagicMock()
+    hitl.request_approval = AsyncMock(side_effect=_request_approval)
+    dispatcher = _dispatcher_con_servicio(HitlGateMiddleware(hitl_guard=hitl), servicio_real)
+
+    tarea = asyncio.create_task(dispatcher.dispatch("admitir_plugin_nativo", {"plugin": "Mod.esp"}))
+    await en_espera.wait()
+    # Muta el perfil activo DESPUÉS de mostrar el pedido y ANTES de aprobar.
+    assert isinstance(servicio_real._rutas, _Resolver)
+    servicio_real._rutas.perfil = "PerfilB"
+    fut.set_result(Decision.APPROVED)
+    resultado = await tarea
+
+    assert resultado["success"] is False and "cambió" in resultado["message"]
+    assert not (raiz / "admit_args.json").exists()
+
+
+async def test_gui_ausencia_de_contexto_rechaza_sin_copiar() -> None:
+    servicio = _servicio()
+    estrategia = AdmitirPluginNativoStrategy(service=servicio)
+    resultado = await estrategia.execute({"plugin": "Mod.esp"})
+    assert resultado["success"] is False
+    servicio.admitir.assert_not_awaited()
+
+
+async def test_gui_unattended_sin_aprobacion_tampoco_copia() -> None:
+    servicio = _servicio()
+    dispatcher = _dispatcher_con_servicio(HitlGateMiddleware(allow_unattended=True), servicio)
+    resultado = await dispatcher.dispatch("admitir_plugin_nativo", {"plugin": "Mod.esp"})
+    assert resultado["success"] is False
+    servicio.admitir.assert_not_awaited()
