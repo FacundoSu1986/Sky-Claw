@@ -46,6 +46,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from sky_claw.local.mo2.bridge_bundle import digest_del_bundle_del_producto
 from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import (
     PROTOCOL_VERSION,
     BridgeCommandError,
@@ -308,6 +309,7 @@ async def _observar_al_worker_ante_la_confirmacion_de_supervision(
                 "role": "bridge",
                 "instance_id": "portable-main",
                 "session_id": descriptor["session_id"],
+                "bundle_digest": digest_del_bundle_del_producto(),
             },
             secreto,
         )

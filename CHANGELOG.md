@@ -223,6 +223,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 
 ### Fixed
+- **El broker rechaza un MO2 bridge cuyo bundle no es el de esta versión de Sky-Claw (B-1, H-5).** `PROTOCOL_VERSION` no cambió con #856, #860 ni #877, así que un plugin
+  instalado antes de esos fixes seguía conectándose con el bug vivo y sin aviso. Ahora el `hello` del bridge declara el SHA-256 de TODO su bundle (`bundle_digest` en `protocol.py`:
+  rutas relativas y contenido de cada archivo, sin `__pycache__`, bytecode ni la `bridge_config.json` por instancia; un enlace dentro del bundle es un error) y el broker lo compara con el de
+  su propio producto (`bridge_bundle.digest_del_bundle_del_producto`, la misma fuente que usa el instalador). Un bridge sin digest o con otro se rechaza con la instrucción de reinstalar
+  (`--mode install-vfs-bridge`) y reabrir MO2, y ese motivo se agrega al error de `wait_until_ready` en vez de un «no se conectó» sin causa.
+  - El plugin calcula el digest **una vez, al cargar**: tras un reinstall con MO2 abierto, recalcularlo en cada `hello` afirmaría el digest del código nuevo sobre el viejo en ejecución.
+  - El instalador registra `bundle_digest` en `bridge_config.json` y verifica que la copia en staging coincida con la fuente antes de hacer el swap; si no, aborta sin tocar la instalación previa.
+  - `PROTOCOL_VERSION` no cambia: el digest distingue versiones del plugin; la versión del protocolo sigue siendo solo la del formato de los mensajes.
+  - **Actualización coordinada:** un bridge ya instalado deja de conectarse hasta reinstalarlo con la versión que corresponde a este Sky-Claw (la razón queda en el log del broker y en el error de espera).
+  - **Tests:** `tests/test_mo2_bridge_identidad_del_bundle.py`; el ancla enumera todos los archivos del bundle real (uno nuevo entra solo) y el único literal de `hello` del bridge debe declarar el digest. **No verificado:** el smoke en un MO2 real (instalar, alterar un archivo, ver el rechazo, reinstalar y reabrir).
+  - **Fuera de este cambio, con nombre:** la tarjeta de estado de la GUI que muestre la identidad (H-17) va con P-3c.
 - **El razonamiento `<thought>`/`<think>` del modelo ya no llega al usuario en ninguna superficie (#918).**
   El `SYSTEM_PROMPT` pide ese bloque «oculto al usuario», pero nada lo ocultaba: Telegram lo rechazaba como HTML
   inválido («error interno») y la GUI, la web, el CLI y el WS lo mostraban crudo. `LLMRouter.chat` aplica ahora
