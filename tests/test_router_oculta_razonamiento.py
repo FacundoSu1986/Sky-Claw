@@ -12,15 +12,17 @@ enumera los ``return`` de ``chat()`` para que una tercera ruta no devuelva texto
 from __future__ import annotations
 
 import ast
+import json
 import pathlib
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 
 from sky_claw.app.agent import router as router_mod
 from sky_claw.app.agent.providers import AnthropicProvider
+from sky_claw.app.agent.reasoning_filter import MENSAJE_SIN_RESPUESTA
 from sky_claw.app.agent.router import LLMRouter
 from sky_claw.app.agent.tools import AsyncToolRegistry
 from sky_claw.app.db.async_registry import AsyncModRegistry
@@ -57,7 +59,13 @@ def herramientas(registro: AsyncModRegistry, tmp_path: pathlib.Path) -> AsyncToo
     return AsyncToolRegistry(registry=registro, mo2=mo2, sync_engine=engine)
 
 
-async def _router(herramientas: AsyncToolRegistry, tmp_path: pathlib.Path, *, xml: bool) -> LLMRouter:
+async def _router(
+    herramientas: AsyncToolRegistry,
+    tmp_path: pathlib.Path,
+    *,
+    xml: bool,
+    respuestas: tuple[str, ...] = (_RESPUESTA_CRUDA,),
+) -> LLMRouter:
     r = LLMRouter(
         provider=AnthropicProvider("test-key"),
         tool_registry=herramientas,
@@ -78,8 +86,12 @@ async def _router(herramientas: AsyncToolRegistry, tmp_path: pathlib.Path, *, xm
         }
     )
 
+    pendientes = list(respuestas)
+
     async def _chat_falso(**_kwargs: Any) -> dict[str, Any]:
-        return {"stop_reason": "end_turn", "content": [{"type": "text", "text": _RESPUESTA_CRUDA}]}
+        # Cada llamada consume una respuesta; la última se repite si el router pide más turnos.
+        texto = pendientes.pop(0) if len(pendientes) > 1 else pendientes[0]
+        return {"stop_reason": "end_turn", "content": [{"type": "text", "text": texto}]}
 
     r._provider.chat = _chat_falso  # type: ignore[method-assign]
     return r
@@ -125,8 +137,76 @@ class TestElRouterOcultaElRazonamiento:
         guardrail.after_model_callback.assert_awaited_once_with(_RESPUESTA_CRUDA)
 
 
+_LLAMADA_OCULTA = (
+    '<thought>Voy a considerar esta operación:\n<tool_call>{"name": "search_mod", "arguments": {"query": "SKSE"}}'
+    "</tool_call>\n</thought>"
+)
+_LLAMADA_REAL = '<tool_call>{"name": "search_mod", "arguments": {"query": "Frostfall"}}</tool_call>'
+
+
+class TestLasLlamadasAHerramientasOcultasNoSeEjecutan:
+    """El parser XML solo ve el texto visible: lo que el modelo «pensó» no es una orden (fail-closed)."""
+
+    async def _correr(
+        self, herramientas: AsyncToolRegistry, tmp_path: pathlib.Path, respuestas: tuple[str, ...]
+    ) -> tuple[str, AsyncMock]:
+        router = await _router(herramientas, tmp_path, xml=True, respuestas=respuestas)
+        try:
+            with patch.object(router._tools, "execute", new_callable=AsyncMock) as ejecutar:
+                ejecutar.return_value = json.dumps({"success": True, "message": ""})
+                respuesta = await router.chat(
+                    "hola", MagicMock(spec=aiohttp.ClientSession), chat_id="razon-herramienta"
+                )
+        finally:
+            await router.close()
+        return respuesta, ejecutar
+
+    async def test_una_llamada_escrita_solo_dentro_del_razonamiento_no_se_ejecuta(
+        self, herramientas: AsyncToolRegistry, tmp_path: pathlib.Path
+    ) -> None:
+        respuesta, ejecutar = await self._correr(herramientas, tmp_path, (_LLAMADA_OCULTA + "\nRespuesta",))
+
+        ejecutar.assert_not_awaited()
+        assert respuesta == "Respuesta"
+
+    async def test_si_toda_la_respuesta_era_razonamiento_con_una_llamada_no_se_ejecuta_y_hay_aviso_neutro(
+        self, herramientas: AsyncToolRegistry, tmp_path: pathlib.Path
+    ) -> None:
+        respuesta, ejecutar = await self._correr(herramientas, tmp_path, (_LLAMADA_OCULTA,))
+
+        ejecutar.assert_not_awaited()
+        assert respuesta == MENSAJE_SIN_RESPUESTA
+
+    async def test_una_llamada_visible_se_ejecuta_y_la_oculta_de_al_lado_no(
+        self, herramientas: AsyncToolRegistry, tmp_path: pathlib.Path
+    ) -> None:
+        """No se sobre-bloquea: la herramienta que el modelo pidió a la vista sigue corriendo, una sola vez."""
+        respuesta, ejecutar = await self._correr(
+            herramientas, tmp_path, (_LLAMADA_OCULTA + "\n" + _LLAMADA_REAL, "Listo")
+        )
+
+        ejecutar.assert_awaited_once()
+        assert "Frostfall" in json.dumps(ejecutar.await_args.args) + json.dumps(ejecutar.await_args.kwargs, default=str)
+        assert "SKSE" not in json.dumps(ejecutar.await_args.args) + json.dumps(ejecutar.await_args.kwargs, default=str)
+        assert respuesta == "Listo"
+
+
 class TestAnclaDeRetornosDeChat:
-    """Enumera los ``return`` de ``LLMRouter.chat``: ninguno devuelve texto del modelo sin filtrar."""
+    """Enumera TODO ``return`` de ``LLMRouter.chat``: o es un literal de aviso, o es una expresión congelada.
+
+    Una expresión nueva (una variable, un f-string, una llamada) rompe el test hasta que alguien decide si
+    puede llevar texto del modelo y, si puede, la pasa por ``ocultar_razonamiento``.
+    """
+
+    #: Únicas expresiones no literales que ``chat()`` devuelve. Las dos primeras son el texto del modelo, ya
+    #: filtrado (ruta nativa y ruta XML); ``loop_response`` es la respuesta fija del corte de bucle de herramientas.
+    EXPRESIONES_CONGELADAS = frozenset(
+        {
+            "ocultar_razonamiento(final_text)",
+            "ocultar_razonamiento(full_text)",
+            "loop_response",
+        }
+    )
 
     @staticmethod
     def _retornos_de_chat() -> list[ast.Return]:
@@ -135,22 +215,19 @@ class TestAnclaDeRetornosDeChat:
         chat = next(n for n in clase.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "chat")
         return [n for n in ast.walk(chat) if isinstance(n, ast.Return) and n.value is not None]
 
-    def test_ningun_return_de_chat_devuelve_el_texto_del_modelo_crudo(self) -> None:
-        crudos = [
-            n.lineno
+    def test_todo_return_de_chat_es_un_literal_o_una_expresion_congelada(self) -> None:
+        no_permitidos = [
+            f"línea {n.lineno}: {ast.unparse(n.value)}"
             for n in self._retornos_de_chat()
-            if isinstance(n.value, ast.Name) and n.value.id in {"final_text", "full_text"}
+            if not (isinstance(n.value, ast.Constant) and isinstance(n.value.value, str))
+            and ast.unparse(n.value) not in self.EXPRESIONES_CONGELADAS
         ]
-        assert crudos == [], f"chat() devuelve texto del modelo sin ocultar_razonamiento en las líneas {crudos}"
+        assert no_permitidos == []
 
-    def test_las_rutas_que_devuelven_texto_del_modelo_pasan_por_el_filtro(self) -> None:
-        filtrados = [
-            n
+    def test_las_dos_rutas_del_texto_del_modelo_pasan_por_el_filtro(self) -> None:
+        filtrados = sorted(
+            ast.unparse(n.value)
             for n in self._retornos_de_chat()
-            if isinstance(n.value, ast.Call)
-            and isinstance(n.value.func, ast.Name)
-            and n.value.func.id == "ocultar_razonamiento"
-        ]
-        # Congelado por igualdad: ruta nativa + ruta XML. Una tercera ruta que devuelva
-        # texto del modelo rompe este test hasta que se la cablee (y se actualice el 2).
-        assert len(filtrados) == 2
+            if ast.unparse(n.value).startswith("ocultar_razonamiento(")
+        )
+        assert filtrados == ["ocultar_razonamiento(final_text)", "ocultar_razonamiento(full_text)"]

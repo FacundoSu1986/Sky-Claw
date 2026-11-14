@@ -13,7 +13,11 @@ import pathlib
 
 import pytest
 
-from sky_claw.app.agent.reasoning_filter import ocultar_razonamiento
+from sky_claw.app.agent.reasoning_filter import (
+    MENSAJE_SIN_RESPUESTA,
+    ocultar_razonamiento,
+    quitar_bloques_de_razonamiento,
+)
 
 RAIZ_PAQUETE = pathlib.Path(__file__).resolve().parents[1] / "sky_claw"
 MODULO_DEL_FILTRO = "app/agent/reasoning_filter.py"
@@ -97,13 +101,76 @@ class TestOcultarRazonamiento:
         # El modelo se cortó razonando: lo ya dicho se conserva, el resto es razonamiento.
         assert ocultar_razonamiento("Hola <thought>razonando sin cerrar") == "Hola"
 
-    def test_si_todo_era_razonamiento_se_conserva_el_contenido_sin_etiquetas(self) -> None:
-        # Un mensaje vacío lo rechaza Telegram igual que el HTML inválido: es preferible
-        # mostrar el contenido que fabricar un «error interno» con un texto en blanco.
-        assert ocultar_razonamiento("<thought>solo esto</thought>") == "solo esto"
+    @pytest.mark.parametrize(
+        "texto",
+        [
+            "<thought>Razonamiento interno confidencial</thought>",
+            "<think>Razonamiento interno confidencial",
+            "  <THINK>Razonamiento interno confidencial</think>  \n",
+            "<thought>Razonamiento interno confidencial</thought><think>otro</think>",
+        ],
+    )
+    def test_si_todo_era_razonamiento_se_devuelve_un_aviso_neutro_y_nunca_ese_contenido(self, texto: str) -> None:
+        # Un mensaje vacío lo rechaza Telegram igual que el HTML inválido, pero el contenido
+        # del razonamiento es justo lo que se prometió ocultar: el filtro falla cerrado.
+        resultado = ocultar_razonamiento(texto)
 
-    def test_si_todo_era_una_apertura_sin_cierre_se_conserva_el_contenido(self) -> None:
-        assert ocultar_razonamiento("<thought>solo esto") == "solo esto"
+        assert resultado == MENSAJE_SIN_RESPUESTA
+        assert "confidencial" not in resultado
+        assert "otro" not in resultado
+
+    @pytest.mark.parametrize(
+        ("texto", "esperado"),
+        [
+            # Un cierre de OTRO tipo no cierra el bloque abierto: lo que sigue sigue oculto.
+            ("<thought>SECRETO1</think>SECRETO2</thought>Respuesta", "Respuesta"),
+            ("<think>SECRETO1</thought>SECRETO2</think>Respuesta", "Respuesta"),
+            # Tipos distintos anidados: cada cierre empareja con su apertura.
+            ("<thought>a<think>SECRETO</think>c</thought>Respuesta", "Respuesta"),
+            ("<think>a<thought>SECRETO</thought>c</think>Respuesta", "Respuesta"),
+            ("<thought>a</think></think>SECRETO</thought>Respuesta", "Respuesta"),
+        ],
+    )
+    def test_un_cierre_que_no_corresponde_no_cierra_el_bloque_ni_expone_su_contenido(
+        self, texto: str, esperado: str
+    ) -> None:
+        resultado = ocultar_razonamiento(texto)
+
+        assert resultado == esperado
+        assert "SECRETO" not in resultado
+
+    def test_si_el_cierre_que_no_corresponde_deja_todo_oculto_el_resultado_es_el_aviso_neutro(self) -> None:
+        resultado = ocultar_razonamiento("<think>SECRETO1</thought>SECRETO2")
+
+        assert resultado == MENSAJE_SIN_RESPUESTA
+
+    def test_las_etiquetas_dentro_de_codigo_markdown_tambien_se_ocultan(self) -> None:
+        """Decisión documentada: el filtro NO respeta los backticks.
+
+        Respetarlos abriría un bypass: bastaría envolver el razonamiento en un span de código para
+        mostrarlo. El costo es que un ejemplo literal de estas etiquetas en una explicación técnica
+        pierde su contenido; el SYSTEM_PROMPT ya reserva ``<thought>`` para el razonamiento.
+        """
+        resultado = ocultar_razonamiento("Ejemplo: `<think>texto</think>`")
+
+        assert "texto" not in resultado
+
+
+class TestQuitarBloquesDeRazonamiento:
+    """Variante sin aviso: es la que ve el parser de llamadas a herramientas (XML)."""
+
+    def test_devuelve_cadena_vacia_si_todo_era_razonamiento(self) -> None:
+        assert quitar_bloques_de_razonamiento("<thought>solo esto</thought>") == ""
+
+    def test_quita_las_llamadas_a_herramientas_escritas_dentro_del_razonamiento(self) -> None:
+        texto = '<thought>\n<tool_call>{"name": "tool_x", "arguments": {}}</tool_call>\n</thought>\nListo'
+
+        assert quitar_bloques_de_razonamiento(texto) == "Listo"
+
+    def test_deja_intacto_lo_que_no_es_razonamiento(self) -> None:
+        texto = '<tool_call>{"name": "tool_x", "arguments": {}}</tool_call>'
+
+        assert quitar_bloques_de_razonamiento(texto) == texto
 
     def test_un_caracter_que_cambia_de_largo_al_minusculizar_no_corrompe_el_corte(self) -> None:
         # ``"İ".lower()`` mide 2 caracteres: buscar índices en una copia en minúsculas
