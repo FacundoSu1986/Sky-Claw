@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import pathlib
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -449,7 +450,11 @@ async def test_la_autoaprobacion_de_descargas_no_loguea_la_url_completa(caplog: 
         await notify(SimpleNamespace(request_id="d9", category="download", reason="", detail="", url=url))
 
     texto = caplog.text
-    assert "cdn.ejemplo.org" in texto and "d9" in texto
+    # El host se extrae del log y se COMPARA por igualdad: un ``"host" in texto`` sobre un
+    # literal con forma de dominio es el patrón de «sanitización de URL por subcadena».
+    coincidencia = re.search(r"download (\S+) .* host=(\S+)", texto)
+    assert coincidencia is not None, texto
+    assert coincidencia.groups() == ("d9", "cdn.ejemplo.org")
     for secreto in ("CLAVE-SECRETA", "TOKEN-SECRETO", "ruta/privada", "usuario"):
         assert secreto not in texto, f"el log filtró {secreto!r}"
 
