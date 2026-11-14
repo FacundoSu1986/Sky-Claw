@@ -1555,7 +1555,13 @@ class VfsExecutionBroker:
         try:
             esperado = self._expected_bundle_digest or digest_del_bundle_del_producto()
         except (OSError, ValueError) as exc:
-            self._bridge_rechazado = f"no se pudo calcular la identidad del bundle de este Sky-Claw ({exc})"
+            # El detalle (rutas de la instalación incluidas) va al log del operador; el mensaje que viaja hacia
+            # ``wait_until_ready`` y hacia quien consulta el estado es genérico: no filtra la estructura del disco.
+            logger.warning("no se pudo calcular la identidad del bundle del bridge de este Sky-Claw", exc_info=True)
+            self._bridge_rechazado = (
+                "no se pudo calcular la identidad del bundle de este Sky-Claw: revisá el log del broker "
+                "(la instalación de Sky-Claw puede estar incompleta; reinstalá Sky-Claw y luego el bridge)"
+            )
             raise VfsBrokerError(self._bridge_rechazado) from exc
         if not isinstance(declarado, str) or not declarado:
             self._bridge_rechazado = (

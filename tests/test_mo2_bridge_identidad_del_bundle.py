@@ -388,3 +388,36 @@ def test_el_instalador_rechaza_una_fuente_con_enlaces_y_no_toca_la_instalacion(t
         instalador.install(**argumentos)  # type: ignore[arg-type]
 
     assert not (argumentos["mo2_root"] / "plugins" / "skyclaw_bridge").exists()  # type: ignore[operator]
+
+
+# ------------------------------------------ el error del producto no filtra rutas al operador (PR-Agent, #934)
+
+
+async def test_si_no_se_puede_calcular_el_digest_del_producto_el_operador_no_ve_la_excepcion_ni_rutas(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """El detalle del ``OSError`` (con rutas de la instalación) va al log; al operador solo un mensaje genérico."""
+    import logging
+
+    from sky_claw.local.mo2 import vfs_broker
+
+    def digest_que_falla() -> str:
+        raise OSError("Permission denied: C:/Users/secreto/Sky-Claw/plugin_bundle/skyclaw_bridge/protocol.py")
+
+    monkeypatch.setattr(vfs_broker, "digest_del_bundle_del_producto", digest_que_falla)
+    broker = _broker(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger=vfs_broker.logger.name), pytest.raises(VfsBrokerError) as error:
+        broker._validate_hello(_hello_de_bridge(broker))
+
+    mensaje = str(error.value)
+    assert "secreto" not in mensaje and "Permission denied" not in mensaje and "protocol.py" not in mensaje
+    assert "log" in mensaje  # le dice dónde mirar
+    assert "secreto" not in str(broker._bridge_rechazado)
+    with pytest.raises(VfsBrokerError) as espera:
+        await broker.wait_until_ready(timeout=0.01)
+    assert "secreto" not in str(espera.value) and "Permission denied" not in str(espera.value)
+    # el detalle completo, con su traza, queda en el log del operador
+    registros = [r for r in caplog.records if "identidad del bundle" in r.getMessage()]
+    assert registros and registros[0].exc_info is not None
+    assert "secreto" in str(registros[0].exc_info[1])
