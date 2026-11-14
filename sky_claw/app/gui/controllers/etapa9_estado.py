@@ -32,16 +32,15 @@ def leer_estado_de_la_etapa9(
     supervisor: object | None,
     consultar_cuarentena: Callable[[], dict[str, Any] | None] | None,
     ahora: float,
-    en_curso: bool,
 ) -> EstadoDeLaEtapa9:
     """Lee progreso y cuarentena. Best-effort: ninguna falla de lectura rompe el panel (se loguea y se omite).
 
-    El progreso solo se atribuye con una corrida EN CURSO (``en_curso`` es el single-flight de la GUI): sin ella el
-    snapshot del servicio sería el rastro de algo que ya terminó. La cuarentena se informa SIEMPRE, también sin corrida:
-    es de la instancia, no de la corrida.
+    El progreso lo decide el CICLO DE VIDA DEL SERVICIO, común a toda superficie: ``progreso_actual`` se descarta al
+    iniciar y al terminar cada corrida, así que una muestra presente es de una corrida en curso, la haya lanzado la GUI o
+    el agente (Telegram, ``/api/chat``). Por eso NO se condiciona al single-flight de la GUI, que no ve lo remoto; la edad
+    de la muestra queda a la vista. La cuarentena se informa SIEMPRE, también sin corrida: es de la instancia.
     """
-    progreso = _progreso(supervisor, ahora) if en_curso else None
-    return EstadoDeLaEtapa9(progreso=progreso, cuarentena=_cuarentena(consultar_cuarentena))
+    return EstadoDeLaEtapa9(progreso=_progreso(supervisor, ahora), cuarentena=_cuarentena(consultar_cuarentena))
 
 
 def _progreso(supervisor: object | None, ahora: float) -> dict[str, Any] | None:

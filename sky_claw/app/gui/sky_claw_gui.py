@@ -43,7 +43,6 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_DIAGNOSTICO_PARALLAX,
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
-    STORE_KEY_RITUAL_IN_FLIGHT,
     STORE_KEY_RITUAL_PREFLIGHT,
     payload_de_generar,
     resolve_pending_hitl_request,
@@ -751,7 +750,6 @@ def main_page() -> None:
         supervisor=runtime.supervisor,
         consultar_cuarentena=getattr(runtime.app_context, "estado_de_cuarentena_vfs", None),
         ahora=time.time(),
-        en_curso=bool(get_store().get(STORE_KEY_RITUAL_IN_FLIGHT)),
     )
 
     # F-001 (post-D2) / ADR 0016 §6: el botón de continuación del toast de

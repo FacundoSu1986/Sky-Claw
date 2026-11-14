@@ -95,7 +95,7 @@ def test_la_gui_y_el_agente_cuentan_el_mismo_progreso() -> None:
 
     del_agente = gestor.estado()["progreso"]
     de_la_gui = leer_estado_de_la_etapa9(
-        supervisor=_supervisor(servicio), consultar_cuarentena=None, ahora=time.time(), en_curso=True
+        supervisor=_supervisor(servicio), consultar_cuarentena=None, ahora=time.time()
     ).progreso
 
     assert de_la_gui is not None
@@ -110,7 +110,7 @@ def test_la_gui_y_el_agente_cuentan_el_mismo_progreso() -> None:
 
 def test_con_la_etapa_en_curso_y_una_muestra_la_gui_ve_el_progreso() -> None:
     estado = leer_estado_de_la_etapa9(
-        supervisor=_supervisor(_servicio(_muestra())), consultar_cuarentena=None, ahora=AHORA, en_curso=True
+        supervisor=_supervisor(_servicio(_muestra())), consultar_cuarentena=None, ahora=AHORA
     )
 
     assert isinstance(estado, EstadoDeLaEtapa9)
@@ -118,12 +118,36 @@ def test_con_la_etapa_en_curso_y_una_muestra_la_gui_ve_el_progreso() -> None:
     assert estado.cuarentena is None
 
 
-def test_sin_corrida_en_curso_no_se_atribuye_un_snapshot_viejo() -> None:
+def test_el_progreso_se_ve_con_una_corrida_lanzada_por_cualquier_superficie() -> None:
+    """Una corrida remota (Telegram, ``/api/chat``) no pasa por el single-flight de la GUI y igual se ve.
+
+    El servicio descarta la muestra al iniciar y al terminar cada corrida (``progreso_actual`` es «de la corrida EN CURSO»),
+    así que su ciclo de vida es la fuente común. Condicionarla a un flag de la GUI hacía invisible lo que lanza el agente.
+    """
     estado = leer_estado_de_la_etapa9(
-        supervisor=_supervisor(_servicio(_muestra())), consultar_cuarentena=None, ahora=AHORA, en_curso=False
+        supervisor=_supervisor(_servicio(_muestra())), consultar_cuarentena=None, ahora=AHORA
     )
 
-    assert estado.progreso is None
+    assert estado.progreso is not None
+
+
+def test_la_lectura_no_depende_del_single_flight_de_la_gui() -> None:
+    """Ancla por AST: ni el seam ni el callback de la GUI consultan ``STORE_KEY_RITUAL_IN_FLIGHT``."""
+    seam = ast.dump(_arbol(RAIZ / "sky_claw" / "app" / "gui" / "controllers" / "etapa9_estado.py"))
+    gui = _arbol(RAIZ / "sky_claw" / "app" / "gui" / "sky_claw_gui.py")
+    callbacks = [
+        n
+        for n in ast.walk(gui)
+        if isinstance(n, ast.Assign)
+        and any(
+            isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant) and t.slice.value == "on_etapa9_estado"
+            for t in n.targets
+        )
+    ]
+
+    assert len(callbacks) == 1
+    assert "IN_FLIGHT" not in seam and "en_curso" not in seam
+    assert "IN_FLIGHT" not in ast.dump(callbacks[0]) and "en_curso" not in ast.dump(callbacks[0])
 
 
 @pytest.mark.parametrize(
@@ -137,7 +161,7 @@ def test_sin_corrida_en_curso_no_se_atribuye_un_snapshot_viejo() -> None:
     ids=["sin_supervisor", "sin_servicio", "servicio_sin_atributo", "sin_muestra"],
 )
 def test_sin_de_donde_leer_el_progreso_la_lectura_responde_igual_y_sin_progreso(supervisor: object) -> None:
-    estado = leer_estado_de_la_etapa9(supervisor=supervisor, consultar_cuarentena=None, ahora=AHORA, en_curso=True)
+    estado = leer_estado_de_la_etapa9(supervisor=supervisor, consultar_cuarentena=None, ahora=AHORA)
 
     assert estado.progreso is None
 
@@ -149,9 +173,7 @@ def test_un_servicio_que_falla_al_leer_el_progreso_no_rompe_la_gui(caplog: pytes
             raise RuntimeError("se cayó")
 
     with caplog.at_level(logging.WARNING):
-        estado = leer_estado_de_la_etapa9(
-            supervisor=_supervisor(_Roto()), consultar_cuarentena=None, ahora=AHORA, en_curso=True
-        )
+        estado = leer_estado_de_la_etapa9(supervisor=_supervisor(_Roto()), consultar_cuarentena=None, ahora=AHORA)
 
     assert estado.progreso is None
     assert any("progreso" in r.getMessage() for r in caplog.records)
@@ -159,16 +181,14 @@ def test_un_servicio_que_falla_al_leer_el_progreso_no_rompe_la_gui(caplog: pytes
 
 def test_la_cuarentena_se_informa_aunque_no_haya_corrida_en_curso() -> None:
     estado = leer_estado_de_la_etapa9(
-        supervisor=_supervisor(None), consultar_cuarentena=lambda: dict(_CUARENTENA), ahora=AHORA, en_curso=False
+        supervisor=_supervisor(None), consultar_cuarentena=lambda: dict(_CUARENTENA), ahora=AHORA
     )
 
     assert estado.cuarentena == _CUARENTENA
 
 
 def test_sin_cuarentena_no_se_informa_nada() -> None:
-    estado = leer_estado_de_la_etapa9(
-        supervisor=_supervisor(None), consultar_cuarentena=lambda: None, ahora=AHORA, en_curso=False
-    )
+    estado = leer_estado_de_la_etapa9(supervisor=_supervisor(None), consultar_cuarentena=lambda: None, ahora=AHORA)
 
     assert estado.cuarentena is None
 
@@ -178,9 +198,7 @@ def test_una_consulta_de_cuarentena_que_falla_no_rompe_la_gui(caplog: pytest.Log
         raise OSError("sin acceso")
 
     with caplog.at_level(logging.WARNING):
-        estado = leer_estado_de_la_etapa9(
-            supervisor=_supervisor(None), consultar_cuarentena=consulta_rota, ahora=AHORA, en_curso=False
-        )
+        estado = leer_estado_de_la_etapa9(supervisor=_supervisor(None), consultar_cuarentena=consulta_rota, ahora=AHORA)
 
     assert estado.cuarentena is None
     assert any("cuarentena" in r.getMessage() for r in caplog.records)
