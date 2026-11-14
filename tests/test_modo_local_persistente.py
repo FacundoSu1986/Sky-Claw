@@ -221,11 +221,17 @@ def test_el_censo_de_categorias_del_puente_esta_completo() -> None:
     notify = next(n for n in ast.walk(arbol) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_notify")
     comparadas: set[str] = set()
     for nodo in ast.walk(notify):
-        if not (isinstance(nodo, ast.Compare) and isinstance(nodo.left, ast.Name) and nodo.left.id == "category"):
+        if not isinstance(nodo, ast.Compare):
             continue
-        for comparador in nodo.comparators:
-            elementos = comparador.elts if isinstance(comparador, ast.Tuple) else [comparador]
-            for elemento in elementos:
+        # Los dos lados: ``category == "x"`` y ``"x" == category`` son la misma
+        # comparación, y sólo mirar el izquierdo dejaría pasar la segunda en verde.
+        operandos = [nodo.left, *nodo.comparators]
+        if not any(isinstance(o, ast.Name) and o.id == "category" for o in operandos):
+            continue
+        for operando in operandos:
+            for elemento in operando.elts if isinstance(operando, ast.Tuple) else [operando]:
+                if isinstance(elemento, ast.Name) and elemento.id == "category":
+                    continue
                 comparadas.add(elemento.value if isinstance(elemento, ast.Constant) else ast.unparse(elemento))
     assert comparadas == set(_POLITICA_POR_CATEGORIA)
 
