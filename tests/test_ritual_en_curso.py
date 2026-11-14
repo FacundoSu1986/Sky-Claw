@@ -462,6 +462,28 @@ def _es_punto_de_suspension(nodo: ast.AST) -> bool:
     return isinstance(nodo, comprension) and any(g.is_async for g in nodo.generators)
 
 
+def _llamada_de_toma(funcion: ast.AST) -> ast.Call:
+    return next(
+        n
+        for n in ast.walk(funcion)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_marcar_en_curso"
+    )
+
+
+def _suspensiones_entre(funcion: ast.AST, guard: ast.If, llamada: ast.Call) -> list[int]:
+    """Líneas de los puntos de suspensión que corren ANTES de que la toma tenga efecto.
+
+    Es el tramo ``[guard, llamada)`` MÁS la propia llamada: Python evalúa los argumentos antes de
+    ejecutarla, así que ``_marcar_en_curso(store, k, await f())`` cede el loop antes de tomar el
+    single-flight aunque el ``await`` comparta línea con la llamada (el filtro por línea solo lo perdía).
+    """
+    en_el_tramo = {
+        id(n) for n in ast.walk(funcion) if hasattr(n, "lineno") and guard.lineno <= n.lineno < llamada.lineno
+    }
+    en_el_tramo |= {id(n) for n in ast.walk(llamada)}
+    return sorted(n.lineno for n in ast.walk(funcion) if _es_punto_de_suspension(n) and id(n) in en_el_tramo)
+
+
 def test_no_hay_punto_de_suspension_entre_el_guard_y_la_toma_del_single_flight() -> None:
     """Ancla por AST: entre ``if store.get(STORE_KEY_RITUAL_IN_FLIGHT)`` y ``_marcar_en_curso`` no se cede el loop.
 
@@ -487,36 +509,37 @@ def test_no_hay_punto_de_suspension_entre_el_guard_y_la_toma_del_single_flight()
             and any(isinstance(c, ast.Name) and c.id == "STORE_KEY_RITUAL_IN_FLIGHT" for c in ast.walk(n.test))
         ]
         assert len(guards) == 1, f"{funcion.name} debe tener UN guard del single-flight"
-        marca = next(
-            n.lineno
-            for n in ast.walk(funcion)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_marcar_en_curso"
-        )
-        assert guards[0].lineno < marca, f"{funcion.name}: el guard debe ir ANTES de tomar el single-flight"
-        suspensiones = [
-            n.lineno for n in ast.walk(funcion) if _es_punto_de_suspension(n) and guards[0].lineno <= n.lineno < marca
-        ]
+        llamada = _llamada_de_toma(funcion)
+        assert guards[0].lineno < llamada.lineno, f"{funcion.name}: el guard debe ir ANTES de tomar el single-flight"
+        suspensiones = _suspensiones_entre(funcion, guards[0], llamada)
         assert suspensiones == [], (
             f"{funcion.name}: punto(s) de suspensión entre el guard y la toma del single-flight "
             f"(líneas {suspensiones}): abre una ventana TOCTOU"
         )
 
 
-def test_el_anclaje_detecta_un_await_metido_entre_el_guard_y_la_toma() -> None:
-    """El ancla no es vacua: sobre una función con el ``await`` en ese tramo, la misma consulta lo encuentra."""
-    fuente = (
-        "async def lanzador(store):\n"
-        "    if store.get(STORE_KEY_RITUAL_IN_FLIGHT):\n"
-        "        return\n"
-        "    await algo()\n"
-        "    _marcar_en_curso(store, 'x', 'y')\n"
-    )
-    funcion = ast.parse(fuente).body[0]
+_CABECERA = "async def lanzador(store):\n    if store.get(STORE_KEY_RITUAL_IN_FLIGHT):\n        return\n"
+
+
+@pytest.mark.parametrize(
+    ("cuerpo", "esperadas"),
+    [
+        ("    await algo()\n    _marcar_en_curso(store, 'x', 'y')\n", [4]),
+        ("    async with algo():\n        pass\n    _marcar_en_curso(store, 'x', 'y')\n", [4]),
+        ("    async for _ in algo():\n        pass\n    _marcar_en_curso(store, 'x', 'y')\n", [4]),
+        ("    _ = [x async for x in algo()]\n    _marcar_en_curso(store, 'x', 'y')\n", [4]),
+        # El hueco que marcó CodeRabbit: el await vive en los ARGUMENTOS de la toma, misma línea.
+        ("    _marcar_en_curso(store, 'x', await fase())\n", [4]),
+        ("    _marcar_en_curso(\n        store,\n        'x',\n        await fase(),\n    )\n", [7]),
+        # Sin suspensión en el tramo: lo de DESPUÉS de tomar no es asunto de esta ancla.
+        ("    _marcar_en_curso(store, 'x', 'y')\n    await algo()\n", []),
+    ],
+)
+def test_el_anclaje_de_suspension_detecta_cada_forma_de_ceder_el_loop(cuerpo: str, esperadas: list[int]) -> None:
+    """El ancla no es vacua: ejercita el MISMO helper que usa el test real sobre fuentes sintéticas."""
+    funcion = ast.parse(_CABECERA + cuerpo).body[0]
     guard = next(n for n in ast.walk(funcion) if isinstance(n, ast.If))
-    marca = next(n.lineno for n in ast.walk(funcion) if isinstance(n, ast.Call) and _llama_a(n, "_marcar_en_curso"))
-    assert [n.lineno for n in ast.walk(funcion) if _es_punto_de_suspension(n) and guard.lineno <= n.lineno < marca] == [
-        4
-    ]
+    assert _suspensiones_entre(funcion, guard, _llamada_de_toma(funcion)) == esperadas
 
 
 # ── La × del aviso cierra el AVISO, no la acción obligatoria del flujo ──
