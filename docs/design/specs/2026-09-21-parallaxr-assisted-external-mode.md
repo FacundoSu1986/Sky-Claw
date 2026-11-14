@@ -46,8 +46,8 @@ El descubrimiento es determinista para un snapshot estable, no recursivo, side-e
 
 1. Se inspeccionan únicamente los directorios **hijos directos** de `mods_dir`:
    `candidate = child / "ParallaxR.BAT"`
-2. Si `candidate` es un archivo regular (`is_file()`):
-   - Se valida su contención física dentro de `mods_dir`.
+2. Si `candidate` es un archivo regular verificado de forma fail-closed (`stat()` / `lstat()`, sin ocultar errores de inspección ni entradas reparsadas rotas o cíclicas):
+   - Se valida su contención física dentro de `mods_dir` con resolución estricta (`resolve(strict=True)`).
    - Se colecta como candidato válido.
 3. Resultados posibles en `ParallaxRAssistedPreflight`:
    - 0 candidatos válidos → `status = MISSING`, `success = False`, `message` no vacío.
@@ -57,6 +57,7 @@ El descubrimiento es determinista para un snapshot estable, no recursivo, side-e
      - Con selección explícita que coincide exactamente con uno de los candidatos descubiertos → `status = READY`, `success = True`, `message = ""` para dicho candidato.
      - Con selección explícita externa o no coincidente → `status = INVALID_SELECTION`, `success = False`, `message` no vacío.
    - Mutación concurrente durante captura de evidencia → `status = EVIDENCE_UNSTABLE`, `success = False`, `message` no vacío.
+   - Error de inspección o lectura durante el descubrimiento (`mods_dir` o entradas hijas), validación física o fingerprint (`OSError`, `PermissionError`, `WinError 21`/`123`/`1921`, `ELOOP`, junctions o symlinks rotos/circulares) → `status = EVIDENCE_INCOMPLETE`, `success = False`, `message` no vacío sin exponer detalles crudos del sistema. Las funciones públicas `discover_parallaxr_candidates()` y `discover_output_markers()` elevan `ParallaxREvidenceIncompleteError` preservando los hallazgos parciales ya observados; `run_parallaxr_assisted_preflight()` captura esa excepción, conserva `candidate_mod_roots` / `existing_output_candidates` parciales y nunca declara `READY`, `AMBIGUOUS` ni `MISSING` ante evidencia incompleta.
 
 **Regla de resultado:** `success: bool` y `message: str` acompañan al enum `status`. `success == True` se cumple si y solo si `status == READY`, y en dicho caso `message == ""` canónicamente. `success == True` significa **exclusivamente** que el preflight tuvo éxito y se puede generar un handoff; **NO** significa que ParallaxR se haya ejecutado ni completado con éxito.
 
@@ -65,9 +66,10 @@ El descubrimiento es determinista para un snapshot estable, no recursivo, side-e
 ## 5. Validación de Contención de Rutas
 
 Para garantizar la seguridad y evitar escapes de ruta (symlinks maliciosos, reparse points, path traversal):
-- Se resuelven físicamente las rutas con `.resolve()`.
+- Durante el descubrimiento físico de entradas existentes (`mods_dir`, directorio mod y entrypoint/marcador), las rutas se resuelven con `.resolve(strict=True)` acotando la captura de `RuntimeError` por bucle (`"symlink loop"`) a `OSError(errno.ELOOP)` para degradar fail-closed a `EVIDENCE_INCOMPLETE`.
+- En la utilidad pública `validate_path_containment()` y al normalizar `explicit_selection` (tras un descubrimiento completo), se utiliza `.resolve(strict=False)` con la misma acotación de bucle para preservar el rechazo determinista (`INVALID_SELECTION`) de rutas seleccionadas inexistentes o irresolubles.
 - Se comprueba contención mediante `resolved_path.is_relative_to(resolved_parent)`.
-- Se valida la contención tanto de `mod_root` como de `entrypoint`.
+- Se valida la contención tanto de `mod_root` como de `entrypoint` antes de inspeccionar archivos dentro del candidato.
 - Todo enlace que resuelva fuera de `mods_dir` es rechazado de inmediato.
 
 ---
@@ -107,7 +109,7 @@ ParallaxR deposita un marcador `ParallaxROutput.tmp` en la carpeta de salida gen
 
 Función de transformación pura `prepare_parallaxr_manual_handoff(preflight)`:
 - Requiere estrictamente `preflight.status == ParallaxRAssistedStatus.READY` y `preflight.success is True`.
-- Falla cerrado ante cualquier otro estado (`MISSING`, `AMBIGUOUS`, `INVALID_SELECTION`, `EVIDENCE_UNSTABLE`).
+- Falla cerrado ante cualquier otro estado (`MISSING`, `AMBIGUOUS`, `INVALID_SELECTION`, `EVIDENCE_UNSTABLE`, `EVIDENCE_INCOMPLETE`).
 - No vuelve a abrir el archivo ni a calcular hashes; traslada fielmente la evidencia capturada por el preflight.
 - Estructura inmutable resultante:
   - `mode`: `"manual_official_entrypoint"`

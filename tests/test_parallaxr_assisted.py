@@ -887,13 +887,31 @@ def _bloqueo_exclusivo_windows(file_path: Path) -> Iterator[None]:
     """Abre file_path sin compartir lectura usando CreateFileW y garantiza cierre del handle."""
     if sys.platform != "win32":
         pytest.skip("Solo reproducible en Windows mediante CreateFileW")
+    from ctypes import wintypes
+
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
     generic_read = 0x80000000
     no_share = 0
     open_existing = 3
     file_attribute_normal = 0x80
     invalid_handle = ctypes.c_void_p(-1).value
-    handle = kernel32.CreateFileW(
+    handle = create_file(
         str(file_path),
         generic_read,
         no_share,
@@ -902,44 +920,37 @@ def _bloqueo_exclusivo_windows(file_path: Path) -> Iterator[None]:
         file_attribute_normal,
         None,
     )
-    if handle in (None, 0, invalid_handle):
+    if handle is None or handle == 0 or handle == invalid_handle:
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         yield
     finally:
-        kernel32.CloseHandle(handle)
+        if not close_handle(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
 
 
 @contextmanager
 def _arena_bucle_junctions_windows(base_dir: Path) -> Iterator[tuple[Path, Path, Path]]:
-    """Crea un par de junctions NTFS mutuamente circulares con limpieza segura via rmdir()."""
+    """Crea un par de junctions NTFS mutuamente circulares sin destino real intermedio."""
     if sys.platform != "win32":
         pytest.skip("Solo reproducible en Windows mediante _winapi.CreateJunction")
     import _winapi
 
     arena = base_dir / "loop_arena"
-    a = arena / "a"
-    b = arena / "b"
-    a.mkdir(parents=True)
-    b.mkdir(parents=True)
-    ja = a / "to_b"
-    jb = b / "to_a"
-    _winapi.CreateJunction(str(b), str(ja))
-    _winapi.CreateJunction(str(a), str(jb))
+    arena.mkdir(parents=True)
+    j1 = arena / "j1"
+    j2 = arena / "j2"
+    # Crear j2 -> dir temporal, retirar dir y apuntar j1 -> j2 produce un ciclo directo irresoluble.
+    j1.mkdir()
+    _winapi.CreateJunction(str(j1), str(j2))
+    j1.rmdir()
+    _winapi.CreateJunction(str(j2), str(j1))
     try:
-        yield arena, ja, jb
+        yield arena, j1, j2
     finally:
-        for junction in (ja, jb):
+        for junction in (j1, j2):
             with suppress(OSError):
                 junction.rmdir()
-
-
-def _ruta_salto_reparse(ja: Path, saltos: int) -> Path:
-    """Construye una ruta con `saltos` redirecciones alternadas entre ja y jb."""
-    ruta = ja
-    for indice in range(saltos - 1):
-        ruta = ruta / ("to_a" if indice % 2 == 0 else "to_b")
-    return ruta
 
 
 def test_c1_candidato_valido_y_fallo_posterior_no_devuelve_ready_ni_missing(
@@ -1347,11 +1358,14 @@ def test_windows_bucle_real_de_junctions_en_hijo_no_fabrica_unicidad(tmp_path: P
     mod_a.mkdir(parents=True)
     (mod_a / "ParallaxR.BAT").write_bytes(b"@echo mod_a")
 
-    with _arena_bucle_junctions_windows(tmp_path) as (_arena, ja, _jb):
-        deep_31 = _ruta_salto_reparse(ja, 31)
+    with _arena_bucle_junctions_windows(tmp_path) as (_arena, j1, _j2):
         mod_loop = mods_dir / "Mod_Loop"
-        _winapi.CreateJunction(str(deep_31), str(mod_loop))
+        _winapi.CreateJunction(str(j1), str(mod_loop))
         try:
+            assert mod_loop.lstat() is not None
+            with pytest.raises(OSError):
+                mod_loop.stat()
+
             with pytest.raises(ParallaxREvidenceIncompleteError) as exc_info:
                 discover_parallaxr_candidates(mods_dir)
             assert (mod_a / "ParallaxR.BAT").resolve() in exc_info.value.partial_candidates
@@ -1374,16 +1388,18 @@ def test_windows_bucle_real_de_junctions_en_hijo_no_fabrica_unicidad(tmp_path: P
 
 
 def test_windows_bucle_real_de_junctions_en_mods_dir_no_devuelve_missing(tmp_path: Path) -> None:
-    """Windows real: pasar una ruta de mods_dir con bucle de junctions falla cerrado en EVIDENCE_INCOMPLETE."""
-    with _arena_bucle_junctions_windows(tmp_path) as (_arena, ja, _jb):
-        mods_dir_loop = _ruta_salto_reparse(ja, 32)
-        with pytest.raises(ParallaxREvidenceIncompleteError):
-            discover_parallaxr_candidates(mods_dir_loop)
+    """Windows real: pasar una ruta de mods_dir con bucle directo de junctions falla cerrado en EVIDENCE_INCOMPLETE."""
+    with _arena_bucle_junctions_windows(tmp_path) as (_arena, j1, _j2):
+        for mods_dir_loop in (j1, j1 / "sub"):
+            with pytest.raises(OSError):
+                mods_dir_loop.stat()
+            with pytest.raises(ParallaxREvidenceIncompleteError):
+                discover_parallaxr_candidates(mods_dir_loop)
 
-        preflight = run_parallaxr_assisted_preflight(mods_dir_loop)
-        assert preflight.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
-        assert preflight.success is False
-        assert preflight.installation is None
+            preflight = run_parallaxr_assisted_preflight(mods_dir_loop)
+            assert preflight.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+            assert preflight.success is False
+            assert preflight.installation is None
 
 
 def test_windows_junction_roto_en_mods_dir_falla_cerrado(tmp_path: Path) -> None:
@@ -1485,14 +1501,14 @@ def test_runtimeerror_bucle_en_explicit_selection_y_discovery_falla_cerrado(
     assert inexistente.status == ParallaxRAssistedStatus.INVALID_SELECTION
     assert inexistente.success is False
 
-    # Caso 2 (Windows real): explicit_selection sobre bucle de >=64 saltos no propaga RuntimeError sin control
+    # Caso 2 (Windows real): explicit_selection sobre ciclo directo de junctions no propaga RuntimeError sin control
     if sys.platform == "win32":
-        with _arena_bucle_junctions_windows(tmp_path) as (_arena, ja, _jb):
-            deep_64 = _ruta_salto_reparse(ja, 64)
-            loop_sel = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=deep_64)
-            assert loop_sel.status == ParallaxRAssistedStatus.INVALID_SELECTION
-            assert loop_sel.success is False
-            assert loop_sel.installation is None
+        with _arena_bucle_junctions_windows(tmp_path) as (_arena, j1, _j2):
+            for loop_path in (j1, j1 / "sub"):
+                loop_sel = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=loop_path)
+                assert loop_sel.status == ParallaxRAssistedStatus.INVALID_SELECTION
+                assert loop_sel.success is False
+                assert loop_sel.installation is None
 
     # Caso 3: un RuntimeError genérico NO relacionado con bucle de symlink no debe ocultarse
     real_resolve = Path.resolve
