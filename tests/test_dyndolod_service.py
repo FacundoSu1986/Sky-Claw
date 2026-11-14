@@ -3061,6 +3061,7 @@ _SERVICIOS_SIN_COBERTURA = {
     "synthesis_service.py": "etapa 7; solo prosa (stage 7)",
     "vramr_service.py": "etapa SIN DETERMINAR; no marca la etapa de ninguna forma",
     "xedit_service.py": "etapa 1; solo prosa QuickAutoClean (stage 1)",
+    "xedit_bridge_service.py": "SIN ETAPA: auditoría nativa a pedido (ADR 0018), fuera de las etapas del SOP",
 }
 
 
@@ -4078,6 +4079,16 @@ _REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
     "dyndolod_validacion_inesperada": {
         "metodo": "_validar_salida_dyndolod",
         "motivo": "Mismo doble contexto: RuntimeError sondeando el candidato.",
+    },
+    "dyndolod_progreso_no_reportado": {
+        "metodo": "_reportar_progreso",
+        "motivo": (
+            "H-11: el latido no pudo entregar la muestra de progreso a su observador (bus caído, "
+            "snapshot que no se armó). Observador best-effort por diseño, el mismo criterio que "
+            "dyndolod_aviso_operador_fallido: el veredicto de la corrida lo dan el exit code, el "
+            "artefacto y el log, no que alguien reciba el progreso. Etiquetarlo contaría como fallo "
+            "de etapa 9 una corrida que puede terminar bien."
+        ),
     },
 }
 

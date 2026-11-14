@@ -53,7 +53,6 @@ _SENSITIVE_KEY_PARTS = frozenset({"api_key", "auth", "credential", "password", "
 DESTRUCTIVE_TOOL_PATTERNS: frozenset[str] = frozenset(
     {
         "execute_loot_sorting",
-        "generate_bashed_patch",
         "generate_lods",
         # Follow-up A: Pandora reescribe los grafos de comportamiento del juego.
         "generate_animations",
@@ -62,10 +61,18 @@ DESTRUCTIVE_TOOL_PATTERNS: frozenset[str] = frozenset(
         # PR-5 grass cache: el precache muta el árbol MO2 (clon + mod de
         # config) y lanza el juego en crash-loop durante horas.
         "generate_grass_cache",
+        # ADR 0018: la admisión copia el plugin y sus masters al laboratorio del
+        # xEdit Bridge. MO2 no se toca, pero se escriben archivos: requiere aprobación.
+        "admitir_plugin_nativo",
         # Nombre real de la strategy (resolve_conflict_patch.py define
         # name="resolve_conflict_with_patch"); el alias viejo sin "_with"
         # nunca matcheó y dejaba la tool de xEdit SIN gate HITL.
         "resolve_conflict_with_patch",
+        # Nota (ADR 0016 §7): ``generate_bashed_patch`` salió de este conjunto tras
+        # retirar ``execute_pipeline`` (#862): tanto ``preparar`` como ``verificar``
+        # son no destructivas (capturan/contrastan testigo durable sin escribir sobre
+        # el parche, el perfil ni ``plugins.txt``) y la construcción manual en Wrye Bash
+        # GUI ya requiere acción explícita del operador.
     }
 )
 
@@ -385,6 +392,18 @@ def _truncate_approval_detail(detail: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _duplicate_execution_result(tool_name: str) -> dict[str, Any]:
+    """Resultado canónico de un duplicado rechazado (pre-check y acquire fallido)."""
+    return {
+        "status": "error",
+        "reason": "DuplicateExecution",
+        "details": (
+            f"Tool '{tool_name}' is already executing with the same "
+            f"arguments. Wait for the current execution to finish."
+        ),
+    }
+
+
 class IdempotencyMiddleware:
     """Rejects duplicate concurrent executions of the same tool+payload.
 
@@ -411,17 +430,16 @@ class IdempotencyMiddleware:
         # This avoids creating a PENDING task that can't transition to FAILED.
         key = self._sm.guard.make_key(strategy.name, payload_dict)
         if self._sm.guard.is_active(key):
-            return {
-                "status": "error",
-                "reason": "DuplicateExecution",
-                "details": (
-                    f"Tool '{strategy.name}' is already executing with the same "
-                    f"arguments. Wait for the current execution to finish."
-                ),
-            }
+            return _duplicate_execution_result(strategy.name)
 
         task = self._sm.create_task(strategy.name, payload_dict)
-        self._sm.acquire_idempotency(task.task_id)
+        # #575 §1: el pre-check de arriba no es atómico con este acquire (hoy no hay
+        # ``await`` entre ambos, pero una reentrancia, un hilo o un ``await`` futuro
+        # abren la ventana). Si la key ya tiene otro dueño, NO se ejecuta el tool: y la
+        # task PENDING se descarta porque ``PENDING → FAILED`` no es transición válida.
+        if not self._sm.acquire_idempotency(task.task_id):
+            self._sm.discard_pending(task.task_id)
+            return _duplicate_execution_result(strategy.name)
         self._sm.transition(task.task_id, "RUNNING")
         try:
             result = await next_call()

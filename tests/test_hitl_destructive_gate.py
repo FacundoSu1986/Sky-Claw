@@ -177,12 +177,12 @@ class TestGuardBackedGate:
             await guard.respond(captured[0].request_id, approved=True)
 
         approve_task = asyncio.create_task(_approve())
-        await gate(_FakeStrategy("generate_bashed_patch"), {}, next_call)
+        await gate(_FakeStrategy("execute_loot_sorting"), {}, next_call)
         await approve_task
 
         req = captured[0]
         assert req.category == "tool_execution"
-        assert "generate_bashed_patch" in req.reason
+        assert "execute_loot_sorting" in req.reason
 
     @pytest.mark.asyncio
     async def test_request_detail_includes_payload_values(self) -> None:
@@ -232,7 +232,7 @@ class TestGuardBackedGate:
             await guard.respond(captured[0].request_id, approved=False)
 
         deny_task = asyncio.create_task(_deny())
-        result = await gate(_FakeStrategy("generate_bashed_patch"), {}, next_call)
+        result = await gate(_FakeStrategy("quick_auto_clean"), {}, next_call)
         await deny_task
 
         assert result["status"] == "error"
@@ -305,19 +305,14 @@ class TestPayloadHandling:
     def test_describe_for_approval_does_not_warn_on_unexpected_keys(self, caplog) -> None:
         """Prompt-time description must not duplicate the unexpected-key warning
         that execute() already emits (Copilot review, PR #175)."""
-        from sky_claw.app.orchestrator.tool_strategies.generate_bashed_patch import (
-            GenerateBashedPatchStrategy,
-        )
         from sky_claw.app.orchestrator.tool_strategies.generate_lods import (
             GenerateLodsStrategy,
         )
 
         lods = GenerateLodsStrategy(service=MagicMock())
-        bashed = GenerateBashedPatchStrategy(wrye_bash_pipeline=MagicMock())
 
         with caplog.at_level(logging.WARNING):
             lods.describe_for_approval({"preset": "High", "tool_name": "noise"})
-            bashed.describe_for_approval({"profile": "Default", "tool_name": "noise"})
 
         assert caplog.records == [], "describe_for_approval must not log unexpected-key warnings"
 
@@ -481,14 +476,24 @@ class TestDestructiveToolPatterns:
     def test_known_destructive_tools(self) -> None:
         expected = {
             "execute_loot_sorting",
-            "generate_bashed_patch",
             "generate_lods",
             "generate_animations",
             "quick_auto_clean",
             "resolve_conflict_with_patch",
             "generate_grass_cache",
+            # ADR 0018: copia archivos al laboratorio del xEdit Bridge.
+            "admitir_plugin_nativo",
         }
         assert expected == DESTRUCTIVE_TOOL_PATTERNS
+
+    def test_auditar_plugin_nativo_not_destructive(self) -> None:
+        """ADR 0018: la auditoría nativa es de lectura sobre la copia ya admitida."""
+        assert "auditar_plugin_nativo" not in DESTRUCTIVE_TOOL_PATTERNS
+
+    def test_generate_bashed_patch_not_destructive(self) -> None:
+        """ADR 0016 §7: tras retirar execute_pipeline (#862), ambas fases asistidas son
+        no destructivas y no llevan gate HITL."""
+        assert "generate_bashed_patch" not in DESTRUCTIVE_TOOL_PATTERNS
 
     def test_query_mod_metadata_not_destructive(self) -> None:
         assert "query_mod_metadata" not in DESTRUCTIVE_TOOL_PATTERNS

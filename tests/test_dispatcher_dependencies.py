@@ -35,6 +35,8 @@ _CAMPOS_DEPENDENCIAS = [
     "default_profile_getter",
     "preview_service_provider",
     "raices_mo2_provider",
+    "xedit_bridge_service",
+    "aprobar_sin_etapas_previas",
 ]
 
 _TOOLS = [
@@ -47,6 +49,9 @@ _TOOLS = [
     "quick_auto_clean",
     "analyze_grass_prerequisites",
     "generate_grass_cache",
+    # ADR 0018: xEdit Bridge (hermanas del AsyncToolRegistry).
+    "auditar_plugin_nativo",
+    "admitir_plugin_nativo",
     "scan_asset_conflicts",
     "scan_asset_conflicts_json",
     "generate_bashed_patch",
@@ -80,13 +85,18 @@ def test_modulos_de_la_frontera_no_conocen_supervisor_y_exponen_la_firma_nueva()
     ]
 
 
-def test_builder_registra_exactamente_las_dieciseis_tools() -> None:
+def test_builder_registra_exactamente_las_dieciocho_tools() -> None:
     dispatcher = build_orchestration_dispatcher(crear_dependencias_dispatcher())
     assert dispatcher.registered_tools() == _TOOLS
 
 
 def test_gate_hitl_envuelve_exactamente_las_siete_tools_destructivas() -> None:
-    from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+    """Verifica que HitlGateMiddleware envuelva sólo las siete tools destructivas y no generate_bashed_patch."""
+    from sky_claw.app.orchestrator.tool_strategies.middleware import (
+        DictResultGuardMiddleware,
+        ErrorWrappingMiddleware,
+        HitlGateMiddleware,
+    )
 
     gate = HitlGateMiddleware(allow_unattended=True)
     dispatcher = build_orchestration_dispatcher(
@@ -103,8 +113,12 @@ def test_gate_hitl_envuelve_exactamente_las_siete_tools_destructivas() -> None:
         "generate_animations",
         "quick_auto_clean",
         "generate_grass_cache",
-        "generate_bashed_patch",
+        "admitir_plugin_nativo",
     }
+    assert [type(item) for item in dispatcher._middleware["generate_bashed_patch"]] == [
+        ErrorWrappingMiddleware,
+        DictResultGuardMiddleware,
+    ]
 
 
 def test_strategies_retienen_las_mismas_instancias_y_callables() -> None:
@@ -127,6 +141,8 @@ def test_strategies_retienen_las_mismas_instancias_y_callables() -> None:
     assert dispatcher._strategies["generate_bashed_patch"].wrye_bash_pipeline is deps.wrye_bash_pipeline
     assert dispatcher._strategies["validate_plugin_limit"].plugin_limit_guard is deps.plugin_limit_guard
     assert dispatcher._strategies["preview_chain"]._service_provider is deps.preview_service_provider
+    assert dispatcher._strategies["auditar_plugin_nativo"].service is deps.xedit_bridge_service
+    assert dispatcher._strategies["admitir_plugin_nativo"].service is deps.xedit_bridge_service
     assert dispatcher._strategies["diagnosticar_parallax_perfil"]._raices_provider is deps.raices_mo2_provider
     assert dispatcher._strategies["diagnosticar_parallax_perfil"]._default_profile_getter is deps.default_profile_getter
     assert dispatcher._strategies["evaluar_parallax_elegibilidad"]._raices_provider is deps.raices_mo2_provider

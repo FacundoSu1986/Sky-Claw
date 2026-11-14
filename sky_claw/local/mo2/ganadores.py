@@ -121,15 +121,51 @@ def _exigir_prefijo(prefijo: str) -> tuple[str, ...]:
     return partes
 
 
-def _exigir_enabled(enabled: Sequence[str]) -> tuple[str, ...]:
+def _clave_de_mod(nombre: str) -> str:
+    """Identidad de un nombre de mod del ``modlist.txt``: ``lower()``, NUNCA ``casefold()`` (#838/#852).
+
+    MO2 resuelve ``mods/<Nombre>`` contra NTFS, que no distingue mayúsculas: ``X`` y ``x``
+    son el MISMO mod. ``casefold()`` colapsa pares que NTFS **no** unifica (``Straße`` /
+    ``Strasse``) y fabricaría un «ya presente» —o un duplicado— que no existe. Es la misma
+    identidad que ``vfs._clave_de_nombre_de_mod`` (#849).
+    """
+    return nombre.lower()
+
+
+def _coincidencias_de_mod(enabled: Sequence[str], mod_name: str) -> list[int]:
+    """Índices de *mod_name* en *enabled* bajo la identidad canónica (#852).
+
+    ÚNICA forma de resolver «en qué posición está este mod». Devuelve TODAS las
+    coincidencias —incluidas ``x``/``X``— para que el llamador falle cerrado ante
+    ambigüedad en vez de elegir una entrada por grafía. ``read_enabled_mods`` ya
+    rechaza el perfil ambiguo en la puerta; los gates que reciben la tupla por
+    parámetro conservan su propia comprobación (defensa en profundidad).
+    """
+    clave = _clave_de_mod(mod_name)
+    return [indice for indice, nombre in enumerate(enabled) if _clave_de_mod(nombre) == clave]
+
+
+def _exigir_sin_repetidos(enabled: Sequence[str]) -> None:
+    """Falla cerrado si el mismo mod aparece DOS veces en el perfil (#852).
+
+    Es la comprobación que vive en la PUERTA (``read_enabled_mods``) y la que reusa
+    ``_exigir_enabled``. NO valida nombres: eso es otra pregunta y le corresponde a
+    ``_exigir_nombre_de_mod``.
+    """
     vistos: set[str] = set()
     for nombre in enabled:
-        _exigir_nombre_de_mod(nombre)
-        if nombre.lower() in vistos:
+        clave = _clave_de_mod(nombre)
+        if clave in vistos:
             raise GanadoresError(
                 f"el modlist repite el mod {nombre!r}: la prioridad efectiva es ambigua y no se puede afirmar"
             )
-        vistos.add(nombre.lower())
+        vistos.add(clave)
+
+
+def _exigir_enabled(enabled: Sequence[str]) -> tuple[str, ...]:
+    for nombre in enabled:
+        _exigir_nombre_de_mod(nombre)
+    _exigir_sin_repetidos(enabled)
     return tuple(enabled)
 
 

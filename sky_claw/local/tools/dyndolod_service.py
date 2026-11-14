@@ -15,12 +15,14 @@ import dataclasses
 import logging
 import os
 import pathlib
+import tempfile
 import time
 from typing import TYPE_CHECKING, Any
 
 from sky_claw.app.core.event_bus import CoreEventBus, Event
 from sky_claw.app.core.event_payloads import (
     DynDOLODPipelineCompletedPayload,
+    DynDOLODPipelineProgressPayload,
     DynDOLODPipelineStartedPayload,
 )
 from sky_claw.app.core.path_resolver import PathResolutionService
@@ -53,6 +55,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODSpawnStrategy,
     DynDOLODTimeoutError,
     InteraccionDeCorrida,
+    ProgresoDeHerramienta,
     ReadinessMode,
     normalize_dyndolod_spawn_strategy,
     resolve_data_visibility_domain,
@@ -422,6 +425,8 @@ class DynDOLODPipelineService:
 
         # Lazy init — runner requiere env vars que pueden no existir aún.
         self._runner: DynDOLODRunner | None = None
+        # H-11: última muestra de progreso de la corrida en curso (ver `progreso_actual`).
+        self._progreso_actual: DynDOLODPipelineProgressPayload | None = None
 
     # ------------------------------------------------------------------
     # Lazy initialization
@@ -522,6 +527,7 @@ class DynDOLODPipelineService:
             readiness=self._readiness if self._readiness is not None else ReadinessMode.DISABLED_FOR_TEST,
             spawn_strategy=self._spawn_strategy,
             desatendido=self._desatendido,
+            on_progress=self._al_progresar,
         )
         logger.info(
             "DynDOLODRunner inicializado: game=%s, dyndolod=%s",
@@ -788,6 +794,11 @@ class DynDOLODPipelineService:
             return None
 
         # Imports perezosos (anti-ciclo: validators.preflight llega a tools._process).
+        from sky_claw.local.validators.dyndolod_disk_budget import (
+            DYNDOLOD_MIN_FREE_BYTES_POR_ROL,
+            DiskBudgetChecker,
+            DiskVolume,
+        )
         from sky_claw.local.validators.preflight import PreflightService
         from sky_claw.local.validators.preflight_sensors import (
             build_master_order_sensor,
@@ -847,9 +858,31 @@ class DynDOLODPipelineService:
             else None
         )
 
+        # P-1: presupuesto de disco ANTES de generar (antes sólo se medía al
+        # empaquetar, tras 30+ min). Tres roles —work root, temporales (`-t:`
+        # cae a %TEMP%) y mods/— que el sensor suma si comparten volumen.
+        # Sin ruta resoluble el rol se omite: no se mide lo que no se sabe.
+        disk_volumes: list[DiskVolume] = []
+        if self._workspace is not None:
+            disk_volumes.append(
+                DiskVolume("work_root", self._workspace.root, DYNDOLOD_MIN_FREE_BYTES_POR_ROL["work_root"])
+            )
+        # `-t:` lo decide `DynDOLODConfig`: este servicio NO le pasa `temp_dir` (cae a
+        # `tempfile.gettempdir()`) y `extra_args` no puede redefinirlo
+        # (`_extra_args_admisibles`), así que éste ES el volumen de temporales de la
+        # corrida. Si algún día el servicio cablea `temp_dir`, este rol tiene que
+        # seguirlo: lo ancla `test_el_volumen_de_temporales_es_el_que_usa_la_config`.
+        disk_volumes.append(
+            DiskVolume("temp", pathlib.Path(tempfile.gettempdir()), DYNDOLOD_MIN_FREE_BYTES_POR_ROL["temp"])
+        )
+        if isinstance(mods_dir, pathlib.Path):
+            disk_volumes.append(DiskVolume("mods", mods_dir, DYNDOLOD_MIN_FREE_BYTES_POR_ROL["mods"]))
+        disk_check = DiskBudgetChecker(volumes=disk_volumes).check
+
         self._preflight = PreflightService(
             vfs_checker=vfs_checker,
             permissions_check=_permissions,
+            disk_check=disk_check,
             overwrite_check=overwrite_check,
             masters_check=masters_check,
             limits_check=limits_check,
@@ -1445,6 +1478,13 @@ class DynDOLODPipelineService:
         # arranque es inmutable y no debe releerse a mitad de corrida (§28).
         workspace = self._workspace
         lease_de_workspace: OwnershipDeWorkspaceVivo | None = workspace.ownership if workspace is not None else None
+
+        # H-11: el progreso es de UNA corrida, y ``lods_status`` se lo atribuye al trabajo ``en_curso``. El gestor marca
+        # ``en_curso`` y llama a ``execute`` sin ningún ``await`` en medio, pero ``_publish_started`` (que también lo
+        # descarta) llega recién DESPUÉS del preflight, que sí es un ``await``: si una corrida anterior no llegó a limpiar
+        # su rastro, ahí se vería como progreso de esta. Se descarta ya, de forma síncrona. Va DESPUÉS del preview: un
+        # ``dry_run`` es de solo lectura y no puede dejar sin muestra a una corrida que está en curso.
+        self._progreso_actual = None
 
         # Preflight brutal ANTES de tocar nada (T-16c·3): un semáforo ROJO (p. ej.
         # el dir de salida sin permisos) cancela el run de 30+ min / GBs sin adquirir
@@ -2985,8 +3025,43 @@ class DynDOLODPipelineService:
     # Eventos
     # ------------------------------------------------------------------
 
+    @property
+    def progreso_actual(self) -> DynDOLODPipelineProgressPayload | None:
+        """Última muestra de progreso de la corrida EN CURSO (H-11), o ``None`` si no hay.
+
+        Es de UNA corrida: se descarta al iniciar la siguiente y al terminar. La leen las superficies que
+        muestran el estado (``lods_status`` del agente); el mismo dato viaja por el evento
+        ``pipeline.dyndolod.progress`` para quien prefiera suscribirse.
+        """
+        return self._progreso_actual
+
+    async def _al_progresar(self, progreso: ProgresoDeHerramienta) -> None:
+        """Callback del latido del runner: guarda el snapshot y publica ``pipeline.dyndolod.progress``.
+
+        El snapshot va ANTES de publicar: ``lods_status`` no depende de que el bus esté vivo. Si la publicación
+        falla la excepción sube; el guard best-effort (y su registro) vive en el runner, el único que decide que
+        un observador roto no cambia el resultado de la corrida.
+        """
+        payload = DynDOLODPipelineProgressPayload(
+            tool_name=progreso.tool_name,
+            elapsed_seconds=progreso.elapsed_seconds,
+            log_path=progreso.log_path,
+            log_bytes=progreso.log_bytes,
+            log_idle_seconds=progreso.log_idle_seconds,
+        )
+        self._progreso_actual = payload
+        await self._event_bus.publish(
+            Event(
+                topic="pipeline.dyndolod.progress",
+                payload=payload.to_log_dict(),
+                source="dyndolod-pipeline-service",
+            )
+        )
+
     async def _publish_started(self, *, preset: str, run_texgen: bool, modo: ModoDeInteraccion) -> None:
         """Publica evento de inicio del pipeline con el modo de interacción de ESTA corrida."""
+        # El progreso es de UNA corrida: lo de la anterior no puede mostrarse como si fuera de esta.
+        self._progreso_actual = None
         payload = DynDOLODPipelineStartedPayload(
             preset=preset,
             run_texgen=run_texgen,
@@ -3016,6 +3091,9 @@ class DynDOLODPipelineService:
         log_paths: tuple[str, ...] = (),
     ) -> None:
         """Publica evento de finalización del pipeline."""
+        # Primera sentencia, antes de cualquier await: aunque la publicación se cancele, el progreso de una
+        # corrida que ya terminó no se queda disponible.
+        self._progreso_actual = None
         payload = DynDOLODPipelineCompletedPayload(
             preset=preset,
             run_texgen=run_texgen,

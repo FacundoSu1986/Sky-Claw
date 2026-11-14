@@ -28,6 +28,7 @@ def crear_dependencias_dispatcher(
     default_profile_getter: Any | None = None,
     preview_service_provider: Any | None = None,
     raices_mo2_provider: Any | None = None,
+    xedit_bridge_service: Any | None = None,
 ) -> OrchestrationDispatcherDependencies:
     """Crea dependencias explícitas con dobles inocuos y overrides puntuales."""
     return OrchestrationDispatcherDependencies(
@@ -49,6 +50,7 @@ def crear_dependencias_dispatcher(
         ),
         preview_service_provider=(preview_service_provider if preview_service_provider is not None else MagicMock()),
         raices_mo2_provider=(raices_mo2_provider if raices_mo2_provider is not None else MagicMock()),
+        xedit_bridge_service=(xedit_bridge_service if xedit_bridge_service is not None else MagicMock()),
     )
 
 
@@ -104,4 +106,5 @@ def crear_dependencias_desde_doble(supervisor: Any) -> OrchestrationDispatcherDe
             "_preview_chain_service_provider",
             MagicMock(),
         ),
+        xedit_bridge_service=getattr(supervisor, "_xedit_bridge_service", MagicMock()),
     )

@@ -4,6 +4,10 @@ Aplican las reglas raíz de [`../../../AGENTS.md`](../../../AGENTS.md) y, sobre 
 [`CLEAN_ROOM.md`](../../../CLEAN_ROOM.md)
 ([ADR 0013](../../../docs/adr/0013-clean-room-native-parallax.md)).
 
+**Agentes que OPERAN el generador (no que lo modifican):** el estado es **beta** y qué ajustar si el operador pide más
+o menos profundidad está en [`docs/operations/native_parallax_beta.md`](../../../docs/operations/native_parallax_beta.md).
+Hoy no hay un parámetro directo de profundidad: leé esa guía antes de proponer valores.
+
 ## Fuentes obligatorias
 
 La política clean-room, `docs/design/research/native-parallax/` y
@@ -51,7 +55,7 @@ La política clean-room, `docs/design/research/native-parallax/` y
   `centrado` (#834 ítem 8, `integrate.Centrado`, `--centrado`) es **opt-in** y por defecto `ninguno`: apagado, la altura y la procedencia (y con ella la clave de caché de toda salida
   ya escrita) son exactamente las de antes (ausente de la procedencia = `ninguno`); `media` lleva la media a 0,5 con un reescalado afín y simétrico (factor entre 0,5 y 1, sin recortar). Las métricas
   del gate se calculan sobre la altura integrada, no sobre la exportada, así que no cambian; la `amplitud` del informe sí. Ancla: `test_los_llamadores_de_produccion_del_centrado_estan_enumerados`
-  (`tests/test_native_parallax_lote.py`, por AST) y la enumeración de `Centrado` en los tests de `integrate` y `lote`. El default se decide después del A/B en el rig, no antes.
+  (`tests/test_native_parallax_lote.py`, por AST) y la enumeración de `Centrado` en los tests de `integrate` y `lote`. El A/B del rig (2026-11-06) y la prueba en el juego real (2026-11-08) no justificaron cambiar el default (`ninguno`): ver `docs/operations/native_parallax_beta.md`.
 - `gates.py` (NP-Q0b) es el gate de calidad y es **fail-closed**: sin un registro de umbrales validado contra un
   corpus REAL, todo va a `REVIEW` (`UMBRALES_VIGENTES is None`, congelado por igualdad). `AUTO_ACCEPT` exige
   evidencia calculada (conteos → cota binomial), no un booleano; el corpus sintético no puede validar; la evidencia

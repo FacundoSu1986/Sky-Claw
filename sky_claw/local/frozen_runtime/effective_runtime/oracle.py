@@ -57,6 +57,9 @@ from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
     leer_ejecutables_de_mo2,
     leer_game_path_de_mo2,
 )
+from sky_claw.local.frozen_runtime.effective_runtime.mo2_instance import (
+    probe_mo2_instance_identity,
+)
 from sky_claw.local.frozen_runtime.effective_runtime.models import (
     DesiredRuntime,
     EffectiveRuntimeAssessment,
@@ -166,6 +169,7 @@ def _observacion_de_ruta(
     label: str = "",
     detail: str = "",
 ) -> SurfaceObservation:
+    """Construye un SurfaceObservation con normalización canónica de ruta."""
     return SurfaceObservation(
         source=source,
         state=state,
@@ -287,6 +291,7 @@ def default_runtime_probes() -> RuntimeProbes:
         identity=identidad,
         compatibility=lambda raiz: assess_runtime_compatibility(raiz),
         processes=probe_live_processes,
+        mo2_instance=probe_mo2_instance_identity,
     )
 
 

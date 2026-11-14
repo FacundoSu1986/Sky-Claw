@@ -890,3 +890,57 @@ contratos y comprobaciones sin alterar el carácter 100% de solo lectura:
      `FrozenRuntimeError`, `OSError`).
    - Se preserva el comportamiento fail-closed ante PE corrupto o problemas de disco (`COMPATIBILITY_UNKNOWN`),
      garantizando que errores de programación (p. ej. `TypeError`, `AttributeError`) no queden enmascarados.
+
+## 14. Extensión P7-A5 (PR 1) — Preflight Read-Only para Transición Stock Independiente, Runtime Manual Saliente e Identidad Activa de MO2
+
+**Fecha:** 2026-11-07
+
+**Trackers:** #867 (activo, P7 Golden Master) y #672 (histórico cerrado).
+
+**Propósito:** Incorporar capacidades estrictamente READ-ONLY en `binder_preflight.py`,
+`provisioning.py`, `effective_runtime/` y `scripts/p7_readonly_inspection.py` para auditar
+una futura transición `MANUAL_RUNTIME -> REGISTERED_STOCK_CLONE` sin manipular Steam y con
+`EMISION_PRODUCTIVA_HABILITADA = False`.
+
+### 14.1 Contrato R1 — `BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION`
+
+- La política por defecto sigue siendo `BinderTransitionPolicy.STRICT_PROVIDER_IDLE`
+  (`ProviderObservationState.IDLE` obligatorio; `ACTIVE` bloquea siempre).
+- Bajo `BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION` explícito, `ProviderObservationState.ACTIVE`
+  sólo se admite cuando se verifican simultáneamente las 12 garantías de aislamiento:
+  1. Managed Source descubierta y validada (`AppID == "489830"`, manifest legible, `buildid` y `StateFlags` numéricos válidos; `INDETERMINATE` o staging ilegible siempre bloquea).
+  2. Generation con procedencia Stock v2 comprobable mediante `verificar_procedencia_stock_generacion`
+     (`state/generations/<gid>.source.json` schema v2; `provider == "stock"` en metadata nunca basta por sí solo).
+  3. Consistencia criptográfica completa entre `GenerationMetadata`, sidecar `.source.json`, `tree_digest`,
+     `runtime_identity`, `critical_files` y `directory_membership` a tres vías (`StockReference == sidecar == versions/<gid>`).
+  4. Validación obligatoria contra autoridad externa A1 (`approved_stock_reference_digest` o
+     `approved_stock_reference_digest_file` vía `cargar_digest_aprobado_stock`), impidiendo que un sidecar
+     autoconsistente sustituya la aprobación del propietario (`STOCK_REFERENCE_UNAPPROVED`).
+  5. Clone `PROVISIONED`, `VALID` y físicamente independiente (`st_nlink == 1`, cero inodos compartidos con Steam, Generation o Stock, cero reparse points).
+  6. Superficie saliente y todos los `[customExecutables]` (`binary` y `workingDirectory`) completamente fuera de `managed_source_root` y `steamapps`.
+  7. Cero procesos vivos (`SkyrimSE.exe`, loaders SKSE, `ModOrganizer.exe`) y cero escrituras sobre la Managed Source.
+
+### 14.2 Contrato R2 — `outgoing_manual_runtime_root`
+
+- Con `outgoing_manual_runtime_root=None` (defecto), cualquier tercer directorio continúa rechazándose con `CONFIG_DIVERGENCE_DETECTED`.
+- Cuando se declara explícitamente `outgoing_manual_runtime_root`, el preflight valida: ruta absoluta canónica sin segmentos `.`/`..`, cero alias 8.3, cero symlinks/junctions/reparse points en ancestros y árbol interno, `SkyrimSE.exe` regular con identidad PE real de Skyrim SE, `st_nlink == 1` y disjunto en `(st_dev, st_ino)` frente a Steam/Generation/Clone/Stock, ausencia total de solapamiento con `managed_source_root`, `steamapps`, `storage_root`, `stock_source_root`, `clone_root`, otros Clones registrados, `mo2_instance_dir` y `[Settings] base_directory`/`mod_directory`, y coherencia unánime entre `MO2 gamePath`, `Config.skyrim_path` y `SKYRIM_PATH`.
+- El runtime manual nunca se registra ni se trata como un Clone válido en `assess_effective_runtime`; `scripts/p7_readonly_inspection.py` conserva `listo_para_p7 = False` (`BLOCKED`) mientras la conmutación a Clone no haya ocurrido.
+
+### 14.3 Contrato R3 — `MO2_INSTANCE_IDENTITY` (`probe_mo2_instance_identity`)
+
+- Se incorpora el 11.º check obligatorio `PreflightCheckCode.MO2_INSTANCE_IDENTITY` respaldado por `RuntimeProbes.mo2_instance` (`effective_runtime/mo2_instance.py`, 100% read-only con `winreg.KEY_READ`).
+- Contrasta el selector de instancia de Windows (`HKCU\Software\Mod Organizer Team\Mod Organizer\CurrentInstance`) y el layout físico para distinguir:
+  - `ACTIVE_GLOBAL`: directorio bajo `%LOCALAPPDATA%\ModOrganizer\<Name>` con `CurrentInstance == <Name>`, `ModOrganizer.ini` presente y sin `ModOrganizer.exe` ni `portable.txt` locales.
+  - `AMBIGUOUS` (portable): directorio fuera de `%LOCALAPPDATA%\ModOrganizer` con `ModOrganizer.exe` + `ModOrganizer.ini`, cuando `CurrentInstance == ""` o (`ABSENT` + `portable.txt`), ya que el Registro de Windows no provee autoridad de ruta única entre posibles instalaciones portables (ver §14.4 punto 4).
+- Bloquea fail-closed un directorio residual o de datos como `base_directory\ModOrganizer.ini` (`MO2_INSTANCE_INACTIVE`), instalaciones mixtas (`MO2_INSTANCE_AMBIGUOUS`) o lecturas indeterminadas del Registro (`MO2_INSTANCE_IDENTITY_UNKNOWN`).
+
+### 14.4 Refinamientos de la Revisión Adversarial PR #885 (2026-11-08)
+
+1. **Aislamiento Físico Específico del Runtime Manual Saliente (P1):**
+   `_validar_runtime_manual_saliente` no delega en `verify_clone_physical_integrity` (que exige `st_nlink == 1` propio de un Clone recién aprovisionado). En su lugar, emplea `_validar_aislamiento_runtime_manual`: audita con `_archivos_fisicos` fail-closed contra symlinks/junctions/reparse points, y comprueba que ningún archivo comparta inodo `(st_dev, st_ino)` con Steam (`managed_source_root`), Clone destino (`clone_root`), Generation (`generation_dir`) o Stock (`stock_source_root`). Archivos con `st_nlink > 1` estrictamente disjuntos de estas superficies protegidas se admiten y se reportan en el detalle de la evaluación.
+2. **Registros de Otros Clones Corruptos o Redirigidos (P1):**
+   `_raices_otros_clones_registrados` verifica `link_kind_or_raise` sobre cada archivo en `state/clones/*.json` y propaga excepciones ante registros truncados o corruptos, provocando rechazo fail-closed inmediato con `PreflightReasonCode.CLONE_RECORD_CORRUPT`.
+3. **Dependencias de Steam en Argumentos de Ejecutables (P1):**
+   `_ejecutables_dependientes_de_steam` ahora audita también `exe.arguments`: cualquier parámetro que contenga `steamapps` o referencie rutas de la Managed Source se clasifica como dependiente y bloquea con `PreflightReasonCode.CONFIG_DIVERGENCE_DETECTED`.
+4. **Ambigüedad de Carpetas Portables en MO2 (P2):**
+   En modo portable, `HKCU\...\CurrentInstance` almacena `""` o está ausente, sin registrar ruta alguna en el sistema de Registro de Windows. Por ende, múltiples carpetas portables son indistinguibles entre sí. `probe_mo2_instance_identity` devuelve `Mo2InstanceIdentityState.AMBIGUOUS` (con `is_active = False`) ante cualquier carpeta fuera de LocalAppData con selector portable, reservando `is_active = True` exclusivamente a instancias globales comprobadas (`ACTIVE_GLOBAL`).

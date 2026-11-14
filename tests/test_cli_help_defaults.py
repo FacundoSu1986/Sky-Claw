@@ -40,6 +40,7 @@ DESTS_CON_DEFAULT_DECLARADO = frozenset(
         "mode",
         "provider",
         "vfs_profile",
+        "vfs_quarantine_action",
         "vfs_timeout",
         "webhook_host",
         "webhook_port",

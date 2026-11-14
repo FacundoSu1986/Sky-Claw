@@ -15,9 +15,11 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from sky_claw.app.orchestrator.tool_state_machine import ToolStateMachine
+from sky_claw.app.orchestrator.tool_strategies.admitir_plugin_nativo import AdmitirPluginNativoStrategy
 from sky_claw.app.orchestrator.tool_strategies.analyze_grass_prerequisites import (
     AnalyzeGrassPrerequisitesStrategy,
 )
+from sky_claw.app.orchestrator.tool_strategies.auditar_plugin_nativo import AuditarPluginNativoStrategy
 from sky_claw.app.orchestrator.tool_strategies.base import (
     DuplicateToolError,
     NextCall,
@@ -280,7 +282,10 @@ def build_orchestration_dispatcher(
 
     # FASE 1.5.1 + #592 F6: generate_lods is destructive → ErrorWrapping + DictGuard + HITL gate
     dispatcher.register(
-        GenerateLodsStrategy(service=dependencies.dyndolod_service),
+        GenerateLodsStrategy(
+            service=dependencies.dyndolod_service,
+            aprobar_sin_etapas_previas=dependencies.aprobar_sin_etapas_previas,
+        ),
         middleware=_destructive_middleware(
             error_reason="DynDOLODPipelineExecutionFailed",
             invalid_result_reason="InvalidDynDOLODResult",
@@ -338,6 +343,26 @@ def build_orchestration_dispatcher(
         ),
     )
 
+    # ADR 0018 — xEdit Bridge: la auditoría nativa es de lectura sobre la copia
+    # admitida (wrapping sin gate, patrón analyze_grass_prerequisites); la admisión
+    # escribe en el laboratorio del bridge → gate innermost. Hermanas del agente LLM
+    # en agent/tools/xedit_bridge_tools.py (ancla: test_xedit_bridge_superficies).
+    dispatcher.register(
+        AuditarPluginNativoStrategy(service=dependencies.xedit_bridge_service),
+        middleware=[
+            ErrorWrappingMiddleware("XEditBridgeAuditFailed"),
+            DictResultGuardMiddleware("InvalidXEditBridgeAuditResult"),
+        ],
+    )
+    dispatcher.register(
+        AdmitirPluginNativoStrategy(service=dependencies.xedit_bridge_service),
+        middleware=_destructive_middleware(
+            error_reason="XEditBridgeAdmissionFailed",
+            invalid_result_reason="InvalidXEditBridgeAdmissionResult",
+            gate=gate,
+        ),
+    )
+
     # Los callables explícitos conservan la resolución lazy del detector de
     # assets sin exponer el objeto que compone toda la aplicación.
     dispatcher.register(
@@ -352,23 +377,20 @@ def build_orchestration_dispatcher(
         ),
     )
 
-    # FASE 1.5.1 + #726: generate_bashed_patch is destructive → ErrorWrapping +
-    # DictGuard + HITL gate. Contraste verificado: `WryeBashPipelineService`
-    # ya convierte todo en dict (incluido `WryeBashHeadlessUnsupportedError`, que
-    # subclasea `WryeBashExecutionError`), así que —igual que Pandora— acá el
-    # wrapping es defensa en profundidad y uniformidad del contrato, NO la
-    # corrección de un escape medido. La estrategia NO implementa
-    # `validate_for_approval`: filtra y advierte (semántica deliberada, distinta
-    # de las otras dos), y el wrapping no la altera.
+    # ADR 0016 §7 + #726: tras el retiro de ``execute_pipeline`` (#862), ambas
+    # fases asistidas de ``generate_bashed_patch`` (``preparar`` y ``verificar``)
+    # son no destructivas sobre el parche, el perfil y ``plugins.txt`` → sin
+    # ``HitlGateMiddleware`` (simétrico con ``AsyncToolRegistry``), conservando
+    # ``ErrorWrappingMiddleware`` + ``DictResultGuardMiddleware`` como defensa en
+    # profundidad del contrato de errores.
     dispatcher.register(
         GenerateBashedPatchStrategy(
             wrye_bash_pipeline=dependencies.wrye_bash_pipeline,
         ),
-        middleware=_destructive_middleware(
-            error_reason="WryeBashPipelineExecutionFailed",
-            invalid_result_reason="InvalidWryeBashPipelineResult",
-            gate=gate,
-        ),
+        middleware=[
+            ErrorWrappingMiddleware("WryeBashPipelineExecutionFailed"),
+            DictResultGuardMiddleware("InvalidWryeBashPipelineResult"),
+        ],
     )
 
     dispatcher.register(

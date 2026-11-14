@@ -563,7 +563,10 @@ _OPENTELEMETRY_DECLARADOS = ("opentelemetry-api", "opentelemetry-sdk", "opentele
 
 
 def test_opentelemetry_piso_de_seguridad_declarado_y_bloqueado() -> None:
-    """La familia OpenTelemetry debe mantener el piso seguro >=1.45.1 ante CVE-2026-114603 (opentelemetry-api).
+    """La familia OpenTelemetry debe mantener el piso seguro >=1.45.2 ante CVE-2026-126360 (opentelemetry-api <=1.45.1).
+
+    El piso anterior (>=1.45.1) era el de CVE-2026-114603 (opentelemetry-api 1.41.1); ``pip-audit --strict`` del job
+    «Security Scan» detectó CVE-2026-126360 sobre 1.45.1 y dejó en rojo a todos los PRs hasta subir de nuevo el piso.
 
     La familia versiona junta (api, sdk, exporters, proto y common salen con el mismo número), así que se enumeran
     TODOS los ``opentelemetry-*`` de la serie 1.x de los TRES locks, no solo el paquete del aviso: un gemelo que quedara
@@ -572,8 +575,8 @@ def test_opentelemetry_piso_de_seguridad_declarado_y_bloqueado() -> None:
     """
     from packaging.version import Version
 
-    piso_minimo = Version("1.45.1")
-    vulnerable = Version("1.41.1")
+    piso_minimo = Version("1.45.2")
+    vulnerable = Version("1.45.1")
 
     # 1. pyproject.toml: el piso en los tres declarados
     with (REPO_ROOT / "pyproject.toml").open("rb") as file:
@@ -584,8 +587,8 @@ def test_opentelemetry_piso_de_seguridad_declarado_y_bloqueado() -> None:
         assert len(candidatos) == 1, f"se esperaba exactamente un {nombre} en runtime, hay {candidatos}"
         req = candidatos[0]
         # Igualdad exacta (como anyio y multidict): probar dos puntos del rango no alcanza, porque el aviso afecta
-        # hasta 1.45.0 y un piso >=1.42 rechazaría 1.41.1 y aceptaría 1.45.1 dejando pasar 1.45.0.
-        assert req.specifier == SpecifierSet(">=1.45.1,<2"), f"rango de {nombre} inesperado: {req.specifier}"
+        # hasta 1.45.1 y un piso >=1.42 rechazaría 1.41.1 y aceptaría 1.45.2 dejando pasar 1.45.1.
+        assert req.specifier == SpecifierSet(">=1.45.2,<2"), f"rango de {nombre} inesperado: {req.specifier}"
         assert not req.specifier.contains(vulnerable), f"el rango de {nombre} admite la versión vulnerable: {req}"
 
     # 2. los dos requirements*.lock: toda la familia 1.x

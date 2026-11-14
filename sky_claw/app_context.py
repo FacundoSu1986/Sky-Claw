@@ -71,6 +71,7 @@ from sky_claw.local.mo2.brokered_loot import (
 )
 from sky_claw.local.mo2.vfs import MO2Controller
 from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker, vfs_instance_id
+from sky_claw.local.mo2.vfs_quarantine import como_liberar
 from sky_claw.local.tools.dyndolod_workspace import construir_coordinacion_de_etapa9
 from sky_claw.local.tools_installer import ToolsInstaller, scan_common_paths
 
@@ -330,6 +331,23 @@ def _mods_candidatos_para_sandbox(mo2_root: pathlib.Path) -> list[pathlib.Path]:
     return candidatos
 
 
+def _raiz_declarada_del_xedit_bridge() -> pathlib.Path | None:
+    """``XEDIT_BRIDGE_ROOT`` si el operador la declaró y apunta a un directorio absoluto existente (#917).
+
+    Es configuración del operador (entorno del proceso), no entrada externa: una raíz declarada a propósito
+    se SUMA al sandbox, sin reemplazar a las demás ni tocar ``install_dir`` (que decide dónde se instalan
+    las herramientas descargadas). Vacía, relativa, inexistente o un archivo = no agrega nada.
+    """
+    valor = os.environ.get("XEDIT_BRIDGE_ROOT", "").strip()
+    if not valor:
+        return None
+    candidata = pathlib.Path(valor)
+    if not candidata.is_absolute():
+        return None
+    resuelta = candidata.resolve(strict=False)
+    return resuelta if resuelta.is_dir() else None
+
+
 def _construir_raices_sandbox(
     mo2_root: pathlib.Path,
     install_dir: pathlib.Path | None,
@@ -352,6 +370,10 @@ def _construir_raices_sandbox(
         roots.append(install_dir)
     if skyrim_path and skyrim_path not in roots:
         roots.append(skyrim_path)
+    # Una sola composición para todos los llamadores (AppContext y el modo VFS de __main__): #917.
+    raiz_bridge = _raiz_declarada_del_xedit_bridge()
+    if raiz_bridge and raiz_bridge not in roots:
+        roots.append(raiz_bridge)
     raiz_instancia = _raiz_datos_instancia_para_sandbox(mo2_root)
     if raiz_instancia and raiz_instancia not in roots:
         roots.append(raiz_instancia)
@@ -2174,9 +2196,19 @@ class AppContext:
                 proveedor_de_servicio=lambda: self.servicio_de_etapa9,
                 notificar=hitl.notify_operator,
                 aprobar_sin_etapas_previas=AprobadorDesatendidoHITL(hitl_guard=hitl).aprobar_sin_etapas_previas,
+                consultar_cuarentena=self._estado_de_cuarentena_vfs,
             )
             self.lod_jobs = lod_jobs
             self._push_startup_cleanup(lod_jobs.cerrar)
+
+            # ADR 0018: la admisión al xEdit Bridge desde el agente espera una decisión
+            # humana y copia hasta 900 s, más que el round del router (120 s): corre como
+            # trabajo en segundo plano y avisa por el MISMO canal del guard. Su cleanup
+            # cancela una admisión viva al apagar (la cancelación mata el proceso del bridge).
+            from sky_claw.app.agent.tools.xedit_bridge_tools import GestorDeAdmisionesNativas
+
+            admisiones_nativas = GestorDeAdmisionesNativas(notificar=hitl.notify_operator)
+            self._push_startup_cleanup(admisiones_nativas.cerrar)
 
             tool_registry = AsyncToolRegistry(
                 registry=self.database.registry,
@@ -2209,6 +2241,7 @@ class AppContext:
                 session_id=session_id,
                 mo2_profile=active_profile,
                 lod_jobs=lod_jobs,
+                admisiones_nativas=admisiones_nativas,
                 # ADR 0016 (H-1, PR B): el MISMO resolver que arma el dispatcher de la
                 # GUI. Sin esto la etapa 6 asistida del agente LLM no puede ubicar el
                 # `plugins.txt` del perfil ni la superposición del artefacto.
@@ -2309,6 +2342,14 @@ class AppContext:
         finally:
             if self.polling is polling:
                 self.polling = None
+
+    def _estado_de_cuarentena_vfs(self) -> dict[str, Any] | None:
+        """H-4: la cuarentena del broker VFS tal como la ve el agente en ``lods_status`` (``None`` si no hay)."""
+        broker = self.vfs_broker
+        razon = None if broker is None else broker.quarantine_reason
+        if razon is None:
+            return None
+        return {"activa": True, "razon": razon, "como_liberar": como_liberar(self.mo2_install_dir)}
 
     async def _close_vfs_broker(self, broker: VfsExecutionBroker) -> None:
         """Cierra IPC VFS y retira referencias publicadas por esta generacion."""

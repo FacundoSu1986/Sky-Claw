@@ -124,7 +124,7 @@ def _archivos_fisicos(root: pathlib.Path, *, etiqueta: str) -> list[tuple[str, o
                     # no trae el file index NTFS (st_ino=0) y el índice físico
                     # quedaría inservible para detectar hardlinks.
                     st = os.stat(entrada, follow_symlinks=False)
-                    attrs = getattr(st, "st_file_attributes", 0)
+                    attrs = getattr(st, "st_file_attributes", 0) or 0
                     if attrs & 0x00000400:  # FILE_ATTRIBUTE_REPARSE_POINT
                         raise PhysicalReparseError(
                             f"{etiqueta}: reparse point dentro del árbol: '{entrada}' (fail-closed)",

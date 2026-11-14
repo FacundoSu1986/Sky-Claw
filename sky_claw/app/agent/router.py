@@ -84,6 +84,10 @@ MAX_HERMES_RETRIES = MAX_XML_TOOL_RETRIES
 # FASE 1.5.3: Default tool round timeout
 DEFAULT_TOOL_ROUND_TIMEOUT = 120.0
 
+#: Largo máximo del resultado de una tool que vuelve al modelo. Se recorta POR POSICIÓN: una tool que
+#: devuelve JSON tiene que acotarse por debajo de este límite para no llegar roto (ADR 0018).
+MAX_TOOL_RESULT_CHARS = 4000
+
 # RND-01: timeout por defecto para la llamada de chat al provider, para no
 # colgar ante un provider mudo. Providers con presupuesto propio más largo
 # (p. ej. OllamaProvider, inferencia local legítima >120s) lo exponen vía un
@@ -726,8 +730,8 @@ class LLMRouter:
                                 await self._save_message(chat_id, "user", error_content)
                                 messages.append({"role": "user", "content": error_content})
                                 continue  # give every call its own error response; don't drop the rest
-                            if len(result_str_h) > 4000:
-                                result_str_h = result_str_h[:4000] + "\n\n[... truncated ...]"
+                            if len(result_str_h) > MAX_TOOL_RESULT_CHARS:
+                                result_str_h = result_str_h[:MAX_TOOL_RESULT_CHARS] + "\n\n[... truncated ...]"
                             tool_content = f"[Tool Result] {_prepare_tool_result_for_model(result_str_h)}"
                             await self._save_message(chat_id, "user", tool_content)
                             messages.append({"role": "user", "content": tool_content})
@@ -847,8 +851,8 @@ class LLMRouter:
                         }
                         result_str = json.dumps(feedback)
 
-                    if len(result_str) > 4000:
-                        result_str = result_str[:4000] + "\n\n[... truncated ...]"
+                    if len(result_str) > MAX_TOOL_RESULT_CHARS:
+                        result_str = result_str[:MAX_TOOL_RESULT_CHARS] + "\n\n[... truncated ...]"
 
                     # TASK-013 P0: sanitize tool output before injecting back into
                     # the LLM context — prevents indirect prompt injection via

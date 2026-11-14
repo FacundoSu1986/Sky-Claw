@@ -20,6 +20,7 @@ import pathlib
 from typing import Any
 
 import keyring
+import keyring.errors
 
 from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.config import SystemPaths
@@ -34,7 +35,9 @@ from .lod_tools import generate_lods, lods_status
 from .nexus_tools import download_mod, search_nexus
 from .parallax_tools import diagnosticar_parallax_perfil, evaluar_parallax_elegibilidad
 from .schemas import (
+    AdmitirPluginNativoParams,
     AnalyzeConflictsParams,
+    AuditarPluginNativoParams,
     BodySlideBatchParams,
     DiagnosticarParallaxParams,
     DownloadModParams,
@@ -68,6 +71,7 @@ from .system_tools import (
     toggle_mod,
     uninstall_mod,
 )
+from .xedit_bridge_tools import admitir_plugin_nativo, auditar_plugin_nativo
 from .xedit_readonly_tool import run_xedit_script
 
 logger = logging.getLogger(__name__)
@@ -80,12 +84,36 @@ def _safe_keyring_get(name: str) -> str | None:
     ``keyring.get_password`` raises. Returning None lets the tool reach its
     graceful "key not configured" JSON instead of surfacing an internal failure
     to the router (Codex P2). Mirrors the fallible keyring handling in config.py.
+
+    #575 §2: el llamador sigue viendo ``None`` en todos los casos, pero el log ya
+    distingue «no configurado» de «el backend falló»:
+
+    - secreto inexistente (el backend devuelve ``None``): sin warning.
+    - ``NoKeyringError``: WARNING «no hay backend».
+    - ``KeyringError`` / ``OSError``: WARNING con el nombre de la clase.
+    - cualquier otra excepción: ERROR. Se sigue degradando a ``None`` porque el backend
+      de Windows relanza ``pywintypes.error`` sin envolver (no es ``OSError`` ni
+      ``KeyringError``) y propagarlo regresaría el «error interno» al router, pero ya
+      no se confunde con un secreto ausente.
+
+    Los logs llevan SOLO el nombre de la clase: ni el mensaje ni el traceback de la
+    excepción, porque el de un backend puede arrastrar datos sensibles.
     """
     try:
         return keyring.get_password("sky_claw", name)
-    except Exception:  # noqa: BLE001 — any keyring/backend error means "unset"
-        logger.warning("keyring read failed for %r; treating as unset", name)
-        return None
+    except keyring.errors.NoKeyringError:
+        logger.warning("keyring: no hay backend disponible; %r se trata como no configurado", name)
+    except (keyring.errors.KeyringError, OSError) as exc:
+        logger.warning(
+            "keyring: el backend falló (%s) al leer %r; se trata como no configurado", type(exc).__name__, name
+        )
+    except Exception as exc:  # noqa: BLE001 — último recurso, distinguible por nivel ERROR (ver docstring)
+        logger.error(
+            "keyring: error inesperado del backend (%s) al leer %r; se trata como no configurado",
+            type(exc).__name__,
+            name,
+        )
+    return None
 
 
 class AsyncToolRegistry:
@@ -156,9 +184,14 @@ class AsyncToolRegistry:
         # que la GUI. Sin él la fase falla cerrado con `SinRutasResolubles` — que es lo
         # honesto, y sigue siendo preferible a que este path vuelva al camino headless.
         path_resolver: Any | None = None,
+        # ADR 0018: gestor de las admisiones al xEdit Bridge en segundo plano (esperan una
+        # decisión humana y copian hasta 900 s, más que el round del router). Lo arma el
+        # AppContext con el aviso del guard y su cleanup; None = la admisión falla cerrada.
+        admisiones_nativas: Any | None = None,
     ) -> None:
         self._registry = registry
         self._lod_jobs = lod_jobs
+        self._admisiones_nativas = admisiones_nativas
         self._mo2 = mo2
         self._sync_engine = sync_engine
         self._loot_exe = loot_exe or pathlib.Path("loot.exe")
@@ -191,6 +224,17 @@ class AsyncToolRegistry:
         self._path_resolver = path_resolver
         self._tools: dict[str, ToolDescriptor] = {}
         self._register_builtins()
+
+    def _xedit_bridge_service(self) -> Any:
+        """``XEditBridgeService`` sobre el MISMO resolver que la GUI, o ``None`` sin resolver.
+
+        Se arma por llamada: es stateless y construirlo no toca el bridge (ADR 0018).
+        """
+        if self._path_resolver is None:
+            return None
+        from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
+
+        return XEditBridgeService(path_resolver=self._path_resolver)
 
     def _resolve_gateway(self) -> Any:
         """Resolve the active NetworkGateway using a best-effort fallback chain.
@@ -522,6 +566,33 @@ class AsyncToolRegistry:
             params_model=XEditAnalysisParams,
             fn=lambda script_name, plugins: run_xedit_script(self._xedit_runner, script_name, plugins),
         )
+        # ADR 0018: auditoría nativa con el xEdit Bridge. Hermanas GUI en tool_strategies/
+        # (auditar_plugin_nativo, admitir_plugin_nativo); el ancla es test_xedit_bridge_superficies.
+        # La auditoría vence antes que el round del router; la admisión es un trabajo en segundo plano.
+        self._tools["auditar_plugin_nativo"] = ToolDescriptor(
+            name="auditar_plugin_nativo",
+            description=(
+                "Chequeo nativo de errores de SSEEdit sobre la copia admitida de un plugin (read-only). "
+                "Solo 'aprobado' permite tratarlo como sin errores; si no está admitido, usá admitir_plugin_nativo."
+            ),
+            params_model=AuditarPluginNativoParams,
+            fn=lambda plugin, timeout=None: auditar_plugin_nativo(
+                self._xedit_bridge_service(), plugin, timeout, admisiones=self._admisiones_nativas
+            ),
+        )
+        self._tools["admitir_plugin_nativo"] = ToolDescriptor(
+            name="admitir_plugin_nativo",
+            description=(
+                "Copia un plugin del perfil MO2 activo y sus masters al laboratorio del xEdit Bridge para "
+                "auditarlo, como trabajo en segundo plano: responde enseguida con un trabajo_id. El operador "
+                "aprueba por su canal y recibe el aviso al terminar; recién entonces usá auditar_plugin_nativo. "
+                "MO2 no se modifica."
+            ),
+            params_model=AdmitirPluginNativoParams,
+            fn=lambda plugin: admitir_plugin_nativo(
+                self._xedit_bridge_service(), self._hitl, plugin, admisiones=self._admisiones_nativas
+            ),
+        )
         self._tools["preview_mod_installer"] = ToolDescriptor(
             name="preview_mod_installer",
             description="Preview FOMOD options for a mod archive.",
@@ -565,11 +636,13 @@ class AsyncToolRegistry:
         # they were never wired in production and always returned "not configured".
         #
         # HITL policy of the agent layer (decisión, no olvido): los tools destructivos
-        # de este registry LLM (run_loot_sort / run_pandora / run_bodyslide /
-        # generate_bashed_patch) NO piden aprobación HITL — solo el lock distribuido
-        # los serializa contra otros mutadores (GUI / preview). `run_xedit_script`
-        # queda fuera de esta lista: esta superficie está limitada a diagnósticos
-        # read-only bundleados y stageados canónicamente.
+        # de este registry LLM (run_loot_sort / run_pandora / run_bodyslide) NO piden
+        # aprobación HITL — solo el lock distribuido los serializa contra otros
+        # mutadores (GUI / preview). `generate_bashed_patch` (#862 + ADR 0016 §7) y
+        # `run_xedit_script` quedan fuera de esa lista: `generate_bashed_patch` sólo
+        # ejecuta las dos fases asistidas no destructivas (`preparar` / `verificar`)
+        # sin gate HITL tampoco en el dispatcher, y `run_xedit_script` está limitado
+        # a diagnósticos read-only bundleados y stageados canónicamente.
         # El gate HITL vive en el dispatcher de la GUI (Rituales); acá el operador de
         # Telegram es el humano de confianza. Si esto cambia, agregar el gate de
         # aprobación es un cambio transversal aparte (no parchear tool por tool).
@@ -652,7 +725,13 @@ class AsyncToolRegistry:
         )
         self._tools["lods_status"] = ToolDescriptor(
             name="lods_status",
-            description="Report the state of the current or last stage-9 LOD generation job (read-only).",
+            description=(
+                "Report the state of the current or last stage-9 LOD generation job (read-only). While the job "
+                "runs, 'progreso' gives facts about the tool's latest heartbeat: the tool, seconds elapsed, log "
+                "size, seconds since the log last changed and how old that sample is. A log that has not changed "
+                "for a long while, or a sample that keeps getting older, is a hint the job may be stalled; it is "
+                "not a verdict."
+            ),
             params_model=None,
             fn=lambda: lods_status(self._lod_jobs),
         )
@@ -728,8 +807,10 @@ class AsyncToolRegistry:
 
 
 __all__ = [
+    "AdmitirPluginNativoParams",
     "AnalyzeConflictsParams",
     "AsyncToolRegistry",
+    "AuditarPluginNativoParams",
     "BodySlideBatchParams",
     "DiagnosticarParallaxParams",
     "DownloadModParams",
@@ -748,7 +829,9 @@ __all__ = [
     "ToolDescriptor",
     "UninstallModParams",
     "XEditAnalysisParams",
+    "admitir_plugin_nativo",
     "analyze_esp_conflicts",
+    "auditar_plugin_nativo",
     "check_load_order",
     "close_game",
     "detect_conflicts",

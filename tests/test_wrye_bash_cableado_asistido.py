@@ -743,3 +743,233 @@ async def test_el_llm_no_puede_colar_el_perfil_ni_el_testigo(tmp_path: pathlib.P
     for campo in ({"profile": "Otro"}, {"testigo_previo": {"sha256": "c" * 64}}):
         with pytest.raises(pydantic.ValidationError):
             await registry.execute("generate_bashed_patch", campo)
+
+
+# ==============================================================================
+# 6. Retiro de la compuerta HITL (ADR 0016 §7): ambas fases son no destructivas
+# ==============================================================================
+
+
+def test_generate_bashed_patch_no_es_destructiva_ni_declara_protocolos_hitl() -> None:
+    """Tras el retiro de ``execute_pipeline`` (#862), ninguna de las dos fases muta el
+    parche, el perfil ni el load order: ``generate_bashed_patch`` sale de
+    ``DESTRUCTIVE_TOOL_PATTERNS`` y ``GenerateBashedPatchStrategy`` no declara
+    protocolos opcionales de prompt HITL sin consumidor."""
+    from sky_claw.app.orchestrator.tool_strategies.base import (
+        ApprovalPayloadDescriber,
+        ApprovalPayloadValidator,
+    )
+    from sky_claw.app.orchestrator.tool_strategies.middleware import DESTRUCTIVE_TOOL_PATTERNS
+
+    assert "generate_bashed_patch" not in DESTRUCTIVE_TOOL_PATTERNS
+    estrategia = GenerateBashedPatchStrategy(wrye_bash_pipeline=AsyncMock())
+    assert not isinstance(estrategia, ApprovalPayloadDescriber)
+    assert not isinstance(estrategia, ApprovalPayloadValidator)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_ejecuta_preparar_y_verificar_sin_hitl_guard(
+    tmp_path: pathlib.Path, sin_preflight: None
+) -> None:
+    """Cierre de la deuda declarada en ADR 0016 §7: con ``HitlGateMiddleware()`` sin
+    ``HITLGuard`` (el default fail-closed que niega con ``HITLGateUnavailable`` toda
+    herramienta destructiva), el dispatcher real ejecuta ``preparar`` y ``verificar``
+    mientras sigue denegando a los rituales destructivos."""
+    from sky_claw.app.orchestrator.dispatcher_dependencies import build_wrye_bash_pipeline
+    from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+    from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+    from sky_claw.local.tools.etapa6_testigos import AlmacenEnMemoria
+    from tests._orchestration_dispatcher_dependencies import crear_dependencias_dispatcher
+
+    game, _ = _perfil(tmp_path, perfil="Requiem")
+    overwrite = tmp_path / "overwrite"
+    overwrite.mkdir(parents=True, exist_ok=True)
+    servicio = WryeBashPipelineService(
+        path_resolver=_resolver(game, tmp_path),
+        testigo_store=AlmacenEnMemoria(),
+    )
+    sm = ToolStateMachine()
+    dispatcher = build_orchestration_dispatcher(
+        crear_dependencias_dispatcher(
+            wrye_bash_pipeline=build_wrye_bash_pipeline(service=servicio, default_profile="Requiem"),
+        ),
+        hitl_gate=HitlGateMiddleware(),  # sin HITLGuard, allow_unattended=False
+        idempotency=IdempotencyMiddleware(state_machine=sm),
+    )
+
+    # 1. En el mismo dispatcher sin guard, un ritual destructivo sigue fallando cerrado.
+    denegado = await dispatcher.dispatch("execute_loot_sorting", {})
+    assert denegado["status"] == "error"
+    assert denegado["reason"] == "HITLGateUnavailable"
+
+    # 2. Fase 1 (preparar) corre sin HITLGuard y registra AWAITING_OPERATOR.
+    prep = await dispatcher.dispatch("generate_bashed_patch", {"fase": "preparar"})
+    assert prep["pendiente"] is True
+    assert prep["success"] is False
+
+    # 3. El operador construye el Bashed Patch en MO2/Wrye Bash y Fase 2 (verificar)
+    #    corre sin HITLGuard probando frescura y cerrando en COMPLETED.
+    (overwrite / BASHED_PATCH_NAME).write_bytes(b"TES4_HITL_FREE_" + b"\x11" * 49)
+    ver = await dispatcher.dispatch("generate_bashed_patch", {"fase": "verificar"})
+    assert ver["success"] is True
+    assert ver["frescura_probada"] is True
+    estados = [t.state for t in sm._tasks.values()]
+    assert "AWAITING_OPERATOR" in estados
+    assert estados[-1] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_ritual_gui_preparar_y_verificar_con_modo_local_apagado_no_abre_modal_hitl(
+    tmp_path: pathlib.Path, sin_preflight: None
+) -> None:
+    """Superficie GUI real (``run_ritual`` + ``run_ritual_resume`` con ``auto_approve=False``,
+    "Modo local" apagado): ni pulsar «Crear Parche» ni pulsar «Ya construí el parche —
+    verificar» estacionan una aprobación en ``STORE_KEY_PENDING_HITL`` ni invocan ``HITLGuard``."""
+    from sky_claw.app.gui.controllers.ritual_runner import (
+        STORE_KEY_PENDING_HITL,
+        STORE_KEY_RITUAL_FEEDBACK,
+        enqueue_pending_hitl,
+        make_gui_hitl_notify,
+        resolve_ritual_resume_action,
+        ritual_auto_approve_armed,
+        ritual_tab_id,
+        run_ritual,
+        run_ritual_resume,
+    )
+    from sky_claw.app.gui.state.reactive_store import ReactiveStore
+    from sky_claw.app.orchestrator.dispatcher_dependencies import build_wrye_bash_pipeline
+    from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+    from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+    from sky_claw.app.security.hitl import HITLGuard
+    from sky_claw.local.tools.etapa6_testigos import AlmacenEnMemoria
+    from tests._orchestration_dispatcher_dependencies import crear_dependencias_dispatcher
+
+    game, _ = _perfil(tmp_path, perfil="Requiem")
+    overwrite = tmp_path / "overwrite"
+    overwrite.mkdir(parents=True, exist_ok=True)
+    servicio = WryeBashPipelineService(
+        path_resolver=_resolver(game, tmp_path),
+        testigo_store=AlmacenEnMemoria(),
+    )
+
+    store = ReactiveStore()
+    notificaciones_hitl: list[Any] = []
+    guard_holder: dict[str, HITLGuard] = {}
+
+    async def _respond(rid: str, approved: bool) -> None:
+        await guard_holder["g"].respond(rid, approved=approved)
+
+    def _park(payload: dict[str, Any]) -> None:
+        notificaciones_hitl.append(payload)
+        enqueue_pending_hitl(store, payload)
+
+    guard = HITLGuard(
+        notify_fn=make_gui_hitl_notify(
+            respond=_respond,
+            set_pending=_park,
+            auto_approve_getter=ritual_auto_approve_armed,
+            tab_id_getter=ritual_tab_id,
+            delegate=None,
+        ),
+        timeout=1,
+    )
+    guard_holder["g"] = guard
+    dispatcher = build_orchestration_dispatcher(
+        crear_dependencias_dispatcher(
+            wrye_bash_pipeline=build_wrye_bash_pipeline(service=servicio, default_profile="Requiem"),
+        ),
+        hitl_gate=HitlGateMiddleware(hitl_guard=guard),
+        idempotency=IdempotencyMiddleware(state_machine=ToolStateMachine()),
+    )
+
+    class _SupervisorConDispatcherReal:
+        async def dispatch_tool(self, tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+            return await dispatcher.dispatch(tool_name, payload)
+
+    sup = _SupervisorConDispatcherReal()
+
+    # Fase 1 desde botón del ritual con Modo local APAGADO (auto_approve=False): no bloquea en modal.
+    await run_ritual("wrye_bash", supervisor=sup, store=store, auto_approve=False, tab_id="tab-1")
+    assert notificaciones_hitl == []
+    assert store.get(STORE_KEY_PENDING_HITL) is None
+    assert store.get(STORE_KEY_RITUAL_FEEDBACK)["type"] == "warning"
+
+    accion = resolve_ritual_resume_action(store, "tab-1")
+    assert accion is not None
+
+    # El operador construye el parche y pulsa el CTA de Fase 2 también con auto_approve=False.
+    (overwrite / BASHED_PATCH_NAME).write_bytes(b"TES4_GUI_REAL_" + b"\x22" * 50)
+    await run_ritual_resume(
+        "wrye_bash",
+        payload=accion["payload"],
+        supervisor=sup,
+        store=store,
+        auto_approve=False,
+        tab_id="tab-1",
+    )
+    assert notificaciones_hitl == []
+    assert store.get(STORE_KEY_PENDING_HITL) is None
+    assert store.get(STORE_KEY_RITUAL_FEEDBACK)["type"] == "positive"
+
+
+# ==============================================================================
+# 3. Auditoría: el resultado de cada fase queda en el log (#880 H-5)
+# ==============================================================================
+
+
+_RUTA_SENSIBLE = "C:\\Users\\operador\\SkyrimSE\\Data\\Bashed Patch, 0.esp"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fase", ["preparar", "verificar"])
+async def test_el_enrutado_registra_el_resultado_de_cada_fase_sin_rutas(
+    fase: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """El punto único loguea los campos de auditoría y NUNCA rutas ni mensajes libres.
+
+    La GUI no devolvía el JSON de ``verificar`` a ningún log, así que una validación real
+    por GUI no dejaba evidencia. Como las tres superficies pasan por
+    ``ejecutar_fase_asistida``, loguear ahí cubre a todas a la vez (no un camino y su gemelo).
+    """
+    servicio = _servicio()
+    resultado = {
+        "success": False,
+        "message": f"No se encontró {_RUTA_SENSIBLE}",
+        "motivo": "artefacto_ausente",
+        "artefacto": _RUTA_SENSIBLE,
+        "plugins_txt": _RUTA_SENSIBLE,
+        "reason": "ArtefactoAusente",
+        "estado_en_plugins": "ausente",
+        "frescura_probada": False,
+        "testigo_origen": "durable",
+        "testigo_contexto": "coincide",
+        "testigo_durable": "guardado",
+    }
+    servicio.preparar_etapa_asistida = AsyncMock(return_value=dict(resultado))
+    servicio.verificar_etapa_asistida = AsyncMock(return_value=dict(resultado))
+
+    with caplog.at_level("INFO", logger="sky_claw.local.tools.wrye_bash_service"):
+        devuelto = await servicio.ejecutar_fase_asistida(profile="P", fase=fase)
+
+    assert devuelto == resultado  # el log no altera lo que ve el llamador
+    registros = [r for r in caplog.records if getattr(r, "fase_asistida", None) == fase]
+    assert len(registros) == 1, "debe haber exactamente un registro de auditoría por fase"
+    # Igualdad exacta del dict logueado (clave → valor): lo que entra y lo que no. Comparar
+    # strings sueltos en el texto daría verde con un valor bajo la clave equivocada.
+    campos = registros[0].args[1]  # type: ignore[index]
+    # Y el mismo dict viaja como campo estructurado para el log JSON, no solo en el mensaje.
+    assert registros[0].resultado_asistido == campos  # type: ignore[attr-defined]
+    assert campos == {
+        "success": False,
+        "reason": "ArtefactoAusente",
+        "motivo": "artefacto_ausente",
+        "frescura_probada": False,
+        "testigo_origen": "durable",
+        "testigo_contexto": "coincide",
+        "testigo_durable": "guardado",
+        "estado_en_plugins": "ausente",
+    }
+    for excluida in ("message", "artefacto", "plugins_txt"):
+        assert excluida not in campos, f"{excluida!r} puede llevar rutas y no va al log"
+    assert _RUTA_SENSIBLE not in caplog.text
+    assert "operador" not in caplog.text

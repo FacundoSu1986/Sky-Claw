@@ -361,7 +361,14 @@ async def test_el_strategy_despacha_run_texgen_false_al_service() -> None:
     """El tramo final del boundary: ``GenerateLodsStrategy`` filtra el payload
     resume y llama al service con ``run_texgen=False`` — el punto donde la
     validación durable de D2 toma el control."""
-    service = SimpleNamespace(execute=AsyncMock(return_value={"success": True}))
+    from sky_claw.local.validators.etapas_previas_lods import EvidenciaDeEtapasPrevias  # noqa: PLC0415
+
+    # D-3: la corrida asistida también verifica las etapas previas; este test es del tramo
+    # payload → service, así que las etapas están completas y el guard no pregunta nada.
+    service = SimpleNamespace(
+        execute=AsyncMock(return_value={"success": True}),
+        verificar_etapas_previas=lambda: EvidenciaDeEtapasPrevias(faltantes=()),
+    )
     strategy = GenerateLodsStrategy(service)  # type: ignore[arg-type]
 
     await strategy.execute({"run_texgen": False})

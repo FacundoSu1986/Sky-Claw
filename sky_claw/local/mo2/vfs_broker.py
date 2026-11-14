@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import os
 import pathlib
 import secrets
@@ -55,6 +56,13 @@ _BRIDGE_LOSS_FENCE_GRACE_SECONDS = 30.0
 # Deadline hard para la confirmación de worker_exit cuando el bridge MO2 permanece
 # conectado tras solicitar terminación.
 _CONNECTED_WORKER_EXIT_DEADLINE_SECONDS = 30.0
+# Política de teardown TRAS el resultado: si el job_result ya llegó y el worker_exit se demora más que esta gracia, el
+# broker le pide al bridge cerrar el Job (el ``cancel`` de siempre) en vez de esperar, con el bridge conectado, hasta el
+# deadline duro y poner la instancia en cuarentena. Un MO2 real midió 0,23-0,75 s entre job_result y worker_exit en lo
+# normal y colas de ~22 s y ~43 s por la salida lenta del bootloader (1 de 24 corridas terminó en cuarentena con el
+# resultado ya recibido): ~7x la peor demora normal. NO cambia el deadline duro ni la cuarentena: ``worker_exit`` solo se
+# emite con el Job VACÍO, y si el bridge no puede cerrarlo, la cuarentena sigue igual.
+_POST_RESULT_CANCEL_GRACE_SECONDS = 5.0
 # Ventana de gracia acotada para permitir el replay de worker_exit si el bridge MO2
 # reconecta tras vencer el deadline conectado original.
 _BRIDGE_RECONNECT_REPLAY_GRACE_SECONDS = 2.0
@@ -79,6 +87,52 @@ def vfs_instance_id(mo2_root: pathlib.Path) -> str:
     normalized = os.path.normcase(str(mo2_root.resolve())).casefold()
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
     return f"mo2-{digest}"
+
+
+def proceso_dueno_sigue_vivo(pid: int, create_time_esperado: object) -> bool:
+    """¿El proceso ``pid`` sigue siendo el dueño original (mismo PID Y misma identidad)?
+
+    Conservadora: ante la duda, el dueño está vivo. ``create_time_esperado`` es el ``create_time`` que el dueño
+    registró en el lock; sin él (lock antiguo) no se puede probar que el PID cambió de dueño y se asume vivo.
+    """
+    # Sin atajo para el PID propio: el SO puede haberle dado a ESTE proceso el PID de un dueño que ya murió (reciclado), y
+    # entonces el ``create_time`` registrado no coincide con el propio y el dueño original no está vivo. Con identidad
+    # igual (o sin ella, en un lock antiguo) sigue siendo «vivo», como antes.
+    # Liveness vía psutil + create_time, NO os.kill(pid, 0): en Windows os.kill
+    # sobre un PID reciclado por un proceso protegido del SO lanza un SystemError
+    # irrecuperable (OSError con excepción C sin traducir), y un PID simplemente
+    # reusado se leería como "vivo" y el lock jamás se reclamaría (deadlock de
+    # arranque tras un crash del broker). create_time da la identidad estable del
+    # proceso, mismo patrón que vfs.MO2Controller._kill_process_tree (review #302).
+    try:
+        create_time = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return False  # el dueño murió: PID libre → lock reclamable
+    except psutil.Error:
+        return True  # no verificable (AccessDenied/…): conservador, no robar el lock
+    # Vivo salvo que el create_time registrado no coincida (PID reusado por otro
+    # proceso ⇒ el dueño original ya murió). Un lock antiguo sin create_time
+    # (None) no dispara la reclamación: se trata como vivo (conservador).
+    return not (isinstance(create_time_esperado, (int, float)) and create_time != create_time_esperado)
+
+
+def lock_de_instancia_tiene_dueno_vivo(lock_path: pathlib.Path) -> bool:
+    """¿El lock de instancia en ``lock_path`` pertenece a un proceso que sigue vivo?
+
+    Es la ÚNICA definición de «lock huérfano»: el broker la usa al arrancar y ``vfs_quarantine`` (la superficie de
+    operador de la cuarentena) la usa para decidir si puede liberar. Conservadora: ante la duda, el dueño está vivo.
+    """
+    try:
+        raw = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return True
+    if isinstance(raw, dict) and raw.get("quarantined"):
+        # Si el lock está envenenado por cuarentena fail-closed, nunca se considera huérfano ni libre
+        return True
+    pid = raw.get("pid") if isinstance(raw, dict) else None
+    if type(pid) is not int or pid <= 0:
+        return True
+    return proceso_dueno_sigue_vivo(pid, raw.get("create_time") if isinstance(raw, dict) else None)
 
 
 class VfsBrokerError(RuntimeError):
@@ -159,11 +213,18 @@ class VfsExecutionBroker:
         fence_grace_seconds: float = _BRIDGE_LOSS_FENCE_GRACE_SECONDS,
         connected_worker_exit_deadline_seconds: float = _CONNECTED_WORKER_EXIT_DEADLINE_SECONDS,
         bridge_reconnect_replay_grace_seconds: float = _BRIDGE_RECONNECT_REPLAY_GRACE_SECONDS,
+        post_result_cancel_grace_seconds: float = _POST_RESULT_CANCEL_GRACE_SECONDS,
     ) -> None:
         try:
             self._instance_id = assert_safe_component(instance_id, field="instance_id")
         except PathViolationError as exc:
             raise VfsBrokerError(str(exc)) from exc
+        if not math.isfinite(post_result_cancel_grace_seconds) or post_result_cancel_grace_seconds <= 0:
+            # Un valor absurdo apagaría la política (o la dispararía de inmediato) sin que nadie se entere.
+            raise VfsBrokerError(
+                f"post_result_cancel_grace_seconds debe ser un número positivo y finito: {post_result_cancel_grace_seconds!r}"
+            )
+        self._post_result_cancel_grace = post_result_cancel_grace_seconds
         self._state_dir = state_dir.resolve()
         self._jobs_dir = self._state_dir / "jobs"
         self._descriptor_path = self._state_dir / f"{self._instance_id}.json"
@@ -319,6 +380,7 @@ class VfsExecutionBroker:
                 poison_payload = json.dumps(
                     {
                         "pid": os.getpid(),
+                        "create_time": self._create_time_propio(),
                         "session_id": self._session_id,
                         "quarantined": True,
                         "quarantine_reason": f"emergencia fail-closed por falla de persistencia: {reason}",
@@ -330,21 +392,26 @@ class VfsExecutionBroker:
             except Exception:
                 pass
 
+    @staticmethod
+    def _create_time_propio() -> float | None:
+        """``create_time`` de este proceso (``None`` si psutil no lo puede leer): su identidad contra el reciclado de PID."""
+        try:
+            create_time: float | None = psutil.Process(os.getpid()).create_time()
+        except psutil.Error:
+            return None
+        return create_time
+
     def _crear_payload_de_identidad(self) -> bytes:
         """Crea el payload JSON de identidad del proceso dueño del lock (pid, session_id, create_time).
 
         create_time proporciona identidad estable contra el reciclado de PID del SO,
         manejando psutil.Error de forma homogénea tanto en adquisición como en reconciliación.
         """
-        try:
-            own_create_time: float | None = psutil.Process(os.getpid()).create_time()
-        except psutil.Error:
-            own_create_time = None
         return json.dumps(
             {
                 "pid": os.getpid(),
                 "session_id": self._session_id,
-                "create_time": own_create_time,
+                "create_time": self._create_time_propio(),
             },
             sort_keys=True,
         ).encode("utf-8")
@@ -484,35 +551,7 @@ class VfsExecutionBroker:
         raise VfsBrokerError(f"no se pudo reclamar el lock de la instancia {self._instance_id}")
 
     def _instance_lock_owner_alive(self) -> bool:
-        try:
-            raw = json.loads(self._instance_lock_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            return True
-        if isinstance(raw, dict) and raw.get("quarantined"):
-            # Si el lock está envenenado por cuarentena fail-closed, nunca se considera huérfano ni libre
-            return True
-        pid = raw.get("pid") if isinstance(raw, dict) else None
-        if type(pid) is not int or pid <= 0:
-            return True
-        if pid == os.getpid():
-            return True
-        expected_create_time = raw.get("create_time") if isinstance(raw, dict) else None
-        # Liveness vía psutil + create_time, NO os.kill(pid, 0): en Windows os.kill
-        # sobre un PID reciclado por un proceso protegido del SO lanza un SystemError
-        # irrecuperable (OSError con excepción C sin traducir), y un PID simplemente
-        # reusado se leería como "vivo" y el lock jamás se reclamaría (deadlock de
-        # arranque tras un crash del broker). create_time da la identidad estable del
-        # proceso, mismo patrón que vfs.MO2Controller._kill_process_tree (review #302).
-        try:
-            create_time = psutil.Process(pid).create_time()
-        except psutil.NoSuchProcess:
-            return False  # el dueño murió: PID libre → lock reclamable
-        except psutil.Error:
-            return True  # no verificable (AccessDenied/…): conservador, no robar el lock
-        # Vivo salvo que el create_time registrado no coincida (PID reusado por otro
-        # proceso ⇒ el dueño original ya murió). Un lock antiguo sin create_time
-        # (None) no dispara la reclamación: se trata como vivo (conservador).
-        return not (isinstance(expected_create_time, (int, float)) and create_time != expected_create_time)
+        return lock_de_instancia_tiene_dueno_vivo(self._instance_lock_path)
 
     def _release_instance_file_lock(self) -> None:
         if not self._owns_instance_file_lock:
@@ -526,6 +565,7 @@ class VfsExecutionBroker:
                 poison_payload = json.dumps(
                     {
                         "pid": os.getpid(),
+                        "create_time": self._create_time_propio(),
                         "session_id": self._session_id,
                         "quarantined": True,
                         "quarantine_reason": f"emergencia fail-closed retenida: {self._quarantine_reason}",
@@ -1011,11 +1051,78 @@ class VfsExecutionBroker:
         timeout: float,
     ) -> VfsJobResult:
         result = await asyncio.wait_for(asyncio.shield(result_future), timeout=timeout)
+        # El deadline duro es ABSOLUTO y se fija antes de la espera blanda: pedir el cierre no lo extiende.
         deadline = asyncio.get_running_loop().time() + self._connected_worker_exit_deadline
+        await self._pedir_cierre_si_el_worker_exit_se_demora(exit_future, job_id=job_id, deadline=deadline)
         while not exit_future.done():
             await self._await_exit_or_bridge_loss(exit_future, deadline, job_id=job_id)
         exit_future.result()
         return result
+
+    async def _pedir_cierre_si_el_worker_exit_se_demora(
+        self,
+        exit_future: asyncio.Future[int | None],
+        *,
+        job_id: str | None,
+        deadline: float,
+    ) -> None:
+        """Con el resultado ya recibido, pide al bridge cerrar el Job si el ``worker_exit`` se demora.
+
+        Es una espera BLANDA: no pone cuarentena ni marca error (eso lo decide, a su plazo, la espera dura que sigue).
+        Solo envía el ``cancel`` de siempre, una vez. Los tres desenlaces conservan la garantía de antes:
+
+        * el bridge cierra el Job, lo confirma vacío y emite ``worker_exit``: se libera normal, sin cuarentena;
+        * el job ya no existe en el bridge (carrera): ``job_unknown`` se trata como benigno y se sigue esperando;
+        * el bridge no puede cerrarlo, o no confirma antes del deadline duro: cuarentena, como siempre.
+
+        Si la gracia no es menor que el deadline duro no hay ventana donde pedirlo: la política no se activa. Un bridge
+        desconectado no es un error de este camino: rige el contrato de pérdida de bridge de la espera dura.
+
+        ``deadline`` es el instante ABSOLUTO del deadline duro. El envío corre como tarea y se espera lo primero que
+        ocurra —que termine, que llegue el ``worker_exit`` o que venza ese deadline—: un socket que no drena (o un lock de
+        escritura retenido por otro) no puede dejar colgado a un job exitoso, ni impedir que el deadline venza, ni
+        retener a un ``worker_exit`` que ya llegó. Cancelar el envío es seguro: la trama ya está en el buffer antes del
+        ``drain()`` (no queda una trama a medias) y el lock de escritura se libera.
+        """
+        gracia = self._post_result_cancel_grace
+        if job_id is None or gracia >= self._connected_worker_exit_deadline:
+            return
+        await asyncio.wait({exit_future}, timeout=gracia)
+        if exit_future.done():
+            return
+        restante = deadline - asyncio.get_running_loop().time()
+        if restante <= 0:
+            return  # el deadline duro ya venció: lo resuelve la espera dura que sigue (cuarentena), sin enviar nada
+        logger.warning(
+            "El worker VFS %s ya reportó su resultado pero no confirmó worker_exit en %.1fs; se pide al bridge MO2 "
+            "cerrar el Job (la cuarentena sigue vigente si no lo confirma)",
+            job_id,
+            gracia,
+            extra={"event": "post_result_cancel_requested", "operation": "vfs_broker", "job_id": job_id},
+        )
+        envio = asyncio.create_task(
+            self._send_bridge({"protocol_version": VFS_PROTOCOL_VERSION, "type": "cancel", "job_id": job_id}),
+            name=f"vfs-post-result-cancel-{job_id}",
+        )
+        try:
+            # Se espera lo PRIMERO que ocurra: el envío termina, llega el worker_exit o vence el deadline duro. Un envío
+            # trabado no retiene ni al evento terminal ni al deadline.
+            esperados: set[asyncio.Future[Any]] = {envio, exit_future}
+            await asyncio.wait(esperados, timeout=restante, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if not envio.done():
+                await _cancel_and_join(envio)
+        if envio.cancelled():
+            if not exit_future.done():
+                logger.warning("No se pudo pedir al bridge cerrar el Job de %s tras el resultado a tiempo", job_id)
+            return
+        error = envio.exception()
+        if error is None:
+            return
+        if isinstance(error, (VfsBrokerError, ConnectionError, OSError)):
+            logger.warning("No se pudo pedir al bridge cerrar el Job de %s tras el resultado", job_id, exc_info=error)
+            return
+        raise error
 
     async def _await_worker_exit(
         self,

@@ -155,6 +155,15 @@ class AdoptionApi(Protocol):
 
     def creation_time(self, handle: int) -> int: ...
 
+    def creation_time_by_pid(self, pid: int) -> int | None:
+        """Creación de ``pid`` leída del sistema SIN abrir el proceso; ``None`` si ya no figura.
+
+        Es la única forma de saber cuándo nació un proceso que no se puede abrir (``csrss``, ``wininit``, ``winlogon``...):
+        ``creation_time`` necesita un handle. Mismas unidades y reloj que ``creation_time``. ``BridgeCommandError`` si la
+        lectura falla.
+        """
+        ...
+
     def has_exited(self, handle: int) -> bool: ...
 
     def in_job(self, handle: int) -> bool:
@@ -182,6 +191,26 @@ def _salio_confirmado(api: AdoptionApi, handle: int) -> bool:
         return False
 
 
+def _nacio_antes_que_su_padre(api: AdoptionApi, pid: int, creacion_del_padre: int) -> bool:
+    """``True`` solo con evidencia POSITIVA de que ``pid`` es más viejo que su padre, y por lo tanto no es su hijo.
+
+    Un proceso nace después que su padre (el padre existía para crearlo, también cuando el padre se falsea), así que uno
+    MÁS VIEJO que el padre retenido solo comparte con él el PPID numérico: Windows no reasigna el PPID cuando el padre
+    muere y el sistema puede entregarle ese PID a otro proceso más tarde. Se lee la creación SIN abrir el proceso porque
+    justamente estos procesos suelen ser de sistema y no se abren; el mismo criterio aplica ``psutil.Process.children``
+    (con la misma lectura de reserva) en el lado del worker y del broker.
+
+    Si la lectura falla, o el proceso ya no figura, NO hay evidencia: ``False``, y el candidato sigue siendo un posible
+    descendiente vivo fuera del Job (fail-closed). Una creación IGUAL a la del padre tampoco descarta: un bootloader crea
+    a su hijo a los pocos milisegundos.
+    """
+    try:
+        creacion = api.creation_time_by_pid(pid)
+    except BridgeCommandError:
+        return False
+    return creacion is not None and creacion < creacion_del_padre
+
+
 def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _ADOPTION_MAX_PASSES) -> int:
     """Contiene a TODO el árbol del proceso lanzado (auditoría independiente, H-01).
 
@@ -194,9 +223,14 @@ def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _
     un PPID numéricamente igual al de un proceso viejo no se confunde con un hijo. Eso también permite seguir a un
     nieto cuyo padre ya murió.
 
+    «Nació después» se lee del handle del candidato; si no se pudo abrir (un proceso de sistema con el PPID reciclado:
+    ``csrss``, ``wininit`` o ``winlogon`` conservan el de un ``smss`` de sesión que ya salió) se lee del sistema sin abrirlo
+    (``creation_time_by_pid``). Solo la evidencia POSITIVA de que es más viejo que su padre lo descarta; sin ella un
+    candidato que no se pudo identificar sigue contando como descendiente vivo fuera del Job (ver ``_nacio_antes_que_su_padre``).
+
     El error es por PID (como la limpieza de H-03): el fallo de uno no corta la ronda. Un descendiente vivo que no se
     pudo adoptar se intenta terminar (no puede quedar suelto fuera del Job) y al final se lanza ``BridgeCommandError``
-    que los nombra a todos: el bridge no emite ``launch_ack``. Devuelve cuántos adoptó.
+    que los nombra a todos, cada uno con su PPID: el bridge no emite ``launch_ack``. Devuelve cuántos adoptó.
 
     Dos clases de fallo, que el broker trata distinto: si todo lo que no se pudo adoptar se TERMINÓ, es un rechazo
     ordinario (``BridgeCommandError``: nada quedó vivo). Si queda un descendiente vivo FUERA del Job (no se pudo abrir ni
@@ -208,6 +242,8 @@ def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _
     abiertos: list[int] = []  # handles que abrió ESTA función (el de la raíz es del bridge: no se cierra)
     ajenos: set[int] = set()
     fallos: dict[int, str] = {}
+    # pid fallido -> su PPID: sin él, al leer el error un PID reciclado no se distingue de un hijo.
+    padres: dict[int, int] = {}
     vivos_fuera: set[int] = set()  # fallaron y NO se pudieron terminar: siguen vivos fuera del Job
     adoptados = 0
     try:
@@ -240,6 +276,18 @@ def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _
                         raise
                     adoptados += 1
                 except BridgeCommandError as exc:
+                    # Todavía no se lo identificó como descendiente (la excepción saltó antes de retenerlo: no se pudo
+                    # abrir, o no se pudo leer su creación por handle) y tampoco como ajeno. Que no se pueda leer por
+                    # handle no lo vuelve un descendiente: si el sistema da su creación y es ANTERIOR a la de su padre,
+                    # su PPID es un PID reciclado. Un ajeno ya identificado NO pasa por acá: que falle cerrar su handle
+                    # sigue rechazando el launch (ver más abajo).
+                    if (
+                        pid not in retenidos
+                        and pid not in ajenos
+                        and _nacio_antes_que_su_padre(api, pid, retenidos[ppid])
+                    ):
+                        ajenos.add(pid)
+                        continue
                     detalle = str(exc)
                     # Sigue vivo salvo que terminarlo funcione: sin handle (no se pudo abrir) o con ``terminate`` fallido
                     # queda un proceso fuera del Job que nada de lo que hace ``launch`` alcanza. Un PID ya identificado
@@ -256,6 +304,7 @@ def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _
                             # chequeo de ``has_exited`` y el ``terminate``, no queda nada vivo.
                             sigue_vivo = not _salio_confirmado(api, handle)
                     fallos[pid] = detalle
+                    padres[pid] = ppid
                     if sigue_vivo:
                         vivos_fuera.add(pid)
             if not hubo_nuevos:
@@ -269,7 +318,7 @@ def adopt_descendants(api: AdoptionApi, root_handle: int, *, max_passes: int = _
             with contextlib.suppress(BridgeCommandError):
                 api.close(handle_abierto)
     if fallos:
-        detalle_total = "; ".join(f"pid {pid}: {motivo}" for pid, motivo in sorted(fallos.items()))
+        detalle_total = "; ".join(f"pid {pid} (PPID {padres[pid]}): {motivo}" for pid, motivo in sorted(fallos.items()))
         if vivos_fuera:
             raise BridgeTerminationError(
                 "no se pudo contener a los descendientes del worker "
@@ -773,6 +822,32 @@ if sys.platform == "win32":
             ("szExeFile", wintypes.WCHAR * 260),
         ]
 
+    class _SystemProcessInformation(ctypes.Structure):
+        """Prefijo de ``SYSTEM_PROCESS_INFORMATION`` (``NtQuerySystemInformation``, clase 5) hasta el PPID.
+
+        ctypes alinea cada campo como el compilador de Windows, así que estas mismas definiciones valen en 32 y 64 bits
+        (``UNICODE_STRING`` mide 8 o 16 bytes según el puntero). Un test del kernel real compara ``CreateTime`` contra
+        ``GetProcessTimes``: si la disposición estuviera mal, no coincidirían.
+        """
+
+        _fields_ = [
+            ("NextEntryOffset", wintypes.ULONG),
+            ("NumberOfThreads", wintypes.ULONG),
+            ("WorkingSetPrivateSize", ctypes.c_longlong),
+            ("HardFaultCount", wintypes.ULONG),
+            ("NumberOfThreadsHighWatermark", wintypes.ULONG),
+            ("CycleTime", ctypes.c_ulonglong),
+            ("CreateTime", ctypes.c_longlong),
+            ("UserTime", ctypes.c_longlong),
+            ("KernelTime", ctypes.c_longlong),
+            ("ImageNameLength", wintypes.USHORT),
+            ("ImageNameMaximumLength", wintypes.USHORT),
+            ("ImageNameBuffer", ctypes.c_void_p),
+            ("BasePriority", wintypes.LONG),
+            ("UniqueProcessId", ctypes.c_void_p),
+            ("InheritedFromUniqueProcessId", ctypes.c_void_p),
+        ]
+
     class _Win32AdoptionApi:
         """``kernel32`` real para :func:`adopt_descendants`. Cada fallo es un ``BridgeCommandError`` con su ``GetLastError``.
 
@@ -789,6 +864,11 @@ if sys.platform == "win32":
         _WAIT_OBJECT_0 = 0
         _WAIT_TIMEOUT = 0x102
         _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+        _SYSTEM_PROCESS_INFORMATION = 5  # clase de NtQuerySystemInformation
+        _STATUS_BUFFER_CORTO = frozenset({0xC0000004, 0xC0000023})  # INFO_LENGTH_MISMATCH, BUFFER_TOO_SMALL
+        _SYSTEM_PROCESS_LIST_INITIAL_BYTES = 1 << 20
+        _SYSTEM_PROCESS_LIST_SLACK_BYTES = 1 << 16
+        _SYSTEM_PROCESS_LIST_ATTEMPTS = 5
 
         def __init__(self, kernel32: ctypes.WinDLL, job_handle: int) -> None:
             k32 = kernel32
@@ -872,6 +952,50 @@ if sys.platform == "win32":
             ):
                 raise self._error("GetProcessTimes")
             return (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
+
+        def creation_time_by_pid(self, pid: int) -> int | None:
+            """Creación (``FILETIME``, el mismo reloj que ``creation_time``) leída de la lista de procesos del sistema.
+
+            ``NtQuerySystemInformation(SystemProcessInformation)`` no abre ningún proceso, así que contesta también por los
+            que ``OpenProcess`` rechaza (``csrss``, ``wininit``...). Es la lectura de reserva que usa ``psutil`` cuando
+            ``GetProcessTimes`` no tiene acceso.
+            """
+            try:
+                ntdll = ctypes.WinDLL("ntdll")
+            except OSError as exc:
+                raise BridgeCommandError(f"no se pudo cargar ntdll: {exc}") from exc
+            consulta = ntdll.NtQuerySystemInformation
+            consulta.argtypes = [wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG, ctypes.POINTER(wintypes.ULONG)]
+            consulta.restype = wintypes.LONG  # NTSTATUS
+            tamano = self._SYSTEM_PROCESS_LIST_INITIAL_BYTES
+            for _ in range(self._SYSTEM_PROCESS_LIST_ATTEMPTS):
+                buffer = ctypes.create_string_buffer(tamano)
+                necesarios = wintypes.ULONG(0)
+                estado = int(consulta(self._SYSTEM_PROCESS_INFORMATION, buffer, tamano, ctypes.byref(necesarios)))
+                if estado >= 0:
+                    return self._creacion_en_la_lista(buffer, tamano, pid)
+                if (estado & 0xFFFFFFFF) not in self._STATUS_BUFFER_CORTO:
+                    raise BridgeCommandError(f"NtQuerySystemInformation falló (NTSTATUS=0x{estado & 0xFFFFFFFF:08X})")
+                # La lista creció entre la medición y la lectura (nacen procesos): se reintenta con margen.
+                tamano = max(int(necesarios.value), tamano) + self._SYSTEM_PROCESS_LIST_SLACK_BYTES
+            raise BridgeCommandError("NtQuerySystemInformation: la lista de procesos siguió creciendo en cada intento")
+
+        @staticmethod
+        def _creacion_en_la_lista(buffer: ctypes.Array[ctypes.c_char], tamano: int, pid: int) -> int | None:
+            entrada = ctypes.sizeof(_SystemProcessInformation)
+            desplazamiento = 0
+            while True:
+                if desplazamiento + entrada > tamano:
+                    raise BridgeCommandError("NtQuerySystemInformation devolvió una lista de procesos truncada")
+                proceso = _SystemProcessInformation.from_buffer(buffer, desplazamiento)
+                if int(proceso.UniqueProcessId or 0) == pid:
+                    return int(proceso.CreateTime)
+                siguiente = int(proceso.NextEntryOffset)
+                if siguiente == 0:
+                    return None  # recorrida completa: el proceso ya no figura
+                if siguiente < entrada:
+                    raise BridgeCommandError("NtQuerySystemInformation devolvió una entrada de proceso inválida")
+                desplazamiento += siguiente
 
         def has_exited(self, handle: int) -> bool:
             result = self._k32.WaitForSingleObject(handle, 0)

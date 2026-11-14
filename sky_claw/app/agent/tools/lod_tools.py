@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import itertools
 import json
 import logging
 import time
@@ -46,6 +45,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from sky_claw.app.agent.tools.job_ids import nuevo_id_de_trabajo
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
 from sky_claw.local.validators.etapas_previas_lods import etapas_previas_faltantes
 
@@ -69,8 +69,6 @@ MOTIVO_SIN_SERVICIO = (
     "de Sky-Claw (modo GUI) abierta en la PC, que es la que arma el pipeline con su lock y su "
     "workspace. En --mode telegram no hay supervisor de etapa 9."
 )
-
-_IDS = itertools.count(1)
 
 
 @dataclass
@@ -145,6 +143,8 @@ class GestorDeTrabajosDeLods:
     superficie de avisos del guard: best-effort, nunca decide el resultado.
     ``aprobar_sin_etapas_previas`` es el override humano del guard de etapas
     previas; ``None`` significa que no hay a quién preguntar y se corta.
+    ``consultar_cuarentena`` devuelve el estado de la cuarentena del broker VFS (o ``None``) para que
+    ``lods_status`` lo informe: el gestor no conoce al broker.
     """
 
     def __init__(
@@ -153,8 +153,10 @@ class GestorDeTrabajosDeLods:
         proveedor_de_servicio: Callable[[], Any | None],
         notificar: Callable[[str], Awaitable[None]] | None = None,
         aprobar_sin_etapas_previas: AprobadorDeEtapasPrevias | None = None,
+        consultar_cuarentena: Callable[[], dict[str, Any] | None] | None = None,
     ) -> None:
         self._proveedor = proveedor_de_servicio
+        self._consultar_cuarentena = consultar_cuarentena
         self._notificar = notificar
         self._aprobar_sin_etapas_previas = aprobar_sin_etapas_previas
         self._actual: TrabajoDeLods | None = None
@@ -203,7 +205,7 @@ class GestorDeTrabajosDeLods:
                 "interaction_mode": interaction_mode,
             }
             trabajo = TrabajoDeLods(
-                id=f"lods-{next(_IDS)}",
+                id=nuevo_id_de_trabajo("lods"),
                 parametros=parametros,
                 iniciado_en=time.time(),
                 estado="esperando_aprobacion" if faltantes else "iniciado",
@@ -313,8 +315,59 @@ class GestorDeTrabajosDeLods:
 
     def estado(self) -> dict[str, Any]:
         if self._actual is None:
-            return {"success": True, "message": "", "estado": "sin_trabajos"}
-        return {"success": True, "message": "", **self._actual.resumen()}
+            respuesta: dict[str, Any] = {"success": True, "message": "", "estado": "sin_trabajos"}
+        else:
+            respuesta = {"success": True, "message": "", **self._actual.resumen()}
+            # H-11: solo mientras la corrida DE ESTE trabajo está en curso. Antes de lanzarla (``iniciado``,
+            # ``esperando_aprobacion``) el snapshot del servicio sería el de otra corrida (p. ej. una directa desde la GUI) y
+            # se le atribuiría al trabajo; después de terminar, es el rastro de algo que ya acabó. Límite conocido: el
+            # snapshot no lleva la identidad de la corrida, así que una corrida directa que se superponga con una
+            # ``en_curso`` de este trabajo no se distingue (el lock transaccional de la instancia impide que dos corridas
+            # avancen a la vez).
+            if self._actual.estado == "en_curso":
+                progreso = self._progreso_del_servicio()
+                if progreso is not None:
+                    respuesta["progreso"] = progreso
+        # Aditivo: sin cuarentena el contrato no cambia. Best-effort: una consulta rota nunca tumba ``lods_status``.
+        # Va FUERA de la rama del trabajo: una instancia en cuarentena se informa también cuando no hay ningún trabajo.
+        cuarentena = self._cuarentena_del_vfs()
+        if cuarentena is not None:
+            respuesta["cuarentena_vfs"] = cuarentena
+        return respuesta
+
+    def _progreso_del_servicio(self) -> dict[str, Any] | None:
+        """Última muestra del latido de la herramienta, en HECHOS; ``None`` si no hay o no se puede leer.
+
+        Best-effort: ``lods_status`` es la consulta con la que el operador averigua si la etapa 9 sigue viva, así
+        que ninguna falla acá puede romperla. No hay un veredicto «colgado»: el operador (o el LLM) juzga con
+        ``log_sin_cambios_segundos`` y con ``muestra_hace_segundos`` —la edad de la muestra— a la vista; un latido
+        que dejó de llegar también es información.
+        """
+        try:
+            servicio = self._proveedor()
+            muestra = None if servicio is None else getattr(servicio, "progreso_actual", None)
+            if muestra is None:
+                return None
+            sin_cambios = muestra.log_idle_seconds
+            return {
+                "herramienta": muestra.tool_name,
+                "transcurrido_segundos": round(muestra.elapsed_seconds, 1),
+                "log_bytes": muestra.log_bytes,
+                "log_sin_cambios_segundos": None if sin_cambios is None else round(sin_cambios, 1),
+                "muestra_hace_segundos": round(max(0.0, time.time() - muestra.sampled_at), 1),
+            }
+        except Exception:  # noqa: BLE001 -- la consulta de estado nunca se rompe por el progreso
+            logger.warning("no se pudo leer el progreso de la etapa 9 para lods_status", exc_info=True)
+            return None
+
+    def _cuarentena_del_vfs(self) -> dict[str, Any] | None:
+        if self._consultar_cuarentena is None:
+            return None
+        try:
+            return self._consultar_cuarentena()
+        except Exception:  # noqa: BLE001 -- consulta best-effort
+            logger.warning("no se pudo consultar la cuarentena del broker VFS", exc_info=True)
+            return None
 
     async def cerrar(self) -> None:
         """Shutdown: cancela el trabajo vivo y espera a que el pipeline limpie."""

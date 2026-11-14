@@ -150,6 +150,20 @@ nunca `<MO2>/overwrite` como path.
   conectado pero el worker no sale ni responde a la terminación, el broker no
   cuelga indefinidamente. Un deadline absoluto interno (`connected_worker_exit_deadline_seconds`,
   por defecto 30.0s) expira con `VfsTeardownDeadlineError`.
+- **Pedido de cierre tras el resultado (cola lenta del proceso lanzado):** con el
+  `job_result` ya recibido, si el `worker_exit` no llega dentro de
+  `post_result_cancel_grace_seconds` (por defecto 5.0 s, positivo y finito), el broker
+  le pide al bridge cerrar el Job con el `cancel` de siempre, **una vez**, y sigue
+  esperando hasta el MISMO deadline duro (pedirlo no lo extiende: el envío queda acotado por ese deadline, así que un socket
+  que no drena no puede dejar colgado a un job exitoso). Cubre `submit()` y
+  las sesiones, que comparten `_await_job_completion`. No relaja nada: `worker_exit` solo
+  se emite con el Job VACÍO, así que liberar al recibirlo conserva la garantía; si el
+  bridge responde que no pudo terminarlo, o no lo confirma antes del deadline, la
+  cuarentena sigue igual; un `job_unknown` es una carrera benigna y no la dispara. Si la
+  gracia no es menor que el deadline duro, la política no se activa. *Motivo:* un MO2
+  real midió 0,23–0,75 s entre `job_result` y `worker_exit` en lo normal y colas de ~22 s
+  y ~43 s por la salida lenta del bootloader (1 de 24 corridas terminó en cuarentena
+  con el resultado ya recibido; medición de otra sesión, no reproducida aquí).
 - **Principio de terminalidad demostrada:** La ausencia de evidencia terminal
   (`timeout`, `bridge_error`, `job_unknown`) **no** equivale a terminalidad.
   El broker jamás asume que un worker está muerto (`set_result(None)`) mientras
@@ -179,6 +193,12 @@ nunca `<MO2>/overwrite` como path.
 - Operaciones worker `health` y `loot_sort`.
 - Modos de operador `install-vfs-bridge` y `vfs-health` sin arrancar el daemon
   completo.
+- Modo de operador `vfs-quarantine` (`status` / `release`), también sin arrancar
+  el daemon: lee la cuarentena persistida y la libera con evidencia explicita y
+  solo si no hay un dueño vivo del lock. Cubre las tres formas persistidas
+  (marcador, lock envenenado y lock huerfano) porque borrar solo el marcador no
+  alcanza: el proximo arranque reclamaria el lock y volveria a aislar la
+  instancia. `lods_status` del agente expone `cuarentena_vfs` cuando existe.
 - LOOT es el primer ritual productivo migrado en sus dos entry points: agente
   lock-only y Supervisor GUI con preview pre-HITL.
 - El guard evita que esos paths reconstruyan un `LOOTRunner` standalone.

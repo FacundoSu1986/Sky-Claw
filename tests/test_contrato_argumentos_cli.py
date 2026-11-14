@@ -223,6 +223,8 @@ LANZADORES_ESPERADOS = {
     "sky_claw/local/tools/synthesis_runner.py": 1,
     "sky_claw/local/tools/texconv_runner.py": 1,
     "sky_claw/local/tools/vramr_service.py": 1,
+    # ADR 0018: un único `run_capture` lanza el xEdit Bridge (run_mcp.py / run_admit.py).
+    "sky_claw/local/tools/xedit_bridge_client.py": 1,
     "sky_claw/local/xedit/runner.py": 1,
 }
 
@@ -246,6 +248,7 @@ LANZADORES_DE_HERRAMIENTA = frozenset(
         "sky_claw/local/tools/vramr_service.py",
         "sky_claw/local/xedit/runner.py",
         "sky_claw/local/tools/wrye_bash_runner.py",
+        "sky_claw/local/tools/xedit_bridge_client.py",
     }
 )
 
@@ -289,6 +292,12 @@ PROCEDENCIA_DE_FLAGS = {
     "sky_claw/local/xedit/runner.py": (
         "TES5Edit/TES5Edit — xEdit/xeInit.pas (-T:/-P:, game mode); tes5edit.github.io/docs "
         "2-overview (-D: Data dir, -R: log filename) y 18-whatsnew 4.0.2 (-autoexit en modo Script)"
+    ),
+    "sky_claw/local/tools/xedit_bridge_client.py": (
+        "xEdit Bridge 1.1.0 — run_admit.py (argparse: config posicional, --mo2 'MO2 instance folder (the "
+        "one with ModOrganizer.ini)', --profile, --plugin), xedit_bridge/mcp_server.py (initialize, "
+        "tools/call xedit_check, _text_result: isError = not ok) y el arranque -I -S -B de su "
+        "codex-mcp.example.toml; EJECUTADO contra la instalación (tests/test_xedit_bridge_smoke_real.py)"
     ),
 }
 
@@ -1524,6 +1533,12 @@ async def test_generate_lods_no_puede_inyectar_switches_por_payload(tmp_path: pa
 
     class _ServicioFalso:
         """Stub del servicio: reenvía al runner como hace `DynDOLODPipelineService`."""
+
+        def verificar_etapas_previas(self) -> Any:
+            """Etapas previas completas: este test es del boundary de ``dyndolod_args``, no del guard (D-3)."""
+            from sky_claw.local.validators.etapas_previas_lods import EvidenciaDeEtapasPrevias  # noqa: PLC0415
+
+            return EvidenciaDeEtapasPrevias(faltantes=())
 
         async def execute(self, **kwargs: Any) -> dict[str, Any]:
             return {

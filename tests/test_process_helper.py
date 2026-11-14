@@ -159,6 +159,59 @@ async def test_run_capture_returns_streams_and_code_on_success():
     assert (stdout, stderr, rc) == (b"hello", b"", 0)
 
 
+async def test_run_capture_input_bytes_llega_por_stdin_a_un_proceso_real():
+    # El cliente MCP del xEdit Bridge habla JSON-RPC por stdin: el helper unificado tiene que poder enviarlo.
+    import sys
+
+    codigo = "import sys; sys.stdout.write(sys.stdin.read().upper())"
+    stdout, _stderr, rc = await run_capture([sys.executable, "-c", codigo], timeout=30.0, input_bytes=b"hola bridge")
+    assert (stdout, rc) == (b"HOLA BRIDGE", 0)
+
+
+async def test_run_capture_sin_input_bytes_no_abre_stdin_ni_lo_envia():
+    proc = _proc(communicate=AsyncMock(return_value=(b"x", b"")), returncode=0)
+    with patch("asyncio.create_subprocess_exec", return_value=proc) as crear:
+        await run_capture(["tool.exe"], timeout=5.0)
+    assert "stdin" not in crear.call_args.kwargs, "sin input_bytes el comportamiento previo no cambia"
+    proc.communicate.assert_awaited_once_with()
+
+
+async def test_run_capture_con_input_bytes_abre_pipe_y_lo_envia():
+    proc = _proc(communicate=AsyncMock(return_value=(b"x", b"")), returncode=0)
+    with patch("asyncio.create_subprocess_exec", return_value=proc) as crear:
+        await run_capture(["tool.exe"], timeout=5.0, input_bytes=b"{}\n")
+    assert crear.call_args.kwargs["stdin"] is asyncio.subprocess.PIPE
+    proc.communicate.assert_awaited_once_with(input=b"{}\n")
+
+
+async def test_run_capture_env_llega_al_proceso_real():
+    import os
+    import sys
+
+    codigo = "import os, sys; sys.stdout.write(os.environ.get('SKYCLAW_PRUEBA_ENV', '-'))"
+    entorno = {**os.environ, "SKYCLAW_PRUEBA_ENV": "desde el caller"}
+    stdout, _stderr, rc = await run_capture([sys.executable, "-c", codigo], timeout=30.0, env=entorno)
+    assert (stdout, rc) == (b"desde el caller", 0)
+
+
+async def test_run_capture_sin_env_no_lo_pasa_y_el_hijo_hereda():
+    proc = _proc(communicate=AsyncMock(return_value=(b"x", b"")), returncode=0)
+    with patch("asyncio.create_subprocess_exec", return_value=proc) as crear:
+        await run_capture(["tool.exe"], timeout=5.0)
+    assert "env" not in crear.call_args.kwargs, "sin env el comportamiento previo no cambia"
+
+
+async def test_run_capture_con_input_bytes_y_timeout_mata_y_cosecha():
+    async def _colgado(*_a, **_k):
+        await asyncio.sleep(3600)
+
+    proc = _proc(communicate=AsyncMock(side_effect=_colgado))
+    with patch("asyncio.create_subprocess_exec", return_value=proc), pytest.raises(TimeoutError):
+        await asyncio.wait_for(run_capture(["tool.exe"], timeout=0.05, input_bytes=b"{}\n"), timeout=2.0)
+    proc.kill.assert_called_once()
+    proc.wait.assert_awaited()
+
+
 async def test_run_capture_kills_and_raises_on_timeout():
     async def _hang(*_a, **_k):
         await asyncio.sleep(3600)
