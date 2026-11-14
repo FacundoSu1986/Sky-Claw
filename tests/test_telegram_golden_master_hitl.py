@@ -3474,3 +3474,414 @@ class TestAuditoriaCruzadaInteraccionesS8:
                 coord._entregas_en_vuelo.clear()
             await coord.esperar_workers_abandonados(timeout=5.0)
             await asyncio.sleep(0)
+
+
+class TestCicloVidaWorkersAbandonados:
+    """Verifica que workers abandonados o encolados al cerrar no muten estado ni toquen transporte liberado."""
+
+    @SOLO_WINDOWS
+    @pytest.mark.asyncio
+    async def test_worker_abandonado_en_decision_no_entra_a_ejecutar_binder_tras_cerrar(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        exclusion_de_test: str,
+    ) -> None:
+        import time
+
+        import sky_claw.app.comms.golden_master_hitl as gm_mod
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        loop = asyncio.get_running_loop()
+        en_decidir = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+        ejecutar_invocado = False
+        sesion_orig = gm_mod.SesionTransicionGoldenMaster
+
+        class _SesionLentaEnDecision(sesion_orig):  # type: ignore[misc, valid-type]
+            def decidir_y_emitir(self, *args: object, **kwargs: object) -> object:
+                res = super().decidir_y_emitir(*args, **kwargs)  # type: ignore[arg-type]
+                loop.call_soon_threadsafe(en_decidir.set)
+                try:
+                    assert soltar.wait(timeout=10.0)
+                finally:
+                    loop.call_soon_threadsafe(terminado.set)
+                return res
+
+            def ejecutar(self, *args: object, **kwargs: object) -> object:
+                nonlocal ejecutar_invocado
+                ejecutar_invocado = True
+                return super().ejecutar(*args, **kwargs)  # type: ignore[arg-type]
+
+        def _binder_prohibido(**_kwargs: object) -> object:
+            raise AssertionError("No debe invocar el binder después de cerrar el coordinador")
+
+        monkeypatch.setattr(gm_mod, "SesionTransicionGoldenMaster", _SesionLentaEnDecision)
+        monkeypatch.setattr(binder_module, "ejecutar_transicion_binder", _binder_prohibido)
+
+        coord, _wh, polling, sender, _router = _construir_entorno(rig)
+        coord._drain_timeout = 0.05
+        tarea_cb: asyncio.Task[None] | None = None
+        try:
+            await polling._process_raw_update(_update_texto(950, "/gm_preparar"))
+            await coord.esperar_idle()
+            cb_data, msg_id, _ = _extraer_token_de_ultimo_envio(sender, "approve")
+
+            tarea_cb = asyncio.create_task(
+                polling._process_raw_update(_update_callback(951, cb_data, message_id=msg_id))
+            )
+            await asyncio.wait_for(en_decidir.wait(), timeout=5.0)
+            envios_al_cerrar = sender.send.await_count
+            ediciones_al_cerrar = sender.edit_message.await_count
+
+            t0 = time.monotonic()
+            await asyncio.wait_for(coord.cerrar(), timeout=5.0)
+            assert time.monotonic() - t0 < 1.0
+            assert coord.cerrado is True
+            assert coord.workers_activos == 1
+
+            # Simular liberación de recursos críticos (sesión HTTP cerrada) tras cerrar().
+            sender.send.side_effect = RuntimeError("Session is closed")
+            sender.edit_message.side_effect = RuntimeError("Session is closed")
+
+            soltar.set()
+            await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.wait_for(tarea_cb, timeout=5.0)
+            assert await coord.esperar_workers_abandonados(timeout=5.0)
+            assert ejecutar_invocado is False
+            assert coord.workers_activos == 0
+            assert coord._workers_abandonados_ids == set()
+            assert coord.errores_tardios_worker == ()
+            assert sender.send.await_count == envios_al_cerrar
+            assert sender.edit_message.await_count == ediciones_al_cerrar
+            evidencia_ini = leer_game_path_de_mo2(rig.mo2_active_global / "modorganizer.ini")
+            assert evidencia_ini.state is ObservationState.OBSERVED
+            assert pathlib.Path(evidencia_ini.path or "").resolve() == rig.manual_runtime.resolve()
+            cfg_data = tomllib.loads(rig.config_path.read_text(encoding="utf-8"))
+            assert pathlib.Path(cfg_data["skyrim_path"]).resolve() == rig.manual_runtime.resolve()
+            assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
+            assert exclusion_de_test in {"real", "doble_posix"}
+        finally:
+            soltar.set()
+            if tarea_cb is not None and not tarea_cb.done():
+                await asyncio.gather(tarea_cb, return_exceptions=True)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+
+    @SOLO_WINDOWS
+    @pytest.mark.asyncio
+    async def test_worker_encolado_reanudar_y_abandonar_no_muta_estado_si_cerrar_ocurrio_antes_de_entrar(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        exclusion_de_test: str,
+    ) -> None:
+        import sky_claw.app.comms.golden_master_hitl as gm_mod
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        tx_id = _simular_crash_pre_pending(rig, monkeypatch)
+
+        # Caso A: /gm_reanudar ya desencolado en el ThreadPoolExecutor justo cuando cerrar() toma efecto.
+        reanudar_llamado = False
+        abandonar_llamado = False
+        sesion_orig = gm_mod.SesionTransicionGoldenMaster
+
+        class _SesionVigilaReanudar(sesion_orig):  # type: ignore[misc, valid-type]
+            def reanudar(self, *args: object, **kwargs: object) -> object:
+                nonlocal reanudar_llamado
+                reanudar_llamado = True
+                return super().reanudar(*args, **kwargs)  # type: ignore[arg-type]
+
+        def _abandonar_prohibido(*_args: object, **_kwargs: object) -> object:
+            nonlocal abandonar_llamado
+            abandonar_llamado = True
+            raise AssertionError("abandonar_transicion_consumida no debe ejecutarse tras cerrar()")
+
+        monkeypatch.setattr(gm_mod, "SesionTransicionGoldenMaster", _SesionVigilaReanudar)
+        monkeypatch.setattr(gm_mod, "abandonar_transicion_consumida", _abandonar_prohibido)
+
+        for comando in (f"/gm_reanudar {tx_id}", f"/gm_abandonar {tx_id} motivo cierre"):
+            coord, _wh, polling, _sender, _router = _construir_entorno(rig)
+            coord._drain_timeout = 0.05
+            executor = coord._asegurar_executor()
+            orig_submit = executor.submit
+            worker_despertado = threading.Event()
+            puede_entrar = threading.Event()
+
+            def _submit_con_carrera(
+                fn: object,
+                *args: object,
+                desp: threading.Event = worker_despertado,
+                pe: threading.Event = puede_entrar,
+                sub: object = orig_submit,
+                **kwargs: object,
+            ) -> object:
+                def _envuelto() -> object:
+                    desp.set()
+                    assert pe.wait(timeout=10.0)
+                    assert callable(fn)
+                    return fn(*args, **kwargs)
+
+                assert callable(sub)
+                return sub(_envuelto)
+
+            monkeypatch.setattr(executor, "submit", _submit_con_carrera)
+            tarea_op: asyncio.Task[None] | None = None
+            try:
+                tarea_op = asyncio.create_task(polling._process_raw_update(_update_texto(952, comando)))
+                assert await asyncio.to_thread(worker_despertado.wait, 5.0)
+                await asyncio.wait_for(coord.cerrar(), timeout=5.0)
+                puede_entrar.set()
+                await asyncio.wait_for(tarea_op, timeout=5.0)
+                await asyncio.sleep(0)
+                assert await coord.esperar_workers_abandonados(timeout=5.0)
+                assert coord.workers_activos == 0
+                assert coord._workers_abandonados_ids == set()
+                assert coord.errores_tardios_worker == ()
+            finally:
+                puede_entrar.set()
+                if tarea_op is not None and not tarea_op.done():
+                    await asyncio.gather(tarea_op, return_exceptions=True)
+                await coord.esperar_workers_abandonados(timeout=5.0)
+
+        assert reanudar_llamado is False
+        assert abandonar_llamado is False
+        assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.REANUDABLE
+        assert exclusion_de_test in {"real", "doble_posix"}
+
+    @pytest.mark.asyncio
+    async def test_workers_desencolados_en_cierre_abortan_antes_de_mutar_portables(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import sky_claw.app.comms.golden_master_hitl as gm_mod
+
+        sender = _crear_sender_simulado()
+        objetivo = ObjetivoTransicionGoldenMaster(
+            storage_root=tmp_path / "storage",
+            mo2_instance_dir=tmp_path / "mo2",
+            clone_id="clone-1",
+            managed_source_root=tmp_path / "managed",
+        )
+        llamadas: list[str] = []
+
+        class _SesionProhibida:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+            def preparar(self, **_kwargs: object) -> object:
+                llamadas.append("preparar")
+                raise AssertionError("preparar no debe correr tras cerrar()")
+
+            def decidir_y_emitir(self, **_kwargs: object) -> object:
+                llamadas.append("decidir")
+                raise AssertionError("decidir_y_emitir no debe correr tras cerrar()")
+
+            def ejecutar(self, **_kwargs: object) -> object:
+                llamadas.append("ejecutar")
+                raise AssertionError("ejecutar no debe correr tras cerrar()")
+
+            def reanudar(self, **_kwargs: object) -> object:
+                llamadas.append("reanudar")
+                raise AssertionError("reanudar no debe correr tras cerrar()")
+
+        monkeypatch.setattr(gm_mod, "SesionTransicionGoldenMaster", _SesionProhibida)
+        monkeypatch.setattr(
+            gm_mod,
+            "diagnosticar_estado_durable",
+            lambda *_a, **_kw: llamadas.append("diagnosticar"),  # type: ignore[arg-type]
+        )
+        monkeypatch.setattr(
+            gm_mod,
+            "abandonar_transicion_consumida",
+            lambda *_a, **_kw: llamadas.append("abandonar"),  # type: ignore[arg-type]
+        )
+
+        for op in ("diag", "prep", "decision", "reanudar", "abandonar"):
+            coord = CoordinadorTelegramGoldenMaster(
+                sender=sender,
+                operador_autorizado=OPERADOR,
+                objetivo=objetivo,
+                drain_timeout=0.05,
+            )
+            executor = coord._asegurar_executor()
+            orig_submit = executor.submit
+            despertado = threading.Event()
+            soltar = threading.Event()
+
+            def _submit_carrera(
+                fn: object,
+                *args: object,
+                desp: threading.Event = despertado,
+                evt_soltar: threading.Event = soltar,
+                sub: object = orig_submit,
+                **kwargs: object,
+            ) -> object:
+                def _envuelto() -> object:
+                    desp.set()
+                    assert evt_soltar.wait(timeout=10.0)
+                    assert callable(fn)
+                    return fn(*args, **kwargs)
+
+                assert callable(sub)
+                return sub(_envuelto)
+
+            monkeypatch.setattr(executor, "submit", _submit_carrera)
+            coord._operacion_en_curso = True
+            identidad = verificar_identidad_telegram(
+                {"from": {"id": OPERADOR}, "chat": {"id": OPERADOR, "type": "private"}},
+                operador_configurado=OPERADOR,
+            )
+            if op == "diag":
+                coro = coord._correr_diagnostico(chat_id=OPERADOR)
+            elif op == "prep":
+                coro = coord._correr_preparar(chat_id=OPERADOR, identidad=identidad)
+            elif op == "decision":
+                sesion_stub = _SesionPruebaStub(token="tok-pre")
+                sesion_stub.sesion = _SesionProhibida()  # type: ignore[attr-defined]
+                sesion_stub.solicitud = SimpleNamespace(  # type: ignore[attr-defined]
+                    presentacion=SimpleNamespace(solicitud_id="sol-pre")
+                )
+                coord._sesion_activa = sesion_stub  # type: ignore[assignment]
+                coro = coord._correr_decision_y_ejecucion(
+                    sesion_activa=sesion_stub,  # type: ignore[arg-type]
+                    decision=DecisionConsentimiento.APROBAR,
+                    identidad=identidad,
+                )
+            elif op == "reanudar":
+                coro = coord._correr_reanudar(chat_id=OPERADOR, transition_id="tx-1")
+            else:
+                coro = coord._correr_abandonar(
+                    chat_id=OPERADOR, transition_id="tx-1", motivo="cierre", identidad=identidad
+                )
+            tarea = coord._lanzar_tarea(coro)
+            try:
+                assert await asyncio.to_thread(despertado.wait, 5.0)
+                await asyncio.wait_for(coord.cerrar(), timeout=5.0)
+                soltar.set()
+                await asyncio.wait_for(asyncio.gather(tarea, return_exceptions=True), timeout=5.0)
+                assert await coord.esperar_workers_abandonados(timeout=5.0)
+                assert coord.workers_activos == 0
+                assert coord._workers_abandonados_ids == set()
+                assert coord.errores_tardios_worker == ()
+            finally:
+                soltar.set()
+                if not tarea.done():
+                    await asyncio.gather(tarea, return_exceptions=True)
+                await coord.esperar_workers_abandonados(timeout=5.0)
+
+        assert llamadas == []
+
+    @pytest.mark.asyncio
+    async def test_worker_preparar_error_tardio_tras_abandono_no_toca_transporte_y_limpia_abandonados_ids(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import sky_claw.app.comms.golden_master_hitl as gm_mod
+
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=OPERADOR,
+            objetivo=ObjetivoTransicionGoldenMaster(
+                storage_root=tmp_path / "storage",
+                mo2_instance_dir=tmp_path / "mo2",
+                clone_id="clone-1",
+                managed_source_root=tmp_path / "managed",
+            ),
+            drain_timeout=0.05,
+        )
+        en_fallo = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+        loop = asyncio.get_running_loop()
+
+        class _SesionEntregaLuegoFalla:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+            def preparar(self, *, identidad: object, entregar: object) -> object:
+                _ = identidad
+                assert callable(entregar)
+                entregar(
+                    _presentacion_prueba(
+                        solicitud_id="sol-late-err",
+                        approval_seq=1,
+                        digest="dig-1",
+                    )
+                )
+                loop.call_soon_threadsafe(en_fallo.set)
+                try:
+                    assert soltar.wait(timeout=10.0)
+                    raise gm_mod.FrozenRuntimeError("fallo tardío tras entregar")
+                finally:
+                    loop.call_soon_threadsafe(terminado.set)
+
+        monkeypatch.setattr(gm_mod, "SesionTransicionGoldenMaster", _SesionEntregaLuegoFalla)
+        identidad = verificar_identidad_telegram(
+            {"from": {"id": OPERADOR}, "chat": {"id": OPERADOR, "type": "private"}},
+            operador_configurado=OPERADOR,
+        )
+        coord._operacion_en_curso = True
+        tarea = coord._lanzar_tarea(coord._correr_preparar(chat_id=OPERADOR, identidad=identidad))
+        try:
+            await asyncio.wait_for(en_fallo.wait(), timeout=5.0)
+            await asyncio.wait_for(coord.cerrar(), timeout=5.0)
+            assert coord._cierre_abandonado is True
+            assert coord.workers_abandonados_en_cierre == 1
+            ediciones_en_cierre = sender.edit_message.await_count
+            envios_en_cierre = sender.send.await_count
+            # Sesión HTTP liberada: ninguna corutina post-abandono debe intentar editar ni enviar.
+            sender.edit_message.side_effect = RuntimeError("Session is closed")
+            sender.send.side_effect = RuntimeError("Session is closed")
+
+            soltar.set()
+            await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.wait_for(asyncio.gather(tarea, return_exceptions=True), timeout=5.0)
+            assert await coord.esperar_workers_abandonados(timeout=5.0)
+            assert coord.workers_activos == 0
+            assert coord._workers_abandonados_ids == set()
+            assert coord.workers_abandonados_en_cierre == 1
+            assert any("fallo tardío tras entregar" in err for err in coord.errores_tardios_worker)
+            assert sender.edit_message.await_count == ediciones_en_cierre
+            assert sender.send.await_count == envios_en_cierre
+        finally:
+            soltar.set()
+            if not tarea.done():
+                await asyncio.gather(tarea, return_exceptions=True)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_esperar_workers_abandonados_timeout_preserva_executors_y_reintenta_sin_perder_ownership(
+        self,
+    ) -> None:
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(sender=sender, operador_autorizado=OPERADOR, drain_timeout=0.05)
+        shutting_down = threading.Event()
+        release_shutdown = threading.Event()
+        calls: list[bool] = []
+
+        class _ExecutorLento:
+            def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
+                _ = cancel_futures
+                calls.append(wait)
+                shutting_down.set()
+                assert release_shutdown.wait(timeout=10.0)
+
+        coord._executors_abandonados.append(_ExecutorLento())  # type: ignore[arg-type]
+        try:
+            ok_1 = await coord.esperar_workers_abandonados(timeout=0.02)
+            assert ok_1 is False
+            assert len(coord._executors_abandonados) == 1
+            assert shutting_down.is_set()
+
+            release_shutdown.set()
+            ok_2 = await coord.esperar_workers_abandonados(timeout=5.0)
+            assert ok_2 is True
+            assert coord._executors_abandonados == []
+            assert calls == [True, True]
+        finally:
+            release_shutdown.set()

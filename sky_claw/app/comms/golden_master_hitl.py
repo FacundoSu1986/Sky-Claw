@@ -148,6 +148,13 @@ class EntregaPresentacionError(RuntimeError):
     """Fallo controlado al entregar la presentación HITL por Telegram."""
 
 
+class _ResultadoAbortadoPorCierre:
+    """Marcador interno para trabajos de worker cancelados antes de mutar tras cierre."""
+
+
+_TRABAJO_ABORTADO_POR_CIERRE = _ResultadoAbortadoPorCierre()
+
+
 def _escape_html(texto: object) -> str:
     if texto is None:
         return ""
@@ -628,6 +635,7 @@ class CoordinadorTelegramGoldenMaster:
         with self._workers_lock:
             self._workers_en_vuelo.discard(cfut)
             abandonado = cfut in self._workers_abandonados_ids
+            self._workers_abandonados_ids.discard(cfut)
             cerrado = self._cerrado
         if not cfut.cancelled():
             exc = cfut.exception()
@@ -640,6 +648,10 @@ class CoordinadorTelegramGoldenMaster:
                     detalle,
                     exc_info=(type(exc), exc, exc.__traceback__),
                 )
+
+    def _debe_abortar_trabajo(self, cancelacion_event: threading.Event | None = None) -> bool:
+        """Indica si el coordinador inició cierre o cancelación antes de entrar en una mutación."""
+        return self._cerrado or (cancelacion_event is not None and cancelacion_event.is_set())
 
     def _activar_cancelacion_trabajo(self, cancelacion_event: threading.Event | None = None) -> None:
         if cancelacion_event is not None:
@@ -1043,14 +1055,19 @@ class CoordinadorTelegramGoldenMaster:
             await asyncio.sleep(min(0.01, restante))
         executors = list(self._executors_abandonados)
         self._executors_abandonados.clear()
-        for executor in executors:
+        for idx, executor in enumerate(executors):
             restante = max(0.0, limite - loop.time())
             if restante <= 0:
+                self._executors_abandonados.extend(executors[idx:])
                 return False
-            await asyncio.wait_for(
-                asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True),
-                timeout=restante,
-            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True),
+                    timeout=restante,
+                )
+            except TimeoutError:
+                self._executors_abandonados.extend(executors[idx:])
+                return False
         return True
 
     # ------------------------------------------------------------------
@@ -1320,12 +1337,23 @@ class CoordinadorTelegramGoldenMaster:
     async def _correr_diagnostico(self, *, chat_id: int) -> None:
         objetivo = self._objetivo
         assert objetivo is not None
+        cancelacion_pedida = threading.Event()
+
+        def _trabajo_diagnostico() -> DiagnosticoDurable | _ResultadoAbortadoPorCierre:
+            if self._debe_abortar_trabajo(cancelacion_pedida):
+                return _TRABAJO_ABORTADO_POR_CIERRE
+            return diagnosticar_estado_durable(objetivo.storage_root)
+
         try:
             if self._cerrado:
                 return
-            diagnostico = await self._ejecutar_en_worker(lambda: diagnosticar_estado_durable(objetivo.storage_root))
-            if not self._cerrado:
-                await self._enviar_seguro(chat_id, self._formatear_diagnostico(diagnostico))
+            diagnostico = await self._ejecutar_en_worker(
+                _trabajo_diagnostico,
+                cancelacion_event=cancelacion_pedida,
+            )
+            if isinstance(diagnostico, _ResultadoAbortadoPorCierre) or self._cerrado:
+                return
+            await self._enviar_seguro(chat_id, self._formatear_diagnostico(diagnostico))
         except FrozenRuntimeError as exc:
             if not self._cerrado:
                 await self._enviar_seguro(chat_id, f"❌ Diagnóstico falló cerrado: {_escape_html(exc)}")
@@ -1459,18 +1487,23 @@ class CoordinadorTelegramGoldenMaster:
         def _botones_ya_retirados() -> bool:
             return bool(entrega_ref.get("botones_retirados")) or any(e.botones_retirados for e in entregas_preparar)
 
+        def _trabajo_preparar() -> Any:
+            if self._debe_abortar_trabajo(cancelacion_pedida):
+                return _TRABAJO_ABORTADO_POR_CIERRE
+            return sesion.preparar(identidad=identidad, entregar=_entregar)
+
         try:
             if self._cerrado:
                 return
             solicitud = await self._ejecutar_en_worker(
-                lambda: sesion.preparar(identidad=identidad, entregar=_entregar),
+                _trabajo_preparar,
                 cancelacion_event=cancelacion_pedida,
             )
-            if self._cerrado:
+            if isinstance(solicitud, _ResultadoAbortadoPorCierre) or self._cerrado:
                 registro.descartar_todo()
                 if "token" in entrega_ref:
                     self._registrar_token_invalidado(entrega_ref["token"])
-                if "message_id" in entrega_ref and not _botones_ya_retirados():
+                if not self._cierre_abandonado and "message_id" in entrega_ref and not _botones_ya_retirados():
                     entrega_ref["botones_retirados"] = True
                     await self._editar_seguro_con_sender(
                         entrega_ref.get("sender", self._sender),
@@ -1509,7 +1542,7 @@ class CoordinadorTelegramGoldenMaster:
             registro.descartar_todo()
             if "token" in entrega_ref:
                 self._registrar_token_invalidado(entrega_ref["token"])
-            if "message_id" in entrega_ref and not _botones_ya_retirados():
+            if not self._cierre_abandonado and "message_id" in entrega_ref and not _botones_ya_retirados():
                 entrega_ref["botones_retirados"] = True
                 await self._editar_seguro_con_sender(
                     entrega_ref.get("sender", self._sender),
@@ -1538,8 +1571,13 @@ class CoordinadorTelegramGoldenMaster:
         callback_id: str | None = None,
     ) -> None:
         chat_id = sesion_activa.chat_id
+        cancelacion_pedida = threading.Event()
 
-        def _trabajo_consentimiento() -> tuple[ConsentimientoAprobacion | None, ResultadoTransicion | None]:
+        def _trabajo_consentimiento() -> (
+            tuple[ConsentimientoAprobacion | None, ResultadoTransicion | None] | _ResultadoAbortadoPorCierre
+        ):
+            if self._debe_abortar_trabajo(cancelacion_pedida):
+                return _TRABAJO_ABORTADO_POR_CIERRE
             consentimiento = sesion_activa.sesion.decidir_y_emitir(
                 solicitud=sesion_activa.solicitud,
                 decision=decision,
@@ -1547,6 +1585,9 @@ class CoordinadorTelegramGoldenMaster:
             )
             if decision is not DecisionConsentimiento.APROBAR or consentimiento is None:
                 return None, None
+            # No iniciar una nueva transición del binder si el coordinador cerró mientras decidía/emitía.
+            if self._debe_abortar_trabajo(cancelacion_pedida):
+                return _TRABAJO_ABORTADO_POR_CIERRE
             resultado = sesion_activa.sesion.ejecutar(
                 solicitud=sesion_activa.solicitud,
                 consentimiento=consentimiento,
@@ -1564,9 +1605,13 @@ class CoordinadorTelegramGoldenMaster:
             )
             if self._cerrado:
                 return
-            _consentimiento, resultado = await self._ejecutar_en_worker(_trabajo_consentimiento)
-            if self._cerrado:
+            res_consentimiento = await self._ejecutar_en_worker(
+                _trabajo_consentimiento,
+                cancelacion_event=cancelacion_pedida,
+            )
+            if isinstance(res_consentimiento, _ResultadoAbortadoPorCierre) or self._cerrado:
                 return
+            _consentimiento, resultado = res_consentimiento
             if resultado is not None:
                 await self._enviar_seguro(chat_id, self._formatear_resultado_transicion(resultado))
             else:
@@ -1598,17 +1643,24 @@ class CoordinadorTelegramGoldenMaster:
     async def _correr_reanudar(self, *, chat_id: int, transition_id: str) -> None:
         objetivo = self._objetivo
         assert objetivo is not None
+        cancelacion_pedida = threading.Event()
 
-        def _trabajo_reanudar() -> ResultadoTransicion:
+        def _trabajo_reanudar() -> ResultadoTransicion | _ResultadoAbortadoPorCierre:
+            if self._debe_abortar_trabajo(cancelacion_pedida):
+                return _TRABAJO_ABORTADO_POR_CIERRE
             sesion = SesionTransicionGoldenMaster(**objetivo.to_sesion_kwargs())
             return sesion.reanudar(transition_id=transition_id)
 
         try:
             if self._cerrado:
                 return
-            resultado = await self._ejecutar_en_worker(_trabajo_reanudar)
-            if not self._cerrado:
-                await self._enviar_seguro(chat_id, self._formatear_resultado_transicion(resultado))
+            resultado = await self._ejecutar_en_worker(
+                _trabajo_reanudar,
+                cancelacion_event=cancelacion_pedida,
+            )
+            if isinstance(resultado, _ResultadoAbortadoPorCierre) or self._cerrado:
+                return
+            await self._enviar_seguro(chat_id, self._formatear_resultado_transicion(resultado))
         except ReanudacionRequiereDuenoError as exc:
             if not self._cerrado:
                 await self._enviar_seguro(
@@ -1633,8 +1685,11 @@ class CoordinadorTelegramGoldenMaster:
     ) -> None:
         objetivo = self._objetivo
         assert objetivo is not None
+        cancelacion_pedida = threading.Event()
 
-        def _trabajo_abandonar() -> RegistroAbandonoTransicion:
+        def _trabajo_abandonar() -> RegistroAbandonoTransicion | _ResultadoAbortadoPorCierre:
+            if self._debe_abortar_trabajo(cancelacion_pedida):
+                return _TRABAJO_ABORTADO_POR_CIERRE
             return abandonar_transicion_consumida(
                 objetivo.storage_root,
                 transition_id=transition_id,
@@ -1645,15 +1700,19 @@ class CoordinadorTelegramGoldenMaster:
         try:
             if self._cerrado:
                 return
-            registro = await self._ejecutar_en_worker(_trabajo_abandonar)
-            if not self._cerrado:
-                await self._enviar_seguro(
-                    chat_id,
-                    "🗑️ Abandono durable registrado.\n"
-                    f"<b>Transición:</b> <code>{_escape_html(registro.transition_id)}</code>\n"
-                    f"<b>Approval seq:</b> <code>{registro.approval_seq}</code>\n"
-                    f"<b>Digest:</b> <code>{_escape_html(registro.record_digest)}</code>",
-                )
+            registro = await self._ejecutar_en_worker(
+                _trabajo_abandonar,
+                cancelacion_event=cancelacion_pedida,
+            )
+            if isinstance(registro, _ResultadoAbortadoPorCierre) or self._cerrado:
+                return
+            await self._enviar_seguro(
+                chat_id,
+                "🗑️ Abandono durable registrado.\n"
+                f"<b>Transición:</b> <code>{_escape_html(registro.transition_id)}</code>\n"
+                f"<b>Approval seq:</b> <code>{registro.approval_seq}</code>\n"
+                f"<b>Digest:</b> <code>{_escape_html(registro.record_digest)}</code>",
+            )
         except FrozenRuntimeError as exc:
             if not self._cerrado:
                 await self._enviar_seguro(chat_id, f"❌ No se pudo abandonar la transición: {_escape_html(exc)}")
