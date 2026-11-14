@@ -18,6 +18,7 @@ from PyQt6.QtCore import QCoreApplication, QObject, Qt, pyqtSignal, pyqtSlot, qI
 
 from .protocol import (
     VfsFrameError,
+    bundle_digest,
     recv_authenticated_message,
     send_authenticated_message,
 )
@@ -29,10 +30,14 @@ from .runtime import (
     BridgeLaunchController,
     ascii_safe_message,
     bridge_error_event_for_command,
+    bridge_hello,
     verify_mo2_breakaway_allowed,
 )
 
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
+# Identidad del código que MO2 CARGÓ: se calcula una sola vez, al importar el módulo. Recalcularla en cada hello leería el
+# disco de ahora, y tras un reinstall con MO2 abierto afirmaría el digest del código nuevo sobre el viejo en ejecución.
+_BUNDLE_DIGEST = bundle_digest(pathlib.Path(__file__).resolve().parent)
 
 
 def _qt_warning(message: object) -> None:
@@ -150,13 +155,11 @@ class _BridgeClient:
                     connection.settimeout(5)
                     send_authenticated_message(
                         connection,
-                        {
-                            "protocol_version": PROTOCOL_VERSION,
-                            "type": "hello",
-                            "role": "bridge",
-                            "instance_id": self._instance_id,
-                            "session_id": session_id,
-                        },
+                        bridge_hello(
+                            instance_id=self._instance_id,
+                            session_id=session_id,
+                            bundle_digest=_BUNDLE_DIGEST,
+                        ),
                         secret,
                     )
                     ack = recv_authenticated_message(connection, secret)

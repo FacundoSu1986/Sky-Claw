@@ -89,6 +89,7 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
         enqueue_pending_hitl,
         make_gui_hitl_notify,
         ritual_auto_approve_armed,
+        ritual_auto_approve_descargas_armed,
         ritual_tab_id,
     )
 
@@ -117,6 +118,7 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
         set_pending=lambda payload: enqueue_pending_hitl(store, payload),
         auto_approve_getter=ritual_auto_approve_armed,
         tab_id_getter=ritual_tab_id,
+        auto_approve_downloads_getter=ritual_auto_approve_descargas_armed,
         delegate=original_notify,
     )
     guard._sky_claw_gui_hitl_bridge_installed = True

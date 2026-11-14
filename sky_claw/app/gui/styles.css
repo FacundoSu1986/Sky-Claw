@@ -170,6 +170,11 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
         inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
 
+/* Acción de tarjeta de ritual bloqueada por el single-flight: mismo lenguaje que
+   .sc-btn:disabled (gris por filter, sin arrastrar el texto con opacity). El
+   !important del cursor le gana al cursor:pointer inline del botón. */
+.sc-ritual-btn:disabled { cursor: not-allowed !important; filter: grayscale(0.6) brightness(0.65); }
+
 /* Header en ventanas angostas: título + buscador + clúster derecho no entran
    por debajo de ~1240px y el avatar quedaba recortado. El HUD GPU·CPU es
    redundante con la Vitalidad del sidebar (siempre visible desde que el shell
@@ -182,9 +187,9 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     .sc-identity-text { display: none; }
 }
 
-/* Input del Asistente sobre pergamino: el placeholder de Quasar es un gris
-   pensado para fondo blanco y sobre el lavado del pergamino se perdía. */
-.sc-chat-input .q-field__native::placeholder { color: rgba(74, 56, 30, 0.6) !important; font-style: italic; }
+/* Input del Asistente sobre la superficie oscura del tema: mismo placeholder
+   tenue que los campos del wizard. */
+.sc-chat-input .q-field__native::placeholder { color: rgba(219, 196, 161, 0.4) !important; font-style: italic; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
     4. HEADER — idem: el dintel del Forge ya está emitido por el shell
