@@ -38,6 +38,13 @@ _REAP_TIMEOUT = 3.0
 #: Timeout corto para ``taskkill`` — best-effort, no debe bloquear el cleanup.
 _TASKKILL_TIMEOUT = 5.0
 
+#: Bloque máximo de lectura por iteración cuando ``max_output_bytes`` está activo.
+_TAMANO_BLOQUE_LECTURA = 65536
+
+
+class OutputLimitExceededError(OSError):
+    """La salida combinada de stdout y stderr excedió ``max_output_bytes``."""
+
 
 def _kill_tree_windows(pid: int) -> None:
     """Best-effort: mata el ÁRBOL de procesos en Windows vía ``taskkill /T``.
@@ -95,6 +102,73 @@ async def kill_and_reap(
         await asyncio.wait_for(proc.wait(), timeout=timeout)
 
 
+async def _capturar_acotado(
+    proc: asyncio.subprocess.Process,
+    *,
+    input_bytes: bytes | None,
+    max_output_bytes: int,
+) -> tuple[bytes, bytes]:
+    """Lee stdout y stderr por bloques acotados y falla si la suma supera ``max_output_bytes``."""
+    chunks_out: list[bytes] = []
+    chunks_err: list[bytes] = []
+    total = 0
+
+    async def _escribir_stdin() -> None:
+        if proc.stdin is None:
+            return
+        try:
+            if input_bytes:
+                proc.stdin.write(input_bytes)
+                await proc.stdin.drain()
+            proc.stdin.close()
+            if hasattr(proc.stdin, "wait_closed"):
+                await proc.stdin.wait_closed()
+        except (BrokenPipeError, ConnectionResetError):
+            # Si el hijo cerró stdin/salió antes, los pipes de salida y returncode informan la causa.
+            pass
+        finally:
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
+                proc.stdin.close()
+
+    async def _leer(stream: asyncio.StreamReader | None, destino: list[bytes]) -> None:
+        nonlocal total
+        if stream is None:
+            return
+        while True:
+            restante = max_output_bytes - total
+            # Limitar la lectura evita acumular bloques enormes en StreamReader antes de comprobar el tope.
+            tamano = max(1, min(_TAMANO_BLOQUE_LECTURA, restante + 1))
+            chunk = await stream.read(tamano)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_output_bytes:
+                raise OutputLimitExceededError(f"la salida del proceso excedió el límite de {max_output_bytes} bytes")
+            destino.append(chunk)
+
+    tareas: list[asyncio.Task[Any]] = [
+        asyncio.create_task(_leer(proc.stdout, chunks_out)),
+        asyncio.create_task(_leer(proc.stderr, chunks_err)),
+        asyncio.create_task(proc.wait()),
+    ]
+    if input_bytes is not None:
+        tareas.append(asyncio.create_task(_escribir_stdin()))
+    pendientes: set[asyncio.Task[Any]] = set(tareas)
+    try:
+        while pendientes:
+            hechas, pendientes = await asyncio.wait(pendientes, return_when=asyncio.FIRST_EXCEPTION)
+            for tarea in hechas:
+                exc = tarea.exception()
+                if exc is not None:
+                    raise exc
+    finally:
+        for tarea in tareas:
+            if not tarea.done():
+                tarea.cancel()
+        await asyncio.gather(*tareas, return_exceptions=True)
+    return b"".join(chunks_out), b"".join(chunks_err)
+
+
 async def run_capture(
     args: list[str],
     *,
@@ -102,6 +176,8 @@ async def run_capture(
     cwd: str | None = None,
     input_bytes: bytes | None = None,
     env: Mapping[str, str] | None = None,
+    require_job: bool = False,
+    max_output_bytes: int | None = None,
 ) -> tuple[bytes, bytes, int]:
     """Run *args* to completion, capturing stdout/stderr under *timeout*.
 
@@ -125,6 +201,14 @@ async def run_capture(
         Entorno COMPLETO del hijo (reemplaza al heredado: el caller que quiera sumar
         variables parte de ``os.environ``). ``None`` conserva el comportamiento
         previo: el hijo hereda el entorno de Sky-Claw.
+    require_job:
+        Si es ``True`` en Windows, exige que el hijo quede asignado a un Job Object
+        ``KILL_ON_JOB_CLOSE`` o mata el proceso y eleva ``OSError``. No elimina la
+        micro-ventana de ``create_subprocess_exec`` antes de asignar el PID.
+    max_output_bytes:
+        Tope opcional sobre los bytes combinados de ``stdout`` y ``stderr``. Si se
+        supera, se mata y cosecha el proceso y se eleva ``OutputLimitExceededError``
+        (subclase de ``OSError``) sin entregar salida truncada.
 
     Returns
     -------
@@ -138,9 +222,14 @@ async def run_capture(
     TimeoutError
         If execution exceeds *timeout* (the process is killed first).
     OSError
-        If ``communicate()`` returns without setting ``returncode`` — an
-        indeterminate state that must never be reported as success.
+        If ``communicate()`` returns without setting ``returncode``, if
+        ``require_job`` fails in Windows, or if ``max_output_bytes`` is exceeded.
+    ValueError
+        If *max_output_bytes* is not a strictly positive integer.
     """
+    if max_output_bytes is not None and (isinstance(max_output_bytes, bool) or max_output_bytes <= 0):
+        raise ValueError(f"max_output_bytes debe ser un entero > 0 (recibido: {max_output_bytes!r})")
+
     kwargs: dict[str, Any] = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = _CREATE_NO_WINDOW
@@ -168,8 +257,16 @@ async def run_capture(
         # el árbol al cerrar los handles del proceso, incluso si Python nunca
         # llega a este `finally`. No-op fuera de Windows.
         job = assign_kill_on_close_job(proc.pid)
-        comunicar = proc.communicate(input=input_bytes) if input_bytes is not None else proc.communicate()
-        stdout, stderr = await asyncio.wait_for(comunicar, timeout=timeout)
+        if require_job and sys.platform == "win32" and job is None:
+            raise OSError(f"{args[0]}: no se pudo asignar Job Object KILL_ON_JOB_CLOSE al subproceso")
+        if max_output_bytes is not None:
+            stdout, stderr = await asyncio.wait_for(
+                _capturar_acotado(proc, input_bytes=input_bytes, max_output_bytes=max_output_bytes),
+                timeout=timeout,
+            )
+        else:
+            comunicar = proc.communicate(input=input_bytes) if input_bytes is not None else proc.communicate()
+            stdout, stderr = await asyncio.wait_for(comunicar, timeout=timeout)
         if proc.returncode is None:
             # No debería pasar nunca en asyncio real (communicate() espera a que
             # el proceso salga antes de retornar); si pasa, es un estado
@@ -375,5 +472,5 @@ def close_job(job_handle: int | None) -> None:
         return
     import ctypes
 
-    with contextlib.suppress(OSError):
+    with contextlib.suppress(OSError, ctypes.ArgumentError):
         ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(ctypes.c_void_p(job_handle))

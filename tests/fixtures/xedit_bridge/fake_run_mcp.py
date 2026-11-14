@@ -16,10 +16,20 @@ import time
 from pathlib import Path
 
 CONFIG = Path(sys.argv[1])
-ESCENARIO = json.loads(CONFIG.read_text(encoding="utf-8"))["escenario"]
-# Entorno y cwd con que lo lanzó el cliente (el [env] del TOML del bridge se suma al heredado).
+_CONFIG_DATA = json.loads(CONFIG.read_text(encoding="utf-8"))
+ESCENARIO = _CONFIG_DATA["escenario"]
+# Entorno y cwd con que lo lanzó el cliente (el [env] del TOML del bridge se suma al heredado permitido).
 CONFIG.with_name("entorno_mcp.json").write_text(
-    json.dumps({"TEMP": os.environ.get("TEMP"), "SYSTEMROOT": os.environ.get("SYSTEMROOT"), "cwd": os.getcwd()}),
+    json.dumps(
+        {
+            "TEMP": os.environ.get("TEMP"),
+            "SYSTEMROOT": os.environ.get("SYSTEMROOT"),
+            "heredados_prohibidos": sorted(
+                k for k in ("SKYCLAW_SECRET_CANARY", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY") if k in os.environ
+            ),
+            "cwd": os.getcwd(),
+        }
+    ),
     encoding="utf-8",
 )
 VERSION = {"version_vieja": "1.0.5", "version_mayor": "2.0.0", "version_rara": "uno"}.get(ESCENARIO, "1.1.0")
@@ -146,6 +156,13 @@ for linea in sys.stdin:
         sys.stdout.flush()
         sys.stdout.buffer.write(crudo + b"\n")
         sys.stdout.buffer.flush()
+        continue
+    if ESCENARIO == "descontrolado_json_truncado" and metodo == "tools/call":
+        flood_bytes = int(_CONFIG_DATA.get("flood_bytes", 65536))
+        prefijo = b'{"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": "{\\"ok\\": true'
+        sys.stdout.buffer.write(prefijo + (b"X" * flood_bytes))
+        sys.stdout.buffer.flush()
+        time.sleep(60)
         continue
     sys.stdout.write(json.dumps(respuesta) + "\n")
     if ESCENARIO == "id_duplicado" and metodo == "tools/call":

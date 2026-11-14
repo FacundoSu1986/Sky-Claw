@@ -11,16 +11,31 @@ import time
 from pathlib import Path
 
 CONFIG = Path(sys.argv[1])
-ESCENARIO = json.loads(CONFIG.read_text(encoding="utf-8"))["escenario"]
+_CONFIG_DATA = json.loads(CONFIG.read_text(encoding="utf-8"))
+ESCENARIO = _CONFIG_DATA["escenario"]
 CONFIG.with_name("admit_args.json").write_text(json.dumps(sys.argv[2:]), encoding="utf-8")
 CONFIG.with_name("entorno_admit.json").write_text(
-    json.dumps({"TEMP": os.environ.get("TEMP"), "SYSTEMROOT": os.environ.get("SYSTEMROOT"), "cwd": os.getcwd()}),
+    json.dumps(
+        {
+            "TEMP": os.environ.get("TEMP"),
+            "SYSTEMROOT": os.environ.get("SYSTEMROOT"),
+            "heredados_prohibidos": sorted(
+                k for k in ("SKYCLAW_SECRET_CANARY", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY") if k in os.environ
+            ),
+            "cwd": os.getcwd(),
+        }
+    ),
     encoding="utf-8",
 )
 PLUGIN = sys.argv[sys.argv.index("--plugin") + 1]
 
 if ESCENARIO == "colgado":
     time.sleep(600)
+if ESCENARIO == "descontrolado":
+    flood_bytes = int(_CONFIG_DATA.get("flood_bytes", 65536))
+    sys.stderr.write("A" * flood_bytes)
+    sys.stderr.flush()
+    time.sleep(60)
 if ESCENARIO == "no_json":
     print("Traceback (most recent call last): boom")
     sys.exit(1)
