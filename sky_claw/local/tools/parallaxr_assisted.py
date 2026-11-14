@@ -15,12 +15,15 @@ Contrato arquitectónico:
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Final
+from typing import Final, TypeVar
 
 OFFICIAL_ENTRYPOINT_NAME: Final[str] = "ParallaxR.BAT"
 OUTPUT_MARKER_NAME: Final[str] = "ParallaxROutput.tmp"
@@ -29,6 +32,9 @@ MANUAL_MODE: Final[str] = "manual_official_entrypoint"
 DEFAULT_INSTRUCTION: Final[str] = "Ejecutá el entrypoint oficial de ParallaxR desde MO2."
 _HASH_CHUNK_SIZE: Final[int] = 65536
 _FINGERPRINT_MAX_ATTEMPTS: Final[int] = 2
+_WINERROR_INSPECTION_FAILURES: Final[frozenset[int]] = frozenset({21, 123, 1921})
+_ABSENCE_ERRNOS: Final[frozenset[int]] = frozenset({errno.ENOENT, errno.ENOTDIR})
+_ItemT = TypeVar("_ItemT")
 
 
 class ParallaxRAssistedStatus(StrEnum):
@@ -39,10 +45,26 @@ class ParallaxRAssistedStatus(StrEnum):
     AMBIGUOUS = "ambiguous"
     INVALID_SELECTION = "invalid_selection"
     EVIDENCE_UNSTABLE = "evidence_unstable"
+    EVIDENCE_INCOMPLETE = "evidence_incomplete"
 
 
 class ParallaxREvidenceUnstableError(RuntimeError):
     """Error cuando un archivo cambia durante la captura de evidencia."""
+
+
+class ParallaxREvidenceIncompleteError(RuntimeError):
+    """Error cuando una inspección de filesystem queda incompleta y no permite concluir ausencia ni unicidad."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_candidates: tuple[Path, ...] = (),
+        partial_markers: tuple[ParallaxROutputMarkerEvidence, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.partial_candidates: tuple[Path, ...] = partial_candidates
+        self.partial_markers: tuple[ParallaxROutputMarkerEvidence, ...] = partial_markers
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,12 +126,72 @@ class ParallaxRManualHandoff:
     message: str = ""
 
 
+def _resolve_path(path: Path, *, strict: bool = False) -> Path:
+    """Resuelve una ruta acotando la captura de RuntimeError a bucles de symlinks/junctions."""
+    try:
+        return path.resolve(strict=strict)
+    except RuntimeError as err:
+        # En Python 3.11 Windows, Path.resolve() convierte ELOOP/WinError 1921 en RuntimeError("Symlink loop from ...").
+        if "symlink loop" in str(err).lower():
+            raise OSError(errno.ELOOP, "Bucle detectado al resolver la ruta.") from err
+        raise
+
+
+def _stat_mode_fail_closed(path: Path) -> int | None:
+    """Obtiene st_mode distinguiendo ausencia real de errores de inspección Windows/POSIX."""
+    try:
+        return path.stat().st_mode
+    except OSError as stat_err:
+        if getattr(stat_err, "winerror", None) in _WINERROR_INSPECTION_FAILURES:
+            raise
+        if stat_err.errno not in _ABSENCE_ERRNOS:
+            raise
+        try:
+            # Un symlink o junction roto falla stat() con ENOENT, pero lstat() confirma que la entrada existe.
+            path.lstat()
+        except OSError as lstat_err:
+            if getattr(lstat_err, "winerror", None) in _WINERROR_INSPECTION_FAILURES:
+                raise lstat_err from stat_err
+            if lstat_err.errno not in _ABSENCE_ERRNOS:
+                raise lstat_err from stat_err
+            return None
+        raise
+
+
+def _is_accessible_dir(path: Path) -> bool:
+    """Indica si la ruta es un directorio accesible; propaga OSError cuando no puede verificarse."""
+    mode = _stat_mode_fail_closed(path)
+    return mode is not None and stat.S_ISDIR(mode)
+
+
+def _is_accessible_regular_file(path: Path) -> bool:
+    """Indica si la ruta es un archivo regular accesible; propaga OSError cuando no puede verificarse."""
+    mode = _stat_mode_fail_closed(path)
+    return mode is not None and stat.S_ISREG(mode)
+
+
+def _resolve_if_contained(
+    child_path: Path,
+    parent_dir: Path,
+    *,
+    strict: bool = False,
+    resolved_parent: Path | None = None,
+) -> Path | None:
+    """Resuelve child_path si permanece contenido en parent_dir; propaga OSError de resolución."""
+    base_parent = resolved_parent if resolved_parent is not None else _resolve_path(parent_dir, strict=strict)
+    resolved_child = _resolve_path(child_path, strict=strict)
+    try:
+        if resolved_child.is_relative_to(base_parent):
+            return resolved_child
+    except ValueError:
+        return None
+    return None
+
+
 def validate_path_containment(child_path: Path, parent_dir: Path) -> bool:
     """Valida que una ruta resuelta permanezca físicamente contenida en el directorio padre."""
     try:
-        resolved_parent = parent_dir.resolve()
-        resolved_child = child_path.resolve()
-        return resolved_child.is_relative_to(resolved_parent)
+        return _resolve_if_contained(child_path, parent_dir, strict=False) is not None
     except (ValueError, OSError):
         return False
 
@@ -167,30 +249,75 @@ def _fingerprint_file_consistently(
     )
 
 
+def _discover_direct_mod_entries(
+    mods_dir: Path,
+    target_name: str,
+    build_item: Callable[[Path], _ItemT],
+) -> tuple[tuple[_ItemT, ...], bool]:
+    """Enumera entradas directas de mods_dir sin convertir errores de E/S en ausencia."""
+    items: list[_ItemT] = []
+    try:
+        if not _is_accessible_dir(mods_dir):
+            return (), True
+        resolved_mods_dir = _resolve_path(mods_dir, strict=True)
+        for child in sorted(mods_dir.iterdir(), key=lambda p: p.name):
+            if not _is_accessible_dir(child):
+                continue
+            resolved_child = _resolve_if_contained(
+                child,
+                mods_dir,
+                strict=True,
+                resolved_parent=resolved_mods_dir,
+            )
+            if resolved_child is None:
+                continue
+            target_candidate = child / target_name
+            if not _is_accessible_regular_file(target_candidate):
+                continue
+            resolved_target = _resolve_if_contained(
+                target_candidate,
+                mods_dir,
+                strict=True,
+                resolved_parent=resolved_mods_dir,
+            )
+            if resolved_target is None:
+                continue
+            items.append(build_item(resolved_target))
+    except OSError:
+        return tuple(items), False
+
+    return tuple(items), True
+
+
 def discover_parallaxr_candidates(mods_dir: Path) -> tuple[Path, ...]:
     """Descubre candidatos de entrypoint oficial exclusivamente en hijos directos de mods_dir.
 
     Operación read-only, side-effect-free respecto del filesystem y acotada.
+    Si ocurre un error de E/S durante la inspección, eleva ParallaxREvidenceIncompleteError
+    preservando los candidatos válidos ya observados.
     """
-    if not mods_dir.exists() or not mods_dir.is_dir():
-        return ()
+    candidates, complete = _discover_direct_mod_entries(
+        mods_dir,
+        OFFICIAL_ENTRYPOINT_NAME,
+        lambda resolved_entrypoint: resolved_entrypoint,
+    )
+    if not complete:
+        raise ParallaxREvidenceIncompleteError(
+            "Inspección incompleta del directorio de mods al descubrir candidatos de ParallaxR.",
+            partial_candidates=candidates,
+        )
+    return candidates
 
-    candidates: list[Path] = []
-    try:
-        for child in sorted(mods_dir.iterdir(), key=lambda p: p.name):
-            if not child.is_dir():
-                continue
-            entrypoint_candidate = child / OFFICIAL_ENTRYPOINT_NAME
-            if (
-                entrypoint_candidate.is_file()
-                and validate_path_containment(entrypoint_candidate, mods_dir)
-                and validate_path_containment(child, mods_dir)
-            ):
-                candidates.append(entrypoint_candidate.resolve())
-    except OSError:
-        return ()
 
-    return tuple(candidates)
+def _build_output_marker_evidence(resolved_marker: Path) -> ParallaxROutputMarkerEvidence:
+    """Construye la evidencia inmutable de un marcador de salida con snapshot anti-TOCTOU."""
+    snapshot = _fingerprint_file_consistently(resolved_marker)
+    return ParallaxROutputMarkerEvidence(
+        path=resolved_marker,
+        size_bytes=snapshot.size_bytes,
+        mtime_ns=snapshot.mtime_ns,
+        sha256=snapshot.sha256,
+    )
 
 
 def discover_output_markers(mods_dir: Path) -> tuple[ParallaxROutputMarkerEvidence, ...]:
@@ -198,31 +325,20 @@ def discover_output_markers(mods_dir: Path) -> tuple[ParallaxROutputMarkerEviden
 
     Operación read-only y side-effect-free respecto del filesystem. No prejuzga frescura.
     Si un marcador está en mutación continua, eleva ParallaxREvidenceUnstableError.
+    Si ocurre un error de E/S durante la inspección, eleva ParallaxREvidenceIncompleteError
+    preservando los marcadores válidos ya observados.
     """
-    if not mods_dir.exists() or not mods_dir.is_dir():
-        return ()
-
-    markers: list[ParallaxROutputMarkerEvidence] = []
-    try:
-        for child in sorted(mods_dir.iterdir(), key=lambda p: p.name):
-            if not child.is_dir():
-                continue
-            marker_candidate = child / OUTPUT_MARKER_NAME
-            if marker_candidate.is_file() and validate_path_containment(marker_candidate, mods_dir):
-                resolved_marker = marker_candidate.resolve()
-                snapshot = _fingerprint_file_consistently(resolved_marker)
-                markers.append(
-                    ParallaxROutputMarkerEvidence(
-                        path=resolved_marker,
-                        size_bytes=snapshot.size_bytes,
-                        mtime_ns=snapshot.mtime_ns,
-                        sha256=snapshot.sha256,
-                    )
-                )
-    except OSError:
-        return ()
-
-    return tuple(markers)
+    markers, complete = _discover_direct_mod_entries(
+        mods_dir,
+        OUTPUT_MARKER_NAME,
+        _build_output_marker_evidence,
+    )
+    if not complete:
+        raise ParallaxREvidenceIncompleteError(
+            "Inspección incompleta del directorio de mods al descubrir marcadores de salida.",
+            partial_markers=markers,
+        )
+    return markers
 
 
 def run_parallaxr_assisted_preflight(
@@ -232,19 +348,63 @@ def run_parallaxr_assisted_preflight(
 
     Retorna evidencia de instalación, candidatos descubiertos y marcadores de salida existentes.
     """
-    if not mods_dir.exists() or not mods_dir.is_dir():
+    try:
+        mods_dir_accessible = _is_accessible_dir(mods_dir)
+    except OSError:
+        return ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
+            success=False,
+            message=(
+                "No se pudo inspeccionar el directorio de mods de MO2 por un error de acceso al sistema de archivos."
+            ),
+        )
+
+    if not mods_dir_accessible:
         return ParallaxRAssistedPreflight(
             status=ParallaxRAssistedStatus.MISSING,
             success=False,
             message=f"El directorio de mods '{mods_dir}' no existe o no es accesible.",
         )
 
-    candidates = discover_parallaxr_candidates(mods_dir)
+    candidates_incomplete = False
+    try:
+        candidates = discover_parallaxr_candidates(mods_dir)
+    except ParallaxREvidenceIncompleteError as err:
+        candidates = err.partial_candidates
+        candidates_incomplete = True
+    except OSError:
+        candidates = ()
+        candidates_incomplete = True
+
     candidate_mod_roots = tuple(c.parent for c in candidates)
 
+    markers_incomplete = False
+    markers_unstable = False
     try:
         existing_output = discover_output_markers(mods_dir)
+    except ParallaxREvidenceIncompleteError as err:
+        existing_output = err.partial_markers
+        markers_incomplete = True
+    except OSError:
+        existing_output = ()
+        markers_incomplete = True
     except ParallaxREvidenceUnstableError:
+        existing_output = ()
+        markers_unstable = True
+
+    if candidates_incomplete or markers_incomplete:
+        return ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
+            success=False,
+            existing_output_candidates=existing_output,
+            candidate_mod_roots=candidate_mod_roots,
+            message=(
+                "La inspección del directorio de mods quedó incompleta por un error de acceso al "
+                "sistema de archivos; no se puede confirmar presencia, ausencia ni unicidad."
+            ),
+        )
+
+    if markers_unstable:
         return ParallaxRAssistedPreflight(
             status=ParallaxRAssistedStatus.EVIDENCE_UNSTABLE,
             success=False,
@@ -265,7 +425,7 @@ def run_parallaxr_assisted_preflight(
 
     if explicit_selection is not None:
         try:
-            resolved_selection = explicit_selection.resolve()
+            resolved_selection = _resolve_path(explicit_selection, strict=False)
         except OSError:
             return ParallaxRAssistedPreflight(
                 status=ParallaxRAssistedStatus.INVALID_SELECTION,
@@ -314,13 +474,15 @@ def run_parallaxr_assisted_preflight(
             candidate_mod_roots=candidate_mod_roots,
             message="Los archivos de ParallaxR cambiaron durante la captura de evidencia; reintente cuando la herramienta no esté siendo modificada.",
         )
-    except OSError as err:
+    except OSError:
         return ParallaxRAssistedPreflight(
-            status=ParallaxRAssistedStatus.MISSING,
+            status=ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
             success=False,
             existing_output_candidates=existing_output,
             candidate_mod_roots=candidate_mod_roots,
-            message=f"Error accediendo al entrypoint seleccionado: {err}",
+            message=(
+                "No se pudo leer el entrypoint seleccionado de ParallaxR por un error de acceso al sistema de archivos."
+            ),
         )
 
     evidence = ParallaxRInstallationEvidence(
