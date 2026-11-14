@@ -89,6 +89,7 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
         enqueue_pending_hitl,
         make_gui_hitl_notify,
         ritual_auto_approve_armed,
+        ritual_auto_approve_descargas_armed,
         ritual_tab_id,
     )
 
@@ -117,6 +118,7 @@ def _install_gui_hitl_bridge(ctx: AppContext, store: ReactiveStore) -> None:
         set_pending=lambda payload: enqueue_pending_hitl(store, payload),
         auto_approve_getter=ritual_auto_approve_armed,
         tab_id_getter=ritual_tab_id,
+        auto_approve_downloads_getter=ritual_auto_approve_descargas_armed,
         delegate=original_notify,
     )
     guard._sky_claw_gui_hitl_bridge_installed = True
@@ -591,6 +593,11 @@ def run_nicegui(
             # supervisor sólo enhebra el snapshot para que el pipeline administrado
             # mute el root admitido con su fence.
             dyndolod_workspace=ctx.dyndolod_workspace,
+            # E3-R3: la MISMA strategy que `AppContext` resolvió del config para
+            # esta sesión. El supervisor la lleva al único servicio de etapa 9 que
+            # comparten la GUI (dispatcher) y el agente remoto (`generate_lods`),
+            # así que una sola inyección cubre las dos superficies.
+            dyndolod_spawn_strategy=ctx.dyndolod_spawn_strategy,
             loot_runner=ctx.vfs_loot_runner,
             # La GUI es el path productivo: nunca degrada a un subprocess LOOT
             # standalone si el bridge/broker no quedo disponible.

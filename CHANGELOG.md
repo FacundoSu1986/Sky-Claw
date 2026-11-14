@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Backend brokered de TexGen/DynDOLOD seleccionable en producción (E3-R3).** `build_brokered_dyndolod_spawn_strategy` existía pero nadie lo llamaba: la composición aceptaba `dyndolod_spawn_strategy` y `SupervisorAgent` no lo pasaba, así que la etapa 9 corría siempre standalone. Ahora `dyndolod_backend` (`config.toml`, default `standalone`) decide el backend y `resolve_dyndolod_spawn_strategy` arma la strategy en `AppContext` con las raíces del arranque (datos de la instancia MO2, mods, instalación, `<juego>/Data` y los `-o:` por herramienta derivados del workspace). Pedir `brokered` sin poder cumplirlo, con una instancia que no corresponde o con un valor desconocido devuelve un guard que falla cerrado en el spawn y en el gate de handoff: nunca cae a standalone. **`WIRING_SECURITY_HOLD` aplicado en código (`WIRING_RUNTIME_HOLD_ENFORCED`):** la contención del worker en el Job Object (fence de supervisión #856, identidad del Job #860/#872, adopción de descendientes #877) está implementada pero no verificada de punta a punta, así que, mientras la constante interna `_CONTENCION_DEL_WORKER_VERIFICADA` (no configurable) sea `False`, pedir `brokered` devuelve el guard del HOLD ANTES de construir la strategy —aun con broker y rutas válidos—, sin sesión en el broker, sin subprocess local y sin fallback a standalone. No pasa a `True` por fusionar un PR de contención: exige evidencia sobre el binario final en un sandbox Windows y el visto bueno del auditor independiente, en un PR aparte; ver `docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md`.
 - **Auditoría nativa de plugins con el xEdit Bridge ([ADR 0018](docs/adr/0018-auditoria-nativa-xedit-bridge.md)).**
   - Dos herramientas, en la GUI (`tool_dispatcher`) y en el agente LLM (`AsyncToolRegistry`), sobre el mismo `XEditBridgeService`:
     - `auditar_plugin_nativo`: chequeo `-CheckForErrors` de SSEEdit sobre la copia admitida. Es de lectura y no pide aprobación.
@@ -222,6 +223,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 
 ### Fixed
+- **El razonamiento `<thought>`/`<think>` del modelo ya no llega al usuario en ninguna superficie (#918).**
+  El `SYSTEM_PROMPT` pide ese bloque «oculto al usuario», pero nada lo ocultaba: Telegram lo rechazaba como HTML
+  inválido («error interno») y la GUI, la web, el CLI y el WS lo mostraban crudo. `LLMRouter.chat` aplica ahora
+  `ocultar_razonamiento` (`sky_claw/app/agent/reasoning_filter.py`) en sus dos retornos de texto final, después del
+  guardrail de salida, y se retira el filtro propio de Telegram (`quitar_razonamiento`) para que haya un solo dueño.
+  El filtro **falla cerrado**: los bloques se emparejan con una pila (un cierre de otro tipo no cierra el bloque), una
+  apertura sin cierre oculta hasta el final y, si la respuesta era solo razonamiento, se muestra un aviso neutro en
+  vez de su contenido. Las etiquetas dentro de código Markdown también se ocultan (decisión documentada: respetar los
+  backticks abriría un bypass). En el modo de tool calling XML el parser solo ve el texto visible: una `<tool_call>`
+  escrita dentro del razonamiento ya no se ejecuta. El reintento en texto plano del sender ante el 400 por entidades
+  se mantiene como red de seguridad. Anclas: `tests/test_router_oculta_razonamiento.py` (enumera por AST todo `return`
+  de `chat()`) y `test_el_filtro_de_razonamiento_tiene_un_solo_dueno` en `tests/test_reasoning_filter.py`.
 - **Auditoría independiente de la pila del fence VFS (H-01, H-02, H-03; H-04 y H-05 quedan pendientes).** (H-01) El bridge del plugin contiene a los descendientes del worker que alcanza, no solo al proceso que lanzó MO2: tras asignar adopta a los descendientes vivos que no estén en el Job (hasta un punto fijo; si alguno no se puede contener no hay `launch_ack`, y si queda vivo fuera del Job —no se pudo abrir ni terminar— se reporta como terminación y el broker cuarentena la instancia) y emite `worker_exit` solo con el Job vacío confirmado (si no, `bridge_error` de terminación y cuarentena), porque el broker toma `worker_exit` como terminalidad confirmada. (H-02) `--vfs-worker` verifica su Job con un módulo liviano (`vfs_arranque`) ANTES de importar `vfs_worker` (cuyo árbol de imports llega a `platform` → `cmd.exe /c ver`); el aborto por identidad es uno solo para ambos puntos de entrada. (H-03) La limpieza de descendientes tras un fallo de identidad es por PID y no se corta al primer error. El HOLD de seguridad se mantiene y solo lo levanta el auditor independiente; detalle y límites (capa `ctypes` sin medir en Windows) en [docs/audits/2026-11-03_identidad_del_job_onefile.md §12](docs/audits/2026-11-03_identidad_del_job_onefile.md).
 - **La tarjeta de Wrye Bash de la GUI lee su ruta de `config.toml` (`wrye_bash_exe`) como LOOT, xEdit y Pandora (#879).**
   El escáner de la GUI se siembra desde la config (`build_tool_path_cfg_keys`) y recién después exporta lo

@@ -1,11 +1,14 @@
 """Telegram rechaza respuestas del LLM con HTML ajeno (#918): ``<thought>…`` llegaba como «error interno».
 
 El modo HTML de Telegram devuelve 400 «can't parse entities» ante una etiqueta que no soporta. Dos
-capas, ambas ancladas acá:
+capas, con UN solo dueño cada una:
 
-1. ``quitar_razonamiento`` saca los bloques ``<thought>``/``<think>`` del texto del modelo.
+1. ``ocultar_razonamiento`` (``agent/reasoning_filter.py``) saca los bloques ``<thought>``/``<think>``
+   en la salida de ``LLMRouter.chat``, para TODAS las superficies; sus tests viven en
+   ``test_reasoning_filter.py`` y ``test_router_oculta_razonamiento.py``. Telegram ya no filtra por su cuenta.
 2. ``_send_chunk`` (punto ÚNICO de ``sendMessage``) reintenta UNA vez en texto plano si Telegram
-   responde 400 por entidades; cualquier otro 400 sigue siendo fallo duro.
+   responde 400 por entidades (red de seguridad para cualquier otro HTML ajeno); cualquier otro 400
+   sigue siendo fallo duro. Se ancla acá.
 """
 
 from __future__ import annotations
@@ -21,7 +24,6 @@ from sky_claw.app.comms.telegram_sender import (
     TelegramEntitiesError,
     TelegramSender,
     TelegramSendError,
-    quitar_razonamiento,
 )
 
 _TOKEN = "123:ABC"
@@ -56,25 +58,6 @@ def _sender(*respuestas: AsyncMock) -> tuple[TelegramSender, MagicMock]:
 
 def _payloads(gateway: MagicMock) -> list[dict[str, Any]]:
     return [llamada.kwargs["json"] for llamada in gateway.request.await_args_list]
-
-
-@pytest.mark.parametrize(
-    ("entrada", "esperado"),
-    [
-        ("<thought>pienso</thought>Hola", "Hola"),
-        ("<think>a\nb</think>\n\nHola", "Hola"),
-        ("<THOUGHT>x</THOUGHT>Hola <b>mundo</b>", "Hola <b>mundo</b>"),
-        ("Hola <thought>x</thought>mundo", "Hola mundo"),
-        ("<thought>sin cierre\nHola", "sin cierre\nHola"),
-        ("Hola sin etiquetas", "Hola sin etiquetas"),
-    ],
-)
-def test_quitar_razonamiento(entrada: str, esperado: str) -> None:
-    assert quitar_razonamiento(entrada) == esperado
-
-
-def test_quitar_razonamiento_no_deja_el_mensaje_vacio() -> None:
-    assert quitar_razonamiento("<thought>solo razonamiento</thought>") == "solo razonamiento"
 
 
 async def test_400_por_entidades_reintenta_en_texto_plano_y_entrega() -> None:
@@ -116,8 +99,12 @@ async def test_el_reintento_respeta_el_reply_markup() -> None:
     assert all(p["reply_markup"] == markup for p in _payloads(gateway))
 
 
-async def test_process_bg_entrega_la_respuesta_sin_el_bloque_de_razonamiento() -> None:
-    """#918, extremo a extremo: el texto que llega al sender no trae ``<thought>`` ni «error interno»."""
+async def test_process_bg_entrega_tal_cual_lo_que_devuelve_el_router() -> None:
+    """El razonamiento lo oculta el router (un solo dueño): Telegram no vuelve a filtrar el texto.
+
+    Si un ``<thought>`` llegara hasta acá por otro camino, el que lo cubre es el reintento en texto
+    plano del sender, no un segundo filtro con reglas propias que divergen del del router.
+    """
     from sky_claw.app.comms.telegram import TelegramWebhook
 
     router, sender = MagicMock(), MagicMock()
@@ -127,7 +114,7 @@ async def test_process_bg_entrega_la_respuesta_sin_el_bloque_de_razonamiento() -
 
     await handler._process_bg(5, "/start", 1)
 
-    sender.send.assert_awaited_once_with(5, "Hola, soy Sky-Claw")
+    sender.send.assert_awaited_once_with(5, "<thought>razono</thought>Hola, soy Sky-Claw")
 
 
 async def test_el_reintento_en_texto_plano_descuenta_el_cooldown_ya_consumido() -> None:

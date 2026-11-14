@@ -27,6 +27,7 @@ def render_dashboard(
     settings: dict[str, Any] | None = None,
     downloads: dict[str, Any] | None = None,
     resolved_conflicts: list[dict[str, Any]] | None = None,
+    perfil_mo2: str | None = None,
 ) -> None:
     """Renderiza la página completa del dashboard (shell Forge v4.0).
 
@@ -93,6 +94,7 @@ def render_dashboard(
         settings=settings,
         downloads=downloads,
         resolved_conflicts=resolved_conflicts,
+        perfil_mo2=perfil_mo2,
     )
 
 

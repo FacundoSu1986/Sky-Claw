@@ -189,13 +189,16 @@ def _try_sin_clasificar(fuente: str) -> list[str]:
             continue
         if not any(_es_get_password(n) for stmt in nodo.body for n in ast.walk(stmt)):
             continue
-        clasificado = False
+        clasificado_antes = False
         for handler in nodo.handlers:
             nombres = _nombre_de_excepcion(handler.type)
-            if "KeyringError" in nombres or "NoKeyringError" in nombres:
-                clasificado = True
-            if {"Exception", "BaseException", "<desnudo>"} & set(nombres) and not clasificado:
+            # Primero se evalúa lo amplio contra lo clasificado por handlers PREVIOS: una tupla
+            # que mezcla ``KeyringError`` con ``Exception`` traga todo sin distinguir, así que
+            # no puede clasificarse a sí misma (hallazgo de CodeRabbit en #928).
+            if {"Exception", "BaseException", "<desnudo>"} & set(nombres) and not clasificado_antes:
                 encontradas.append(_funcion_contenedora(arbol, nodo))
+            if "KeyringError" in nombres or "NoKeyringError" in nombres:
+                clasificado_antes = True
     return sorted(encontradas)
 
 
@@ -220,6 +223,31 @@ def _produccion() -> list[Path]:
             [],
         ),
         ("def f():\n    try:\n        otra.cosa()\n    except Exception:\n        pass\n", []),
+        # #575 §2 (hallazgo de CodeRabbit en #928): una tupla que MEZCLA una clase clasificada
+        # con una amplia no clasifica nada. La clasificación solo vale si la estableció un
+        # handler ANTERIOR, nunca el mismo que ya traga todo.
+        (
+            "def f():\n    try:\n        keyring.get_password('s','n')\n"
+            "    except (keyring.errors.KeyringError, OSError, Exception):\n        pass\n",
+            ["f"],
+        ),
+        (
+            "def f():\n    try:\n        keyring.get_password('s','n')\n"
+            "    except (keyring.errors.NoKeyringError, BaseException):\n        pass\n",
+            ["f"],
+        ),
+        (
+            "def f():\n    try:\n        keyring.get_password('s','n')\n"
+            "    except keyring.errors.KeyringError:\n        pass\n"
+            "    except (OSError, Exception):\n        pass\n",
+            [],
+        ),
+        (
+            "def f():\n    try:\n        keyring.get_password('s','n')\n"
+            "    except Exception:\n        pass\n"
+            "    except keyring.errors.KeyringError:\n        pass\n",
+            ["f"],
+        ),
     ],
 )
 def test_detector_de_try_sin_clasificar_sintetico(fuente: str, esperadas: list[str]) -> None:
@@ -233,6 +261,16 @@ def test_detector_de_try_sin_clasificar_sintetico(fuente: str, esperadas: list[s
 #:
 #: Enumerados por AST, no a mano (la lista manual se había dejado ``_validate_and_save``).
 #: ``save_settings`` aparece dos veces: son dos ``try`` distintos dentro de la misma función.
+#: ``LocalConfig._migrate_and_get`` (``local_config.py``), el hermano de forma MIXTA
+#: ``(KeyringError, OSError, Exception)`` que el detector original no veía, ya está clasificado y salió
+#: de esta lista (con tests de comportamiento en ``test_local_config_keyring_lectura.py``).
+#:
+#: Los que quedan, y por qué siguen acá:
+#: - ``setup_wizard._validate_and_save``: manejador de FRONTERA de UI (muestra el error al usuario con
+#:   ``ui.notify`` en vez de degradar a «no configurado») y no tiene tests de comportamiento; clasificarlo
+#:   sin uno sería inventar el contrato.
+#: - ``sky_claw_gui.py`` y ``app_context.py``: los tocan PR abiertos de otras sesiones (#923, #936, #937,
+#:   #927, #854); se clasifican cuando aterricen para no abrir conflictos.
 _HERMANOS_PENDIENTES = {
     "sky_claw/app/gui/setup_wizard.py": ["_validate_and_save"],
     "sky_claw/app/gui/sky_claw_gui.py": ["_configured", "_on_check_updates", "save_settings", "save_settings"],
