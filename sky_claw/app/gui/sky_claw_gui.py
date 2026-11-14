@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,10 +38,12 @@ from sky_claw.app.gui.controllers import (
     ModController,
     NavigationController,
 )
+from sky_claw.app.gui.controllers.etapa9_estado import leer_estado_de_la_etapa9
 from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_DIAGNOSTICO_PARALLAX,
     STORE_KEY_PENDING_HITL,
     STORE_KEY_RITUAL_FEEDBACK,
+    STORE_KEY_RITUAL_IN_FLIGHT,
     STORE_KEY_RITUAL_PREFLIGHT,
     payload_de_generar,
     resolve_pending_hitl_request,
@@ -740,6 +743,15 @@ def main_page() -> None:
             payload=payload_de_generar(tool_key, modo_de_interaccion_del_cliente()),
         ),
         name="gui-ritual-run",
+    )
+
+    # P-3c-2 (H-11 y H-4): progreso de la etapa 9 y cuarentena del broker VFS. UNA lectura, la misma fuente y los mismos
+    # hechos que ``lods_status``; solo lectura (liberar la cuarentena es ``--mode vfs-quarantine`` con Sky-Claw cerrado).
+    callbacks["on_etapa9_estado"] = lambda: leer_estado_de_la_etapa9(
+        supervisor=runtime.supervisor,
+        consultar_cuarentena=getattr(runtime.app_context, "estado_de_cuarentena_vfs", None),
+        ahora=time.time(),
+        en_curso=bool(get_store().get(STORE_KEY_RITUAL_IN_FLIGHT)),
     )
 
     # F-001 (post-D2) / ADR 0016 §6: el botón de continuación del toast de

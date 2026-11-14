@@ -21,6 +21,7 @@ from typing import Any
 
 from nicegui import app, ui
 
+from sky_claw.app.gui.controllers.etapa9_estado import lineas_de_progreso, texto_de_cuarentena
 from sky_claw.app.gui.controllers.ritual_runner import (
     CLIENT_KEY_AUTO_APPROVE,
     CLIENT_KEY_MODO_DE_INTERACCION,
@@ -60,6 +61,10 @@ _HITL_CALLBACKS: dict[str, Callable] = {}
 # invoca el callback que el page cablea a ``run_ritual_resume`` (mismo
 # dispatcher, mismo HITL, mismo single-flight).
 _RITUAL_RESUME_CALLBACKS: dict[str, Callable] = {}
+
+# P-3c-2: la lectura del estado de la etapa 9 (progreso + cuarentena). La cablea el page (sky_claw_gui) a
+# ``leer_estado_de_la_etapa9``; el panel la consulta en cada refresco del timer vivo y no decide nada por su cuenta.
+_ETAPA9_CALLBACKS: dict[str, Callable] = {}
 
 # Guard en app.storage.client (P1-7): render_forge_dashboard puede re-ejecutarse
 # muchas veces en la vida de una pestaña — main_page es @ui.refreshable y hay
@@ -378,12 +383,17 @@ def render_forge_dashboard(
     # callback lo cablea el page (sky_claw_gui) a run_ritual_resume — la GUI
     # expresa intención y nada más.
     _RITUAL_RESUME_CALLBACKS["resume"] = _cb(callbacks, "on_ritual_resume")
+    _ETAPA9_CALLBACKS["estado"] = _cb(callbacks, "on_etapa9_estado")
     with ui.element("div").classes("sc-shell").style(root):
         # Live heartbeat for the vitals bars + header HUD. Refresh ONLY those two
         # @ui.refreshable containers (never the whole page), so CPU/GPU/RAM pulse
         # while the chat input keeps its text. Created inside the page slot so it is
         # torn down on navigation / full refresh — timers never pile up (Codex #3).
-        ui.timer(LIVE_REFRESH_SECONDS, lambda: (_vitals_panel.refresh(), _hud_panel.refresh()))
+        # P-3c-2: el mismo latido refresca el panel de progreso/cuarentena de la etapa 9 (lectura en memoria, barata).
+        ui.timer(
+            LIVE_REFRESH_SECONDS,
+            lambda: (_vitals_panel.refresh(), _hud_panel.refresh(), _etapa9_estado_panel.refresh()),
+        )
         # Keyboard shortcut (F8) to flip "Modo local" without reaching for the mouse.
         ui.keyboard(on_key=_on_modo_local_key)
         ui.html(
@@ -664,6 +674,43 @@ def _ayuda_del_modo_de_interaccion() -> None:
         f"<div style=\"font-family:'EB Garamond',serif; font-size:12px; line-height:1.35; color:#8a8068;\">"
         f"{_e(_AYUDA_DEL_MODO[modo_de_interaccion_del_cliente()])}</div>"
     ).style(_FRAGMENTO)
+
+
+@ui.refreshable
+def _etapa9_estado_panel() -> None:
+    """Progreso de la etapa 9 y cuarentena del broker VFS (P-3c-2): solo lectura, sin veredicto de «colgado».
+
+    Se dibuja solo cuando hay algo que decir: con una corrida en curso y una muestra del latido, y/o con la instancia en
+    cuarentena (que se informa también sin corrida). Liberar la cuarentena sigue siendo ``--mode vfs-quarantine`` con
+    Sky-Claw cerrado: acá solo se muestra el procedimiento.
+    """
+    leer = _ETAPA9_CALLBACKS.get("estado")
+    if not callable(leer):
+        return
+    try:
+        estado = leer()
+    except Exception:
+        return  # un panel informativo nunca rompe el dashboard
+    if estado is None or (estado.progreso is None and estado.cuarentena is None):
+        return
+    bloques: list[str] = []
+    if estado.cuarentena is not None:
+        bloques.append(
+            "<div style=\"font-family:'EB Garamond',serif; font-size:13px; line-height:1.4; color:#e8b4a0;\">"
+            f"{_e(texto_de_cuarentena(estado.cuarentena))}</div>"
+        )
+    if estado.progreso is not None:
+        lineas = "".join(f"<div>{_e(linea)}</div>" for linea in lineas_de_progreso(estado.progreso))
+        bloques.append(
+            "<div style=\"font-family:'EB Garamond',serif; font-size:13px; line-height:1.5; color:#d8cfb8;\">"
+            f"<div style=\"font-family:'Cinzel',serif; font-size:11px; letter-spacing:.14em; color:#c8a86a;\">ETAPA 9 EN CURSO</div>{lineas}</div>"
+        )
+    borde = "rgba(200,100,80,.45)" if estado.cuarentena is not None else "rgba(200,168,106,.3)"
+    with ui.element("div").style(
+        f"margin-bottom:18px; padding:12px 16px; display:flex; flex-direction:column; gap:10px; border-radius:5px;"
+        f"background:linear-gradient(168deg, rgba(30,22,14,.9), rgba(14,10,7,.92)); border:1px solid {borde};"
+    ):
+        ui.html("".join(bloques)).style(_FRAGMENTO)
 
 
 def _selector_de_modo_de_interaccion() -> None:
@@ -1286,6 +1333,7 @@ def _rituales(callbacks: dict[str, Callable]) -> None:
     snapshot = get_store().get(STORE_KEY_ENV)
     on_ritual_run = _cb(callbacks, "on_ritual_run")
     on_ritual_install = _cb(callbacks, "on_ritual_install")
+    _etapa9_estado_panel()
     with ui.element("div").style(
         "display:grid; grid-template-columns:repeat(auto-fill,minmax(232px,1fr)); gap:16px; margin-bottom:32px;"
     ):
