@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from sky_claw.app.db.snapshot_manager import FileSnapshotManager
     from sky_claw.app.orchestrator.preview.chain_preview_service import ChainPreviewService
     from sky_claw.app.orchestrator.sandbox_promotion import SandboxPromotionFlow
+    from sky_claw.app.orchestrator.tool_strategies.generate_lods import AprobadorDeEtapasPrevias
     from sky_claw.app.scraper.scraper_agent import ScraperAgent
     from sky_claw.app.security.hitl import HITLGuard
     from sky_claw.app.security.path_validator import PathValidator
@@ -70,6 +71,9 @@ class OrchestrationDispatcherDependencies:
     raices_mo2_provider: Callable[[], RaicesDeInstanciaMO2]
     #: ADR 0018: auditoría nativa con el xEdit Bridge. Construirlo no toca el bridge.
     xedit_bridge_service: XEditBridgeService
+    #: D-3: el canal por el que el operador de la GUI confirma lanzar la etapa 9 en modo ASISTIDO sin las etapas
+    #: previas. ``None`` = no hay a quién preguntarle: la corrida asistida con etapas faltantes se corta.
+    aprobar_sin_etapas_previas: AprobadorDeEtapasPrevias | None = None
 
 
 def build_preview_chain_service_provider(

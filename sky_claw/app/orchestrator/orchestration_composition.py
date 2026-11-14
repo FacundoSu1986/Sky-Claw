@@ -381,6 +381,10 @@ def build_orchestration_composition(
         raices_mo2_provider=path_resolver.raices_de_instancia_mo2,
         # ADR 0018: el mismo resolver que usa el agente LLM; construirlo no exige el bridge presente.
         xedit_bridge_service=XEditBridgeService(path_resolver=path_resolver),
+        # D-3: la GUI (este dispatcher) también verifica las etapas previas en modo ASISTIDO y le pide la
+        # confirmación al operador por SU canal (modal de la GUI, categoría propia, nunca auto-aprobada). El agente
+        # remoto tiene el suyo en AppContext, sobre el mismo guard.
+        aprobar_sin_etapas_previas=AprobadorDesatendidoHITL(hitl_guard=hitl_guard).aprobar_sin_etapas_previas_asistido,
     )
 
     # ------------------------------------------------------------------
