@@ -191,6 +191,11 @@ def _aviso_de_fin(trabajo: TrabajoDeAdmision) -> str:
             f"⏹️ La admisión de {trabajo.visible} se canceló antes de terminar (Sky-Claw se cerró); si llegó a "
             "copiar, volvé a admitirlo antes de auditarlo."
         )
+    if resultado.get("estado_admision") == "ambigua":
+        detalle = str(resultado.get("message") or "el bridge respondió ok=true sin admission_id válido")[:300]
+        return (
+            f"⚠️ La admisión de {trabajo.visible} quedó en estado ambiguo (la copia pudo haberse realizado): {detalle}"
+        )
     return (
         f"❌ La admisión de {trabajo.visible} no se hizo: {str(resultado.get('message') or 'error sin detalle')[:300]}"
     )

@@ -839,3 +839,113 @@ async def test_gui_directo_abortado_limpia_contexto_pendiente() -> None:
     resultado = await estrategia.execute({"plugin": "Mod.esp"})
     assert resultado["success"] is False
     servicio.admitir.assert_not_awaited()
+
+
+# --- XB-SC-07 y XB-SC-08: visibilidad íntegra HITL y trazabilidad de admisión ----------------
+
+
+async def test_xb_sc_07_contextos_largos_fuera_de_800_se_recortan_y_deben_rechazarse() -> None:
+    """XB-SC-07 (RED -> GREEN): un pedido cuyo plugin (255), perfil largo e instancia Windows válida
+    superan los 800 caracteres del detalle truncaría la diferencia entre contextos; debe rechazarse antes
+    de pedir aprobación al operador y sin ejecutar ninguna copia."""
+    from sky_claw.app.orchestrator.tool_strategies.middleware import (
+        MAX_APPROVAL_DETAIL_LENGTH,
+        _truncate_approval_detail,
+    )
+    from sky_claw.local.tools.tool_result import normalize_tool_result
+
+    plugin = "M" * 251 + ".esp"
+    assert len(plugin) == 255
+    perfil_largo = "PerfilMO2_" + ("P" * 242)
+    prefijo_windows = pathlib.Path("C:/MO2/" + "/".join([f"Subcarpeta_{i:02d}" for i in range(18)]))
+    instancia_a = prefijo_windows / "Instancia_A" / "ModOrganizer"
+    instancia_b = prefijo_windows / "Instancia_B" / "ModOrganizer"
+    ctx_a = ContextoAdmision(instancia_a, perfil_largo)
+    ctx_b = ContextoAdmision(instancia_b, perfil_largo)
+
+    # Precondición: ambos contextos difieren, son válidos en Windows y su diferencia queda más allá del límite 800.
+    raw_a = f"Admitir {plugin} ({ctx_a.resumen()})"
+    raw_b = f"Admitir {plugin} ({ctx_b.resumen()})"
+    assert raw_a != raw_b
+    assert len(raw_a) > MAX_APPROVAL_DETAIL_LENGTH
+    assert _truncate_approval_detail(raw_a) == _truncate_approval_detail(raw_b)
+    assert "Instancia_A" not in _truncate_approval_detail(raw_a)
+
+    servicio = _servicio()
+    servicio.contexto_de_admision = MagicMock(side_effect=[ctx_a, ctx_b, ctx_a])
+    hitl = _hitl(Decision.APPROVED)
+    dispatcher = _dispatcher_con_servicio(HitlGateMiddleware(hitl_guard=hitl), servicio)
+
+    res_a = await dispatcher.dispatch("admitir_plugin_nativo", {"plugin": plugin})
+    res_b = await dispatcher.dispatch("admitir_plugin_nativo", {"plugin": plugin})
+
+    detalles_enviados = [call.kwargs.get("detail", "") for call in hitl.request_approval.await_args_list]
+    assert hitl.request_approval.await_count == 0, (
+        f"no debe pedir aprobación si el detalle recorta el contexto: "
+        f"pedidos={hitl.request_approval.await_count}, iguales={len(set(detalles_enviados)) == 1}, "
+        f"largos={[len(d) for d in detalles_enviados]}"
+    )
+    servicio.admitir.assert_not_awaited()
+    assert normalize_tool_result(res_a)["success"] is False
+    assert normalize_tool_result(res_b)["success"] is False
+
+    # Incluso llamando ``describe_for_approval`` sin ``validate_for_approval``, rechaza antes de registrar contexto.
+    estrategia = AdmitirPluginNativoStrategy(service=servicio)
+    with pytest.raises(ValueError, match="íntegro"):
+        estrategia.describe_for_approval({"plugin": plugin})
+    directo = await estrategia.execute({"plugin": plugin})
+    assert directo["success"] is False
+    servicio.admitir.assert_not_awaited()
+
+
+async def test_xb_sc_07_contextos_distintos_que_entran_en_800_se_muestran_integros() -> None:
+    """Cuando plugin + perfil + ruta MO2 caben en 800 caracteres, el operador ve ambos contextos íntegros."""
+    from sky_claw.app.orchestrator.tool_strategies.middleware import _MAX_APPROVAL_DETAIL_LENGTH
+
+    plugin = "PluginMediano_" + ("M" * 60) + ".esp"
+    perfil = "Perfil_" + ("P" * 60)
+    prefijo = pathlib.Path("C:/MO2/" + "/".join([f"Dir_{i:02d}" for i in range(10)]))
+    ctx_a = ContextoAdmision(prefijo / "Instancia_A" / "ModOrganizer", perfil)
+    ctx_b = ContextoAdmision(prefijo / "Instancia_B" / "ModOrganizer", perfil)
+
+    servicio = _servicio()
+    servicio.contexto_de_admision = MagicMock(side_effect=[ctx_a, ctx_b])
+    hitl = _hitl(Decision.APPROVED)
+    dispatcher = _dispatcher_con_servicio(HitlGateMiddleware(hitl_guard=hitl), servicio)
+
+    res_a = await dispatcher.dispatch("admitir_plugin_nativo", {"plugin": plugin})
+    res_b = await dispatcher.dispatch("admitir_plugin_nativo", {"plugin": plugin})
+
+    assert res_a["success"] is True and res_b["success"] is True
+    assert hitl.request_approval.await_count == 2
+    detalles = [call.kwargs["detail"] for call in hitl.request_approval.await_args_list]
+    assert all(len(d) <= _MAX_APPROVAL_DETAIL_LENGTH for d in detalles)
+    assert detalles[0] != detalles[1]
+    assert plugin in detalles[0] and str(ctx_a.ini_dir) in detalles[0] and perfil in detalles[0]
+    assert plugin in detalles[1] and str(ctx_b.ini_dir) in detalles[1] and perfil in detalles[1]
+    assert [c.kwargs["contexto"] for c in servicio.admitir.await_args_list] == [ctx_a, ctx_b]
+
+
+async def test_xb_sc_08_admision_ambigua_avisa_estado_ambiguo_en_llm_sin_negar_copia() -> None:
+    """Superficie LLM (XB-SC-08): si el servicio reporta estado ambiguo (``ok=True`` sin ``admission_id``
+    válido), el aviso al operador no afirma que no se copió ni sugiere continuar con ``auditar_plugin_nativo``."""
+    servicio, (gestor, avisos) = _servicio(), _gestor()
+    servicio.admitir.return_value = {
+        "success": False,
+        "message": "admisión con resultado ambiguo: el bridge respondió ok=true sin admission_id válido (la copia pudo haberse realizado)",
+        "plugin": "Mod.esp",
+        "admission_id": None,
+        "estado_admision": "ambigua",
+        "clausura": ["Skyrim.esm", "Mod.esp"],
+        "copiados": ["Mod.esp"],
+        "reutilizados": ["Skyrim.esm"],
+        "reemplazados": [],
+    }
+    await admitir_plugin_nativo(servicio, _hitl(Decision.APPROVED), "Mod.esp", admisiones=gestor)
+    await _terminar(gestor)
+    assert len(avisos) == 1
+    aviso = avisos[0].casefold()
+    assert "ambigu" in aviso
+    assert "pudo" in aviso or "copi" in aviso
+    assert "no se hizo" not in aviso
+    assert "auditar_plugin_nativo" not in aviso

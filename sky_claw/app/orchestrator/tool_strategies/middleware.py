@@ -44,7 +44,8 @@ from sky_claw.local.tools.tool_result import es_etapa_pendiente
 
 logger = logging.getLogger(__name__)
 
-_MAX_APPROVAL_DETAIL_LENGTH = 800
+MAX_APPROVAL_DETAIL_LENGTH = 800
+_MAX_APPROVAL_DETAIL_LENGTH = MAX_APPROVAL_DETAIL_LENGTH
 _MAX_APPROVAL_VALUE_LENGTH = 120
 _SENSITIVE_KEY_PARTS = frozenset({"api_key", "auth", "credential", "password", "secret", "token"})
 

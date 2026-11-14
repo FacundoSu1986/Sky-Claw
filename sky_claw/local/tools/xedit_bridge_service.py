@@ -426,16 +426,39 @@ class XEditBridgeService:
                 "message": _texto_una_linea(datos.get("error") or "el bridge rechazó la admisión"),
             }
         admission_id = _validar_identificador(datos.get("admission_id"))
-        logger.info("Plugin %s admitido en el xEdit Bridge (%s)", plugin, admission_id or "-")
+        clausura = _lista_textos(datos.get("closure"))
+        copiados = _lista_textos(datos.get("copied"))
+        reutilizados = _lista_textos(datos.get("reused"))
+        reemplazados = _lista_textos(datos.get("replaced"))
+        if admission_id is None:
+            logger.warning(
+                "Admisión en estado ambiguo para %s en el xEdit Bridge: ok=True sin admission_id válido",
+                plugin,
+            )
+            return {
+                **base,
+                "success": False,
+                "message": (
+                    "admisión con resultado ambiguo: el bridge respondió ok=true sin admission_id válido "
+                    "(la copia pudo haberse realizado; verificá el laboratorio antes de auditar)"
+                ),
+                "admission_id": None,
+                "estado_admision": "ambigua",
+                "clausura": clausura,
+                "copiados": copiados,
+                "reutilizados": reutilizados,
+                "reemplazados": reemplazados,
+            }
+        logger.info("Plugin %s admitido en el xEdit Bridge (%s)", plugin, admission_id)
         return {
             **base,
             "success": True,
             "message": "",
             "admission_id": admission_id,
-            "clausura": _lista_textos(datos.get("closure")),
-            "copiados": _lista_textos(datos.get("copied")),
-            "reutilizados": _lista_textos(datos.get("reused")),
-            "reemplazados": _lista_textos(datos.get("replaced")),
+            "clausura": clausura,
+            "copiados": copiados,
+            "reutilizados": reutilizados,
+            "reemplazados": reemplazados,
             "siguiente": "auditar_plugin_nativo",
         }
 

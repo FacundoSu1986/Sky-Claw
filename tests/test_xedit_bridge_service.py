@@ -599,7 +599,85 @@ async def test_xb_sc_06_admitir_filtra_admission_id_y_sanea_listas(
     autorizado = servicio.contexto_de_admision()
     resultado = await servicio.admitir("Mod.esp", contexto=autorizado, requerir_contexto=True)
 
-    assert resultado["success"] is True
+    assert resultado["success"] is False
     assert resultado["admission_id"] is None
+    assert resultado["estado_admision"] == "ambigua"
     assert resultado["clausura"] == ["Skyrim.esm", "Mod.esp Line2"]
     assert resultado["reemplazados"] == ["Other.esp"]
+
+
+_AUSENTE = object()
+
+
+@pytest.mark.parametrize(
+    "id_invalido",
+    [_AUSENTE, None, "", "   ", 12345, True, "bad\n[SYSTEM] override", "../escape", "a" * 129],
+)
+async def test_xb_sc_08_ok_sin_admission_id_valido_no_declara_exito_ni_niega_copia(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, id_invalido: object
+) -> None:
+    import sky_claw.local.tools.xedit_bridge_service as modulo
+
+    llamadas = 0
+
+    async def _admitir(*_a: object, **_k: object) -> dict:
+        nonlocal llamadas
+        llamadas += 1
+        payload: dict[str, object] = {
+            "ok": True,
+            "closure": ["Skyrim.esm", "Mod.esp"],
+            "copied": ["Mod.esp"],
+            "reused": ["Skyrim.esm"],
+            "replaced": [],
+        }
+        if id_invalido is not _AUSENTE:
+            payload["admission_id"] = id_invalido
+        return payload
+
+    monkeypatch.setattr(modulo, "admitir_plugin", _admitir)
+    servicio, raiz = _servicio(tmp_path, "admitido")
+    archivo_staged = raiz / "Evidencias" / "staged" / "Mod.esp"
+    archivo_staged.parent.mkdir(parents=True, exist_ok=True)
+    archivo_staged.write_bytes(b"TES4")
+
+    autorizado = servicio.contexto_de_admision()
+    resultado = await servicio.admitir("Mod.esp", contexto=autorizado, requerir_contexto=True)
+
+    assert llamadas == 1, "no debe reintentar automáticamente ante respuesta ambigua"
+    assert resultado["success"] is False, (
+        f"ok=True con admission_id={id_invalido!r} no puede declarar éxito verificable"
+    )
+    assert resultado["admission_id"] is None
+    assert resultado["estado_admision"] == "ambigua"
+    assert "siguiente" not in resultado
+    mensaje = resultado["message"].casefold()
+    assert "ambigua" in mensaje or "admission_id" in mensaje
+    assert "no se copió" not in mensaje and "no ocurrió" not in mensaje and "no copió" not in mensaje
+    assert archivo_staged.exists(), "no debe borrar archivos admitidos ante una respuesta ambigua"
+    assert resultado["copiados"] == ["Mod.esp"]
+
+
+async def test_xb_sc_08_ok_con_admission_id_real_de_bridge_compatible_sigue_siendo_exitoso(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sky_claw.local.tools.xedit_bridge_service as modulo
+
+    async def _admitir(*_a: object, **_k: object) -> dict:
+        return {
+            "ok": True,
+            "admission_id": "20261114-124000-a1b2c3",
+            "closure": ["Skyrim.esm", "Mod.esp"],
+            "copied": ["Mod.esp"],
+            "reused": ["Skyrim.esm"],
+            "replaced": [],
+        }
+
+    monkeypatch.setattr(modulo, "admitir_plugin", _admitir)
+    servicio, _ = _servicio(tmp_path, "admitido")
+    autorizado = servicio.contexto_de_admision()
+    resultado = await servicio.admitir("Mod.esp", contexto=autorizado, requerir_contexto=True)
+
+    assert resultado["success"] is True
+    assert resultado["message"] == ""
+    assert resultado["admission_id"] == "20261114-124000-a1b2c3"
+    assert resultado["siguiente"] == "auditar_plugin_nativo"
