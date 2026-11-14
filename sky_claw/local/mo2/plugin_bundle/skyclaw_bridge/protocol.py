@@ -18,19 +18,10 @@ LENGTH_BYTES = 4
 #: queda fuera de la identidad del bundle (si no, el mismo código tendría un digest distinto por instancia).
 BRIDGE_CONFIG_NAME = "bridge_config.json"
 _BYTECODE_SUFFIXES = frozenset({".pyc", ".pyo"})
-#: ``IO_REPARSE_TAG_MOUNT_POINT``: un junction de Windows no es symlink para ``is_symlink()``. Solo ESTE tag cuenta como enlace:
-#: otros reparse points (placeholders de OneDrive, dedup) son archivos normales y no deben impedir cargar el plugin.
-_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
 
 
 class VfsFrameError(RuntimeError):
     """Frame incompleto, demasiado grande o con JSON inválido."""
-
-
-def _es_enlace(path: pathlib.Path) -> bool:
-    if path.is_symlink():
-        return True
-    return getattr(path.lstat(), "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
 
 
 def _archivos_del_bundle(carpeta: pathlib.Path, base: pathlib.Path) -> list[pathlib.Path]:
@@ -40,7 +31,7 @@ def _archivos_del_bundle(carpeta: pathlib.Path, base: pathlib.Path) -> list[path
             continue
         if carpeta == base and path.name == BRIDGE_CONFIG_NAME:
             continue
-        if _es_enlace(path):
+        if path.is_symlink():
             raise ValueError(f"el bundle del bridge no admite enlaces: {path.name}")
         if path.is_dir():
             archivos.extend(_archivos_del_bundle(path, base))
@@ -54,8 +45,13 @@ def bundle_digest(root: pathlib.Path) -> str:
 
     Cubre los archivos por ruta relativa POSIX (ordenados) y por contenido, de modo que agregar, quitar, renombrar o
     editar cualquiera cambia el resultado. Excluye lo que no es código: ``__pycache__``, ``*.pyc``/``*.pyo`` y la
-    ``bridge_config.json`` de la raíz (es por instancia). Un enlace dentro del bundle es un error: no se sigue, porque
+    ``bridge_config.json`` de la raíz (es por instancia). Un symlink dentro del bundle es un error: no se sigue, porque
     hashearía contenido de otro lugar.
+
+    Los junctions de Windows NO se detectan acá: este módulo corre dentro del Python embebido de MO2 y no puede importar
+    ``sky_claw``, y la detección de junctions vive en UN solo módulo (``sky_claw/app/security/links.py``, ancla en
+    ``tests/test_links.py``). La verificación del bundle del PRODUCTO la hace el lado host con esa pieza
+    (``bridge_bundle.py`` y el instalador).
     """
 
     base = pathlib.Path(root)

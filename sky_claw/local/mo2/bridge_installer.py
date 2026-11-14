@@ -10,7 +10,11 @@ import uuid
 from collections.abc import Callable, Sequence
 
 from sky_claw.app.security.file_permissions import restrict_to_owner
-from sky_claw.app.security.links import link_kind_or_raise_with_retry, rmtree_link_aware
+from sky_claw.app.security.links import (
+    exigir_arbol_copiable_sin_reparse,
+    link_kind_or_raise_with_retry,
+    rmtree_link_aware,
+)
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.mo2.bridge_bundle import RUTA_DEL_BUNDLE
 from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.protocol import bundle_digest
@@ -79,6 +83,8 @@ class MO2BridgeInstaller:
         backup = plugins / f".skyclaw_bridge.{suffix}.backup"
         moved_old = False
         try:
+            # La fuente se copia siguiendo enlaces: un symlink o junction dentro de ella copiaría contenido de otro lugar.
+            exigir_arbol_copiable_sin_reparse(self._bundle)
             shutil.copytree(
                 self._bundle,
                 staging,

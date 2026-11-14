@@ -348,3 +348,43 @@ def test_el_hello_del_worker_no_pide_el_digest_del_bundle(tmp_path: pathlib.Path
         broker._validate_hello(hello_de_worker)
 
     assert _INSTRUCCION not in str(error.value)
+
+
+# ------------------------------------------------------- la detección de enlaces vive en UN solo módulo (links)
+
+
+def test_el_digest_del_producto_delega_la_deteccion_de_enlaces_en_links(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El plugin no puede importar ``links``; el lado host sí, y es el que garantiza un bundle sin enlaces."""
+    from sky_claw.local.mo2 import bridge_bundle
+
+    llamadas: list[pathlib.Path] = []
+
+    def exigir_que_falla(raiz: pathlib.Path) -> None:
+        llamadas.append(raiz)
+        raise OSError("contiene junction")
+
+    digest_del_bundle_del_producto.cache_clear()
+    monkeypatch.setattr(bridge_bundle, "exigir_arbol_copiable_sin_reparse", exigir_que_falla)
+    try:
+        with pytest.raises(OSError, match="junction"):
+            digest_del_bundle_del_producto()
+    finally:
+        digest_del_bundle_del_producto.cache_clear()
+
+    assert llamadas == [RUTA_DEL_BUNDLE]
+
+
+def test_el_instalador_rechaza_una_fuente_con_enlaces_y_no_toca_la_instalacion(tmp_path: pathlib.Path) -> None:
+    instalador, argumentos = _instalar(tmp_path)
+    fuente = tmp_path / "fuente"
+    shutil.copytree(RUTA_DEL_BUNDLE, fuente, ignore=_IGNORADOS)
+    try:
+        (fuente / "enlace.py").symlink_to(fuente / "plugin.py")
+    except (OSError, NotImplementedError):
+        pytest.skip("este sistema no permite crear symlinks")
+    instalador._bundle = fuente  # noqa: SLF001 -- se prueba la fuente con un enlace sin tocar el bundle real
+
+    with pytest.raises(MO2BridgeInstallError):
+        instalador.install(**argumentos)  # type: ignore[arg-type]
+
+    assert not (argumentos["mo2_root"] / "plugins" / "skyclaw_bridge").exists()  # type: ignore[operator]
