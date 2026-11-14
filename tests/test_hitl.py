@@ -520,6 +520,115 @@ class TestRespond:
         await guard.respond(req_id, approved=True)
         assert fake._event.is_set()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "valor_invalido",
+        [
+            Decision.DENIED,
+            Decision.TIMEOUT,
+            Decision.APPROVED,
+            1,
+            0,
+            "false",
+            "true",
+            "",
+            None,
+        ],
+    )
+    async def test_respond_rechaza_tipos_no_bool_sin_aprobar_ni_resolver(
+        self,
+        valor_invalido: object,
+    ) -> None:
+        """approved debe ser bool estricto: tipos inválidos fallan antes de _commit."""
+        eventos_terminales: list[tuple[str, Decision]] = []
+
+        async def _on_terminal(req: HITLRequest, decision: Decision) -> None:
+            eventos_terminales.append((req.request_id, decision))
+
+        guard = HITLGuard(timeout=5, on_terminal=_on_terminal)
+        req_id = str(uuid.uuid4())
+        fake = await _inject_pending(guard, req_id)
+
+        with pytest.raises(TypeError):
+            await guard.respond(req_id, valor_invalido)  # type: ignore[arg-type]
+
+        # La solicitud sigue pendiente, sin resolver ni aprobar, y sin notificar terminación.
+        assert fake._resolved is False
+        assert not fake._event.is_set()
+        assert fake.decision == Decision.TIMEOUT
+        assert req_id in guard._pending
+        assert eventos_terminales == []
+
+        # Una respuesta booleana válida posterior sigue funcionando normalmente.
+        assert await guard.respond(req_id, False) is True
+        assert fake._resolved is True
+        assert fake._event.is_set()
+        assert fake.decision == Decision.DENIED
+        assert eventos_terminales == [(req_id, Decision.DENIED)]
+
+    @pytest.mark.asyncio
+    async def test_respond_tipo_invalido_mantiene_espera_y_permite_denegar_con_false(
+        self,
+    ) -> None:
+        """Tras rechazar llamadas con tipos inválidos, wait sigue abierto y acepta False."""
+        eventos_terminales: list[tuple[str, Decision]] = []
+
+        async def _on_terminal(req: HITLRequest, decision: Decision) -> None:
+            eventos_terminales.append((req.request_id, decision))
+
+        guard = HITLGuard(timeout=5, on_terminal=_on_terminal)
+        espera = asyncio.create_task(
+            guard.request_approval(request_id="req-denegar-tras-error", reason="prueba"),
+        )
+        for _ in range(200):
+            if "req-denegar-tras-error" in guard._pending:
+                break
+            await asyncio.sleep(0)
+        else:  # pragma: no cover
+            pytest.fail("la solicitud no se registró como pendiente")
+
+        for valor_invalido in (Decision.DENIED, Decision.TIMEOUT, 1, "false", None):
+            with pytest.raises(TypeError):
+                await guard.respond("req-denegar-tras-error", valor_invalido)  # type: ignore[arg-type]
+            assert not espera.done()
+            assert "req-denegar-tras-error" in guard._pending
+            assert eventos_terminales == []
+
+        assert await guard.respond("req-denegar-tras-error", False) is True
+        assert await espera is Decision.DENIED
+        assert "req-denegar-tras-error" not in guard._pending
+        assert eventos_terminales == [("req-denegar-tras-error", Decision.DENIED)]
+
+    @pytest.mark.asyncio
+    async def test_respond_tipo_invalido_y_sin_booleano_expira_fail_closed_con_timeout(
+        self,
+    ) -> None:
+        """Si solo llegan tipos inválidos y no hay bool válido, vence con TIMEOUT."""
+        eventos_terminales: list[tuple[str, Decision]] = []
+        capturadas: list[HITLRequest] = []
+
+        async def _on_terminal(req: HITLRequest, decision: Decision) -> None:
+            eventos_terminales.append((req.request_id, decision))
+
+        async def _notify(req: HITLRequest) -> None:
+            capturadas.append(req)
+            for valor_invalido in (Decision.DENIED, Decision.TIMEOUT, 1, "false", None):
+                with pytest.raises(TypeError):
+                    await guard.respond(req.request_id, valor_invalido)  # type: ignore[arg-type]
+
+        guard = HITLGuard(notify_fn=_notify, timeout=0, on_terminal=_on_terminal)
+        decision = await guard.request_approval(
+            request_id="req-timeout-fail-closed",
+            reason="prueba",
+        )
+
+        assert decision is Decision.TIMEOUT
+        assert len(capturadas) == 1
+        assert capturadas[0]._resolved is True
+        assert capturadas[0].decision is Decision.TIMEOUT
+        assert "req-timeout-fail-closed" not in guard._pending
+        assert eventos_terminales == [("req-timeout-fail-closed", Decision.TIMEOUT)]
+
 
 # ---------------------------------------------------------------------------
 # TestTimeout
