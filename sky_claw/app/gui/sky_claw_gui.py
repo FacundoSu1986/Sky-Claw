@@ -45,6 +45,7 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_RITUAL_IN_FLIGHT,
     STORE_KEY_RITUAL_LAST_RESULT,
     STORE_KEY_RITUAL_PREFLIGHT,
+    payload_de_generar,
     resolve_pending_hitl_request,
     resolve_visible_pending_hitl,
     run_diagnostico_parallax,
@@ -77,6 +78,7 @@ from sky_claw.app.gui.views.forge_dashboard import (
     _rituales,
     current_tab_id,
     descargas_auto_enabled,
+    modo_de_interaccion_del_cliente,
     modo_local_enabled,
 )
 from sky_claw.config import Config
@@ -789,6 +791,8 @@ def main_page() -> None:
             store=get_store(),
             auto_approve=modo_local_enabled(),
             tab_id=current_tab_id(),
+            # H-12: el modo de la etapa 9 lo elige el operador en la tarjeta; se lee ACÁ, con contexto de cliente.
+            payload=payload_de_generar(tool_key, modo_de_interaccion_del_cliente()),
         ),
         name="gui-ritual-run",
     )

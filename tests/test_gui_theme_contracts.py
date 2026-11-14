@@ -1713,6 +1713,8 @@ _CONSUMIDORES_FRAGMENTO = frozenset(
         "_resolved_section",
         "_conflict_row",
         "_ritual_feedback_panel",
+        # H-12: la ayuda del selector de modo de la etapa 9 (texto de un solo hijo dentro de la tarjeta).
+        "_ayuda_del_modo_de_interaccion",
     }
 )
 
