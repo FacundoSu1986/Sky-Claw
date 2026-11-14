@@ -155,6 +155,93 @@ class _ResultadoAbortadoPorCierre:
 _TRABAJO_ABORTADO_POR_CIERRE = _ResultadoAbortadoPorCierre()
 
 
+class _EjecutorDaemonUnico:
+    """Runner de un único hilo ``daemon=True`` sin registro en ``_threads_queues``.
+
+    Evita que un I/O de filesystem colgado bloquee ``atexit`` / ``_python_exit()``
+    indefinidamente después de vencer ``drain_timeout`` en ``cerrar()`` (a diferencia
+    de ``concurrent.futures.ThreadPoolExecutor``, cuyos hilos no-daemon son unidos sin
+    cota al salir del intérprete). Las mutaciones durables previas/posteriores están
+    cubiertas por ``participant_lock``, escrituras atómicas ``temp + os.replace`` y la
+    recuperación crash-safe ``PENDING``/burn-first de ``frozen_runtime``.
+    """
+
+    def __init__(self, *, thread_name: str = "skyclaw-gm-hitl") -> None:
+        self._thread_name = thread_name
+        self._cond = threading.Condition()
+        self._cola: collections.deque[tuple[concurrent.futures.Future[Any], Callable[[], Any]]] = collections.deque()
+        self._cerrado = False
+        self._hilo: threading.Thread | None = None
+        self._terminado = threading.Event()
+
+    def _bucle_worker(self) -> None:
+        try:
+            while True:
+                with self._cond:
+                    while not self._cola and not self._cerrado:
+                        self._cond.wait()
+                    if self._cola:
+                        fut, fn = self._cola.popleft()
+                    else:
+                        break
+                if not fut.set_running_or_notify_cancel():
+                    continue
+                try:
+                    resultado = fn()
+                except BaseException as exc:  # noqa: BLE001 - propagar cualquier fallo al Future observable
+                    fut.set_exception(exc)
+                else:
+                    fut.set_result(resultado)
+        finally:
+            self._terminado.set()
+
+    def submit(self, fn: Callable[[], _T]) -> concurrent.futures.Future[_T]:
+        fut: concurrent.futures.Future[_T] = concurrent.futures.Future()
+        with self._cond:
+            if self._cerrado:
+                raise RuntimeError("No se pueden encolar nuevos workers en un ejecutor cerrado.")
+            self._cola.append((fut, fn))
+            if self._hilo is None:
+                hilo = threading.Thread(
+                    target=self._bucle_worker,
+                    name=self._thread_name,
+                    daemon=True,
+                )
+                try:
+                    hilo.start()
+                except BaseException:
+                    with contextlib.suppress(ValueError):
+                        self._cola.remove((fut, fn))
+                    self._cerrado = True
+                    self._terminado.set()
+                    raise
+                self._hilo = hilo
+            self._cond.notify()
+        return fut
+
+    def ha_terminado(self) -> bool:
+        with self._cond:
+            hilo = self._hilo
+        return hilo is None or self._terminado.is_set()
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        cancelados: list[concurrent.futures.Future[Any]] = []
+        with self._cond:
+            self._cerrado = True
+            if cancel_futures:
+                while self._cola:
+                    fut, _fn = self._cola.popleft()
+                    cancelados.append(fut)
+            hilo = self._hilo
+            self._cond.notify_all()
+        for fut in cancelados:
+            fut.cancel()
+        if hilo is None:
+            self._terminado.set()
+        elif wait:
+            hilo.join()
+
+
 def _escape_html(texto: object) -> str:
     if texto is None:
         return ""
@@ -482,7 +569,7 @@ class CoordinadorTelegramGoldenMaster:
         self._sesion_activa: _SesionActiva | None = None
         self._tokens_invalidados: collections.OrderedDict[str, None] = collections.OrderedDict()
         self._tareas_activas: set[asyncio.Task[None]] = set()
-        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._executor: _EjecutorDaemonUnico | None = None
         self._worker_fut_activo: asyncio.Future[Any] | None = None
         self._workers_lock = threading.Lock()
         self._workers_en_vuelo: set[concurrent.futures.Future[Any]] = set()
@@ -491,7 +578,7 @@ class CoordinadorTelegramGoldenMaster:
         self._workers_abandonados_count: int = 0
         self._errores_tardios_worker: list[str] = []
         self._errores_cierre: list[str] = []
-        self._executors_abandonados: list[concurrent.futures.ThreadPoolExecutor] = []
+        self._executors_abandonados: list[_EjecutorDaemonUnico] = []
         self._worker_cancel_events: set[threading.Event] = set()
         self._cierre_abandonado: bool = False
         self._esperas_abandono: set[asyncio.Future[None]] = set()
@@ -543,14 +630,11 @@ class CoordinadorTelegramGoldenMaster:
             hay_workers = bool(self._workers_en_vuelo)
         return self._operacion_en_curso or hay_workers or self._tiene_entregas_en_vuelo()
 
-    def _asegurar_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+    def _asegurar_executor(self) -> _EjecutorDaemonUnico:
         if self._cerrado:
             raise RuntimeError("El coordinador Golden Master está cerrado; no se admiten nuevos workers.")
         if self._executor is None:
-            self._executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="skyclaw-gm-hitl",
-            )
+            self._executor = _EjecutorDaemonUnico(thread_name="skyclaw-gm-hitl")
         return self._executor
 
     def _registrar_token_invalidado(self, token: str) -> None:
@@ -1060,6 +1144,15 @@ class CoordinadorTelegramGoldenMaster:
             if restante <= 0:
                 self._executors_abandonados.extend(executors[idx:])
                 return False
+            if isinstance(executor, _EjecutorDaemonUnico):
+                executor.shutdown(wait=False, cancel_futures=True)
+                while not executor.ha_terminado():
+                    restante = limite - loop.time()
+                    if restante <= 0:
+                        self._executors_abandonados.extend(executors[idx:])
+                        return False
+                    await asyncio.sleep(min(0.005, restante))
+                continue
             try:
                 await asyncio.wait_for(
                     asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True),

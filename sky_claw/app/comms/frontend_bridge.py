@@ -580,17 +580,12 @@ class FrontendBridge:
 
             # Telegram hot-reload
             if telegram_token:
-                from sky_claw.app_context import resolver_operador_telegram_para_recarga
-
-                operador_config = telegram_chat_id or getattr(self.config, "telegram_chat_id", "")
-                operador_efectivo = resolver_operador_telegram_para_recarga(
-                    self.ctx,
-                    config_chat_id=operador_config,
+                # Pasar el valor original de configuración sin convertir None a "",
+                # preservando una sola resolución fail-closed en _reload_telegram.
+                operador_config: object = (
+                    telegram_chat_id if telegram_chat_id else getattr(self.config, "telegram_chat_id", "")
                 )
-                tg_ok = await self._reload_telegram(
-                    telegram_token,
-                    "" if operador_efectivo is None else str(operador_efectivo),
-                )
+                tg_ok = await self._reload_telegram(telegram_token, operador_config)
                 if tg_ok:
                     reload_messages.append("Telegram reconectado")
                 else:
@@ -696,7 +691,7 @@ class FrontendBridge:
         """
         return await self.ctx.reload_llm_provider(provider_name, api_key)
 
-    async def _reload_telegram(self, token: str, chat_id: str | int | None = "") -> bool:
+    async def _reload_telegram(self, token: str, chat_id: object = "") -> bool:
         """Stop existing Telegram polling and restart with new token.
 
         Completely recreates the Telegram sender and polling handler

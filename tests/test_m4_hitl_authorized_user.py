@@ -387,7 +387,7 @@ class TestMatrizOperadorTelegramCR03:
             assert callable(notify_fn)
             await notify_fn(HITLRequest(request_id="req-matrix-1", reason="prueba"))
             if esperado is None:
-                sender_mock.send.assert_not_awaited()
+                sender_mock.send.assert_not_called()
             else:
                 sender_mock.send.assert_awaited_once()
                 assert sender_mock.send.await_args.args[0] == esperado
@@ -503,6 +503,54 @@ class TestHotReloadIdentidadOperadorCR03:
             assert mock_webhook.call_args.kwargs["authorized_user_id"] == 111222
             assert mock_polling.call_args.kwargs["authorized_chat_id"] == 111222
             assert ctx.operator_chat_id == 111222  # type: ignore[attr-defined]
+        finally:
+            await ctx.stop()  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize("chat_guardado_invalido", ["0", "abc", "-1001234567890"])
+    async def test_handle_update_config_con_chat_id_invalido_en_config_y_solo_token_nuevo_falla_cerrado(
+        self, tmp_path: Path, chat_guardado_invalido: str
+    ) -> None:
+        """CodeRabbit PRRT_kwDOR1JjU863igUb: None no debe convertirse en '' ni reactivar fallback CLI."""
+        from sky_claw.app.comms.frontend_bridge import FrontendBridge
+        from sky_claw.config import Config
+
+        ctx = _build_full_start_ctx(tmp_path, mode="cli", cli_operator=987654)
+        ctx.router = MagicMock()
+        ctx.hitl = MagicMock()
+        ctx.polling = None
+        ctx.operator_chat_id = 987654
+        ctx._operator_chat_id_resuelto = True
+
+        cfg = Config(tmp_path / "cfg_invalid_stored.toml")
+        cfg._data["telegram_chat_id"] = chat_guardado_invalido
+
+        bridge = FrontendBridge(ctx.router, MagicMock(), cfg, ctx)
+        bridge._set_keyring = MagicMock()  # type: ignore[method-assign]
+        bridge._send_config_result = AsyncMock()  # type: ignore[method-assign]
+        cfg.save = MagicMock()  # type: ignore[method-assign]
+
+        fake_polling = MagicMock()
+        fake_polling.start = AsyncMock()
+        fake_polling.stop = AsyncMock()
+
+        try:
+            with (
+                patch(
+                    "sky_claw.app.comms.golden_master_hitl.asegurar_coordinador_golden_master", new_callable=AsyncMock
+                ) as mock_gm,
+                patch("sky_claw.app.comms.telegram.TelegramWebhook") as mock_webhook,
+                patch("sky_claw.app.comms.telegram_polling.TelegramPolling", return_value=fake_polling) as mock_polling,
+                patch("sky_claw.app.comms.telegram_sender.TelegramSender"),
+            ):
+                mock_gm.return_value = MagicMock()
+                await bridge._handle_update_config(
+                    {"id": "m2-invalid-cfg", "content": {"telegram_bot_token": "999:NEWTOK", "telegram_chat_id": ""}}
+                )
+
+            assert mock_gm.call_args.kwargs["authorized_user_id"] is None
+            assert mock_webhook.call_args.kwargs["authorized_user_id"] is None
+            assert mock_polling.call_args.kwargs["authorized_chat_id"] is None
+            assert ctx.operator_chat_id is None  # type: ignore[attr-defined]
         finally:
             await ctx.stop()  # type: ignore[attr-defined]
 
@@ -640,7 +688,7 @@ class TestValidacionEstrictaTransporteCR03:
         )
         assert polling._authorized_chat_id is None
         await polling._process_raw_update({"update_id": 1, "message": {"text": "/status", "chat": {"id": 1}}})
-        handler.process_update.assert_not_awaited()
+        handler.process_update.assert_not_called()
 
         coord = CoordinadorTelegramGoldenMaster(
             sender=sender,

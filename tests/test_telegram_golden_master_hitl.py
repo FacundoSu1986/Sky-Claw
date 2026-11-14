@@ -2824,10 +2824,27 @@ class TestCierreAcotadoWorkerCR01:
 
         monkeypatch.setattr(gm_mod, "diagnosticar_estado_durable", _diag_falso)
 
-        # Disparar comando admitido y cerrar inmediatamente en paralelo antes de que llegue al worker
-        t_cmd = asyncio.create_task(polling._process_raw_update(_update_texto(901, "/gm_diagnostico")))
+        admitido = asyncio.Event()
+        habilitar_diagnostico = asyncio.Event()
+        original_correr_diagnostico = coord._correr_diagnostico
+
+        async def _barrera_pre_worker(*, chat_id: int) -> None:
+            assert coord._operacion_en_curso is True
+            admitido.set()
+            await habilitar_diagnostico.wait()
+            await original_correr_diagnostico(chat_id=chat_id)
+
+        monkeypatch.setattr(coord, "_correr_diagnostico", _barrera_pre_worker)
+
+        # Disparar comando /gm_estado soportado, confirmar admisión real y cerrar en paralelo antes del worker
+        t_cmd = asyncio.create_task(polling._process_raw_update(_update_texto(901, "/gm_estado")))
+        await asyncio.wait_for(admitido.wait(), timeout=5.0)
+        t_c1 = asyncio.create_task(coord.cerrar())
+        t_c2 = asyncio.create_task(coord.cerrar())
         await asyncio.sleep(0)
-        await asyncio.wait_for(asyncio.gather(coord.cerrar(), coord.cerrar()), timeout=2.0)
+        assert coord.cerrado is True
+        habilitar_diagnostico.set()
+        await asyncio.wait_for(asyncio.gather(t_c1, t_c2), timeout=2.0)
         await asyncio.wait_for(t_cmd, timeout=5.0)
 
         assert llamadas_worker == []
@@ -3885,3 +3902,99 @@ class TestCicloVidaWorkersAbandonados:
             assert calls == [True, True]
         finally:
             release_shutdown.set()
+
+    def test_worker_bloqueado_en_io_no_cuelga_salida_del_interprete_tras_cerrar(self) -> None:
+        """CodeRabbit PRRT_kwDOR1JjU863igUe: el worker daemonizado no bloquea `_python_exit` si un I/O queda colgado."""
+        import subprocess
+        import sys
+        import textwrap
+
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        script = textwrap.dedent(
+            """
+            import asyncio
+            import threading
+            from unittest.mock import AsyncMock, MagicMock
+            from sky_claw.app.comms.golden_master_hitl import CoordinadorTelegramGoldenMaster
+
+            async def _main() -> None:
+                loop = asyncio.get_running_loop()
+                sender = MagicMock()
+                sender.send = AsyncMock()
+                sender.edit_message = AsyncMock()
+                sender.answer_callback = AsyncMock()
+                coord = CoordinadorTelegramGoldenMaster(
+                    sender=sender,
+                    operador_autorizado=123456,
+                    drain_timeout=0.05,
+                )
+                en_worker = asyncio.Event()
+                nunca_termina = threading.Event()
+
+                def _io_colgado() -> None:
+                    loop.call_soon_threadsafe(en_worker.set)
+                    nunca_termina.wait(timeout=60.0)
+
+                coord._lanzar_tarea(coord._ejecutar_en_worker(_io_colgado))
+                await asyncio.wait_for(en_worker.wait(), timeout=5.0)
+                await asyncio.wait_for(coord.cerrar(), timeout=2.0)
+
+            asyncio.run(_main())
+            print("SALIDA_LIMPIA_TRAS_CERRAR")
+            """
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=4.0,
+            check=False,
+        )
+        assert proc.returncode == 0
+        assert "SALIDA_LIMPIA_TRAS_CERRAR" in proc.stdout
+
+    @pytest.mark.asyncio
+    async def test_esperar_workers_abandonados_no_fuga_hilo_en_executor_por_defecto_tras_timeout(self) -> None:
+        """Un timeout de esperar_workers_abandonados no deja tareas colgadas en el pool por defecto ni hilos non-daemon."""
+        import concurrent.futures.thread as cf_thread
+
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(sender=sender, operador_autorizado=OPERADOR, drain_timeout=0.05)
+        loop = asyncio.get_running_loop()
+        en_worker = asyncio.Event()
+        soltar = threading.Event()
+        terminado = asyncio.Event()
+
+        def _trabajo_lento() -> str:
+            loop.call_soon_threadsafe(en_worker.set)
+            try:
+                assert soltar.wait(timeout=10.0)
+                return "ok"
+            finally:
+                loop.call_soon_threadsafe(terminado.set)
+
+        tarea = coord._lanzar_tarea(coord._ejecutar_en_worker(_trabajo_lento))
+        try:
+            await asyncio.wait_for(en_worker.wait(), timeout=5.0)
+            await asyncio.wait_for(coord.cerrar(), timeout=2.0)
+
+            ok_timeout = await coord.esperar_workers_abandonados(timeout=0.03)
+            assert ok_timeout is False
+            hilos_gm = [t for t in threading.enumerate() if t.name.startswith("skyclaw-gm-hitl")]
+            assert len(hilos_gm) == 1
+            assert hilos_gm[0].daemon is True
+            assert all(not t.name.startswith("skyclaw-gm-hitl") for t in cf_thread._threads_queues)
+            # El executor por defecto de asyncio no queda bloqueado esperando executor.shutdown(wait=True).
+            assert await asyncio.wait_for(asyncio.to_thread(lambda: "libre"), timeout=1.0) == "libre"
+
+            soltar.set()
+            await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.gather(tarea, return_exceptions=True)
+            assert await coord.esperar_workers_abandonados(timeout=5.0) is True
+            assert coord._executors_abandonados == []
+        finally:
+            soltar.set()
+            if not tarea.done():
+                await asyncio.gather(tarea, return_exceptions=True)
+            await coord.esperar_workers_abandonados(timeout=5.0)
