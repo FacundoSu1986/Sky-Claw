@@ -44,7 +44,10 @@ from sky_claw.app.gui.views.forge_dashboard import (
     STORE_KEY_MODO_LOCAL_DEFECTO,
     resolver_modo_local,
 )
-from sky_claw.app.security.hitl import CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA
+from sky_claw.app.security.hitl import (
+    CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA,
+    CATEGORIA_DYNDOLOD_ETAPAS_PREVIAS_ASISTIDO,
+)
 from sky_claw.config import Config
 
 _GUI = pathlib.Path(__file__).resolve().parent.parent / "sky_claw" / "app" / "gui"
@@ -199,9 +202,45 @@ def test_la_preferencia_de_descargas_solo_la_lee_su_seam() -> None:
     assert lectores == ["forge_dashboard.py:descargas_auto_enabled"]
 
 
-@pytest.mark.parametrize("categoria", ["download", "sandbox_promotion", CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA])
+#: Qué hace el puente GUI con CADA categoría que intercepta. Igualdad exacta contra
+#: lo que ``_notify`` realmente compara (censo AST abajo): una categoría nueva en
+#: el puente rompe el ancla hasta que se decide acá si alguna preferencia la
+#: auto-aprueba. Así entró ``dyndolod_etapas_previas_asistido`` (#906) mientras
+#: este PR estaba abierto: en un merge limpio, sin un solo marcador.
+_POLITICA_POR_CATEGORIA: dict[str, str] = {
+    "tool_execution": "modo_local",
+    "download": "preferencia_de_descargas",
+    "sandbox_promotion": "siempre_manual",
+    "CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA": "siempre_manual",
+    "CATEGORIA_DYNDOLOD_ETAPAS_PREVIAS_ASISTIDO": "siempre_manual",
+}
+
+
+def test_el_censo_de_categorias_del_puente_esta_completo() -> None:
+    arbol = ast.parse((_GUI / "controllers" / "ritual_runner.py").read_text(encoding="utf-8"))
+    notify = next(n for n in ast.walk(arbol) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_notify")
+    comparadas: set[str] = set()
+    for nodo in ast.walk(notify):
+        if not (isinstance(nodo, ast.Compare) and isinstance(nodo.left, ast.Name) and nodo.left.id == "category"):
+            continue
+        for comparador in nodo.comparators:
+            elementos = comparador.elts if isinstance(comparador, ast.Tuple) else [comparador]
+            for elemento in elementos:
+                comparadas.add(elemento.value if isinstance(elemento, ast.Constant) else ast.unparse(elemento))
+    assert comparadas == set(_POLITICA_POR_CATEGORIA)
+
+
+@pytest.mark.parametrize(
+    "categoria",
+    [
+        "download",
+        "sandbox_promotion",
+        CATEGORIA_DYNDOLOD_CONFIGURACION_LISTA,
+        CATEGORIA_DYNDOLOD_ETAPAS_PREVIAS_ASISTIDO,
+    ],
+)
 async def test_lo_que_nunca_se_auto_aprueba_sigue_pidiendo_confirmacion(categoria: str) -> None:
-    """Con la preferencia encendida (getter True) estas tres categorías siguen parkeando modal."""
+    """Con «Modo local» encendido (getter True) estas categorías siguen parkeando modal."""
     aprobadas: list[str] = []
     parkeadas: list[dict[str, object]] = []
 

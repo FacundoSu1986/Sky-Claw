@@ -69,6 +69,28 @@ def test_sin_detalle_ni_url_no_hay_caja_tecnica_y_el_motivo_tiene_default() -> N
     assert "Spline Sans Mono',monospace; font-size:11px" not in html
 
 
+@pytest.mark.parametrize(
+    ("pending", "fragmento"),
+    [
+        # Sólo se sugiere un atajo donde el atajo EXISTE para esa categoría.
+        ({"category": "tool_execution"}, "Modo local"),
+        ({"category": "download", "url": "https://x"}, "descargas"),
+        ({"url": "https://x"}, "descargas"),
+        # Estas nunca se auto-aprueban: prometer «Modo local» sería mentirle al operador.
+        ({"category": "sandbox_promotion"}, None),
+        ({"category": "dyndolod_configuracion_lista"}, None),
+        ({"category": "dyndolod_etapas_previas_asistido"}, None),
+        ({}, None),
+    ],
+)
+def test_el_tip_del_modal_solo_promete_atajos_que_existen(pending: dict[str, str], fragmento: str | None) -> None:
+    tip = fd._hitl_tip(pending)
+    if fragmento is None:
+        assert tip == ""
+    else:
+        assert fragmento in tip and "Ajustes → Aprobaciones" in tip
+
+
 def _llamadores(nombre: str, archivo: str) -> set[str]:
     arbol = ast.parse((_GUI / archivo).read_text(encoding="utf-8"))
     return {

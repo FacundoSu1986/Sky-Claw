@@ -846,6 +846,24 @@ def _es_descarga(pending: dict[str, Any]) -> bool:
     return str(pending.get("category", "")) == "download" or bool(pending.get("url"))
 
 
+def _hitl_tip(pending: dict[str, Any]) -> str:
+    """Seam puro: el atajo que el modal puede sugerir para ESTA solicitud, o ``""``.
+
+    El tip tiene que ser cierto: sólo ``tool_execution`` se auto-aprueba con
+    «Modo local» y sólo las descargas con su preferencia. El resto de las
+    categorías que el puente estaciona (promoción de sandbox, confirmaciones de
+    DynDOLOD) nunca se auto-aprueban, así que prometerles un atajo sería mentir.
+    """
+    if _es_descarga(pending):
+        return "Tip: para no confirmar las descargas que iniciás vos con «Instalar», Ajustes → Aprobaciones."
+    if str(pending.get("category", "")) == "tool_execution":
+        return (
+            "Tip: activá «Modo local» (F8) para no aprobar cada acción mientras estés en la PC; "
+            "para dejarlo fijo, Ajustes → Aprobaciones."
+        )
+    return ""
+
+
 def _hitl_solicitud_html(pending: dict[str, Any]) -> str:
     """Seam puro: el cuerpo de UNA solicitud HITL, igual en toda superficie que la muestre.
 
@@ -900,13 +918,7 @@ def _hitl_modal_panel() -> None:
     if not _hitl_modal_visible(pending, str(get_store().get("active_section") or "")):
         return
     request_id = str(pending.get("request_id", ""))
-    # El tip tiene que ser cierto para ESTA solicitud: «Modo local» no aprueba descargas.
-    tip = (
-        "Tip: para no confirmar las descargas que iniciás vos con «Instalar», Ajustes → Aprobaciones."
-        if _es_descarga(pending)
-        else "Tip: activá «Modo local» (F8) para no aprobar cada acción mientras estés en la PC; "
-        "para dejarlo fijo, Ajustes → Aprobaciones."
-    )
+    tip = _hitl_tip(pending)
     overlay = (
         "position:fixed; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center;"
         "background:rgba(7,9,12,.72); backdrop-filter:blur(3px);"
@@ -922,7 +934,11 @@ def _hitl_modal_panel() -> None:
             f'<span style="color:#ecd9a8; display:inline-flex;" aria-hidden="true">{_ICON_SHIELD_CHECK}</span>'
             "<span style=\"font-family:'Cinzel',serif; font-weight:700; font-size:15px; letter-spacing:.1em; color:#f1e6cf;\">APROBACIÓN REQUERIDA</span></div>"
             f"{_hitl_solicitud_html(pending)}"
-            f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#857c69; margin-bottom:14px;\">{_e(tip)}</div>"
+            + (
+                f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#857c69; margin-bottom:14px;\">{_e(tip)}</div>"
+                if tip
+                else ""
+            )
         )
         with ui.element("div").style("display:flex; gap:11px; justify-content:flex-end;"):
             deny = ui.element("button").classes("sc-btn sc-btn--danger").style("padding:9px 18px;")
@@ -2145,7 +2161,7 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
         ui.html(
             f'<span style="{_HINT}">Con esto, «Instalar» descarga de internet sin preguntar. Vale sólo para lo que '
             "iniciás vos desde esta pantalla: las descargas que pida el agente o Telegram siguen pidiendo "
-            "confirmación, igual que la promoción de un sandbox y la configuración de TexGen/DynDOLOD.</span>"
+            "confirmación, igual que la promoción de un sandbox y las confirmaciones de DynDOLOD.</span>"
         )
 
     # ── Guardar ──
