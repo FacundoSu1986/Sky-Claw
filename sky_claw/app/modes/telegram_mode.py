@@ -28,20 +28,22 @@ async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
     if ctx.sender is None:
         logger.error("TELEGRAM_BOT_TOKEN required.")
         sys.exit(1)
+    from sky_claw.app_context import resolver_operador_telegram_desde_contexto
+
+    operador_efectivo = resolver_operador_telegram_desde_contexto(ctx)
     golden_master_coordinator = await asegurar_coordinador_golden_master(
         ctx,
         sender=ctx.sender,
-        authorized_user_id=ctx._args.operator_chat_id,
+        authorized_user_id=operador_efectivo,
     )
-    # M-4: pasar authorized_user_id. Sin él, _validate_sender falla cerrado
-    # (allowed_user_id=None ⇒ rechaza) y bloquea TODOS los approvals HITL en
-    # --mode telegram.
+    # M-4 / CR-03: pasar la única identidad efectiva resuelta al coordinador,
+    # TelegramWebhook y TelegramPolling sin sobrescribirla con ctx._args.operator_chat_id.
     webhook_handler = TelegramWebhook(
         router=ctx.router,
         sender=ctx.sender,
         session=ctx.session,
         hitl=ctx.hitl,
-        authorized_user_id=ctx._args.operator_chat_id,
+        authorized_user_id=operador_efectivo,
         hitl_registry=ctx.telegram_hitl_registry,
         golden_master_coordinator=golden_master_coordinator,
     )
@@ -50,7 +52,7 @@ async def _run_telegram(ctx: AppContext, host: str, port: int) -> None:
         webhook_handler=webhook_handler,
         gateway=ctx.network.gateway,
         session=ctx.session,
-        authorized_chat_id=ctx._args.operator_chat_id,
+        authorized_chat_id=operador_efectivo,
     )
     await polling.start()
     logger.info("Telegram polling started. Press Ctrl+C to stop.")

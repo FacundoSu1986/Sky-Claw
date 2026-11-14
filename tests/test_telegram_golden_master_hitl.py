@@ -56,7 +56,7 @@ from sky_claw.local.frozen_runtime import approval as approval_module
 from sky_claw.local.frozen_runtime import autorizacion_hitl_transicion as hitl_wiring
 from sky_claw.local.frozen_runtime import binder_recovery as recovery_module
 from sky_claw.local.frozen_runtime import journal as journal_module
-from sky_claw.local.frozen_runtime import mo2_ini_exclusion
+from sky_claw.local.frozen_runtime import mo2_ini_escritura, mo2_ini_exclusion
 from sky_claw.local.frozen_runtime import owner_consent as owner_consent_module
 from sky_claw.local.frozen_runtime import runtime_clone_binder as binder_module
 from sky_claw.local.frozen_runtime.approval import (
@@ -848,13 +848,16 @@ class TestReanudacionCrashYAbandono:
             await coord.cerrar()
 
     @pytest.mark.asyncio
-    async def test_abandono_autorizado_y_rechazo_post_pending(
+    async def test_abandono_autorizado_deja_estado_limpio_y_conserva_invariantes(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Abandono autorizado cierra la transición pre-PENDING sin emitir ni mutar superficies."""
         rig = RigStockManual(tmp_path, steam_activo=True)
+        antes = _huellas(rig)
+        ini_inicial = leer_game_path_de_mo2(rig.mo2_active_global / "modorganizer.ini")
         tx_id = _simular_crash_pre_pending(rig, monkeypatch)
 
-        coord, _webhook, polling, sender, _router = _construir_entorno(rig)
+        coord, _webhook, polling, sender, router = _construir_entorno(rig)
         try:
             # Exige motivo explícito
             await polling._process_raw_update(_update_texto(600, f"/gm_abandonar {tx_id}"))
@@ -864,20 +867,139 @@ class TestReanudacionCrashYAbandono:
             # Abandona con motivo y autoría verificada
             await polling._process_raw_update(_update_texto(601, f"/gm_abandonar {tx_id} cancelar ventana previa"))
             await coord.esperar_idle()
-            assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
-
-            # Post-PENDING: /gm_reanudar falla cerrado y nunca re-emite
-            jp = transition_journal_path(rig.storage)
-            jp.parent.mkdir(parents=True, exist_ok=True)
-            jp.write_text(
-                '{"schema_version": 2, "state": "PENDING_PROMOTION", "journal_revision": 1}', encoding="utf-8"
+            diag = diagnosticar_estado_durable(rig.storage)
+            assert diag.estado is EstadoDurable.LIMPIO
+            assert diag.transicion_en_curso is None
+            assert diag.transicion_reanudable is None
+            assert (
+                journal_module.cargar_journal_transicion(rig.storage).disposition
+                is journal_module.JournalDisposition.ABSENT
             )
+
+            autoridad = derivar_autoridad_aprobacion(rig.storage)
+            assert len(autoridad.witnesses) == 1
+            assert len(autoridad.tombstones) == 1
+            assert cargar_ledger_aprobacion(rig.storage).ledger.state is ApprovalLifecycle.CONSUMED
+
+            # Tras el abandono no puede reanudarse la transición cerrada
             await polling._process_raw_update(_update_texto(602, f"/gm_reanudar {tx_id}"))
             await coord.esperar_idle()
+            texto_tras_abandono = sender.send.await_args_list[-1].args[1].casefold()
+            assert "no se pudo reanudar" in texto_tras_abandono
+            assert "no hay ninguna aprobación consumida" in texto_tras_abandono
+            assert "estado=limpio" in texto_tras_abandono
+            router.chat.assert_not_awaited()
+
+            ini_despues = leer_game_path_de_mo2(rig.mo2_active_global / "modorganizer.ini")
+            assert ini_despues.state is ini_inicial.state
+            assert pathlib.Path(ini_despues.path or "").resolve() == pathlib.Path(ini_inicial.path or "").resolve()
+            despues = _huellas(rig)
+            for prohibida in (rig.managed_source, rig.stock_source, rig.manual_runtime, rig.storage / "versions"):
+                prefijo = str(prohibida)
+                for clave, valor in antes.items():
+                    if clave.startswith(prefijo):
+                        assert despues[clave] == valor
+        finally:
+            await coord.cerrar()
+
+    @SOLO_WINDOWS
+    @pytest.mark.asyncio
+    async def test_rechazo_reanudar_post_pending_tras_fallo_real_inyectado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, exclusion_de_test: str
+    ) -> None:
+        """Una transición válida que falla tras publicar PENDING real exige recuperación manual del dueño."""
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        antes = _huellas(rig)
+        ini_inicial = leer_game_path_de_mo2(rig.mo2_active_global / "modorganizer.ini")
+        assert ini_inicial.state is ObservationState.OBSERVED
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+
+        inyectado: list[journal_module.JournalDisposition] = []
+
+        def _fallar_post_pending(
+            _exclusion: object,
+            _target_clone_root: object,
+            *,
+            plan_ejecutables: object = None,
+            al_escribir: object = None,
+        ) -> None:
+            inyectado.append(journal_module.cargar_journal_transicion(rig.storage).disposition)
+            raise mo2_ini_escritura.Mo2IniEscrituraError("fallo real inyectado tras publicar PENDING")
+
+        monkeypatch.setattr(binder_module, "actualizar_game_path_por_handle", _fallar_post_pending)
+
+        coord, _webhook, polling, sender, router = _construir_entorno(rig)
+        try:
+            # 1. Preparación y aprobación real que publica PENDING antes del fallo inyectado
+            await polling._process_raw_update(_update_texto(610, "/gm_preparar"))
+            await coord.esperar_idle()
+            cb_data, msg_id, _ = _extraer_token_de_ultimo_envio(sender, "approve")
+
+            await polling._process_raw_update(_update_callback(611, cb_data, message_id=msg_id))
+            await coord.esperar_idle()
+
+            assert inyectado == [journal_module.JournalDisposition.PENDING_PROMOTION]
+            diag = diagnosticar_estado_durable(rig.storage)
+            assert diag.estado is EstadoDurable.PENDIENTE_RECUPERABLE
+            assert diag.journal_disposition is journal_module.JournalDisposition.PENDING_PROMOTION
+            assert diag.transicion_en_curso is not None
+            assert diag.transicion_reanudable is None
+            tx_id = diag.transicion_en_curso
+
+            autoridad_tras_fallo = derivar_autoridad_aprobacion(rig.storage)
+            assert len(autoridad_tras_fallo.witnesses) == 1
+            assert len(autoridad_tras_fallo.tombstones) == 1
+            assert cargar_ledger_aprobacion(rig.storage).ledger.state is ApprovalLifecycle.CONSUMED
+
+            # 2. /gm_estado y /gm_reanudar recorren el control real post-PENDING y exigen recuperación del dueño
+            await polling._process_raw_update(_update_texto(612, "/gm_estado"))
+            await coord.esperar_idle()
+            texto_estado = sender.send.await_args_list[-1].args[1].casefold()
+            assert "pendiente_recuperable" in texto_estado
+            assert tx_id.casefold() in texto_estado
+
+            await polling._process_raw_update(_update_texto(613, f"/gm_reanudar {tx_id}"))
+            await coord.esperar_idle()
+            texto_reanudar = sender.send.await_args_list[-1].args[1]
             assert (
-                "dueño" in sender.send.await_args_list[-1].args[1].casefold()
-                or "pending" in sender.send.await_args_list[-1].args[1].casefold()
+                "La transición ya publicó <code>PENDING</code> y requiere recuperación manual del dueño"
+                in texto_reanudar
             )
+            assert "<code>recuperar_transicion_interrumpida</code>" in texto_reanudar
+            assert "<code>reconciliar_journal</code>" in texto_reanudar
+            assert "dejó un PENDING publicado: el burn-first gastó la aprobación" in texto_reanudar
+
+            # 3. No aparecen nuevas emisiones ni consumos, ni muta el INI ni las rutas reales
+            envios_antes_reintento = sender.send.await_count
+            await polling._process_raw_update(_update_texto(614, "/gm_preparar"))
+            await coord.esperar_idle()
+            assert sender.send.await_count == envios_antes_reintento + 1
+            ultimo_envio = sender.send.await_args_list[-1]
+            assert ultimo_envio.kwargs.get("reply_markup") is None
+            assert "hay un pending (pending_promotion)" in ultimo_envio.args[1].casefold()
+
+            router.chat.assert_not_awaited()
+            autoridad_final = derivar_autoridad_aprobacion(rig.storage)
+            assert len(autoridad_final.witnesses) == 1
+            assert len(autoridad_final.tombstones) == 1
+            assert cargar_ledger_aprobacion(rig.storage).ledger.state is ApprovalLifecycle.CONSUMED
+
+            diag_final = diagnosticar_estado_durable(rig.storage)
+            assert diag_final.estado is EstadoDurable.PENDIENTE_RECUPERABLE
+            assert diag_final.journal_disposition is journal_module.JournalDisposition.PENDING_PROMOTION
+            assert diag_final.transicion_en_curso == tx_id
+
+            ini_despues = leer_game_path_de_mo2(rig.mo2_active_global / "modorganizer.ini")
+            assert ini_despues.state is ObservationState.OBSERVED
+            assert pathlib.Path(ini_despues.path or "").resolve() == pathlib.Path(ini_inicial.path or "").resolve()
+
+            despues = _huellas(rig)
+            for prohibida in (rig.managed_source, rig.stock_source, rig.manual_runtime, rig.storage / "versions"):
+                prefijo = str(prohibida)
+                for clave, valor in antes.items():
+                    if clave.startswith(prefijo):
+                        assert despues[clave] == valor
+            assert exclusion_de_test in {"real", "doble_posix"}
         finally:
             await coord.cerrar()
 
@@ -2401,3 +2523,954 @@ class TestP2ResidualDrenadoEntrega:
         finally:
             soltar_edit.set()
             await coord.cerrar()
+
+
+# ===========================================================================
+# 11. CR-01 y CR-02 — Cierre acotado con workers activos y CancelledError
+# ===========================================================================
+
+
+class _SesionPruebaStub:
+    """Sesion minima en memoria para comprobar invalidacion en tests de cierre."""
+
+    def __init__(self, token: str = "tok-cr02", chat_id: int = 424242, message_id: int = 77) -> None:
+        self.token = token
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.descartada = False
+        self.registro = self
+
+    def descartar_todo(self) -> None:
+        self.descartada = True
+
+
+class TestCierreAcotadoWorkerCR01:
+    """CR-01: shutdown acotado al deadline sin perder propiedad ni excepciones de workers."""
+
+    @pytest.mark.asyncio
+    async def test_cerrar_con_worker_normal_completa_y_libera_executor(self) -> None:
+        loop = asyncio.get_running_loop()
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=424242,
+            drain_timeout=2.0,
+        )
+        en_worker = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+
+        def _trabajo() -> str:
+            loop.call_soon_threadsafe(en_worker.set)
+            try:
+                assert soltar.wait(timeout=10.0)
+                return "listo"
+            finally:
+                loop.call_soon_threadsafe(terminado.set)
+
+        tarea_worker = (
+            coord._lanzar_tarea(coord._correr_worker_para_test(_trabajo))
+            if hasattr(coord, "_correr_worker_para_test")
+            else asyncio.create_task(coord._ejecutar_en_worker(_trabajo))
+        )
+        try:
+            await asyncio.wait_for(en_worker.wait(), timeout=5.0)
+            cierre_task = asyncio.create_task(coord.cerrar())
+            await asyncio.sleep(0)
+            soltar.set()
+
+            await asyncio.wait_for(cierre_task, timeout=5.0)
+            resultado = await asyncio.wait_for(tarea_worker, timeout=5.0)
+            assert resultado == "listo"
+            assert coord.cerrado is True
+            assert coord._executor is None
+            assert coord.workers_activos == 0
+            assert coord.workers_abandonados_en_cierre == 0
+        finally:
+            soltar.set()
+            if not terminado.is_set():
+                await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_cerrar_con_worker_que_falla_con_excepcion_termina_limpio_y_observa_error(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        loop = asyncio.get_running_loop()
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=424242,
+            drain_timeout=2.0,
+        )
+        en_worker = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+
+        def _trabajo_fallido() -> None:
+            loop.call_soon_threadsafe(en_worker.set)
+            try:
+                assert soltar.wait(timeout=10.0)
+                raise RuntimeError("boom en worker durante cierre")
+            finally:
+                loop.call_soon_threadsafe(terminado.set)
+
+        tarea_worker = asyncio.create_task(coord._ejecutar_en_worker(_trabajo_fallido))
+        try:
+            await asyncio.wait_for(en_worker.wait(), timeout=5.0)
+            with caplog.at_level(logging.WARNING, logger="sky_claw"):
+                cierre_task = asyncio.create_task(coord.cerrar())
+                await asyncio.sleep(0)
+                soltar.set()
+                await asyncio.wait_for(cierre_task, timeout=5.0)
+
+            with pytest.raises(RuntimeError, match="boom en worker durante cierre"):
+                await asyncio.wait_for(tarea_worker, timeout=5.0)
+            assert coord._executor is None
+            assert coord.workers_activos == 0
+        finally:
+            soltar.set()
+            if not terminado.is_set():
+                await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_cerrar_con_worker_bloqueado_mas_alla_de_drain_timeout_es_acotado_y_conserva_propiedad(
+        self,
+    ) -> None:
+        import time
+
+        loop = asyncio.get_running_loop()
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=424242,
+            drain_timeout=0.05,
+        )
+        en_worker = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+
+        def _trabajo_bloqueado() -> str:
+            loop.call_soon_threadsafe(en_worker.set)
+            try:
+                assert soltar.wait(timeout=10.0)
+                return "tardio"
+            finally:
+                loop.call_soon_threadsafe(terminado.set)
+
+        async def _op_simulada() -> None:
+            await coord._ejecutar_en_worker(_trabajo_bloqueado)
+
+        tarea = coord._lanzar_tarea(_op_simulada())
+        try:
+            await asyncio.wait_for(en_worker.wait(), timeout=5.0)
+
+            inicio = time.monotonic()
+            await asyncio.wait_for(coord.cerrar(), timeout=2.0)
+            transcurrido = time.monotonic() - inicio
+
+            assert transcurrido < 1.0
+            assert coord.cerrado is True
+            assert coord._executor is None
+            # Propiedad supervisada conservada mientras el hilo sigue vivo
+            assert coord.workers_activos == 1
+            assert coord.workers_abandonados_en_cierre >= 1
+
+            # Post-cierre no admite nuevas operaciones ni recrea executor
+            with pytest.raises(RuntimeError):
+                await coord._ejecutar_en_worker(lambda: "no debe correr")
+            assert coord._executor is None
+
+            # Al desbloquear luego el worker, termina sin colgar y libera la propiedad
+            soltar.set()
+            await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.gather(tarea, return_exceptions=True)
+            assert await coord.esperar_workers_abandonados(timeout=5.0)
+            assert coord.workers_activos == 0
+            assert coord._executor is None
+        finally:
+            soltar.set()
+            if not terminado.is_set():
+                await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.gather(tarea, return_exceptions=True)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_worker_tardio_que_falla_tras_cerrar_no_pierde_excepcion_ni_deja_future_sin_recuperar(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import gc
+        import logging
+        import sys
+
+        loop = asyncio.get_running_loop()
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=424242,
+            drain_timeout=0.05,
+        )
+        en_worker = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+        unraisables: list[object] = []
+        hook_previo = sys.unraisablehook
+
+        def _capturar_unraisable(args: object) -> None:
+            unraisables.append(args)
+
+        sys.unraisablehook = _capturar_unraisable  # type: ignore[assignment]
+        try:
+
+            def _trabajo_tardio_con_error() -> None:
+                loop.call_soon_threadsafe(en_worker.set)
+                try:
+                    assert soltar.wait(timeout=10.0)
+                    raise RuntimeError("boom tardio pos-cierre")
+                finally:
+                    loop.call_soon_threadsafe(terminado.set)
+
+            async def _op_simulada() -> None:
+                await coord._ejecutar_en_worker(_trabajo_tardio_con_error)
+
+            tarea = coord._lanzar_tarea(_op_simulada())
+            await asyncio.wait_for(en_worker.wait(), timeout=5.0)
+
+            await asyncio.wait_for(coord.cerrar(), timeout=2.0)
+            assert coord.workers_activos == 1
+
+            with caplog.at_level(logging.WARNING, logger="sky_claw"):
+                soltar.set()
+                await asyncio.wait_for(terminado.wait(), timeout=5.0)
+                await asyncio.gather(tarea, return_exceptions=True)
+                assert await coord.esperar_workers_abandonados(timeout=5.0)
+                gc.collect()
+
+            assert coord.workers_activos == 0
+            assert any("boom tardio pos-cierre" in msg for msg in coord.errores_tardios_worker)
+            assert any("boom tardio pos-cierre" in r.getMessage() for r in caplog.records)
+            assert unraisables == []
+        finally:
+            sys.unraisablehook = hook_previo
+            soltar.set()
+            if not terminado.is_set():
+                await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_cierre_repetido_tras_abandono_es_idempotente_y_acotado(self) -> None:
+        import time
+
+        loop = asyncio.get_running_loop()
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=424242,
+            drain_timeout=0.05,
+        )
+        en_worker = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+
+        def _trabajo() -> None:
+            loop.call_soon_threadsafe(en_worker.set)
+            try:
+                assert soltar.wait(timeout=10.0)
+            finally:
+                loop.call_soon_threadsafe(terminado.set)
+
+        tarea = coord._lanzar_tarea(coord._ejecutar_en_worker(_trabajo))
+        try:
+            await asyncio.wait_for(en_worker.wait(), timeout=5.0)
+            await asyncio.wait_for(coord.cerrar(), timeout=2.0)
+            assert coord.workers_activos == 1
+
+            t0 = time.monotonic()
+            await asyncio.wait_for(coord.cerrar(), timeout=2.0)
+            await asyncio.wait_for(coord.cerrar(), timeout=2.0)
+            assert time.monotonic() - t0 < 0.5
+            assert coord._executor is None
+            assert coord.workers_activos == 1
+        finally:
+            soltar.set()
+            if not terminado.is_set():
+                await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.gather(tarea, return_exceptions=True)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_cierre_concurrente_con_operacion_admitida_no_recrea_executor_ni_escapa_deadline(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import sky_claw.app.comms.golden_master_hitl as gm_mod
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        coord, _wh, polling, _sender, _router = _construir_entorno(rig)
+        coord._drain_timeout = 0.05
+
+        llamadas_worker: list[str] = []
+
+        def _diag_falso(_root: pathlib.Path) -> object:
+            llamadas_worker.append("ejecutado")
+            raise AssertionError("No debe correr worker tras cierre concurrente")
+
+        monkeypatch.setattr(gm_mod, "diagnosticar_estado_durable", _diag_falso)
+
+        # Disparar comando admitido y cerrar inmediatamente en paralelo antes de que llegue al worker
+        t_cmd = asyncio.create_task(polling._process_raw_update(_update_texto(901, "/gm_diagnostico")))
+        await asyncio.sleep(0)
+        await asyncio.wait_for(asyncio.gather(coord.cerrar(), coord.cerrar()), timeout=2.0)
+        await asyncio.wait_for(t_cmd, timeout=5.0)
+
+        assert llamadas_worker == []
+        assert coord.cerrado is True
+        assert coord._executor is None
+
+    @pytest.mark.asyncio
+    async def test_worker_ejecutando_operacion_durable_simulada_completa_sin_corrupcion_tras_timeout_cierre(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        from sky_claw.local.frozen_runtime.root_lock import participant_lock
+        from sky_claw.local.frozen_runtime.storage import initialize_frozen_runtime_storage
+
+        storage_root = tmp_path / "FrozenRuntime"
+        assert initialize_frozen_runtime_storage(storage_root).success
+        archivo_durable = storage_root / "estado_simulado.json"
+
+        loop = asyncio.get_running_loop()
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=424242,
+            drain_timeout=0.05,
+        )
+        dentro_lock = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+
+        def _op_durable() -> None:
+            with participant_lock(storage_root):
+                loop.call_soon_threadsafe(dentro_lock.set)
+                try:
+                    assert soltar.wait(timeout=10.0)
+                    archivo_durable.write_text('{"fase": "confirmado", "ok": true}\n', encoding="utf-8")
+                finally:
+                    loop.call_soon_threadsafe(terminado.set)
+
+        tarea = coord._lanzar_tarea(coord._ejecutar_en_worker(_op_durable))
+        try:
+            await asyncio.wait_for(dentro_lock.wait(), timeout=5.0)
+            await asyncio.wait_for(coord.cerrar(), timeout=2.0)
+            assert coord.workers_activos == 1
+
+            # Liberar: la operación durable debe concluir limpiamente dentro de su lock sin corromperse
+            soltar.set()
+            await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.gather(tarea, return_exceptions=True)
+            assert await coord.esperar_workers_abandonados(timeout=5.0)
+
+            assert coord.workers_activos == 0
+            assert '"fase": "confirmado"' in archivo_durable.read_text(encoding="utf-8")
+            assert diagnosticar_estado_durable(storage_root).estado is EstadoDurable.LIMPIO
+        finally:
+            soltar.set()
+            if not terminado.is_set():
+                await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.gather(tarea, return_exceptions=True)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+
+
+class TestCancelacionCierreCR02:
+    """CR-02: cancelar cerrar() ejecuta cleanup crítico y propaga CancelledError."""
+
+    @pytest.mark.asyncio
+    async def test_cancelar_cerrar_mientras_drena_worker_ejecuta_cleanup_critico_y_propaga_cancelled_error(
+        self,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=424242,
+            drain_timeout=10.0,
+        )
+        sesion_abierta = _SesionPruebaStub(token="tok-cr02-cancel")
+        coord._sesion_activa = sesion_abierta  # type: ignore[assignment]
+
+        en_worker = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+
+        def _trabajo() -> None:
+            loop.call_soon_threadsafe(en_worker.set)
+            try:
+                assert soltar.wait(timeout=10.0)
+            finally:
+                loop.call_soon_threadsafe(terminado.set)
+
+        tarea = coord._lanzar_tarea(coord._ejecutar_en_worker(_trabajo))
+        try:
+            await asyncio.wait_for(en_worker.wait(), timeout=5.0)
+            cierre_task = asyncio.create_task(coord.cerrar())
+            await asyncio.sleep(0)
+            assert not cierre_task.done()
+
+            cierre_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(cierre_task, timeout=5.0)
+
+            assert coord.cerrado is True
+            assert coord._executor is None
+            assert coord._sesion_activa is None
+            assert sesion_abierta.descartada is True
+            assert "tok-cr02-cancel" in coord._tokens_invalidados
+            assert coord.workers_activos == 1
+        finally:
+            soltar.set()
+            if not terminado.is_set():
+                await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.gather(tarea, return_exceptions=True)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+            await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_cancelar_cerrar_con_fallo_en_cleanup_observa_error_sin_ocultar_cancelacion(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        class _SesionFallaCleanup(_SesionPruebaStub):
+            def descartar_todo(self) -> None:
+                raise RuntimeError("fallo critico de cleanup en descartar_todo")
+
+        loop = asyncio.get_running_loop()
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=424242,
+            drain_timeout=10.0,
+        )
+        coord._sesion_activa = _SesionFallaCleanup(token="tok-cr02-err")  # type: ignore[assignment]
+
+        en_worker = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+
+        def _trabajo() -> None:
+            loop.call_soon_threadsafe(en_worker.set)
+            try:
+                assert soltar.wait(timeout=10.0)
+            finally:
+                loop.call_soon_threadsafe(terminado.set)
+
+        tarea = coord._lanzar_tarea(coord._ejecutar_en_worker(_trabajo))
+        try:
+            await asyncio.wait_for(en_worker.wait(), timeout=5.0)
+            with caplog.at_level(logging.WARNING, logger="sky_claw"):
+                cierre_task = asyncio.create_task(coord.cerrar())
+                await asyncio.sleep(0)
+                cierre_task.cancel()
+
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(cierre_task, timeout=5.0)
+
+            assert coord.cerrado is True
+            assert coord._executor is None
+            assert coord._sesion_activa is None
+            assert any("fallo critico de cleanup en descartar_todo" in msg for msg in coord.errores_cierre)
+            assert any("fallo critico de cleanup en descartar_todo" in r.getMessage() for r in caplog.records)
+        finally:
+            soltar.set()
+            if not terminado.is_set():
+                await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.gather(tarea, return_exceptions=True)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+            await asyncio.sleep(0)
+
+
+class TestAuditoriaCruzadaInteraccionesS8:
+    """Auditoría cruzada §8: interacciones shutdown/cancelación/hot-reload/reutilización/orden."""
+
+    @pytest.mark.asyncio
+    async def test_shutdown_durante_preparacion_hitl_es_acotado_y_no_deja_sesion_abierta(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import time
+
+        import sky_claw.app.comms.golden_master_hitl as gm_mod
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        loop = asyncio.get_running_loop()
+        en_preparar = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+        sesion_orig = gm_mod.SesionTransicionGoldenMaster
+
+        class _SesionPrepararBloqueado(sesion_orig):  # type: ignore[misc, valid-type]
+            def preparar(self, *args: object, **kwargs: object) -> object:
+                loop.call_soon_threadsafe(en_preparar.set)
+                try:
+                    assert soltar.wait(timeout=10.0)
+                    return super().preparar(*args, **kwargs)  # type: ignore[arg-type]
+                finally:
+                    loop.call_soon_threadsafe(terminado.set)
+
+        monkeypatch.setattr(gm_mod, "SesionTransicionGoldenMaster", _SesionPrepararBloqueado)
+        coord, _wh, polling, sender, _router = _construir_entorno(rig)
+        coord._drain_timeout = 0.05
+        tarea_cmd: asyncio.Task[None] | None = None
+        try:
+            tarea_cmd = asyncio.create_task(polling._process_raw_update(_update_texto(910, "/gm_preparar")))
+            await asyncio.wait_for(en_preparar.wait(), timeout=5.0)
+            envios_antes_cierre = sender.send.await_count
+
+            t0 = time.monotonic()
+            await asyncio.wait_for(coord.cerrar(), timeout=5.0)
+            assert time.monotonic() - t0 < 1.0
+            assert coord.cerrado is True
+            assert coord._executor is None
+            assert coord.workers_activos == 1
+
+            soltar.set()
+            await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.wait_for(tarea_cmd, timeout=5.0)
+            assert await coord.esperar_workers_abandonados(timeout=5.0)
+            assert coord.workers_activos == 0
+            assert coord._sesion_activa is None
+            assert sender.send.await_count == envios_antes_cierre
+        finally:
+            soltar.set()
+            if tarea_cmd is not None and not tarea_cmd.done():
+                await asyncio.gather(tarea_cmd, return_exceptions=True)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+
+    @SOLO_WINDOWS
+    @pytest.mark.asyncio
+    async def test_shutdown_durante_decision_de_aprobacion_mantiene_acotado_e_integridad(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        exclusion_de_test: str,
+    ) -> None:
+        import time
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        loop = asyncio.get_running_loop()
+        en_decision = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+        orig_actualizar = binder_module.actualizar_game_path_por_handle
+
+        def _actualizar_bloqueado(*args: object, **kwargs: object) -> object:
+            loop.call_soon_threadsafe(en_decision.set)
+            try:
+                assert soltar.wait(timeout=10.0)
+                return orig_actualizar(*args, **kwargs)  # type: ignore[arg-type]
+            finally:
+                loop.call_soon_threadsafe(terminado.set)
+
+        monkeypatch.setattr(binder_module, "actualizar_game_path_por_handle", _actualizar_bloqueado)
+        coord, _wh, polling, sender, _router = _construir_entorno(rig)
+        coord._drain_timeout = 0.05
+        tarea_cb: asyncio.Task[None] | None = None
+        try:
+            await polling._process_raw_update(_update_texto(920, "/gm_preparar"))
+            await coord.esperar_idle()
+            cb_data, msg_id, _ = _extraer_token_de_ultimo_envio(sender, "approve")
+
+            tarea_cb = asyncio.create_task(
+                polling._process_raw_update(_update_callback(921, cb_data, message_id=msg_id))
+            )
+            await asyncio.wait_for(en_decision.wait(), timeout=5.0)
+            envios_antes_cierre = sender.send.await_count
+
+            t0 = time.monotonic()
+            await asyncio.wait_for(coord.cerrar(), timeout=5.0)
+            assert time.monotonic() - t0 < 1.0
+            assert coord.cerrado is True
+            assert coord._executor is None
+            assert coord.workers_activos == 1
+
+            soltar.set()
+            await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.wait_for(tarea_cb, timeout=5.0)
+            assert await coord.esperar_workers_abandonados(timeout=5.0)
+            assert coord.workers_activos == 0
+            assert coord.errores_tardios_worker == ()
+            assert sender.send.await_count == envios_antes_cierre
+            assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
+            evidencia_ini = leer_game_path_de_mo2(rig.mo2_active_global / "modorganizer.ini")
+            assert evidencia_ini.state is ObservationState.OBSERVED
+            assert pathlib.Path(evidencia_ini.path or "").resolve() == rig.clone_root.resolve()
+            assert exclusion_de_test in {"real", "doble_posix"}
+        finally:
+            soltar.set()
+            if tarea_cb is not None and not tarea_cb.done():
+                await asyncio.gather(tarea_cb, return_exceptions=True)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_durante_abandono_autorizado_mantiene_acotado_y_suprime_mensajes_tardios(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import time
+
+        import sky_claw.app.comms.golden_master_hitl as gm_mod
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        tx_id = _simular_crash_pre_pending(rig, monkeypatch)
+        loop = asyncio.get_running_loop()
+        en_abandono = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+        orig_abandonar = gm_mod.abandonar_transicion_consumida
+
+        def _abandonar_bloqueado(*args: object, **kwargs: object) -> object:
+            loop.call_soon_threadsafe(en_abandono.set)
+            try:
+                assert soltar.wait(timeout=10.0)
+                return orig_abandonar(*args, **kwargs)  # type: ignore[arg-type]
+            finally:
+                loop.call_soon_threadsafe(terminado.set)
+
+        monkeypatch.setattr(gm_mod, "abandonar_transicion_consumida", _abandonar_bloqueado)
+        coord, _wh, polling, sender, _router = _construir_entorno(rig)
+        coord._drain_timeout = 0.05
+        tarea_abandono: asyncio.Task[None] | None = None
+        try:
+            tarea_abandono = asyncio.create_task(
+                polling._process_raw_update(_update_texto(930, f"/gm_abandonar {tx_id} cierre concurrente"))
+            )
+            await asyncio.wait_for(en_abandono.wait(), timeout=5.0)
+            envios_antes_cierre = sender.send.await_count
+
+            t0 = time.monotonic()
+            await asyncio.wait_for(coord.cerrar(), timeout=5.0)
+            assert time.monotonic() - t0 < 1.0
+            assert coord.cerrado is True
+            assert coord._executor is None
+            assert coord.workers_activos == 1
+
+            soltar.set()
+            await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.wait_for(tarea_abandono, timeout=5.0)
+            assert await coord.esperar_workers_abandonados(timeout=5.0)
+            assert coord.workers_activos == 0
+            assert coord.errores_tardios_worker == ()
+            assert sender.send.await_count == envios_antes_cierre
+            assert diagnosticar_estado_durable(rig.storage).estado is EstadoDurable.LIMPIO
+        finally:
+            soltar.set()
+            if tarea_abandono is not None and not tarea_abandono.done():
+                await asyncio.gather(tarea_abandono, return_exceptions=True)
+            await coord.esperar_workers_abandonados(timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_reutilizacion_coordinador_abierto_y_reemplazo_tras_cierre(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sender1 = _crear_sender_simulado()
+        sender2 = _crear_sender_simulado()
+        objetivo = _objetivo_desde_rig(rig)
+        ctx = SimpleNamespace(
+            golden_master_coordinator=None,
+            _golden_master_objetivo=objetivo,
+            _stopping=False,
+        )
+
+        coord1 = await asegurar_coordinador_golden_master(ctx, sender=sender1, authorized_user_id=OPERADOR)
+        polling = TelegramPolling(
+            token="123:ABC",
+            webhook_handler=TelegramWebhook(
+                router=MagicMock(chat=AsyncMock(return_value="ok")),
+                sender=sender1,
+                session=MagicMock(spec=aiohttp.ClientSession),
+                authorized_user_id=OPERADOR,
+                hitl_registry=TelegramHITLMessageRegistry(),
+                golden_master_coordinator=coord1,
+            ),
+            gateway=MagicMock(),
+            session=MagicMock(spec=aiohttp.ClientSession),
+            interval=0,
+            authorized_chat_id=OPERADOR,
+        )
+        # Reutilización normal en múltiples ciclos y hot-reload
+        await polling._process_raw_update(_update_texto(940, "/gm_preparar"))
+        await coord1.esperar_idle()
+        _, msg_id, _ = _extraer_token_de_ultimo_envio(sender1, "approve")
+        cb_deny, _, _ = _extraer_token_de_ultimo_envio(sender1, "deny")
+        await polling._process_raw_update(_update_callback(941, cb_deny, message_id=msg_id))
+        await coord1.esperar_idle()
+
+        coord1_reused = await asegurar_coordinador_golden_master(ctx, sender=sender2, authorized_user_id=OPERADOR)
+        assert coord1_reused is coord1
+        assert not coord1.cerrado
+
+        # Tras cerrar coord1, un contexto activo obtiene un nuevo coordinador en lugar de un zombi cerrado
+        await coord1.cerrar()
+        assert coord1.cerrado is True
+        coord2 = await asegurar_coordinador_golden_master(ctx, sender=sender2, authorized_user_id=OPERADOR)
+        try:
+            assert coord2 is not coord1
+            assert not coord2.cerrado
+            assert ctx.golden_master_coordinator is coord2
+            # La referencia antigua cerrada permanece cerrada
+            assert coord1.cerrado is True
+            # Si ctx está en shutdown, no crea un tercer coordinador tras cerrar coord2
+            await coord2.cerrar()
+            ctx._stopping = True
+            coord3 = await asegurar_coordinador_golden_master(ctx, sender=sender2, authorized_user_id=OPERADOR)
+            assert coord3 is coord2
+            assert coord3.cerrado is True
+        finally:
+            await coord2.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_rechazo_comandos_y_callbacks_despues_del_cierre_y_single_flight_preservado(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import sky_claw.app.comms.golden_master_hitl as gm_mod
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        loop = asyncio.get_running_loop()
+        en_worker = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+        sesion_orig = gm_mod.SesionTransicionGoldenMaster
+
+        class _SesionLenta(sesion_orig):  # type: ignore[misc, valid-type]
+            def preparar(self, *args: object, **kwargs: object) -> object:
+                loop.call_soon_threadsafe(en_worker.set)
+                try:
+                    assert soltar.wait(timeout=10.0)
+                    return super().preparar(*args, **kwargs)  # type: ignore[arg-type]
+                finally:
+                    loop.call_soon_threadsafe(terminado.set)
+
+        monkeypatch.setattr(gm_mod, "SesionTransicionGoldenMaster", _SesionLenta)
+        coord, _wh, polling, sender, router = _construir_entorno(rig)
+        t_prep = asyncio.create_task(polling._process_raw_update(_update_texto(950, "/gm_preparar")))
+        try:
+            await asyncio.wait_for(en_worker.wait(), timeout=5.0)
+            # Single-flight rechaza operación concurrente mientras /gm_preparar sigue vivo
+            await polling._process_raw_update(_update_texto(951, "/gm_estado"))
+            assert "operación golden master en curso" in sender.send.await_args_list[-1].args[1].casefold()
+            soltar.set()
+            await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.wait_for(t_prep, timeout=5.0)
+            await coord.esperar_idle()
+        finally:
+            soltar.set()
+            if not t_prep.done():
+                await asyncio.gather(t_prep, return_exceptions=True)
+
+        cb_data, msg_id, _ = _extraer_token_de_ultimo_envio(sender, "approve")
+        await coord.cerrar()
+        assert coord.cerrado is True
+        assert coord._executor is None
+
+        # Todo comando o callback recibido tras cerrar se rechaza cerrado y nunca recrea executor ni cae al LLM
+        for uid, texto in enumerate(
+            [
+                "/gm_estado",
+                "/gm_preparar",
+                "/gm_aprobar falso",
+                "/gm_reanudar tx-falso",
+                "/gm_abandonar tx-falso motivo",
+            ],
+            start=960,
+        ):
+            await polling._process_raw_update(_update_texto(uid, texto))
+            assert "cerrado" in sender.send.await_args_list[-1].args[1].casefold()
+
+        await polling._process_raw_update(_update_callback(969, cb_data, message_id=msg_id))
+        assert "cerrado" in str(sender.answer_callback_query.await_args_list[-1]).casefold()
+        assert coord._executor is None
+        router.chat.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cierre_polling_antes_de_destruir_sesion_http_en_app_context_y_telegram_mode(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import argparse
+        from unittest.mock import patch
+
+        from sky_claw.app.modes import telegram_mode
+        from sky_claw.app_context import AppContext
+
+        # Parte A: AppContext.stop() detiene polling ANTES de cerrar coordinador y ANTES de destruir network.session
+        args = argparse.Namespace(
+            db_path=str(tmp_path / "app.db"),
+            mo2_root=tmp_path / "MO2",
+            staging_dir=tmp_path / "staging",
+            provider="ollama",
+            operator_chat_id=OPERADOR,
+            loot_exe=None,
+            install_dir=None,
+            mode="cli",
+        )
+        ctx = AppContext(args)
+        eventos: list[str] = []
+        session_fake = MagicMock()
+        session_fake.closed = False
+
+        async def _network_close() -> None:
+            eventos.append("network.close")
+            session_fake.closed = True
+
+        coord = CoordinadorTelegramGoldenMaster(sender=_crear_sender_simulado(), operador_autorizado=OPERADOR)
+        orig_cerrar = coord.cerrar
+
+        async def _coord_cerrar() -> None:
+            assert not session_fake.closed
+            eventos.append("coord.cerrar")
+            await orig_cerrar()
+
+        coord.cerrar = _coord_cerrar  # type: ignore[method-assign]
+
+        polling_fake = MagicMock()
+
+        async def _polling_stop() -> None:
+            assert not session_fake.closed
+            eventos.append("polling.stop")
+
+        polling_fake.stop = AsyncMock(side_effect=_polling_stop)
+
+        ctx._push_startup_cleanup(_network_close)
+        ctx.golden_master_coordinator = coord
+        ctx.polling = polling_fake
+
+        await ctx.stop()
+        assert eventos == ["polling.stop", "coord.cerrar", "network.close"]
+        assert session_fake.closed is True
+
+        # Parte B: telegram_mode._run_telegram detiene polling antes de cerrar coordinador y con session abierta
+        eventos_modo: list[str] = []
+        session_modo = MagicMock()
+        session_modo.closed = False
+        coord_modo = CoordinadorTelegramGoldenMaster(sender=_crear_sender_simulado(), operador_autorizado=OPERADOR)
+        orig_cerrar_modo = coord_modo.cerrar
+
+        async def _cerrar_modo() -> None:
+            assert not session_modo.closed
+            eventos_modo.append("coord.cerrar")
+            await orig_cerrar_modo()
+
+        coord_modo.cerrar = _cerrar_modo  # type: ignore[method-assign]
+
+        async def _asegurar_modo(*_a: object, **_kw: object) -> CoordinadorTelegramGoldenMaster:
+            return coord_modo
+
+        iniciado = asyncio.Event()
+
+        def _polling_modo(**_kw: object) -> MagicMock:
+            poll = MagicMock()
+
+            async def _start() -> None:
+                iniciado.set()
+
+            async def _stop() -> None:
+                assert not session_modo.closed
+                eventos_modo.append("polling.stop")
+
+            poll.start = AsyncMock(side_effect=_start)
+            poll.stop = AsyncMock(side_effect=_stop)
+            return poll
+
+        ctx_modo = MagicMock()
+        ctx_modo.local_config = SimpleNamespace(telegram_bot_token="123:ABC", telegram_chat_id=str(OPERADOR))
+        ctx_modo.operator_chat_id = OPERADOR
+        ctx_modo._operator_chat_id_resuelto = True
+        ctx_modo._args = SimpleNamespace(operator_chat_id=OPERADOR)
+        ctx_modo.router = MagicMock()
+        ctx_modo.sender = _crear_sender_simulado()
+        ctx_modo.network = SimpleNamespace(session=session_modo, gateway=MagicMock())
+        ctx_modo.hitl = None
+        ctx_modo.telegram_hitl_registry = None
+
+        with (
+            patch.object(telegram_mode, "asegurar_coordinador_golden_master", side_effect=_asegurar_modo),
+            patch.object(telegram_mode, "TelegramWebhook", return_value=MagicMock()),
+            patch.object(telegram_mode, "TelegramPolling", side_effect=_polling_modo),
+        ):
+            tarea_modo = asyncio.create_task(telegram_mode._run_telegram(ctx_modo, "127.0.0.1", 0))
+            await asyncio.wait_for(iniciado.wait(), timeout=5.0)
+            tarea_modo.cancel()
+            await asyncio.wait_for(tarea_modo, timeout=5.0)
+
+        assert eventos_modo == ["polling.stop", "coord.cerrar"]
+
+    @pytest.mark.asyncio
+    async def test_cancelacion_de_cerrar_con_entrega_en_vuelo_solicita_cancelacion_entrega_y_propaga(
+        self,
+    ) -> None:
+        from sky_claw.app.comms.golden_master_hitl import _EntregaEnVuelo
+
+        loop = asyncio.get_running_loop()
+        sender = _crear_sender_simulado()
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=OPERADOR,
+            drain_timeout=10.0,
+        )
+        en_worker = asyncio.Event()
+        terminado = asyncio.Event()
+        soltar = threading.Event()
+
+        def _trabajo() -> None:
+            loop.call_soon_threadsafe(en_worker.set)
+            try:
+                assert soltar.wait(timeout=10.0)
+            finally:
+                loop.call_soon_threadsafe(terminado.set)
+
+        entrega_viva = _EntregaEnVuelo(sender=sender, chat_id=OPERADOR, token="tok-entrega-cancel")
+        entrega_viva.iniciada.set()
+        entrega_tarea = asyncio.create_task(asyncio.sleep(10.0))
+        entrega_viva.tarea = entrega_tarea
+        with coord._entregas_lock:
+            coord._entregas_en_vuelo.add(entrega_viva)
+
+        tarea = coord._lanzar_tarea(coord._ejecutar_en_worker(_trabajo))
+        try:
+            await asyncio.wait_for(en_worker.wait(), timeout=5.0)
+            cierre_task = asyncio.create_task(coord.cerrar())
+            await asyncio.sleep(0)
+            cierre_task.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(cierre_task, timeout=5.0)
+
+            assert entrega_viva.abortada.is_set()
+            assert entrega_viva.cancelacion_pedida is True
+            assert coord.cerrado is True
+        finally:
+            soltar.set()
+            if not terminado.is_set():
+                await asyncio.wait_for(terminado.wait(), timeout=5.0)
+            await asyncio.gather(tarea, entrega_tarea, return_exceptions=True)
+            with coord._entregas_lock:
+                coord._entregas_en_vuelo.clear()
+            await coord.esperar_workers_abandonados(timeout=5.0)
+            await asyncio.sleep(0)

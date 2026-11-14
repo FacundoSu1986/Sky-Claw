@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiohttp
 
+from sky_claw.app.comms.telegram_polling import normalizar_operador_telegram_estricto
 from sky_claw.app.comms.telegram_sender import (
     MAX_MESSAGE_LENGTH,
     TelegramMessage,
@@ -464,7 +465,7 @@ class CoordinadorTelegramGoldenMaster:
         if not math.isfinite(drain_timeout) or drain_timeout <= 0:
             raise ValueError("drain_timeout debe ser un número finito positivo")
         self._sender = sender
-        self._operador_autorizado = operador_autorizado
+        self._operador_autorizado: int | None = normalizar_operador_telegram_estricto(operador_autorizado)
         self._objetivo = objetivo
         self._delivery_timeout = delivery_timeout
         self._drain_timeout = drain_timeout
@@ -476,10 +477,50 @@ class CoordinadorTelegramGoldenMaster:
         self._tareas_activas: set[asyncio.Task[None]] = set()
         self._executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._worker_fut_activo: asyncio.Future[Any] | None = None
+        self._workers_lock = threading.Lock()
+        self._workers_en_vuelo: set[concurrent.futures.Future[Any]] = set()
+        self._workers_asyncio_en_vuelo: set[asyncio.Future[Any]] = set()
+        self._workers_abandonados_ids: set[concurrent.futures.Future[Any]] = set()
+        self._workers_abandonados_count: int = 0
+        self._errores_tardios_worker: list[str] = []
+        self._errores_cierre: list[str] = []
+        self._executors_abandonados: list[concurrent.futures.ThreadPoolExecutor] = []
+        self._worker_cancel_events: set[threading.Event] = set()
+        self._cierre_abandonado: bool = False
+        self._esperas_abandono: set[asyncio.Future[None]] = set()
+        self._fecha_limite_cierre: float | None = None
         self._entregas_lock = threading.Lock()
         self._entregas_en_vuelo: set[_EntregaEnVuelo] = set()
         self._recargas_en_curso: int = 0
         self._reload_lock = asyncio.Lock()
+
+    @property
+    def cerrado(self) -> bool:
+        """Indica si el coordinador inició o completó el cierre."""
+        return self._cerrado
+
+    @property
+    def workers_activos(self) -> int:
+        """Cantidad de trabajos aún activos dentro del executor."""
+        with self._workers_lock:
+            return len(self._workers_en_vuelo)
+
+    @property
+    def workers_abandonados_en_cierre(self) -> int:
+        """Cantidad de workers cuya espera fue abandonada por timeout o cancelación."""
+        with self._workers_lock:
+            return self._workers_abandonados_count
+
+    @property
+    def errores_tardios_worker(self) -> tuple[str, ...]:
+        """Errores capturados en workers tras cierre, abandono o cancelación."""
+        with self._workers_lock:
+            return tuple(self._errores_tardios_worker)
+
+    @property
+    def errores_cierre(self) -> tuple[str, ...]:
+        """Errores observados en cleanup sin ocultar la cancelación original."""
+        return tuple(self._errores_cierre)
 
     @property
     def tiene_solicitud_abierta(self) -> bool:
@@ -490,10 +531,14 @@ class CoordinadorTelegramGoldenMaster:
             return bool(self._entregas_en_vuelo)
 
     def _esta_ocupado(self) -> bool:
-        """Indica si hay una operación activa o una entrega Telegram todavía sin terminar."""
-        return self._operacion_en_curso or self._tiene_entregas_en_vuelo()
+        """Indica si hay una operación activa, worker vivo o entrega Telegram sin terminar."""
+        with self._workers_lock:
+            hay_workers = bool(self._workers_en_vuelo)
+        return self._operacion_en_curso or hay_workers or self._tiene_entregas_en_vuelo()
 
     def _asegurar_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        if self._cerrado:
+            raise RuntimeError("El coordinador Golden Master está cerrado; no se admiten nuevos workers.")
         if self._executor is None:
             self._executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1,
@@ -574,6 +619,38 @@ class CoordinadorTelegramGoldenMaster:
         except (*_ERRORES_TRANSPORTE_TELEGRAM, RuntimeError):
             logger.warning("No se pudo confirmar callback Golden Master %s", callback_id, exc_info=True)
 
+    @staticmethod
+    def _consumir_excepcion_asyncio_fut(wfut: asyncio.Future[Any]) -> None:
+        if not wfut.cancelled():
+            _ = wfut.exception()
+
+    def _al_finalizar_worker_en_hilo(self, cfut: concurrent.futures.Future[Any]) -> None:
+        with self._workers_lock:
+            self._workers_en_vuelo.discard(cfut)
+            abandonado = cfut in self._workers_abandonados_ids
+            cerrado = self._cerrado
+        if not cfut.cancelled():
+            exc = cfut.exception()
+            if exc is not None and (cerrado or abandonado):
+                detalle = f"{type(exc).__name__}: {exc}"
+                with self._workers_lock:
+                    self._errores_tardios_worker.append(detalle)
+                logger.error(
+                    "Excepción en worker Golden Master tras cierre/abandono: %s",
+                    detalle,
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+    def _activar_cancelacion_trabajo(self, cancelacion_event: threading.Event | None = None) -> None:
+        if cancelacion_event is not None:
+            cancelacion_event.set()
+        for ev in list(self._worker_cancel_events):
+            ev.set()
+        with self._entregas_lock:
+            entregas = list(self._entregas_en_vuelo)
+        for entrega in entregas:
+            entrega.solicitar_cancelacion()
+
     async def _ejecutar_en_worker(
         self,
         fn: Callable[[], _T],
@@ -582,33 +659,68 @@ class CoordinadorTelegramGoldenMaster:
     ) -> _T:
         """Ejecuta ``fn`` en el hilo único del coordinador, resistiendo cancelaciones repetidas."""
         loop = asyncio.get_running_loop()
+        if self._cerrado:
+            raise RuntimeError("El coordinador Golden Master está cerrado; no se admiten nuevos workers.")
         executor = self._asegurar_executor()
-        worker_fut = loop.run_in_executor(executor, fn)
-        self._worker_fut_activo = worker_fut
-        caller_cancelled = False
+        concurrent_fut: concurrent.futures.Future[_T] = executor.submit(fn)
+        with self._workers_lock:
+            self._workers_en_vuelo.add(concurrent_fut)
+        concurrent_fut.add_done_callback(self._al_finalizar_worker_en_hilo)
 
+        worker_fut: asyncio.Future[_T] = asyncio.wrap_future(concurrent_fut, loop=loop)
+        worker_fut.add_done_callback(self._consumir_excepcion_asyncio_fut)
+        self._worker_fut_activo = worker_fut
+        self._workers_asyncio_en_vuelo.add(worker_fut)
+        if cancelacion_event is not None:
+            self._worker_cancel_events.add(cancelacion_event)
+
+        caller_cancelled = False
+        abandon_fut: asyncio.Future[None] = loop.create_future()
+        if self._cierre_abandonado:
+            abandon_fut.set_result(None)
+        else:
+            self._esperas_abandono.add(abandon_fut)
+
+        esperas: set[asyncio.Future[Any]] = {worker_fut, abandon_fut}
         try:
-            while not worker_fut.done():
+            while not worker_fut.done() and not self._cierre_abandonado:
                 try:
-                    await asyncio.shield(worker_fut)
+                    done, _ = await asyncio.wait(
+                        esperas,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if abandon_fut in done:
+                        break
                 except asyncio.CancelledError:
                     caller_cancelled = True
-                    if cancelacion_event is not None:
-                        cancelacion_event.set()
-                        with self._entregas_lock:
-                            entregas = list(self._entregas_en_vuelo)
-                        for entrega in entregas:
-                            entrega.solicitar_cancelacion()
-                except Exception as exc:  # noqa: BLE001 - worker_fut ya finalizó; el retorno/propagación ocurre abajo
-                    logger.debug("Worker Golden Master finalizó con excepción %s", type(exc).__name__)
-                    break
+                    self._activar_cancelacion_trabajo(cancelacion_event)
+                    if self._cierre_abandonado:
+                        break
         finally:
+            self._esperas_abandono.discard(abandon_fut)
+            self._workers_asyncio_en_vuelo.discard(worker_fut)
+            if cancelacion_event is not None:
+                self._worker_cancel_events.discard(cancelacion_event)
             if self._worker_fut_activo is worker_fut:
                 self._worker_fut_activo = None
 
+        if not worker_fut.done() and self._cierre_abandonado:
+            with self._workers_lock:
+                if concurrent_fut not in self._workers_abandonados_ids and not concurrent_fut.done():
+                    self._workers_abandonados_ids.add(concurrent_fut)
+                    self._workers_abandonados_count += 1
+            raise asyncio.CancelledError
+
         if caller_cancelled:
             if worker_fut.done() and not worker_fut.cancelled():
-                _ = worker_fut.exception()
+                exc = worker_fut.exception()
+                if exc is not None:
+                    detalle = f"{type(exc).__name__}: {exc}"
+                    logger.warning(
+                        "Worker Golden Master finalizó con error tras cancelación del llamador: %s",
+                        detalle,
+                        exc_info=(type(exc), exc, exc.__traceback__),
+                    )
             raise asyncio.CancelledError
         return worker_fut.result()
 
@@ -627,13 +739,46 @@ class CoordinadorTelegramGoldenMaster:
         tarea.add_done_callback(self._registrar_excepcion_tarea)
         return tarea
 
-    async def _invalidar_sesion_abierta(self, *, motivo: str) -> None:
+    def _registrar_error_cierre(self, exc: Exception, *, contexto: str) -> Exception:
+        detalle = f"{contexto}: {type(exc).__name__}: {exc}"
+        self._errores_cierre.append(detalle)
+        logger.exception("Error durante cleanup de cierre Golden Master (%s): %s", contexto, exc)
+        return exc
+
+    def _marcar_abandono_cierre(self) -> None:
+        self._cierre_abandonado = True
+        with self._workers_lock:
+            for cfut in self._workers_en_vuelo:
+                if not cfut.done() and cfut not in self._workers_abandonados_ids:
+                    self._workers_abandonados_ids.add(cfut)
+                    self._workers_abandonados_count += 1
+        for fut in list(self._esperas_abandono):
+            if not fut.done():
+                fut.set_result(None)
+
+    def _desactivar_sesion_abierta_local(self) -> _SesionActiva | None:
         sesion_abierta = self._sesion_activa
         if sesion_abierta is None:
-            return
+            return None
         self._sesion_activa = None
-        self._registrar_token_invalidado(sesion_abierta.token)
-        sesion_abierta.registro.descartar_todo()
+        primer_error: Exception | None = None
+        try:
+            self._registrar_token_invalidado(sesion_abierta.token)
+        except Exception as exc:  # noqa: BLE001 - invalidación best-effort preserva el resto del cleanup
+            primer_error = exc
+        try:
+            sesion_abierta.registro.descartar_todo()
+        except Exception as exc:  # noqa: BLE001 - cleanup local no debe abortar antes de descartar/cerrar
+            if primer_error is None:
+                primer_error = exc
+        if primer_error is not None:
+            raise primer_error
+        return sesion_abierta
+
+    async def _invalidar_sesion_abierta(self, *, motivo: str) -> None:
+        sesion_abierta = self._desactivar_sesion_abierta_local()
+        if sesion_abierta is None:
+            return
         await self._editar_seguro(
             sesion_abierta.chat_id,
             sesion_abierta.message_id,
@@ -663,8 +808,15 @@ class CoordinadorTelegramGoldenMaster:
                 await self._invalidar_sesion_abierta(motivo="recarga del transporte Telegram")
                 if self._cerrado:
                     return
+                nuevo_operador = normalizar_operador_telegram_estricto(operador_autorizado)
+                if self._operador_autorizado != nuevo_operador and self._operador_autorizado is not None:
+                    logger.warning(
+                        "Hot-reload Golden Master modificó el operador autorizado: %s -> %s",
+                        self._operador_autorizado,
+                        nuevo_operador,
+                    )
                 self._sender = sender
-                self._operador_autorizado = operador_autorizado
+                self._operador_autorizado = nuevo_operador
                 if actualizar_objetivo or objetivo is not None:
                     self._objetivo = objetivo
         finally:
@@ -770,48 +922,136 @@ class CoordinadorTelegramGoldenMaster:
         await self._drenar_entregas_en_vuelo(cancelar=False)
 
     async def cerrar(self) -> None:
-        """Detiene entregas pendientes, drena tareas de forma acotada y descarta prompts abiertos."""
+        """Detiene entregas pendientes, drena tareas/workers de forma acotada y descarta prompts abiertos."""
         self._cerrado = True
         loop = asyncio.get_running_loop()
-        fecha_limite_cierre = loop.time() + self._drain_timeout
-        with self._entregas_lock:
-            entregas = list(self._entregas_en_vuelo)
-        for entrega in entregas:
-            entrega.solicitar_cancelacion()
+        if self._fecha_limite_cierre is None:
+            self._fecha_limite_cierre = loop.time() + self._drain_timeout
+        fecha_limite_cierre = self._fecha_limite_cierre
+        self._activar_cancelacion_trabajo()
 
-        worker_fut = self._worker_fut_activo
-        if worker_fut is not None:
-            while not worker_fut.done():
+        cancelacion_recibida: asyncio.CancelledError | None = None
+        error_cleanup_pendiente: Exception | None = None
+
+        try:
+            if not self._cierre_abandonado:
+                while True:
+                    workers_vivos = [w for w in self._workers_asyncio_en_vuelo if not w.done()]
+                    if not workers_vivos:
+                        break
+                    restante_workers = fecha_limite_cierre - loop.time()
+                    if restante_workers <= 0:
+                        self._marcar_abandono_cierre()
+                        break
+                    _hechos_w, pendientes_w = await asyncio.wait(workers_vivos, timeout=restante_workers)
+                    if pendientes_w and loop.time() >= fecha_limite_cierre:
+                        self._marcar_abandono_cierre()
+                        break
+
+            pendientes = [t for t in self._tareas_activas if not t.done()]
+            if pendientes:
+                if self._cierre_abandonado:
+                    for tarea in pendientes:
+                        if not tarea.done():
+                            tarea.cancel()
+                    restante_yield = max(0.0, min(0.05, fecha_limite_cierre - loop.time()))
+                    await asyncio.wait(pendientes, timeout=restante_yield)
+                else:
+                    restante_pend = max(0.0, fecha_limite_cierre - loop.time())
+                    if restante_pend > 0:
+                        _hechas, sin_terminar = await asyncio.wait(pendientes, timeout=restante_pend)
+                    else:
+                        sin_terminar = set(pendientes)
+                    if sin_terminar:
+                        self._marcar_abandono_cierre()
+                        for tarea in sin_terminar:
+                            if not tarea.done():
+                                tarea.cancel()
+                        restante_cancel = max(0.0, min(0.05, fecha_limite_cierre - loop.time()))
+                        await asyncio.wait(sin_terminar, timeout=restante_cancel)
+
+            await self._drenar_entregas_en_vuelo(cancelar=True, fecha_limite=fecha_limite_cierre)
+
+            restante_invalidar = fecha_limite_cierre - loop.time()
+            if restante_invalidar > 0 and not self._cierre_abandonado:
                 try:
-                    await asyncio.shield(worker_fut)
-                except asyncio.CancelledError:
-                    continue
-                except Exception as exc:  # noqa: BLE001 - drenado seguro del worker al cerrar
-                    logger.debug("Worker Golden Master cerrado con %s", type(exc).__name__)
-                    break
+                    await asyncio.wait_for(
+                        self._invalidar_sesion_abierta(motivo="cierre del servicio"),
+                        timeout=restante_invalidar,
+                    )
+                except TimeoutError:
+                    logger.warning("Timeout invalidando sesión abierta en Telegram durante cierre.")
+                except Exception as exc:  # noqa: BLE001 - cleanup crítico observa error y prosigue cierre de executor
+                    error_cleanup_pendiente = self._registrar_error_cierre(exc, contexto="invalidar sesión")
+            else:
+                try:
+                    self._desactivar_sesion_abierta_local()
+                except Exception as exc:  # noqa: BLE001 - cleanup crítico observa error y prosigue cierre de executor
+                    error_cleanup_pendiente = self._registrar_error_cierre(exc, contexto="invalidar sesión local")
+        except asyncio.CancelledError as exc:
+            cancelacion_recibida = exc
 
-        pendientes = [t for t in self._tareas_activas if not t.done()]
-        if pendientes:
-            restante_pend = max(0.05, min(0.5, fecha_limite_cierre - loop.time()))
-            _hechas, sin_terminar = await asyncio.wait(pendientes, timeout=restante_pend)
-            if sin_terminar:
-                for tarea in sin_terminar:
-                    if not tarea.done():
-                        tarea.cancel()
-                restante_cancel = max(0.05, fecha_limite_cierre - loop.time())
-                await asyncio.wait(sin_terminar, timeout=restante_cancel)
+        # Cleanup indispensable tras cancelación o cierre normal/por timeout (sin waits bloqueantes).
+        if cancelacion_recibida is not None:
+            self._activar_cancelacion_trabajo()
+            with self._workers_lock:
+                hay_workers_vivos_cancel = bool(self._workers_en_vuelo)
+            if hay_workers_vivos_cancel or any(not t.done() for t in self._tareas_activas):
+                self._marcar_abandono_cierre()
+            for tarea in list(self._tareas_activas):
+                if not tarea.done():
+                    tarea.cancel()
+            with self._entregas_lock:
+                self._entregas_en_vuelo = {e for e in self._entregas_en_vuelo if e.iniciada.is_set()}
+            try:
+                self._desactivar_sesion_abierta_local()
+            except Exception as exc:  # noqa: BLE001 - preservar cancelación original observando falla de cleanup
+                self._registrar_error_cierre(exc, contexto="invalidar sesión local tras cancelación")
 
-        await self._drenar_entregas_en_vuelo(cancelar=True, fecha_limite=fecha_limite_cierre)
-        restante_invalidar = max(0.05, fecha_limite_cierre - loop.time())
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(
-                self._invalidar_sesion_abierta(motivo="cierre del servicio"),
-                timeout=restante_invalidar,
-            )
         if self._executor is not None:
             executor = self._executor
             self._executor = None
-            await asyncio.to_thread(executor.shutdown, wait=True)
+            with self._workers_lock:
+                hay_workers_vivos = bool(self._workers_en_vuelo)
+            if hay_workers_vivos or cancelacion_recibida is not None:
+                self._executors_abandonados.append(executor)
+            try:
+                # Nunca bloquear con wait=True en cierre: trabajadores vivos siguen bajo propiedad supervisada.
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception as exc:  # noqa: BLE001 - error al cerrar executor queda observable sin ocultar cancelación
+                err = self._registrar_error_cierre(exc, contexto="shutdown executor")
+                if error_cleanup_pendiente is None:
+                    error_cleanup_pendiente = err
+
+        if cancelacion_recibida is not None:
+            raise cancelacion_recibida
+        if error_cleanup_pendiente is not None:
+            raise error_cleanup_pendiente
+
+    async def esperar_workers_abandonados(self, *, timeout: float = 5.0) -> bool:
+        """Espera de forma acotada a que concluyan workers abandonados y se unan sus executors."""
+        loop = asyncio.get_running_loop()
+        limite = loop.time() + timeout
+        while True:
+            with self._workers_lock:
+                vivos = bool(self._workers_en_vuelo)
+            if not vivos:
+                break
+            restante = limite - loop.time()
+            if restante <= 0:
+                return False
+            await asyncio.sleep(min(0.01, restante))
+        executors = list(self._executors_abandonados)
+        self._executors_abandonados.clear()
+        for executor in executors:
+            restante = max(0.0, limite - loop.time())
+            if restante <= 0:
+                return False
+            await asyncio.wait_for(
+                asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True),
+                timeout=restante,
+            )
+        return True
 
     # ------------------------------------------------------------------
     # Despacho de entradas crudas (webhook / polling / llamadas directas)
@@ -1081,6 +1321,8 @@ class CoordinadorTelegramGoldenMaster:
         objetivo = self._objetivo
         assert objetivo is not None
         try:
+            if self._cerrado:
+                return
             diagnostico = await self._ejecutar_en_worker(lambda: diagnosticar_estado_durable(objetivo.storage_root))
             if not self._cerrado:
                 await self._enviar_seguro(chat_id, self._formatear_diagnostico(diagnostico))
@@ -1218,6 +1460,8 @@ class CoordinadorTelegramGoldenMaster:
             return bool(entrega_ref.get("botones_retirados")) or any(e.botones_retirados for e in entregas_preparar)
 
         try:
+            if self._cerrado:
+                return
             solicitud = await self._ejecutar_en_worker(
                 lambda: sesion.preparar(identidad=identidad, entregar=_entregar),
                 cancelacion_event=cancelacion_pedida,
@@ -1250,7 +1494,7 @@ class CoordinadorTelegramGoldenMaster:
             registro.descartar_todo()
             if "token" in entrega_ref:
                 self._registrar_token_invalidado(entrega_ref["token"])
-            if "message_id" in entrega_ref and not _botones_ya_retirados():
+            if not self._cierre_abandonado and "message_id" in entrega_ref and not _botones_ya_retirados():
                 entrega_ref["botones_retirados"] = True
                 await self._editar_seguro_con_sender(
                     entrega_ref.get("sender", self._sender),
@@ -1360,6 +1604,8 @@ class CoordinadorTelegramGoldenMaster:
             return sesion.reanudar(transition_id=transition_id)
 
         try:
+            if self._cerrado:
+                return
             resultado = await self._ejecutar_en_worker(_trabajo_reanudar)
             if not self._cerrado:
                 await self._enviar_seguro(chat_id, self._formatear_resultado_transicion(resultado))
@@ -1397,6 +1643,8 @@ class CoordinadorTelegramGoldenMaster:
             )
 
         try:
+            if self._cerrado:
+                return
             registro = await self._ejecutar_en_worker(_trabajo_abandonar)
             if not self._cerrado:
                 await self._enviar_seguro(
@@ -1517,6 +1765,7 @@ async def asegurar_coordinador_golden_master(
     local_cfg: Any = None,
 ) -> CoordinadorTelegramGoldenMaster:
     """Reutiliza o construye el coordinador del contexto de forma segura ante hot-reload/mocks."""
+    operador_efectivo = normalizar_operador_telegram_estricto(authorized_user_id)
     existente = getattr(ctx, "golden_master_coordinator", None)
     objetivo_guardado = getattr(ctx, "_golden_master_objetivo", None)
     objetivo_ctx = objetivo_guardado if isinstance(objetivo_guardado, ObjetivoTransicionGoldenMaster) else None
@@ -1530,17 +1779,20 @@ async def asegurar_coordinador_golden_master(
         ctx._golden_master_objetivo = objetivo
 
     if isinstance(existente, CoordinadorTelegramGoldenMaster):
-        await existente.actualizar_transporte(
-            sender=sender,
-            operador_autorizado=authorized_user_id,
-            objetivo=objetivo,
-            actualizar_objetivo=actualizar_objetivo,
-        )
-        return existente
+        if not existente.cerrado:
+            await existente.actualizar_transporte(
+                sender=sender,
+                operador_autorizado=operador_efectivo,
+                objetivo=objetivo,
+                actualizar_objetivo=actualizar_objetivo,
+            )
+            return existente
+        if getattr(ctx, "_stopping", False):
+            return existente
 
     coordinador = CoordinadorTelegramGoldenMaster(
         sender=sender,
-        operador_autorizado=authorized_user_id,
+        operador_autorizado=operador_efectivo,
         objetivo=objetivo,
     )
     ctx.golden_master_coordinator = coordinador

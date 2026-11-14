@@ -24,6 +24,7 @@ from sky_claw.app.comms.golden_master_hitl import (
     es_callback_golden_master,
     es_comando_golden_master,
 )
+from sky_claw.app.comms.telegram_polling import normalizar_operador_telegram_estricto
 from sky_claw.app.comms.telegram_sender import TelegramRateLimitError
 from sky_claw.app.security.network_gateway import EgressViolationError, NetworkGatewayTimeoutError
 from sky_claw.logging_config import correlation_id_var
@@ -505,8 +506,8 @@ class TelegramWebhook:
         self._secret_token = secret_token
         self._seen_updates: collections.OrderedDict[int, None] = collections.OrderedDict()
         self._tasks: set[asyncio.Task[None]] = set()
-        # Asignamos directamente desde la inyección de dependencias
-        self._allowed_user_id = authorized_user_id
+        # Asignamos directamente desde la inyección de dependencias validando estricto
+        self._allowed_user_id: int | None = normalizar_operador_telegram_estricto(authorized_user_id)
 
     def _validate_sender(self, message_or_callback: dict[str, Any]) -> bool:
         """Valida que el mensaje no sea reenviado y el usuario esté autorizado.
@@ -523,12 +524,11 @@ class TelegramWebhook:
             logger.warning("TELEGRAM_ALLOWED_USER_ID no configurado - rechazando comando HITL")
             return False
 
-        # Obtener usuario del mensaje/callback
+        # Obtener usuario del mensaje/callback y verificar tipo/valor (bool es int en Python)
         from_user = message_or_callback.get("from", {})
         user_id = from_user.get("id")
 
-        # Verificar que el usuario esté autorizado
-        if user_id != self._allowed_user_id:
+        if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id != self._allowed_user_id:
             return False
 
         # Verificar que no sea un mensaje reenviado (para callbacks, verificar el mensaje original)
