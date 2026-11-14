@@ -428,3 +428,65 @@ async def test_una_descarga_ajena_no_se_auto_aprueba_mientras_la_gui_esta_armada
 
     assert parkeadas == ["del-agente"], "la descarga del agente tiene que pedir confirmación"
     assert aprobadas == ["del-instalador"], "sólo la del instalador de la GUI se auto-aprueba"
+
+
+async def test_la_autoaprobacion_de_descargas_no_loguea_la_url_completa(caplog: pytest.LogCaptureFixture) -> None:
+    """El log lleva el host y el request_id; credenciales, ruta y query de la URL no salen."""
+    import logging
+
+    async def _responder(request_id: str, aprobado: bool) -> None:
+        return None
+
+    notify = make_gui_hitl_notify(
+        respond=_responder,
+        set_pending=lambda payload: None,
+        auto_approve_getter=lambda: False,
+        auto_approve_downloads_getter=lambda: True,
+        delegate=None,
+    )
+    url = "https://usuario:CLAVE-SECRETA@cdn.ejemplo.org/ruta/privada/x.7z?token=TOKEN-SECRETO"
+    with caplog.at_level(logging.INFO, logger="sky_claw.app.gui.controllers.ritual_runner"):
+        await notify(SimpleNamespace(request_id="d9", category="download", reason="", detail="", url=url))
+
+    texto = caplog.text
+    assert "cdn.ejemplo.org" in texto and "d9" in texto
+    for secreto in ("CLAVE-SECRETA", "TOKEN-SECRETO", "ruta/privada", "usuario"):
+        assert secreto not in texto, f"el log filtró {secreto!r}"
+
+
+async def test_las_tasks_hijas_del_instalador_heredan_el_armado_y_las_ajenas_no(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Documenta la herencia de contexto: el permiso es del ÁRBOL de tasks de la instalación.
+
+    Una task creada dentro de ``ensure_*`` es trabajo del propio instalador y hereda el
+    armado; una task creada ANTES (el agente, Telegram, otro click) no lo ve. Si esto
+    cambia, es una decisión de seguridad, no un detalle.
+    """
+    monkeypatch.setenv("LOOT_EXE", "")
+    vistos: dict[str, bool] = {}
+    ajena_lista, instalador_dentro = asyncio.Event(), asyncio.Event()
+
+    async def _ajena() -> None:
+        await instalador_dentro.wait()
+        vistos["ajena"] = ritual_auto_approve_descargas_armed()
+        ajena_lista.set()
+
+    tarea_ajena = asyncio.create_task(_ajena())  # creada ANTES de armar
+
+    async def _ensure_loot(install_dir: object, session: object) -> object:
+        async def _hija() -> None:
+            vistos["hija"] = ritual_auto_approve_descargas_armed()
+
+        instalador_dentro.set()
+        await ajena_lista.wait()
+        await asyncio.create_task(_hija())  # creada DENTRO del instalador
+        return SimpleNamespace(exe_path="C:/Modding/LOOT/loot.exe", verification=None)
+
+    contexto = SimpleNamespace(
+        tools_installer=SimpleNamespace(ensure_loot=_ensure_loot), install_dir="C:/Modding", session="sess"
+    )
+    await run_ritual_install("loot", app_context=contexto, store=ReactiveStore(), auto_approve_downloads=True)
+    await tarea_ajena
+
+    assert vistos == {"ajena": False, "hija": True}

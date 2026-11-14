@@ -12,6 +12,8 @@ para siempre — por eso el ancla enumera los escritores por AST.
 from __future__ import annotations
 
 import ast
+import asyncio
+import contextlib
 import pathlib
 from types import SimpleNamespace
 from typing import Any
@@ -278,3 +280,170 @@ def test_el_handshake_de_la_pestana_refresca_modal_y_grilla() -> None:
         and isinstance(nodo.func.value, ast.Name)
     }
     assert refrescados == {"_hitl_modal_panel", "_rituales"}
+
+
+# ── El single-flight dura hasta el FINAL de la operación (P1 de la auditoría de #923) ──
+class _Mo2(SimpleNamespace):
+    """``add_mod_to_modlist`` que se puede pausar a mitad de la activación."""
+
+    def __init__(self, *, pausar: bool) -> None:
+        super().__init__(pausar=pausar, dentro=asyncio.Event(), soltar=asyncio.Event(), mods_dir=None)
+
+    async def add_mod_to_modlist(self, nombre: str, *, profile: str) -> None:
+        if self.pausar:
+            self.dentro.set()
+            await self.soltar.wait()
+
+
+def _escenario_community_shaders(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, *, donde: str
+) -> tuple[SimpleNamespace, ReactiveStore, asyncio.Event, asyncio.Event]:
+    """Instalación de Community Shaders pausada DESPUÉS de ``ensure``: en persistencia o en activación."""
+    from sky_claw.local.discovery.environment import EnvironmentSnapshot, MO2Info, SkyrimEdition, SkyrimInfo
+    from sky_claw.local.tools_installer import ModInstallResult
+
+    mo2_root = pathlib.Path("D:/Modding/MO2")
+    store = ReactiveStore()
+    store.set(
+        fd.STORE_KEY_ENV,
+        EnvironmentSnapshot(
+            skyrim=SkyrimInfo(
+                path=pathlib.Path("D:/Skyrim"), exe_name="SkyrimSE.exe", edition=SkyrimEdition.AE, version="1.6.1170"
+            ),
+            mo2=MO2Info(path=mo2_root, profiles=["Default"]),
+        ),
+    )
+    mods = [
+        ModInstallResult(
+            mod_name="Community Shaders", mod_dir=mo2_root / "mods" / "CS", version="v1", already_existed=False
+        )
+    ]
+
+    async def _ensure(mods_dir: object, session: object, downloader: object = None, **kwargs: object) -> list[object]:
+        return mods
+
+    mo2 = _Mo2(pausar=donde == "activacion")
+    dentro_persistencia, soltar_persistencia = asyncio.Event(), asyncio.Event()
+
+    async def _persistir(config_path: object, campo: str, valor: object) -> None:
+        if donde == "persistencia":
+            dentro_persistencia.set()
+            await soltar_persistencia.wait()
+
+    monkeypatch.setattr("sky_claw.local.local_config.persistir_campo_bloqueante", _persistir)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('llm_provider = "ollama"\n', encoding="utf-8")
+    contexto = SimpleNamespace(
+        tools_installer=SimpleNamespace(ensure_community_shaders=_ensure),
+        install_dir="C:/Modding",
+        session="sess",
+        network=SimpleNamespace(downloader="dl"),
+        config_path=config_path,
+        mo2=mo2,
+        mo2_profile="Default",
+    )
+    if donde == "persistencia":
+        return contexto, store, dentro_persistencia, soltar_persistencia
+    return contexto, store, mo2.dentro, mo2.soltar
+
+
+@pytest.mark.parametrize("donde", ["persistencia", "activacion"])
+async def test_community_shaders_mantiene_el_single_flight_hasta_activar_el_perfil(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, donde: str
+) -> None:
+    """Mientras CS persiste o activa en modlist.txt, NINGÚN otro lanzador puede pasar el guard.
+
+    Los dos hermanos que mutan el estado (``run_ritual`` y ``run_ritual_install``)
+    se intentan a mitad de la operación y los dos tienen que ser rechazados; la
+    tarjeta sigue diciendo «Instalando…». Recién al terminar se libera todo.
+    """
+    contexto, store, dentro, soltar = _escenario_community_shaders(tmp_path, monkeypatch, donde=donde)
+    tarea = asyncio.create_task(rr.run_ritual_install("community_shaders", app_context=contexto, store=store))
+    await asyncio.wait_for(dentro.wait(), timeout=5)
+
+    assert rr.ritual_en_curso(store) == {"tool_key": "community_shaders", "fase": "instalando"}
+    assert store.get(rr.STORE_KEY_RITUAL_IN_FLIGHT) is True
+
+    llamadas: list[str] = []
+
+    async def _ensure_loot(install_dir: object, session: object) -> object:
+        llamadas.append("ensure_loot")
+        return SimpleNamespace(exe_path=None, verification=None)
+
+    otro_contexto = SimpleNamespace(
+        tools_installer=SimpleNamespace(ensure_loot=_ensure_loot), install_dir="C:/Modding", session="sess"
+    )
+    await rr.run_ritual_install("loot", app_context=otro_contexto, store=store)
+    assert llamadas == [], "una segunda instalación pasó el guard mientras CS escribía el perfil"
+    assert "en curso" in store.get(rr.STORE_KEY_RITUAL_FEEDBACK)["text"]
+
+    despachos: list[str] = []
+
+    class _Supervisor:
+        async def dispatch_tool(self, nombre: str, payload: dict[str, object]) -> dict[str, object]:
+            despachos.append(nombre)
+            return {"success": True, "message": ""}
+
+    await rr.run_ritual("loot", supervisor=_Supervisor(), store=store, auto_approve=False)
+    assert despachos == [], "un ritual pasó el guard mientras CS escribía el perfil"
+    assert rr.ritual_en_curso(store) == {"tool_key": "community_shaders", "fase": "instalando"}
+
+    soltar.set()
+    await asyncio.wait_for(tarea, timeout=5)
+    assert rr.ritual_en_curso(store) is None
+    assert not store.get(rr.STORE_KEY_RITUAL_IN_FLIGHT)
+
+
+@pytest.mark.parametrize("donde", ["persistencia", "activacion"])
+async def test_cancelar_a_mitad_de_la_activacion_libera_el_single_flight(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, donde: str
+) -> None:
+    contexto, store, dentro, _soltar = _escenario_community_shaders(tmp_path, monkeypatch, donde=donde)
+    tarea = asyncio.create_task(rr.run_ritual_install("community_shaders", app_context=contexto, store=store))
+    await asyncio.wait_for(dentro.wait(), timeout=5)
+
+    tarea.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await tarea
+
+    assert rr.ritual_en_curso(store) is None
+    assert not store.get(rr.STORE_KEY_RITUAL_IN_FLIGHT), "la cancelación dejó el single-flight trabado"
+
+
+@pytest.mark.parametrize("lanzador", ["run_ritual", "run_ritual_install"])
+def test_ningun_await_posterior_a_tomar_el_single_flight_corre_fuera_del_finally_que_lo_libera(
+    lanzador: str,
+) -> None:
+    """Ancla por AST sobre AMBOS lanzadores: todo ``await`` posterior a ``_marcar_en_curso`` está
+    dentro del ``try`` cuyo ``finally`` llama a ``_liberar_en_curso``.
+
+    Es la propiedad del P1: liberar antes de un await deja pasar a otro lanzador mientras la
+    operación sigue escribiendo. Enumera todos los awaits de la función, no sólo el de CS.
+    """
+    arbol = ast.parse(pathlib.Path(rr.__file__).read_text(encoding="utf-8"))
+    funcion = next(n for n in arbol.body if isinstance(n, ast.AsyncFunctionDef) and n.name == lanzador)
+
+    def _llama(nodo: ast.AST, nombre: str) -> bool:
+        return any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == nombre for n in ast.walk(nodo)
+        )
+
+    marca = next(
+        n.lineno
+        for n in ast.walk(funcion)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_marcar_en_curso"
+    )
+    contenedores = [
+        t
+        for t in ast.walk(funcion)
+        if isinstance(t, ast.Try) and any(_llama(f, "_liberar_en_curso") for f in t.finalbody)
+    ]
+    assert len(contenedores) == 1, f"{lanzador} debe liberar el single-flight en UN solo finally"
+    cuerpo = contenedores[0].body
+    desde, hasta = cuerpo[0].lineno, max(getattr(n, "end_lineno", n.lineno) for n in cuerpo)
+    afuera = [
+        n.lineno
+        for n in ast.walk(funcion)
+        if isinstance(n, ast.Await) and n.lineno > marca and not (desde <= n.lineno <= hasta)
+    ]
+    assert afuera == [], f"{lanzador}: await(s) tras tomar el single-flight fuera de su finally (líneas {afuera})"
