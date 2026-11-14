@@ -12,8 +12,13 @@ Propiedad y política (#575 §3; anclado en ``tests/test_gui_event_bus_ciclo_de_
   memoria. Y hoy ningún productor publica telemetría de alta frecuencia (el ancla de los
   tests congela qué tipos publica producción). El día que aparezca uno, hay que decidir la
   política de overflow, dejando fuera los eventos de control/HITL.
-- **Lo no entregado es ruidoso.** ``stop()`` avisa cuántos eventos quedaron sin entregar y
-  ``publish()`` tras ``stop()`` avisa; ambos se retienen hasta un ``start()`` posterior.
+- **Lo no despachado es ruidoso.** ``stop()`` avisa cuántos eventos quedaron sin que el hilo
+  procesador los tomara (``pending``) y ``publish()`` tras ``stop()`` avisa; ambos se retienen
+  hasta un ``start()`` posterior. **Límite:** lo que el procesador ya reenvió al loop con
+  ``call_soon_threadsafe`` pertenece al loop y ``stop()`` NO lo cuenta (con el loop ocupado,
+  ``pending`` es 0 aunque haya eventos esperando). No se pierde mientras el loop siga corriendo,
+  pero el bus no da acuse de entrega. ``pending`` es aproximado con hilos activos
+  (``Queue.qsize``) y exacto sin consumidor ni productores.
 """
 
 from __future__ import annotations
@@ -87,7 +92,11 @@ class EventBus:
 
     @property
     def pending(self) -> int:
-        """Eventos publicados que el hilo procesador todavía no tomó (diagnóstico y tests)."""
+        """Eventos publicados que el hilo procesador todavía no tomó (diagnóstico y tests).
+
+        Aproximado con hilos activos (``Queue.qsize``); exacto sin consumidor ni productores.
+        No incluye lo que el procesador ya reenvió al loop y este aún no ejecutó.
+        """
         return self._event_queue.qsize()
 
     @classmethod
@@ -97,6 +106,9 @@ class EventBus:
 
         Es la receta soportada para aislar estado: evita que cada test toque
         ``EventBus._instance`` y ``_subscribers`` a mano. ``stop()`` corre al salir.
+
+        Contrato: **solo para tests secuenciales**. Reemplaza el singleton mientras dura el
+        bloque, así que no es seguro si otro hilo llama ``EventBus()`` en ese lapso.
         """
         with cls._lock:
             guardada = cls._instance
@@ -192,7 +204,7 @@ class EventBus:
         pendientes = self._event_queue.qsize()
         if pendientes:
             self._logger.warning(
-                "EventBus detenido con %d evento(s) sin entregar; quedan retenidos hasta un start()",
+                "EventBus detenido con %d evento(s) sin despachar; quedan retenidos hasta un start()",
                 pendientes,
             )
 

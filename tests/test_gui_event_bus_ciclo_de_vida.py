@@ -11,8 +11,9 @@ Decisiones que estos tests anclan (``sky_claw/app/gui/gui_event_adapter.py``):
   backlog se acumula en la cola interna del *loop*; acotar ``_event_queue`` no acotaría la
   memoria. Y hoy ningún productor publica telemetría de alta frecuencia (ver el ancla de
   abajo). Nada se descarta: lo único que se hace es que lo no entregado sea **ruidoso**.
-- **Lo no entregado no es silencioso**: ``stop()`` avisa cuántos eventos quedaron sin
-  entregar y ``publish()`` tras ``stop()`` avisa (el evento se retiene hasta un ``start()``).
+- **Lo no despachado no es silencioso**: ``stop()`` avisa cuántos eventos quedaron sin que el hilo
+  procesador los tomara y ``publish()`` tras ``stop()`` avisa (el evento se retiene hasta un
+  ``start()``). Lo ya reenviado al loop no se cuenta: ver el test del loop ocupado.
 """
 
 from __future__ import annotations
@@ -180,6 +181,39 @@ async def test_bajo_presion_y_con_el_loop_ocupado_no_se_pierde_ni_se_duplica_nin
         assert bus.pending == 0
 
 
+async def test_con_el_loop_ocupado_stop_no_cuenta_lo_ya_reenviado_al_loop_pero_nada_se_pierde(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Fija el LÍMITE de ``pending``/``stop()`` (hallazgo de la auditoría sobre #932).
+
+    Este test corre EN el loop, así que mientras ejecuta código síncrono el loop está ocupado:
+    el hilo procesador reenvía los eventos con ``call_soon_threadsafe`` y quedan esperando en el
+    loop. ``pending`` (cola propia del bus) llega a 0 y ``stop()`` no avisa de ellos. No se
+    pierde nada: al devolverle el control al loop se entregan todos. Hay que leerlo como
+    «el bus no da acuse de entrega», no como una garantía de que ``stop()`` cuenta todo lo no
+    entregado.
+    """
+    with EventBus.aislado() as bus:
+        recibidos: list[int] = []
+        bus.subscribe(EventType.LLM_RESPONSE, lambda e: recibidos.append(e.data["n"]))
+        bus.start()
+        for n in range(50):
+            bus.publish(_evento(n=n))
+
+        limite = time.monotonic() + 5.0
+        while bus.pending and time.monotonic() < limite:
+            time.sleep(0.01)  # a propósito SÍNCRONO: el loop debe seguir ocupado
+        assert bus.pending == 0
+        assert recibidos == [], "el loop no pudo ejecutar nada mientras el test es síncrono"
+
+        with caplog.at_level(logging.WARNING, logger=_LOGGER):
+            bus.stop()
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+        await _esperar(lambda: len(recibidos) == 50)
+        assert recibidos == list(range(50))
+
+
 # ---------------------------------------------------------------------------
 # Ancla: qué tipos de evento publica producción hoy (la política de overflow espera a esto)
 # ---------------------------------------------------------------------------
@@ -207,7 +241,12 @@ _PUBLICADOS_EN_PRODUCCION = frozenset(
 
 
 def _tipos_publicados(fuente: str) -> set[str]:
-    """Nombres ``EventType.X`` usados al construir un ``SkyClawEvent`` (``type=`` o 1.er arg)."""
+    """Nombres ``EventType.X`` usados al construir un ``SkyClawEvent`` (``type=`` o 1.er arg).
+
+    **Límite**: solo reconoce el tipo escrito como literal ``EventType.X``. No ve un tipo dinámico
+    (``type=tipo``), un alias ni una factoría que construya el evento. Es un test de regresión
+    útil, no una garantía formal de que nunca aparezca telemetría.
+    """
     tipos: set[str] = set()
     for nodo in ast.walk(ast.parse(fuente)):
         if not (isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == "SkyClawEvent"):
