@@ -1877,3 +1877,527 @@ class TestAuditoriaAdversarialTransporte:
         assert coord._cerrado is True
         assert ctx.polling is None
         assert ctx.golden_master_coordinator is None
+
+
+class TestP2ResidualDrenadoEntrega:
+    """Reproducción y regresión del drenado real de entregas canceladas en `_cancelar_y_drenar`."""
+
+    @staticmethod
+    def _extraer_callback_de_prompt(sender: MagicMock, accion: str = "approve") -> str:
+        """Extrae `callback_data` del último envío con teclado inline (ignorando avisos de texto)."""
+        con_teclado = [c for c in sender.send.await_args_list if c.kwargs.get("reply_markup") is not None]
+        assert con_teclado, "debió haberse emitido al menos un prompt con inline_keyboard"
+        markup = con_teclado[-1].kwargs["reply_markup"]
+        for boton in markup["inline_keyboard"][0]:
+            cb = str(boton["callback_data"])
+            if cb.startswith(f"gm:{accion}:"):
+                return cb
+        raise AssertionError(f"no se encontró acción {accion!r} en inline_keyboard")
+
+    @pytest.mark.asyncio
+    async def test_timeout_cleanup_mayor_a_medio_segundo_retiene_entregas_y_single_flight(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: cleanup >0.5s tras CancelledError mantiene `_entregas_en_vuelo` y bloquea single-flight hasta terminar."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        sender = _crear_sender_simulado()
+        cancelada = asyncio.Event()
+        liberar_cleanup = asyncio.Event()
+        cleanup_finalizado = asyncio.Event()
+        prompts_enviados = 0
+
+        async def _send_con_cleanup_largo(
+            chat_id: int, text: str, reply_markup: dict | None = None, **_kwargs: object
+        ) -> TelegramMessage:
+            nonlocal prompts_enviados
+            if reply_markup is None:
+                return TelegramMessage(chat_id=chat_id, message_id=9100)
+            prompts_enviados += 1
+            if prompts_enviados == 1:
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    cancelada.set()
+                    await asyncio.sleep(0.65)
+                    await liberar_cleanup.wait()
+                    cleanup_finalizado.set()
+                    raise
+            msg = TelegramMessage(chat_id=chat_id, message_id=9100 + prompts_enviados)
+            sender._mensajes_enviados.append(msg)
+            return msg
+
+        sender.send = AsyncMock(side_effect=_send_con_cleanup_largo)
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+            delivery_timeout=0.05,
+        )
+        try:
+            # Act: timeout tras 0.05s cancela el envío; el cleanup dura >0.5s y sigue vivo al volver la tarea
+            tarea = await coord.iniciar_comando(_update_texto(1001, "/gm_preparar"))
+            assert tarea is not None
+            await asyncio.wait_for(cancelada.wait(), timeout=5.0)
+            await asyncio.wait_for(tarea, timeout=5.0)
+
+            # Assert durante cleanup vivo: la propiedad del envío y single-flight siguen activos
+            assert not cleanup_finalizado.is_set()
+            assert bool(coord._entregas_en_vuelo) is True
+
+            await coord.procesar_actualizacion(_update_texto(1002, "/gm_preparar"))
+            assert prompts_enviados == 1
+
+            # Liberamos el cleanup real y comprobamos liberación limpia y apertura posterior
+            liberar_cleanup.set()
+            await asyncio.wait_for(cleanup_finalizado.wait(), timeout=5.0)
+            await coord.esperar_idle()
+
+            assert not coord._entregas_en_vuelo
+            await coord.procesar_actualizacion(_update_texto(1003, "/gm_preparar"))
+            assert prompts_enviados == 2
+            assert coord.tiene_solicitud_abierta is True
+        finally:
+            liberar_cleanup.set()
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_timeout_coro_suprime_cancelacion_neutraliza_mensaje_tardio_con_botones(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: si send() suprime CancelledError y retorna TelegramMessage tardío, se retiran botones y token."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        sender = _crear_sender_simulado()
+        cancelaciones = 0
+        permitir_retorno_tardio = asyncio.Event()
+        retorno_tardio_emitido = asyncio.Event()
+
+        async def _send_suprime_cancelacion(
+            chat_id: int, text: str, reply_markup: dict | None = None, **_kwargs: object
+        ) -> TelegramMessage:
+            nonlocal cancelaciones
+            if reply_markup is None:
+                return TelegramMessage(chat_id=chat_id, message_id=9200)
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancelaciones += 1
+                await permitir_retorno_tardio.wait()
+                retorno_tardio_emitido.set()
+                msg = TelegramMessage(chat_id=chat_id, message_id=999)
+                sender._mensajes_enviados.append(msg)
+                return msg
+            raise AssertionError("debió recibir CancelledError")
+
+        sender.send = AsyncMock(side_effect=_send_suprime_cancelacion)
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+            delivery_timeout=0.05,
+        )
+        try:
+            # Act: timeout vence mientras la coroutine suprime cancelación y aún no retorna
+            await coord.procesar_actualizacion(_update_texto(1010, "/gm_preparar"))
+            cb_tardio = self._extraer_callback_de_prompt(sender, "approve")
+
+            assert cancelaciones == 1
+            assert not retorno_tardio_emitido.is_set()
+            assert bool(coord._entregas_en_vuelo) is True
+
+            permitir_retorno_tardio.set()
+            await asyncio.wait_for(retorno_tardio_emitido.wait(), timeout=5.0)
+            await coord.esperar_idle()
+
+            # Assert: botones tardíos removidos y aprobación posterior imposible
+            assert not coord._entregas_en_vuelo
+            ediciones_999 = [c for c in sender.edit_message.await_args_list if c.args[1] == 999]
+            assert ediciones_999, "el TelegramMessage tardío debe editarse para retirar sus botones inline"
+            assert ediciones_999[-1].kwargs.get("reply_markup") is None
+
+            await coord.procesar_actualizacion(_update_callback(1011, cb_tardio, message_id=999))
+            assert coord.tiene_solicitud_abierta is False
+            assert derivar_autoridad_aprobacion(rig.storage).witnesses == ()
+        finally:
+            permitir_retorno_tardio.set()
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_cerrar_con_cleanup_largo_y_supresion_neutraliza_botones_post_cierre(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: cerrar() espera terminación acotada >0.5s y neutraliza cualquier TelegramMessage tardío."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        sender = _crear_sender_simulado()
+        en_send = asyncio.Event()
+        entregado_tardio = asyncio.Event()
+
+        async def _send_cleanup_y_suprime(
+            chat_id: int, text: str, reply_markup: dict | None = None, **_kwargs: object
+        ) -> TelegramMessage:
+            if reply_markup is None:
+                return TelegramMessage(chat_id=chat_id, message_id=9300)
+            en_send.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.65)
+                entregado_tardio.set()
+                msg = TelegramMessage(chat_id=chat_id, message_id=998)
+                sender._mensajes_enviados.append(msg)
+                return msg
+            raise AssertionError("debió recibir CancelledError al cerrar")
+
+        sender.send = AsyncMock(side_effect=_send_cleanup_y_suprime)
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+            delivery_timeout=5.0,
+        )
+        try:
+            # Act
+            tarea = await coord.iniciar_comando(_update_texto(1020, "/gm_preparar"))
+            assert tarea is not None
+            await asyncio.wait_for(en_send.wait(), timeout=5.0)
+            await coord.cerrar()
+            cb_tardio = self._extraer_callback_de_prompt(sender, "approve")
+
+            # Assert
+            assert entregado_tardio.is_set() is True
+            assert not coord._entregas_en_vuelo
+            ediciones_998 = [c for c in sender.edit_message.await_args_list if c.args[1] == 998]
+            assert ediciones_998, "cerrar() no puede dejar un mensaje tardío con botones vivos"
+            assert ediciones_998[-1].kwargs.get("reply_markup") is None
+
+            await coord.procesar_actualizacion(_update_callback(1021, cb_tardio, message_id=998))
+            assert coord.tiene_solicitud_abierta is False
+            assert derivar_autoridad_aprobacion(rig.storage).witnesses == ()
+        finally:
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_hot_reload_espera_terminacion_real_y_neutraliza_con_sender_anterior(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: actualizar_transporte() espera el drenado >0.5s y retira botones usando el sender original."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        sender_a = _crear_sender_simulado()
+        sender_b = _crear_sender_simulado()
+        en_send_a = asyncio.Event()
+        sender_a_terminado = asyncio.Event()
+
+        async def _send_a_lento_con_supresion(
+            chat_id: int, text: str, reply_markup: dict | None = None, **_kwargs: object
+        ) -> TelegramMessage:
+            if reply_markup is None:
+                return TelegramMessage(chat_id=chat_id, message_id=9400)
+            en_send_a.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.65)
+                sender_a_terminado.set()
+                msg = TelegramMessage(chat_id=chat_id, message_id=777)
+                sender_a._mensajes_enviados.append(msg)
+                return msg
+            raise AssertionError("debió recibir CancelledError por timeout")
+
+        sender_a.send = AsyncMock(side_effect=_send_a_lento_con_supresion)
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender_a,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+            delivery_timeout=0.05,
+        )
+        try:
+            # Act
+            prep_task = await coord.iniciar_comando(_update_texto(1030, "/gm_preparar"))
+            assert prep_task is not None
+            await asyncio.wait_for(en_send_a.wait(), timeout=5.0)
+            reload_task = asyncio.create_task(
+                coord.actualizar_transporte(sender=sender_b, operador_autorizado=OPERADOR)
+            )
+            await asyncio.wait_for(reload_task, timeout=5.0)
+            await asyncio.wait_for(prep_task, timeout=5.0)
+            cb_tardio = self._extraer_callback_de_prompt(sender_a, "approve")
+
+            # Assert: la recarga no cambió el transporte antes de que terminara sender_a y limpió 777 con sender_a
+            assert sender_a_terminado.is_set() is True
+            assert not coord._entregas_en_vuelo
+            ediciones_777 = [c for c in sender_a.edit_message.await_args_list if c.args[1] == 777]
+            assert ediciones_777, "los botones emitidos por sender_a deben retirarse con sender_a"
+            assert ediciones_777[-1].kwargs.get("reply_markup") is None
+            assert sender_b.send.await_count == 0
+            assert sender_b.edit_message.await_count == 0
+
+            await coord.procesar_actualizacion(_update_callback(1031, cb_tardio, message_id=777))
+            assert coord.tiene_solicitud_abierta is False
+            assert derivar_autoridad_aprobacion(rig.storage).witnesses == ()
+        finally:
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_cerrar_drenado_acotado_cuando_coro_cuelga_conserva_propiedad_y_neutraliza_al_desbloquear(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: si send() queda colgada indefinidamente, cerrar() es acotado y la propiedad sigue viva hasta salir."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        sender = _crear_sender_simulado()
+        en_send = asyncio.Event()
+        liberar_cuelgue = asyncio.Event()
+        finalizado = asyncio.Event()
+
+        async def _send_colgada_indefinida(
+            chat_id: int, text: str, reply_markup: dict | None = None, **_kwargs: object
+        ) -> TelegramMessage:
+            if reply_markup is None:
+                return TelegramMessage(chat_id=chat_id, message_id=9500)
+            en_send.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                await liberar_cuelgue.wait()
+                finalizado.set()
+                msg = TelegramMessage(chat_id=chat_id, message_id=997)
+                sender._mensajes_enviados.append(msg)
+                return msg
+            raise AssertionError("debió recibir CancelledError al cerrar")
+
+        sender.send = AsyncMock(side_effect=_send_colgada_indefinida)
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+            delivery_timeout=5.0,
+            drain_timeout=0.3,
+        )
+        try:
+            # Act
+            tarea = await coord.iniciar_comando(_update_texto(1040, "/gm_preparar"))
+            assert tarea is not None
+            await asyncio.wait_for(en_send.wait(), timeout=5.0)
+            loop = asyncio.get_running_loop()
+            t0 = loop.time()
+            await asyncio.wait_for(coord.cerrar(), timeout=5.0)
+            transcurrido = loop.time() - t0
+            cb_tardio = self._extraer_callback_de_prompt(sender, "approve")
+
+            # Assert: cerrar() estuvo acotado (~drain_timeout) y no vació el registro antes de terminar la coro
+            assert transcurrido < 1.5
+            assert not finalizado.is_set()
+            assert bool(coord._entregas_en_vuelo) is True
+
+            # Cuando el transporte colgado finalmente retorna tardío, limpia botones y suelta la propiedad
+            liberar_cuelgue.set()
+            await asyncio.wait_for(finalizado.wait(), timeout=5.0)
+            await coord.esperar_idle()
+            assert not coord._entregas_en_vuelo
+            ediciones_997 = [c for c in sender.edit_message.await_args_list if c.args[1] == 997]
+            assert ediciones_997
+            assert ediciones_997[-1].kwargs.get("reply_markup") is None
+
+            await coord.procesar_actualizacion(_update_callback(1041, cb_tardio, message_id=997))
+            assert derivar_autoridad_aprobacion(rig.storage).witnesses == ()
+        finally:
+            liberar_cuelgue.set()
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_superar_drain_timeout_en_reload_mantiene_single_flight_y_neutraliza_tardio(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: incluso superando drain_timeout, single-flight sigue cerrado hasta terminación real."""
+        # Arrange: cleanup controlado de sender_a excede explícitamente drain_timeout=0.3s
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        sender_a = _crear_sender_simulado()
+        sender_b = _crear_sender_simulado()
+        cancelada_a = asyncio.Event()
+        liberar_a = asyncio.Event()
+        terminado_a = asyncio.Event()
+
+        async def _send_a_mas_largo_que_drain(
+            chat_id: int, text: str, reply_markup: dict | None = None, **_kwargs: object
+        ) -> TelegramMessage:
+            if reply_markup is None:
+                return TelegramMessage(chat_id=chat_id, message_id=9600)
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancelada_a.set()
+                await liberar_a.wait()
+                terminado_a.set()
+                msg = TelegramMessage(chat_id=chat_id, message_id=888)
+                sender_a._mensajes_enviados.append(msg)
+                return msg
+            raise AssertionError("debió recibir CancelledError")
+
+        sender_a.send = AsyncMock(side_effect=_send_a_mas_largo_que_drain)
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender_a,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+            delivery_timeout=0.05,
+            drain_timeout=0.3,
+        )
+        try:
+            # Act
+            prep = await coord.iniciar_comando(_update_texto(1050, "/gm_preparar"))
+            assert prep is not None
+            await asyncio.wait_for(cancelada_a.wait(), timeout=5.0)
+            await asyncio.wait_for(
+                coord.actualizar_transporte(sender=sender_b, operador_autorizado=OPERADOR),
+                timeout=5.0,
+            )
+
+            # Assert mid-flight: drain_timeout venció pero sender_a sigue vivo => single-flight cerrado también para sender_b y /gm_estado
+            assert not terminado_a.is_set()
+            assert bool(coord._entregas_en_vuelo) is True
+
+            await coord.procesar_actualizacion(_update_texto(1051, "/gm_preparar"))
+            await coord.procesar_actualizacion(_update_texto(1052, "/gm_estado"))
+            assert not [c for c in sender_b.send.await_args_list if c.kwargs.get("reply_markup") is not None]
+            assert any("en curso" in c.args[1] for c in sender_b.send.await_args_list)
+
+            # Liberamos sender_a: retira botones 888 usando sender_a (no sender_b) y abre single-flight
+            liberar_a.set()
+            await asyncio.wait_for(terminado_a.wait(), timeout=5.0)
+            await coord.esperar_idle()
+            assert not coord._entregas_en_vuelo
+            ediciones_888 = [c for c in sender_a.edit_message.await_args_list if c.args[1] == 888]
+            assert ediciones_888
+            assert ediciones_888[-1].kwargs.get("reply_markup") is None
+            assert sender_b.edit_message.await_count == 0
+
+            await coord.procesar_actualizacion(_update_texto(1053, "/gm_preparar"))
+            prompts_b = [c for c in sender_b.send.await_args_list if c.kwargs.get("reply_markup") is not None]
+            assert len(prompts_b) == 1
+            assert coord.tiene_solicitud_abierta is True
+        finally:
+            liberar_a.set()
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_cerrar_con_runtime_error_de_sesion_cerrada_cierra_executor(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: RuntimeError ('Session is closed') al editar/enviar no debe filtrar executor ni dejar Tasks sin recuperar."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        coord, webhook, _polling, sender, _router = _construir_entorno(rig)
+        try:
+            await coord.procesar_actualizacion(_update_texto(1060, "/gm_preparar"))
+            assert coord.tiene_solicitud_abierta is True
+
+            # Simulamos sesión aiohttp ya cerrada antes de llamar cerrar()
+            sender.edit_message = AsyncMock(side_effect=RuntimeError("Session is closed"))
+            sender.send = AsyncMock(side_effect=RuntimeError("Session is closed"))
+
+            # Disparamos un callback malformado o estado vía webhook y cerramos
+            await webhook.handle_update(_update_texto(1061, "/gm_estado"))
+            await coord.esperar_idle()
+            await coord.cerrar()
+
+            # Assert: cerrar() completó, descartó solicitud y apagó el ThreadPoolExecutor
+            assert coord.tiene_solicitud_abierta is False
+            assert coord._executor is None
+        finally:
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_cerrar_permanece_acotado_ante_edit_message_colgado(self, tmp_path: pathlib.Path) -> None:
+        """AAA: aunque invalidar la sesión abierta cuelgue en edit_message, cerrar() queda acotado a drain_timeout."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        sender = _crear_sender_simulado()
+        soltar_edit = asyncio.Event()
+
+        async def _edit_lento(*_args: object, **_kwargs: object) -> None:
+            await soltar_edit.wait()
+
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+            drain_timeout=0.3,
+        )
+        try:
+            await coord.procesar_actualizacion(_update_texto(1070, "/gm_preparar"))
+            assert coord.tiene_solicitud_abierta is True
+            sender.edit_message = AsyncMock(side_effect=_edit_lento)
+
+            # Act
+            loop = asyncio.get_running_loop()
+            t0 = loop.time()
+            await asyncio.wait_for(coord.cerrar(), timeout=5.0)
+            duracion = loop.time() - t0
+
+            # Assert
+            assert duracion < 1.5
+            assert coord.tiene_solicitud_abierta is False
+            assert coord._executor is None
+        finally:
+            soltar_edit.set()
+            await coord.cerrar()
+
+    @pytest.mark.asyncio
+    async def test_cerrar_concurrente_durante_callback_aborta_antes_de_mutar_en_worker(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: cerrar() mientras espera red previo al worker aborta antes de invocar decidir_y_emitir()."""
+        # Arrange
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+        sender = _crear_sender_simulado()
+        llamadas_worker: list[str] = []
+        edit_en_vuelo = asyncio.Event()
+        soltar_edit = asyncio.Event()
+
+        async def _edit_pausado(chat_id: int, message_id: int, text: str, reply_markup: dict | None = None) -> None:
+            if "Procesando" in text:
+                edit_en_vuelo.set()
+                await soltar_edit.wait()
+
+        monkeypatch.setattr(
+            SesionTransicionGoldenMaster,
+            "decidir_y_emitir",
+            lambda self, **_kw: llamadas_worker.append("muto"),
+        )
+        coord = CoordinadorTelegramGoldenMaster(
+            sender=sender,
+            operador_autorizado=OPERADOR,
+            objetivo=_objetivo_desde_rig(rig),
+            drain_timeout=0.5,
+        )
+        try:
+            await coord.procesar_actualizacion(_update_texto(1080, "/gm_preparar"))
+            cb_aprobar, msg_id, _sol_id = _extraer_token_de_ultimo_envio(sender, "approve")
+            sender.edit_message = AsyncMock(side_effect=_edit_pausado)
+
+            # Act: dispara callback y cierra justo antes de que el callback entre al worker
+            cb_task = await coord.iniciar_callback(_update_callback(1081, cb_aprobar, message_id=msg_id))
+            assert cb_task is not None
+            await asyncio.wait_for(edit_en_vuelo.wait(), timeout=5.0)
+            cierre_task = asyncio.create_task(coord.cerrar())
+            await asyncio.sleep(0.02)
+            soltar_edit.set()
+            await asyncio.wait_for(cierre_task, timeout=5.0)
+
+            # Assert: nunca alcanzó decidir_y_emitir y limpió estado/executor
+            assert llamadas_worker == []
+            assert coord._executor is None
+            assert coord._operacion_en_curso is False
+        finally:
+            soltar_edit.set()
+            await coord.cerrar()

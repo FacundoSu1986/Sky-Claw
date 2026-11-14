@@ -24,9 +24,12 @@ from __future__ import annotations
 import asyncio
 import collections
 import concurrent.futures
+import contextlib
 import dataclasses
+import functools
 import html
 import logging
+import math
 import pathlib
 import secrets
 import threading
@@ -87,6 +90,7 @@ _GM_CALLBACK_ACTIONS = frozenset({"approve", "deny", "cancel"})
 _GM_CALLBACK_MAX_BYTES = 64
 _MAX_TOKENS_INVALIDADOS = 512
 _ENTREGA_TIMEOUT_SEGUNDOS = 20.0
+_DRENAJE_CIERRE_TIMEOUT_SEGUNDOS = 1.5
 _TELEGRAM_MAX_CHAR_RESUMEN = 3800
 
 _ACCION_A_DECISION: dict[str, DecisionConsentimiento] = {
@@ -389,6 +393,55 @@ def _construir_teclado_golden_master(token: str) -> dict[str, Any]:
     }
 
 
+@dataclasses.dataclass(eq=False, slots=True)
+class _EntregaEnVuelo:
+    """Propiedad explícita de una entrega Telegram en curso en el event loop."""
+
+    sender: TelegramSender
+    chat_id: int
+    token: str
+    abortada: threading.Event = dataclasses.field(default_factory=threading.Event)
+    iniciada: threading.Event = dataclasses.field(default_factory=threading.Event)
+    finalizada: threading.Event = dataclasses.field(default_factory=threading.Event)
+    _lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+    fut: concurrent.futures.Future[TelegramMessage] | None = None
+    tarea: asyncio.Task[Any] | None = None
+    mensaje_emitido: TelegramMessage | None = None
+    botones_retirados: bool = False
+    cancelacion_pedida: bool = False
+
+    def establecer_fut(self, fut: concurrent.futures.Future[TelegramMessage]) -> None:
+        """Asocia el Future cross-thread y propaga la cancelación si ya fue abortada."""
+        cancelar_ahora = False
+        with self._lock:
+            self.fut = fut
+            if self.abortada.is_set() and not self.cancelacion_pedida:
+                self.cancelacion_pedida = True
+                cancelar_ahora = True
+        if cancelar_ahora:
+            fut.cancel()
+
+    def solicitar_cancelacion(self) -> None:
+        """Marca la entrega como abortada y solicita una única cancelación cooperativa."""
+        fut_a_cancelar: concurrent.futures.Future[TelegramMessage] | None = None
+        tarea_a_cancelar: asyncio.Task[Any] | None = None
+        with self._lock:
+            self.abortada.set()
+            if self.cancelacion_pedida:
+                return
+            if self.fut is None and self.tarea is None:
+                # Aún no existe handle cancelable; `establecer_fut` o una llamada posterior propagará el abort.
+                return
+            self.cancelacion_pedida = True
+            fut_a_cancelar = self.fut
+            tarea_a_cancelar = self.tarea
+        if fut_a_cancelar is not None and fut_a_cancelar.cancel():
+            return
+        if tarea_a_cancelar is not None and not tarea_a_cancelar.done():
+            with contextlib.suppress(RuntimeError):
+                tarea_a_cancelar.get_loop().call_soon_threadsafe(tarea_a_cancelar.cancel)
+
+
 class CoordinadorTelegramGoldenMaster:
     """Adaptador single-flight de Telegram para sesiones HITL de Golden Master.
 
@@ -404,11 +457,17 @@ class CoordinadorTelegramGoldenMaster:
         operador_autorizado: int | None,
         objetivo: ObjetivoTransicionGoldenMaster | None = None,
         delivery_timeout: float = _ENTREGA_TIMEOUT_SEGUNDOS,
+        drain_timeout: float = _DRENAJE_CIERRE_TIMEOUT_SEGUNDOS,
     ) -> None:
+        if not math.isfinite(delivery_timeout) or delivery_timeout <= 0:
+            raise ValueError("delivery_timeout debe ser un número finito positivo")
+        if not math.isfinite(drain_timeout) or drain_timeout <= 0:
+            raise ValueError("drain_timeout debe ser un número finito positivo")
         self._sender = sender
         self._operador_autorizado = operador_autorizado
         self._objetivo = objetivo
         self._delivery_timeout = delivery_timeout
+        self._drain_timeout = drain_timeout
 
         self._operacion_en_curso: bool = False
         self._cerrado: bool = False
@@ -418,13 +477,21 @@ class CoordinadorTelegramGoldenMaster:
         self._executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._worker_fut_activo: asyncio.Future[Any] | None = None
         self._entregas_lock = threading.Lock()
-        self._entregas_en_vuelo: set[concurrent.futures.Future[TelegramMessage]] = set()
+        self._entregas_en_vuelo: set[_EntregaEnVuelo] = set()
         self._recargas_en_curso: int = 0
         self._reload_lock = asyncio.Lock()
 
     @property
     def tiene_solicitud_abierta(self) -> bool:
         return self._sesion_activa is not None and self._sesion_activa.fase == "ABIERTA"
+
+    def _tiene_entregas_en_vuelo(self) -> bool:
+        with self._entregas_lock:
+            return bool(self._entregas_en_vuelo)
+
+    def _esta_ocupado(self) -> bool:
+        """Indica si hay una operación activa o una entrega Telegram todavía sin terminar."""
+        return self._operacion_en_curso or self._tiene_entregas_en_vuelo()
 
     def _asegurar_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         if self._executor is None:
@@ -456,9 +523,31 @@ class CoordinadorTelegramGoldenMaster:
     ) -> TelegramMessage | None:
         try:
             return await self._sender.send(chat_id, texto, reply_markup=reply_markup)
-        except _ERRORES_TRANSPORTE_TELEGRAM:
+        except (*_ERRORES_TRANSPORTE_TELEGRAM, RuntimeError):
             logger.warning("Fallo de transporte al enviar mensaje Golden Master a %s", chat_id, exc_info=True)
             return None
+
+    async def _editar_seguro_con_sender(
+        self,
+        sender: TelegramSender,
+        chat_id: int,
+        message_id: int,
+        texto: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+        ignorar_runtime_cerrado: bool = True,
+    ) -> None:
+        try:
+            await sender.edit_message(chat_id, message_id, texto, reply_markup=reply_markup)
+        except (*_ERRORES_TRANSPORTE_TELEGRAM, RuntimeError) as exc:
+            if isinstance(exc, RuntimeError) and not ignorar_runtime_cerrado:
+                raise
+            logger.warning(
+                "Fallo de transporte al editar mensaje Golden Master %s/%s",
+                chat_id,
+                message_id,
+                exc_info=True,
+            )
 
     async def _editar_seguro(
         self,
@@ -468,22 +557,21 @@ class CoordinadorTelegramGoldenMaster:
         *,
         reply_markup: dict[str, Any] | None = None,
     ) -> None:
-        try:
-            await self._sender.edit_message(chat_id, message_id, texto, reply_markup=reply_markup)
-        except _ERRORES_TRANSPORTE_TELEGRAM:
-            logger.warning(
-                "Fallo de transporte al editar mensaje Golden Master %s/%s",
-                chat_id,
-                message_id,
-                exc_info=True,
-            )
+        await self._editar_seguro_con_sender(
+            self._sender,
+            chat_id,
+            message_id,
+            texto,
+            reply_markup=reply_markup,
+            ignorar_runtime_cerrado=True,
+        )
 
     async def _responder_callback_seguro(self, callback_id: object, text: str | None = None) -> None:
         if not isinstance(callback_id, str) or not callback_id:
             return
         try:
             await self._sender.answer_callback_query(callback_id, text=text)
-        except _ERRORES_TRANSPORTE_TELEGRAM:
+        except (*_ERRORES_TRANSPORTE_TELEGRAM, RuntimeError):
             logger.warning("No se pudo confirmar callback Golden Master %s", callback_id, exc_info=True)
 
     async def _ejecutar_en_worker(
@@ -497,8 +585,6 @@ class CoordinadorTelegramGoldenMaster:
         executor = self._asegurar_executor()
         worker_fut = loop.run_in_executor(executor, fn)
         self._worker_fut_activo = worker_fut
-        current_task = asyncio.current_task()
-        initial_cancels = current_task.cancelling() if current_task is not None else 0
         caller_cancelled = False
 
         try:
@@ -506,16 +592,13 @@ class CoordinadorTelegramGoldenMaster:
                 try:
                     await asyncio.shield(worker_fut)
                 except asyncio.CancelledError:
-                    if current_task is None or current_task.cancelling() > initial_cancels:
-                        caller_cancelled = True
-                    else:
-                        caller_cancelled = True
+                    caller_cancelled = True
                     if cancelacion_event is not None:
                         cancelacion_event.set()
                         with self._entregas_lock:
                             entregas = list(self._entregas_en_vuelo)
-                        for entrega_fut in entregas:
-                            entrega_fut.cancel()
+                        for entrega in entregas:
+                            entrega.solicitar_cancelacion()
                 except Exception as exc:  # noqa: BLE001 - worker_fut ya finalizó; el retorno/propagación ocurre abajo
                     logger.debug("Worker Golden Master finalizó con excepción %s", type(exc).__name__)
                     break
@@ -529,10 +612,19 @@ class CoordinadorTelegramGoldenMaster:
             raise asyncio.CancelledError
         return worker_fut.result()
 
+    @staticmethod
+    def _registrar_excepcion_tarea(tarea: asyncio.Task[Any]) -> None:
+        if tarea.cancelled():
+            return
+        exc = tarea.exception()
+        if exc is not None:
+            logger.exception("Fallo no esperado en tarea Golden Master HITL", exc_info=exc)
+
     def _lanzar_tarea(self, coro: Any) -> asyncio.Task[None]:
         tarea = asyncio.create_task(coro)
         self._tareas_activas.add(tarea)
         tarea.add_done_callback(self._tareas_activas.discard)
+        tarea.add_done_callback(self._registrar_excepcion_tarea)
         return tarea
 
     async def _invalidar_sesion_abierta(self, *, motivo: str) -> None:
@@ -558,11 +650,19 @@ class CoordinadorTelegramGoldenMaster:
         actualizar_objetivo: bool = False,
     ) -> None:
         """Actualiza sender/operador ante un hot-reload invalidando antes cualquier prompt abierto."""
+        if self._cerrado:
+            return
         self._recargas_en_curso += 1
         try:
             async with self._reload_lock:
+                if self._cerrado:
+                    return
                 await self.esperar_idle()
+                if self._cerrado:
+                    return
                 await self._invalidar_sesion_abierta(motivo="recarga del transporte Telegram")
+                if self._cerrado:
+                    return
                 self._sender = sender
                 self._operador_autorizado = operador_autorizado
                 if actualizar_objetivo or objetivo is not None:
@@ -570,19 +670,114 @@ class CoordinadorTelegramGoldenMaster:
         finally:
             self._recargas_en_curso -= 1
 
+    @staticmethod
+    def _consumir_excepcion_entrega(tarea: asyncio.Task[Any], entrega: _EntregaEnVuelo) -> None:
+        if tarea.cancelled():
+            return
+        exc = tarea.exception()
+        if exc is not None and (entrega.abortada.is_set() or isinstance(exc, EntregaPresentacionError)):
+            logger.debug(
+                "Entrega Golden Master abortada finalizó con %s (excepción consumida)",
+                type(exc).__name__,
+            )
+
+    async def _neutralizar_entrega_tardia(
+        self,
+        entrega: _EntregaEnVuelo,
+        enviado: TelegramMessage | None,
+    ) -> None:
+        """Invalida token y retira botones si `send()` retornó tarde tras abortar o cerrar."""
+        self._registrar_token_invalidado(entrega.token)
+        if enviado is None:
+            return
+        msg_id = getattr(enviado, "message_id", None)
+        if not isinstance(msg_id, bool) and isinstance(msg_id, int) and msg_id > 0:
+            entrega.botones_retirados = True
+            await self._editar_seguro_con_sender(
+                entrega.sender,
+                entrega.chat_id,
+                msg_id,
+                "🚫 Solicitud Golden Master cancelada o expirada.",
+                reply_markup=None,
+                ignorar_runtime_cerrado=True,
+            )
+
+    async def _purgar_entrega_no_iniciada_si_cancelada(self, entrega: _EntregaEnVuelo) -> None:
+        """Descarta del registro una entrega cancelada antes de entrar a `_envolver_entrega`."""
+        if entrega.iniciada.is_set() or not entrega.abortada.is_set():
+            return
+        # Dos turnos en el event loop aseguran que corran el callback de run_coroutine_threadsafe
+        # y el primer paso de la Task cancelada sin riesgo de carrera de publicación.
+        for _ in range(2):
+            if entrega.iniciada.is_set():
+                return
+            await asyncio.sleep(0)
+        if entrega.iniciada.is_set():
+            return
+        fut = entrega.fut
+        if fut is not None and fut.done() and fut.cancelled():
+            with self._entregas_lock:
+                self._entregas_en_vuelo.discard(entrega)
+            entrega.finalizada.set()
+
+    async def _drenar_entregas_en_vuelo(
+        self,
+        *,
+        cancelar: bool,
+        fecha_limite: float | None = None,
+    ) -> None:
+        """Drena entregas activas hasta `drain_timeout`, conservando su propiedad si siguen vivas."""
+        loop = asyncio.get_running_loop()
+        limite = fecha_limite if fecha_limite is not None else loop.time() + self._drain_timeout
+        while True:
+            with self._entregas_lock:
+                entregas = list(self._entregas_en_vuelo)
+            if not entregas:
+                return
+            if cancelar:
+                for entrega in entregas:
+                    entrega.solicitar_cancelacion()
+            for entrega in entregas:
+                await self._purgar_entrega_no_iniciada_si_cancelada(entrega)
+            with self._entregas_lock:
+                activas = list(self._entregas_en_vuelo)
+            if not activas:
+                return
+            restante = limite - loop.time()
+            if restante <= 0:
+                return
+            if any(e.tarea is None and not e.finalizada.is_set() for e in activas):
+                await asyncio.sleep(min(0.005, restante))
+                continue
+            tareas = {e.tarea for e in activas if e.tarea is not None and not e.tarea.done()}
+            if not tareas:
+                await asyncio.sleep(min(0.005, restante))
+                with self._entregas_lock:
+                    if not self._entregas_en_vuelo:
+                        return
+                if loop.time() >= limite:
+                    return
+                continue
+            _hechas, pendientes = await asyncio.wait(tareas, timeout=restante)
+            if pendientes and loop.time() >= limite:
+                return
+
     async def esperar_idle(self) -> None:
-        """Espera de manera determinista a que terminen todas las operaciones en curso."""
+        """Espera a que terminen las operaciones en curso y drena de forma acotada entregas vivas."""
         while self._tareas_activas:
             pendientes = list(self._tareas_activas)
             await asyncio.gather(*pendientes, return_exceptions=True)
+        await self._drenar_entregas_en_vuelo(cancelar=False)
 
     async def cerrar(self) -> None:
-        """Detiene entregas pendientes, espera la terminalidad del worker y descarta prompts abiertos."""
+        """Detiene entregas pendientes, drena tareas de forma acotada y descarta prompts abiertos."""
         self._cerrado = True
+        loop = asyncio.get_running_loop()
+        fecha_limite_cierre = loop.time() + self._drain_timeout
         with self._entregas_lock:
             entregas = list(self._entregas_en_vuelo)
-        for fut in entregas:
-            fut.cancel()
+        for entrega in entregas:
+            entrega.solicitar_cancelacion()
 
         worker_fut = self._worker_fut_activo
         if worker_fut is not None:
@@ -597,15 +792,22 @@ class CoordinadorTelegramGoldenMaster:
 
         pendientes = [t for t in self._tareas_activas if not t.done()]
         if pendientes:
-            try:
-                await asyncio.wait_for(asyncio.gather(*pendientes, return_exceptions=True), timeout=0.5)
-            except TimeoutError:
-                for tarea in pendientes:
+            restante_pend = max(0.05, min(0.5, fecha_limite_cierre - loop.time()))
+            _hechas, sin_terminar = await asyncio.wait(pendientes, timeout=restante_pend)
+            if sin_terminar:
+                for tarea in sin_terminar:
                     if not tarea.done():
                         tarea.cancel()
-                await asyncio.gather(*pendientes, return_exceptions=True)
+                restante_cancel = max(0.05, fecha_limite_cierre - loop.time())
+                await asyncio.wait(sin_terminar, timeout=restante_cancel)
 
-        await self._invalidar_sesion_abierta(motivo="cierre del servicio")
+        await self._drenar_entregas_en_vuelo(cancelar=True, fecha_limite=fecha_limite_cierre)
+        restante_invalidar = max(0.05, fecha_limite_cierre - loop.time())
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                self._invalidar_sesion_abierta(motivo="cierre del servicio"),
+                timeout=restante_invalidar,
+            )
         if self._executor is not None:
             executor = self._executor
             self._executor = None
@@ -670,7 +872,7 @@ class CoordinadorTelegramGoldenMaster:
         if sesion_activa is None or sesion_activa.token != token:
             await self._responder_callback_seguro(callback_id, text="Solicitud inexistente, expirada o de otra sesión")
             return None
-        if sesion_activa.fase != "ABIERTA" or self._operacion_en_curso:
+        if sesion_activa.fase != "ABIERTA" or self._esta_ocupado():
             await self._responder_callback_seguro(callback_id, text="Solicitud ya en procesamiento")
             return None
 
@@ -758,7 +960,7 @@ class CoordinadorTelegramGoldenMaster:
         if resto:
             await self._enviar_seguro(chat_id, "❌ /gm_estado no admite argumentos.")
             return None
-        if self._operacion_en_curso:
+        if self._esta_ocupado():
             await self._enviar_seguro(
                 chat_id,
                 "⏳ Hay una operación Golden Master en curso; reintentá en unos instantes.",
@@ -780,7 +982,7 @@ class CoordinadorTelegramGoldenMaster:
                 "❌ /gm_preparar no admite rutas ni argumentos por Telegram (usa únicamente config verificada).",
             )
             return None
-        if self._operacion_en_curso or self._sesion_activa is not None:
+        if self._esta_ocupado() or self._sesion_activa is not None:
             await self._enviar_seguro(
                 chat_id,
                 "⛔ Ya existe una operación o solicitud Golden Master abierta.",
@@ -802,7 +1004,7 @@ class CoordinadorTelegramGoldenMaster:
             await self._enviar_seguro(chat_id, "❌ Debés indicar exactamente el ID de solicitud activo.")
             return None
         solicitud_id_pedida = partes[0]
-        if self._operacion_en_curso:
+        if self._esta_ocupado():
             await self._enviar_seguro(chat_id, "⏳ Ya hay una operación Golden Master en curso.")
             return None
         sesion_activa = self._sesion_activa
@@ -836,7 +1038,7 @@ class CoordinadorTelegramGoldenMaster:
         if len(partes) != 1:
             await self._enviar_seguro(chat_id, "❌ Uso: <code>/gm_reanudar &lt;transition_id&gt;</code>")
             return None
-        if self._operacion_en_curso or self._sesion_activa is not None:
+        if self._esta_ocupado() or self._sesion_activa is not None:
             await self._enviar_seguro(
                 chat_id,
                 "⛔ No se puede reanudar mientras exista otra operación o solicitud abierta.",
@@ -859,7 +1061,7 @@ class CoordinadorTelegramGoldenMaster:
                 "❌ Uso: <code>/gm_abandonar &lt;transition_id&gt; &lt;motivo&gt;</code> (el motivo es obligatorio).",
             )
             return None
-        if self._operacion_en_curso or self._sesion_activa is not None:
+        if self._esta_ocupado() or self._sesion_activa is not None:
             await self._enviar_seguro(
                 chat_id,
                 "⛔ No se puede abandonar mientras exista otra operación o solicitud abierta.",
@@ -896,15 +1098,16 @@ class CoordinadorTelegramGoldenMaster:
         sesion = SesionTransicionGoldenMaster(**objetivo.to_sesion_kwargs(), registro=registro)
         entrega_ref: dict[str, Any] = {}
         cancelacion_pedida = threading.Event()
+        entregas_preparar: list[_EntregaEnVuelo] = []
 
-        def _capturar_si_respondio(
-            fut_entregada: concurrent.futures.Future[TelegramMessage],
-            token_entregado: str,
-            entrega_cruda: dict[str, TelegramMessage],
-        ) -> None:
-            entregado: Any = entrega_cruda.get("mensaje")
+        def _capturar_si_respondio(entrega: _EntregaEnVuelo) -> None:
+            entrega_ref["token"] = entrega.token
+            entrega_ref["sender"] = entrega.sender
+            entregado: Any = entrega.mensaje_emitido
+            fut_entregada = entrega.fut
             if (
                 entregado is None
+                and fut_entregada is not None
                 and fut_entregada.done()
                 and not fut_entregada.cancelled()
                 and fut_entregada.exception() is None
@@ -914,86 +1117,105 @@ class CoordinadorTelegramGoldenMaster:
                 return
             msg_id_tardio = getattr(entregado, "message_id", None)
             if not isinstance(msg_id_tardio, bool) and isinstance(msg_id_tardio, int) and msg_id_tardio > 0:
-                entrega_ref["token"] = token_entregado
                 entrega_ref["message_id"] = msg_id_tardio
+                entrega_ref["botones_retirados"] = entrega.botones_retirados
 
-        def _cancelar_y_drenar(
-            fut_entregada: concurrent.futures.Future[TelegramMessage],
-            token_entregado: str,
-            coro_iniciada: threading.Event,
-            coro_finalizada: threading.Event,
-            entrega_cruda: dict[str, TelegramMessage],
-        ) -> None:
-            fut_entregada.cancel()
-            # Esperamos la señal real de cierre de la coroutine: concurrent.futures.Future.cancel()
-            # marca done() de inmediato aunque la task asyncio siga drenando finally/CancelledError.
-            if coro_iniciada.is_set():
-                drain_s = min(0.5, max(0.25, self._delivery_timeout))
-                coro_finalizada.wait(timeout=drain_s)
-            _capturar_si_respondio(fut_entregada, token_entregado, entrega_cruda)
+        def _cancelar_y_drenar(entrega: _EntregaEnVuelo) -> None:
+            entrega.solicitar_cancelacion()
+            # Esperamos acotadamente la finalización real de la coroutine; si continúa activa
+            # (cleanup > 0.5s o supresión de cancelación), conserva su entrada en `_entregas_en_vuelo`.
+            if entrega.iniciada.is_set():
+                drain_s = min(self._drain_timeout, min(0.5, max(0.25, self._delivery_timeout)))
+                entrega.finalizada.wait(timeout=drain_s)
+            _capturar_si_respondio(entrega)
 
         def _entregar(presentacion: PresentacionConsentimiento) -> None:
             if self._cerrado or cancelacion_pedida.is_set():
                 raise EntregaPresentacionError("preparación Golden Master cancelada antes de entregar")
-            # Renderizado fail-closed ANTES de crear/enviar la coroutine: nunca entregar prompt parcial ni botones sin scope íntegro.
+            # Renderizado fail-closed ANTES de agendar/enviar la coroutine: nunca entregar prompt parcial ni botones sin scope íntegro.
             mensaje_html = _formatear_mensaje_presentacion_desde_pres(presentacion)
             token = secrets.token_urlsafe(16)
-            coro = self._sender.send(
-                chat_id,
-                mensaje_html,
-                reply_markup=_construir_teclado_golden_master(token),
-            )
-            coro_iniciada = threading.Event()
-            coro_finalizada = threading.Event()
-            entrega_cruda: dict[str, TelegramMessage] = {}
+            sender_usado = self._sender
+            entrega = _EntregaEnVuelo(sender=sender_usado, chat_id=chat_id, token=token)
+            entrega_ref["token"] = token
+            entrega_ref["sender"] = sender_usado
+            entregas_preparar.append(entrega)
 
             async def _envolver_entrega() -> TelegramMessage:
-                coro_iniciada.set()
+                tarea_actual = asyncio.current_task()
+                if tarea_actual is not None:
+                    entrega.tarea = tarea_actual
+                    tarea_actual.add_done_callback(functools.partial(self._consumir_excepcion_entrega, entrega=entrega))
+                entrega.iniciada.set()
                 try:
-                    enviado = await coro
-                    entrega_cruda["mensaje"] = enviado
+                    if entrega.abortada.is_set() or self._cerrado or cancelacion_pedida.is_set():
+                        self._registrar_token_invalidado(entrega.token)
+                        raise EntregaPresentacionError("entrega Golden Master abortada antes de enviar")
+                    enviado = await entrega.sender.send(
+                        entrega.chat_id,
+                        mensaje_html,
+                        reply_markup=_construir_teclado_golden_master(entrega.token),
+                    )
+                    entrega.mensaje_emitido = enviado
+                    if entrega.abortada.is_set() or self._cerrado or cancelacion_pedida.is_set():
+                        await self._neutralizar_entrega_tardia(entrega, enviado)
                     return enviado
                 finally:
-                    coro_finalizada.set()
+                    if entrega.abortada.is_set() or self._cerrado or cancelacion_pedida.is_set():
+                        self._registrar_token_invalidado(entrega.token)
+                    with self._entregas_lock:
+                        self._entregas_en_vuelo.discard(entrega)
+                    entrega.finalizada.set()
 
             envoltorio = _envolver_entrega()
+            with self._entregas_lock:
+                if self._cerrado or cancelacion_pedida.is_set():
+                    envoltorio.close()
+                    raise EntregaPresentacionError("adaptador Golden Master cerrado antes de agendar entrega")
+                self._entregas_en_vuelo.add(entrega)
             try:
                 fut = asyncio.run_coroutine_threadsafe(envoltorio, loop)
             except RuntimeError as exc:
+                with self._entregas_lock:
+                    self._entregas_en_vuelo.discard(entrega)
+                entrega.finalizada.set()
                 envoltorio.close()
-                coro.close()
                 raise EntregaPresentacionError(f"no se pudo agendar la entrega por Telegram: {exc}") from exc
             cerrando_en_carrera = False
+            entrega.establecer_fut(fut)
             with self._entregas_lock:
-                if self._cerrado or cancelacion_pedida.is_set():
+                if self._cerrado or cancelacion_pedida.is_set() or entrega.abortada.is_set():
                     cerrando_en_carrera = True
-                else:
-                    self._entregas_en_vuelo.add(fut)
             if cerrando_en_carrera:
-                _cancelar_y_drenar(fut, token, coro_iniciada, coro_finalizada, entrega_cruda)
+                _cancelar_y_drenar(entrega)
                 raise EntregaPresentacionError("adaptador Golden Master cerrado durante la entrega")
             try:
                 mensaje = fut.result(timeout=self._delivery_timeout)
             except concurrent.futures.CancelledError as exc:
-                _cancelar_y_drenar(fut, token, coro_iniciada, coro_finalizada, entrega_cruda)
+                _cancelar_y_drenar(entrega)
                 raise EntregaPresentacionError("entrega Golden Master cancelada por cierre") from exc
             except (*_ERRORES_TRANSPORTE_TELEGRAM, TimeoutError, RuntimeError) as exc:
-                _cancelar_y_drenar(fut, token, coro_iniciada, coro_finalizada, entrega_cruda)
+                _cancelar_y_drenar(entrega)
                 raise EntregaPresentacionError(f"fallo al entregar presentación por Telegram: {exc}") from exc
             except BaseException:
-                _cancelar_y_drenar(fut, token, coro_iniciada, coro_finalizada, entrega_cruda)
+                _cancelar_y_drenar(entrega)
                 raise
-            finally:
-                with self._entregas_lock:
-                    self._entregas_en_vuelo.discard(fut)
+            if self._cerrado or cancelacion_pedida.is_set() or entrega.abortada.is_set():
+                _cancelar_y_drenar(entrega)
+                raise EntregaPresentacionError("entrega Golden Master invalidada durante cierre o cancelación")
 
             msg_id = getattr(mensaje, "message_id", None)
             if isinstance(msg_id, bool) or not isinstance(msg_id, int) or msg_id <= 0:
                 raise EntregaPresentacionError(
                     "la entrega por Telegram no devolvió un message_id entero válido (rechazo fail-closed)"
                 )
-            entrega_ref["token"] = token
+            entrega_ref["token"] = entrega.token
+            entrega_ref["sender"] = entrega.sender
             entrega_ref["message_id"] = msg_id
+            entrega_ref["botones_retirados"] = entrega.botones_retirados
+
+        def _botones_ya_retirados() -> bool:
+            return bool(entrega_ref.get("botones_retirados")) or any(e.botones_retirados for e in entregas_preparar)
 
         try:
             solicitud = await self._ejecutar_en_worker(
@@ -1002,13 +1224,18 @@ class CoordinadorTelegramGoldenMaster:
             )
             if self._cerrado:
                 registro.descartar_todo()
-                self._registrar_token_invalidado(entrega_ref["token"])
-                await self._editar_seguro(
-                    chat_id,
-                    entrega_ref["message_id"],
-                    "🚫 Solicitud Golden Master cerrada durante el apagado.",
-                    reply_markup=None,
-                )
+                if "token" in entrega_ref:
+                    self._registrar_token_invalidado(entrega_ref["token"])
+                if "message_id" in entrega_ref and not _botones_ya_retirados():
+                    entrega_ref["botones_retirados"] = True
+                    await self._editar_seguro_con_sender(
+                        entrega_ref.get("sender", self._sender),
+                        chat_id,
+                        entrega_ref["message_id"],
+                        "🚫 Solicitud Golden Master cerrada durante el apagado.",
+                        reply_markup=None,
+                        ignorar_runtime_cerrado=True,
+                    )
                 return
             self._sesion_activa = _SesionActiva(
                 sesion=sesion,
@@ -1021,31 +1248,42 @@ class CoordinadorTelegramGoldenMaster:
             )
         except asyncio.CancelledError:
             registro.descartar_todo()
-            if "message_id" in entrega_ref:
+            if "token" in entrega_ref:
                 self._registrar_token_invalidado(entrega_ref["token"])
-                if not self._cerrado:
-                    await self._editar_seguro(
-                        chat_id,
-                        entrega_ref["message_id"],
-                        "🚫 Preparación Golden Master cancelada.",
-                        reply_markup=None,
-                    )
+            if "message_id" in entrega_ref and not _botones_ya_retirados():
+                entrega_ref["botones_retirados"] = True
+                await self._editar_seguro_con_sender(
+                    entrega_ref.get("sender", self._sender),
+                    chat_id,
+                    entrega_ref["message_id"],
+                    "🚫 Preparación Golden Master cancelada.",
+                    reply_markup=None,
+                    ignorar_runtime_cerrado=True,
+                )
             raise
         except (EntregaPresentacionError, FrozenRuntimeError) as exc:
             registro.descartar_todo()
-            if "message_id" in entrega_ref:
+            if "token" in entrega_ref:
                 self._registrar_token_invalidado(entrega_ref["token"])
-                if not self._cerrado:
-                    await self._editar_seguro(
-                        chat_id,
-                        entrega_ref["message_id"],
-                        f"❌ Preparación abortada: {_escape_html(exc)}",
-                        reply_markup=None,
-                    )
-            elif not self._cerrado:
+            if "message_id" in entrega_ref and not _botones_ya_retirados():
+                entrega_ref["botones_retirados"] = True
+                await self._editar_seguro_con_sender(
+                    entrega_ref.get("sender", self._sender),
+                    chat_id,
+                    entrega_ref["message_id"],
+                    f"❌ Preparación abortada: {_escape_html(exc)}",
+                    reply_markup=None,
+                    ignorar_runtime_cerrado=True,
+                )
+            elif not self._cerrado and "message_id" not in entrega_ref:
                 await self._enviar_seguro(chat_id, f"❌ No se pudo preparar la solicitud: {_escape_html(exc)}")
         finally:
-            self._operacion_en_curso = False
+            try:
+                for entrega in entregas_preparar:
+                    if not entrega.iniciada.is_set() and entrega.abortada.is_set():
+                        await self._purgar_entrega_no_iniciada_si_cancelada(entrega)
+            finally:
+                self._operacion_en_curso = False
 
     async def _correr_decision_y_ejecucion(
         self,
@@ -1080,6 +1318,8 @@ class CoordinadorTelegramGoldenMaster:
                 f"⏳ Procesando decisión ({_ETIQUETA_DECISION[decision]})...",
                 reply_markup=None,
             )
+            if self._cerrado:
+                return
             _consentimiento, resultado = await self._ejecutar_en_worker(_trabajo_consentimiento)
             if self._cerrado:
                 return
