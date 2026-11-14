@@ -900,14 +900,37 @@ class CoordinadorTelegramGoldenMaster:
         def _capturar_si_respondio(
             fut_entregada: concurrent.futures.Future[TelegramMessage],
             token_entregado: str,
+            entrega_cruda: dict[str, TelegramMessage],
         ) -> None:
-            if not fut_entregada.done() or fut_entregada.cancelled() or fut_entregada.exception() is not None:
+            entregado: Any = entrega_cruda.get("mensaje")
+            if (
+                entregado is None
+                and fut_entregada.done()
+                and not fut_entregada.cancelled()
+                and fut_entregada.exception() is None
+            ):
+                entregado = fut_entregada.result(timeout=0)
+            if entregado is None:
                 return
-            entregado = fut_entregada.result(timeout=0)
             msg_id_tardio = getattr(entregado, "message_id", None)
             if not isinstance(msg_id_tardio, bool) and isinstance(msg_id_tardio, int) and msg_id_tardio > 0:
                 entrega_ref["token"] = token_entregado
                 entrega_ref["message_id"] = msg_id_tardio
+
+        def _cancelar_y_drenar(
+            fut_entregada: concurrent.futures.Future[TelegramMessage],
+            token_entregado: str,
+            coro_iniciada: threading.Event,
+            coro_finalizada: threading.Event,
+            entrega_cruda: dict[str, TelegramMessage],
+        ) -> None:
+            fut_entregada.cancel()
+            # Esperamos la señal real de cierre de la coroutine: concurrent.futures.Future.cancel()
+            # marca done() de inmediato aunque la task asyncio siga drenando finally/CancelledError.
+            if coro_iniciada.is_set():
+                drain_s = min(0.5, max(0.25, self._delivery_timeout))
+                coro_finalizada.wait(timeout=drain_s)
+            _capturar_si_respondio(fut_entregada, token_entregado, entrega_cruda)
 
         def _entregar(presentacion: PresentacionConsentimiento) -> None:
             if self._cerrado or cancelacion_pedida.is_set():
@@ -920,29 +943,45 @@ class CoordinadorTelegramGoldenMaster:
                 mensaje_html,
                 reply_markup=_construir_teclado_golden_master(token),
             )
+            coro_iniciada = threading.Event()
+            coro_finalizada = threading.Event()
+            entrega_cruda: dict[str, TelegramMessage] = {}
+
+            async def _envolver_entrega() -> TelegramMessage:
+                coro_iniciada.set()
+                try:
+                    enviado = await coro
+                    entrega_cruda["mensaje"] = enviado
+                    return enviado
+                finally:
+                    coro_finalizada.set()
+
+            envoltorio = _envolver_entrega()
             try:
-                fut = asyncio.run_coroutine_threadsafe(coro, loop)
+                fut = asyncio.run_coroutine_threadsafe(envoltorio, loop)
             except RuntimeError as exc:
+                envoltorio.close()
                 coro.close()
                 raise EntregaPresentacionError(f"no se pudo agendar la entrega por Telegram: {exc}") from exc
+            cerrando_en_carrera = False
             with self._entregas_lock:
                 if self._cerrado or cancelacion_pedida.is_set():
-                    fut.cancel()
-                    raise EntregaPresentacionError("adaptador Golden Master cerrado durante la entrega")
-                self._entregas_en_vuelo.add(fut)
+                    cerrando_en_carrera = True
+                else:
+                    self._entregas_en_vuelo.add(fut)
+            if cerrando_en_carrera:
+                _cancelar_y_drenar(fut, token, coro_iniciada, coro_finalizada, entrega_cruda)
+                raise EntregaPresentacionError("adaptador Golden Master cerrado durante la entrega")
             try:
                 mensaje = fut.result(timeout=self._delivery_timeout)
             except concurrent.futures.CancelledError as exc:
-                fut.cancel()
-                _capturar_si_respondio(fut, token)
+                _cancelar_y_drenar(fut, token, coro_iniciada, coro_finalizada, entrega_cruda)
                 raise EntregaPresentacionError("entrega Golden Master cancelada por cierre") from exc
             except (*_ERRORES_TRANSPORTE_TELEGRAM, TimeoutError, RuntimeError) as exc:
-                fut.cancel()
-                _capturar_si_respondio(fut, token)
+                _cancelar_y_drenar(fut, token, coro_iniciada, coro_finalizada, entrega_cruda)
                 raise EntregaPresentacionError(f"fallo al entregar presentación por Telegram: {exc}") from exc
             except BaseException:
-                fut.cancel()
-                _capturar_si_respondio(fut, token)
+                _cancelar_y_drenar(fut, token, coro_iniciada, coro_finalizada, entrega_cruda)
                 raise
             finally:
                 with self._entregas_lock:

@@ -1461,6 +1461,7 @@ class TestAuditoriaAdversarialTransporte:
         monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
         sender = _crear_sender_simulado()
         cancelada = asyncio.Event()
+        cleanup_drenado = asyncio.Event()
         entregado_tarde = asyncio.Event()
 
         async def _send_lento(
@@ -1471,6 +1472,8 @@ class TestAuditoriaAdversarialTransporte:
                     await asyncio.sleep(0.5)
                 except asyncio.CancelledError:
                     cancelada.set()
+                    await asyncio.sleep(0.03)
+                    cleanup_drenado.set()
                     raise
                 entregado_tarde.set()
             return TelegramMessage(chat_id=chat_id, message_id=850)
@@ -1485,10 +1488,12 @@ class TestAuditoriaAdversarialTransporte:
         try:
             # Act
             await coord.procesar_actualizacion(_update_texto(900, "/gm_preparar"))
-            await asyncio.sleep(0.15)
 
-            # Assert
+            # Assert inmediato: el worker canceló Y drenó el cleanup async antes de liberar single-flight
             assert cancelada.is_set(), "timeout en _entregar debe cancelar fut para no entregar botones tardíos"
+            assert cleanup_drenado.is_set(), "el envío cancelado debe drenarse antes de retirar el futuro y retornar"
+            assert not coord._entregas_en_vuelo
+            await asyncio.sleep(0.1)
             assert not entregado_tarde.is_set()
             assert coord.tiene_solicitud_abierta is False
             assert coord._operacion_en_curso is False
@@ -1795,3 +1800,80 @@ class TestAuditoriaAdversarialTransporte:
         await ctx.stop()
         polling_registrado.stop.assert_awaited_once()
         assert ctx.polling is None
+
+    @pytest.mark.asyncio
+    async def test_frontend_bridge_reload_crea_primer_coordinador_y_app_context_stop_lo_drena_antes_de_red(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: si arranca sin token y FrontendBridge._reload_telegram crea el primer coordinador, stop() cierra en orden LIFO."""
+        import argparse
+        from types import SimpleNamespace
+
+        from sky_claw.app.comms.frontend_bridge import FrontendBridge
+        from sky_claw.app.comms.telegram_polling import TelegramPolling
+        from sky_claw.app_context import AppContext
+
+        rig = RigStockManual(tmp_path, steam_activo=True)
+        args = argparse.Namespace(
+            db_path=str(tmp_path / "app.db"),
+            mo2_root=tmp_path / "MO2",
+            staging_dir=tmp_path / "staging",
+            provider="ollama",
+            operator_chat_id=None,
+            loot_exe=None,
+            install_dir=None,
+            mode="cli",
+        )
+        ctx = AppContext(args)
+        ctx.config_path = tmp_path / "config.toml"
+        ctx.router = MagicMock()
+        ctx.hitl = MagicMock()
+        ctx.network = MagicMock(gateway=MagicMock(), session=MagicMock())
+        ctx._golden_master_objetivo = _objetivo_desde_rig(rig)
+
+        eventos: list[str] = []
+        red_abierta = True
+
+        async def _cerrar_red() -> None:
+            nonlocal red_abierta
+            red_abierta = False
+            eventos.append("network_close")
+
+        ctx._push_startup_cleanup(_cerrar_red)
+
+        async def _send_ok(chat_id: int, text: str, reply_markup: dict | None = None, **_kw: object) -> TelegramMessage:
+            assert red_abierta is True
+            return TelegramMessage(chat_id=chat_id, message_id=951)
+
+        async def _edit_ok(*_args: object, **_kwargs: object) -> bool:
+            assert red_abierta is True, "cerrar coordinador debe limpiar botones con red aun abierta"
+            eventos.append("gm_edit")
+            return True
+
+        monkeypatch.setattr("sky_claw.app.comms.telegram_sender.TelegramSender.send", AsyncMock(side_effect=_send_ok))
+        monkeypatch.setattr(
+            "sky_claw.app.comms.telegram_sender.TelegramSender.edit_message",
+            AsyncMock(side_effect=_edit_ok),
+        )
+        monkeypatch.setattr(TelegramPolling, "start", AsyncMock())
+
+        async def _stop_poll(self_poll: object) -> None:
+            assert red_abierta is True
+            eventos.append("polling_stop")
+
+        monkeypatch.setattr(TelegramPolling, "stop", _stop_poll)
+
+        bridge = FrontendBridge(ctx.router, ctx.network.session, SimpleNamespace(), ctx)
+        ok = await bridge._reload_telegram("123456:TESTTOKEN", str(OPERADOR))
+        assert ok is True
+        coord = ctx.golden_master_coordinator
+        assert coord is not None
+
+        await coord.procesar_actualizacion(_update_texto(940, "/gm_preparar"))
+        assert coord.tiene_solicitud_abierta is True
+
+        await ctx.stop()
+        assert eventos == ["polling_stop", "gm_edit", "network_close"]
+        assert coord._cerrado is True
+        assert ctx.polling is None
+        assert ctx.golden_master_coordinator is None
