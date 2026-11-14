@@ -13,6 +13,7 @@ import time
 import psutil
 import pytest
 
+from sky_claw.local.mo2.bridge_bundle import digest_del_bundle_del_producto
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker
 from sky_claw.local.mo2.vfs_contracts import (
@@ -237,6 +238,7 @@ async def test_worker_reporta_resultado_por_su_canal_autenticado(tmp_path: pathl
             "role": "bridge",
             "instance_id": "portable-main",
             "session_id": descriptor["session_id"],
+            "bundle_digest": digest_del_bundle_del_producto(),
         },
         secret,
     )

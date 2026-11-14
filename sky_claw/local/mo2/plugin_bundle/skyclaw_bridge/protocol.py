@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import pathlib
 import socket
 import struct
 from collections.abc import Mapping
@@ -13,10 +14,59 @@ from typing import Any
 MAX_FRAME_BYTES = 1024 * 1024
 MAC_BYTES = hashlib.sha256().digest_size
 LENGTH_BYTES = 4
+#: Config por instancia que el instalador escribe DENTRO del bundle: no es código y difiere entre instancias, así que
+#: queda fuera de la identidad del bundle (si no, el mismo código tendría un digest distinto por instancia).
+BRIDGE_CONFIG_NAME = "bridge_config.json"
+_BYTECODE_SUFFIXES = frozenset({".pyc", ".pyo"})
+#: ``IO_REPARSE_TAG_MOUNT_POINT``: un junction de Windows no es symlink para ``is_symlink()``. Solo ESTE tag cuenta como enlace:
+#: otros reparse points (placeholders de OneDrive, dedup) son archivos normales y no deben impedir cargar el plugin.
+_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
 
 
 class VfsFrameError(RuntimeError):
     """Frame incompleto, demasiado grande o con JSON inválido."""
+
+
+def _es_enlace(path: pathlib.Path) -> bool:
+    if path.is_symlink():
+        return True
+    return getattr(path.lstat(), "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
+
+
+def _archivos_del_bundle(carpeta: pathlib.Path, base: pathlib.Path) -> list[pathlib.Path]:
+    archivos: list[pathlib.Path] = []
+    for path in sorted(carpeta.iterdir()):
+        if path.name == "__pycache__" or path.suffix in _BYTECODE_SUFFIXES:
+            continue
+        if carpeta == base and path.name == BRIDGE_CONFIG_NAME:
+            continue
+        if _es_enlace(path):
+            raise ValueError(f"el bundle del bridge no admite enlaces: {path.name}")
+        if path.is_dir():
+            archivos.extend(_archivos_del_bundle(path, base))
+        else:
+            archivos.append(path)
+    return archivos
+
+
+def bundle_digest(root: pathlib.Path) -> str:
+    """SHA-256 hex de TODO el código del bundle del bridge: la identidad que el bridge declara en su ``hello``.
+
+    Cubre los archivos por ruta relativa POSIX (ordenados) y por contenido, de modo que agregar, quitar, renombrar o
+    editar cualquiera cambia el resultado. Excluye lo que no es código: ``__pycache__``, ``*.pyc``/``*.pyo`` y la
+    ``bridge_config.json`` de la raíz (es por instancia). Un enlace dentro del bundle es un error: no se sigue, porque
+    hashearía contenido de otro lugar.
+    """
+
+    base = pathlib.Path(root)
+    resumen = hashlib.sha256()
+    for path in _archivos_del_bundle(base, base):
+        nombre = path.relative_to(base).as_posix().encode("utf-8")
+        # Longitud antes del nombre: así la secuencia (nombre, digest) se parsea de una sola manera.
+        resumen.update(len(nombre).to_bytes(4, "big"))
+        resumen.update(nombre)
+        resumen.update(hashlib.sha256(path.read_bytes()).digest())
+    return resumen.hexdigest()
 
 
 class VfsAuthenticationError(VfsFrameError):

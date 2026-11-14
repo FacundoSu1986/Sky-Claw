@@ -30,6 +30,23 @@ JOB_OBJECT_NAME_PATTERN = r"Local\\SkyClawVfs-[0-9a-f]{32}"
 _JOB_OBJECT_NAME = re.compile(JOB_OBJECT_NAME_PATTERN)
 
 
+def bridge_hello(*, instance_id: str, session_id: str, bundle_digest: str) -> dict[str, object]:
+    """El ÚNICO ``hello`` del bridge: declara la identidad del bundle que está EJECUTANDO (H-5).
+
+    ``PROTOCOL_VERSION`` no cambió con los fixes del bridge, así que no distingue un plugin viejo de uno nuevo; el digest
+    del bundle sí. El broker lo compara con el de su propio producto y rechaza un bridge desactualizado.
+    """
+
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "type": "hello",
+        "role": "bridge",
+        "instance_id": instance_id,
+        "session_id": session_id,
+        "bundle_digest": bundle_digest,
+    }
+
+
 def ascii_safe_message(message: object) -> str:
     """Evita que el logger ASCII del Python embebido de MO2 mate un thread."""
 
