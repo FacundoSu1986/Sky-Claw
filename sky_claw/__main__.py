@@ -61,6 +61,7 @@ if len(sys.argv) >= 3 and sys.argv[1] == FLAG_HELPER_DRIVER_UIA:
 
     raise SystemExit(_main_helper_driver(sys.argv[2:]))
 
+from sky_claw.app.comms.telegram_polling import normalizar_operador_telegram_estricto  # noqa: E402
 from sky_claw.app.modes.cli_mode import _run_cli, _run_oneshot  # noqa: E402
 from sky_claw.app.modes.security_mode import _run_security  # noqa: E402
 from sky_claw.app.modes.telegram_mode import _run_telegram  # noqa: E402
@@ -83,7 +84,7 @@ logger = logging.getLogger("sky_claw")
 def _build_parser() -> argparse.ArgumentParser:
     config = Config()
     _chat_id_str = config.telegram_chat_id or ""
-    _default_chat_id = int(_chat_id_str) if _chat_id_str.isdigit() else None
+    _default_chat_id = normalizar_operador_telegram_estricto(_chat_id_str)
 
     # #665: el default de --mode se decide UNA vez y el help lo deriva con
     # ``%(default)s``. Antes el help fijaba "default: cli" y un

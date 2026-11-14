@@ -32,12 +32,12 @@ Lo que este módulo NO hace
   superficie de consentimiento.** Hay censos por AST en ``tests/`` que lo
   congelan (``ConsentimientoAprobacion`` sólo lo construye ``owner_consent``;
   ``consumir_aprobacion`` sólo lo llaman ``approval`` y el binder).
-- **No entrega mensajes ni habla con Telegram.** La presentación se entrega por
-  un puerto inyectado (``entregar``) y la identidad la acuña
+- **Adaptador Telegram de transporte (P7-A5 PR 4).** La presentación se
+  entrega por un puerto inyectado (``entregar``) y la identidad la acuña
   ``verificar_identidad_telegram`` a partir del update CRUDO del transporte. El
-  adaptador de transporte es el gap declarado del PR siguiente
-  (``TRANSPORT_ADAPTER = NOT_WIRED``); inventarlo acá sin consumidor sería una
-  segunda superficie de identidad.
+  adaptador productivo quedó cableado en PR 4
+  (``sky_claw.app.comms.golden_master_hitl``, ``TRANSPORT_ADAPTER = WIRED_BUT_GATED``)
+  manteniendo ``EMISION_PRODUCTIVA_HABILITADA = False``.
 - **No ejecuta la transición real ni toca instalaciones reales** en este PR:
   ``PRIMERA_TRANSICION_REAL = NOT_EXECUTED``.
 
@@ -190,7 +190,7 @@ logger = logging.getLogger(__name__)
 #: Declaraciones de alcance. Se escriben para que el estado real del cableado no
 #: se infiera de la ausencia de código.
 EMISION_PRODUCTIVA_ABIERTA_POR_ESTE_MODULO = False
-TRANSPORT_ADAPTER = "NOT_WIRED"
+TRANSPORT_ADAPTER = "WIRED_BUT_GATED"
 PRIMERA_TRANSICION_REAL = "NOT_EXECUTED"
 CANDIDATE_OBJECT = "NOT_CREATED"
 #: La aprobación se puede reanudar SÓLO en la ventana «consumida sin PENDING».

@@ -9742,6 +9742,15 @@ ROLLBACK_PRODUCTIVA           = DISABLED
 EFFECTIVE_RUNTIME_MUTATED     = NO
 ```
 
+> **Actualización P7-A5 PR 3 / PR 4 (2026-11-11 → actual):** el bloque de
+> arriba refleja el cierre histórico de P4-S6. Desde P7-A5 PR 3 existe el
+> consumidor autorizado (`autorizacion_hitl_transicion.py`,
+> `HITL_PRODUCTIVE = WIRED_BUT_GATED`), ampliado con los cierres de #909/#914, y
+> desde P7-A5 PR 4 existe el adaptador Telegram
+> (`sky_claw/app/comms/golden_master_hitl.py`,
+> `TRANSPORT_ADAPTER = WIRED_BUT_GATED`). **`EMISION_PRODUCTIVA_HABILITADA`
+> permanece en `False`** hasta aprobación explícita de habilitación productiva.
+
 **`HITL_PRODUCTIVE = NOT_WIRED`, no `ENABLED`.** La superficie existe y se prueba
 end-to-end, pero **nadie la llama**: el dispatcher de Telegram no enruta una
 decisión al `RegistroConsentimientos`, la GUI no abre solicitudes y ningún módulo
@@ -10234,6 +10243,12 @@ EFFECTIVE_RUNTIME_MUTATED              = NO
 ISSUE_672                              = OPEN
 MERGED                                 = NO
 ```
+
+> **Actualización P7-A5 PR 3 / PR 4:** bloque anterior = fotografía histórica
+> de P4-S6. El consumidor y el adaptador Telegram están cableados en
+> `autorizacion_hitl_transicion.py` (`HITL_PRODUCTIVE = WIRED_BUT_GATED`) y
+> `golden_master_hitl.py` (`TRANSPORT_ADAPTER = WIRED_BUT_GATED`);
+> `EMISION_PRODUCTIVA_HABILITADA` sigue en `False`.
 
 ### 47.8 Auditoría R1 — la verificación de concurrencia no era concurrente
 
