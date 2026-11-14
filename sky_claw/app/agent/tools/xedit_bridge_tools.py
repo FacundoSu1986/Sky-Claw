@@ -38,6 +38,7 @@ from sky_claw.app.agent.tools.schemas import TIMEOUT_MAXIMO_LLM
 from sky_claw.app.security.hitl import Decision, new_hitl_request_id
 from sky_claw.app.security.sanitize import sanitize_for_prompt
 from sky_claw.local.tools.xedit_bridge_client import nombre_visible, validar_plugin
+from sky_claw.local.tools.xedit_bridge_service import texto_una_linea
 
 if TYPE_CHECKING:
     from sky_claw.app.security.hitl import HITLGuard
@@ -288,7 +289,7 @@ class GestorDeAdmisionesNativas:
             logger.exception("la admisión remota (%s) lanzó en vez de devolver su resultado", trabajo.id)
             resultado = {
                 "success": False,
-                "message": f"error inesperado de la admisión: {sanitize_for_prompt(str(exc), max_length=300)}",
+                "message": f"error inesperado de la admisión: {texto_una_linea(exc)}",
             }
         await self._terminar(trabajo, resultado)
 

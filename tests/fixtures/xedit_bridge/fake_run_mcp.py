@@ -24,9 +24,9 @@ CONFIG.with_name("entorno_mcp.json").write_text(
         {
             "TEMP": os.environ.get("TEMP"),
             "SYSTEMROOT": os.environ.get("SYSTEMROOT"),
-            "SKYCLAW_SECRET_CANARY": os.environ.get("SKYCLAW_SECRET_CANARY"),
-            "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY"),
-            "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY"),
+            "heredados_prohibidos": sorted(
+                k for k in ("SKYCLAW_SECRET_CANARY", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY") if k in os.environ
+            ),
             "cwd": os.getcwd(),
         }
     ),

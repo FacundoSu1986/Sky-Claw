@@ -440,9 +440,7 @@ async def test_xb_sc_03_secretos_canario_del_entorno_no_llegan_al_bridge(
         await admitir_plugin(instalacion, tmp_path / "MO2", "Perfil", "Mod.esp")
 
     visto = json.loads((raiz / registro).read_text(encoding="utf-8"))
-    assert visto["SKYCLAW_SECRET_CANARY"] is None
-    assert visto["OPENAI_API_KEY"] is None
-    assert visto["AWS_SECRET_ACCESS_KEY"] is None
+    assert visto["heredados_prohibidos"] == []
     assert visto["SYSTEMROOT"] == os.environ.get("SYSTEMROOT")
     esperado_temp = str(temporales) if con_toml_env else os.environ.get("TEMP")
     assert visto["TEMP"] == esperado_temp
@@ -465,7 +463,7 @@ async def test_xb_sc_03_override_case_insensitive_de_env_en_windows(
 
     visto = json.loads((raiz / "entorno_mcp.json").read_text(encoding="utf-8"))
     assert visto["TEMP"] == str(temporales)
-    assert visto["SKYCLAW_SECRET_CANARY"] is None
+    assert visto["heredados_prohibidos"] == []
 
 
 # --- XB-SC-04 & XB-SC-05: contención obligatoria por Job Object y límite de salida ----------

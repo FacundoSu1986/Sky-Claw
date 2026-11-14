@@ -456,16 +456,42 @@ def _pid_vivo_windows(pid: int) -> bool:
     if sys.platform != "win32" or pid <= 0:
         return False
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k32.GetExitCodeProcess.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+
     handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
     if not handle:
-        return False
+        err = ctypes.get_last_error()
+        if err == 87:  # ERROR_INVALID_PARAMETER: PID inexistente
+            return False
+        raise OSError(err, ctypes.FormatError(err))
     try:
         codigo = wintypes.DWORD()
         if not k32.GetExitCodeProcess(handle, ctypes.byref(codigo)):
-            return False
+            err = ctypes.get_last_error()
+            raise OSError(err, ctypes.FormatError(err))
         return codigo.value == 259  # STILL_ACTIVE
     finally:
         k32.CloseHandle(handle)
+
+
+def test_pid_vivo_windows_reporta_proceso_actual_y_muerto():
+    """Control positivo/negativo para ``_pid_vivo_windows``: distingue proceso vivo de ya terminado."""
+    if sys.platform != "win32":
+        pytest.skip("específico de Windows")
+    import os
+    import subprocess
+
+    assert _pid_vivo_windows(os.getpid()) is True
+    assert _pid_vivo_windows(0) is False
+    hijo = subprocess.Popen([sys.executable, "-c", "pass"])
+    pid_hijo = hijo.pid
+    hijo.wait(timeout=10)
+    assert _pid_vivo_windows(pid_hijo) is False
 
 
 async def test_run_capture_require_job_true_mata_y_falla_cerrado_si_job_es_none(monkeypatch):

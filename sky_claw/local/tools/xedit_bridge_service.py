@@ -56,9 +56,13 @@ def _texto(valor: Any, largo: int = _LARGO_TEXTO) -> str:
     return sanitize_for_prompt(str(valor), max_length=largo)
 
 
-def _texto_una_linea(valor: Any, largo: int = _LARGO_TEXTO) -> str:
+def texto_una_linea(valor: Any, largo: int = _LARGO_TEXTO) -> str:
+    """Sanea ``valor`` con ``sanitize_for_prompt`` y lo aplana a una sola línea sin controles."""
     en_linea = _SALTOS_RE.sub(" ", _texto(valor, largo))
     return "".join(c for c in en_linea if unicodedata.category(c) != "Cc").strip()
+
+
+_texto_una_linea = texto_una_linea
 
 
 def _lista(valor: Any) -> list[Any]:
@@ -87,16 +91,21 @@ def _tiene_controles_o_formato(valor: str) -> bool:
     return any(unicodedata.category(c) in {"Cc", "Cf", "Zl", "Zp"} for c in valor)
 
 
+def _es_traversal(ruta: str) -> bool:
+    partes = [*ruta.replace("\\", "/").split("/"), *PureWindowsPath(ruta).parts]
+    return any(parte == ".." or parte.lstrip(":") == ".." for parte in partes)
+
+
 def _validar_ruta_log(valor: Any) -> str | None:
     """Valida y sanea ``log_path`` para impedir saltos de rol, controles e intentos de traversal."""
     if not isinstance(valor, str):
         return None
-    if not valor.strip() or _tiene_controles_o_formato(valor):
-        return None
-    if ".." in valor.replace("\\", "/").split("/") or ".." in PureWindowsPath(valor).parts:
+    if not valor.strip() or _tiene_controles_o_formato(valor) or _es_traversal(valor):
         return None
     saneado = _texto_una_linea(valor, _LARGO_RUTA_LOG)
-    return saneado or None
+    if not saneado or _tiene_controles_o_formato(saneado) or _es_traversal(saneado):
+        return None
+    return saneado
 
 
 def _validar_hallazgos(crudo: Any) -> tuple[list[dict[str, str]], str | None]:
