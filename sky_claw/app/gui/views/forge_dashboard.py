@@ -30,13 +30,13 @@ from sky_claw.app.gui.controllers.ritual_runner import (
     RITUALES_CON_MODO_DE_INTERACCION,
     STORE_KEY_RITUAL_FEEDBACK,
     STORE_KEY_RITUAL_PREFLIGHT,
-    clear_ritual_result_owned,
     diagnostico_parallax_de,
     limpiar_diagnostico_parallax,
     lineas_del_diagnostico_parallax,
     modo_de_interaccion_o_defecto,
     resolve_ritual_resume_action,
     resolve_visible_pending_hitl,
+    ritual_en_curso,
 )
 from sky_claw.app.gui.gui_helpers import _FRAGMENTO
 from sky_claw.app.gui.icons import (
@@ -85,6 +85,23 @@ STORE_KEY_GPU = "sys_gpu"
 STORE_KEY_RAM = "sys_ram"
 # EnvironmentSnapshot produced by EnvironmentScanner.scan() at startup.
 STORE_KEY_ENV = "environment_snapshot"
+# Preferencia persistida «Modo local por defecto» (Ajustes → ``config.toml``).
+# La publica ``sky_claw_gui.cargar_modo_local_defecto`` y su ÚNICO lector de
+# decisión es ``modo_local_enabled`` (ancla AST en test_modo_local_persistente.py).
+CONFIG_KEY_MODO_LOCAL_DEFECTO = "gui_auto_approve_rituals"
+STORE_KEY_MODO_LOCAL_DEFECTO = "modo_local_defecto"
+# Preferencia APARTE para las descargas de red (egress): «Modo local»/F8 no la
+# enciende. Único lector de decisión: ``descargas_auto_enabled``.
+CONFIG_KEY_DESCARGAS_AUTO = "gui_auto_approve_downloads"
+STORE_KEY_DESCARGAS_AUTO = "descargas_auto_defecto"
+#: Clave de ``config.toml`` → clave del store, de TODAS las preferencias de
+#: aprobación. Congelada por igualdad literal en test_modo_local_persistente.py:
+#: persistencia, carga y validación iteran esta tabla, así que una preferencia
+#: nueva no puede quedar a medio cablear.
+PREFERENCIAS_DE_APROBACION: dict[str, str] = {
+    CONFIG_KEY_MODO_LOCAL_DEFECTO: STORE_KEY_MODO_LOCAL_DEFECTO,
+    CONFIG_KEY_DESCARGAS_AUTO: STORE_KEY_DESCARGAS_AUTO,
+}
 
 # Heartbeat (seconds) for the component-level live refresh of the Vitalidad bars
 # and the header HUD. A ``ui.timer`` re-renders ONLY those two containers at this
@@ -349,6 +366,7 @@ def render_forge_dashboard(
     settings: dict[str, Any] | None = None,
     downloads: dict[str, Any] | None = None,
     resolved_conflicts: list[dict[str, Any]] | None = None,
+    perfil_mo2: str | None = None,
 ) -> None:
     """Render the full Forge shell (sidebar + header + scroll content).
 
@@ -399,10 +417,17 @@ def render_forge_dashboard(
         # dispara el refresh. Re-renderizar al conectar recupera el modal en vez
         # de dejar la aprobación huérfana hasta su timeout.
         _refrescar_hitl_al_conectar()
-        _ritual_feedback_panel()
-        _ritual_preflight_panel()
+        # Pila de avisos: un solo ancla fija y los paneles apilados en flujo. Con
+        # dos ``position:fixed`` a offsets fijos (22px / 96px) un toast de varias
+        # líneas quedaba debajo del semáforo de preflight.
+        with ui.element("div").style(
+            "position:fixed; right:22px; bottom:22px; z-index:1000; width:min(520px, calc(100vw - 44px));"
+            "display:flex; flex-direction:column; align-items:stretch; pointer-events:none;"
+        ):
+            _ritual_preflight_panel()
+            _ritual_feedback_panel()
         _parallax_diagnostico_panel()
-        _sidebar(active, conflicts, pending, active_section, callbacks, connected)
+        _sidebar(active, conflicts, pending, active_section, callbacks, connected, perfil_mo2)
         with ui.element("div").style(
             "position:relative; z-index:2; flex:1; min-width:0; min-height:0; display:flex; flex-direction:column;"
         ):
@@ -444,7 +469,13 @@ def _safe(stats: dict[str, Any], key: str) -> float:
 
 # ── SIDEBAR ────────────────────────────────────────────────────────────────────
 def _sidebar(
-    active: int, conflicts: int, pending: int, section: str, callbacks: dict[str, Callable], connected: bool
+    active: int,
+    conflicts: int,
+    pending: int,
+    section: str,
+    callbacks: dict[str, Callable],
+    connected: bool,
+    perfil_mo2: str | None = None,
 ) -> None:
     aside = (
         "position:relative; z-index:3; width:266px; flex-shrink:0; display:flex; flex-direction:column;"
@@ -487,6 +518,9 @@ def _sidebar(
             "<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; color:#8a927f; margin-top:1px;\">ws://localhost:8765</div>"
             "</div></div>"
         )
+        perfil_html = _perfil_mo2_html(perfil_mo2)
+        if perfil_html:
+            ui.html(perfil_html)
         ui.html(
             '<div style="display:flex; align-items:center; justify-content:center; gap:.7em; margin:14px 18px 6px; color:#c8a86a; opacity:.85;'
             ' font-family:\'Noto Sans Runic\',serif; font-size:13px; letter-spacing:.5em; text-shadow:0 0 10px rgba(200,168,106,.45);" aria-hidden="true">ᚠ&nbsp;ᚱ&nbsp;ᚷ</div>'
@@ -501,6 +535,25 @@ def _sidebar(
                 _nav_item(item, item["key"] == section, counts.get(item["key"]), on_nav)
         # Vitality
         _vitals()
+
+
+def _perfil_mo2_html(perfil: str | None) -> str:
+    """Seam puro: el perfil de MO2 sobre el que opera ESTA sesión, o ``""`` si no se conoce.
+
+    Es el perfil de la sesión (``AppContext.mo2_profile``, el que usan los
+    rituales), no el del escaneo de arranque. Sin dato no se dibuja nada: un
+    «Default» inventado le nombraría al operador un perfil que quizá no es.
+    """
+    nombre = str(perfil or "").strip()
+    if not nombre:
+        return ""
+    return (
+        '<div style="margin:8px 18px 0; padding:8px 12px; display:flex; align-items:baseline; gap:9px;'
+        ' background:rgba(0,0,0,.28); border:1px solid rgba(200,168,106,.18); border-radius:4px;">'
+        "<span style=\"flex-shrink:0; font-family:'Spline Sans Mono',monospace; font-size:9.5px; letter-spacing:.14em; color:#8a7f6a;\">PERFIL MO2</span>"
+        f"<span style=\"flex:1; min-width:0; font-family:'Spline Sans Mono',monospace; font-size:11.5px; color:#e6dcc4;"
+        f' overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{_e(nombre)}">{_e(nombre)}</span></div>'
+    )
 
 
 def _nav_item(item: dict[str, str], is_active: bool, count: int | None, on_nav: Callable | None) -> None:
@@ -621,9 +674,32 @@ def modo_local_enabled() -> bool:
     context — e.g. unit tests or a background task (Codex review on #211).
     """
     try:
-        return bool(app.storage.client.get(CLIENT_KEY_AUTO_APPROVE, False))
+        sesion = app.storage.client.get(CLIENT_KEY_AUTO_APPROVE)
     except Exception:
         return False
+    return resolver_modo_local(sesion, get_store().get(STORE_KEY_MODO_LOCAL_DEFECTO))
+
+
+def descargas_auto_enabled() -> bool:
+    """True si el operador eligió en Ajustes no confirmar las descargas que él inicia.
+
+    Sólo el booleano ``True`` arma (fail-closed). No hay toggle de sesión: es
+    egress de red y se decide en Ajustes, no con un atajo de teclado.
+    """
+    return get_store().get(STORE_KEY_DESCARGAS_AUTO) is True
+
+
+def resolver_modo_local(sesion: object, defecto: object) -> bool:
+    """Seam puro: la elección explícita de la sesión gana; si no hay, la preferencia persistida.
+
+    ``sesion`` es lo que el toggle (F8) escribió en ESTA conexión, o ``None`` si
+    el operador no lo tocó. ``defecto`` es la preferencia de Ajustes. Sólo el
+    booleano ``True`` arma la auto-aprobación: cualquier otro valor —ausente,
+    string, número— deja el gate pidiendo confirmación (fail-closed).
+    """
+    if sesion is not None:
+        return sesion is True
+    return defecto is True
 
 
 def modo_de_interaccion_del_cliente() -> str:
@@ -792,6 +868,18 @@ def _hitl_modal_visible(pending: dict[str, Any] | None, active_section: str) -> 
     return bool(pending) and active_section != "Downloads"
 
 
+def _refrescar_al_conectar() -> None:
+    """Handler del handshake: re-renderiza TODO lo que el shell resuelve por dueño de pestaña.
+
+    Antes del handshake ``current_tab_id()`` es ``None``, así que el primer render
+    tras un F5 no ve ni la aprobación HITL ni la acción de resume que le pertenecen
+    a esta pestaña. El modal y la grilla de rituales son los dos refreshables que
+    leen ese estado (ancla que los enumera en test_ritual_en_curso.py).
+    """
+    _hitl_modal_panel.refresh()
+    _rituales.refresh()
+
+
 def _refrescar_hitl_al_conectar() -> None:
     """Re-renderiza el modal HITL cuando la pestaña completa su handshake.
 
@@ -814,7 +902,69 @@ def _refrescar_hitl_al_conectar() -> None:
         if client_storage.get(_HITL_RECONNECT_HOOK_KEY):
             return
         client_storage[_HITL_RECONNECT_HOOK_KEY] = True
-        ui.context.client.on_connect(_hitl_modal_panel.refresh)
+        ui.context.client.on_connect(_refrescar_al_conectar)
+
+
+def _es_descarga(pending: dict[str, Any]) -> bool:
+    """Una solicitud es egress de red por categoría o —envelope legacy sin categoría— por traer URL."""
+    return str(pending.get("category", "")) == "download" or bool(pending.get("url"))
+
+
+def _hitl_tip(pending: dict[str, Any]) -> str:
+    """Seam puro: el atajo que el modal puede sugerir para ESTA solicitud, o ``""``.
+
+    El tip tiene que ser cierto: sólo ``tool_execution`` se auto-aprueba con
+    «Modo local» y sólo las descargas con su preferencia. El resto de las
+    categorías que el puente estaciona (promoción de sandbox, confirmaciones de
+    DynDOLOD) nunca se auto-aprueban, así que prometerles un atajo sería mentir.
+    """
+    if _es_descarga(pending):
+        return "Tip: para no confirmar las descargas que iniciás vos con «Instalar», Ajustes → Aprobaciones."
+    if str(pending.get("category", "")) == "tool_execution":
+        return (
+            "Tip: activá «Modo local» (F8) para no aprobar cada acción mientras estés en la PC; "
+            "para dejarlo fijo, Ajustes → Aprobaciones."
+        )
+    return ""
+
+
+def _hitl_solicitud_html(pending: dict[str, Any]) -> str:
+    """Seam puro: el cuerpo de UNA solicitud HITL, igual en toda superficie que la muestre.
+
+    Lo consumen el modal global y la Puerta de Descargas (ancla que enumera los
+    llamadores en test_pantallas_forge.py): antes cada uno armaba su HTML y el
+    modal no mostraba el origen de la descarga.
+
+    * Banda + rótulo de categoría: una descarga es salida a internet (frost); el
+      resto, una acción sobre la instalación (ámbar). El rótulo es la señal y el
+      color sólo lo acompaña. La banda es ``position:absolute``: el contenedor
+      que la reciba tiene que ser ``position:relative``.
+    * Motivo en prosa y, aparte, lo técnico (detalle y URL) en una caja mono que
+      se escanea de un vistazo. Todo escapado: son textos que eligió un tercero.
+    """
+    reason = str(pending.get("reason", "") or "Esta acción requiere tu aprobación.")
+    banda, rotulo = (FROST, "DESCARGA DE RED") if _es_descarga(pending) else ("#e0a13c", "ACCIÓN SOBRE TU INSTALACIÓN")
+    lineas_tecnicas = "".join(
+        f'<div style="color:{color};">{_e(texto)}</div>'
+        for texto, color in (
+            (str(pending.get("detail", "") or ""), "#b8b1a0"),
+            (str(pending.get("url", "") or ""), FROST),
+        )
+        if texto
+    )
+    caja_tecnica = (
+        "<div style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; line-height:1.55; margin-bottom:16px;"
+        " padding:9px 11px; border-radius:4px; background:rgba(0,0,0,.34); border:1px solid rgba(200,168,106,.16);"
+        f' word-break:break-word;">{lineas_tecnicas}</div>'
+        if lineas_tecnicas
+        else '<div style="margin-bottom:16px;"></div>'
+    )
+    return (
+        f'<div style="position:absolute; left:0; right:0; top:0; height:3px; background:{banda};"></div>'
+        f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; letter-spacing:.14em; color:{banda}; margin-bottom:8px;\">{rotulo}</div>"
+        f"<div style=\"font-family:'EB Garamond',serif; font-size:14px; line-height:1.5; color:#d8cfba; margin-bottom:8px;\">{_e(reason)}</div>"
+        f"{caja_tecnica}"
+    )
 
 
 @ui.refreshable
@@ -832,30 +982,27 @@ def _hitl_modal_panel() -> None:
     if not _hitl_modal_visible(pending, str(get_store().get("active_section") or "")):
         return
     request_id = str(pending.get("request_id", ""))
-    reason = str(pending.get("reason", "") or "Esta acción requiere tu aprobación.")
-    detail = str(pending.get("detail", "") or "")
+    tip = _hitl_tip(pending)
     overlay = (
         "position:fixed; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center;"
         "background:rgba(7,9,12,.72); backdrop-filter:blur(3px);"
     )
     card = (
-        "max-width:460px; width:90%; padding:24px 26px; border-radius:6px; color:#e8e2d4;"
-        "background:linear-gradient(168deg, rgba(30,22,14,.98), rgba(14,10,7,.99)); border:1px solid rgba(200,168,106,.4);"
+        "position:relative; overflow:hidden; max-width:520px; width:90%; padding:26px 26px 22px; border-radius:6px; color:#e8e2d4;"
+        "background:linear-gradient(168deg, rgba(26,32,40,.98), rgba(11,14,19,.99)); border:1px solid rgba(200,168,106,.4);"
         "box-shadow:0 30px 70px -20px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.05);"
-    )
-    detail_html = (
-        f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:11px; color:#8a8270; margin-bottom:16px; word-break:break-word;\">{_e(detail)}</div>"
-        if detail
-        else '<div style="margin-bottom:16px;"></div>'
     )
     with ui.element("div").style(overlay), ui.element("div").style(card):
         ui.html(
             '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">'
             f'<span style="color:#ecd9a8; display:inline-flex;" aria-hidden="true">{_ICON_SHIELD_CHECK}</span>'
             "<span style=\"font-family:'Cinzel',serif; font-weight:700; font-size:15px; letter-spacing:.1em; color:#f1e6cf;\">APROBACIÓN REQUERIDA</span></div>"
-            f"<div style=\"font-family:'EB Garamond',serif; font-size:14px; line-height:1.5; color:#d8cfba; margin-bottom:8px;\">{_e(reason)}</div>"
-            f"{detail_html}"
-            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#857c69; margin-bottom:14px;\">Tip: activá «Modo local» (F8) para no aprobar cada acción mientras estés en la PC.</div>"
+            f"{_hitl_solicitud_html(pending)}"
+            + (
+                f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#857c69; margin-bottom:14px;\">{_e(tip)}</div>"
+                if tip
+                else ""
+            )
         )
         with ui.element("div").style("display:flex; gap:11px; justify-content:flex-end;"):
             deny = ui.element("button").classes("sc-btn sc-btn--danger").style("padding:9px 18px;")
@@ -866,6 +1013,29 @@ def _hitl_modal_panel() -> None:
             ok.on("click", lambda _=None, rid=request_id: _respond_hitl(rid, True))
             with ok:
                 ui.html("Aprobar")
+
+
+def _resume_disponible() -> bool:
+    """True si el page cableó el callback de resume (sin él no se ofrece el botón)."""
+    return callable(_RITUAL_RESUME_CALLBACKS.get("resume"))
+
+
+def _despachar_resume(accion: dict[str, Any]) -> None:
+    """ÚNICO camino por el que la vista despacha una acción de resume (toast y tarjeta).
+
+    Cierra el aviso y transporta ``tool_key``/``payload`` tal como los derivó el
+    seam de ownership: la vista no decide qué intención se despacha (F-001), y el
+    ``tool_key`` sale del envelope de la corrida, nunca de un literal (R-005).
+    """
+    fn = _RITUAL_RESUME_CALLBACKS.get("resume")
+    # El payload viaja tal como lo derivó el seam (ancla AST en test_resume_etapa6_asistida.py).
+    payload_de_la_accion = dict(accion.get("payload") or {})
+    # Cierra el aviso, pero NO consume el resultado propio: eso lo hace
+    # ``run_ritual`` después de sus guards. Si el runner rechaza el resume
+    # (single-flight tomado, daemon no listo) la acción tiene que seguir ahí.
+    get_store().set(STORE_KEY_RITUAL_FEEDBACK, None)
+    if callable(fn):
+        fn(str(accion.get("tool_key", "")), payload_de_la_accion)
 
 
 @ui.refreshable
@@ -885,7 +1055,7 @@ def _ritual_feedback_panel() -> None:
     kind = str(fb.get("type", "info"))
     accent = {"positive": GREEN, "negative": RED, "warning": "#e0b341"}.get(kind, ACCENT)
     wrap = (
-        "position:fixed; right:22px; bottom:22px; z-index:1000; max-width:420px; display:flex; align-items:flex-start; gap:10px;"
+        "margin-top:10px; pointer-events:auto; display:flex; align-items:flex-start; gap:10px;"
         "padding:13px 15px; border-radius:5px; color:#e8e2d4;"
         f"background:linear-gradient(168deg, rgba(30,22,14,.97), rgba(14,10,7,.98)); border:1px solid {accent};"
         "box-shadow:0 18px 40px -18px rgba(0,0,0,.85);"
@@ -893,7 +1063,7 @@ def _ritual_feedback_panel() -> None:
     with ui.element("div").style(wrap):
         ui.html(
             f'<span style="width:8px; height:8px; margin-top:5px; flex-shrink:0; border-radius:50%; background:{accent}; box-shadow:0 0 7px {accent};"></span>'
-            f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:13px; line-height:1.4;\">{_e(text)}</span>"
+            f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:14px; line-height:1.5;\">{_e(text)}</span>"
         ).style(_FRAGMENTO)
         # F-001: la acción de Resume se deriva del dict ESTRUCTURAL del último
         # resultado — el panel no parsea el message ni decide por strings.
@@ -902,30 +1072,14 @@ def _ritual_feedback_panel() -> None:
         # corrida, nunca de un literal acá (ancla AST en test_resume_hardening).
         accion = resolve_ritual_resume_action(get_store(), current_tab_id())
         if accion is not None:
-            tool_key_de_la_corrida = str(accion.get("tool_key", ""))
             detalle = _e(str(accion.get("detail", "")))
-            resume_fn = _RITUAL_RESUME_CALLBACKS.get("resume")
-
-            payload_de_la_accion = dict(accion.get("payload") or {})
-
-            def _on_resume(_: Any = None, fn: Callable | None = resume_fn) -> None:
-                # Cerrar el toast antes de despachar: el nuevo run publicará su
-                # propio feedback; este quedó consumido por la acción.
-                get_store().set(STORE_KEY_RITUAL_FEEDBACK, None)
-                clear_ritual_result_owned(get_store(), current_tab_id())
-                _ritual_feedback_panel.refresh()
-                # El payload viaja tal como lo derivó el seam: la vista no decide qué
-                # intención se despacha (F-001), sólo transporta.
-                if callable(fn):
-                    fn(tool_key_de_la_corrida, dict(payload_de_la_accion))
-
-            if callable(resume_fn):
+            if _resume_disponible():
                 r = (
                     ui.element("button")
                     .classes("sc-btn sc-btn--gold")
                     .style("margin-top:0; padding:6px 12px; font-size:11px; letter-spacing:.06em;")
                 )
-                r.on("click", _on_resume)
+                r.on("click", lambda _=None, a=accion: _despachar_resume(a))
                 with r:
                     ui.html(str(accion.get("label", "Continuar")))
                 if detalle:
@@ -942,11 +1096,12 @@ def _ritual_feedback_panel() -> None:
         )
         x.on(
             "click",
+            # La × cierra el AVISO, no la acción: «Ya construí el parche — verificar»
+            # y «Continuar DynDOLOD» son controles obligatorios del flujo y siguen
+            # disponibles en la tarjeta del ritual hasta que se despachen o una
+            # corrida nueva de esta pestaña los reemplace.
             lambda _=None: (
                 get_store().set(STORE_KEY_RITUAL_FEEDBACK, None),
-                # F-004: el dismiss del resultado accionable respeta el dueño —
-                # una pestaña ajena no desaloja el resultado de otra.
-                clear_ritual_result_owned(get_store(), current_tab_id()),
                 _ritual_feedback_panel.refresh(),
             ),
         )
@@ -967,10 +1122,7 @@ def _ritual_preflight_panel() -> None:
     report = get_store().get(STORE_KEY_RITUAL_PREFLIGHT)
     if not report:
         return
-    wrap = (
-        "position:fixed; right:22px; bottom:96px; z-index:1000; max-width:420px;"
-        "display:flex; align-items:flex-start; gap:8px;"
-    )
+    wrap = "margin-top:10px; pointer-events:auto; display:flex; align-items:flex-start; gap:8px;"
     with ui.element("div").style(wrap):
         with ui.element("div").style("flex:1; min-width:0;"):
             create_preflight_panel(report)
@@ -1186,8 +1338,8 @@ def _filigrana_esquina(pos: str, espejo: str) -> str:
 
 def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
     sec = (
-        "position:relative; overflow:hidden; border-radius:5px; min-height:354px; display:flex; align-items:flex-end;"
-        "padding:38px 40px; margin-bottom:26px; border:1px solid rgba(200,168,106,.3);"
+        "position:relative; overflow:hidden; border-radius:5px; min-height:236px; display:flex; align-items:flex-end;"
+        "padding:26px 36px; margin-bottom:22px; border:1px solid rgba(200,168,106,.3);"
         "box-shadow:0 26px 60px -24px rgba(0,0,0,.85), inset 0 0 90px rgba(0,0,0,.45);"
     )
     with ui.element("section").style(sec):
@@ -1210,11 +1362,11 @@ def _hero(active: int, conflicts: int, callbacks: dict[str, Callable]) -> None:
         )
         with ui.element("div").style("position:relative; z-index:2; max-width:680px;"):
             ui.html(
-                '<div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">'
+                '<div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">'
                 '<span style="height:1px; width:34px; background:linear-gradient(90deg,transparent,#c8a86a);"></span>'
                 '<span style="font-family:\'Noto Sans Runic\',serif; font-size:14px; letter-spacing:.42em; color:#ecd9a8; opacity:.85; text-shadow:0 0 12px rgba(200,168,106,.45);" aria-hidden="true">ᛞᚱᚪᚷᚩᚾᛒᚩᚱᚾ</span></div>'
-                '<div style="filter:drop-shadow(0 3px 14px rgba(0,0,0,.7));"><h1 style="margin:0; font-family:\'Cinzel\',serif; font-weight:900; font-size:52px; line-height:1.0; letter-spacing:.03em; background:linear-gradient(178deg,#f7ecce 8%,#e3c98f 48%,#a47f48 100%); -webkit-background-clip:text; background-clip:text; color:transparent;">SALVE,<br>DOVAHKIIN</h1></div>'
-                f'<p style="margin:16px 0 26px; max-width:520px; font-family:\'EB Garamond\',serif; font-size:17px; line-height:1.55; color:#d8cfba;">Tu forja está despierta. <span style="color:#ecd9a8; font-weight:600;">{_e(active)} mods</span> montan guardia sobre Tamriel y el orden de carga aguarda tu palabra.</p>'
+                '<div style="filter:drop-shadow(0 3px 14px rgba(0,0,0,.7));"><h1 style="margin:0; font-family:\'Cinzel\',serif; font-weight:900; font-size:clamp(28px,3.1vw,40px); line-height:1.05; letter-spacing:.03em; background:linear-gradient(178deg,#f7ecce 8%,#e3c98f 48%,#a47f48 100%); -webkit-background-clip:text; background-clip:text; color:transparent;">SALVE, DOVAHKIIN</h1></div>'
+                f'<p style="margin:10px 0 18px; max-width:560px; font-family:\'EB Garamond\',serif; font-size:15.5px; line-height:1.5; color:#d8cfba;">Tu forja está despierta. <span style="color:#ecd9a8; font-weight:600;">{_e(active)} mods</span> montan guardia sobre Tamriel y el orden de carga aguarda tu palabra.</p>'
             )
             with ui.element("div").style("display:flex; flex-wrap:wrap; align-items:center; gap:18px;"):
                 ui.html(_integridad_html(conflicts)).style(_FRAGMENTO)
@@ -1248,7 +1400,7 @@ def _stats(active: int, pending: int, conflicts: int, storage: float) -> None:
         (_STAT_RUNES["mods"], ACCENT, "MODS ACTIVOS", f"{active}", "", "guardando Tamriel"),
         (_STAT_RUNES["pending"], ACCENT, "PENDIENTES", f"{pending}", "", "esperan renovación"),
         (_STAT_RUNES["conflicts"], RED, "CONFLICTOS", f"{conflicts}", "", "requieren tu juicio"),
-        (_STAT_RUNES["space"], FROST, "ESPACIO", f"{storage:.1f}", "GB", "de 200 GB en disco"),
+        (_STAT_RUNES["space"], FROST, "ESPACIO", f"{storage:.1f}", "GB", "en mods activos"),
     ]
     cards = ""
     for rune, tone, label, value, unit, sub in defs:
@@ -1274,6 +1426,37 @@ def _stats(active: int, pending: int, conflicts: int, storage: float) -> None:
 
 
 # ── RITUALES DE LA FORJA ───────────────────────────────────────────────────────
+#: Insignias OPERATIVAS de una tarjeta (lo que está pasando ahora), aparte del
+#: estado de instalación de ``_RITUAL_STATE_STYLE``. Congeladas por igualdad en
+#: test_ritual_en_curso.py. El texto es la señal; el color sólo la matiza.
+_INSIGNIAS_OPERATIVAS: dict[str, dict[str, str]] = {
+    "ejecutando": {"texto": "EJECUTANDO…", "color": FROST},
+    "instalando": {"texto": "INSTALANDO…", "color": FROST},
+    "accion": {"texto": "ACCIÓN REQUERIDA", "color": "#e0a13c"},
+}
+
+
+def _estado_operativo_de_tarjeta(
+    tool_key: str, en_curso: dict[str, str] | None, accion: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Seam puro: qué muestra UNA tarjeta dado lo que corre y la acción pendiente.
+
+    * ``bloqueada``: hay un single-flight tomado (por cualquier tool) — ningún
+      botón de la grilla puede lanzar otro.
+    * ``insignia``: la fase, sólo en la tarjeta de la tool que corre; si no,
+      «acción requerida» cuando la acción de resume es de ESTA tool.
+    * ``accion``: la acción de resume, sólo en la tarjeta de su tool.
+    """
+    propia = accion if accion is not None and accion.get("tool_key") == tool_key else None
+    insignia: str | None = None
+    if en_curso is not None and en_curso.get("tool_key") == tool_key and en_curso.get("fase") in _INSIGNIAS_OPERATIVAS:
+        insignia = en_curso["fase"]
+    elif propia is not None:
+        insignia = "accion"
+    return {"insignia": insignia, "bloqueada": en_curso is not None, "accion": propia}
+
+
+@ui.refreshable
 def _rituales(callbacks: dict[str, Callable]) -> None:
     ui.html(
         '<div style="display:flex; align-items:center; gap:16px; margin-bottom:6px;">'
@@ -1286,11 +1469,21 @@ def _rituales(callbacks: dict[str, Callable]) -> None:
     snapshot = get_store().get(STORE_KEY_ENV)
     on_ritual_run = _cb(callbacks, "on_ritual_run")
     on_ritual_install = _cb(callbacks, "on_ritual_install")
+    # Refreshable propio: el estado «en curso» y la acción de resume cambian sin
+    # re-renderizar la página (que resetearía el input del chat).
+    en_curso = ritual_en_curso(get_store())
+    accion = resolve_ritual_resume_action(get_store(), current_tab_id())
     with ui.element("div").style(
         "display:grid; grid-template-columns:repeat(auto-fill,minmax(232px,1fr)); gap:16px; margin-bottom:32px;"
     ):
         for r in _RITUALS:
-            _ritual_card(r, _ritual_status(snapshot, r["tool"]), on_ritual_run, on_ritual_install)
+            _ritual_card(
+                r,
+                _ritual_status(snapshot, r["tool"]),
+                on_ritual_run,
+                on_ritual_install,
+                _estado_operativo_de_tarjeta(r["tool"], en_curso, accion),
+            )
 
 
 # Per-state chrome for a ritual card. "unknown" = scan hasn't landed yet, so we
@@ -1344,8 +1537,13 @@ def _ritual_card(
     state: str = "unknown",
     on_ritual_run: Callable | None = None,
     on_ritual_install: Callable | None = None,
+    operativo: dict[str, Any] | None = None,
 ) -> None:
     tone = r["tone"]
+    operativo = operativo or {"insignia": None, "bloqueada": False, "accion": None}
+    insignia = _INSIGNIAS_OPERATIVAS.get(operativo["insignia"] or "")
+    bloqueada = bool(operativo["bloqueada"])
+    accion_resume = operativo["accion"]
     style = _RITUAL_STATE_STYLE.get(state, _RITUAL_STATE_STYLE["unknown"])
     deco_opacity = style["deco_opacity"]
     card_border = style["card_border"]
@@ -1377,15 +1575,46 @@ def _ritual_card(
             f"<div style=\"margin-top:3px; font-family:'Cinzel',serif; font-weight:600; font-size:14.5px; letter-spacing:.03em; color:#ecdfc2; line-height:1.2;\">{_e(r['label'])}</div>"
             f"<div style=\"flex:1; font-family:'EB Garamond',serif; font-size:13px; line-height:1.42; color:#9b927e;\">{_e(r['desc'])}</div>"
             f'<div style="display:flex; align-items:center; gap:7px; padding-top:2px;"><span style="width:7px; height:7px; border-radius:50%; background:{status_dot}; box-shadow:0 0 6px {status_dot};"></span>'
-            f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:12px; color:{status_color};\">{status_label}</span></div>"
+            f"<span style=\"flex:1; font-family:'Spline Sans Mono',monospace; font-size:11px; letter-spacing:.02em; color:{status_color};\">{status_label}</span></div>"
         ).style(_FRAGMENTO)
+        if insignia is not None:
+            # El pulso es decoración (.sc-deco → se apaga con reduced-motion); el
+            # estado lo dice el TEXTO de la insignia.
+            ui.html(
+                f'<div style="display:flex; align-items:center; gap:7px; padding:5px 9px; border-radius:4px;'
+                f' background:rgba(0,0,0,.32); border:1px solid {insignia["color"]}66;">'
+                f'<span class="sc-deco" style="color:{insignia["color"]}; font-size:10px; animation:scPulse 1.6s ease-in-out infinite;" aria-hidden="true">◆</span>'
+                f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:10.5px; letter-spacing:.08em; color:{insignia['color']};\">{insignia['texto']}</span></div>"
+            )
+        if accion_resume is not None and _resume_disponible():
+            # Control obligatorio del flujo (Fase 2 de Wrye Bash / handoff de
+            # DynDOLOD) en un lugar que no se descarta: mismo despachador que el toast.
+            fase2 = ui.element("button").classes("sc-btn sc-btn--gold").style("padding:8px 10px; font-size:11px;")
+            if bloqueada:
+                fase2.props("disabled")
+            fase2.on("click", lambda _=None, a=accion_resume: _despachar_resume(a))
+            with fase2:
+                ui.html(_e(str(accion_resume.get("label", "Continuar"))))
+            detalle_resume = str(accion_resume.get("detail", "") or "")
+            if detalle_resume:
+                ui.html(
+                    f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; line-height:1.4; color:#8a8270; word-break:break-word;\">{_e(detalle_resume)}</div>"
+                )
         # H-12: el modo de la etapa 9 se elige antes de «Ejecutar»; solo se ofrece si el botón va a despachar de verdad.
         if action == "run" and r["tool"] in RITUALES_CON_MODO_DE_INTERACCION:
             _selector_de_modo_de_interaccion()
-        b = ui.element("button").style(
-            f"margin-top:2px; padding:8px 10px; cursor:pointer; font-family:'Cinzel',serif; font-size:11.5px; font-weight:600;"
-            f"letter-spacing:.1em; background:rgba(0,0,0,.3); border:1px solid; border-radius:4px; {btn_style}"
+        b = (
+            ui.element("button")
+            .classes("sc-ritual-btn")
+            .style(
+                f"margin-top:2px; padding:8px 10px; cursor:pointer; font-family:'Cinzel',serif; font-size:11.5px; font-weight:600;"
+                f"letter-spacing:.1em; background:rgba(0,0,0,.3); border:1px solid; border-radius:4px; {btn_style}"
+            )
         )
+        if bloqueada:
+            # Hay un single-flight tomado: un segundo click sólo devolvería el aviso
+            # «ya hay un ritual en curso». El botón lo dice sin tener que apretarlo.
+            b.props("disabled")
         # Fase 2: an available tool runs for real through the supervisor dispatcher
         # (HITL-gated). Follow-up C: a "missing" tool with an auto-installer downloads
         # it through ToolsInstaller (download approval parks the GUI modal). Tools with
@@ -1497,26 +1726,28 @@ def _mod_row(idx: int, m: dict[str, Any], on_mod: Callable | None) -> None:
 def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks: dict[str, Callable]) -> None:
     sec = (
         "position:relative; border-radius:5px; overflow:hidden; display:flex; flex-direction:column;"
-        "background:linear-gradient(180deg, rgba(244,232,206,.62), rgba(226,206,168,.5)), url('/assets/parchment.png') center/cover, #d8bf98;"
-        " border:2px solid #5c4a2a;"
-        "box-shadow:0 20px 44px -20px rgba(0,0,0,.85), inset 0 0 60px rgba(70,48,20,.35);"
+        # Superficie oscura del tema (vidrio y acero): el pergamino claro era la única
+        # pieza clara del shell y rompía el contraste del modo oscuro.
+        "background:linear-gradient(168deg, rgba(26,32,40,.9), rgba(11,14,19,.95));"
+        " border:1px solid rgba(200,168,106,.26);"
+        "box-shadow:0 20px 44px -20px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04);"
     )
     with ui.element("section").style(sec):
         ui.html(
-            '<div style="position:absolute; inset:5px; border:1px solid rgba(92,74,42,.35); pointer-events:none; border-radius:3px;"></div>'
-            '<div style="position:relative; display:flex; align-items:center; gap:12px; padding:15px 18px; border-bottom:1px solid rgba(92,74,42,.45); background:linear-gradient(180deg, rgba(92,74,42,.22), transparent);">'
+            '<div style="position:absolute; inset:5px; border:1px solid rgba(200,168,106,.08); pointer-events:none; border-radius:3px;"></div>'
+            '<div style="position:relative; display:flex; align-items:center; gap:12px; padding:15px 18px; border-bottom:1px solid rgba(200,168,106,.16); background:linear-gradient(180deg, rgba(200,168,106,.07), transparent);">'
             '<div style="width:40px; height:40px; flex-shrink:0; border-radius:50%; display:flex; align-items:center; justify-content:center; background:radial-gradient(circle at 50% 35%, #3a2c1a, #16100a); border:1.5px solid #c8a86a; box-shadow:0 0 12px rgba(200,168,106,.45);">'
             '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#ecd9a8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 0 1 10 10c0 5.5-4.5 10-10 10S2 17.5 2 12"/><path d="M12 7v5"/><path d="M12 16h.01"/></svg></div>'
-            '<div style="flex:1;"><div style="font-family:\'Cinzel\',serif; font-weight:700; font-size:15px; letter-spacing:.06em; color:#2c2016;">Asistente Arcano</div>'
-            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#6b5536;\">Forjado con DeepSeek</div></div>"
-            '<span style="font-family:\'Noto Sans Runic\',serif; font-size:15px; color:#5c4a2a; opacity:.85;" aria-hidden="true">ᚺᚢᛗ</span></div>'
+            '<div style="flex:1;"><div style="font-family:\'Cinzel\',serif; font-weight:700; font-size:15px; letter-spacing:.06em; color:#ecdfc2;">Asistente Arcano</div>'
+            "<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#8a8068;\">Consejero de la forja</div></div>"
+            '<span style="font-family:\'Noto Sans Runic\',serif; font-size:15px; color:#c8a86a; opacity:.7;" aria-hidden="true">ᚺᚢᛗ</span></div>'
         )
         # Messages
         with (
             ui.element("div")
             .classes("sc-scroll")
             .style(
-                "position:relative; flex:1; min-height:212px; max-height:300px; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:13px;"
+                "position:relative; flex:1; min-height:212px; max-height:420px; overflow-y:auto; padding:16px 18px; display:flex; flex-direction:column; gap:13px;"
             )
         ):
             if not chat_messages:
@@ -1525,26 +1756,28 @@ def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks
                 _chat_bubble(str(c.get("content", "")), is_user=bool(c.get("is_user", False)))
             if is_thinking:
                 ui.html(
-                    "<div style=\"display:flex; align-items:center; gap:8px; color:#6b5536; font-family:'EB Garamond',serif; font-style:italic; font-size:13px;\">"
+                    "<div style=\"display:flex; align-items:center; gap:8px; color:#a39a85; font-family:'EB Garamond',serif; font-style:italic; font-size:13px;\">"
                     '<span style="display:inline-flex; gap:3px;">'
-                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s infinite;"></span>'
-                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s .2s infinite;"></span>'
-                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#6b5536; animation:scBlink 1.2s .4s infinite;"></span></span>'
+                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#c8a86a; animation:scBlink 1.2s infinite;"></span>'
+                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#c8a86a; animation:scBlink 1.2s .2s infinite;"></span>'
+                    '<span class="sc-deco" style="width:5px; height:5px; border-radius:50%; background:#c8a86a; animation:scBlink 1.2s .4s infinite;"></span></span>'
                     "Consultando los pergaminos…</div>"
                 )
         # Input row
         with ui.element("div").style(
-            "position:relative; display:flex; gap:9px; padding:13px 16px; border-top:1px solid rgba(92,74,42,.45);"
+            "position:relative; display:flex; gap:9px; padding:13px 16px; border-top:1px solid rgba(200,168,106,.16);"
         ):
             on_send = _cb(callbacks, "on_send_message")
             chat_input = (
                 ui.input(placeholder="Habla, y escucharé…")
                 .classes("sc-chat-input")
-                .props('dense borderless input-style="color:#2c2016; font-family:EB Garamond,serif; font-size:14.5px"')
+                .props(
+                    'dense borderless dark input-style="color:#e8e2d4; font-family:EB Garamond,serif; font-size:14.5px"'
+                )
                 .style(
                     "flex:1; padding:4px 13px;"
-                    "background:rgba(255,252,244,.58); border:1px solid rgba(92,74,42,.5); border-radius:5px;"
-                    "box-shadow:inset 0 1px 3px rgba(70,48,20,.25);"
+                    "background:rgba(0,0,0,.34); border:1px solid rgba(200,168,106,.26); border-radius:5px;"
+                    "box-shadow:inset 0 2px 6px rgba(0,0,0,.45);"
                 )
             )
 
@@ -1570,33 +1803,33 @@ def _asistente(chat_messages: list[dict[str, Any]], is_thinking: bool, callbacks
             chat_input.on("keydown.enter", _send)
             sb = ui.element("button").style(
                 "width:44px; flex-shrink:0; display:flex; align-items:center; justify-content:center; cursor:pointer;"
-                "background:linear-gradient(180deg,#5c4a2a,#3e321d); border:1px solid #2a2012; border-radius:5px; box-shadow:inset 0 1px 0 rgba(255,255,255,.12);"
+                "background:linear-gradient(180deg,#f3dca0,#c8a86a 58%,#9c7a40); border:1px solid #f6e6bd; border-radius:5px; box-shadow:inset 0 1px 0 rgba(255,255,255,.12);"
             )
             sb.on("click", _send)
             with sb:
                 ui.html(
-                    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#f0e4cc" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
+                    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#1c130a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
                 )
 
 
 def _chat_bubble(text: str, is_user: bool) -> None:
     if is_user:
         wrap = "display:flex; justify-content:flex-end;"
-        who, who_color, who_align = "TÚ", "#6b5536", "text-align:right;"
+        who, who_color, who_align = "TÚ", "#a39a85", "text-align:right;"
         bubble = (
-            "background:linear-gradient(180deg, rgba(98,78,44,.96), rgba(74,58,32,.96)); color:#f6eedb;"
-            " border-radius:9px 9px 2px 9px; box-shadow:0 3px 8px -3px rgba(40,26,10,.55);"
+            "background:rgba(200,168,106,.14); color:#f1e6cf; border:1px solid rgba(200,168,106,.32);"
+            " border-radius:9px 9px 2px 9px;"
         )
     else:
         wrap = "display:flex; justify-content:flex-start;"
-        who, who_color, who_align = "ASISTENTE", "#7a5f30", ""
+        who, who_color, who_align = "ASISTENTE", "#c8a86a", ""
         bubble = (
-            "background:rgba(255,251,242,.78); color:#2c2016; border:1px solid rgba(92,74,42,.32);"
-            " border-radius:9px 9px 9px 2px; box-shadow:0 2px 6px -3px rgba(70,48,20,.4);"
+            "background:rgba(255,255,255,.045); color:#d8cfba; border:1px solid rgba(255,255,255,.09);"
+            " border-radius:9px 9px 9px 2px;"
         )
     ui.html(
         f'<div style="{wrap}"><div style="max-width:82%;">'
-        f"<div style=\"font-family:'Cinzel',serif; font-size:9.5px; letter-spacing:.12em; color:{who_color}; margin-bottom:4px; {who_align}\">{who}</div>"
+        f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; letter-spacing:.1em; color:{who_color}; margin-bottom:4px; {who_align}\">{who}</div>"
         f"<div style=\"padding:9px 13px; font-family:'EB Garamond',serif; font-size:14px; line-height:1.45; {bubble}\">{_e(text)}</div></div></div>"
     )
 
@@ -1621,20 +1854,12 @@ def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable], sea
     """
     from .mod_list import build_mod_list
 
-    with ui.element("div").style("display:flex; align-items:center; gap:16px; margin-bottom:14px;"):
-        ui.html(
-            "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">ARSENAL DE LA FORJA</h2>"
-        )
-        # El separador es un hijo DIRECTO del flex (ui.element, no dentro del
-        # ui.html) para que flex:1 lo estire y empuje el botón a la derecha
-        # (review Copilot #228: un <span flex:1> embebido en ui.html no aplica).
-        ui.element("div").style(
-            "flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"
-        )
-        # Chequeo on-demand de actualizaciones en Nexus → reactiva el badge del
-        # sidebar (pending_updates). Espejo de "Detectar disputas" de Conflictos.
-        on_check = _cb(callbacks, "on_check_updates")
-        if on_check is not None:
+    # El título de la sección ya lo da el header del shell: acá sólo va la acción.
+    # Chequeo on-demand de actualizaciones en Nexus → reactiva el badge del
+    # sidebar (pending_updates). Espejo de "Detectar disputas" de Conflictos.
+    on_check = _cb(callbacks, "on_check_updates")
+    if on_check is not None:
+        with ui.element("div").style("display:flex; justify-content:flex-end; margin-bottom:6px;"):
             upd_btn = (
                 ui.element("button")
                 .classes("sc-btn sc-btn--gold")
@@ -1676,7 +1901,7 @@ def _conflicts_screen(
     resolved = resolved or []
     with ui.element("div").style("display:flex; align-items:center; gap:16px; margin-bottom:14px;"):
         ui.html(
-            "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">DISPUTAS EN LA FORJA</h2>"
+            "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">SIN RESOLVER</h2>"
             f"<span style=\"font-family:'Spline Sans Mono',monospace; font-size:12px; color:{RED_SOFT};\">◆ {len(conflicts)}</span>"
             '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span>'
         ).style(_FRAGMENTO)
@@ -1765,12 +1990,12 @@ def _conflict_row(c: dict[str, Any], on_resolve: Callable | None) -> None:
     )
     with ui.element("div").style(row):
         ui.html(
-            f'<span style="width:9px; height:9px; border-radius:50%; background:{RED}; box-shadow:0 0 9px {RED}; flex-shrink:0;"></span>'
+            f'<span style="color:{RED}; font-size:12px; flex-shrink:0;" aria-hidden="true">◆</span>'
             '<div style="flex:1; min-width:0;">'
             f"<div style=\"font-family:'Cinzel',serif; font-size:14px; color:#f1e6cf;\">{_e(c.get('mod_a', '?'))}"
             f'<span style="color:{RED_SOFT}; display:inline-flex; align-items:center; vertical-align:-2px; margin:0 4px;" aria-hidden="true">{_ICON_SWORDS}</span>'
             f"{_e(c.get('mod_b', '?'))}</div>"
-            f"<div style=\"font-family:'EB Garamond',serif; font-style:italic; font-size:12px; color:#8a7f6a; margin-top:2px;\">{_e(subtitle)}</div>"
+            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10.5px; color:#8a7f6a; margin-top:3px;\">{_e(subtitle)}</div>"
             "</div>"
         ).style(_FRAGMENTO)
         if on_resolve is not None:
@@ -1793,7 +2018,7 @@ def _open_resolve_dialog(c: dict[str, Any], on_resolve: Callable) -> None:
     cid = c.get("id")
     card = (
         "min-width:420px; max-width:92vw; padding:22px 24px; border-radius:6px; color:#e8e2d4;"
-        "background:linear-gradient(168deg, rgba(30,22,14,.98), rgba(14,10,7,.99)); border:1px solid rgba(200,168,106,.4);"
+        "background:linear-gradient(168deg, rgba(26,32,40,.98), rgba(11,14,19,.99)); border:1px solid rgba(200,168,106,.4);"
     )
     with ui.dialog() as dialog, ui.element("div").style(card):
         ui.html(
@@ -1845,6 +2070,61 @@ _LBL = "font-family:'Cinzel',serif; font-size:11px; font-weight:600; letter-spac
 _HINT = "font-family:'EB Garamond',serif; font-style:italic; font-size:11.5px; color:#8a7f6a;"
 
 
+def _entorno_secciones(snapshot: Any) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Seam puro: lo que el escaneo de entorno encontró, como secciones de ``(etiqueta, valor)``.
+
+    Sin snapshot real devuelve ``[]`` —no se afirma nada antes del primer
+    escaneo—; con snapshot, lo que NO se detectó se dice explícitamente en vez
+    de omitirse. ``getattr`` defensivo: la store puede traer objetos que no son
+    snapshots (tests, arranque).
+    """
+    tools = getattr(snapshot, "tools", None)
+    if not isinstance(tools, dict):
+        return []
+    skyrim = getattr(snapshot, "skyrim", None)
+    mo2 = getattr(snapshot, "mo2", None)
+    filas_skyrim = (
+        [
+            ("Edición", str(getattr(skyrim.edition, "value", skyrim.edition))),
+            ("Versión", str(skyrim.version) or "No detectada"),
+            ("Ruta", str(skyrim.path)),
+        ]
+        if skyrim is not None
+        else [("Estado", "No detectado")]
+    )
+    filas_mo2 = (
+        [("Ruta", str(mo2.path)), ("Perfiles", ", ".join(str(p) for p in mo2.profiles) or "Ninguno")]
+        if mo2 is not None
+        else [("Estado", "No detectado")]
+    )
+    filas_tools = [(str(t.name), str(t.exe_path)) for t in tools.values()]
+    filas_tools += [(str(m.name), "No detectada") for m in getattr(snapshot, "missing", None) or []]
+    return [
+        ("SKYRIM", filas_skyrim),
+        ("MOD ORGANIZER 2", filas_mo2),
+        ("HERRAMIENTAS", filas_tools or [("Estado", "Ninguna detectada")]),
+    ]
+
+
+def _entorno_html(secciones: list[tuple[str, list[tuple[str, str]]]]) -> str:
+    """Seam puro: las secciones del entorno como HTML (rutas en mono, todo escapado)."""
+    bloques = ""
+    for titulo, filas in secciones:
+        filas_html = "".join(
+            '<div style="display:flex; gap:12px; padding:3px 0;">'
+            f"<span style=\"flex:0 0 96px; font-family:'EB Garamond',serif; font-size:12.5px; color:#8a7f6a;\">{_e(etiqueta)}</span>"
+            f"<span style=\"flex:1; min-width:0; font-family:'Spline Sans Mono',monospace; font-size:11px; color:#d8cfba; word-break:break-all;\">{_e(valor)}</span>"
+            "</div>"
+            for etiqueta, valor in filas
+        )
+        bloques += (
+            '<div style="margin-top:14px;">'
+            f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; letter-spacing:.14em; color:#b8a87e; margin-bottom:4px;\">{_e(titulo)}</div>"
+            f"{filas_html}</div>"
+        )
+    return bloques
+
+
 def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -> None:
     """Pantalla de Ajustes: identidad + proveedor IA + claves (persistidas).
 
@@ -1858,15 +2138,9 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
     on_save = _cb(callbacks, "on_settings_save")
     inputs: dict[str, Any] = {}
 
-    ui.html(
-        '<div style="display:flex; align-items:center; gap:16px; margin-bottom:18px;">'
-        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">CÁMARA DE AJUSTES</h2>"
-        '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
-    )
-
     panel = (
         "display:flex; flex-direction:column; gap:14px; padding:20px 22px; margin-bottom:18px; border-radius:5px;"
-        "background:rgba(62,39,35,.3); border:1px solid rgba(200,168,106,.25);"
+        "max-width:760px; background:rgba(62,39,35,.3); border:1px solid rgba(200,168,106,.25);"
     )
 
     def _text_field(key: str, label: str, value: str = "", hint: str = "", password: bool = False) -> None:
@@ -1927,12 +2201,44 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
             hint="Vaciar para quitar el destino de notificaciones",
         )
 
+    # ── Aprobaciones (preferencia persistida de «Modo local») ──
+    with ui.element("section").style(panel):
+        ui.html(f'<span style="{_LBL}">APROBACIONES</span>')
+        aprobaciones_toggle = (
+            ui.toggle(
+                {False: "Confirmar cada ritual", True: "Aprobar rituales automáticamente"},
+                value=settings.get("modo_local_defecto") is True,
+            )
+            .classes("sc-toggle")
+            .props("unelevated toggle-color=sc-tema toggle-text-color=sc-tema")
+            .style("align-self:flex-start;")
+        )
+        ui.html(
+            f'<span style="{_HINT}">Arranca cada sesión de esta PC en «Modo local» (F8 lo alterna al vuelo).</span>'
+        )
+        descargas_toggle = (
+            ui.toggle(
+                {False: "Confirmar cada descarga", True: "Aprobar descargas automáticamente"},
+                value=settings.get("descargas_auto") is True,
+            )
+            .classes("sc-toggle")
+            .props("unelevated toggle-color=sc-tema toggle-text-color=sc-tema")
+            .style("align-self:flex-start;")
+        )
+        ui.html(
+            f'<span style="{_HINT}">Con esto, «Instalar» descarga de internet sin preguntar. Vale sólo para lo que '
+            "iniciás vos desde esta pantalla: las descargas que pida el agente o Telegram siguen pidiendo "
+            "confirmación, igual que la promoción de un sandbox y las confirmaciones de DynDOLOD.</span>"
+        )
+
     # ── Guardar ──
     if on_save is not None:
 
         def _collect_and_save(_: Any = None) -> None:
             payload = {key: str(inp.value or "") for key, inp in inputs.items()}
             payload["llm_provider"] = str(provider_toggle.value or "")
+            payload[CONFIG_KEY_MODO_LOCAL_DEFECTO] = "true" if aprobaciones_toggle.value is True else "false"
+            payload[CONFIG_KEY_DESCARGAS_AUTO] = "true" if descargas_toggle.value is True else "false"
             on_save(payload)
 
         btn = (
@@ -1943,6 +2249,16 @@ def _settings_screen(settings: dict[str, Any], callbacks: dict[str, Callable]) -
         with btn:
             ui.html("Guardar Ajustes")
         btn.on("click", _collect_and_save)
+
+    # ── Entorno detectado (sólo lectura) ──
+    entorno = _entorno_html(_entorno_secciones(get_store().get(STORE_KEY_ENV)))
+    if entorno:
+        with ui.element("section").style(panel + "margin-top:22px;"):
+            ui.html(
+                f'<span style="{_LBL}">ENTORNO DETECTADO</span>'
+                f'<div style="{_HINT} margin-top:3px;">Sólo lectura: lo que encontró el escaneo de arranque.</div>'
+                f"{entorno}"
+            )
 
 
 _STATUS_COLORS = {"ok": GREEN, "success": GREEN, "registered": GREEN, "failed": RED, "error": RED}
@@ -1976,30 +2292,21 @@ def _downloads_screen(downloads: dict[str, Any], callbacks: dict[str, Callable])
     # ── Puerta de aprobación ──
     ui.html(
         '<div style="display:flex; align-items:center; gap:16px; margin-bottom:14px;">'
-        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">PUERTA DE APROBACIÓN</h2>"
+        "<h2 style=\"margin:0; font-family:'Cinzel',serif; font-weight:700; font-size:17px; letter-spacing:.2em; color:#e7d6ad;\">SOLICITUD PENDIENTE</h2>"
         '<span style="flex:1; height:1px; background:linear-gradient(90deg,rgba(200,168,106,.4),transparent);"></span></div>'
     )
     if pending:
         card = (
-            "display:flex; flex-direction:column; gap:10px; padding:18px 20px; margin-bottom:22px; border-radius:5px;"
-            "background:rgba(62,39,35,.4); border:1px solid rgba(200,168,106,.45); box-shadow:0 0 18px rgba(200,168,106,.18);"
+            "position:relative; overflow:hidden; display:flex; flex-direction:column; max-width:760px;"
+            " padding:22px 22px 18px; margin-bottom:22px; border-radius:5px;"
+            "background:linear-gradient(168deg, rgba(26,32,40,.9), rgba(11,14,19,.95)); border:1px solid rgba(200,168,106,.4);"
         )
         with ui.element("div").style(card):
-            url = str(pending.get("url") or "")
-            url_html = (
-                f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:11.5px; color:#86b9d4;"
-                f' word-break:break-all;">{_e(url)}</div>'
-                if url
-                else ""
-            )
-            ui.html(
-                f"<div style=\"font-family:'Cinzel',serif; font-size:14px; color:#f1e6cf;\">{_e(pending.get('reason', 'Descarga pendiente'))}</div>"
-                f"<div style=\"font-family:'EB Garamond',serif; font-size:12.5px; color:#b8b1a0;\">{_e(pending.get('detail', ''))}</div>"
-                f"{url_html}"
-            )
+            # Misma solicitud, mismo dibujo que el modal global (seam compartido).
+            ui.html(_hitl_solicitud_html(pending))
             if on_respond is not None:
                 rid = str(pending.get("request_id") or "")
-                with ui.element("div").style("display:flex; gap:12px; margin-top:4px;"):
+                with ui.element("div").style("display:flex; gap:12px; justify-content:flex-end;"):
                     deny = (
                         ui.element("button")
                         .classes("sc-btn sc-btn--danger")

@@ -1195,6 +1195,7 @@ _CONSUMIDORES_C2: dict[str, str] = {
     "_hitl_modal_panel:deny": "danger",
     "_hitl_modal_panel:ok": "gold",
     "_ritual_feedback_panel:r": "gold",
+    "_ritual_card:fase2": "gold",
     "_hero:btn": "gold",
     "_mods_screen:upd_btn": "gold",
     "_conflicts_screen:scan_btn": "gold",

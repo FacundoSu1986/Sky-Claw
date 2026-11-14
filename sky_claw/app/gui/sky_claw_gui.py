@@ -40,7 +40,10 @@ from sky_claw.app.gui.controllers import (
 from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_DIAGNOSTICO_PARALLAX,
     STORE_KEY_PENDING_HITL,
+    STORE_KEY_RITUAL_EN_CURSO,
     STORE_KEY_RITUAL_FEEDBACK,
+    STORE_KEY_RITUAL_IN_FLIGHT,
+    STORE_KEY_RITUAL_LAST_RESULT,
     STORE_KEY_RITUAL_PREFLIGHT,
     payload_de_generar,
     resolve_pending_hitl_request,
@@ -63,12 +66,18 @@ from sky_claw.app.gui.state import ReactiveStore, get_store
 from sky_claw.app.gui.task_tracking import create_tracked_task, drain_tracked_tasks
 from sky_claw.app.gui.views import render_dashboard
 from sky_claw.app.gui.views.forge_dashboard import (
+    CONFIG_KEY_DESCARGAS_AUTO,
+    CONFIG_KEY_MODO_LOCAL_DEFECTO,
+    PREFERENCIAS_DE_APROBACION,
     STORE_KEY_ENV,
+    STORE_KEY_MODO_LOCAL_DEFECTO,
     _hitl_modal_panel,
     _parallax_diagnostico_panel,
     _ritual_feedback_panel,
     _ritual_preflight_panel,
+    _rituales,
     current_tab_id,
+    descargas_auto_enabled,
     modo_de_interaccion_del_cliente,
     modo_local_enabled,
 )
@@ -470,6 +479,35 @@ def _ensure_identity_loaded(config_path: Path) -> None:
     store.set(_IDENTITY_LOADED_KEY, True)
 
 
+def cargar_modo_local_defecto(config_path: Path, store: ReactiveStore, *, forzar: bool = False) -> None:
+    """Publica en el store TODAS las preferencias de aprobación del TOML.
+
+    Itera ``PREFERENCIAS_DE_APROBACION`` («Modo local por defecto» y descargas):
+    las dos viajan juntas, así que no puede cargarse una y quedar la otra vieja.
+
+    Una lectura por proceso (``main_page`` re-renderiza seguido y no debe releer
+    el disco cada vez); ``forzar=True`` tras guardar Ajustes. Fail-closed: si la
+    config no se puede leer, o el valor no es exactamente ``True``, queda en
+    ``False`` y los rituales siguen pidiendo confirmación.
+    """
+    if not forzar and store.get(STORE_KEY_MODO_LOCAL_DEFECTO) is not None:
+        return
+    datos: dict[str, Any] = {}
+    try:
+        datos = Config(config_path)._data
+    except Exception:
+        logger.exception(
+            "No se pudieron leer las preferencias de aprobación desde %s; se pide confirmación", config_path
+        )
+    for clave_config, clave_store in PREFERENCIAS_DE_APROBACION.items():
+        store.set(clave_store, datos.get(clave_config) is True)
+
+
+#: Texto → booleano de la preferencia en el payload de Ajustes. Vocabulario
+#: cerrado: cualquier otro valor se rechaza antes de persistir nada.
+_MODO_LOCAL_DEFECTO_VALORES: dict[str, bool] = {"true": True, "false": False}
+
+
 def save_settings(
     config_path: Path,
     payload: dict[str, str],
@@ -495,6 +533,17 @@ def save_settings(
     error = validate_credentials(provider, api_key, telegram_token, telegram_chatid, require_api_key=False)
     if error is not None:
         return error
+
+    # Preferencias de aprobación: ausente = no cambiar; presente = sólo
+    # "true"/"false". Se validan TODAS antes de tocar keyring o TOML.
+    preferencias: dict[str, bool] = {}
+    for clave in PREFERENCIAS_DE_APROBACION:
+        if clave not in payload:
+            continue
+        crudo = str(payload.get(clave) or "").strip().lower()
+        if crudo not in _MODO_LOCAL_DEFECTO_VALORES:
+            return "Valor no válido para las preferencias de aprobación automática"
+        preferencias[clave] = _MODO_LOCAL_DEFECTO_VALORES[crudo]
 
     # Cambiar a un provider cloud requiere su clave: la tipeada ahora o el slot
     # {provider}_api_key ya guardado. Sin esto, AppContext caería a la
@@ -550,6 +599,8 @@ def save_settings(
             cfg._data["user_display_name"] = name
         if role:
             cfg._data["user_role"] = role
+        for clave, valor in preferencias.items():
+            cfg._data[clave] = valor
         cfg.save()
     except Exception as exc:
         logger.exception("Error guardando configuración de Ajustes")
@@ -583,11 +634,13 @@ def _build_settings_data(config_path: Path) -> dict[str, Any]:
     import keyring
 
     app_state = get_app_state_instance()
-    provider, chat_id = "deepseek", ""
+    provider, chat_id, modo_local_defecto, descargas_auto = "deepseek", "", False, False
     try:
         cfg = Config(config_path)
         provider = str(cfg._data.get("llm_provider") or "deepseek")
         chat_id = str(cfg._data.get("telegram_chat_id") or "")
+        modo_local_defecto = cfg._data.get(CONFIG_KEY_MODO_LOCAL_DEFECTO) is True
+        descargas_auto = cfg._data.get(CONFIG_KEY_DESCARGAS_AUTO) is True
     except Exception:
         logger.exception("No se pudo leer la config para Ajustes; se muestran defaults")
 
@@ -608,6 +661,8 @@ def _build_settings_data(config_path: Path) -> dict[str, Any]:
         "identity": {"name": app_state.user_display_name, "role": app_state.user_role},
         "provider": provider,
         "telegram_chat_id": chat_id,
+        "modo_local_defecto": modo_local_defecto,
+        "descargas_auto": descargas_auto,
         "key_status": key_status,
     }
 
@@ -769,10 +824,13 @@ def main_page() -> None:
             tool_key,
             app_context=runtime.app_context,
             store=get_store(),
-            # P1-7: la descarga es egress de red y nunca se auto-aprueba, así que
-            # su aprobación también tiene que quedar marcada con la pestaña que
-            # la pidió — si no, era accionable desde cualquier otra.
+            # P1-7: la descarga es egress de red; cuando pide confirmación, tiene
+            # que quedar marcada con la pestaña que la pidió — si no, era
+            # accionable desde cualquier otra.
             tab_id=current_tab_id(),
+            # Preferencia propia de Ajustes (no «Modo local»): se lee acá, en el
+            # click, y run_ritual_install la arma sólo para su task.
+            auto_approve_downloads=descargas_auto_enabled(),
         ),
         name="gui-ritual-install",
     )
@@ -980,6 +1038,8 @@ def main_page() -> None:
         if error is not None:
             ui.notify(error, type="negative")
             return
+        # Antes del refresh: el toggle del header se re-renderiza leyendo el store.
+        cargar_modo_local_defecto(runtime.config_path, get_store(), forzar=True)
         main_page.refresh()
 
         # Hot-reload del proveedor LLM: si el daemon ya tiene router vivo, se
@@ -1008,6 +1068,7 @@ def main_page() -> None:
     # A3: identidad del header data-driven desde el estado, sembrado desde el
     # TOML la primera vez (editable en Ajustes).
     _ensure_identity_loaded(runtime.config_path)
+    cargar_modo_local_defecto(runtime.config_path, get_store())
     app_state = get_app_state_instance()
     identity = {"name": app_state.user_display_name, "role": app_state.user_role}
 
@@ -1039,6 +1100,8 @@ def main_page() -> None:
         resolved_conflicts=get_store().get("resolved_conflicts_list") or [],
         settings=_build_settings_data(runtime.config_path) if active_section == "Settings" else None,
         downloads=downloads,
+        # El perfil sobre el que operan los rituales de ESTA sesión (no el del escaneo).
+        perfil_mo2=getattr(runtime.app_context, "mo2_profile", None),
     )
 
 
@@ -1129,6 +1192,12 @@ def setup_app() -> None:
     # a prompt or showing a result never resets the chat input.
     store.subscribe(STORE_KEY_PENDING_HITL, _hitl_modal_panel.refresh)
     store.subscribe(STORE_KEY_RITUAL_FEEDBACK, _ritual_feedback_panel.refresh)
+    # La grilla de rituales también tiene refreshable propio: pinta «Ejecutando» /
+    # «Instalando» y bloquea los botones mientras el single-flight está tomado, y
+    # muestra la acción de resume (Fase 2 de Wrye Bash, handoff de DynDOLOD) en la
+    # tarjeta. Las tres claves la despiertan; ninguna refresca la página.
+    for clave_ritual in (STORE_KEY_RITUAL_IN_FLIGHT, STORE_KEY_RITUAL_EN_CURSO, STORE_KEY_RITUAL_LAST_RESULT):
+        store.subscribe(clave_ritual, _rituales.refresh)
     # T-16b: el semáforo de preflight que el dispatch adjunta se surface en su
     # propio @ui.refreshable, sin resetear el chat (mismo patrón que el toast).
     store.subscribe(STORE_KEY_RITUAL_PREFLIGHT, _ritual_preflight_panel.refresh)
