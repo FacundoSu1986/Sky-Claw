@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import ast
 import ctypes
+import dataclasses
 import errno
 import hashlib
+import json
 import os
 import sys
 from collections.abc import Callable, Iterator
@@ -28,6 +30,7 @@ from sky_claw.local.tools.parallaxr_assisted import (
     ParallaxRAssistedStatus,
     ParallaxREvidenceIncompleteError,
     ParallaxREvidenceUnstableError,
+    ParallaxRInstallationEvidence,
     ParallaxRManualHandoff,
     _FileFingerprintSnapshot,
     _fingerprint_file_consistently,
@@ -2072,3 +2075,238 @@ def test_fingerprint_c5_archivo_estable_mantiene_ready_y_handoff(tmp_path: Path)
     assert handoff.requires_user_launch is True
     assert handoff.direct_helper_invocation is False
     assert handoff.sky_claw_launches_process is False
+
+
+# =============================================================================
+# 10. INVARIANTES DE ESTADO EN ParallaxRAssistedPreflight (#667-A3)
+# =============================================================================
+
+_ESTADOS_NEGATIVOS_ESPERADOS: tuple[ParallaxRAssistedStatus, ...] = (
+    ParallaxRAssistedStatus.MISSING,
+    ParallaxRAssistedStatus.AMBIGUOUS,
+    ParallaxRAssistedStatus.INVALID_SELECTION,
+    ParallaxRAssistedStatus.EVIDENCE_UNSTABLE,
+    ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
+)
+
+
+def _evidencia_instalacion_valida(tmp_path: Path) -> ParallaxRInstallationEvidence:
+    """Construye una evidencia de instalación coherente para pruebas de contrato del preflight."""
+    mod_root = tmp_path / "mods" / "ParallaxR"
+    entrypoint = mod_root / "ParallaxR.BAT"
+    contenido = b"@echo off\necho ParallaxR\n"
+    return ParallaxRInstallationEvidence(
+        mod_root=mod_root,
+        entrypoint=entrypoint,
+        size_bytes=len(contenido),
+        mtime_ns=1_700_000_000_000_000_000,
+        sha256=hashlib.sha256(contenido).hexdigest(),
+    )
+
+
+def test_t1_ready_con_success_false_es_rechazado() -> None:
+    """T1: construir READY con success=False (nominal o posicional) debe fallar cerrado."""
+    with pytest.raises(ValueError, match="READY"):
+        ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.READY,
+            success=False,
+        )
+
+    with pytest.raises(ValueError, match="READY"):
+        ParallaxRAssistedPreflight(ParallaxRAssistedStatus.READY, False)
+
+
+def test_t2_missing_con_success_true_es_rechazado() -> None:
+    """T2: construir MISSING con success=True (nominal o posicional) debe fallar cerrado."""
+    with pytest.raises(ValueError, match="missing"):
+        ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.MISSING,
+            success=True,
+        )
+
+    with pytest.raises(ValueError, match="missing"):
+        ParallaxRAssistedPreflight(ParallaxRAssistedStatus.MISSING, True)
+
+
+def test_t3_catalogo_estados_negativos_esta_completo() -> None:
+    """Ancla que todos los estados no-READY del enum están cubiertos por las pruebas parametrizadas."""
+    assert set(_ESTADOS_NEGATIVOS_ESPERADOS) == {
+        s for s in ParallaxRAssistedStatus if s != ParallaxRAssistedStatus.READY
+    }
+
+
+@pytest.mark.parametrize("status_negativo", _ESTADOS_NEGATIVOS_ESPERADOS)
+def test_t3_ningun_estado_negativo_admite_success_true(
+    status_negativo: ParallaxRAssistedStatus,
+    tmp_path: Path,
+) -> None:
+    """T3: ningún estado negativo puede construirse con success=True."""
+    with pytest.raises(ValueError):
+        ParallaxRAssistedPreflight(
+            status=status_negativo,
+            success=True,
+        )
+
+    with pytest.raises(ValueError):
+        ParallaxRAssistedPreflight(
+            status=status_negativo,
+            success=True,
+            installation=_evidencia_instalacion_valida(tmp_path),
+            message="",
+        )
+
+
+@pytest.mark.parametrize("valor_no_bool", [1, 0, "true", "false", None])
+def test_a3_rechaza_success_no_booleano_estricto(valor_no_bool: Any) -> None:
+    """success debe ser bool estricto; enteros truthy/falsy o strings no deben aceptarse."""
+    with pytest.raises(TypeError):
+        ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.READY,
+            success=valor_no_bool,
+        )
+
+
+@pytest.mark.parametrize("status_invalido", ["ready", "missing", None, 123])
+def test_a3_rechaza_status_que_no_es_enum(status_invalido: Any) -> None:
+    """status debe ser una instancia de ParallaxRAssistedStatus, no un string suelto."""
+    with pytest.raises(TypeError):
+        ParallaxRAssistedPreflight(
+            status=status_invalido,
+            success=(status_invalido == "ready"),
+        )
+
+
+def test_t4_ready_valido_conserva_inmutabilidad_y_contrato(tmp_path: Path) -> None:
+    """T4: un resultado READY legítimo conserva success=True, message='', evidencia válida e inmutabilidad."""
+    evidencia = _evidencia_instalacion_valida(tmp_path)
+    preflight = ParallaxRAssistedPreflight(
+        status=ParallaxRAssistedStatus.READY,
+        success=True,
+        installation=evidencia,
+        candidate_mod_roots=(evidencia.mod_root,),
+        message="",
+    )
+    preflight_posicional = ParallaxRAssistedPreflight(
+        ParallaxRAssistedStatus.READY,
+        True,
+        evidencia,
+    )
+
+    assert preflight.status == ParallaxRAssistedStatus.READY
+    assert preflight.success is True
+    assert preflight.message == ""
+    assert preflight.installation == evidencia
+    assert preflight_posicional.success is True
+    assert preflight_posicional.installation == evidencia
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        preflight.success = False  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("status_negativo", _ESTADOS_NEGATIVOS_ESPERADOS)
+def test_t5_estados_negativos_validos_construibles_y_serializables(
+    status_negativo: ParallaxRAssistedStatus,
+) -> None:
+    """T5: todos los estados negativos con success=False siguen siendo construibles y serializables."""
+    mensaje = f"Fallo esperado para {status_negativo.value}"
+    preflight = ParallaxRAssistedPreflight(
+        status=status_negativo,
+        success=False,
+        message=mensaje,
+    )
+
+    assert preflight.status is status_negativo
+    assert preflight.success is False
+    assert preflight.message == mensaje
+
+    serializado = dataclasses.asdict(preflight)
+    assert serializado["status"] == status_negativo
+    assert serializado["success"] is False
+    assert serializado["message"] == mensaje
+    assert serializado["installation"] is None
+    assert serializado["existing_output_candidates"] == ()
+    assert serializado["candidate_mod_roots"] == ()
+
+    json_texto = json.dumps(serializado, default=str)
+    assert f'"{status_negativo.value}"' in json_texto
+    assert '"success": false' in json_texto
+
+
+def test_t6_compatibilidad_handoff_sin_io_ni_procesos(tmp_path: Path) -> None:
+    """T6: READY válido habilita handoff puro sin filesystem ni procesos; negativos fallan cerrado."""
+    evidencia = _evidencia_instalacion_valida(tmp_path)
+    preflight_ready = ParallaxRAssistedPreflight(
+        status=ParallaxRAssistedStatus.READY,
+        success=True,
+        installation=evidencia,
+        candidate_mod_roots=(evidencia.mod_root,),
+        message="",
+    )
+
+    with (
+        patch.object(Path, "open", side_effect=AssertionError("handoff no debe abrir archivos")),
+        patch.object(Path, "stat", side_effect=AssertionError("handoff no debe consultar stat")),
+        patch(
+            "sky_claw.local.tools.parallaxr_assisted._fingerprint_file_consistently",
+            side_effect=AssertionError("handoff no debe recalcular fingerprint"),
+        ),
+    ):
+        handoff = prepare_parallaxr_manual_handoff(preflight_ready)
+
+    assert handoff.success is True
+    assert handoff.message == ""
+    assert handoff.entrypoint == evidencia.entrypoint
+    assert handoff.mod_root == evidencia.mod_root
+    assert handoff.fingerprint == evidencia
+    assert handoff.requires_user_launch is True
+    assert handoff.direct_helper_invocation is False
+    assert handoff.sky_claw_launches_process is False
+
+    for status_negativo in _ESTADOS_NEGATIVOS_ESPERADOS:
+        preflight_negativo = ParallaxRAssistedPreflight(
+            status=status_negativo,
+            success=False,
+            message="no listo",
+        )
+        with pytest.raises(ValueError, match="no está en estado READY"):
+            prepare_parallaxr_manual_handoff(preflight_negativo)
+
+
+def test_t7_compatibilidad_consumidores_dataclass_fields_asdict_y_replace(tmp_path: Path) -> None:
+    """T7: consumidores que usan fields(), asdict() y replace() conservan contrato e invariante."""
+    nombres_campos = tuple(f.name for f in dataclasses.fields(ParallaxRAssistedPreflight))
+    assert nombres_campos == (
+        "status",
+        "success",
+        "installation",
+        "existing_output_candidates",
+        "candidate_mod_roots",
+        "message",
+    )
+
+    evidencia = _evidencia_instalacion_valida(tmp_path)
+    preflight_ready = ParallaxRAssistedPreflight(
+        status=ParallaxRAssistedStatus.READY,
+        success=True,
+        installation=evidencia,
+        candidate_mod_roots=(evidencia.mod_root,),
+    )
+
+    actualizado = dataclasses.replace(preflight_ready, candidate_mod_roots=())
+    assert actualizado.status == ParallaxRAssistedStatus.READY
+    assert actualizado.success is True
+    assert dataclasses.asdict(actualizado)["success"] is True
+
+    with pytest.raises(ValueError):
+        dataclasses.replace(preflight_ready, status=ParallaxRAssistedStatus.MISSING)
+
+    degradado = dataclasses.replace(
+        preflight_ready,
+        status=ParallaxRAssistedStatus.MISSING,
+        success=False,
+        installation=None,
+        message="eliminado",
+    )
+    assert degradado.status == ParallaxRAssistedStatus.MISSING
+    assert degradado.success is False
+    assert dataclasses.asdict(degradado)["success"] is False
