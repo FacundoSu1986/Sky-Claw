@@ -41,6 +41,7 @@ from sky_claw.app.comms._transport import (
     assert_safe_ws_url,
     enviar_si_conectado,
 )
+from sky_claw.app.comms.telegram_polling import normalizar_operador_telegram_estricto
 from sky_claw.config import Config
 
 if TYPE_CHECKING:
@@ -514,16 +515,13 @@ class FrontendBridge:
             if telegram_chat_id and len(telegram_chat_id) > self._max_chatid_len:
                 await self._send_config_result(msg_id, False, "El Chat ID es demasiado largo.")
                 return
-            if telegram_chat_id:
-                try:
-                    int(telegram_chat_id)
-                except ValueError:
-                    await self._send_config_result(
-                        msg_id,
-                        False,
-                        "El Chat ID de Telegram debe ser numérico.",
-                    )
-                    return
+            if telegram_chat_id and normalizar_operador_telegram_estricto(telegram_chat_id) is None:
+                await self._send_config_result(
+                    msg_id,
+                    False,
+                    "El Chat ID de Telegram debe ser un identificador numérico positivo.",
+                )
+                return
 
             # ── Persistence Phase ────────────────────────────────────────
             llm_api_key = content.get("llm_api_key", "").strip()
@@ -582,10 +580,12 @@ class FrontendBridge:
 
             # Telegram hot-reload
             if telegram_token:
-                tg_ok = await self._reload_telegram(
-                    telegram_token,
-                    telegram_chat_id or getattr(self.config, "telegram_chat_id", ""),
+                # Pasar el valor original de configuración sin convertir None a "",
+                # preservando una sola resolución fail-closed en _reload_telegram.
+                operador_config: object = (
+                    telegram_chat_id if telegram_chat_id else getattr(self.config, "telegram_chat_id", "")
                 )
+                tg_ok = await self._reload_telegram(telegram_token, operador_config)
                 if tg_ok:
                     reload_messages.append("Telegram reconectado")
                 else:
@@ -691,7 +691,7 @@ class FrontendBridge:
         """
         return await self.ctx.reload_llm_provider(provider_name, api_key)
 
-    async def _reload_telegram(self, token: str, chat_id: str = "") -> bool:
+    async def _reload_telegram(self, token: str, chat_id: object = "") -> bool:
         """Stop existing Telegram polling and restart with new token.
 
         Completely recreates the Telegram sender and polling handler
@@ -721,13 +721,36 @@ class FrontendBridge:
             )
 
             # Recreate polling
+            from sky_claw.app.comms.golden_master_hitl import asegurar_coordinador_golden_master
             from sky_claw.app.comms.telegram import TelegramWebhook
             from sky_claw.app.comms.telegram_polling import TelegramPolling
+            from sky_claw.app_context import resolver_operador_telegram_para_recarga
 
-            # M-4: pasar authorized_user_id (int) para no dejar el HITL bloqueado
-            # tras el hot-reload. _validate_sender falla cerrado si es None y
-            # compara contra el user_id (int), por eso se convierte chat_id.
-            authorized_user_id = int(chat_id) if chat_id else None
+            # M-4 / CR-03: resolver identidad única y fail-closed para coordinador,
+            # TelegramWebhook y TelegramPolling sin sobrescribir CLI con None.
+            authorized_user_id = resolver_operador_telegram_para_recarga(
+                self.ctx,
+                config_chat_id=chat_id,
+            )
+            operador_previo = (
+                normalizar_operador_telegram_estricto(getattr(self.ctx, "operator_chat_id", None))
+                if getattr(self.ctx, "_operator_chat_id_resuelto", False) is True
+                else None
+            )
+            if operador_previo != authorized_user_id and operador_previo is not None:
+                logger.warning(
+                    "Hot-reload Telegram modificó identidad de operador autorizado: %s -> %s",
+                    operador_previo,
+                    authorized_user_id,
+                )
+            self.ctx.operator_chat_id = authorized_user_id
+            self.ctx._operator_chat_id_resuelto = True
+
+            golden_master_coordinator = await asegurar_coordinador_golden_master(
+                self.ctx,
+                sender=self.ctx.sender,
+                authorized_user_id=authorized_user_id,
+            )
             webhook_handler = TelegramWebhook(
                 router=self.ctx.router,
                 sender=self.ctx.sender,
@@ -735,13 +758,14 @@ class FrontendBridge:
                 hitl=self.ctx.hitl,
                 authorized_user_id=authorized_user_id,
                 hitl_registry=self.ctx.telegram_hitl_registry,
+                golden_master_coordinator=golden_master_coordinator,
             )
             self.ctx.polling = TelegramPolling(
                 token=token,
                 webhook_handler=webhook_handler,
                 gateway=self.ctx.network.gateway,
                 session=self.ctx.session,
-                authorized_chat_id=chat_id or None,
+                authorized_chat_id=authorized_user_id,
             )
             await self.ctx.polling.start()
             logger.info("✅ Telegram polling reiniciado con nuevo token.")

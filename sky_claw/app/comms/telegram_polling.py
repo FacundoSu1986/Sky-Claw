@@ -23,6 +23,26 @@ logger = logging.getLogger(__name__)
 TELEGRAM_API_GET_UPDATES = "https://api.telegram.org/bot{token}/getUpdates"
 
 
+def normalizar_operador_telegram_estricto(valor: object) -> int | None:
+    """Normaliza una identidad privada de operador en Telegram de forma fail-closed.
+
+    Solo acepta enteros positivos (``bool`` es subclase de ``int`` en Python y
+    se rechaza explícitamente). Los IDs negativos pertenecen a grupos/canales y
+    ``0`` no representa un usuario privado válido.
+    """
+    if valor is None or isinstance(valor, bool):
+        return None
+    if isinstance(valor, int):
+        return valor if valor > 0 else None
+    if isinstance(valor, str):
+        texto = valor.strip()
+        if not texto or not texto.isascii() or not texto.isdigit():
+            return None
+        parsed = int(texto)
+        return parsed if parsed > 0 else None
+    return None
+
+
 class TelegramPolling:
     """Long polling client for Telegram Bot API.
 
@@ -48,7 +68,7 @@ class TelegramPolling:
         self._session = session
         self._owns_session = False
         self._interval = interval
-        self._authorized_chat_id = authorized_chat_id
+        self._authorized_chat_id: int | None = normalizar_operador_telegram_estricto(authorized_chat_id)
         # review #257: loguear el fail-closed una sola vez por instancia (evita
         # spam de ERROR si llegan muchos updates con el operador sin configurar).
         self._fail_closed_logged = False

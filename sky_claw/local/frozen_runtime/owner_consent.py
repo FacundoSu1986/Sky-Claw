@@ -31,11 +31,15 @@ FASE C — EMISIÓN (bajo el lock; la toma ``emitir_aprobacion_autorizada``)
   segunda autoridad
 ```
 
-**Qué NO agrega.** No hay TTL, no hay firma criptográfica, no hay un segundo store
-durable y **no hay cableado**: ningún módulo de producción llama a ``presentar`` ni
-a ``responder`` (``HITL_PRODUCTIVE = NOT_WIRED``), porque cablear la superficie sin
-un consumidor de la aprobación dejaría autorizaciones ``ISSUED`` sin salida
-operativa. La solicitud vive en memoria a propósito: si el proceso muere, la
+**Alcance histórico del slice P4-S6 (actualizado en P7-A5 PR 3 / PR 4).**
+Cuando se creó este módulo en P4-S6 la superficie no tenía consumidor ni
+transporte (`HITL_PRODUCTIVE = NOT_WIRED`) porque cablearla antes habría dejado
+autorizaciones ``ISSUED`` sin salida operativa. Desde PR 3
+(``autorizacion_hitl_transicion.py``, ``HITL_PRODUCTIVE = WIRED_BUT_GATED``) y
+PR 4 (``sky_claw/app/comms/golden_master_hitl.py``,
+``TRANSPORT_ADAPTER = WIRED_BUT_GATED``) el consumidor y el adaptador de Telegram
+ya existen, pero ``approval.EMISION_PRODUCTIVA_HABILITADA`` sigue en ``False``.
+La solicitud sigue viviendo en memoria a propósito: si el proceso muere, la
 solicitud muere con él y no queda nada aprobable — el fail-closed es más barato
 que un registro durable de propuestas, que sería una segunda autoridad.
 
@@ -53,9 +57,9 @@ GUI_BUTTON_IS_IDENTITY              = NO    (no hay login: presencia local ≠ i
 IDENTITY_IS_A_CAPABILITY            = YES   (constructor cerrado; sello acuñado por el
                                              verificador y comprobado por identidad)
 PRESENTATION_IS_NON_AMBIGUOUS       = YES   (ningún valor del scope aporta una línea)
-HITL_PRODUCTIVE                     = NOT_WIRED (ningún módulo de producción presenta
-                                             ni responde: la superficie existe, el
-                                             cableado no)
+HITL_PRODUCTIVE                     = WIRED_BUT_GATED (PR 3: consumidor autorizado;
+                                             PR 4: adaptador Telegram; la emisión
+                                             productiva sigue cerrada en False)
 OWNER_REQUEST_ID_IS_DURABLE         = YES   (witness v3, ``solicitud_binding``: lo
                                              acuña ``responder`` desde la presentación
                                              abierta y la puerta durable lo contrasta
@@ -793,9 +797,9 @@ def emitir_aprobacion_autorizada(
 
     ``timeout`` es **fail-fast a propósito** (0.0): si el root lock está tomado,
     esto falla y no emite —fail-closed— en vez de atar el hilo del transporte a
-    una espera que el dueño del lock no controla. El llamador que prefiera
-    esperar pasa su propio valor; elegirlo acá sería decidir por un cableado que
-    todavía no existe (``HITL_PRODUCTIVE = NOT_WIRED``, §46.7).
+    una espera que el dueño del lock no controla. El consumidor que prefiera
+    esperar pasa su propio valor; la emisión efectiva sigue gobernada por
+    ``EMISION_PRODUCTIVA_HABILITADA`` (``HITL_PRODUCTIVE = WIRED_BUT_GATED``).
     """
     _exigir_binding_completo(consentimiento)
     if not approval_module.EMISION_PRODUCTIVA_HABILITADA:
