@@ -225,8 +225,10 @@ def _fingerprint_file_consistently(
     """Calcula el fingerprint de un archivo usando un único descriptor abierto por intento.
 
     Garantiza coherencia fotográfica entre metadatos y hash durante la captura (anti-TOCTOU).
-    Si el archivo es mutado concurrentemente, reintenta hasta max_attempts veces.
-    Si la inestabilidad persiste, lanza ParallaxREvidenceUnstableError.
+    Si el archivo es mutado o desaparece sin anomalías durante la verificación final, reintenta
+    hasta max_attempts veces y lanza ParallaxREvidenceUnstableError si persiste la carrera.
+    Si ocurre un error de acceso o inspección distinto de ausencia simple, propaga el OSError
+    de inmediato para evitar degradar evidencia incompleta a inestabilidad.
     """
     for _ in range(max_attempts):
         with file_path.open("rb") as handle:
@@ -249,8 +251,10 @@ def _fingerprint_file_consistently(
             # Validar que la ruta siga resolviendo al mismo archivo físico
             try:
                 path_stat = file_path.stat()
-            except OSError:
-                continue
+            except OSError as stat_err:
+                if _es_error_de_ausencia_sin_anomalias(stat_err):
+                    continue
+                raise
 
             path_matches = (
                 path_stat.st_dev == after.st_dev

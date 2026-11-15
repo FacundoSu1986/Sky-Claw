@@ -14,14 +14,16 @@ import errno
 import hashlib
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from typing import IO, Any
 from unittest.mock import patch
 
 import pytest
 
 from sky_claw.local.tools.parallaxr_assisted import (
+    _FINGERPRINT_MAX_ATTEMPTS,
     ParallaxRAssistedPreflight,
     ParallaxRAssistedStatus,
     ParallaxREvidenceIncompleteError,
@@ -1769,3 +1771,304 @@ def test_c4_compatibilidad_escenarios_validos_y_handoff_falla_cerrado(
     assert incompleto.success is False
     with pytest.raises(ValueError):
         prepare_parallaxr_manual_handoff(incompleto)
+
+
+# =============================================================================
+# 9. VERIFICACIÓN FINAL DE IDENTIDAD EN FINGERPRINT (PR #944)
+# =============================================================================
+
+
+@contextmanager
+def _interceptar_stat_final_post_lectura(
+    monkeypatch: pytest.MonkeyPatch,
+    target_path: Path,
+    *,
+    make_error: Callable[[int], OSError] | None = None,
+    make_stat: Callable[[os.stat_result, int], os.stat_result] | None = None,
+    fail_second_open_error: OSError | None = None,
+) -> Iterator[dict[str, int]]:
+    """Intercepta el Path.stat() posterior a open('rb') dentro de _fingerprint_file_consistently."""
+    target_resolved = target_path.resolve()
+    real_open = Path.open
+    real_stat = Path.stat
+    counts = {"open_calls": 0, "post_open_stat_calls": 0}
+    pending_post_open_stat = False
+    fail_next_open = False
+
+    def wrapped_open(
+        self: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> IO[Any]:
+        nonlocal pending_post_open_stat
+        if mode == "rb" and self in (target_path, target_resolved):
+            counts["open_calls"] += 1
+            if fail_next_open and fail_second_open_error is not None:
+                raise fail_second_open_error
+            handle = real_open(self, mode, buffering, encoding, errors, newline)
+            pending_post_open_stat = True
+            return handle
+        return real_open(self, mode, buffering, encoding, errors, newline)
+
+    def wrapped_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        nonlocal pending_post_open_stat, fail_next_open
+        if pending_post_open_stat and follow_symlinks and self in (target_path, target_resolved):
+            pending_post_open_stat = False
+            counts["post_open_stat_calls"] += 1
+            attempt = counts["post_open_stat_calls"]
+            if fail_second_open_error is not None:
+                fail_next_open = True
+            if make_error is not None:
+                raise make_error(attempt)
+            if make_stat is not None:
+                return make_stat(real_stat(self, follow_symlinks=follow_symlinks), attempt)
+        return real_stat(self, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "open", wrapped_open)
+    monkeypatch.setattr(Path, "stat", wrapped_stat)
+    yield counts
+
+
+@pytest.mark.parametrize(
+    ("exc_factory", "expected_exc_type"),
+    [
+        (lambda _attempt: PermissionError(errno.EACCES, "sin permiso en stat final"), PermissionError),
+        (lambda _attempt: OSError(errno.EIO, "error de E/S en stat final"), OSError),
+    ],
+)
+def test_fingerprint_c1_error_inspeccion_en_stat_final_devuelve_evidence_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exc_factory: Callable[[int], OSError],
+    expected_exc_type: type[OSError],
+) -> None:
+    """C1: PermissionError o EIO en Path.stat() tras leer falla a EVIDENCE_INCOMPLETE, no a EVIDENCE_UNSTABLE."""
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "ParallaxR"
+    mod_dir.mkdir(parents=True)
+    bat = mod_dir / "ParallaxR.BAT"
+    bat.write_bytes(b"@echo ok")
+
+    # Verificación directa del helper: propaga de inmediato en el primer intento sin consumir reintentos.
+    with (
+        _interceptar_stat_final_post_lectura(monkeypatch, bat, make_error=exc_factory) as counts_direct,
+        pytest.raises(expected_exc_type),
+    ):
+        _fingerprint_file_consistently(bat.resolve())
+    assert counts_direct["open_calls"] == 1
+    assert counts_direct["post_open_stat_calls"] == 1
+
+    # Verificación integrada en preflight: EVIDENCE_INCOMPLETE sin handoff ni fuga de ruta en mensaje.
+    with _interceptar_stat_final_post_lectura(monkeypatch, bat, make_error=exc_factory) as counts_preflight:
+        preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+    assert counts_preflight["open_calls"] == 1
+    assert preflight.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+    assert preflight.status != ParallaxRAssistedStatus.EVIDENCE_UNSTABLE
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.candidate_mod_roots == (mod_dir.resolve(),)
+    assert str(tmp_path) not in preflight.message
+    with pytest.raises(ValueError):
+        prepare_parallaxr_manual_handoff(preflight)
+
+
+def test_fingerprint_c2_error_en_stat_final_de_marcador_preserva_evidencia_previa(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C2: Error de acceso en Path.stat() final de un segundo marcador falla a EVIDENCE_INCOMPLETE preservando previos."""
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "01_Mod_A"
+    mod_a.mkdir(parents=True)
+    (mod_a / "ParallaxR.BAT").write_bytes(b"@echo mod_a")
+    marker_1_bytes = b"marcador valido previo"
+    marker_1 = mod_a / "ParallaxROutput.tmp"
+    marker_1.write_bytes(marker_1_bytes)
+
+    mod_b = mods_dir / "02_Out_B"
+    mod_b.mkdir(parents=True)
+    marker_2 = mod_b / "ParallaxROutput.tmp"
+    marker_2.write_bytes(b"marcador con fallo en stat final")
+
+    # discover_output_markers debe elevar ParallaxREvidenceIncompleteError con marker_1 preservado.
+    with (
+        _interceptar_stat_final_post_lectura(
+            monkeypatch,
+            marker_2,
+            make_error=lambda _attempt: PermissionError(errno.EACCES, "acceso denegado tras lectura"),
+        ) as counts_markers,
+        pytest.raises(ParallaxREvidenceIncompleteError) as exc_info,
+    ):
+        discover_output_markers(mods_dir)
+
+    assert counts_markers["open_calls"] == 1
+    assert len(exc_info.value.partial_markers) == 1
+    assert exc_info.value.partial_markers[0].path == marker_1.resolve()
+    assert exc_info.value.partial_markers[0].sha256 == hashlib.sha256(marker_1_bytes).hexdigest()
+
+    # run_parallaxr_assisted_preflight preserva marcador válido y candidato sin devolver READY ni EVIDENCE_UNSTABLE.
+    with _interceptar_stat_final_post_lectura(
+        monkeypatch,
+        marker_2,
+        make_error=lambda _attempt: OSError(errno.EIO, "error E/S en stat final del marcador"),
+    ) as counts_preflight:
+        preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+    assert counts_preflight["open_calls"] == 1
+    assert preflight.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+    assert preflight.status != ParallaxRAssistedStatus.EVIDENCE_UNSTABLE
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.candidate_mod_roots == (mod_a.resolve(),)
+    assert len(preflight.existing_output_candidates) == 1
+    assert preflight.existing_output_candidates[0].path == marker_1.resolve()
+    with pytest.raises(ValueError):
+        prepare_parallaxr_manual_handoff(preflight)
+
+
+def test_fingerprint_c3_mutacion_genuina_conserva_evidence_unstable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C3: Un cambio real de identidad tras la lectura sigue clasificando como EVIDENCE_UNSTABLE."""
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "ParallaxR"
+    mod_dir.mkdir(parents=True)
+    bat = mod_dir / "ParallaxR.BAT"
+    bat.write_bytes(b"@echo estable")
+
+    def stat_mutado(real: os.stat_result, attempt: int) -> os.stat_result:
+        return os.stat_result(
+            (
+                real.st_mode,
+                real.st_ino + attempt,
+                real.st_dev,
+                real.st_nlink,
+                real.st_uid,
+                real.st_gid,
+                real.st_size + 1,
+                real.st_atime,
+                real.st_mtime,
+                real.st_ctime,
+            )
+        )
+
+    with _interceptar_stat_final_post_lectura(monkeypatch, bat, make_stat=stat_mutado) as counts:
+        preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+    assert counts["open_calls"] == _FINGERPRINT_MAX_ATTEMPTS
+    assert counts["post_open_stat_calls"] == _FINGERPRINT_MAX_ATTEMPTS
+    assert preflight.status == ParallaxRAssistedStatus.EVIDENCE_UNSTABLE
+    assert preflight.success is False
+    assert preflight.installation is None
+    with pytest.raises(ValueError):
+        prepare_parallaxr_manual_handoff(preflight)
+
+
+def test_fingerprint_c4_enoent_en_stat_final_no_devuelve_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C4: ENOENT durante el stat() final se trata como carrera anti-TOCTOU o evidencia incompleta, nunca READY."""
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "ParallaxR"
+    mod_dir.mkdir(parents=True)
+    bat = mod_dir / "ParallaxR.BAT"
+    bat.write_bytes(b"@echo carrera")
+
+    # Caso A: reemplazo concurrente repetido donde open() reabre el path pero stat() final ve ENOENT.
+    with _interceptar_stat_final_post_lectura(
+        monkeypatch,
+        bat,
+        make_error=lambda _attempt: FileNotFoundError(errno.ENOENT, "ausente en carrera stat"),
+    ) as counts_race:
+        preflight_race = run_parallaxr_assisted_preflight(mods_dir)
+
+    assert counts_race["open_calls"] == _FINGERPRINT_MAX_ATTEMPTS
+    assert counts_race["post_open_stat_calls"] == _FINGERPRINT_MAX_ATTEMPTS
+    assert preflight_race.status == ParallaxRAssistedStatus.EVIDENCE_UNSTABLE
+    assert preflight_race.status != ParallaxRAssistedStatus.READY
+    assert preflight_race.success is False
+    assert preflight_race.installation is None
+    with pytest.raises(ValueError):
+        prepare_parallaxr_manual_handoff(preflight_race)
+
+    # Caso B: ENOENT en stat() final seguido de desaparición real al reintentar open().
+    with _interceptar_stat_final_post_lectura(
+        monkeypatch,
+        bat,
+        make_error=lambda _attempt: FileNotFoundError(errno.ENOENT, "desapareció en stat"),
+        fail_second_open_error=FileNotFoundError(errno.ENOENT, "desapareció al reintentar"),
+    ) as counts_gone:
+        preflight_gone = run_parallaxr_assisted_preflight(mods_dir)
+
+    assert counts_gone["open_calls"] == 2
+    assert counts_gone["post_open_stat_calls"] == 1
+    assert preflight_gone.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+    assert preflight_gone.status not in (ParallaxRAssistedStatus.READY, ParallaxRAssistedStatus.MISSING)
+    assert preflight_gone.success is False
+    assert preflight_gone.installation is None
+    with pytest.raises(ValueError):
+        prepare_parallaxr_manual_handoff(preflight_gone)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="WinError específico de Windows")
+def test_fingerprint_c4_windows_winerror_1921_en_stat_final_falla_cerrado(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """En Windows, WinError 1921 disfrazado con errno ENOENT en stat() final falla inmediato a EVIDENCE_INCOMPLETE."""
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "ParallaxR"
+    mod_dir.mkdir(parents=True)
+    bat = mod_dir / "ParallaxR.BAT"
+    bat.write_bytes(b"@echo winerror")
+
+    winerror_1921 = FileNotFoundError(errno.ENOENT, "El sistema no puede resolver el nombre del archivo", None, 1921)
+    with _interceptar_stat_final_post_lectura(monkeypatch, bat, make_error=lambda _attempt: winerror_1921) as counts:
+        preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+    assert counts["open_calls"] == 1
+    assert preflight.status == ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+    assert preflight.status != ParallaxRAssistedStatus.EVIDENCE_UNSTABLE
+    assert preflight.success is False
+    assert preflight.installation is None
+
+
+def test_fingerprint_c5_archivo_estable_mantiene_ready_y_handoff(tmp_path: Path) -> None:
+    """C5: Regresión sin mocks: entrypoint y marcador estables mantienen READY y handoff manual válido."""
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "ParallaxR"
+    mod_dir.mkdir(parents=True)
+    bat_bytes = b"@echo estable_v1"
+    bat = mod_dir / "ParallaxR.BAT"
+    bat.write_bytes(bat_bytes)
+
+    marker_bytes = b"output_marker_v1"
+    marker = mod_dir / "ParallaxROutput.tmp"
+    marker.write_bytes(marker_bytes)
+
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+    assert preflight.status == ParallaxRAssistedStatus.READY
+    assert preflight.success is True
+    assert preflight.message == ""
+    assert preflight.installation is not None
+    assert preflight.installation.entrypoint == bat.resolve()
+    assert preflight.installation.mod_root == mod_dir.resolve()
+    assert preflight.installation.size_bytes == len(bat_bytes)
+    assert preflight.installation.mtime_ns == bat.stat().st_mtime_ns
+    assert preflight.installation.sha256 == hashlib.sha256(bat_bytes).hexdigest()
+    assert len(preflight.existing_output_candidates) == 1
+    assert preflight.existing_output_candidates[0].path == marker.resolve()
+    assert preflight.existing_output_candidates[0].sha256 == hashlib.sha256(marker_bytes).hexdigest()
+
+    handoff = prepare_parallaxr_manual_handoff(preflight)
+    assert handoff.success is True
+    assert handoff.requires_user_launch is True
+    assert handoff.direct_helper_invocation is False
+    assert handoff.sky_claw_launches_process is False
