@@ -55,9 +55,11 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODSpawnStrategy,
     DynDOLODTimeoutError,
     InteraccionDeCorrida,
+    PreflightDeBackend,
     ProgresoDeHerramienta,
     ReadinessMode,
     normalize_dyndolod_spawn_strategy,
+    preflight_del_backend,
     resolve_data_visibility_domain,
 )
 from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido, ModoDeInteraccion, modo_de_interaccion_desde
@@ -535,6 +537,15 @@ class DynDOLODPipelineService:
             dyndolod_exe,
         )
         return self._runner
+
+    async def verificar_backend_listo(self) -> PreflightDeBackend:
+        """¿Puede el backend de ESTA corrida servirla ahora? (B-3 / H-6)
+
+        Lo consultan los guards de etapas previas (GUI asistida y agente remoto) ANTES de pedirle al operador
+        que apruebe seguir sin ellas: lo mismo que hace el runner antes de la aprobación remota de la
+        configuración. Delega en el fail-closed único; el servicio no interpreta la strategy.
+        """
+        return await preflight_del_backend(self._spawn_strategy)
 
     def verificar_etapas_previas(self) -> EvidenciaDeEtapasPrevias:
         """SOP §5.2: artefactos de las etapas 6, 7 y 8 en el perfil activo (#661).

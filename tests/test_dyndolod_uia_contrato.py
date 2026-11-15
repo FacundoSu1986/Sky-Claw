@@ -61,6 +61,7 @@ def test_los_codigos_de_error_son_estables_y_machine_readable():
         "UNATTENDED_CAPABILITY_UNAVAILABLE",
         "UNATTENDED_BUILD_UNSUPPORTED",
         "UNATTENDED_CONFIGURATION_NOT_APPROVED",
+        "BACKEND_NOT_READY",
         "PRESET_ABSENT",
         "PRESET_MISMATCH",
         "PRESET_RESTORE_FAILED",

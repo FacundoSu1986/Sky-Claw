@@ -42,6 +42,7 @@ from sky_claw.app.orchestrator.dyndolod_desatendido_hitl import (
 )
 from sky_claw.app.orchestrator.tool_strategies.generate_lods import _VALID_LOD_KEYS
 from sky_claw.app.security.hitl import CATEGORIA_DYNDOLOD_DESATENDIDO, Decision, HITLGuard
+from sky_claw.local.tools.dyndolod_runner import PreflightDeBackend
 from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
 from sky_claw.local.tools.dyndolod_uia_driver import (
     ResumenDeHerramienta,
@@ -78,6 +79,10 @@ class ServicioFalso:
         if self._verificacion_lanza:
             raise OSError("disco desconectado")
         return EvidenciaDeEtapasPrevias(faltantes=self._faltantes)
+
+    async def verificar_backend_listo(self) -> PreflightDeBackend:
+        # B-3: el backend está listo; los casos de backend no listo viven en test_dyndolod_preflight_del_backend.py
+        return PreflightDeBackend.ok()
 
     async def execute(self, **kwargs):
         self.llamadas.append(kwargs)
