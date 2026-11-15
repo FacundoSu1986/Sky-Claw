@@ -387,9 +387,13 @@ def leer_game_path_de_mo2(ini_path: pathlib.Path) -> Mo2GamePathEvidence:
 def leer_ejecutables_de_mo2(ini_path: pathlib.Path) -> tuple[Mo2Executable, ...]:
     """Entradas de ``[customExecutables]``, ordenadas por índice. Nunca lanza.
 
-    Detecta anomalías (claves duplicadas, entradas huérfanas sin binario, índices
+    Admite la clave de metadatos ``size=<entero>=0..N`` que escribe Qt
+    ``QSettings::beginWriteArray("customExecutables")`` y valida su consistencia
+    con los índices ``1..size``. Detecta anomalías (``size`` duplicado o inválido,
+    índices faltantes o fuera de rango respecto de ``size``, claves duplicadas,
+    claves desconocidas sin índice, entradas huérfanas sin binario, índices
     inválidos, líneas malformadas o secciones duplicadas) y las adjunta en el
-    campo ``anomalia`` del ejecutable para que el planificador pueda fallar cerrado.
+    campo ``anomalia`` para que el planificador pueda fallar cerrado.
     """
     contenido, _motivo = _leer_texto(ini_path)
     if contenido is None:
@@ -399,6 +403,7 @@ def leer_ejecutables_de_mo2(ini_path: pathlib.Path) -> tuple[Mo2Executable, ...]
     secciones_custom_vistas = 0
     claves_vistas: set[str] = set()
     anomalias_detectadas: list[str] = []
+    size_declarado: int | None = None
 
     por_indice: dict[int, dict[str, str]] = {}
     indices_con_duplicados: set[int] = set()
@@ -435,6 +440,13 @@ def leer_ejecutables_de_mo2(ini_path: pathlib.Path) -> tuple[Mo2Executable, ...]
 
         prefijo, separador, campo = clave_limpia.partition("\\")
         if not separador:
+            if clave_limpia == "size":
+                valor_limpio = valor.strip()
+                if not valor_limpio or not valor_limpio.isascii() or not valor_limpio.isdigit():
+                    anomalias_detectadas.append(f"Valor inválido para 'size' en [customExecutables]: '{valor_limpio}'")
+                elif size_declarado is None and not es_duplicada:
+                    size_declarado = int(valor_limpio)
+                continue
             anomalias_detectadas.append(f"Clave sin separador de índice en [customExecutables]: '{clave_limpia}'")
             continue
 
@@ -450,6 +462,21 @@ def leer_ejecutables_de_mo2(ini_path: pathlib.Path) -> tuple[Mo2Executable, ...]
         if campo in campos_idx and campos_idx[campo] != valor:
             indices_con_duplicados.add(idx)
         campos_idx[campo] = valor
+
+    if size_declarado is not None:
+        esperados = set(range(1, size_declarado + 1))
+        observados = set(por_indice.keys())
+        if observados != esperados:
+            faltantes = sorted(esperados - observados)
+            sobrantes = sorted(observados - esperados)
+            if faltantes:
+                anomalias_detectadas.append(
+                    f"Metadata size={size_declarado} en [customExecutables] con índices faltantes: {faltantes}"
+                )
+            if sobrantes:
+                anomalias_detectadas.append(
+                    f"Metadata size={size_declarado} en [customExecutables] con índices fuera de rango: {sobrantes}"
+                )
 
     ejecutables: list[Mo2Executable] = []
     indices_ordenados = sorted(por_indice.keys())

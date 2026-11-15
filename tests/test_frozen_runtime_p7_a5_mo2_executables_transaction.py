@@ -23,6 +23,9 @@ from sky_claw.local.frozen_runtime.binder_preflight import (
     PreflightReasonCode,
     evaluar_binder_preflight,
 )
+from sky_claw.local.frozen_runtime.binder_preflight import (
+    _argumentos_dependientes_de_steam as _preflight_argumentos_dependientes_de_steam,
+)
 from sky_claw.local.frozen_runtime.binder_recovery import (
     RegistroCorruptoError,
     _coincide_con_lo_escrito,
@@ -42,6 +45,8 @@ from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
 from sky_claw.local.frozen_runtime.mo2_executables_plan import (
     ClasificacionEjecutableMO2,
     MutacionCampoEjecutable,
+    _argumentos_dependientes_de_steam,
+    _contiene_referencia_a_ruta,
     _dentro_de_area_steamapps,
     planificar_migracion_ejecutables,
 )
@@ -1970,3 +1975,476 @@ def test_p1_noop_no_bloquea_si_ini_no_fue_modificado_incluso_sin_bytes_bajo_excl
 
     assert res2.success is True
     assert res2.transition_id == "idempotent-noop"
+
+
+# =============================================================================
+# P7-A5-F01 / P7-A5-F02: QSettings size y escapes Qt en [customExecutables]
+# =============================================================================
+
+
+def _preparar_par_runtime_sintetico(
+    tmp_path: pathlib.Path,
+) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+    """Crea un par outgoing/clone sintético con SKSE válido para planificar."""
+    outgoing = tmp_path / "Skyrim_Manual_1.6.1170"
+    clone = tmp_path / "FrozenClone_p7_01"
+    tools = tmp_path / "Tools"
+    for root in (outgoing, clone, tools):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "Data").mkdir(exist_ok=True)
+    (outgoing / "skse64_loader.exe").write_bytes(b"MZ_SKSE")
+    (clone / "skse64_loader.exe").write_bytes(b"MZ_SKSE")
+    (tools / "SSEEdit.exe").write_bytes(b"MZ_SSEEDIT")
+    return outgoing, clone, tools
+
+
+def test_f01_size_10_con_diez_ejecutables_validos(tmp_path: pathlib.Path) -> None:
+    """QSettings size=10 con 10 entradas válidas se lee sin anomalías y se planifica/preserva."""
+    outgoing, clone, tools = _preparar_par_runtime_sintetico(tmp_path)
+    extra_bins: list[pathlib.Path] = []
+    for idx in range(2, 11):
+        exe_file = tools / f"Herramienta{idx}.exe"
+        exe_file.write_bytes(b"MZ_TOOL")
+        extra_bins.append(exe_file)
+
+    lineas = [
+        "[General]",
+        f"gamePath=@ByteArray({str(outgoing).replace(chr(92), chr(92) * 2)})",
+        "",
+        "[customExecutables]",
+        "size=10",
+        "1\\title=SKSE",
+        f"1\\binary={outgoing.as_posix()}/skse64_loader.exe",
+        f"1\\workingDirectory={outgoing.as_posix()}",
+        "1\\arguments=",
+        "1\\custom=true",
+        "1\\toolbar=false",
+        "1\\ownicon=true",
+        "1\\hide=false",
+    ]
+    for offset, exe_file in enumerate(extra_bins, start=2):
+        lineas.extend(
+            [
+                f"{offset}\\title=Herramienta {offset}",
+                f"{offset}\\binary={exe_file.as_posix()}",
+                f"{offset}\\workingDirectory={tools.as_posix()}",
+                f"{offset}\\arguments=-autoload",
+            ]
+        )
+
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_bytes = ("\r\n".join(lineas) + "\r\n").encode("utf-8")
+    ini_path.write_bytes(ini_bytes)
+
+    ejecutables = leer_ejecutables_de_mo2(ini_path)
+    assert len(ejecutables) == 10
+    assert [exe.index for exe in ejecutables] == list(range(1, 11))
+    assert all(exe.anomalia is None for exe in ejecutables)
+
+    plan = planificar_migracion_ejecutables(ejecutables, outgoing, clone)
+    assert plan.bloqueado is False
+    assert plan.entradas[0].clasificacion is ClasificacionEjecutableMO2.MIGRABLE_AL_CLONE
+    assert all(entrada.clasificacion is ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE for entrada in plan.entradas[1:])
+
+    salida_bytes = prever_bytes(ini_bytes, clone.as_posix(), plan_ejecutables=plan)
+    assert b"size=10\r\n" in salida_bytes
+    assert f"1\\binary={clone.as_posix()}/skse64_loader.exe".encode() in salida_bytes
+
+
+def test_f01_size_cero_sin_entradas(tmp_path: pathlib.Path) -> None:
+    """QSettings size=0 sin ejecutables devuelve tupla vacía sin anomalía sintética."""
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_bytes(b"[General]\r\ngamePath=C:/Dummy\r\n[customExecutables]\r\nsize=0\r\n")
+
+    assert leer_ejecutables_de_mo2(ini_path) == ()
+
+
+def test_f01_size_valido_con_entrada_incompleta_sigue_bloqueada(tmp_path: pathlib.Path) -> None:
+    """size=2 válido no oculta una entrada incompleta sin binary."""
+    outgoing, clone, _tools = _preparar_par_runtime_sintetico(tmp_path)
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_text(
+        "[General]\n"
+        f"gamePath={outgoing.as_posix()}\n"
+        "[customExecutables]\n"
+        "size=2\n"
+        "1\\title=SKSE\n"
+        f"1\\binary={outgoing.as_posix()}/skse64_loader.exe\n"
+        "2\\title=Incompleta\n"
+        "2\\arguments=-foo\n",
+        encoding="utf-8",
+    )
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    assert len(exes) == 2
+    assert exes[1].anomalia is not None
+    assert "binary" in exes[1].anomalia
+    plan = planificar_migracion_ejecutables(exes, outgoing, clone)
+    assert plan.bloqueado is True
+
+
+@pytest.mark.parametrize(
+    "lineas_size",
+    [
+        ["size=1", "size=1"],
+        ["size=1", "size=2"],
+        ["size=1", "SIZE=1"],
+    ],
+)
+def test_f01_size_duplicado_bloqueado(tmp_path: pathlib.Path, lineas_size: list[str]) -> None:
+    """Metadata size duplicada (idéntica, conflictiva o por casing) bloquea."""
+    outgoing, clone, _tools = _preparar_par_runtime_sintetico(tmp_path)
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_text(
+        "[customExecutables]\n"
+        + "\n".join(lineas_size)
+        + f"\n1\\title=SKSE\n1\\binary={outgoing.as_posix()}/skse64_loader.exe\n",
+        encoding="utf-8",
+    )
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    assert exes and exes[0].anomalia is not None
+    plan = planificar_migracion_ejecutables(exes, outgoing, clone)
+    assert plan.bloqueado is True
+
+
+@pytest.mark.parametrize("valor_invalido", ["", "abc", "-1", "+2", "1.5", "²", "10 # extra"])
+def test_f01_size_invalido_bloqueado(tmp_path: pathlib.Path, valor_invalido: str) -> None:
+    """Valores no enteros ASCII positivos en size= se rechazan con anomalía."""
+    outgoing, clone, _tools = _preparar_par_runtime_sintetico(tmp_path)
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_text(
+        "[customExecutables]\n"
+        f"size={valor_invalido}\n"
+        "1\\title=SKSE\n"
+        f"1\\binary={outgoing.as_posix()}/skse64_loader.exe\n",
+        encoding="utf-8",
+    )
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    assert exes and exes[0].anomalia is not None
+    plan = planificar_migracion_ejecutables(exes, outgoing, clone)
+    assert plan.bloqueado is True
+
+
+@pytest.mark.parametrize(
+    ("size_val", "indices"),
+    [
+        (3, [1, 2]),
+        (3, [1, 3]),
+        (2, [1, 2, 3]),
+        (0, [1]),
+    ],
+)
+def test_f01_indices_inconsistentes_con_size_bloqueado(
+    tmp_path: pathlib.Path,
+    size_val: int,
+    indices: list[int],
+) -> None:
+    """Desajuste entre size declarado e índices 1..size falla cerrado."""
+    outgoing, clone, tools = _preparar_par_runtime_sintetico(tmp_path)
+    lineas = ["[customExecutables]", f"size={size_val}"]
+    for idx in indices:
+        bin_path = outgoing / "skse64_loader.exe" if idx == 1 else tools / "SSEEdit.exe"
+        lineas.extend([f"{idx}\\title=Tool{idx}", f"{idx}\\binary={bin_path.as_posix()}"])
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    assert exes and exes[0].anomalia is not None
+    plan = planificar_migracion_ejecutables(exes, outgoing, clone)
+    assert plan.bloqueado is True
+
+
+def test_f01_claves_duplicadas_y_entradas_huerfanas_con_size(tmp_path: pathlib.Path) -> None:
+    """Campos duplicados, entradas sin binary e índice 0 siguen bloqueando con size presente."""
+    outgoing, clone, _tools = _preparar_par_runtime_sintetico(tmp_path)
+
+    # Campo duplicado bajo size=1
+    ini_dup = tmp_path / "dup.ini"
+    ini_dup.write_text(
+        "[customExecutables]\n"
+        "size=1\n"
+        "1\\title=SKSE\n"
+        f"1\\binary={outgoing.as_posix()}/skse64_loader.exe\n"
+        f"1\\binary={outgoing.as_posix()}/skse64_loader.exe\n",
+        encoding="utf-8",
+    )
+    exes_dup = leer_ejecutables_de_mo2(ini_dup)
+    assert exes_dup[0].anomalia is not None
+    assert planificar_migracion_ejecutables(exes_dup, outgoing, clone).bloqueado is True
+
+    # Entrada huérfana sin binary + índice 0 inválido
+    ini_huerf = tmp_path / "huerf.ini"
+    ini_huerf.write_text(
+        "[customExecutables]\n"
+        "size=1\n"
+        f"0\\binary={outgoing.as_posix()}/skse64_loader.exe\n"
+        "1\\title=Huerfana\n"
+        "1\\arguments=-foo\n",
+        encoding="utf-8",
+    )
+    exes_huerf = leer_ejecutables_de_mo2(ini_huerf)
+    assert any(e.anomalia is not None for e in exes_huerf)
+    assert planificar_migracion_ejecutables(exes_huerf, outgoing, clone).bloqueado is True
+
+
+@pytest.mark.parametrize("clave_desconocida", ["foo=bar", "count=1", "SIZE=1", "Size=1", "customFlag=true"])
+def test_f01_claves_desconocidas_en_custom_executables_bloqueadas(
+    tmp_path: pathlib.Path,
+    clave_desconocida: str,
+) -> None:
+    """Solo se admite la metadata exacta size=<entero>; cualquier otra clave suelta bloquea."""
+    outgoing, clone, _tools = _preparar_par_runtime_sintetico(tmp_path)
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_text(
+        "[customExecutables]\n"
+        "size=1\n"
+        f"{clave_desconocida}\n"
+        "1\\title=SKSE\n"
+        f"1\\binary={outgoing.as_posix()}/skse64_loader.exe\n",
+        encoding="utf-8",
+    )
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    assert exes and exes[0].anomalia is not None
+    assert planificar_migracion_ejecutables(exes, outgoing, clone).bloqueado is True
+
+
+def test_f01_seccion_duplicada_con_size_bloqueada(tmp_path: pathlib.Path) -> None:
+    """Dos secciones [customExecutables] con size siguen fallando cerrado en lector y escritor."""
+    outgoing, clone, tools = _preparar_par_runtime_sintetico(tmp_path)
+    contenido = (
+        "[General]\r\n"
+        f"gamePath={outgoing.as_posix()}\r\n"
+        "[customExecutables]\r\n"
+        "size=1\r\n"
+        f"1\\binary={outgoing.as_posix()}/skse64_loader.exe\r\n"
+        "[customExecutables]\r\n"
+        "size=1\r\n"
+        f"2\\binary={tools.as_posix()}/SSEEdit.exe\r\n"
+    ).encode()
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_bytes(contenido)
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    assert exes and exes[0].anomalia is not None
+    assert planificar_migracion_ejecutables(exes, outgoing, clone).bloqueado is True
+    with pytest.raises(FormatoIniNoAdmitidoError, match="[Ss]ección.*duplicada"):
+        prever_bytes(contenido, clone.as_posix())
+
+
+def test_f01_archivo_sin_size_y_entradas_validas_permitido(tmp_path: pathlib.Path) -> None:
+    """INIs sintéticos heredados sin size= siguen siendo válidos si todas las entradas son íntegras."""
+    outgoing, clone, tools = _preparar_par_runtime_sintetico(tmp_path)
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_text(
+        "[customExecutables]\n"
+        "1\\title=SKSE\n"
+        f"1\\binary={outgoing.as_posix()}/skse64_loader.exe\n"
+        "2\\title=SSEEdit\n"
+        f"2\\binary={tools.as_posix()}/SSEEdit.exe\n",
+        encoding="utf-8",
+    )
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    assert len(exes) == 2
+    assert all(e.anomalia is None for e in exes)
+    assert planificar_migracion_ejecutables(exes, outgoing, clone).bloqueado is False
+
+
+@pytest.mark.parametrize(
+    ("argumentos", "ruta_str", "esperado"),
+    [
+        # Referencias verdaderas con escapes Qt reales de MO2 2.5.2 y variantes
+        (
+            r"-D:\"G:\\Modding\\Skyrim_Runtime_1.6.1170\\Data\\\"",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r'-D:"G:\\Modding\\Skyrim_Runtime_1.6.1170\\Data\\"',
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r'"-D:\"G:\\Modding\\Skyrim_Runtime_1.6.1170\\Data\\\" -autoload"',
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r"\"G:\\Modding\\Skyrim_Runtime_1.6.1170\"",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r"-p:\"G:\\Modding\\Skyrim_Runtime_1.6.1170\\\"",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            '-D:"G:/Modding/Skyrim_Runtime_1.6.1170/Data"',
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r'-D:"G:\Modding\Skyrim_Runtime_1.6.1170\Data"',
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r'-D:"G:\tools\new\Skyrim_Runtime_1.6.1170\Data"',
+            r"G:\tools\new\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r"-D:\"G:\\Modding\\Skyrim Runtime 1.6.1170\\Data\\\"",
+            r"G:\Modding\Skyrim Runtime 1.6.1170",
+            True,
+        ),
+        (
+            r"-D:\"g:\\modding\\SKYRIM_RUNTIME_1.6.1170\\data\\\"",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r'-D:"G:\\\\Modding\\\\Skyrim_Runtime_1.6.1170\\\\Data"',
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        # Fail-closed ante escapes malformados / truncados / NUL
+        (
+            r"@ByteArray(G:\\Other\\truncado",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            "G:\\\\Other\x00Hidden",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r"-D:\"G:\\Other\\",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r"-D:\"G:\\Other\xZZ\"",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r"-D:\"G:\\Other\\xEdit\\Data\\\"",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            False,
+        ),
+        # No falsopositivos en prefijos parciales ni rutas ajenas
+        (
+            r"-D:\"G:\\Modding\\Skyrim_Runtime_1.6.1170_Backup\\Data\\\"",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            False,
+        ),
+        (
+            r"-D:\"G:\\Modding\\Skyrim_Runtime_1.6.11700\\Data\\\"",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            False,
+        ),
+        (
+            r"-D:\"G:\\Modding\\OtraCarpeta\\Data\\\"",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            False,
+        ),
+        (
+            r'-D:"C:\Tools\xEdit\Data"',
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            False,
+        ),
+        (
+            "-sse -autoload",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            False,
+        ),
+    ],
+)
+def test_f02_contiene_referencia_a_ruta_variantes_qt_y_falsos_positivos(
+    argumentos: str,
+    ruta_str: str,
+    esperado: bool,
+) -> None:
+    """_contiene_referencia_a_ruta detecta escapes Qt (\\\\ y \\\") sin falsos positivos."""
+    assert _contiene_referencia_a_ruta(argumentos, pathlib.PureWindowsPath(ruta_str)) is esperado  # type: ignore[arg-type]
+
+
+def test_f02_planificar_bloquea_sseedit_con_escapes_qt_reales(tmp_path: pathlib.Path) -> None:
+    """SSEEdit externo con arguments en formato Qt QSettings hacia outgoing bloquea el plan; con sufijo distinto pasa."""
+    outgoing, clone, tools = _preparar_par_runtime_sintetico(tmp_path)
+    outgoing_qt = str(outgoing).replace("\\", "\\\\")
+
+    ini_bloqueado = tmp_path / "mo2_bloqueado.ini"
+    ini_bloqueado.write_text(
+        "[customExecutables]\n"
+        "size=2\n"
+        "1\\title=SKSE\n"
+        f"1\\binary={outgoing.as_posix()}/skse64_loader.exe\n"
+        "2\\title=SSEEdit\n"
+        f"2\\binary={tools.as_posix()}/SSEEdit.exe\n"
+        f"2\\workingDirectory={tools.as_posix()}\n"
+        f'2\\arguments=-D:\\"{outgoing_qt}\\\\Data\\\\\\"\n',
+        encoding="utf-8",
+    )
+
+    exes_bloqueado = leer_ejecutables_de_mo2(ini_bloqueado)
+    assert all(e.anomalia is None for e in exes_bloqueado)
+    plan_bloqueado = planificar_migracion_ejecutables(exes_bloqueado, outgoing, clone)
+    assert plan_bloqueado.bloqueado is True
+    assert plan_bloqueado.entradas[1].clasificacion is ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA
+
+    ini_limpio = tmp_path / "mo2_limpio.ini"
+    ini_limpio.write_text(
+        "[customExecutables]\n"
+        "size=2\n"
+        "1\\title=SKSE\n"
+        f"1\\binary={outgoing.as_posix()}/skse64_loader.exe\n"
+        "2\\title=SSEEdit\n"
+        f"2\\binary={tools.as_posix()}/SSEEdit.exe\n"
+        f"2\\workingDirectory={tools.as_posix()}\n"
+        f'2\\arguments=-D:\\"{outgoing_qt}_Backup\\\\Data\\\\\\"\n',
+        encoding="utf-8",
+    )
+    exes_limpio = leer_ejecutables_de_mo2(ini_limpio)
+    plan_limpio = planificar_migracion_ejecutables(exes_limpio, outgoing, clone)
+    assert plan_limpio.bloqueado is False
+    assert plan_limpio.entradas[1].clasificacion is ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE
+
+
+def test_f02_argumentos_dependientes_de_steam_ambos_hermanos_alineados() -> None:
+    """Los hermanos en mo2_executables_plan y binder_preflight comparten detección Qt y sin falsos positivos."""
+    ms_root = pathlib.PureWindowsPath(r"D:\CustomGames\SkyrimSE")
+    arg_qt = r"-D:\"D:\\CustomGames\\SkyrimSE\\Data\\\""
+    arg_prefijo = r"-D:\"D:\\CustomGames\\SkyrimSE_Copy\\Data\\\""
+    arg_malformado = r"@ByteArray(D:\\CustomGames\\truncado"
+
+    for fn in (_argumentos_dependientes_de_steam, _preflight_argumentos_dependientes_de_steam):
+        assert fn(arg_qt, ms_root) is True  # type: ignore[arg-type]
+        assert fn(arg_prefijo, ms_root) is False  # type: ignore[arg-type]
+        assert fn(arg_malformado, ms_root) is True  # type: ignore[arg-type]
+
+
+def test_f02_planificar_escapes_malformados_en_arguments_clasificados_como_ambigua(tmp_path: pathlib.Path) -> None:
+    """Un escape malformado en arguments sin mención a Steam se clasifica como AMBIGUA_O_BLOQUEADA, no DEPENDIENTE_DE_STEAM."""
+    outgoing, clone, tools = _preparar_par_runtime_sintetico(tmp_path)
+    ms_root = tmp_path / "SteamLibrary" / "steamapps" / "common" / "Skyrim Special Edition"
+    ms_root.mkdir(parents=True)
+
+    exes = (
+        Mo2Executable(
+            index=1,
+            title="SSEEdit",
+            binary=f"{tools.as_posix()}/SSEEdit.exe",
+            working_directory=tools.as_posix(),
+            arguments=r"@ByteArray(C:\\Tools\\truncado",
+        ),
+    )
+    plan = planificar_migracion_ejecutables(exes, outgoing, clone, managed_source_root=ms_root)
+    assert plan.bloqueado is True
+    assert plan.entradas[0].clasificacion is ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA
