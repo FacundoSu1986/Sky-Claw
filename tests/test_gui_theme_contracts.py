@@ -1715,6 +1715,8 @@ _CONSUMIDORES_FRAGMENTO = frozenset(
         "_ritual_feedback_panel",
         # H-12: la ayuda del selector de modo de la etapa 9 (texto de un solo hijo dentro de la tarjeta).
         "_ayuda_del_modo_de_interaccion",
+        # P-3c-2: el panel de progreso/cuarentena de la etapa 9.
+        "_etapa9_estado_panel",
     }
 )
 
