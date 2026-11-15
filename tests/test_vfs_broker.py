@@ -15,6 +15,7 @@ from typing import Any
 import psutil
 import pytest
 
+from sky_claw.local.mo2.bridge_bundle import digest_del_bundle_del_producto
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_broker import (
     VfsBrokerError,
@@ -179,6 +180,7 @@ async def _conectar_bridge(broker: VfsExecutionBroker):
             "role": "bridge",
             "instance_id": "portable-main",
             "session_id": descriptor["session_id"],
+            "bundle_digest": digest_del_bundle_del_producto(),
         },
         secret,
     )

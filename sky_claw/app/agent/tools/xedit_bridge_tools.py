@@ -38,6 +38,7 @@ from sky_claw.app.agent.tools.schemas import TIMEOUT_MAXIMO_LLM
 from sky_claw.app.security.hitl import Decision, new_hitl_request_id
 from sky_claw.app.security.sanitize import sanitize_for_prompt
 from sky_claw.local.tools.xedit_bridge_client import nombre_visible, validar_plugin
+from sky_claw.local.tools.xedit_bridge_service import texto_una_linea
 
 if TYPE_CHECKING:
     from sky_claw.app.security.hitl import HITLGuard
@@ -190,6 +191,11 @@ def _aviso_de_fin(trabajo: TrabajoDeAdmision) -> str:
             f"⏹️ La admisión de {trabajo.visible} se canceló antes de terminar (Sky-Claw se cerró); si llegó a "
             "copiar, volvé a admitirlo antes de auditarlo."
         )
+    if resultado.get("estado_admision") == "ambigua":
+        detalle = str(resultado.get("message") or "el bridge respondió ok=true sin admission_id válido")[:300]
+        return (
+            f"⚠️ La admisión de {trabajo.visible} quedó en estado ambiguo (la copia pudo haberse realizado): {detalle}"
+        )
     return (
         f"❌ La admisión de {trabajo.visible} no se hizo: {str(resultado.get('message') or 'error sin detalle')[:300]}"
     )
@@ -286,7 +292,10 @@ class GestorDeAdmisionesNativas:
             raise
         except Exception as exc:  # noqa: BLE001 -- frontera del trabajo: el servicio no debería lanzar
             logger.exception("la admisión remota (%s) lanzó en vez de devolver su resultado", trabajo.id)
-            resultado = {"success": False, "message": f"error inesperado de la admisión: {exc}"}
+            resultado = {
+                "success": False,
+                "message": f"error inesperado de la admisión: {texto_una_linea(exc)}",
+            }
         await self._terminar(trabajo, resultado)
 
     async def _terminar(self, trabajo: TrabajoDeAdmision, resultado: dict[str, Any]) -> None:

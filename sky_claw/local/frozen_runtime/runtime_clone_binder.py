@@ -28,16 +28,21 @@ Lo que este módulo hace cumplir:
 
 Lo que este módulo NO afirma:
 
-- ``EXCLUSION_WITH_MO2 = NOT_ESTABLISHED``. El lock de Sky-Claw **no impide**
-  que un operador abra ``ModOrganizer.exe``: MO2 no participa del lock. Lo que
-  hay es detección (quiescencia al entrar y revalidación bajo la sección
-  crítica) y un fail-closed cuando la detección ve algo. Entre la última
-  revalidación y el ``os.replace`` del INI queda una ventana que ningún lock de
-  Sky-Claw cierra. Por eso el switch está **limitado a rig sintético**: no hay
-  wiring productivo, y no debe haberlo hasta que exista exclusión real
-  (``FILE_SHARE_NONE`` sobre el INI o un protocolo con MO2).
-- ``POWER_LOSS_GUARANTEE = NOT_CLAIMED``: ``os.replace`` atómico, sin WAL ni
-  ``fsync`` de directorio, igual que el resto del paquete.
+- ``EXCLUSION_WITH_MO2 = WIN32_FILE_SHARE_NONE`` (desde P5-C2,
+  ``mo2_ini_exclusion.py``): bajo la sección crítica el binder adquiere un
+  handle exclusivo de Win32 (``dwShareMode = 0``) sobre ``modorganizer.ini``,
+  verifica el SHA-256 en memoria contra el snapshot validado y escribe
+  in-place bajo ese mismo handle antes de cerrarlo (eliminando el
+  ``os.replace`` intermedio en la escritura normal del INI). Contra
+  agregadores Win32 sintéticos quedó medido ``ERROR_SHARING_VIOLATION`` (0
+  escrituras perdidas), **pero** sigue vigente
+  ``MODORGANIZER_EXE_COMPAT = NOT_MEASURED_ON_LIVE_MO2``: no se probó todavía
+  la reacción exacta del binario real ``ModOrganizer.exe`` ante un handle
+  ``FILE_SHARE_NONE`` vivo ni con MO2 portable. En POSIX la exclusión OS no
+  existe y el binder falla cerrado.
+- ``POWER_LOSS_GUARANTEE = NOT_CLAIMED``: escritura in-place tras validación +
+  ``DirectoryRollback`` / ``os.replace`` en snapshots sin WAL ni ``fsync`` de
+  directorio (seguimiento #911).
 - ``QT_QSETTINGS_EQUIVALENCE = NOT_CLAIMED``: ver ``mo2_ini_escritura``.
 """
 
@@ -391,10 +396,13 @@ def _revalidar_bajo_lock(
     ancle a ESA lectura (si el archivo cambia entre la revalidación y el
     snapshot, la comparación de digests lo detecta).
 
-    Lo que NO cierra: MO2 puede abrirse ENTRE esta función y el ``os.replace``
-    del INI. Es una ventana de microsegundos que ningún lock de Sky-Claw cubre,
-    porque MO2 no participa. Ver ``EXCLUSION_WITH_MO2`` en el docstring del
-    módulo.
+    Lo que NO cierra: MO2 puede abrirse ENTRE esta función y la adquisición del
+    handle exclusivo ``FILE_SHARE_NONE`` justo antes de mutar el INI (momento
+    en que ``mo2_ini_exclusion`` verifica de nuevo la huella SHA-256 bajo
+    exclusión OS). Además sigue sin medirse en rig real la reacción de
+    ``ModOrganizer.exe`` ante ``ERROR_SHARING_VIOLATION``
+    (``MODORGANIZER_EXE_COMPAT = NOT_MEASURED_ON_LIVE_MO2``). Ver
+    ``EXCLUSION_WITH_MO2`` en el docstring del módulo.
     """
     _exigir_quiescencia(observadores, momento="revalidación bajo lock")
 
