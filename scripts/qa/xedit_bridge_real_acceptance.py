@@ -55,6 +55,7 @@ class Contexto:
         self.gestor: Any = None
         self.registry: Any = None
         self.resolver: Any = None
+        self.resultados: list[dict[str, Any]] = []  # se conservan aunque un escenario posterior falle
 
     def estado_admitidos(self) -> dict[str, str]:
         return inventario(self.admitidos)
@@ -164,7 +165,7 @@ def etiquetar(nombre: str, tipo: str, datos: dict[str, Any], doble: str | None =
 
 
 async def correr(ctx: Contexto) -> list[dict[str, Any]]:
-    res: list[dict[str, Any]] = []
+    res = ctx.resultados
     armar(ctx)
     aislamiento = control_de_aislamiento(ctx)
     res.append(etiquetar("aislamiento", "real", aislamiento))
@@ -234,7 +235,7 @@ async def correr(ctx: Contexto) -> list[dict[str, Any]]:
     errores = {}
     for etiqueta, valor in (("int_1", 1), ("str_true", "true"), ("None", None)):
         try:
-            await ctx.hitl.respond(solicitud.request_id, valor)  # type: ignore[arg-type]
+            await ctx.hitl.respond(solicitud.request_id, valor)
             errores[etiqueta] = "NO LANZO"
         except TypeError as exc:
             errores[etiqueta] = f"TypeError: {exc}"
@@ -369,6 +370,7 @@ def main() -> int:
         import traceback
 
         resultado["error"] = f"{type(exc).__name__}: {exc}"
+        resultado["pruebas_completadas_antes_del_error"] = ctx.resultados
         resultado["traceback"] = traceback.format_exc()
         codigo = 1
     destino = args.out / "resultado-harness.json"
