@@ -99,6 +99,7 @@ from sky_claw.local.frozen_runtime.membership import (
 )
 from sky_claw.local.frozen_runtime.mo2_executables_plan import (
     PlanMigracionEjecutablesMO2,
+    _argumentos_dependientes_de_steam,
     planificar_migracion_ejecutables,
 )
 from sky_claw.local.frozen_runtime.models import (
@@ -175,27 +176,6 @@ def _comparte_inodos_correspondientes(raiz_a: pathlib.Path, raiz_b: pathlib.Path
             st_b = os.stat(archivo_b, follow_symlinks=False)
             if st_a.st_dev > 0 and st_a.st_ino > 0 and (st_a.st_dev, st_a.st_ino) == (st_b.st_dev, st_b.st_ino):
                 return True
-    return False
-
-
-def _argumentos_dependientes_de_steam(
-    arguments: str,
-    managed_source_root: pathlib.Path | None,
-) -> bool:
-    """Verifica si la cadena de argumentos referencia Steam o el directorio de la Managed Source."""
-    if not arguments or not arguments.strip():
-        return False
-    args_limpio = arguments.strip()
-    norm_slash = "\\".join(args_limpio.casefold().split("/"))
-    if "\\steamapps\\" in norm_slash or norm_slash.endswith("\\steamapps") or "steamapps" in norm_slash:
-        return True
-    if managed_source_root is not None:
-        ms_str = os.path.normpath(os.path.abspath(os.fspath(managed_source_root))).casefold()
-        if ms_str in norm_slash:
-            return True
-        ms_posix = managed_source_root.as_posix().casefold()
-        if ms_posix in "/".join(args_limpio.casefold().split("\\")):
-            return True
     return False
 
 
