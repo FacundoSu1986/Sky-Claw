@@ -2103,6 +2103,10 @@ async def preflight_del_backend(spawn_strategy: object) -> PreflightDeBackend:
     * la capability lanza ⇒ no listo, con el error en el motivo.
 
     ``asyncio.CancelledError`` NO se traga: cancelar la corrida tiene que seguir cancelándola.
+
+    **Log once (SOP §5 regla 5):** el registro de la excepción es el DIAGNÓSTICO (lleva la traza local que no
+    viaja al operador) y por eso no lleva ``pipeline_stage``; el que cuenta como registro de la etapa es el del
+    corte, que decide el desenlace en cada sitio. Etiquetar los dos contaría dos veces el mismo intento.
     """
     nombre = type(spawn_strategy).__name__
     preflight = getattr(spawn_strategy, "preflight_backend", None)
@@ -2118,7 +2122,7 @@ async def preflight_del_backend(spawn_strategy: object) -> PreflightDeBackend:
             "preflight del backend %s falló: %s",
             nombre,
             exc,
-            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
+            extra={"operation_type": "dyndolod_preflight_backend_fallo", "tx_id": _tx_id()},
             exc_info=True,
         )
         # El motivo viaja al operador (Telegram / GUI): una excepción inesperada puede traer rutas locales o detalles

@@ -320,6 +320,34 @@ async def test_con_el_backend_no_listo_el_operador_no_recibe_la_pregunta(tmp_pat
     assert estrategia.preflights == 1
 
 
+async def test_un_preflight_que_lanza_deja_un_solo_registro_de_etapa_y_conserva_la_traza(
+    tmp_path, sha_de_alpha209, caplog
+):
+    """SOP §5 regla 5 («log once»): el corte es el único registro de la etapa; el diagnóstico de la excepción del
+    preflight lleva su propio ``operation_type`` y la traza, pero NO ``pipeline_stage`` (un conteo
+    ``WHERE pipeline_stage=9`` no cuenta dos veces el mismo intento)."""
+    estrategia = types.SimpleNamespace(
+        data_visibility_domain="physical",
+        spawn=AsyncMock(),
+        verify_texgen_handoff=AsyncMock(),
+        preflight_backend=AsyncMock(side_effect=RuntimeError("detalle interno 7")),
+    )
+    instalacion = _instalacion(tmp_path)
+    runner = _runner_con(instalacion, _capacidad(None, tmp_path / "estado", AprobadorFalso()), estrategia)
+
+    with caplog.at_level(logging.WARNING):
+        resultado = await runner.preparar_interaccion_desatendida(run_texgen=True, preset="Medium")
+
+    assert resultado.codigos_desatendido == ("BACKEND_NOT_READY",)
+    de_etapa = [r for r in caplog.records if getattr(r, "pipeline_stage", None) == 9]
+    assert len(de_etapa) == 1, [r.getMessage() for r in de_etapa]
+    diagnostico = [
+        r for r in caplog.records if getattr(r, "operation_type", None) == "dyndolod_preflight_backend_fallo"
+    ]
+    assert len(diagnostico) == 1 and diagnostico[0].exc_info, "la traza local no se pierde"
+    assert not hasattr(diagnostico[0], "pipeline_stage")
+
+
 async def test_con_el_backend_listo_el_operador_si_recibe_la_pregunta(tmp_path, sha_de_alpha209):
     """Control positivo: el hook no saltea la aprobación cuando el backend está bien."""
     instalacion = _instalacion(tmp_path)

@@ -3934,6 +3934,15 @@ def test_los_servicios_no_regresan_de_su_cobertura_declarada() -> None:
 #:    porque nombra el artefacto —`meta.ini`— que el mensaje del handler no
 #:    menciona; exento, no duplicado.
 _REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
+    "dyndolod_preflight_backend_fallo": {
+        "metodo": "preflight_del_backend",
+        "motivo": (
+            "B-3: diagnóstico y no veredicto. Si la capability preflight_backend de la strategy LANZA, este registro "
+            "lleva la traza local (que no viaja al operador) y el fail-closed devuelve 'no listo'; el que decide el "
+            "desenlace y cuenta como registro de la etapa es el del corte en cada sitio (_resultado_de_corte en el "
+            "runner, _corte_por_backend_no_listo en la GUI). Etiquetar los dos contaría dos veces el mismo intento."
+        ),
+    },
     "dyndolod_preset_no_restaurado": {
         "metodo": "_restaurar_preset_sin_gatear",
         "motivo": (
