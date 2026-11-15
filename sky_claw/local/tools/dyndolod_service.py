@@ -782,11 +782,16 @@ class DynDOLODPipelineService:
           ``omit_unconfigured`` el checkpoint queda honestamente OMITIDO (no se
           midió, no se afirma un verde).
 
-        Defecto hermano conocido (NO cubierto acá): el camino legacy "DynDOLOD
-        solo" (``run_texgen=False`` SIN ``TexGen Output`` preservado) bajo
-        brokered spawnea con fingerprint de perfil + canary + atestación runtime,
-        pero sin una prueba de visibilidad del load order completo — el sensor
-        físico ya no lo cubre ahí por diseño. Follow-up abierto con evidencia.
+        El camino legacy "DynDOLOD solo" (``run_texgen=False`` SIN ``TexGen
+        Output`` preservado, o sea ``handoff=None``) NO queda sin prueba de
+        visibilidad bajo brokered (H-13, B-4): ``spawn`` arma el job con
+        ``expected_plugins`` —el conjunto completo de plugins activos— en TODAS
+        sus rutas, y el worker rechaza el dispatch si alguno no es visible en el
+        Data virtual (anclado por ``test_dyndolod_solo_brokered_visibilidad.py``).
+        Lo que NINGUNA ruta brokered prueba hoy es la visibilidad de los archivos
+        que no son plugins (meshes, texturas) de cada mod: es la hipótesis H-2
+        (el overlay podría mostrar un árbol viejo o parcial y el canary acertar
+        igual), a medir en rig (S-2) antes de diseñar un muestreo.
 
         El cache de ``self._preflight`` es seguro bajo la premisa —anclada en
         tests— de que ``_spawn_strategy``/``_data_visibility_domain`` se fijan
