@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import tracemalloc
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -21,6 +22,7 @@ from sky_claw.local.frozen_runtime.binder_preflight import (
     PreflightCheckCode,
     PreflightCheckStatus,
     PreflightReasonCode,
+    _ejecutables_dependientes_de_steam,
     evaluar_binder_preflight,
 )
 from sky_claw.local.frozen_runtime.binder_preflight import (
@@ -46,9 +48,12 @@ from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
 from sky_claw.local.frozen_runtime.mo2_executables_plan import (
     ClasificacionEjecutableMO2,
     MutacionCampoEjecutable,
+    _analizar_variantes_argumentos,
     _argumentos_dependientes_de_steam,
     _contiene_referencia_a_ruta,
     _dentro_de_area_steamapps,
+    _desescapar_qt_argumentos,
+    _tiene_escape_argumento_malformado,
     planificar_migracion_ejecutables,
 )
 from sky_claw.local.frozen_runtime.mo2_ini_escritura import (
@@ -2325,7 +2330,7 @@ def test_f01_archivo_sin_size_y_entradas_validas_permitido(tmp_path: pathlib.Pat
             True,
         ),
         (
-            r"-D:\"G:\\Other\\",
+            r"-D:\"G:\\Other\\" + "\\",
             r"G:\Modding\Skyrim_Runtime_1.6.1170",
             True,
         ),
@@ -2373,7 +2378,7 @@ def test_f02_contiene_referencia_a_ruta_variantes_qt_y_falsos_positivos(
     esperado: bool,
 ) -> None:
     """_contiene_referencia_a_ruta detecta escapes Qt (\\\\ y \\\") sin falsos positivos."""
-    assert _contiene_referencia_a_ruta(argumentos, pathlib.PureWindowsPath(ruta_str)) is esperado  # type: ignore[arg-type]
+    assert _contiene_referencia_a_ruta(argumentos, pathlib.PureWindowsPath(ruta_str)) is esperado
 
 
 def test_f02_planificar_bloquea_sseedit_con_escapes_qt_reales(tmp_path: pathlib.Path) -> None:
@@ -2426,9 +2431,9 @@ def test_f02_argumentos_dependientes_de_steam_ambos_hermanos_alineados() -> None
     arg_malformado = r"@ByteArray(D:\\CustomGames\\truncado"
 
     for fn in (_argumentos_dependientes_de_steam, _preflight_argumentos_dependientes_de_steam):
-        assert fn(arg_qt, ms_root) is True  # type: ignore[arg-type]
-        assert fn(arg_prefijo, ms_root) is False  # type: ignore[arg-type]
-        assert fn(arg_malformado, ms_root) is True  # type: ignore[arg-type]
+        assert fn(arg_qt, ms_root) is True
+        assert fn(arg_prefijo, ms_root) is False
+        assert fn(arg_malformado, ms_root) is True
 
 
 def test_f02_planificar_escapes_malformados_en_arguments_clasificados_como_ambigua(tmp_path: pathlib.Path) -> None:
@@ -2474,10 +2479,17 @@ def test_f03_04_size_desproporcionado_no_asigna_rango_en_memoria(
 
     monkeypatch.setattr(mo2_ini_mod, "range", _range_vigilado, raising=False)
 
-    exes = leer_ejecutables_de_mo2(ini_path)
+    tracemalloc.start()
+    try:
+        exes = leer_ejecutables_de_mo2(ini_path)
+        _actual, pico_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
     assert len(exes) == 1
     assert exes[0].anomalia is not None
     assert "1000000000" in exes[0].anomalia
+    assert pico_bytes < 1_000_000
 
 
 def test_f03_05_size_decimal_miles_de_digitos_no_lanza_y_marca_anomalia(tmp_path: pathlib.Path) -> None:
@@ -2599,4 +2611,270 @@ def test_f02_auditoria_unc_y_escapes_hex_octal_en_arguments(
     esperado: bool,
 ) -> None:
     """Auditoría F02: rutas UNC escapadas en Qt y escapes hex/octal dentro de arguments."""
-    assert _contiene_referencia_a_ruta(argumentos, pathlib.PureWindowsPath(ruta_unc)) is esperado  # type: ignore[arg-type]
+    assert _contiene_referencia_a_ruta(argumentos, pathlib.PureWindowsPath(ruta_unc)) is esperado
+
+
+# =============================================================================
+# CR-01 / CR-02: Orden independiente de escapes Qt y quoting Windows en Capa 2
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("argumentos", "esperado_malformado", "descripcion"),
+    [
+        # 1. Escape inválido antes del primer escape Qt válido -> fail-closed
+        (r"\xZZ C:\\Tools", True, "invalido_xzz_antes_de_barra_doble_qt"),
+        (r"-cfg \xZZ -p \"D:\\Tools\"", True, "invalido_xzz_antes_de_comilla_y_barra_qt"),
+        (r"-flag \x C:\\Tools", True, "invalido_x_con_espacio_antes_de_qt"),
+        (r"\xZZ \xYY C:\\Tools", True, "multiples_invalidos_antes_de_qt"),
+        # 2. Escape Qt válido antes del escape inválido -> fail-closed
+        (r"C:\\Tools \xZZ", True, "qt_antes_de_xzz"),
+        (r"-p \"D:\\Tools\" -cfg \xZZ", True, "comilla_qt_antes_de_xzz"),
+        (r"C:\\Tools \xZZ \x", True, "qt_y_multiples_invalidos"),
+        (r"-D:\"C:\xZZ\"", True, "xzz_dentro_de_comillas_qt"),
+        # 3. Escape inválido aislado sin evidencia de serialización Qt -> literal por contrato
+        (r"\xZZ", False, "xzz_aislado_sin_escapes_qt"),
+        # 4. Ruta Windows literal con \x como parte del nombre (sin escapes Qt)
+        (r"C:\xZZ", False, "ruta_literal_xzz"),
+        (r"-cfg C:\xZZ\preset.ini", False, "flag_con_ruta_literal_xzz"),
+        (r'-D:"G:\Modding\xTools\Data"', False, "ruta_literal_con_barra_x_y_sin_qt"),
+        # 5. Escapes Qt válidos
+        (r"-D:\"D:\\Tools\\SSEEdit\\Data\"", False, "escapes_qt_validos_barra_y_comillas"),
+        (r"-D:\"C:\\xZZ\"", False, "ruta_xzz_correctamente_escapada_en_qt"),
+        (r"-p \"D:\\Tools\\x64\\bin\"", False, "x64_correctamente_escapado_en_qt"),
+        # 6. NUL embebido (literal, \0, \x00, \000) -> siempre fail-closed
+        ("G:\\\\Other\x00Hidden", True, "nul_crudo_en_cadena"),
+        (r"C:\Tools\0", True, "escape_octal_nul_en_ruta"),
+        (r"\x00 C:\\Tools", True, "escape_hex_nul_antes_de_qt"),
+        (r"C:\\Tools \x10000", True, "overflow_16_bits_a_nul_fail_closed"),
+        # 7. Barra final suelta: literal vs serialización Qt
+        ("C:\\Tools\\", False, "barra_final_en_ruta_literal_sin_qt"),
+        ("-o D:\\Tools\\", False, "argumento_literal_terminado_en_barra"),
+        ("C:\\Tools\\\\\\", True, "barra_final_suelta_impar_con_qt_previo"),
+        ('-D:\\"C:\\\\Tools\\" \\', True, "barra_final_suelta_tras_escapes_qt"),
+        ("C:\\\\Tools\\\\", False, "barra_final_escapada_par_en_qt"),
+    ],
+)
+def test_cr01_desescapar_qt_argumentos_independiente_del_orden(
+    argumentos: str,
+    esperado_malformado: bool,
+    descripcion: str,
+) -> None:
+    """CR-01: la detección de escapes Qt inválidos o truncados es independiente del orden."""
+    _decodificado, malformado = _desescapar_qt_argumentos(argumentos)
+    assert malformado is esperado_malformado, descripcion
+    assert _tiene_escape_argumento_malformado(argumentos) is esperado_malformado, descripcion
+
+
+@pytest.mark.parametrize(
+    ("argumentos", "esperado_preservable"),
+    [
+        # 1. Comillas simples de agrupación con comillas dobles internas
+        (r"-msg 'it\"s ok'", True),
+        (r"-filter='tag\"'", True),
+        (r"-name 'John \"The\" Tester'", True),
+        # 2. Comillas dobles equilibradas
+        (r"-D:\"D:\\Tools\\SSEEdit\\Data\"", True),
+        # 3. Comillas literales escapadas (caso CodeRabbit PRRT_kwDOR1JjU863q1Qp)
+        (r"-label \"a\\\"b\"", True),
+        (r"-title \"Skyrim \\\"AE\\\" Edition\"", True),
+        # 4. Barra invertida inmediatamente anterior a comilla (estilo xEdit / Delphi)
+        (r"-D:\"D:\\Tools\\SSEEdit\\Data\\\"", True),
+        # 5. Secuencias con 2 y 3 barras anteriores a comillas (regla Windows)
+        (r"-D:\"D:\\Tools\\\\\"", True),
+        (r"-label \"a\\\\\\\"b\"", True),
+        # 6. Rutas Windows externas con espacios
+        (r"-D:\"C:\\Program Files\\Mod Tools\\SSEEdit\\Data\"", True),
+        # 7. Argumentos externos literales sin escapes Qt con comillas literales
+        (r'-label "a\"b" -autoload', True),
+        # 8. Casos realmente malformados (Capa 1 Qt corrupta) -> bloqueados fail-closed
+        (r"@ByteArray(C:\\Tools\\truncado", False),
+        ("C:\\Tools\x00Hidden", False),
+        (r"\xZZ C:\\Tools", False),
+        (r"-label \"a\\\"b\" \xZZ", False),
+        ('-D:\\"D:\\\\Tools\\\\" \\', False),
+    ],
+)
+def test_cr02_comillas_literales_y_quoting_windows_integracion_completa(
+    tmp_path: pathlib.Path,
+    argumentos: str,
+    esperado_preservable: bool,
+) -> None:
+    """CR-02: comillas literales válidas preservan EXTERNA_PRESERVABLE; escapes Qt inválidos bloquean."""
+    outgoing, clone, tools = _preparar_par_runtime_sintetico(tmp_path)
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_text(
+        "[General]\n"
+        f"gamePath={outgoing.as_posix()}\n"
+        "[customExecutables]\n"
+        "size=2\n"
+        "1\\title=SKSE\n"
+        f"1\\binary={outgoing.as_posix()}/skse64_loader.exe\n"
+        "2\\title=SSEEdit\n"
+        f"2\\binary={tools.as_posix()}/SSEEdit.exe\n"
+        f"2\\workingDirectory={tools.as_posix()}\n"
+        f"2\\arguments={argumentos}\n",
+        encoding="utf-8",
+    )
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    assert all(exe.anomalia is None for exe in exes)
+    plan = planificar_migracion_ejecutables(exes, outgoing, clone)
+
+    if esperado_preservable:
+        assert plan.bloqueado is False
+        assert plan.entradas[0].clasificacion is ClasificacionEjecutableMO2.MIGRABLE_AL_CLONE
+        assert plan.entradas[1].clasificacion is ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE
+        assert plan.entradas[1].arguments_original == argumentos
+    else:
+        assert plan.bloqueado is True
+        assert plan.entradas[1].clasificacion is ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA
+
+
+def test_cr01_cr02_integracion_runtime_saliente_steam_y_prefijos_con_comillas_literales(
+    tmp_path: pathlib.Path,
+) -> None:
+    """CR-01/CR-02: eliminar conteo de comillas NO debilita detección de outgoing, Steam o prefijos."""
+    outgoing, clone, tools = _preparar_par_runtime_sintetico(tmp_path)
+    outgoing_qt = str(outgoing).replace("\\", "\\\\")
+    ms_root = tmp_path / "SteamLibrary" / "steamapps" / "common" / "Skyrim Special Edition"
+    ms_root.mkdir(parents=True)
+    ms_qt = str(ms_root).replace("\\", "\\\\")
+
+    # 1. Referencia al runtime saliente combinada con comillas literales impares -> BLOQUEADA
+    exe_outgoing_comilla = Mo2Executable(
+        index=1,
+        title="SSEEdit",
+        binary=f"{tools.as_posix()}/SSEEdit.exe",
+        working_directory=tools.as_posix(),
+        arguments=f'-label \\"a\\\\\\"b\\" -D:\\"{outgoing_qt}\\\\Data\\"',
+    )
+    plan_out = planificar_migracion_ejecutables((exe_outgoing_comilla,), outgoing, clone, managed_source_root=ms_root)
+    assert plan_out.bloqueado is True
+    assert plan_out.entradas[0].clasificacion is ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA
+
+    # 2. Comilla sin cerrar apuntando al runtime saliente -> BLOQUEADA
+    exe_outgoing_sin_cerrar = Mo2Executable(
+        index=1,
+        title="SSEEdit",
+        binary=f"{tools.as_posix()}/SSEEdit.exe",
+        working_directory=tools.as_posix(),
+        arguments=f'-D:\\"{outgoing_qt}\\\\Data',
+    )
+    plan_unclosed = planificar_migracion_ejecutables(
+        (exe_outgoing_sin_cerrar,), outgoing, clone, managed_source_root=ms_root
+    )
+    assert plan_unclosed.bloqueado is True
+    assert plan_unclosed.entradas[0].clasificacion is ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA
+
+    # 3. Prefijo similar + comillas literales impares -> NO bloqueado por falso positivo
+    exe_prefijo_similar = Mo2Executable(
+        index=1,
+        title="SSEEdit",
+        binary=f"{tools.as_posix()}/SSEEdit.exe",
+        working_directory=tools.as_posix(),
+        arguments=f'-label \\"a\\\\\\"b\\" -D:\\"{outgoing_qt}_Backup\\\\Data\\\\\\"',
+    )
+    plan_sim = planificar_migracion_ejecutables((exe_prefijo_similar,), outgoing, clone, managed_source_root=ms_root)
+    assert plan_sim.bloqueado is False
+    assert plan_sim.entradas[0].clasificacion is ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE
+
+    # 4. Steam / Managed Source con comillas literales impares -> DEPENDIENTE_DE_STEAM y alineado con preflight
+    args_steam = f'-label \\"a\\\\\\"b\\" -D:\\"{ms_qt}\\\\Data\\"'
+    exe_steam = Mo2Executable(
+        index=1,
+        title="ToolSteam",
+        binary=f"{tools.as_posix()}/SSEEdit.exe",
+        working_directory=tools.as_posix(),
+        arguments=args_steam,
+    )
+    plan_steam = planificar_migracion_ejecutables((exe_steam,), outgoing, clone, managed_source_root=ms_root)
+    assert plan_steam.bloqueado is True
+    assert plan_steam.entradas[0].clasificacion is ClasificacionEjecutableMO2.DEPENDIENTE_DE_STEAM
+    assert _argumentos_dependientes_de_steam(args_steam, ms_root) is True
+    assert _preflight_argumentos_dependientes_de_steam(args_steam, ms_root) is True
+    assert _ejecutables_dependientes_de_steam((exe_steam,), ms_root) != []
+
+
+def test_cr01_integracion_ini_orden_escapes_end_to_end(tmp_path: pathlib.Path) -> None:
+    """CR-01 end-to-end: INI con escape inválido antes de escape Qt bloquea la planificación."""
+    outgoing, clone, tools = _preparar_par_runtime_sintetico(tmp_path)
+    ini_invalido = tmp_path / "mo2_cr01.ini"
+    ini_invalido.write_text(
+        "[customExecutables]\n"
+        "size=1\n"
+        "1\\title=SSEEdit\n"
+        f"1\\binary={tools.as_posix()}/SSEEdit.exe\n"
+        f"1\\workingDirectory={tools.as_posix()}\n"
+        "1\\arguments=\\xZZ C:\\\\Tools\n",
+        encoding="utf-8",
+    )
+    exes = leer_ejecutables_de_mo2(ini_invalido)
+    assert exes[0].anomalia is None
+    plan = planificar_migracion_ejecutables(exes, outgoing, clone)
+    assert plan.bloqueado is True
+    assert plan.entradas[0].clasificacion is ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA
+
+    ini_literal = tmp_path / "mo2_literal.ini"
+    ini_literal.write_text(
+        "[customExecutables]\n"
+        "size=1\n"
+        "1\\title=SSEEdit\n"
+        f"1\\binary={tools.as_posix()}/SSEEdit.exe\n"
+        f"1\\workingDirectory={tools.as_posix()}\n"
+        "1\\arguments=-cfg C:\\xZZ\\tool.ini\n",
+        encoding="utf-8",
+    )
+    exes_lit = leer_ejecutables_de_mo2(ini_literal)
+    plan_lit = planificar_migracion_ejecutables(exes_lit, outgoing, clone)
+    assert plan_lit.bloqueado is False
+    assert plan_lit.entradas[0].clasificacion is ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE
+
+
+@pytest.mark.parametrize(
+    ("argumentos", "ruta_objetivo", "esperado"),
+    [
+        # Qt 5.15 QSettingsPrivate::iniUnescapedStringList consume dígitos hex/octales como char16_t (16 bits, wrap)
+        (
+            r'-D:"\x10047:\\Modding\\Skyrim_Runtime_1.6.1170\\Data"',
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r'-D:"\00107:\\Modding\\Skyrim_Runtime_1.6.1170\\Data"',
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        # UNC en @ByteArray y comillas anidadas
+        (
+            r"@ByteArray(\\\\Servidor\\Modding\\Skyrim_Runtime_1.6.1170\\Data)",
+            r"\\Servidor\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r'@ByteArray(-D:"\\\\Servidor\\Modding\\Skyrim_Runtime_1.6.1170\\Data")',
+            r"\\Servidor\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r'"\"\\\\Servidor\\Modding\\Skyrim_Runtime_1.6.1170\\Data\""',
+            r"\\Servidor\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r'"\"\\\\Servidor\\Modding\\Skyrim_Runtime_1.6.1170_Backup\\Data\""',
+            r"\\Servidor\Modding\Skyrim_Runtime_1.6.1170",
+            False,
+        ),
+    ],
+)
+def test_auditoria_qt_escape_wrap_16bit_y_unc_bytearray_comillas_anidadas(
+    argumentos: str,
+    ruta_objetivo: str,
+    esperado: bool,
+) -> None:
+    """Verifica equivalencia Qt 5.15 en escapes >4 hex / >3 octales y UNC dentro de @ByteArray o comillas."""
+    ruta_win = pathlib.PureWindowsPath(ruta_objetivo)
+    assert _contiene_referencia_a_ruta(argumentos, ruta_win) is esperado
+    variantes, _malformado = _analizar_variantes_argumentos(argumentos)
+    assert len(variantes) >= 1

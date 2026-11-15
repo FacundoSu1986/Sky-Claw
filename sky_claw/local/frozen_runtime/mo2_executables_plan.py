@@ -113,16 +113,23 @@ def _dentro_de_area_steamapps(camino: pathlib.Path) -> bool:
 def _desescapar_qt_argumentos(texto: str) -> tuple[str, bool]:
     """Desescapa una cadena ``arguments`` serializada por Qt ``QSettings::IniFormat``.
 
-    Devuelve ``(texto_decodificado, escape_malformado)``. Si el texto emplea
-    escapes Qt (``\\\\`` o ``\\"``), un escape ``\\x`` sin dígitos hexadecimales,
-    una barra suelta al final o comillas desequilibradas se marcan como
-    malformados para fallar cerrado.
+    Devuelve ``(texto_decodificado, escape_malformado)``. Valida únicamente la
+    Capa 1 (serialización Qt ``QSettings``): NUL embebido (``\\0``, ``\\x00`` o
+    desbordamiento de 16 bits a 0) falla cerrado siempre, y cualquier escape
+    ``\\x`` sin dígitos hexadecimales o barra suelta final se combina al término
+    del barrido con la evidencia de escapes Qt (``\\\\``, ``\\"``, ``\\'``,
+    ``\\?``) para evitar sensibilidad al orden de aparición.
+
+    La interpretación de comillas de Capa 2 (argumentos de Windows / aplicación
+    destino, p. ej. ``\\"`` escapado en MSVCRT o ``-D:"...\\"`` en Delphi)
+    no se rechaza por paridad ingenua de ``"``.
     """
     salida: list[str] = []
     indice = 0
     largo = len(texto)
     vio_escape_qt = False
-    malformado = False
+    vio_escape_invalido = False
+    tiene_nul = False
 
     while indice < largo:
         caracter = texto[indice]
@@ -133,8 +140,7 @@ def _desescapar_qt_argumentos(texto: str) -> tuple[str, bool]:
 
         indice += 1
         if indice >= largo:
-            if vio_escape_qt:
-                malformado = True
+            vio_escape_invalido = True
             salida.append("\\")
             break
 
@@ -145,14 +151,13 @@ def _desescapar_qt_argumentos(texto: str) -> tuple[str, bool]:
                 vio_escape_qt = True
             codigo = _ESCAPES_DE_UNA_LETRA[siguiente]
             if codigo == 0:
-                malformado = True
+                tiene_nul = True
             salida.append(chr(codigo))
             continue
 
         if siguiente == "x":
             if indice >= largo or texto[indice] not in _DIGITOS_HEX:
-                if vio_escape_qt:
-                    malformado = True
+                vio_escape_invalido = True
                 salida.append("\\x")
                 continue
             valor = 0
@@ -160,7 +165,7 @@ def _desescapar_qt_argumentos(texto: str) -> tuple[str, bool]:
                 valor = ((valor << 4) + int(texto[indice], 16)) & 0xFFFF
                 indice += 1
             if valor == 0:
-                malformado = True
+                tiene_nul = True
             salida.append(chr(valor))
             continue
 
@@ -170,7 +175,7 @@ def _desescapar_qt_argumentos(texto: str) -> tuple[str, bool]:
                 valor = ((valor << 3) + int(texto[indice], 8)) & 0xFFFF
                 indice += 1
             if valor == 0:
-                malformado = True
+                tiene_nul = True
             salida.append(chr(valor))
             continue
 
@@ -179,9 +184,8 @@ def _desescapar_qt_argumentos(texto: str) -> tuple[str, bool]:
 
     decodificado = "".join(salida)
     if "\x00" in decodificado:
-        malformado = True
-    if vio_escape_qt and decodificado.count('"') % 2 == 1:
-        malformado = True
+        tiene_nul = True
+    malformado = tiene_nul or (vio_escape_qt and vio_escape_invalido)
     return decodificado, malformado
 
 
@@ -227,7 +231,7 @@ def _colapsar_barras_para_busqueda(texto: str, *, preservar_unc: bool) -> str:
     return re.sub(r"[\\/]+", _reemplazar_barra, texto)
 
 
-def _contiene_referencia_a_ruta(texto: str, ruta_base: pathlib.Path) -> bool:
+def _contiene_referencia_a_ruta(texto: str, ruta_base: pathlib.PurePath) -> bool:
     """Detecta si un texto contiene referencias a una ruta base o sus descendientes.
 
     Decodifica escapes de Qt ``QSettings::IniFormat`` (``\\\\``, ``\\"``,
@@ -260,7 +264,7 @@ def _contiene_referencia_a_ruta(texto: str, ruta_base: pathlib.Path) -> bool:
     return False
 
 
-def _argumentos_dependientes_de_steam(argumentos: str, managed_source_root: pathlib.Path | None) -> bool:
+def _argumentos_dependientes_de_steam(argumentos: str, managed_source_root: pathlib.PurePath | None) -> bool:
     """Comprueba si los argumentos contienen referencias a Steam o Managed Source."""
     if not argumentos or not argumentos.strip():
         return False
