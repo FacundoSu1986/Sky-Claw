@@ -2118,7 +2118,7 @@ async def preflight_del_backend(spawn_strategy: object) -> PreflightDeBackend:
             "preflight del backend %s falló: %s",
             nombre,
             exc,
-            extra={"operation_type": "dyndolod_preflight_backend_fallo", "tx_id": _tx_id()},
+            extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": _tx_id()},
             exc_info=True,
         )
         # El motivo viaja al operador (Telegram / GUI): una excepción inesperada puede traer rutas locales o detalles
