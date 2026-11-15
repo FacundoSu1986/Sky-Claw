@@ -255,6 +255,7 @@ def test_sin_instancia_mo2_el_servicio_no_afirma_etapas(tmp_path):
 import ast  # noqa: E402
 
 from sky_claw.app.orchestrator.tool_strategies.generate_lods import GenerateLodsStrategy  # noqa: E402
+from sky_claw.local.tools.dyndolod_runner import PreflightDeBackend  # noqa: E402
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion  # noqa: E402
 from sky_claw.local.validators.etapas_previas_lods import EvidenciaDeEtapasPrevias  # noqa: E402
 
@@ -264,6 +265,9 @@ RAIZ = pathlib.Path(__file__).resolve().parents[1]
 def _servicio_con_evidencia(evidencia: EvidenciaDeEtapasPrevias | Exception) -> MagicMock:
     servicio = MagicMock()
     servicio.execute = AsyncMock(return_value={"success": True, "message": ""})
+    # B-3: el backend está listo salvo que el caso diga lo contrario (los casos de backend no listo viven en
+    # ``test_dyndolod_preflight_del_backend.py``); sin esto el guard asistido esperaría un MagicMock.
+    servicio.verificar_backend_listo = AsyncMock(return_value=PreflightDeBackend.ok())
     if isinstance(evidencia, Exception):
         servicio.verificar_etapas_previas = MagicMock(side_effect=evidencia)
     else:

@@ -2065,10 +2065,74 @@ def normalize_dyndolod_spawn_strategy(
     return spawn_strategy
 
 
+@dataclass(frozen=True, slots=True)
+class PreflightDeBackend:
+    """Veredicto de «¿este backend puede servir una corrida AHORA?» (B-3 / H-6).
+
+    ``listo=False`` siempre trae un ``motivo`` legible por el operador: quien recibe el corte
+    tiene que poder leer POR QUÉ no hay backend (bridge sin conectar, bundle viejo, barrera de
+    contención puesta) sin ir a buscarlo a un log. Se construye con :meth:`ok` y
+    :meth:`bloqueado`.
+    """
+
+    listo: bool
+    motivo: str = ""
+
+    @classmethod
+    def ok(cls) -> PreflightDeBackend:
+        return cls(listo=True)
+
+    @classmethod
+    def bloqueado(cls, motivo: str) -> PreflightDeBackend:
+        if not motivo.strip():
+            raise ValueError("un backend no listo tiene que decir por qué: el motivo no puede ser vacío")
+        return cls(listo=False, motivo=motivo)
+
+
+async def preflight_del_backend(spawn_strategy: object) -> PreflightDeBackend:
+    """La ÚNICA pieza que le pregunta a una strategy si su backend está listo. Fail-closed.
+
+    Toda pregunta al operador anterior al ``spawn`` (la aprobación remota de la configuración
+    del runner, el guard de etapas previas de la GUI asistida y el del agente remoto) pasa por
+    acá antes de preguntar: aprobar una corrida que el backend no puede arrancar es aprobar
+    nada. El fail-closed vive en UNA pieza —en vez de repartirlo en tres sitios, que es como
+    nace el defecto del hermano que quedó sin el chequeo— y cubre tres casos:
+
+    * la strategy no declara la capability ⇒ no listo (no se adivina el backend);
+    * devuelve algo que no es un :class:`PreflightDeBackend` ⇒ no listo;
+    * la capability lanza ⇒ no listo, con el error en el motivo.
+
+    ``asyncio.CancelledError`` NO se traga: cancelar la corrida tiene que seguir cancelándola.
+    """
+    nombre = type(spawn_strategy).__name__
+    preflight = getattr(spawn_strategy, "preflight_backend", None)
+    if preflight is None:
+        return PreflightDeBackend.bloqueado(
+            f"el backend de spawn {nombre} no expone la capability preflight_backend: "
+            "sin poder probar que el backend está listo no se le pregunta nada al operador"
+        )
+    try:
+        veredicto = await preflight()
+    except Exception as exc:  # noqa: BLE001 -- frontera: cualquier fallo del backend es "no listo", nunca "seguir"
+        logger.warning(
+            "preflight del backend %s falló: %s",
+            nombre,
+            exc,
+            extra={"operation_type": "dyndolod_preflight_backend_fallo", "tx_id": _tx_id()},
+            exc_info=True,
+        )
+        return PreflightDeBackend.bloqueado(f"el preflight del backend {nombre} falló ({type(exc).__name__}: {exc})")
+    if not isinstance(veredicto, PreflightDeBackend):
+        return PreflightDeBackend.bloqueado(
+            f"el preflight del backend {nombre} devolvió {type(veredicto).__name__} y no un PreflightDeBackend"
+        )
+    return veredicto
+
+
 class DynDOLODSpawnStrategy(Protocol):
     """Única frontera de backend; el resto del runner es backend-agnóstico.
 
-    Tres capabilities, una por pregunta distinta:
+    Cuatro capabilities, una por pregunta distinta:
 
     * ``spawn`` — cómo nace el proceso (subprocess local vs sesión USVFS).
     * ``verify_texgen_handoff`` — en qué namespace debe demostrarse la
@@ -2082,6 +2146,12 @@ class DynDOLODSpawnStrategy(Protocol):
       sólo es semánticamente válido cuando el proceso consume ese ``Data``.
       Resuelta por :func:`resolve_data_visibility_domain` — ``None`` (sin
       strategy) conserva ``"physical"``; lo indeterminado falla cerrado.
+    * ``preflight_backend`` — ¿puede el backend servir una corrida AHORA? (B-3).
+      Lo consulta :func:`preflight_del_backend` justo antes de CUALQUIER pregunta al
+      operador previa al ``spawn``: standalone responde listo sin esperar a nadie;
+      brokered espera (plazo corto) a que el bridge de MO2 esté conectado y con un
+      bundle que el host acepta. Es una pregunta barata y SIN efectos: no abre sesiones
+      ni lanza jobs.
 
     **Binding gate→spawn (anti-TOCTOU):** cuando el gate aprobó, ``spawn``
     recibe por parámetro explícito el ``TexGenHandoffApproval`` —el estado
@@ -2110,6 +2180,8 @@ class DynDOLODSpawnStrategy(Protocol):
     ) -> DynDOLODProcess: ...
 
     async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult: ...
+
+    async def preflight_backend(self) -> PreflightDeBackend: ...
 
     @property
     def data_visibility_domain(self) -> DataVisibilityDomain: ...
@@ -2174,6 +2246,10 @@ class StandaloneDynDOLODSpawnStrategy:
     @property
     def data_visibility_domain(self) -> DataVisibilityDomain:
         return "physical"
+
+    async def preflight_backend(self) -> PreflightDeBackend:
+        """El backend local no depende de ningún servicio externo: nada que esperar."""
+        return PreflightDeBackend.ok()
 
     async def spawn(
         self,
@@ -3424,6 +3500,10 @@ class DynDOLODRunner:
             return InteraccionDeCorrida(modo=modo)
         return await self.preparar_interaccion_desatendida(run_texgen=run_texgen, preset=preset)
 
+    async def verificar_backend_listo(self) -> PreflightDeBackend:
+        """¿Puede el backend de ESTA corrida servirla ahora? Delega en el fail-closed único."""
+        return await preflight_del_backend(self._spawn_strategy)
+
     async def preparar_interaccion_desatendida(
         self,
         *,
@@ -3517,6 +3597,13 @@ class DynDOLODRunner:
                     output_esperado=str(self._expected_output_de(tool_name)),
                 )
             )
+
+        # B-3: lo barato y determinista (contrato, presets) corrió arriba y corta por su propia causa SIN
+        # hacer esperar al bridge; acá, ya sólo falta preguntar. Ninguna pregunta al operador sale hacia un
+        # backend que no puede arrancar la corrida: aprobarla sería aprobar una corrida condenada.
+        backend = await self.verificar_backend_listo()
+        if not backend.listo:
+            return self._resultado_de_corte(CodigoDesatendido.BACKEND_NOT_READY, backend.motivo)
 
         decision = await consultar_aprobador(
             lambda: capacidad.aprobador.aprobar_configuracion(
@@ -6084,5 +6171,7 @@ __all__ = [
     "DynDOLODPipelineResult",
     "DynDOLODRunner",
     "DynDOLODTimeoutError",
+    "PreflightDeBackend",
+    "preflight_del_backend",
     "resolve_data_visibility_domain",
 ]

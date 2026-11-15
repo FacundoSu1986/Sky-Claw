@@ -50,7 +50,7 @@ from sky_claw.local.mo2.vfs_attestation import (
     read_enabled_mods,
     read_enabled_plugins,
 )
-from sky_claw.local.mo2.vfs_broker import vfs_instance_id
+from sky_claw.local.mo2.vfs_broker import VfsBrokerError, vfs_instance_id
 from sky_claw.local.mo2.vfs_contracts import (
     VFS_TOOL_EXECUTABLE_NAMES,
     VfsJob,
@@ -67,7 +67,7 @@ from sky_claw.local.tools.texgen_handoff import (
 )
 
 if TYPE_CHECKING:
-    from sky_claw.local.tools.dyndolod_runner import DataVisibilityDomain, DynDOLODProcess
+    from sky_claw.local.tools.dyndolod_runner import DataVisibilityDomain, DynDOLODProcess, PreflightDeBackend
 
 logger = logging.getLogger("SkyClaw.BrokeredDynDOLOD")
 
@@ -78,6 +78,8 @@ _PROBE_HANDOFF_TIMEOUT_SECONDS = 120.0
 
 
 class BrokeredDynDOLODProtocol(Protocol):
+    async def wait_until_ready(self, *, timeout: float = ...) -> None: ...
+
     async def open_session(
         self,
         job: VfsJob,
@@ -518,6 +520,24 @@ class BrokeredDynDOLODSpawnStrategy:
         # apertura de la sesión (fail-closed) y el proceso no nace.
         return fresh
 
+    async def preflight_backend(self) -> PreflightDeBackend:
+        """¿Está el bridge de MO2 conectado al broker (y aceptado) para servir una corrida? (B-3 / H-6)
+
+        Espera con el plazo corto del broker (``wait_until_ready``) y reutiliza SU motivo de rechazo
+        tal cual: el del bundle del bridge viejo (#934) ya trae la instrucción de reinstalarlo, y
+        no se pierde por el camino. Sólo espera: no abre sesiones ni lanza jobs. Cualquier otro
+        error del broker lo convierte en «no listo» el fail-closed único
+        (:func:`~sky_claw.local.tools.dyndolod_runner.preflight_del_backend`).
+        """
+        # Import local: este módulo mantiene al runner como dependencia solo de tipos.
+        from sky_claw.local.tools.dyndolod_runner import PreflightDeBackend
+
+        try:
+            await self._broker.wait_until_ready()
+        except VfsBrokerError as exc:
+            return PreflightDeBackend.bloqueado(str(exc).strip() or "el broker no tiene el bridge de MO2 conectado")
+        return PreflightDeBackend.ok()
+
     async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult:
         """Gate MO2/USVFS del handoff TexGen → DynDOLOD. Fail-closed, completo.
 
@@ -942,6 +962,16 @@ class VfsRequiredDynDOLODSpawnStrategy:
     async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult:
         del request
         return TexGenHandoffResult.bloqueado(self._reason)
+
+    async def preflight_backend(self) -> PreflightDeBackend:
+        """El backend PEDIDO no se puede construir (barrera de contención puesta): nunca está listo.
+
+        Sin esto, el operador remoto aprobaba una corrida que este guard iba a refutar en el
+        ``spawn``: era el caso garantizado de «aprobar una corrida condenada».
+        """
+        from sky_claw.local.tools.dyndolod_runner import PreflightDeBackend
+
+        return PreflightDeBackend.bloqueado(self._reason)
 
 
 def _normalizar_backend(valor: object) -> str | None:

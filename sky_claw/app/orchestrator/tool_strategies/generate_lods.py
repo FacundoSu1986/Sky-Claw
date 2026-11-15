@@ -7,7 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from sky_claw.local.tools.dyndolod_uia_contrato import ModoDeInteraccion, modo_de_interaccion_desde
+from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido, ModoDeInteraccion, modo_de_interaccion_desde
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
 from sky_claw.local.validators.etapas_previas_lods import etapas_previas_faltantes
 
@@ -103,6 +103,12 @@ class GenerateLodsStrategy:
         faltantes = await etapas_previas_faltantes(self.service.verificar_etapas_previas)
         if not faltantes:
             return None
+        # B-3 (H-6): antes de pedirle al operador que apruebe seguir sin las etapas previas, el backend tiene
+        # que poder servir la corrida: aprobar una que va a morir en el spawn es aprobar nada. Con las etapas
+        # completas no hay pregunta que proteger (arriba): el spawn mismo refuta un backend caído.
+        backend = await self.service.verificar_backend_listo()
+        if not backend.listo:
+            return self._corte_por_backend_no_listo(backend.motivo, faltantes)
         decision, falla_del_canal = await self._pedir_confirmacion_sin_etapas_previas(faltantes)
         if decision is ResultadoConfirmacion.APROBADA:
             logger.warning(
@@ -131,6 +137,24 @@ class GenerateLodsStrategy:
             "errors": [mensaje],
             "etapas_faltantes": list(faltantes),
             "confirmacion": decision.value,
+            "assisted": True,
+            "interaction_mode": ModoDeInteraccion.ASISTIDO.value,
+        }
+
+    @staticmethod
+    def _corte_por_backend_no_listo(motivo: str, faltantes: tuple[str, ...]) -> dict[str, Any]:
+        """Resultado de error del guard asistido cuando el backend no puede servir la corrida (sin pregunta previa)."""
+        mensaje = (
+            f"{CodigoDesatendido.BACKEND_NOT_READY.value}: la etapa 9 asistida no se lanza y no se te pide "
+            f"confirmar las etapas previas faltantes porque el backend no está listo: {motivo}"
+        )
+        logger.warning("%s", mensaje, extra=_EXTRA_DE_LA_ETAPA)
+        return {
+            "success": False,
+            "message": mensaje,
+            "errors": [mensaje],
+            "etapas_faltantes": list(faltantes),
+            "backend_no_listo": motivo,
             "assisted": True,
             "interaction_mode": ModoDeInteraccion.ASISTIDO.value,
         }
