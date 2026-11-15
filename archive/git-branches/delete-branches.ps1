@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Borra ramas obsoletas YA ARCHIVADAS, con guardas fail-closed.
 
@@ -10,7 +10,15 @@
       - el manifiesto la clasifica como MERGED o CLOSED (no NO_PR),
       - NO tiene un PR abierto HOY (gh pr list --state open),
       - NO esta checked-out en ningun worktree (git worktree list),
-      - NO es la rama actual ni 'main'.
+      - NO es la rama actual ni 'main',
+      - NO figura en la lista de RAMAS PROTEGIDAS (identidad exacta, ver abajo).
+
+    RAMAS PROTEGIDAS: se excluyen por nombre exacto, antes de evaluar cualquier
+    otra guarda, y la exclusion vale para la ref local y la remota, con o sin
+    -Execute y -IncludeRemote. No depende del estado del PR, de que la rama
+    figure en un manifiesto historico, de que exista un bundle ni de que un
+    worktree la use. Solo el propietario puede autorizar su eliminacion
+    (ver AGENTS.md, seccion "Rama protegida - EXP-M6 / PR #675").
 
     Motivo: el manifiesto es un snapshot; una rama listada como obsoleta puede
     tener un PR abierto abierto despues (caso real: #675 sobre la rama
@@ -53,6 +61,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# --- RAMAS PROTEGIDAS: identidad exacta, no estado ------------------------
+# Una rama de esta lista NO se borra nunca: ni por tener PR OPEN/CLOSED/MERGED,
+# ni por figurar en un manifiesto historico, ni por estar en un bundle valido,
+# ni por no estar en uso. La comparacion es case-sensitive (-ccontains) porque
+# los nombres de rama de Git distinguen mayusculas. La guarda se evalua antes
+# que el resto y cubre las dos superficies (local y origin) porque el bucle
+# decide por nombre: no hay camino que borre una ref sin pasar por aca.
+# La eliminacion exige autorizacion explicita del propietario (AGENTS.md).
+$ramasProtegidas = @(
+    'research/native-parallax-exp-m6-pair-mismatch-decomposition'
+)
 
 function Fail { param([string]$Message) throw $Message }
 
@@ -241,6 +261,11 @@ Write-Host ''
 $borradas = 0; $omitidas = 0; $fallidas = 0; $wouldDelete = 0
 foreach ($name in $candidatas) {
     $razon = $null
+    if ($ramasProtegidas -ccontains $name) {
+        Write-Host ("  OMITE — RAMA PROTEGIDA EXP-M6 PR #675   {0}" -f $name)
+        $omitidas++
+        continue
+    }
     if ($name -eq 'main') { $razon = 'es main' }
     elseif ($name -eq $current) { $razon = 'es la rama actual' }
     elseif ($openPR.ContainsKey($name)) { $razon = 'tiene PR ABIERTO hoy' }

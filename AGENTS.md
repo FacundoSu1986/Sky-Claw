@@ -158,6 +158,27 @@ así que ninguna otra cuenta puede heredarlo.
 El registro de git era consistente, pero no había forma de auditarlo. Sin ancla,
 esto vuelve.*
 
+## Rama protegida — EXP-M6 / PR #675
+
+> **RAMA PROTEGIDA — EXP-M6 / PR #675:**  
+> `research/native-parallax-exp-m6-pair-mismatch-decomposition` está preservada como investigación histórica.  
+> Prohibido borrarla, forzar su actualización, rebasarla, reciclarla o incluirla en limpiezas automáticas de ramas.  
+> El tag `archive/exp-m6-pr675` y su respaldo son artefactos de conservación.  
+> Solo el propietario puede autorizar expresamente la eliminación de esta rama.  
+> Un PR cerrado **no implica autorización de borrado**.
+
+La regla no depende del estado del PR, de que la rama figure en un manifiesto histórico, de
+que exista un bundle, de que no la use un worktree ni de las opciones del script:
+[`archive/git-branches/delete-branches.ps1`](archive/git-branches/delete-branches.ps1) la excluye
+por identidad exacta (ref local y remota) y emite `OMITE — RAMA PROTEGIDA EXP-M6 PR #675` antes de
+evaluar cualquier otra guarda. Los casos de `tests/test_git_archive_scripts.py` fijan la conducta
+sobre repositorios temporales: retirar la protección rompe la suite.
+
+El commit preservado es `f1415711c51a2ec483fd37f41a164044649747aa`, con el documento
+`docs/design/research/native-parallax/exp-m6-pair-mismatch-decomposition.md` en estado
+`RESEARCH_ONLY / NOT_MERGED / NOT_PRODUCTION_APPROVED`. No se fusiona con el generador productivo
+ni se usa como fuente de umbrales o constantes (ver [CLEAN_ROOM.md](CLEAN_ROOM.md)).
+
 ## Integración: merge, rebase y conflictos
 
 La propiedad, en una frase: **el árbol que se prueba es el que se mergea, y un conflicto se
