@@ -108,6 +108,20 @@ class ParallaxRAssistedPreflight:
     candidate_mod_roots: tuple[Path, ...] = ()
     message: str = ""
 
+    def __post_init__(self) -> None:
+        """Valida que status sea ParallaxRAssistedStatus, success bool estricto y success is True <=> READY."""
+        if not isinstance(self.status, ParallaxRAssistedStatus):
+            raise TypeError(f"status debe ser ParallaxRAssistedStatus; se recibió {type(self.status).__name__}.")
+        if type(self.success) is not bool:
+            raise TypeError(f"success debe ser bool estricto; se recibió {type(self.success).__name__}.")
+        expected_success = self.status == ParallaxRAssistedStatus.READY
+        if self.success is not expected_success:
+            raise ValueError(
+                f"Invariante ParallaxRAssistedPreflight violado: "
+                f"status={self.status.name} ({self.status.value!r}) exige success={expected_success!r}, "
+                f"se recibió success={self.success!r}."
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class ParallaxRManualHandoff:

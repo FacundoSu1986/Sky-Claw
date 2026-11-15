@@ -14,6 +14,13 @@ import re
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
+    _DIGITOS_HEX,
+    _DIGITOS_OCT,
+    _ESCAPES_DE_UNA_LETRA,
+    decode_qt_byte_array,
+)
+
 if TYPE_CHECKING:
     from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import Mo2Executable
 
@@ -103,30 +110,197 @@ def _dentro_de_area_steamapps(camino: pathlib.Path) -> bool:
     return any(comp.name.casefold() == "steamapps" for comp in (camino, *camino.parents))
 
 
-def _contiene_referencia_a_ruta(texto: str, ruta_base: pathlib.Path) -> bool:
-    """Detecta si un texto contiene referencias a una ruta base o sus descendientes."""
+def _desescapar_qt_argumentos(texto: str) -> tuple[str, bool]:
+    """Desescapa una cadena ``arguments`` serializada por Qt ``QSettings::IniFormat``.
+
+    Devuelve ``(texto_decodificado, escape_malformado)``. Valida únicamente la
+    Capa 1 (serialización Qt ``QSettings``): NUL embebido (``\\0``, ``\\x00`` o
+    desbordamiento de 16 bits a 0) falla cerrado siempre, y cualquier escape
+    ``\\x`` sin dígitos hexadecimales o barra suelta final se combina al término
+    del barrido con la evidencia de escapes Qt (``\\\\``, ``\\"``, ``\\'``,
+    ``\\?``) para evitar sensibilidad al orden de aparición.
+
+    La interpretación de comillas de Capa 2 (argumentos de Windows / aplicación
+    destino, p. ej. ``\\"`` escapado en MSVCRT o ``-D:"...\\"`` en Delphi)
+    no se rechaza por paridad ingenua de ``"``.
+    """
+    salida: list[str] = []
+    indice = 0
+    largo = len(texto)
+    vio_escape_qt = False
+    vio_escape_invalido = False
+    tiene_nul = False
+
+    while indice < largo:
+        caracter = texto[indice]
+        if caracter != "\\":
+            salida.append(caracter)
+            indice += 1
+            continue
+
+        indice += 1
+        if indice >= largo:
+            vio_escape_invalido = True
+            salida.append("\\")
+            break
+
+        siguiente = texto[indice]
+        indice += 1
+        if siguiente in _ESCAPES_DE_UNA_LETRA:
+            if siguiente in ('"', "'", "?", "\\"):
+                vio_escape_qt = True
+            codigo = _ESCAPES_DE_UNA_LETRA[siguiente]
+            if codigo == 0:
+                tiene_nul = True
+            salida.append(chr(codigo))
+            continue
+
+        if siguiente == "x":
+            if indice >= largo or texto[indice] not in _DIGITOS_HEX:
+                # Qt 5.15 QSettingsPrivate::iniUnescapedStringList (StHexEscape):
+                # un '\\x' sin dígitos hex se descarta y el carácter siguiente se
+                # reprocesa como texto normal.
+                vio_escape_invalido = True
+                continue
+            valor = 0
+            while indice < largo and texto[indice] in _DIGITOS_HEX:
+                valor = ((valor << 4) + int(texto[indice], 16)) & 0xFFFF
+                indice += 1
+            if valor == 0:
+                tiene_nul = True
+            salida.append(chr(valor))
+            continue
+
+        if siguiente in _DIGITOS_OCT:
+            valor = int(siguiente, 8)
+            while indice < largo and texto[indice] in _DIGITOS_OCT:
+                valor = ((valor << 3) + int(texto[indice], 8)) & 0xFFFF
+                indice += 1
+            if valor == 0:
+                tiene_nul = True
+            salida.append(chr(valor))
+            continue
+
+        # Qt 5.15 QSettingsPrivate::iniUnescapedStringList descarta escapes desconocidos
+        # (StEscape vuelve a StNormal sin emitir '\\' ni el carácter siguiente).
+
+    decodificado = "".join(salida)
+    if "\x00" in decodificado:
+        tiene_nul = True
+    malformado = tiene_nul or (vio_escape_qt and vio_escape_invalido)
+    return decodificado, malformado
+
+
+def _analizar_variantes_argumentos(texto: str) -> tuple[tuple[str, ...], bool]:
+    """Produce representaciones comparables de ``arguments`` y señala escapes inválidos."""
+    if not texto:
+        return (), False
+    if "\x00" in texto:
+        return (texto,), True
+
+    recortado = texto.strip()
+    if recortado.startswith("@ByteArray("):
+        decodificado_bytes = decode_qt_byte_array(texto)
+        if decodificado_bytes is None:
+            return (texto,), True
+        dec_ba = decodificado_bytes.decode("utf-8", "surrogateescape")
+        if "\x00" in dec_ba:
+            return (dec_ba,), True
+        return (dec_ba,), False
+
+    dec_qt, malformado = _desescapar_qt_argumentos(texto)
+    variantes = (dec_qt, texto) if dec_qt != texto else (texto,)
+    return variantes, malformado
+
+
+def _tiene_escape_argumento_malformado(texto: str) -> bool:
+    """Indica si ``arguments`` presenta un escape Qt ambiguo, truncado o con NUL."""
+    _variantes, malformado = _analizar_variantes_argumentos(texto)
+    return malformado
+
+
+def _colapsar_barras_para_busqueda(texto: str, *, preservar_unc: bool) -> str:
+    """Normaliza separadores repetidos a ``/`` manteniendo el prefijo UNC si aplica."""
+    if not preservar_unc:
+        return re.sub(r"[\\/]+", "/", texto)
+
+    def _reemplazar_barra(match: re.Match[str]) -> str:
+        inicio = match.start()
+        if len(match.group(0)) >= 2 and (inicio == 0 or match.string[inicio - 1] in " \t\r\n\"'=:,;("):
+            return "//"
+        return "/"
+
+    return re.sub(r"[\\/]+", _reemplazar_barra, texto)
+
+
+def _es_limite_final_de_ruta_valido(variante_norm: str, inicio: int, fin_ruta: int) -> bool:
+    """Valida si ``fin_ruta`` cierra el token de ruta evitando falsos positivos entre comillas.
+
+    Un espacio interno dentro de una ruta entrecomillada (p. ej.
+    ``"G:/Modding/Skyrim_Runtime_1.6.1170 Backup/Data"``) continúa el mismo
+    argumento siempre que exista su comilla de cierre con contenido no vacío en la
+    misma línea. Cualquier comilla previa sin cerrar falla cerrado.
+    """
+    if fin_ruta >= len(variante_norm):
+        return True
+    siguiente = variante_norm[fin_ruta]
+    if siguiente not in " \t\r\n":
+        return True
+    if inicio > 0 and variante_norm[inicio - 1] in ("'", '"'):
+        comilla = variante_norm[inicio - 1]
+        idx_cierre = variante_norm.find(comilla, fin_ruta)
+        if idx_cierre != -1:
+            entre = variante_norm[fin_ruta:idx_cierre]
+            if entre.strip() and "\r" not in entre and "\n" not in entre:
+                return False
+    return True
+
+
+def _contiene_referencia_a_ruta(texto: str, ruta_base: pathlib.PurePath) -> bool:
+    """Detecta si un texto contiene referencias a una ruta base o sus descendientes.
+
+    Decodifica escapes de Qt ``QSettings::IniFormat`` (``\\\\``, ``\\"``,
+    hex/octal y ``@ByteArray(...)``) y falla cerrado si detecta escapes
+    truncados, ambiguos o NUL embebidos.
+    """
     if not texto:
         return False
     fspath = os.fspath(ruta_base).rstrip("/\\")
     if not fspath:
         return False
-    fspath_forward = "/".join(fspath.split("\\"))
-    texto_forward = "/".join(texto.split("\\"))
-    patron = re.escape(fspath_forward) + r"(?:[/\"'\s]|$)"
-    return bool(re.search(patron, texto_forward, flags=re.IGNORECASE))
+
+    es_unc = fspath.startswith("\\\\") or fspath.startswith("//")
+    fspath_norm = _colapsar_barras_para_busqueda(fspath, preservar_unc=es_unc)
+    if not fspath_norm:
+        return False
+
+    variantes, malformado = _analizar_variantes_argumentos(texto)
+    if malformado:
+        return True
+
+    patron = re.compile(
+        r"(?:^|(?<=[\s\"'=:,;(]))" + re.escape(fspath_norm) + r"(?=[/\\\"' \t\r\n,;)]|$)",
+        flags=re.IGNORECASE,
+    )
+    for variante in variantes:
+        variante_norm = _colapsar_barras_para_busqueda(variante, preservar_unc=es_unc)
+        for coincidencia in patron.finditer(variante_norm):
+            if _es_limite_final_de_ruta_valido(variante_norm, coincidencia.start(), coincidencia.end()):
+                return True
+    return False
 
 
-def _argumentos_dependientes_de_steam(argumentos: str, managed_source_root: pathlib.Path | None) -> bool:
+def _argumentos_dependientes_de_steam(argumentos: str, managed_source_root: pathlib.PurePath | None) -> bool:
     """Comprueba si los argumentos contienen referencias a Steam o Managed Source."""
-    texto = argumentos.lower()
-    if "steamapps" in texto:
+    if not argumentos or not argumentos.strip():
+        return False
+    variantes, malformado = _analizar_variantes_argumentos(argumentos)
+    if malformado:
+        return True
+    if any("steamapps" in variante.casefold() for variante in variantes):
         return True
     if managed_source_root is not None:
-        ms_fspath = os.fspath(managed_source_root).lower()
-        ms_str = ms_fspath.replace("\\", "/")
-        texto_norm = texto.replace("\\", "/")
-        if ms_str in texto_norm:
-            return True
+        return _contiene_referencia_a_ruta(argumentos, managed_source_root)
     return False
 
 
@@ -241,7 +415,7 @@ def planificar_migracion_ejecutables(
 
         norm_bin = pathlib.Path(os.path.normpath(os.path.abspath(bin_raw)))
 
-        # 1. Comprobación de Steam
+        # 1. Comprobación de Steam (binario/workdir) y escapes malformados en arguments
         en_ms = norm_ms is not None and _es_igual_o_hijo(norm_bin, norm_ms)
         en_steamapps = _dentro_de_area_steamapps(norm_bin)
         wd_en_steam = False
@@ -252,6 +426,29 @@ def planificar_migracion_ejecutables(
                 wd_en_steam = (norm_ms is not None and _es_igual_o_hijo(norm_wd, norm_ms)) or _dentro_de_area_steamapps(
                     norm_wd
                 )
+
+        if (
+            not (en_ms or en_steamapps or wd_en_steam)
+            and exe.arguments
+            and _tiene_escape_argumento_malformado(exe.arguments)
+        ):
+            motivo = (
+                f"Ejecutable {exe.index} ({exe.title}) contiene escapes malformados o "
+                f"ambiguos en arguments: '{exe.arguments}'"
+            )
+            entradas.append(
+                EntradaPlanEjecutableMO2(
+                    index=exe.index,
+                    title=exe.title,
+                    clasificacion=ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA,
+                    binary_original=exe.binary,
+                    working_dir_original=exe.working_directory,
+                    arguments_original=exe.arguments,
+                    motivo=motivo,
+                )
+            )
+            motivos_bloqueo.append(motivo)
+            continue
 
         args_en_steam = False
         if exe.arguments:
