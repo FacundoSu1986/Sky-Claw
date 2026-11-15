@@ -99,7 +99,17 @@ jobs:
     # restringir push a main/master la contencion baja y los tiempos deberian
     # mejorar, no empeorar; 70 min deja el peor caso medido (~40 min) al ~57 %.
     # Bajar el limite ahora seria reintroducir un valor inferior al ya justificado.
-    timeout-minutes: 70
+    # 2026-11-15: 70 min dejo de alcanzar. Windows py3.11 se cancelo tres veces seguidas
+    # al tocar el limite con la suite al 98 % y ningun test fallando (#935 dos veces
+    # sobre el mismo head, a los 70 min 16 s; #936 una). La misma suite paso py3.11
+    # completa en 56-58 min en otras corridas y py3.12 tarda 50-62 min: el runner lento
+    # de py3.11 llega a ~72 min (el peor caso de 2026-10-22 era 2322 s). El agregador
+    # `Tests (Pytest)` solo ve el `cancelled` y bloquea el merge de un PR sano. 90 min
+    # deja el peor caso extrapolado al ~80 %. El piso esta anclado en
+    # tests/test_ci_platform_policy.py (TOPE_MINIMO_DE_LA_MATRIZ_WINDOWS). Es un
+    # parche al sintoma: si la suite vuelve a rozar el limite, el paso siguiente es
+    # repartirla en shards, no subir el tope otra vez.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
