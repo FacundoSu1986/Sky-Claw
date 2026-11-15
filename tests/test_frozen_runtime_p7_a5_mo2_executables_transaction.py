@@ -2878,3 +2878,341 @@ def test_auditoria_qt_escape_wrap_16bit_y_unc_bytearray_comillas_anidadas(
     assert _contiene_referencia_a_ruta(argumentos, ruta_win) is esperado
     variantes, _malformado = _analizar_variantes_argumentos(argumentos)
     assert len(variantes) >= 1
+
+
+# =========================================================================
+# CR-03: Descarte de escapes desconocidos y \x sin hex según Qt 5.15
+# =========================================================================
+
+
+@pytest.mark.parametrize(
+    ("entrada", "decodificado_esperado", "malformado_esperado"),
+    [
+        # Hallazgo CodeRabbit CR-03: Qt 5.15 iniUnescapedStringList descarta backslash + char desconocido
+        (r"Steam\qapps", "Steamapps", False),
+        (r"G:\\Games\\Steam\qapps", r"G:\Games\Steamapps", False),
+        (r"-p Steam\qapps\\common", r"-p Steamapps\common", False),
+        # \x sin dígito hexadecimal: en Qt 5.15 StHexEscape descarta '\x' y reanuda en 'p'
+        (r"steama\xpps", "steamapps", False),
+        # Tanto \q como \p son escapes desconocidos y Qt los descarta ambos
+        (r"-cfg C:\qTools\preset.ini", r"-cfg C:Toolsreset.ini", False),
+        (
+            r'-D:"G:\\Modding\\Skyrim_\qRuntime_1.6.1170"',
+            r'-D:"G:\Modding\Skyrim_Runtime_1.6.1170"',
+            False,
+        ),
+        (r"-o C:\new\test\run", "-o C:\new\test\run", False),
+        # Evidencia explícita de escape Qt (\\ o \") + \x sin hex -> malformado fail-closed
+        (r"G:\\steama\xpps", r"G:\steamapps", True),
+        (r"\"steama\xpps\"", '"steamapps"', True),
+        (r"G:\\Steam\qapps", r"G:\Steamapps", False),
+    ],
+)
+def test_cr03_desescapar_qt_argumentos_coincide_con_qt515(
+    entrada: str,
+    decodificado_esperado: str,
+    malformado_esperado: bool,
+) -> None:
+    """Verifica que _desescapar_qt_argumentos descarte escapes desconocidos y \\x sin hex como Qt 5.15."""
+    decodificado, malformado = _desescapar_qt_argumentos(entrada)
+    assert decodificado == decodificado_esperado
+    assert malformado is malformado_esperado
+
+
+@pytest.mark.parametrize(
+    ("argumentos", "esperado_steam"),
+    [
+        (r"Steam\qapps", True),
+        (r"G:\\Games\\Steam\qapps", True),
+        (r"-p Steam\qapps\\common", True),
+        (r"steama\xpps", True),
+        (r"@ByteArray(steama\xpps)", True),
+        (r"-cfg C:\qTools\preset.ini", False),
+        (r"-o C:\new\test\run", False),
+    ],
+)
+def test_cr03_deteccion_steam_con_escapes_desconocidos_y_no_falsos_positivos(
+    argumentos: str,
+    esperado_steam: bool,
+) -> None:
+    """Confirma que evasiones \\q / \\x se detectan como Steam y rutas Windows benignas no dan falso positivo."""
+    assert _argumentos_dependientes_de_steam(argumentos, None) is esperado_steam
+    if argumentos == r"@ByteArray(steama\xpps)":
+        variantes, malformado = _analizar_variantes_argumentos(argumentos)
+        assert malformado is False
+        assert variantes == ("steamapps",)
+
+
+def test_cr03_contiene_referencia_a_ruta_con_escape_desconocido_y_benigno() -> None:
+    """Valida detección de bypass \\q hacia runtime base sin bloquear herramientas externas literales."""
+    base_runtime = pathlib.PureWindowsPath(r"G:\Modding\Skyrim_Runtime_1.6.1170")
+    assert _contiene_referencia_a_ruta(r'-D:"G:\\Modding\\Skyrim_\qRuntime_1.6.1170"', base_runtime) is True
+    assert _contiene_referencia_a_ruta(r'-D:"G:/Modding/Skyrim_\qRuntime_1.6.1170"', base_runtime) is True
+    assert _contiene_referencia_a_ruta(r"-cfg C:\qTools\preset.ini", base_runtime) is False
+    assert _contiene_referencia_a_ruta(r"-o C:\new\test\run", base_runtime) is False
+
+
+def test_cr03_planificacion_clasificacion_y_no_falsos_bloqueos(tmp_path: pathlib.Path) -> None:
+    """Verifica clasificación completa en planificar_migracion_ejecutables para casos CR-03."""
+    outgoing = tmp_path / "Skyrim_Runtime_1.6.1170"
+    clone = tmp_path / "Clone"
+    tools = tmp_path / "Tools"
+    outgoing.mkdir()
+    clone.mkdir()
+    tools.mkdir()
+    exe_ext = tools / "xEdit.exe"
+    exe_ext.write_bytes(b"MZ")
+
+    # Casos benignos con rutas literales Windows que contienen '\q', '\n', '\t', '\r'
+    plan_benigno = planificar_migracion_ejecutables(
+        (
+            Mo2Executable(1, "xEdit qTools", str(exe_ext), str(tools), r"-cfg C:\qTools\preset.ini"),
+            Mo2Executable(2, "xEdit LiteralEscapes", str(exe_ext), str(tools), r"-o C:\new\test\run"),
+        ),
+        outgoing_runtime_root=outgoing,
+        target_clone_root=clone,
+    )
+    assert plan_benigno.bloqueado is False
+    assert [e.clasificacion for e in plan_benigno.entradas] == [
+        ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE,
+        ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE,
+    ]
+
+    # Casos de evasión Steam o referencia residual ofuscada con \q / \x
+    outgoing_esc = (
+        str(outgoing)
+        .replace("\\", "\\\\")
+        .replace(
+            "Skyrim_Runtime_1.6.1170",
+            r"Skyrim_\qRuntime_1.6.1170",
+        )
+    )
+    plan_bloqueado = planificar_migracion_ejecutables(
+        (
+            Mo2Executable(1, "Evasion Steam q", str(exe_ext), str(tools), r"-p Steam\qapps\\common"),
+            Mo2Executable(2, "Evasion Steam x", str(exe_ext), str(tools), r"steama\xpps"),
+            Mo2Executable(3, "Evasion Runtime q", str(exe_ext), str(tools), f'-D:"{outgoing_esc}"'),
+        ),
+        outgoing_runtime_root=outgoing,
+        target_clone_root=clone,
+    )
+    assert plan_bloqueado.bloqueado is True
+    assert [e.clasificacion for e in plan_bloqueado.entradas] == [
+        ClasificacionEjecutableMO2.DEPENDIENTE_DE_STEAM,
+        ClasificacionEjecutableMO2.DEPENDIENTE_DE_STEAM,
+        ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA,
+    ]
+
+
+# =========================================================================
+# CR-04: Límites entre comillas con espacios internos en rutas Windows
+# =========================================================================
+
+
+@pytest.mark.parametrize(
+    ("argumentos", "ruta_objetivo", "esperado"),
+    [
+        # Hallazgo CodeRabbit CR-04: ruta hermana entrecomillada con espacio interno -> False
+        (r'-D:"G:\Modding\Skyrim_Runtime_1.6.1170 Backup\Data"', r"G:\Modding\Skyrim_Runtime_1.6.1170", False),
+        (
+            r'"-D:\"G:\\Modding\\Skyrim_Runtime_1.6.1170 Backup\\Data\""',
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            False,
+        ),
+        (r'-D:"G:/Modding/Skyrim_Runtime_1.6.1170 Old/Data"', r"G:\Modding\Skyrim_Runtime_1.6.1170", False),
+        (r"-D:'G:\Modding\Skyrim_Runtime_1.6.1170 Archive\Data'", r"G:\Modding\Skyrim_Runtime_1.6.1170", False),
+        (r'-p "G:\Modding\Skyrim_Runtime_1.6.1170 Copy 2\Data"', r"G:\Modding\Skyrim_Runtime_1.6.1170", False),
+        (
+            r'-p "\\server\share\Skyrim_Runtime_1.6.1170 Backup\Data"',
+            r"\\server\share\Skyrim_Runtime_1.6.1170",
+            False,
+        ),
+        (r'-p "D:\G:\Modding\Skyrim_Runtime_1.6.1170"', r"G:\Modding\Skyrim_Runtime_1.6.1170", False),
+        (r'-D:"G:\Modding\Skyrim_Runtime_1.6.1170_Backup\Data"', r"G:\Modding\Skyrim_Runtime_1.6.1170", False),
+        (
+            r'-D:"G:\Modding\Skyrim Runtime 1.6.1170 Backup\Data"',
+            r"G:\Modding\Skyrim Runtime 1.6.1170",
+            False,
+        ),
+        # Verdaderos positivos que DEBEN seguir detectándose
+        (r'-D:"G:\Modding\Skyrim_Runtime_1.6.1170"', r"G:\Modding\Skyrim_Runtime_1.6.1170", True),
+        (r'-D:"G:\Modding\Skyrim_Runtime_1.6.1170\Data"', r"G:\Modding\Skyrim_Runtime_1.6.1170", True),
+        (r"-p G:\Modding\Skyrim_Runtime_1.6.1170 -autoload", r"G:\Modding\Skyrim_Runtime_1.6.1170", True),
+        (r'-p "G:\Modding\Skyrim_Runtime_1.6.1170" "C:\Out"', r"G:\Modding\Skyrim_Runtime_1.6.1170", True),
+        # Espacios finales dentro de comillas: Win32 recorta espacios finales / entrada sospechosa
+        (r'-p "G:\Modding\Skyrim_Runtime_1.6.1170   "', r"G:\Modding\Skyrim_Runtime_1.6.1170", True),
+        # Segunda coincidencia real tras una primera hermana inocua con espacio
+        (
+            r'-backup "G:\Modding\Skyrim_Runtime_1.6.1170 Backup\Data" -D:"G:\Modding\Skyrim_Runtime_1.6.1170\Data"',
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        # Comilla previa sin cerrar NO debe silenciar referencias reales posteriores (fail-closed)
+        (
+            r'-title "Foo -p G:\Modding\Skyrim_Runtime_1.6.1170 -autoload',
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (r'-D:"G:\Modding\Skyrim Runtime 1.6.1170\Data"', r"G:\Modding\Skyrim Runtime 1.6.1170", True),
+        (r'"-D:\"G:\\Modding\\Skyrim_Runtime_1.6.1170\""', r"G:\Modding\Skyrim_Runtime_1.6.1170", True),
+    ],
+)
+def test_cr04_limites_entre_comillas_con_espacios_internos(
+    argumentos: str,
+    ruta_objetivo: str,
+    esperado: bool,
+) -> None:
+    """Verifica que espacios internos entre comillas no generen falsos positivos sin crear bypasses."""
+    ruta_win = pathlib.PureWindowsPath(ruta_objetivo)
+    assert _contiene_referencia_a_ruta(argumentos, ruta_win) is esperado
+
+
+def test_cr04_planificacion_sseedit_backup_en_argumentos_es_externa_preservable(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Confirma que SSEEdit con -D hacia '<runtime> Backup\\Data' se preserva y no se bloquea."""
+    outgoing = tmp_path / "Skyrim_Runtime_1.6.1170"
+    clone = tmp_path / "Clone"
+    managed = tmp_path / "GoldenSource"
+    tools = tmp_path / "Tools"
+    outgoing.mkdir()
+    clone.mkdir()
+    managed.mkdir()
+    tools.mkdir()
+    sseedit = tools / "SSEEdit.exe"
+    sseedit.write_bytes(b"MZ")
+
+    backup_data = tmp_path / "Skyrim_Runtime_1.6.1170 Backup" / "Data"
+    managed_backup = tmp_path / "GoldenSource Backup" / "Data"
+
+    plan_preservable = planificar_migracion_ejecutables(
+        (
+            Mo2Executable(1, "SSEEdit Backup", str(sseedit), str(tools), f'-D:"{backup_data}"'),
+            Mo2Executable(2, "SSEEdit ManagedBackup", str(sseedit), str(tools), f'-D:"{managed_backup}"'),
+        ),
+        outgoing_runtime_root=outgoing,
+        target_clone_root=clone,
+        managed_source_root=managed,
+    )
+    assert plan_preservable.bloqueado is False
+    assert [e.clasificacion for e in plan_preservable.entradas] == [
+        ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE,
+        ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE,
+    ]
+
+    plan_real_ref = planificar_migracion_ejecutables(
+        (
+            Mo2Executable(1, "SSEEdit Activo", str(sseedit), str(tools), f'-D:"{outgoing / "Data"}"'),
+            Mo2Executable(2, "SSEEdit Managed", str(sseedit), str(tools), f'-D:"{managed / "Data"}"'),
+        ),
+        outgoing_runtime_root=outgoing,
+        target_clone_root=clone,
+        managed_source_root=managed,
+    )
+    assert plan_real_ref.bloqueado is True
+    assert [e.clasificacion for e in plan_real_ref.entradas] == [
+        ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA,
+        ClasificacionEjecutableMO2.DEPENDIENTE_DE_STEAM,
+    ]
+
+
+# =========================================================================
+# Sección 6: Validación cruzada integrada (ModOrganizer.ini -> leer -> planificar)
+# =========================================================================
+
+
+def test_cruzada_cr03_cr04_ini_a_planificacion(tmp_path: pathlib.Path) -> None:
+    """Valida extremo a extremo desde ModOrganizer.ini real con size=N y escapes Qt hasta la planificación."""
+    outgoing = tmp_path / "Skyrim_Runtime_1.6.1170"
+    clone = tmp_path / "Clone_1.6.1170"
+    tools = tmp_path / "Tools"
+    outgoing.mkdir()
+    clone.mkdir()
+    tools.mkdir()
+    (outgoing / "skse64_loader.exe").write_bytes(b"MZ")
+    (clone / "skse64_loader.exe").write_bytes(b"MZ")
+    sseedit = tools / "SSEEdit.exe"
+    sseedit.write_bytes(b"MZ")
+
+    backup_data = tmp_path / "Skyrim_Runtime_1.6.1170 Backup" / "Data"
+    skse_posix = str(outgoing / "skse64_loader.exe").replace("\\", "/")
+    outgoing_posix = str(outgoing).replace("\\", "/")
+    sseedit_posix = str(sseedit).replace("\\", "/")
+    tools_posix = str(tools).replace("\\", "/")
+    backup_ini = str(backup_data).replace("\\", "\\\\")
+
+    ini_ok = tmp_path / "ModOrganizer_ok.ini"
+    ini_ok.write_text(
+        "\n".join(
+            [
+                "[customExecutables]",
+                "size=3",
+                "1\\title=SKSE",
+                f"1\\binary={skse_posix}",
+                f"1\\workingDirectory={outgoing_posix}",
+                "1\\arguments=-forcesteamloader",
+                "2\\title=SSEEdit Backup",
+                f"2\\binary={sseedit_posix}",
+                f"2\\workingDirectory={tools_posix}",
+                f'2\\arguments="-D:\\"{backup_ini}\\""',
+                "3\\title=SSEEdit qTools",
+                f"3\\binary={sseedit_posix}",
+                f"3\\workingDirectory={tools_posix}",
+                "3\\arguments=-cfg C:\\\\qTools\\\\preset.ini",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    ejecutables_ok = tuple(leer_ejecutables_de_mo2(ini_ok))
+    plan_ok = planificar_migracion_ejecutables(ejecutables_ok, outgoing, clone)
+    assert plan_ok.bloqueado is False
+    assert [e.clasificacion for e in plan_ok.entradas] == [
+        ClasificacionEjecutableMO2.MIGRABLE_AL_CLONE,
+        ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE,
+        ClasificacionEjecutableMO2.EXTERNA_PRESERVABLE,
+    ]
+
+    # Casos negativos mediante INI real con doble capa (QSettings INI + _desescapar_qt_argumentos)
+    outgoing_q_ini = (
+        str(outgoing).replace("\\", "\\\\").replace("Skyrim_Runtime_1.6.1170", r"Skyrim_\qRuntime_1.6.1170")
+    )
+    outgoing_ini = str(outgoing).replace("\\", "\\\\")
+    ini_neg = tmp_path / "ModOrganizer_neg.ini"
+    ini_neg.write_text(
+        "\n".join(
+            [
+                "[customExecutables]",
+                "size=4",
+                "1\\title=Evasion Steam q via INI",
+                f"1\\binary={sseedit_posix}",
+                f"1\\workingDirectory={tools_posix}",
+                r"1\arguments=Steam\qapps",
+                "2\\title=Evasion Steam x via INI",
+                f"2\\binary={sseedit_posix}",
+                f"2\\workingDirectory={tools_posix}",
+                r"2\arguments=steama\xpps",
+                "3\\title=Evasion Runtime q via INI",
+                f"3\\binary={sseedit_posix}",
+                f"3\\workingDirectory={tools_posix}",
+                f'3\\arguments=-D:"{outgoing_q_ini}"',
+                "4\\title=Comilla previa sin cerrar",
+                f"4\\binary={sseedit_posix}",
+                f"4\\workingDirectory={tools_posix}",
+                f'4\\arguments=-title "Foo -p {outgoing_ini} -autoload',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    ejecutables_neg = tuple(leer_ejecutables_de_mo2(ini_neg))
+    plan_neg = planificar_migracion_ejecutables(ejecutables_neg, outgoing, clone)
+    assert plan_neg.bloqueado is True
+    assert [e.clasificacion for e in plan_neg.entradas] == [
+        ClasificacionEjecutableMO2.DEPENDIENTE_DE_STEAM,
+        ClasificacionEjecutableMO2.DEPENDIENTE_DE_STEAM,
+        ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA,
+        ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA,
+    ]

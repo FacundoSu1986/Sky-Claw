@@ -157,8 +157,10 @@ def _desescapar_qt_argumentos(texto: str) -> tuple[str, bool]:
 
         if siguiente == "x":
             if indice >= largo or texto[indice] not in _DIGITOS_HEX:
+                # Qt 5.15 QSettingsPrivate::iniUnescapedStringList (StHexEscape):
+                # un '\\x' sin dígitos hex se descarta y el carácter siguiente se
+                # reprocesa como texto normal.
                 vio_escape_invalido = True
-                salida.append("\\x")
                 continue
             valor = 0
             while indice < largo and texto[indice] in _DIGITOS_HEX:
@@ -179,8 +181,8 @@ def _desescapar_qt_argumentos(texto: str) -> tuple[str, bool]:
             salida.append(chr(valor))
             continue
 
-        salida.append("\\")
-        salida.append(siguiente)
+        # Qt 5.15 QSettingsPrivate::iniUnescapedStringList descarta escapes desconocidos
+        # (StEscape vuelve a StNormal sin emitir '\\' ni el carácter siguiente).
 
     decodificado = "".join(salida)
     if "\x00" in decodificado:
@@ -231,6 +233,29 @@ def _colapsar_barras_para_busqueda(texto: str, *, preservar_unc: bool) -> str:
     return re.sub(r"[\\/]+", _reemplazar_barra, texto)
 
 
+def _es_limite_final_de_ruta_valido(variante_norm: str, inicio: int, fin_ruta: int) -> bool:
+    """Valida si ``fin_ruta`` cierra el token de ruta evitando falsos positivos entre comillas.
+
+    Un espacio interno dentro de una ruta entrecomillada (p. ej.
+    ``"G:/Modding/Skyrim_Runtime_1.6.1170 Backup/Data"``) continúa el mismo
+    argumento siempre que exista su comilla de cierre con contenido no vacío en la
+    misma línea. Cualquier comilla previa sin cerrar falla cerrado.
+    """
+    if fin_ruta >= len(variante_norm):
+        return True
+    siguiente = variante_norm[fin_ruta]
+    if siguiente not in " \t\r\n":
+        return True
+    if inicio > 0 and variante_norm[inicio - 1] in ("'", '"'):
+        comilla = variante_norm[inicio - 1]
+        idx_cierre = variante_norm.find(comilla, fin_ruta)
+        if idx_cierre != -1:
+            entre = variante_norm[fin_ruta:idx_cierre]
+            if entre.strip() and "\r" not in entre and "\n" not in entre:
+                return False
+    return True
+
+
 def _contiene_referencia_a_ruta(texto: str, ruta_base: pathlib.PurePath) -> bool:
     """Detecta si un texto contiene referencias a una ruta base o sus descendientes.
 
@@ -254,13 +279,14 @@ def _contiene_referencia_a_ruta(texto: str, ruta_base: pathlib.PurePath) -> bool
         return True
 
     patron = re.compile(
-        r"(?:^|(?<=[\s\"'=:,;(]))" + re.escape(fspath_norm) + r"(?:[/\\\"' \t\r\n,;)]|$)",
+        r"(?:^|(?<=[\s\"'=:,;(]))" + re.escape(fspath_norm) + r"(?=[/\\\"' \t\r\n,;)]|$)",
         flags=re.IGNORECASE,
     )
     for variante in variantes:
         variante_norm = _colapsar_barras_para_busqueda(variante, preservar_unc=es_unc)
-        if patron.search(variante_norm):
-            return True
+        for coincidencia in patron.finditer(variante_norm):
+            if _es_limite_final_de_ruta_valido(variante_norm, coincidencia.start(), coincidencia.end()):
+                return True
     return False
 
 
