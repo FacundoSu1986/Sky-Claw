@@ -343,9 +343,16 @@ class HITLGuard:
     async def respond(self, request_id: str, approved: bool) -> bool:
         """Deliver the operator's decision for *request_id*.
 
+        Requires ``type(approved) is bool`` strictly (raises ``TypeError``
+        otherwise) so truthy/falsy values such as ``Decision.DENIED``, ints,
+        strings, or ``None`` cannot resolve the request.
+
         Returns ``True`` if this call committed the decision (the request was
         still pending and unresolved), ``False`` otherwise — including when a
         timeout already auto-denied it, so a late click never gets a false
         "approved" ack (F6).
         """
+        # Evita coerción truthy/falsy antes de _commit (ej. Decision.DENIED o "false" son truthy).
+        if type(approved) is not bool:
+            raise TypeError(f"approved debe ser bool estricto; se recibió {type(approved).__name__}")
         return await self._commit(request_id, Decision.APPROVED if approved else Decision.DENIED)
