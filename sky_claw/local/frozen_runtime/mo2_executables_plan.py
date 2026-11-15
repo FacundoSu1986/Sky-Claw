@@ -215,10 +215,16 @@ def _tiene_escape_argumento_malformado(texto: str) -> bool:
 
 def _colapsar_barras_para_busqueda(texto: str, *, preservar_unc: bool) -> str:
     """Normaliza separadores repetidos a ``/`` manteniendo el prefijo UNC si aplica."""
-    if preservar_unc and (texto.startswith("\\\\") or texto.startswith("//")):
-        cuerpo = texto[2:]
-        return "//" + re.sub(r"[\\/]+", "/", cuerpo)
-    return re.sub(r"[\\/]+", "/", texto)
+    if not preservar_unc:
+        return re.sub(r"[\\/]+", "/", texto)
+
+    def _reemplazar_barra(match: re.Match[str]) -> str:
+        inicio = match.start()
+        if len(match.group(0)) >= 2 and (inicio == 0 or match.string[inicio - 1] in " \t\r\n\"'=:,;("):
+            return "//"
+        return "/"
+
+    return re.sub(r"[\\/]+", _reemplazar_barra, texto)
 
 
 def _contiene_referencia_a_ruta(texto: str, ruta_base: pathlib.Path) -> bool:

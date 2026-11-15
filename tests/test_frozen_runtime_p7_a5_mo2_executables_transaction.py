@@ -37,6 +37,7 @@ from sky_claw.local.frozen_runtime.binder_recovery import (
 from sky_claw.local.frozen_runtime.clones import (
     cargar_runtime_clone_record,
 )
+from sky_claw.local.frozen_runtime.effective_runtime import mo2_ini as mo2_ini_mod
 from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import (
     Mo2Executable,
     leer_ejecutables_de_mo2,
@@ -2448,3 +2449,154 @@ def test_f02_planificar_escapes_malformados_en_arguments_clasificados_como_ambig
     plan = planificar_migracion_ejecutables(exes, outgoing, clone, managed_source_root=ms_root)
     assert plan.bloqueado is True
     assert plan.entradas[0].clasificacion is ClasificacionEjecutableMO2.AMBIGUA_O_BLOQUEADA
+
+
+# =============================================================================
+# P7-A5-F03: Acotación O(k) de QSettings size e índices + auditoría F02 UNC
+# =============================================================================
+
+
+def test_f03_04_size_desproporcionado_no_asigna_rango_en_memoria(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F03-04: size=1000000000 se rechaza como anomalía sin invocar range proporcional a size."""
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_text("[customExecutables]\nsize=1000000000\n", encoding="utf-8")
+
+    rango_original = range
+
+    def _range_vigilado(*args: int) -> range:
+        stop = args[1] if len(args) >= 2 else args[0]
+        if stop > 1000:
+            raise AssertionError(f"Construcción proporcional a size detectada en mo2_ini: range(..., stop={stop})")
+        return rango_original(*args)
+
+    monkeypatch.setattr(mo2_ini_mod, "range", _range_vigilado, raising=False)
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    assert len(exes) == 1
+    assert exes[0].anomalia is not None
+    assert "1000000000" in exes[0].anomalia
+
+
+def test_f03_05_size_decimal_miles_de_digitos_no_lanza_y_marca_anomalia(tmp_path: pathlib.Path) -> None:
+    """F03-05: Un decimal de miles de caracteres en size= nunca lanza ValueError y reporta anomalía acotada."""
+    size_gigante = "9" * 6000
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_text(f"[customExecutables]\nsize={size_gigante}\n", encoding="utf-8")
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    assert len(exes) == 1
+    assert exes[0].anomalia is not None
+    assert len(exes[0].anomalia) < 512
+
+
+@pytest.mark.parametrize(
+    ("size_val", "indices", "esperado_valido"),
+    [
+        ("0", [], True),  # F03-01
+        ("1", [1], True),  # F03-02
+        ("10", [1, 2], False),  # F03-06
+        ("3", [1, 3, 4], False),  # F03-07
+        ("0", [1], False),  # F03-08
+        ("-1", [1], False),  # F03-09
+        ("abc", [1], False),  # F03-10
+        ("01", [1], False),  # cero a la izquierda no canónico
+        ("0" * 5000, [], False),  # miles de ceros no canónicos
+    ],
+)
+def test_f03_matriz_contrato_size_e_indices(
+    tmp_path: pathlib.Path,
+    size_val: str,
+    indices: list[int],
+    esperado_valido: bool,
+) -> None:
+    """Verifica la matriz F03-01..F03-10 de metadata size e integridad de índices."""
+    outgoing, clone, tools = _preparar_par_runtime_sintetico(tmp_path)
+    lineas = ["[customExecutables]", f"size={size_val}"]
+    for idx in indices:
+        bin_path = outgoing / "skse64_loader.exe" if idx == 1 else tools / "SSEEdit.exe"
+        lineas.extend([f"{idx}\\title=Tool{idx}", f"{idx}\\binary={bin_path.as_posix()}"])
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    if esperado_valido:
+        assert len(exes) == len(indices)
+        assert all(exe.anomalia is None for exe in exes)
+        assert planificar_migracion_ejecutables(exes, outgoing, clone).bloqueado is False
+    else:
+        assert exes and any(exe.anomalia is not None for exe in exes)
+        assert planificar_migracion_ejecutables(exes, outgoing, clone).bloqueado is True
+
+
+@pytest.mark.parametrize(
+    "prefijo_invalido",
+    [
+        "²",  # dígito Unicode no ASCII: int("²") lanzaba ValueError
+        "١",  # dígito árabe-índico no ASCII
+        "01",  # cero a la izquierda ambiguo
+        "9" * 6000,  # excede sys.get_int_max_str_digits() (4300)
+        "9999999999",  # excede INT32_MAX de Qt QSettings::setArrayIndex(int)
+        "2147483648",  # INT32_MAX + 1
+    ],
+)
+def test_f03_indice_individual_malformado_o_desproporcionado_nunca_lanza(
+    tmp_path: pathlib.Path,
+    prefijo_invalido: str,
+) -> None:
+    """Un índice no ASCII, con cero a la izquierda o fuera de rango Qt nunca lanza y falla cerrado."""
+    outgoing, clone, _tools = _preparar_par_runtime_sintetico(tmp_path)
+    ini_path = tmp_path / "modorganizer.ini"
+    ini_path.write_text(
+        "[customExecutables]\n"
+        f"{prefijo_invalido}\\title=Tool\n"
+        f"{prefijo_invalido}\\binary={outgoing.as_posix()}/skse64_loader.exe\n",
+        encoding="utf-8",
+    )
+
+    exes = leer_ejecutables_de_mo2(ini_path)
+    assert len(exes) == 1
+    assert exes[0].anomalia is not None
+    assert len(exes[0].anomalia) < 512
+    assert planificar_migracion_ejecutables(exes, outgoing, clone).bloqueado is True
+
+
+@pytest.mark.parametrize(
+    ("argumentos", "ruta_unc", "esperado"),
+    [
+        (
+            r"-D:\"\\\\Servidor\\Modding\\Skyrim_Runtime_1.6.1170\\Data\\\"",
+            r"\\Servidor\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r'-D:"\\Servidor\Modding\Skyrim_Runtime_1.6.1170\Data"',
+            r"\\Servidor\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r"-D:\"\\\\Servidor\\Modding\\Skyrim_Runtime_1.6.1170_Backup\\Data\\\"",
+            r"\\Servidor\Modding\Skyrim_Runtime_1.6.1170",
+            False,
+        ),
+        (
+            r"-D:\"\x47:\\Modding\\Skyrim_Runtime_1.6.1170\\Data\\\"",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+        (
+            r"-D:\"\107:\\Modding\\Skyrim_Runtime_1.6.1170\\Data\\\"",
+            r"G:\Modding\Skyrim_Runtime_1.6.1170",
+            True,
+        ),
+    ],
+)
+def test_f02_auditoria_unc_y_escapes_hex_octal_en_arguments(
+    argumentos: str,
+    ruta_unc: str,
+    esperado: bool,
+) -> None:
+    """Auditoría F02: rutas UNC escapadas en Qt y escapes hex/octal dentro de arguments."""
+    assert _contiene_referencia_a_ruta(argumentos, pathlib.PureWindowsPath(ruta_unc)) is esperado  # type: ignore[arg-type]
