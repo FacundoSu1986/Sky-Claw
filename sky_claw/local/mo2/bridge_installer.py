@@ -10,8 +10,14 @@ import uuid
 from collections.abc import Callable, Sequence
 
 from sky_claw.app.security.file_permissions import restrict_to_owner
-from sky_claw.app.security.links import link_kind_or_raise_with_retry, rmtree_link_aware
+from sky_claw.app.security.links import (
+    exigir_arbol_copiable_sin_reparse,
+    link_kind_or_raise_with_retry,
+    rmtree_link_aware,
+)
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
+from sky_claw.local.mo2.bridge_bundle import RUTA_DEL_BUNDLE
+from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.protocol import bundle_digest
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION
 
 
@@ -28,7 +34,7 @@ class MO2BridgeInstaller:
         hardener: Callable[[pathlib.Path], None] = restrict_to_owner,
     ) -> None:
         self._hardener = hardener
-        self._bundle = pathlib.Path(__file__).parent / "plugin_bundle" / "skyclaw_bridge"
+        self._bundle = RUTA_DEL_BUNDLE
 
     def install(
         self,
@@ -77,16 +83,26 @@ class MO2BridgeInstaller:
         backup = plugins / f".skyclaw_bridge.{suffix}.backup"
         moved_old = False
         try:
+            # La fuente se copia siguiendo enlaces: un symlink o junction dentro de ella copiaría contenido de otro lugar.
+            exigir_arbol_copiable_sin_reparse(self._bundle)
             shutil.copytree(
                 self._bundle,
                 staging,
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
             )
+            # La copia debe ser idéntica a la fuente ANTES de escribir la config por instancia (que no entra al digest):
+            # el digest que registramos es el de lo que quedó en disco, no el que esperábamos copiar.
+            digest = bundle_digest(self._bundle)
+            if bundle_digest(staging) != digest:
+                raise MO2BridgeInstallError(
+                    "la copia del bundle no coincide con la fuente (copia incompleta o alterada)"
+                )
             config_path = staging / "bridge_config.json"
             config_path.write_text(
                 json.dumps(
                     {
                         "protocol_version": VFS_PROTOCOL_VERSION,
+                        "bundle_digest": digest,
                         "instance_id": instance,
                         "descriptor_path": str(descriptor),
                         "worker_executable": str(worker),

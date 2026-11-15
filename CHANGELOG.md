@@ -235,6 +235,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 
 ### Fixed
+- **El job «Tests / windows-latest / py3.11» del CI ya no se cancela al 98 % de la suite (`timeout-minutes` 70 → 90).** Con 70 min, `py3.11` se canceló tres veces seguidas (#935 dos veces sobre el mismo head, a los 70 min 16 s; #936 una) con la suite casi completa y ningún test fallando; el agregador `Tests (Pytest)` solo ve el `cancelled` y bloquea el merge de un PR sano. La misma suite pasó `py3.11` completa en 56-58 min en otras corridas y `py3.12` tarda 50-62 min: el runner lento de `py3.11` llega a ~72 min (el peor caso de 2026-10-22 era 2322 s), así que 90 min deja el peor caso extrapolado al ~80 %.
+  - El piso queda anclado en `tests/test_ci_platform_policy.py` (`test_el_tope_de_la_matriz_windows_cubre_el_peor_caso_medido`): bajarlo en silencio rompe el test.
+  - **Es un parche al síntoma:** la suite casi se duplicó desde octubre. Si vuelve a rozar el límite, el paso siguiente es repartirla en shards, no subir el tope otra vez. **No verificado:** la corrida de este mismo PR es la primera que usa el tope nuevo.
+- **El broker rechaza un MO2 bridge cuyo bundle no es el de esta versión de Sky-Claw (B-1, H-5).** `PROTOCOL_VERSION` no cambió con #856, #860 ni #877, así que un plugin
+  instalado antes de esos fixes seguía conectándose con el bug vivo y sin aviso. Ahora el `hello` del bridge declara el SHA-256 de TODO su bundle (`bundle_digest` en `protocol.py`:
+  rutas relativas y contenido de cada archivo, sin `__pycache__`, bytecode ni la `bridge_config.json` por instancia; un enlace dentro del bundle es un error) y el broker lo compara con el de
+  su propio producto (`bridge_bundle.digest_del_bundle_del_producto`, la misma fuente que usa el instalador). Un bridge sin digest o con otro se rechaza con la instrucción de reinstalar
+  (`--mode install-vfs-bridge`) y reabrir MO2, y ese motivo se agrega al error de `wait_until_ready` en vez de un «no se conectó» sin causa.
+  - El plugin calcula el digest **una vez, al cargar**: tras un reinstall con MO2 abierto, recalcularlo en cada `hello` afirmaría el digest del código nuevo sobre el viejo en ejecución.
+  - El instalador registra `bundle_digest` en `bridge_config.json` y verifica que la copia en staging coincida con la fuente antes de hacer el swap; si no, aborta sin tocar la instalación previa.
+  - `PROTOCOL_VERSION` no cambia: el digest distingue versiones del plugin; la versión del protocolo sigue siendo solo la del formato de los mensajes.
+  - **Actualización coordinada:** un bridge ya instalado deja de conectarse hasta reinstalarlo con la versión que corresponde a este Sky-Claw (la razón queda en el log del broker y en el error de espera).
+  - **Tests:** `tests/test_mo2_bridge_identidad_del_bundle.py`; el ancla enumera todos los archivos del bundle real (uno nuevo entra solo) y el único literal de `hello` del bridge debe declarar el digest. **No verificado:** el smoke en un MO2 real (instalar, alterar un archivo, ver el rechazo, reinstalar y reabrir).
+  - **Fuera de este cambio, con nombre:** la tarjeta de estado de la GUI que muestre la identidad (H-17) va con P-3c.
+- **El MO2 bridge entrega sus eventos en orden aunque el envío falle y tenga que reconectar (B-2, H-14).** Un evento cuyo envío fallaba se re-encolaba al **final** de la cola: con `[launch_ack, worker_exit]` y un fallo en el primero,
+  tras reconectar salía `worker_exit` antes que `launch_ack`, y el broker (que arma su máquina de estados con ese orden) veía la salida de un worker que todavía no había confirmado. Ahora el evento que falló vuelve al **frente**
+  (`BridgeEventOutbox.requeue_front`) y el drenaje vive en una sola función, `runtime.flush_outbox`, el único consumidor del outbox.
+  - Se re-encola ante **cualquier** error del envío y no solo `OSError`/`VfsFrameError`: antes otro error perdía el evento terminal y dejaba la cuenta de pendientes sin saldar (el apagado habría esperado de más o dado el evento por enviado).
+  - El drenaje salió de `plugin.py` (que importa `mobase` y no se puede cargar en tests) a `runtime.py`, así que la reconexión se prueba con un enlace falso que falla y se recupera.
+  - **Cerrar MO2 a mitad de una corrida puede dejar la instancia en cuarentena, y es lo esperado:** el bridge termina el worker y drena su cola hasta 2 s, pero si el broker no alcanza a recibir `worker_exit` no puede probar que el proceso terminó y aísla la instancia (y veta el rollback). Se libera con `--mode vfs-quarantine` (H-4); no es un fallo a corregir en el bridge.
+  - **Actualización coordinada:** el cambio vive en el bundle del plugin; hay que reinstalarlo (`--mode install-vfs-bridge`) y reabrir MO2 para que tenga efecto.
+  - **Tests:** `tests/test_mo2_bridge_orden_de_eventos.py` (reconexión con fallos, productor concurrente con enlace intermitente que exige «lo entregado es exactamente lo producido y en su orden», y anclas por AST: `flush_outbox` es el único que saca eventos y solo él los mete al frente; el plugin solo toca el outbox con `put`/`wait_until_drained`). **No verificado:** una reconexión real contra MO2.
 - **El razonamiento `<thought>`/`<think>` del modelo ya no llega al usuario en ninguna superficie (#918).**
   El `SYSTEM_PROMPT` pide ese bloque «oculto al usuario», pero nada lo ocultaba: Telegram lo rechazaba como HTML
   inválido («error interno») y la GUI, la web, el CLI y el WS lo mostraban crudo. `LLMRouter.chat` aplica ahora

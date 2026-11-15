@@ -35,6 +35,7 @@ import psutil
 import pytest
 
 from sky_claw.local.mo2 import vfs_broker
+from sky_claw.local.mo2.bridge_bundle import digest_del_bundle_del_producto
 from sky_claw.local.mo2.brokered_dyndolod import BrokeredDynDOLODProcess
 from sky_claw.local.mo2.brokered_loot import BrokeredLootRunner, LOOTTimeoutError
 from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import (
@@ -128,6 +129,7 @@ class _BridgeFalso:
                 "role": "bridge",
                 "instance_id": "portable-main",
                 "session_id": descriptor["session_id"],
+                "bundle_digest": digest_del_bundle_del_producto(),
             },
             secret,
         )

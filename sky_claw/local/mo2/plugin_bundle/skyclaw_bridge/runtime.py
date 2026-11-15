@@ -30,6 +30,23 @@ JOB_OBJECT_NAME_PATTERN = r"Local\\SkyClawVfs-[0-9a-f]{32}"
 _JOB_OBJECT_NAME = re.compile(JOB_OBJECT_NAME_PATTERN)
 
 
+def bridge_hello(*, instance_id: str, session_id: str, bundle_digest: str) -> dict[str, object]:
+    """El ÚNICO ``hello`` del bridge: declara la identidad del bundle que está EJECUTANDO (H-5).
+
+    ``PROTOCOL_VERSION`` no cambió con los fixes del bridge, así que no distingue un plugin viejo de uno nuevo; el digest
+    del bundle sí. El broker lo compara con el de su propio producto y rechaza un bridge desactualizado.
+    """
+
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "type": "hello",
+        "role": "bridge",
+        "instance_id": instance_id,
+        "session_id": session_id,
+        "bundle_digest": bundle_digest,
+    }
+
+
 def ascii_safe_message(message: object) -> str:
     """Evita que el logger ASCII del Python embebido de MO2 mate un thread."""
 
@@ -103,6 +120,40 @@ class BridgeEventOutbox(queue.Queue[dict[str, object]]):
                     return False
                 self.all_tasks_done.wait(remaining)
         return True
+
+    def requeue_front(self, event: dict[str, object]) -> None:
+        """Devuelve AL FRENTE un evento que se sacó y no se pudo enviar (H-14).
+
+        No toca ``unfinished_tasks``: el evento sigue pendiente (se sacó con ``get`` y nunca se llamó ``task_done``), así que
+        ``wait_until_drained`` no lo da por enviado. Un ``put`` lo mandaría al final y, tras reconectar, un evento posterior
+        (``worker_exit``) saldría antes que el que falló (``launch_ack``).
+        """
+
+        with self.mutex:
+            self.queue.appendleft(event)
+            self.not_empty.notify()
+
+
+def flush_outbox(outbox: BridgeEventOutbox, send: Callable[[dict[str, object]], None]) -> None:
+    """Envía los eventos pendientes EN ORDEN; ante un fallo, el evento vuelve al frente y el error se propaga (H-14).
+
+    Es la ÚNICA pieza que consume el outbox: un segundo consumidor (o un ``put`` de lo que se sacó) reintroduciría el
+    reordenamiento tras una reconexión; un test lo ancla por AST. El evento terminal no puede perderse: tras reconectar el
+    broker lo necesita para habilitar rollback y liberar los locks. Se re-encola ante CUALQUIER error del envío, no solo de
+    red: perder el evento (y dejar la cuenta de pendientes sin saldar) es peor que dejar que el error mate el hilo.
+    """
+
+    while True:
+        try:
+            event = outbox.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            send(event)
+        except Exception:
+            outbox.requeue_front(event)
+            raise
+        outbox.task_done()
 
 
 class OrganizerApi(Protocol):

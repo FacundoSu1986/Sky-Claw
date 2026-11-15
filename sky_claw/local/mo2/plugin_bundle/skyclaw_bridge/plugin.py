@@ -18,6 +18,7 @@ from PyQt6.QtCore import QCoreApplication, QObject, Qt, pyqtSignal, pyqtSlot, qI
 
 from .protocol import (
     VfsFrameError,
+    bundle_digest,
     recv_authenticated_message,
     send_authenticated_message,
 )
@@ -29,10 +30,15 @@ from .runtime import (
     BridgeLaunchController,
     ascii_safe_message,
     bridge_error_event_for_command,
+    bridge_hello,
+    flush_outbox,
     verify_mo2_breakaway_allowed,
 )
 
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
+# Identidad del código que MO2 CARGÓ: se calcula una sola vez, al importar el módulo. Recalcularla en cada hello leería el
+# disco de ahora, y tras un reinstall con MO2 abierto afirmaría el digest del código nuevo sobre el viejo en ejecución.
+_BUNDLE_DIGEST = bundle_digest(pathlib.Path(__file__).resolve().parent)
 
 
 def _qt_warning(message: object) -> None:
@@ -150,13 +156,11 @@ class _BridgeClient:
                     connection.settimeout(5)
                     send_authenticated_message(
                         connection,
-                        {
-                            "protocol_version": PROTOCOL_VERSION,
-                            "type": "hello",
-                            "role": "bridge",
-                            "instance_id": self._instance_id,
-                            "session_id": session_id,
-                        },
+                        bridge_hello(
+                            instance_id=self._instance_id,
+                            session_id=session_id,
+                            bundle_digest=_BUNDLE_DIGEST,
+                        ),
                         secret,
                     )
                     ack = recv_authenticated_message(connection, secret)
@@ -176,20 +180,8 @@ class _BridgeClient:
         jobs_root: pathlib.Path,
     ) -> None:
         while not self._stop.is_set():
-            while True:
-                try:
-                    outgoing = self._outgoing.get_nowait()
-                except queue.Empty:
-                    break
-                try:
-                    send_authenticated_message(connection, outgoing, secret)
-                except (OSError, VfsFrameError):
-                    # El evento terminal no puede perderse: tras reconectar el
-                    # broker lo necesita para habilitar rollback/liberar locks.
-                    self._outgoing.put(outgoing)
-                    self._outgoing.task_done()
-                    raise
-                self._outgoing.task_done()
+            # Único consumidor del outbox: un evento que falla vuelve al FRENTE (orden preservado tras reconectar).
+            flush_outbox(self._outgoing, lambda event: send_authenticated_message(connection, event, secret))
             readable, _, _ = select.select([connection], [], [], 0.1)
             if not readable:
                 continue

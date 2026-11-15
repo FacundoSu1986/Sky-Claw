@@ -32,6 +32,7 @@ from typing import Any
 
 import pytest
 
+from sky_claw.local.mo2.bridge_bundle import digest_del_bundle_del_producto
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_broker import VfsBridgeLaunchError, VfsExecutionBroker, VfsWorkerDisconnectedError
 from sky_claw.local.mo2.vfs_contracts import (
@@ -193,6 +194,7 @@ class _Arnes:
                 "role": "bridge",
                 "instance_id": "portable-main",
                 "session_id": self.descriptor["session_id"],
+                "bundle_digest": digest_del_bundle_del_producto(),
             },
             self.secreto,
         )

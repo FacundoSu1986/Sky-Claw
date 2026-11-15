@@ -24,6 +24,7 @@ import psutil
 
 from sky_claw.app.security.file_permissions import restrict_to_owner
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
+from sky_claw.local.mo2.bridge_bundle import digest_del_bundle_del_producto
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationChallenge
 from sky_claw.local.mo2.vfs_contracts import (
     VFS_MANIFEST_PROTOCOL_VERSION,
@@ -214,6 +215,7 @@ class VfsExecutionBroker:
         connected_worker_exit_deadline_seconds: float = _CONNECTED_WORKER_EXIT_DEADLINE_SECONDS,
         bridge_reconnect_replay_grace_seconds: float = _BRIDGE_RECONNECT_REPLAY_GRACE_SECONDS,
         post_result_cancel_grace_seconds: float = _POST_RESULT_CANCEL_GRACE_SECONDS,
+        expected_bundle_digest: str | None = None,
     ) -> None:
         try:
             self._instance_id = assert_safe_component(instance_id, field="instance_id")
@@ -225,6 +227,10 @@ class VfsExecutionBroker:
                 f"post_result_cancel_grace_seconds debe ser un número positivo y finito: {post_result_cancel_grace_seconds!r}"
             )
         self._post_result_cancel_grace = post_result_cancel_grace_seconds
+        # Identidad del bundle que debe declarar el bridge (H-5). ``None`` = la del bundle de ESTE producto; se inyecta
+        # solo para probar. ``_bridge_rechazado`` guarda el último motivo accionable para decírselo a quien espera.
+        self._expected_bundle_digest = expected_bundle_digest
+        self._bridge_rechazado: str | None = None
         self._state_dir = state_dir.resolve()
         self._jobs_dir = self._state_dir / "jobs"
         self._descriptor_path = self._state_dir / f"{self._instance_id}.json"
@@ -619,7 +625,8 @@ class VfsExecutionBroker:
         try:
             await asyncio.wait_for(self._bridge_ready.wait(), timeout=timeout)
         except TimeoutError as exc:
-            raise VfsBrokerError("MO2 bridge no se conectó al broker") from exc
+            motivo = f": {self._bridge_rechazado}" if self._bridge_rechazado else ""
+            raise VfsBrokerError(f"MO2 bridge no se conectó al broker{motivo}") from exc
 
     def _precondiciones(self, job: VfsJob, challenge: VfsAttestationChallenge) -> None:
         """Validaciones comunes de ``submit``/``open_session`` (una sola copia)."""
@@ -1517,6 +1524,7 @@ class VfsExecutionBroker:
             raise VfsBrokerError("session_id del bridge no coincide")
         role = str(message["role"])
         if role == "bridge":
+            self._verificar_el_bundle_del_bridge(message.get("bundle_digest"))
             return role, None
         if message.get("supervision_fence") is not True:
             # Un worker sin el fence despacharía sin esperar la supervisión: el
@@ -1535,6 +1543,39 @@ class VfsExecutionBroker:
                 "worker sin la identidad de Job pedida para este launch: se rechaza (actualizá worker y daemon juntos)"
             )
         return role, job_id
+
+    def _verificar_el_bundle_del_bridge(self, declarado: object) -> None:
+        """Rechaza un bridge cuyo bundle no es el que trae esta versión de Sky-Claw (H-5).
+
+        ``protocol_version`` no cambió con los fixes del bridge, así que un plugin viejo seguía conectándose con el bug
+        vivo y sin aviso. El motivo queda en ``_bridge_rechazado``: ``wait_until_ready`` lo muestra a quien espera.
+        """
+
+        accion = "reinstalalo con `--mode install-vfs-bridge` y reabrí MO2"
+        try:
+            esperado = self._expected_bundle_digest or digest_del_bundle_del_producto()
+        except (OSError, ValueError) as exc:
+            # El detalle (rutas de la instalación incluidas) va al log del operador; el mensaje que viaja hacia
+            # ``wait_until_ready`` y hacia quien consulta el estado es genérico: no filtra la estructura del disco.
+            logger.warning("no se pudo calcular la identidad del bundle del bridge de este Sky-Claw", exc_info=True)
+            self._bridge_rechazado = (
+                "no se pudo calcular la identidad del bundle de este Sky-Claw: revisá el log del broker "
+                "(la instalación de Sky-Claw puede estar incompleta; reinstalá Sky-Claw y luego el bridge)"
+            )
+            raise VfsBrokerError(self._bridge_rechazado) from exc
+        if not isinstance(declarado, str) or not declarado:
+            self._bridge_rechazado = (
+                f"el MO2 bridge instalado no declara la identidad de su bundle (es de una versión anterior): {accion}"
+            )
+        elif declarado != esperado:
+            self._bridge_rechazado = (
+                f"el MO2 bridge instalado ({declarado[:12]}) no es el bundle de esta versión de Sky-Claw "
+                f"({esperado[:12]}): {accion}"
+            )
+        else:
+            self._bridge_rechazado = None
+            return
+        raise VfsBrokerError(self._bridge_rechazado)
 
     def _handle_bridge_message(self, message: Mapping[str, object]) -> None:
         if message.get("protocol_version") != VFS_PROTOCOL_VERSION:

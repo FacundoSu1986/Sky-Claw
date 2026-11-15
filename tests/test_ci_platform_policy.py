@@ -84,6 +84,28 @@ def test_la_suite_completa_solo_certifica_windows() -> None:
     assert jobs["test-summary"]["needs"] == ["test"]
 
 
+#: Piso del ``timeout-minutes`` del job ``test``. Se sube junto con el comentario de ci.yml cuando la suite crece, y baja
+#: solo a propósito: un valor menor reintroduce la cancelación al 98 % de la suite sin ningún test fallando.
+TOPE_MINIMO_DE_LA_MATRIZ_WINDOWS = 90
+
+
+def test_el_tope_de_la_matriz_windows_cubre_el_peor_caso_medido() -> None:
+    """El job ``test`` no puede quedar por debajo de lo que la suite tarda en el runner más lento.
+
+    2026-11-15: con 70 min, ``Windows py3.11`` se canceló tres veces seguidas (#935 dos veces sobre el mismo head, #936 una)
+    con la suite al 98 % y ningún test fallando; el peor caso extrapolado es ~72 min y ``py3.12`` ronda 50-62 min. El
+    agregador ``Tests (Pytest)`` solo ve ese ``cancelled`` y bloquea el merge de un PR cuyo código está sano.
+    """
+    tope = _jobs()["test"]["timeout-minutes"]
+
+    assert isinstance(tope, int)
+    assert not isinstance(tope, bool)
+    assert tope >= TOPE_MINIMO_DE_LA_MATRIZ_WINDOWS, (
+        f"timeout-minutes del job test es {tope}: la suite ya tardó más de 70 min en Windows py3.11; "
+        f"el piso es {TOPE_MINIMO_DE_LA_MATRIZ_WINDOWS} (ver el comentario en ci.yml antes de bajarlo)"
+    )
+
+
 def test_posix_conserva_una_senal_informativa_acotada() -> None:
     posix = _jobs()["test-posix-core"]
 

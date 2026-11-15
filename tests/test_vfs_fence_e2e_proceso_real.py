@@ -38,6 +38,7 @@ from typing import Any, cast
 import psutil
 import pytest
 
+from sky_claw.local.mo2.bridge_bundle import digest_del_bundle_del_producto
 from sky_claw.local.mo2.plugin_bundle.skyclaw_bridge.runtime import PROTOCOL_VERSION, BridgeLaunchController
 from sky_claw.local.mo2.vfs_broker import VfsExecutionBroker
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION
@@ -273,6 +274,7 @@ async def test_el_worker_real_no_crea_descendientes_antes_del_ack_y_todos_quedan
                 "role": "bridge",
                 "instance_id": "portable-main",
                 "session_id": descriptor["session_id"],
+                "bundle_digest": digest_del_bundle_del_producto(),
             },
             secreto,
         )
