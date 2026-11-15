@@ -15,6 +15,10 @@ POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 GIT = shutil.which("git")
 pytestmark = pytest.mark.skipif(not POWERSHELL or not GIT, reason="Requiere git y PowerShell")
 
+# Identidad exacta de la rama protegida y el aviso que el script debe emitir.
+RAMA_PROTEGIDA = "research/native-parallax-exp-m6-pair-mismatch-decomposition"
+AVISO_PROTEGIDA = "OMITE — RAMA PROTEGIDA EXP-M6 PR #675"
+
 
 def git(repo: Path, *args: str) -> str:
     """Ejecuta git únicamente sobre el repositorio temporal del test."""
@@ -141,12 +145,13 @@ def ejecutar(
     rama: str = "",
     cwd: Path | None = None,
     git_dir: str = "",
+    script_fuente: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Ejercita el script productivo con guardas y refs reales en disco."""
     script = "restore.ps1" if restaurar else "delete-branches.ps1"
     script_temporal = Path(archivo["repo"]) / "archive" / "git-branches" / script
     script_temporal.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(RAIZ / "archive" / "git-branches" / script, script_temporal)
+    shutil.copyfile(script_fuente or (RAIZ / "archive" / "git-branches" / script), script_temporal)
     args = [
         str(POWERSHELL),
         "-NoProfile",
@@ -183,6 +188,26 @@ def ejecutar(
         errors="replace",
         timeout=30,
     )
+
+
+def _preparar_rama_protegida(archivo: dict[str, Path | str], *, estado: str = "CLOSED") -> str:
+    """Publica la rama protegida real y la anota en el bundle y en el manifiesto.
+
+    El manifiesto la declara MERGED/CLOSED y el bundle contiene su tip exacto: sin
+    la guarda de identidad, todas las demás condiciones autorizarían el borrado.
+    """
+    repo = Path(archivo["repo"])
+    base = str(archivo["base"])
+    git(repo, "branch", RAMA_PROTEGIDA, base)
+    git(repo, "push", "origin", f"{base}:refs/heads/{RAMA_PROTEGIDA}")
+    git(repo, "bundle", "create", str(archivo["bundle"]), "--branches", "--remotes")
+    filas = [
+        "refs/heads/archivada-local\tlocal\tMERGED\t#1\tfecha\tarchivada-local",
+        "refs/heads/archivada-remota\tlocal\tMERGED\t#2\tfecha\tarchivada-remota",
+        f"refs/heads/{RAMA_PROTEGIDA}\tlocal\t{estado}\t#675\tfecha\t{RAMA_PROTEGIDA}",
+    ]
+    Path(archivo["manifest"]).write_text("\n".join(filas), encoding="utf-8")
+    return base
 
 
 @pytest.mark.parametrize("superficie", ["local", "remota"])
@@ -397,3 +422,77 @@ def test_familia_de_scripts_del_archivo_es_exacta() -> None:
         "rebase-apply/head-name",
         "BISECT_START",
     }
+
+
+@pytest.mark.parametrize("estado", ["CLOSED", "MERGED"])
+def test_rama_protegida_con_pr_cerrado_nunca_se_elimina(archivo: dict[str, Path | str], estado: str) -> None:
+    """Con el PR cerrado o mergeado, la identidad protegida manda sobre el manifiesto."""
+    base = _preparar_rama_protegida(archivo, estado=estado)
+    resultado = ejecutar(archivo)
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert AVISO_PROTEGIDA in resultado.stdout
+    repo = Path(archivo["repo"])
+    assert git(repo, "rev-parse", f"refs/heads/{RAMA_PROTEGIDA}") == base
+
+
+def test_rama_protegida_incluida_en_un_bundle_valido_nunca_se_elimina(archivo: dict[str, Path | str]) -> None:
+    """Aunque el bundle verifique y contenga el tip exacto, la guarda manda."""
+    base = _preparar_rama_protegida(archivo)
+    repo = Path(archivo["repo"])
+    verificacion = subprocess.run(
+        [str(GIT), "bundle", "verify", str(archivo["bundle"])],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert verificacion.returncode == 0
+    assert "complete history" in verificacion.stdout + verificacion.stderr
+    assert f"refs/heads/{RAMA_PROTEGIDA}" in git(repo, "bundle", "list-heads", str(archivo["bundle"]))
+    resultado = ejecutar(archivo)
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert AVISO_PROTEGIDA in resultado.stdout
+    assert git(repo, "rev-parse", f"refs/heads/{RAMA_PROTEGIDA}") == base
+
+
+def test_rama_protegida_sobrevive_a_execute_include_remote(archivo: dict[str, Path | str]) -> None:
+    """La guarda cubre la ref local y la remota, incluso con -Execute -IncludeRemote."""
+    base = _preparar_rama_protegida(archivo)
+    resultado = ejecutar(archivo, remoto=True)
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert AVISO_PROTEGIDA in resultado.stdout
+    repo = Path(archivo["repo"])
+    assert git(repo, "rev-parse", f"refs/heads/{RAMA_PROTEGIDA}") == base
+    assert git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{RAMA_PROTEGIDA}").split()[0] == base
+
+
+def test_otras_ramas_elegibles_conservan_el_comportamiento_anterior(archivo: dict[str, Path | str]) -> None:
+    """La proteccion no afloja el borrado de las ramas que si son elegibles."""
+    _preparar_rama_protegida(archivo)
+    resultado = ejecutar(archivo, remoto=True)
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    repo = Path(archivo["repo"])
+    assert set(git(repo, "branch", "--format=%(refname:short)").splitlines()) == {"main", RAMA_PROTEGIDA}
+    remotas = {
+        linea.split("\t")[1] for linea in git(repo, "ls-remote", "--heads", "origin").splitlines() if linea.strip()
+    }
+    assert remotas == {f"refs/heads/{RAMA_PROTEGIDA}"}
+
+
+def test_retirar_la_proteccion_del_script_hace_que_la_rama_se_borre(
+    archivo: dict[str, Path | str], tmp_path: Path
+) -> None:
+    """Ancla de mutacion: sin la identidad protegida, la rama cae y la suite lo detecta."""
+    _preparar_rama_protegida(archivo)
+    original = (RAIZ / "archive" / "git-branches" / "delete-branches.ps1").read_text(encoding="utf-8-sig")
+    mutado = original.replace(RAMA_PROTEGIDA, "rama-sin-guarda")
+    assert mutado != original
+    ruta = tmp_path / "delete-branches-mutado.ps1"
+    ruta.write_text(mutado, encoding="utf-8-sig")
+    resultado = ejecutar(archivo, remoto=True, script_fuente=ruta)
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert AVISO_PROTEGIDA not in resultado.stdout
+    repo = Path(archivo["repo"])
+    assert RAMA_PROTEGIDA not in git(repo, "branch", "--format=%(refname:short)").splitlines()
+    assert RAMA_PROTEGIDA not in git(repo, "ls-remote", "--heads", "origin")
