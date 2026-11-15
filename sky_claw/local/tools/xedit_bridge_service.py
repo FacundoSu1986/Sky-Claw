@@ -17,9 +17,11 @@ Contrato de resultado (``success``/``message``, ver ``tool_result.py``):
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Protocol
+from pathlib import Path, PureWindowsPath
+from typing import Any, Protocol, TypeGuard
 
 from sky_claw.app.security.sanitize import sanitize_for_prompt
 from sky_claw.local.tools.xedit_bridge_client import (
@@ -38,7 +40,10 @@ TIMEOUT_POR_DEFECTO = 60
 LIMITE_HALLAZGOS = 50
 _LARGO_TEXTO = 300
 _LARGO_NOMBRE = 255
+_LARGO_RUTA_LOG = 500
 _CAMPOS_HALLAZGO = ("signature", "formid", "record_name", "path", "description")
+_PATRON_IDENTIFICADOR = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SALTOS_RE = re.compile(r"[\r\n\t\u0085\u2028\u2029]+")
 
 
 class _Rutas(Protocol):
@@ -51,9 +56,88 @@ def _texto(valor: Any, largo: int = _LARGO_TEXTO) -> str:
     return sanitize_for_prompt(str(valor), max_length=largo)
 
 
+def texto_una_linea(valor: Any, largo: int = _LARGO_TEXTO) -> str:
+    """Sanea ``valor`` con ``sanitize_for_prompt`` y lo aplana a una sola línea sin controles."""
+    en_linea = _SALTOS_RE.sub(" ", _texto(valor, largo))
+    return "".join(c for c in en_linea if unicodedata.category(c) != "Cc").strip()
+
+
+_texto_una_linea = texto_una_linea
+
+
 def _lista(valor: Any) -> list[Any]:
     """Un campo de lista del bridge; cualquier otro tipo cuenta como vacío (nunca se itera un str)."""
     return valor if isinstance(valor, list) else []
+
+
+def _lista_textos(valor: Any, largo: int = _LARGO_NOMBRE) -> list[str]:
+    """Extrae solo elementos ``str`` de una lista del bridge y los sanea en una línea."""
+    return [_texto_una_linea(n, largo) for n in _lista(valor) if isinstance(n, str)]
+
+
+def _es_entero_no_negativo(valor: Any) -> TypeGuard[int]:
+    """Entero estricto >= 0 (rechaza ``bool``, ``float``, strings y negativos)."""
+    return isinstance(valor, int) and not isinstance(valor, bool) and valor >= 0
+
+
+def _validar_identificador(valor: Any) -> str | None:
+    """Valida ``run_id`` / ``admission_id`` externos sin saltos, espacios ni traversal."""
+    if not isinstance(valor, str) or ".." in valor:
+        return None
+    return valor if _PATRON_IDENTIFICADOR.fullmatch(valor) else None
+
+
+def _tiene_controles_o_formato(valor: str) -> bool:
+    return any(unicodedata.category(c) in {"Cc", "Cf", "Zl", "Zp"} for c in valor)
+
+
+def _es_traversal(ruta: str) -> bool:
+    partes = [*ruta.replace("\\", "/").split("/"), *PureWindowsPath(ruta).parts]
+    return any(parte == ".." or parte.lstrip(":") == ".." for parte in partes)
+
+
+def _validar_ruta_log(valor: Any) -> str | None:
+    """Valida y sanea ``log_path`` para impedir saltos de rol, controles e intentos de traversal."""
+    if not isinstance(valor, str):
+        return None
+    if not valor.strip() or _tiene_controles_o_formato(valor) or _es_traversal(valor):
+        return None
+    saneado = _texto_una_linea(valor, _LARGO_RUTA_LOG)
+    if not saneado or _tiene_controles_o_formato(saneado) or _es_traversal(saneado):
+        return None
+    return saneado
+
+
+def _validar_hallazgos(crudo: Any) -> tuple[list[dict[str, str]], str | None]:
+    if not isinstance(crudo, list):
+        return [], "findings debe ser una lista"
+    normalizados: list[dict[str, str]] = []
+    for item in crudo:
+        if not isinstance(item, dict):
+            return [], "findings contiene elementos que no son objetos"
+        limpio: dict[str, str] = {}
+        for campo in _CAMPOS_HALLAZGO:
+            val = item.get(campo)
+            if val is None:
+                continue
+            if not isinstance(val, str):
+                return [], f"findings.{campo} debe ser texto"
+            limpio[campo] = _texto_una_linea(val)
+        if len(normalizados) < LIMITE_HALLAZGOS:
+            normalizados.append(limpio)
+    return normalizados, None
+
+
+def _validar_fallas(crudo: Any) -> tuple[list[str], str | None]:
+    if not isinstance(crudo, list):
+        return [], "execution_failures debe ser una lista"
+    fallas: list[str] = []
+    for item in crudo:
+        if not isinstance(item, str):
+            return [], "execution_failures contiene elementos no textuales"
+        if len(fallas) < 10:
+            fallas.append(_texto_una_linea(item))
+    return fallas, None
 
 
 @dataclass(frozen=True)
@@ -100,7 +184,7 @@ class XEditBridgeService:
         ``margen_s`` se suma al timeout del motor para el plazo total del proceso; una superficie con su
         propio plazo (el round del router del agente) pasa uno menor para vencer antes que él.
         """
-        base: dict[str, Any] = {"plugin": _texto(plugin, _LARGO_NOMBRE), "aprobado": False}
+        base: dict[str, Any] = {"plugin": _texto_una_linea(plugin, _LARGO_NOMBRE), "aprobado": False}
         try:
             validar_plugin(plugin)
             respuesta = await auditar_plugin(
@@ -112,13 +196,21 @@ class XEditBridgeService:
             )
         except (BridgeError, ValueError) as exc:
             logger.warning("Auditoría nativa sin veredicto para %r: %s", plugin, exc)
-            return {**base, "success": False, "message": _texto(exc)}
+            return {**base, "success": False, "message": _texto_una_linea(exc)}
         return self._veredicto(plugin, respuesta)
 
     def _veredicto(self, plugin: str, respuesta: RespuestaAuditoria) -> dict[str, Any]:
         payload = respuesta.payload
-        datos = payload.get("untrusted_data")
-        datos = datos if isinstance(datos, dict) else {}
+        crudo = payload.get("untrusted_data")
+        if crudo is not None and not isinstance(crudo, dict):
+            return {
+                "plugin": _texto_una_linea(plugin, _LARGO_NOMBRE),
+                "success": False,
+                "message": "respuesta del bridge con esquema inválido: untrusted_data no es un objeto",
+                "aprobado": False,
+                "no_admitido": False,
+            }
+        datos: dict[str, Any] = crudo if isinstance(crudo, dict) else {}
         if not datos:
             # El bridge real informa las fallas en ``errors`` (lista); ``error`` se acepta por robustez.
             errores = [str(e) for e in _lista(payload.get("errors"))] or [str(payload.get("error") or "")]
@@ -130,66 +222,149 @@ class XEditBridgeService:
                 else f"el xEdit Bridge no auditó {plugin}: {error}"
             )
             return {
-                "plugin": _texto(plugin, _LARGO_NOMBRE),
+                "plugin": _texto_una_linea(plugin, _LARGO_NOMBRE),
                 "success": False,
-                "message": _texto(mensaje),
+                "message": _texto_una_linea(mensaje),
                 "aprobado": False,
                 "no_admitido": no_admitido,
             }
-        completo = datos.get("check_complete") is True
-        integridad = datos.get("prospective_integrity")
-        recortado = datos.get("truncated") is True
-        limpio = datos.get("clean") is True
-        hallazgos_crudos = _lista(datos.get("findings"))
-        # «Aprobado» es la decisión de seguridad de la herramienta: no se deriva de un solo campo. Un ``clean``
-        # que contradice los contadores, los hallazgos o las fallas de ejecución es un resultado incoherente,
-        # y un resultado incoherente no es confiable ni aprueba (defensa en profundidad frente al bridge).
-        contador = datos.get("native_counter_records")
-        con_errores = isinstance(contador, int) and not isinstance(contador, bool) and contador > 0
+
+        errores_esquema: list[str] = []
+        ok_crudo = payload.get("ok")
+        if not isinstance(ok_crudo, bool):
+            errores_esquema.append("ok debe ser booleano")
+
+        check_complete_crudo = datos.get("check_complete")
+        if not isinstance(check_complete_crudo, bool):
+            errores_esquema.append("check_complete debe ser booleano")
+        completo = check_complete_crudo is True
+
+        clean_crudo = datos.get("clean")
+        if not isinstance(clean_crudo, bool):
+            errores_esquema.append("clean debe ser booleano")
+        limpio = clean_crudo is True
+
+        truncated_crudo = datos.get("truncated")
+        if not isinstance(truncated_crudo, bool):
+            errores_esquema.append("truncated debe ser booleano")
+        mcp_recortado = datos.get("mcp_response_truncated")
+        if mcp_recortado is not None and not isinstance(mcp_recortado, bool):
+            errores_esquema.append("mcp_response_truncated debe ser booleano")
+        recortado = (truncated_crudo is True) or (mcp_recortado is True)
+
+        integridad_cruda = datos.get("prospective_integrity")
+        integridad_saneada: str | None
+        if (
+            not isinstance(integridad_cruda, str)
+            or not integridad_cruda.strip()
+            or _tiene_controles_o_formato(integridad_cruda)
+        ):
+            errores_esquema.append("prospective_integrity inválido o ausente")
+            integridad_saneada = None
+        else:
+            integridad_saneada = _texto_una_linea(integridad_cruda, 40)
+
+        contador_crudo = datos.get("native_counter_records")
+        errores_nativos: int | None = contador_crudo if _es_entero_no_negativo(contador_crudo) else None
+        if errores_nativos is None:
+            errores_esquema.append("native_counter_records debe ser entero >= 0")
+
+        procesados_crudo = datos.get("native_processed_records")
+        registros_procesados: int | None = procesados_crudo if _es_entero_no_negativo(procesados_crudo) else None
+        if registros_procesados is None:
+            errores_esquema.append("native_processed_records debe ser entero >= 0")
+
+        avisos: int | None
+        if "check_warning_count" in datos:
+            avisos_crudo = datos.get("check_warning_count")
+            avisos = avisos_crudo if _es_entero_no_negativo(avisos_crudo) else None
+            if avisos is None:
+                errores_esquema.append("check_warning_count debe ser entero >= 0")
+        else:
+            avisos = 0
+
+        hallazgos_crudo_raw = datos.get("findings")
+        hallazgos, err_hallazgos = _validar_hallazgos(hallazgos_crudo_raw)
+        if err_hallazgos is not None:
+            errores_esquema.append(err_hallazgos)
+
+        fallas_crudo_raw = datos.get("execution_failures")
+        fallas, err_fallas = _validar_fallas(fallas_crudo_raw)
+        if err_fallas is not None:
+            errores_esquema.append(err_fallas)
+
+        run_id = _validar_identificador(datos.get("run_id"))
+        if run_id is None:
+            errores_esquema.append("run_id inválido o ausente")
+
+        log_path = _validar_ruta_log(datos.get("log_path"))
+        if log_path is None:
+            errores_esquema.append("log_path inválido o ausente")
+
+        # Coherencia entre campos del propio bridge: nunca derivar aprobación de datos contradictorios.
         incoherencias = []
-        if limpio and con_errores:
-            incoherencias.append(f"clean=true con {contador} errores nativos")
-        if limpio and hallazgos_crudos:
-            incoherencias.append(f"clean=true con {len(hallazgos_crudos)} hallazgos")
-        if limpio and _lista(datos.get("execution_failures")):
+        if limpio and errores_nativos is not None and errores_nativos > 0:
+            incoherencias.append(f"clean=true con {errores_nativos} errores nativos")
+        if limpio and isinstance(hallazgos_crudo_raw, list) and hallazgos_crudo_raw:
+            incoherencias.append(f"clean=true con {len(hallazgos_crudo_raw)} hallazgos")
+        if limpio and isinstance(fallas_crudo_raw, list) and fallas_crudo_raw:
             incoherencias.append("clean=true con fallas de ejecución")
-        confiable = completo and integridad == "PASS" and not recortado and not incoherencias
-        hallazgos = [
-            {campo: _texto(h[campo]) for campo in _CAMPOS_HALLAZGO if isinstance(h, dict) and h.get(campo) is not None}
-            for h in hallazgos_crudos[:LIMITE_HALLAZGOS]
-        ]
-        fallas = [_texto(f) for f in _lista(datos.get("execution_failures"))[:10]]
-        # De la causa más específica a la más general: el bridge marca un recorte también como incompleto.
+        if limpio and completo and integridad_cruda == "PASS" and not recortado and ok_crudo is False:
+            incoherencias.append("ok=false con clean=true")
+
+        tiene_fallas_ejecucion = isinstance(fallas_crudo_raw, list) and len(fallas_crudo_raw) > 0
+        confiable = (
+            ok_crudo is True
+            and completo
+            and integridad_cruda == "PASS"
+            and not recortado
+            and not tiene_fallas_ejecucion
+            and not incoherencias
+            and not errores_esquema
+        )
+
+        # De la causa más específica a la más general: incoherencias -> esquema -> recorte -> integridad -> incompleto.
         if confiable:
             mensaje = ""
         elif incoherencias:
             mensaje = "resultado incoherente del bridge, no se aprueba: " + "; ".join(incoherencias)
+        elif errores_esquema:
+            mensaje = "respuesta del bridge con esquema inválido: " + "; ".join(errores_esquema[:5])
         elif recortado:
             mensaje = "respuesta del bridge recortada: revisar el log crudo en log_path"
-        elif integridad != "PASS":
-            mensaje = f"auditoría nativa sin integridad prospectiva PASS (integridad={_texto(integridad, 40)})"
+        elif integridad_cruda != "PASS":
+            mensaje = f"auditoría nativa sin integridad prospectiva PASS (integridad={integridad_saneada})"
         else:
+            razones_incompleto = list(fallas)
+            if ok_crudo is False and not razones_incompleto:
+                razones_incompleto.append("el bridge informó ok=false")
             mensaje = "auditoría nativa incompleta: " + (
-                "; ".join(fallas) or "el chequeo no terminó de forma verificable"
+                "; ".join(razones_incompleto) or "el chequeo no terminó de forma verificable"
             )
+
+        aprobado = (ok_crudo is True) and confiable and limpio
         return {
-            "plugin": _texto(plugin, _LARGO_NOMBRE),
+            "plugin": _texto_una_linea(plugin, _LARGO_NOMBRE),
             "success": confiable,
-            "message": mensaje,
-            "aprobado": payload.get("ok") is True and confiable and limpio,
+            "message": _texto_una_linea(mensaje) if mensaje else "",
+            "aprobado": aprobado,
             "clean": limpio,
             "check_complete": completo,
-            "errores_nativos": datos.get("native_counter_records"),
-            "registros_procesados": datos.get("native_processed_records"),
-            "avisos": datos.get("check_warning_count", 0),
+            "errores_nativos": errores_nativos,
+            "registros_procesados": registros_procesados,
+            "avisos": avisos,
             "hallazgos": hallazgos,
-            "hallazgos_omitidos": max(0, len(hallazgos_crudos) - LIMITE_HALLAZGOS),
+            "hallazgos_omitidos": (
+                max(0, len(hallazgos_crudo_raw) - LIMITE_HALLAZGOS)
+                if err_hallazgos is None and isinstance(hallazgos_crudo_raw, list)
+                else 0
+            ),
             "fallas": fallas,
-            "integridad": integridad,
+            "integridad": integridad_saneada,
             "recortado": recortado,
-            "bridge_version": respuesta.version,
-            "run_id": datos.get("run_id"),
-            "log_path": datos.get("log_path"),
+            "bridge_version": _texto_una_linea(respuesta.version, 40),
+            "run_id": run_id,
+            "log_path": log_path,
             "no_admitido": False,
         }
 
@@ -197,13 +372,26 @@ class XEditBridgeService:
         """El contexto del que se copiaría hoy: instancia MO2 (carpeta del INI) y perfil activo."""
         return ContextoAdmision(self._rutas.get_mo2_instance_ini_dir(), self._rutas.get_active_profile())
 
-    async def admitir(self, plugin: str, *, contexto: ContextoAdmision | None = None) -> dict[str, Any]:
+    async def admitir(
+        self,
+        plugin: str,
+        *,
+        contexto: ContextoAdmision | None = None,
+        requerir_contexto: bool = False,
+    ) -> dict[str, Any]:
         """Copia ``plugin`` y sus masters del MO2 de Sky-Claw al laboratorio del bridge (MO2 no se toca).
 
         Solo debe llamarse después de una aprobación humana: la impone cada superficie. ``contexto`` es el que
         se mostró al operador al pedirla: si el vigente es otro, no se copia nada (la aprobación era para ese).
         """
-        base: dict[str, Any] = {"plugin": _texto(plugin, _LARGO_NOMBRE)}
+        base: dict[str, Any] = {"plugin": _texto_una_linea(plugin, _LARGO_NOMBRE)}
+        if requerir_contexto and contexto is None:
+            logger.warning("Admisión de %r rechazada: falta el contexto de autorización obligatorio", plugin)
+            return {
+                **base,
+                "success": False,
+                "message": "admisión rechazada: falta el contexto de autorización de MO2 aprobado",
+            }
         # El bridge re-deriva la instancia (base, mods, perfiles, juego) de su ModOrganizer.ini: se le
         # pasa la carpeta del MISMO INI que usa Sky-Claw, no la instalación (que en MO2 2.4+ no tiene INI)
         # ni la raíz de datos (que puede guardar una copia vieja).
@@ -213,9 +401,10 @@ class XEditBridgeService:
             return {
                 **base,
                 "success": False,
-                "message": (
+                "message": _texto_una_linea(
                     f"el contexto de MO2 cambió durante la espera de la aprobación (se aprobó {contexto.resumen()}; "
-                    f"ahora es {vigente.resumen()}): no se copió nada, volvé a pedir la admisión"
+                    f"ahora es {vigente.resumen()}): no se copió nada, volvé a pedir la admisión",
+                    largo=500,
                 ),
             }
         mo2 = vigente.ini_dir
@@ -229,19 +418,47 @@ class XEditBridgeService:
             datos = await admitir_plugin(self._instalacion(), mo2, vigente.perfil, plugin)
         except (BridgeError, ValueError) as exc:
             logger.warning("Admisión de %r no realizada: %s", plugin, exc)
-            return {**base, "success": False, "message": _texto(exc)}
-        if not datos.get("ok"):
-            return {**base, "success": False, "message": _texto(datos.get("error") or "el bridge rechazó la admisión")}
-        logger.info("Plugin %s admitido en el xEdit Bridge (%s)", plugin, datos.get("admission_id"))
+            return {**base, "success": False, "message": _texto_una_linea(exc)}
+        if datos.get("ok") is not True:
+            return {
+                **base,
+                "success": False,
+                "message": _texto_una_linea(datos.get("error") or "el bridge rechazó la admisión"),
+            }
+        admission_id = _validar_identificador(datos.get("admission_id"))
+        clausura = _lista_textos(datos.get("closure"))
+        copiados = _lista_textos(datos.get("copied"))
+        reutilizados = _lista_textos(datos.get("reused"))
+        reemplazados = _lista_textos(datos.get("replaced"))
+        if admission_id is None:
+            logger.warning(
+                "Admisión en estado ambiguo para %s en el xEdit Bridge: ok=True sin admission_id válido",
+                plugin,
+            )
+            return {
+                **base,
+                "success": False,
+                "message": (
+                    "admisión con resultado ambiguo: el bridge respondió ok=true sin admission_id válido "
+                    "(la copia pudo haberse realizado; verificá el laboratorio antes de auditar)"
+                ),
+                "admission_id": None,
+                "estado_admision": "ambigua",
+                "clausura": clausura,
+                "copiados": copiados,
+                "reutilizados": reutilizados,
+                "reemplazados": reemplazados,
+            }
+        logger.info("Plugin %s admitido en el xEdit Bridge (%s)", plugin, admission_id)
         return {
             **base,
             "success": True,
             "message": "",
-            "admission_id": datos.get("admission_id"),
-            "clausura": [_texto(n, _LARGO_NOMBRE) for n in _lista(datos.get("closure"))],
-            "copiados": [_texto(n, _LARGO_NOMBRE) for n in _lista(datos.get("copied"))],
-            "reutilizados": [_texto(n, _LARGO_NOMBRE) for n in _lista(datos.get("reused"))],
-            "reemplazados": [_texto(n, _LARGO_NOMBRE) for n in _lista(datos.get("replaced"))],
+            "admission_id": admission_id,
+            "clausura": clausura,
+            "copiados": copiados,
+            "reutilizados": reutilizados,
+            "reemplazados": reemplazados,
             "siguiente": "auditar_plugin_nativo",
         }
 

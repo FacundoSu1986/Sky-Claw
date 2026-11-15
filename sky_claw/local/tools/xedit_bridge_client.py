@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from typing import Any
@@ -31,6 +32,45 @@ VERSION_TOPE = (2, 0, 0)
 MARGEN_TIMEOUT_S = 60.0
 TIMEOUT_ADMISION_S = 900.0
 TIMEOUT_MINIMO, TIMEOUT_MAXIMO = 5, 120
+#: Tope combinado de stdout/stderr capturados desde el bridge (evita acumulación sin límite de memoria).
+LIMITE_BYTES_SALIDA = 8 * 1024 * 1024
+#: Lista blanca mínima del entorno OS/runtime necesaria para Python ``-I -S -B`` y SSEEdit sin filtrar secretos.
+VARIABLES_ENTORNO_PERMITIDAS: frozenset[str] = frozenset(
+    {
+        "ALLUSERSPROFILE",
+        "APPDATA",
+        "COMMONPROGRAMFILES",
+        "COMMONPROGRAMFILES(X86)",
+        "COMSPEC",
+        "HOME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LOCALAPPDATA",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
+        "PATH",
+        "PATHEXT",
+        "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_IDENTIFIER",
+        "PROCESSOR_LEVEL",
+        "PROCESSOR_REVISION",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PYTHONIOENCODING",
+        "PYTHONUTF8",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "USERPROFILE",
+        "WINDIR",
+    }
+)
 #: Nombre de plugin sin ruta. Única fuente: lo reusan los modelos de parámetros de las dos
 #: superficies (``schemas.py`` y ``tool_strategies``); sintaxis válida para ``re`` y para Pydantic.
 PATRON_PLUGIN = r"^[^\\/:*?\"<>|\x00-\x1f]+\.(?:[eE][sS][mMpPlL])$"
@@ -106,7 +146,7 @@ class InstalacionBridge:
     """Instalación del bridge: su intérprete, su carpeta ``BridgeTrabajo`` y el env que declara.
 
     ``entorno`` son las variables que el bridge pide para su proceso (sus ``TEMP``/``APPDATA``
-    dentro del laboratorio); se SUMAN al entorno heredado al lanzarlo.
+    dentro del laboratorio); se SUMAN únicamente a la lista blanca OS/runtime permitida.
     """
 
     python: Path
@@ -219,6 +259,25 @@ def _decodificar(salida: bytes, *, utf8_estricto: bool = False) -> str:
         return salida.decode("cp1252", errors="replace")
 
 
+def _construir_entorno(extra: Mapping[str, str]) -> dict[str, str]:
+    """Arma el entorno mínimo permitido para el bridge sin heredar secretos de Sky-Claw."""
+    entorno: dict[str, str] = {
+        clave: valor for clave, valor in os.environ.items() if clave.upper() in VARIABLES_ENTORNO_PERMITIDAS
+    }
+    if os.name == "nt":
+        # En Windows los nombres son case-insensitive: reemplazar por clave normalizada evita duplicados.
+        por_nombre = {clave.upper(): clave for clave in entorno}
+        for clave, valor in extra.items():
+            previa = por_nombre.get(clave.upper())
+            if previa is not None and previa != clave:
+                entorno.pop(previa, None)
+            entorno[clave] = valor
+            por_nombre[clave.upper()] = clave
+    else:
+        entorno.update(extra)
+    return entorno
+
+
 async def _ejecutar(
     instalacion: InstalacionBridge,
     comando: list[str],
@@ -227,10 +286,16 @@ async def _ejecutar(
     entrada: bytes | None = None,
     utf8_estricto: bool = False,
 ) -> tuple[str, str, int]:
-    entorno = {**os.environ, **instalacion.entorno} if instalacion.entorno else None
+    entorno = _construir_entorno(instalacion.entorno)
     try:
         stdout, stderr, codigo = await run_capture(
-            comando, timeout=timeout, cwd=str(instalacion.raiz), input_bytes=entrada, env=entorno
+            comando,
+            timeout=timeout,
+            cwd=str(instalacion.raiz),
+            input_bytes=entrada,
+            env=entorno,
+            require_job=True,
+            max_output_bytes=LIMITE_BYTES_SALIDA,
         )
     except TimeoutError as exc:
         raise BridgeError(
