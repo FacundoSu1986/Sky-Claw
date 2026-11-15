@@ -92,6 +92,21 @@ reescrituras por rebase), entre ellos `feat/t5v2-uia-output-gate` (PR #528 CLOSE
 CLOSED), `feat/skse-autoinstall` (PR #422 CLOSED) y los `backup/*`, `codex/*`,
 `wip/*`. El bundle los preserva; revisá su contenido antes de darlos por perdidos.
 
+### Rama protegida — EXP-M6 / PR #675
+
+`research/native-parallax-exp-m6-pair-mismatch-decomposition` está **preservada como
+investigación histórica** (PR #675, research-only y no mergeado). No es una rama obsoleta y no
+se borra en ninguna circunstancia:
+
+- El commit conservado es `f1415711c51a2ec483fd37f41a164044649747aa`, con el tag anotado
+  `archive/exp-m6-pr675` y un bundle verificado fuera de este repo (no está en ninguno de los
+  dos bundles de esta carpeta).
+- `delete-branches.ps1` la excluye **por identidad exacta**, antes de mirar el estado del PR,
+  el manifiesto, el bundle o los worktrees, y emite `OMITE — RAMA PROTEGIDA EXP-M6 PR #675`.
+- La protección cubre la ref local y la remota, también con `-Execute -IncludeRemote`.
+- Sólo el propietario puede autorizar su eliminación. Un PR cerrado **no** autoriza el borrado
+  (regla en el `AGENTS.md` raíz y casos en `tests/test_git_archive_scripts.py`).
+
 ## Cómo restaurar
 
 ```powershell
@@ -159,7 +174,8 @@ El script **aborta** si `gh pr list`, `git worktree list`, `git bundle list-head
 queda pendiente.
 
 Omite toda rama con PR abierto, checked-out en un worktree, la rama actual o
-`main`, y toda rama que no esté en el bundle. **No borres a mano guiándote por el
+`main`, toda rama de la lista de protegidas (por identidad exacta, ver «Rama protegida —
+EXP-M6 / PR #675») y toda rama que no esté en el bundle. **No borres a mano guiándote por el
 manifiesto** (ver la advertencia de snapshot más arriba).
 
 Una ref sólo se borra si su tip coincide con el SHA del bundle para esa superficie:
