@@ -2121,7 +2121,12 @@ async def preflight_del_backend(spawn_strategy: object) -> PreflightDeBackend:
             extra={"operation_type": "dyndolod_preflight_backend_fallo", "tx_id": _tx_id()},
             exc_info=True,
         )
-        return PreflightDeBackend.bloqueado(f"el preflight del backend {nombre} falló ({type(exc).__name__}: {exc})")
+        # El motivo viaja al operador (Telegram / GUI): una excepción inesperada puede traer rutas locales o detalles
+        # internos, así que acá va SOLO el tipo; la traza completa quedó en el log de arriba (mismo criterio que B-1).
+        # Los motivos pensados para el operador (el ``VfsBrokerError`` del broker) los devuelve la strategy tal cual.
+        return PreflightDeBackend.bloqueado(
+            f"el preflight del backend {nombre} falló ({type(exc).__name__}); revisá el log de Sky-Claw"
+        )
     if not isinstance(veredicto, PreflightDeBackend):
         return PreflightDeBackend.bloqueado(
             f"el preflight del backend {nombre} devolvió {type(veredicto).__name__} y no un PreflightDeBackend"

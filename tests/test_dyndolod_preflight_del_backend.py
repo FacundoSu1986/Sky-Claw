@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import logging
 import pathlib
 import types
 from typing import Any
@@ -186,7 +187,18 @@ async def test_una_excepcion_del_preflight_es_un_backend_no_listo_y_no_se_propag
     estrategia = types.SimpleNamespace(preflight_backend=AsyncMock(side_effect=RuntimeError("el broker explotó")))
     veredicto = await preflight_del_backend(estrategia)
     assert veredicto.listo is False
-    assert "el broker explotó" in veredicto.motivo
+    assert "RuntimeError" in veredicto.motivo
+    # el motivo viaja al operador: la excepción inesperada (rutas, detalles internos) NO va en él; vive en el log
+    assert "el broker explotó" not in veredicto.motivo
+
+
+async def test_la_causa_completa_de_la_excepcion_queda_en_el_log_local(caplog):
+    """Lo que se le oculta al operador no se pierde: el log local conserva la causa y la traza."""
+    estrategia = types.SimpleNamespace(preflight_backend=AsyncMock(side_effect=RuntimeError("detalle interno 42")))
+    with caplog.at_level(logging.WARNING):
+        await preflight_del_backend(estrategia)
+    assert "detalle interno 42" in caplog.text
+    assert any(r.exc_info for r in caplog.records)
 
 
 async def test_la_cancelacion_del_preflight_se_propaga_y_no_se_traga():
@@ -231,7 +243,8 @@ async def test_brokered_con_un_error_inesperado_del_broker_tampoco_esta_listo(tm
     estrategia = _brokered(tmp_path, _BrokerFalso(OSError("socket cerrado")))
     veredicto = await preflight_del_backend(estrategia)
     assert veredicto.listo is False
-    assert "socket cerrado" in veredicto.motivo
+    assert "OSError" in veredicto.motivo
+    assert "socket cerrado" not in veredicto.motivo
 
 
 async def test_el_guard_de_la_barrera_no_esta_listo_y_dice_por_que():
