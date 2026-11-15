@@ -223,6 +223,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   el retiro por igualdad literal y se actualizaron sin relajarlos.
 
 ### Fixed
+- **El job «Tests / windows-latest / py3.11» del CI ya no se cancela al 98 % de la suite (`timeout-minutes` 70 → 90).** Con 70 min, `py3.11` se canceló tres veces seguidas (#935 dos veces sobre el mismo head, a los 70 min 16 s; #936 una) con la suite casi completa y ningún test fallando; el agregador `Tests (Pytest)` solo ve el `cancelled` y bloquea el merge de un PR sano. La misma suite pasó `py3.11` completa en 56-58 min en otras corridas y `py3.12` tarda 50-62 min: el runner lento de `py3.11` llega a ~72 min (el peor caso de 2026-10-22 era 2322 s), así que 90 min deja el peor caso extrapolado al ~80 %.
+  - El piso queda anclado en `tests/test_ci_platform_policy.py` (`test_el_tope_de_la_matriz_windows_cubre_el_peor_caso_medido`): bajarlo en silencio rompe el test.
+  - **Es un parche al síntoma:** la suite casi se duplicó desde octubre. Si vuelve a rozar el límite, el paso siguiente es repartirla en shards, no subir el tope otra vez. **No verificado:** la corrida de este mismo PR es la primera que usa el tope nuevo.
 - **El broker rechaza un MO2 bridge cuyo bundle no es el de esta versión de Sky-Claw (B-1, H-5).** `PROTOCOL_VERSION` no cambió con #856, #860 ni #877, así que un plugin
   instalado antes de esos fixes seguía conectándose con el bug vivo y sin aviso. Ahora el `hello` del bridge declara el SHA-256 de TODO su bundle (`bundle_digest` en `protocol.py`:
   rutas relativas y contenido de cada archivo, sin `__pycache__`, bytecode ni la `bridge_config.json` por instancia; un enlace dentro del bundle es un error) y el broker lo compara con el de
