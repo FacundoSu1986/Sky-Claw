@@ -56,6 +56,7 @@ from sky_claw.local.mo2.vfs_contracts import (
     VfsJob,
     VfsJobResult,
 )
+from sky_claw.local.mo2.vfs_quarantine import como_liberar
 from sky_claw.local.mo2.vfs_session import VfsProcessSession
 from sky_claw.local.tools.artifact_digest import digest_arbol
 from sky_claw.local.tools.output_targets import HerramientaDynDOLOD, derivar_layout_de_dyndolod
@@ -78,6 +79,9 @@ _PROBE_HANDOFF_TIMEOUT_SECONDS = 120.0
 
 
 class BrokeredDynDOLODProtocol(Protocol):
+    @property
+    def quarantine_reason(self) -> str | None: ...
+
     async def wait_until_ready(self, *, timeout: float = ...) -> None: ...
 
     async def open_session(
@@ -523,15 +527,25 @@ class BrokeredDynDOLODSpawnStrategy:
     async def preflight_backend(self) -> PreflightDeBackend:
         """¿Está el bridge de MO2 conectado al broker (y aceptado) para servir una corrida? (B-3 / H-6)
 
-        Espera con el plazo corto del broker (``wait_until_ready``) y reutiliza SU motivo de rechazo
-        tal cual: el del bundle del bridge viejo (#934) ya trae la instrucción de reinstalarlo, y
-        no se pierde por el camino. Sólo espera: no abre sesiones ni lanza jobs. Cualquier otro
-        error del broker lo convierte en «no listo» el fail-closed único
+        Dos condiciones, las dos que hacen que ``open_session``/``submit`` rechacen la corrida: la
+        instancia en cuarentena (``_precondiciones`` la rechaza aunque el bridge esté conectado) y el
+        bridge sin conectar. La cuarentena es estado local y se mira primero: no se gasta el plazo del
+        bridge para enterarse de algo que ya se sabe, y el motivo trae el procedimiento para liberarla.
+        Del bridge espera con el plazo corto del broker (``wait_until_ready``) y reutiliza SU motivo
+        de rechazo tal cual: el del bundle viejo (#934) ya trae la instrucción de reinstalarlo. Sólo
+        lee y espera: no abre sesiones ni lanza jobs. Cualquier otro error del broker lo convierte en
+        «no listo» el fail-closed único
         (:func:`~sky_claw.local.tools.dyndolod_runner.preflight_del_backend`).
         """
         # Import local: este módulo mantiene al runner como dependencia solo de tipos.
         from sky_claw.local.tools.dyndolod_runner import PreflightDeBackend
 
+        cuarentena = self._broker.quarantine_reason
+        if cuarentena is not None:
+            return PreflightDeBackend.bloqueado(
+                f"la instancia MO2 está en cuarentena por terminalidad indeterminada: {cuarentena}. "
+                f"{como_liberar(self._install_root)}"
+            )
         try:
             await self._broker.wait_until_ready()
         except VfsBrokerError as exc:

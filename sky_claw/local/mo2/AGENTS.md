@@ -113,11 +113,13 @@ raíz.
   `worker_exit`): es lo esperado y se libera con `--mode vfs-quarantine`; no lo «arregles» ampliando el plazo.
 - **Al operador no se le pregunta por una corrida que el backend no puede servir** (H-6, B-3). Toda pregunta anterior al
   `spawn` pasa antes por `preflight_del_backend` (`dyndolod_runner.py`, la ÚNICA pieza que lee la capability
-  `preflight_backend` de la strategy; es obligatoria: una strategy sin ella es «no lista»). La brokered espera con
-  `broker.wait_until_ready()` y devuelve el motivo del broker sin reescribirlo (el del bundle viejo de B-1 ya trae la
+  `preflight_backend` de la strategy; es obligatoria: una strategy sin ella es «no lista»). La brokered mira primero
+  `broker.quarantine_reason` (estado local; `open_session`/`submit` la rechazan aunque el bridge esté conectado) y después espera
+  con `broker.wait_until_ready()`, devolviendo el motivo del broker sin reescribirlo (el del bundle viejo de B-1 ya trae la
   instrucción de reinstalar); `VfsRequiredDynDOLODSpawnStrategy` (la barrera de contención) responde «no listo» con su razón.
   Sólo espera: no abre sesiones ni lanza jobs. Una strategy de spawn nueva declara `preflight_backend` o rompe
-  `tests/test_dyndolod_preflight_del_backend.py`, que también congela los sitios que le preguntan algo al operador.
+  `tests/test_dyndolod_preflight_del_backend.py`, que también clasifica TODO sitio de `request_approval` (la compuerta HITL
+  del dispatcher se protege con `GenerateLodsStrategy.prepare_for_approval`): una pregunta nueva antes del spawn necesita su preflight.
 - `ganadores.py` (NP-A0d) contesta UNA vez «¿qué capa provee esta ruta virtual en el overlay del perfil?». Recibe `enabled` ya
   normalizado por `vfs_attestation.read_enabled_mods` (no parsea el modlist: un test lo ancla), recorre con
   `links.iter_archivos_propios` (no entra a enlaces), trata `overwrite` como la capa más alta y un `*.mohidden` como ausente, y

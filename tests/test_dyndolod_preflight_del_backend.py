@@ -31,9 +31,13 @@ import pytest
 
 import sky_claw.local.tools.dyndolod_runner as ddl
 from sky_claw.app.agent.tools.lod_tools import GestorDeTrabajosDeLods
+from sky_claw.app.orchestrator.tool_dispatcher import build_orchestration_dispatcher
+from sky_claw.app.orchestrator.tool_strategies.base import ApprovalPreparer
 from sky_claw.app.orchestrator.tool_strategies.generate_lods import GenerateLodsStrategy
+from sky_claw.app.orchestrator.tool_strategies.middleware import HitlGateMiddleware
+from sky_claw.app.security.hitl import Decision
 from sky_claw.local.mo2.brokered_dyndolod import BrokeredDynDOLODSpawnStrategy, VfsRequiredDynDOLODSpawnStrategy
-from sky_claw.local.mo2.vfs_broker import VfsBrokerError
+from sky_claw.local.mo2.vfs_broker import VfsBrokerError, VfsExecutionBroker
 from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODPipelineResult,
     DynDOLODRunner,
@@ -49,6 +53,7 @@ from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
 from sky_claw.local.tools.output_targets import derivar_layout_de_dyndolod
 from sky_claw.local.validators.etapas_previas_lods import EvidenciaDeEtapasPrevias
 from tests._dyndolod_gui_simulada import CONTRATO_DYNDOLOD, CONTRATO_TEXGEN
+from tests._orchestration_dispatcher_dependencies import crear_dependencias_dispatcher
 from tests.test_dyndolod_desatendido_integracion import AprobadorFalso, _capacidad, _instalacion
 
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
@@ -86,9 +91,14 @@ class _EstrategiaFalsa:
 class _BrokerFalso:
     """Lo único que el preflight puede pedirle al broker es esperar al bridge: nunca abrir una sesión."""
 
-    def __init__(self, error: BaseException | None = None) -> None:
+    def __init__(self, error: BaseException | None = None, *, quarantine_reason: str | None = None) -> None:
         self._error = error
+        self._quarantine_reason = quarantine_reason
         self.esperas = 0
+
+    @property
+    def quarantine_reason(self) -> str | None:
+        return self._quarantine_reason
 
     async def wait_until_ready(self, **_kwargs: Any) -> None:
         self.esperas += 1
@@ -245,6 +255,30 @@ async def test_brokered_con_un_error_inesperado_del_broker_tampoco_esta_listo(tm
     assert veredicto.listo is False
     assert "OSError" in veredicto.motivo
     assert "socket cerrado" not in veredicto.motivo
+
+
+async def test_brokered_en_cuarentena_no_esta_listo_aunque_el_bridge_este_conectado(tmp_path):
+    """El broker rechaza ``open_session``/``submit`` en cuarentena (``_precondiciones``) aunque el bridge esté
+    conectado: el preflight no puede responder «listo» mirando solo la conexión (Codex P2 en #950)."""
+    broker = _BrokerFalso(quarantine_reason="terminalidad desconocida demostrada")
+    veredicto = await _brokered(tmp_path, broker).preflight_backend()
+    assert veredicto.listo is False
+    assert "terminalidad desconocida demostrada" in veredicto.motivo
+    assert "--mode vfs-quarantine" in veredicto.motivo, "el operador tiene que poder leer cómo liberarla"
+    assert broker.esperas == 0, "la cuarentena es estado local: no se gasta el plazo del bridge para enterarse"
+
+
+async def test_brokered_con_el_broker_real_en_cuarentena_no_esta_listo(tmp_path):
+    """Con el broker REAL (no un doble): lo que ``quarantine_reason`` dice es lo que ``_precondiciones`` rechaza."""
+    broker = VfsExecutionBroker(instance_id="inst-b3", state_dir=tmp_path / "estado")
+    await broker.start()
+    try:
+        broker._quarantine_instance("job-1", "terminalidad desconocida demostrada")  # noqa: SLF001
+        veredicto = await _brokered(tmp_path, broker).preflight_backend()  # type: ignore[arg-type]
+    finally:
+        await broker.close()
+    assert veredicto.listo is False
+    assert "terminalidad desconocida demostrada" in veredicto.motivo
 
 
 async def test_el_guard_de_la_barrera_no_esta_listo_y_dice_por_que():
@@ -462,6 +496,67 @@ async def test_el_agente_remoto_pregunta_y_lanza_si_el_backend_esta_listo():
 
 
 # =============================================================================
+# Sitio 4: la compuerta HITL del dispatcher (``tool_execution``), antes de ejecutar la strategy
+# =============================================================================
+#
+# Es el sitio que el censo de arriba no veía (Codex P1 en #950): ``generate_lods`` está registrado detrás de
+# ``HitlGateMiddleware``, que le pide al operador aprobar ``tool_execution`` ANTES de llamar a ``execute``. Con la
+# barrera de contención puesta, el operador aprobaba igual una corrida que el backend iba a refutar.
+
+
+class _GuardHITLFalso:
+    """Lo único que la compuerta le pide al ``HITLGuard``: una decisión por ``request_approval``."""
+
+    def __init__(self, decision: Decision = Decision.APPROVED) -> None:
+        self._decision = decision
+        self.pedidos: list[dict[str, Any]] = []
+
+    async def request_approval(self, **kwargs: Any) -> Decision:
+        self.pedidos.append(kwargs)
+        return self._decision
+
+
+def _dispatcher_de_produccion(veredicto: PreflightDeBackend, guard: _GuardHITLFalso) -> tuple[Any, MagicMock]:
+    """El dispatcher REAL de producción (mismo ``build_orchestration_dispatcher`` y la misma cadena de middleware)."""
+    servicio = _servicio_de_la_strategy(veredicto)
+    servicio.verificar_etapas_previas = MagicMock(return_value=EvidenciaDeEtapasPrevias(faltantes=()))
+    dispatcher = build_orchestration_dispatcher(
+        crear_dependencias_dispatcher(dyndolod_service=servicio), hitl_gate=HitlGateMiddleware(hitl_guard=guard)
+    )
+    return dispatcher, servicio
+
+
+async def test_la_compuerta_del_dispatcher_no_le_pregunta_al_operador_si_el_backend_no_esta_listo():
+    guard = _GuardHITLFalso()
+    dispatcher, servicio = _dispatcher_de_produccion(PreflightDeBackend.bloqueado(MOTIVO_BRIDGE), guard)
+
+    resultado = await dispatcher.dispatch("generate_lods", {"preset": "Medium"})
+
+    assert guard.pedidos == [], "no se le pide al operador aprobar tool_execution por una corrida que no puede arrancar"
+    servicio.execute.assert_not_awaited()
+    assert resultado["status"] == "error"
+    assert resultado["reason"] == "DynDOLODPipelineExecutionFailed"
+    assert "BACKEND_NOT_READY" in resultado["details"] and MOTIVO_BRIDGE in resultado["details"]
+
+
+async def test_la_compuerta_del_dispatcher_pregunta_y_ejecuta_si_el_backend_esta_listo():
+    """Control positivo: el preflight no saltea la aprobación cuando el backend está bien."""
+    guard = _GuardHITLFalso()
+    dispatcher, servicio = _dispatcher_de_produccion(PreflightDeBackend.ok(), guard)
+
+    resultado = await dispatcher.dispatch("generate_lods", {"preset": "Medium"})
+
+    assert [p["category"] for p in guard.pedidos] == ["tool_execution"]
+    servicio.execute.assert_awaited_once()
+    assert resultado == {"success": True, "message": ""}
+
+
+def test_generate_lods_es_un_preparador_de_aprobacion_de_la_compuerta():
+    """Sin la capability, ``HitlGateMiddleware`` no tiene dónde probar el backend antes de preguntar."""
+    assert isinstance(GenerateLodsStrategy(MagicMock()), ApprovalPreparer)
+
+
+# =============================================================================
 # Anclas que ENUMERAN: un sitio o una strategy nueva rompe esto hasta que se decida
 # =============================================================================
 
@@ -655,3 +750,108 @@ def test_el_runner_y_el_servicio_delegan_en_la_misma_pieza():
     ]:
         llamadas = [n for n in ast.walk(_funcion(ruta, calificado)) if isinstance(n, ast.Call)]
         assert [_nombre_de_llamada(n) for n in llamadas] == ["preflight_del_backend"], calificado
+
+
+# -----------------------------------------------------------------------------
+# El censo CERRADO: toda pregunta humana pasa por ``HITLGuard.request_approval``
+# -----------------------------------------------------------------------------
+#
+# El censo de arriba busca por NOMBRE (``consultar_aprobador``, el canal de etapas previas) y por eso no vio la
+# compuerta del dispatcher: otro nombre, mismo recurso. ``request_approval`` es la única primitiva por la que un
+# humano recibe una pregunta, así que enumerar SUS sitios cierra la clase. (``tests/test_hitl.py`` congela los mismos
+# sitios con otro fin —la identidad del ``request_id``—; este los clasifica por lo que importa acá: ¿antes del spawn?)
+
+_ASK_ANTES_DEL_SPAWN_CON_PREFLIGHT = {
+    # sitio de la pregunta -> (archivo, función) que prueba el backend antes de que ese sitio se alcance
+    ("sky_claw/app/orchestrator/dyndolod_desatendido_hitl.py", "AprobadorDesatendidoHITL.aprobar_configuracion"): (
+        "sky_claw/local/tools/dyndolod_runner.py",
+        "DynDOLODRunner.preparar_interaccion_desatendida",
+    ),
+    (
+        "sky_claw/app/orchestrator/dyndolod_desatendido_hitl.py",
+        "AprobadorDesatendidoHITL.aprobar_sin_etapas_previas",
+    ): ("sky_claw/app/agent/tools/lod_tools.py", "GestorDeTrabajosDeLods._correr"),
+    (
+        "sky_claw/app/orchestrator/dyndolod_desatendido_hitl.py",
+        "AprobadorDesatendidoHITL.aprobar_sin_etapas_previas_asistido",
+    ): (
+        "sky_claw/app/orchestrator/tool_strategies/generate_lods.py",
+        "GenerateLodsStrategy._guard_de_etapas_previas_del_asistido",
+    ),
+    ("sky_claw/app/orchestrator/tool_strategies/middleware.py", "HitlGateMiddleware.__call__"): (
+        "sky_claw/app/orchestrator/tool_strategies/generate_lods.py",
+        "GenerateLodsStrategy.prepare_for_approval",
+    ),
+}
+#: Con el proceso ya vivo, o después de la corrida: el ``spawn`` ya ocurrió, así que el backend estuvo listo.
+_ASK_DESPUES_DEL_SPAWN = {
+    ("sky_claw/app/orchestrator/dyndolod_desatendido_hitl.py", "AprobadorDesatendidoHITL.aprobar_modal"),
+    ("sky_claw/app/orchestrator/dyndolod_readiness_hitl.py", "ConfirmadorHITL.confirmar"),
+    ("sky_claw/app/orchestrator/sandbox_promotion.py", "SandboxPromotionFlow._request_decision"),
+}
+#: Preguntas que no están en el camino de ``generate_lods`` (otras tools, instaladores, sincronización de mods).
+_ASK_FUERA_DE_LA_ETAPA_9 = {
+    ("sky_claw/app/agent/tools/nexus_tools.py", "download_mod"),
+    ("sky_claw/app/agent/tools/system_tools.py", "install_mod_from_archive"),
+    ("sky_claw/app/agent/tools/xedit_bridge_tools.py", "_pedir_aprobacion_de_admision"),
+    ("sky_claw/app/orchestrator/sync_engine.py", "SyncEngine._check_and_update_mod"),
+    ("sky_claw/local/tools_installer.py", "ToolsInstaller._ensure_github_mod"),
+    ("sky_claw/local/tools_installer.py", "ToolsInstaller._ensure_nexus_mod"),
+    ("sky_claw/local/tools_installer.py", "ToolsInstaller.ensure_bodyslide"),
+    ("sky_claw/local/tools_installer.py", "ToolsInstaller.ensure_loot"),
+    ("sky_claw/local/tools_installer.py", "ToolsInstaller.ensure_pandora"),
+    ("sky_claw/local/tools_installer.py", "ToolsInstaller.ensure_skse"),
+    ("sky_claw/local/tools_installer.py", "ToolsInstaller.ensure_xedit"),
+    # Gate de la cadena LOOT→xEdit→DynDOLOD con preview: hoy NO tiene call site de producción (lo prueba
+    # ``test_el_gate_de_la_cadena_con_preview_no_tiene_call_site_de_produccion``); si se cablea, esto rompe.
+    ("sky_claw/app/orchestrator/preview/approval_gate.py", "ChainPreviewApprovalGate.preview_then_execute"),
+}
+
+
+def _sitios_de_request_approval() -> set[tuple[str, str]]:
+    sitios: set[tuple[str, str]] = set()
+    for ruta in sorted((RAIZ / "sky_claw").rglob("*.py")):
+        for calificado, funcion in _funciones(_arbol(ruta)):
+            if any(
+                isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "request_approval"
+                for n in ast.walk(funcion)
+            ):
+                sitios.add((ruta.relative_to(RAIZ).as_posix(), calificado))
+    return sitios
+
+
+def test_toda_pregunta_humana_esta_clasificada_por_su_relacion_con_el_spawn():
+    """Un sitio nuevo de ``request_approval`` rompe esto hasta decidir su clase: si pregunta ANTES del spawn de la
+    etapa 9, necesita el preflight (y su entrada en la primera tabla, con la función que lo prueba)."""
+    clasificados = set(_ASK_ANTES_DEL_SPAWN_CON_PREFLIGHT) | _ASK_DESPUES_DEL_SPAWN | _ASK_FUERA_DE_LA_ETAPA_9
+    assert _sitios_de_request_approval() == clasificados
+
+
+def test_cada_pregunta_previa_al_spawn_tiene_un_responsable_que_prueba_el_backend():
+    for sitio, (ruta, calificado) in _ASK_ANTES_DEL_SPAWN_CON_PREFLIGHT.items():
+        llamadas = [n for n in ast.walk(_funcion(ruta, calificado)) if isinstance(n, ast.Call)]
+        assert "verificar_backend_listo" in {_nombre_de_llamada(n) for n in llamadas}, (
+            f"{calificado} es quien protege la pregunta de {sitio} y no prueba el backend"
+        )
+
+
+def test_la_compuerta_prueba_el_backend_antes_de_abrir_la_espera_humana():
+    """Orden dentro de ``HitlGateMiddleware.__call__``: ``_prepare_for_approval`` (donde el preflight corre) va ANTES
+    de ``request_approval``."""
+    funcion = _funcion("sky_claw/app/orchestrator/tool_strategies/middleware.py", "HitlGateMiddleware.__call__")
+    llamadas = [n for n in ast.walk(funcion) if isinstance(n, ast.Call)]
+    preparar = [n.lineno for n in llamadas if _nombre_de_llamada(n) == "_prepare_for_approval"]
+    preguntar = [n.lineno for n in llamadas if _nombre_de_llamada(n) == "request_approval"]
+    assert preparar and preguntar and min(preparar) < min(preguntar)
+
+
+def test_el_gate_de_la_cadena_con_preview_no_tiene_call_site_de_produccion():
+    """Fundamento de su exclusión, verificado y no escrito: nadie en ``sky_claw/`` lo instancia fuera de su módulo."""
+    propio = "sky_claw/app/orchestrator/preview/approval_gate.py"
+    usuarios = sorted(
+        ruta.relative_to(RAIZ).as_posix()
+        for ruta in (RAIZ / "sky_claw").rglob("*.py")
+        if ruta.relative_to(RAIZ).as_posix() != propio
+        and "ChainPreviewApprovalGate" in ruta.read_text(encoding="utf-8")
+    )
+    assert usuarios == [], f"ChainPreviewApprovalGate ya tiene call sites de producción: {usuarios}; falta su preflight"

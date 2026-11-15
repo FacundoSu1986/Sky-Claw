@@ -7,6 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from sky_claw.local.tools.dyndolod_runner import DynDOLODExecutionError
 from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido, ModoDeInteraccion, modo_de_interaccion_desde
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
 from sky_claw.local.validators.etapas_previas_lods import etapas_previas_faltantes
@@ -60,6 +61,23 @@ class GenerateLodsStrategy:
             return "payload: <empty>"
         parts = [f"{key}={value!r}" for key, value in sorted(filtered.items())]
         return "payload: " + ", ".join(parts)
+
+    async def prepare_for_approval(self, payload_dict: dict[str, Any]) -> None:
+        """Prueba el backend ANTES de que ``HitlGateMiddleware`` abra la espera humana de ``tool_execution`` (B-3).
+
+        Es la cuarta pregunta previa al spawn de esta tool y la primera que el operador ve en el camino del
+        dispatcher: aprobar ``generate_lods`` para que el backend refute la corrida es aprobar nada. La compuerta
+        la llama como ``ApprovalPreparer`` y convierte la excepción en el error dict de la tool (el wrapping está
+        FUERA del gate): el operador lee el motivo sin haber recibido ninguna pregunta. Vale para los dos modos de
+        interacción: el backend le hace falta a cualquier corrida.
+        """
+        del payload_dict
+        backend = await self.service.verificar_backend_listo()
+        if not backend.listo:
+            raise DynDOLODExecutionError(
+                f"{CodigoDesatendido.BACKEND_NOT_READY.value}: la etapa 9 no se lanza y no se te pide aprobarla "
+                f"porque el backend no está listo: {backend.motivo}"
+            )
 
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         filtered = self._filter_payload(payload_dict)
