@@ -12,7 +12,7 @@ que la estrategia ignora (precedente Codex #213). Hermana LLM:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -87,7 +87,11 @@ class AdmitirPluginNativoStrategy:
             and preparado[0] == scope.get("request_id")
             and preparado[1] == plugin
         ):
+            # El scope es ``dict[str, Any]``: lo que se guardó acá lo escribió ``validate_for_approval``
+            # con ``_preparar_detalle``. El cast hace explícito el contrato sin relajar el type-check.
             _, _, contexto, detalle = preparado
+            contexto = cast("ContextoAdmision", contexto)
+            detalle = cast(str, detalle)
         else:
             plugin, contexto, detalle = self._preparar_detalle(payload_dict)
         if scope is not None:
@@ -116,7 +120,9 @@ class AdmitirPluginNativoStrategy:
                     "(o ya fue consumido); no se copió nada"
                 ),
             }
-        return await self.service.admitir(params.plugin, contexto=contexto)
+        # El contexto autorizado es OBLIGATORIO: presencia != aprobación HITL (el gate ya corrió), pero
+        # sin él la copia no puede vincularse a lo que el operador vio. Las dos superficies lo exigen.
+        return await self.service.admitir(params.plugin, contexto=contexto, requerir_contexto=True)
 
     def _consumir_contexto_autorizado(self, plugin: str) -> ContextoAdmision | None:
         scope = hitl_invocation_state()
@@ -127,5 +133,5 @@ class AdmitirPluginNativoStrategy:
             request_id, bound_plugin, contexto = entrada
             if request_id != scope.get("request_id") or bound_plugin != plugin:
                 return None
-            return contexto
+            return cast("ContextoAdmision", contexto)
         return self._direct_pendientes.pop(plugin, None)

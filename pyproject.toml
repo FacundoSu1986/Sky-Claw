@@ -418,6 +418,42 @@ module = [
 strict = true
 ignore_errors = false
 
+# MISIÓN B (2026-11-15): los cinco módulos del xEdit Bridge salen de las exenciones amplias
+# `ignore_errors = true` (`sky_claw.local.tools.*`, `sky_claw.app.agent.*`,
+# `sky_claw.app.orchestrator.*`). Override LITERAL por módulo: un wildcard nuevo no puede volver
+# a silenciarlos.
+#
+# `strict` NO es una opción per-module en mypy 1.20.2 (no figura en mypy.options.PER_MODULE_OPTIONS):
+# ponerlo en un override no lo aplica por módulo, sino que su efecto se cuela de forma global desde
+# el bloque grande preexistente. Por eso acá se enumeran EXPLÍCITAMENTE los flags de strict que sí
+# son per-module y aplicables (medidos con una comprobación negativa A/B, ver el PR). No se repiten
+# los globales (`warn_unused_configs`, `warn_redundant_casts`, `exclude`) ni `warn_unreachable`
+# (false-positivo documentado en double-checked-locking). Anclado por
+# `tests/test_xedit_bridge_contexto_obligatorio.py::test_los_cinco_modulos_del_bridge_tienen_override_especifico_de_mypy`.
+[[tool.mypy.overrides]]
+module = [
+    "sky_claw.local.tools.xedit_bridge_client",
+    "sky_claw.local.tools.xedit_bridge_service",
+    "sky_claw.app.agent.tools.xedit_bridge_tools",
+    "sky_claw.app.orchestrator.tool_strategies.admitir_plugin_nativo",
+    "sky_claw.app.orchestrator.tool_strategies.auditar_plugin_nativo",
+]
+ignore_errors = false
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_untyped_decorators = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_equality = true
+implicit_optional = false
+implicit_reexport = false
+extra_checks = true
+
 [tool.hatch.version]
 source = "vcs"
 

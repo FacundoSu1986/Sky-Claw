@@ -22,7 +22,6 @@ _GUI_DIR = pathlib.Path("sky_claw/app/gui")
 
 #: Files migrated in PR-4 — bare create_task must not reappear in them.
 _MIGRATED_FILES = [
-    _GUI_DIR / "views" / "actions.py",
     _GUI_DIR / "views" / "mod_list.py",
     _GUI_DIR / "sky_claw_gui.py",
 ]

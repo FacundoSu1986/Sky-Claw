@@ -124,7 +124,9 @@ async def test_admitir_describe_for_approval_muestra_el_nombre_sin_formato_invis
     texto = estrategia.describe_for_approval({"plugin": "Mod\u202epse.esl"})
     assert "\u202e" not in texto and "Mod\\u202epse.esl" in texto
     await estrategia.execute({"plugin": "Mod\u202epse.esl"})
-    servicio.admitir.assert_awaited_once_with("Mod\u202epse.esl", contexto=CONTEXTO)  # se ejecuta el nombre real
+    servicio.admitir.assert_awaited_once_with(
+        "Mod\u202epse.esl", contexto=CONTEXTO, requerir_contexto=True
+    )  # se ejecuta el nombre real
 
 
 def test_admitir_describe_for_approval_muestra_el_nombre_entero_dentro_del_detalle_del_gate() -> None:
@@ -147,7 +149,7 @@ async def test_estrategias_delegan_al_servicio() -> None:
     estrategia.describe_for_approval({"plugin": "Mod.esp"})
     await estrategia.execute({"plugin": "Mod.esp"})
     servicio.auditar.assert_awaited_once_with("Mod.esp", timeout=90)
-    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO)
+    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO, requerir_contexto=True)
 
 
 @pytest.mark.parametrize(
@@ -332,7 +334,7 @@ async def test_admitir_handler_responde_sin_esperar_la_decision_del_operador() -
 
     decision.set_result(Decision.APPROVED)
     await _terminar(gestor)
-    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO)
+    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO, requerir_contexto=True)
     assert gestor.actual is not None and gestor.actual.estado == "exitosa"
     assert len(avisos) == 1 and "Mod.esp" in avisos[0] and "auditar_plugin_nativo" in avisos[0]
 
@@ -370,7 +372,7 @@ async def test_admitir_pedido_muestra_el_nombre_entero_y_sin_formato_invisible(n
     await _terminar(gestor)
     razon = hitl.request_approval.await_args.kwargs["reason"]
     assert visible in razon and "\u202e" not in razon
-    servicio.admitir.assert_awaited_once_with(nombre, contexto=CONTEXTO)
+    servicio.admitir.assert_awaited_once_with(nombre, contexto=CONTEXTO, requerir_contexto=True)
 
 
 async def test_admitir_nombre_que_no_se_puede_mostrar_no_pide_aprobacion() -> None:
@@ -478,7 +480,7 @@ async def test_registro_cablea_resolver_y_hitl_de_la_sesion(
     await _terminar(gestor)
     assert construidos == [resolver], "el servicio tiene que usar el MISMO resolver que la GUI"
     hitl.request_approval.assert_awaited_once()
-    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO)
+    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO, requerir_contexto=True)
 
     # La auditoría del registro llega al servicio con el margen del agente, no con el de la GUI.
     await registro.execute("auditar_plugin_nativo", {"plugin": "Mod.esp"})
@@ -596,7 +598,7 @@ async def test_admitir_el_pedido_muestra_el_contexto_y_se_copia_con_el_capturado
     await _terminar(gestor)
     razon = hitl.request_approval.await_args.kwargs["reason"]
     assert "Instancia" in razon and "prueva huevo 3" in razon and "Otra" not in razon
-    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO)
+    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO, requerir_contexto=True)
 
 
 async def test_gui_el_pedido_muestra_el_contexto_y_la_ejecucion_lo_verifica() -> None:
@@ -605,7 +607,7 @@ async def test_gui_el_pedido_muestra_el_contexto_y_la_ejecucion_lo_verifica() ->
     texto = estrategia.describe_for_approval({"plugin": "Mod.esp"})
     assert "Instancia" in texto and "prueva huevo 3" in texto
     await estrategia.execute({"plugin": "Mod.esp"})
-    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO)
+    servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO, requerir_contexto=True)
     segunda = await estrategia.execute(
         {"plugin": "Mod.esp"}
     )  # el contexto aprobado se consume: no se reutiliza ni copia
@@ -644,7 +646,9 @@ async def test_gui_dos_aprobaciones_concurrentes_case_distinto_orden_inverso_con
     servicio.contexto_de_admision = MagicMock(side_effect=[ctx_a, ctx_b])
     registrados: list[tuple[str, object]] = []
 
-    async def _admitir_mock(plugin: str, *, contexto: ContextoAdmision | None = None) -> dict:
+    async def _admitir_mock(
+        plugin: str, *, contexto: ContextoAdmision | None = None, requerir_contexto: bool = False
+    ) -> dict:
         registrados.append((plugin, contexto))
         return {"success": True, "message": "", "admission_id": "adm-1", "clausura": [plugin]}
 
@@ -697,7 +701,9 @@ async def test_gui_concurrencia_denegacion_o_timeout_no_contamina_hermana_ni_cop
     servicio.contexto_de_admision = MagicMock(side_effect=[ctx_b, ctx_a])
     registrados: list[tuple[str, object]] = []
 
-    async def _admitir_mock(plugin: str, *, contexto: ContextoAdmision | None = None) -> dict:
+    async def _admitir_mock(
+        plugin: str, *, contexto: ContextoAdmision | None = None, requerir_contexto: bool = False
+    ) -> dict:
         registrados.append((plugin, contexto))
         return {"success": True, "message": "", "admission_id": "adm-1", "clausura": [plugin]}
 
@@ -743,7 +749,9 @@ async def test_gui_cancelacion_durante_espera_no_copia_ni_fuga_contexto_a_otra()
     servicio.contexto_de_admision = MagicMock(side_effect=[ctx_b, ctx_a])
     registrados: list[tuple[str, object]] = []
 
-    async def _admitir_mock(plugin: str, *, contexto: ContextoAdmision | None = None) -> dict:
+    async def _admitir_mock(
+        plugin: str, *, contexto: ContextoAdmision | None = None, requerir_contexto: bool = False
+    ) -> dict:
         registrados.append((plugin, contexto))
         return {"success": True, "message": "", "admission_id": "adm-1", "clausura": [plugin]}
 
