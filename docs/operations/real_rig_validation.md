@@ -47,6 +47,10 @@ Cada runner prometido por una release necesita su propia matriz de aceptación.
 Registrar versión de MO2, USVFS, Skyrim, tool, perfil, SHA de Sky-Claw y
 resultado de cada escenario.
 
+Para la etapa 9 (TexGen y DynDOLOD), la matriz de aceptación que corresponde a
+la sesión de rig previa al levantamiento del HOLD está en
+[R0: re-certificación en rig real](r0_recertificacion_en_rig.md).
+
 ## Evidencia fechada
 
 Los paquetes observados se indexan en

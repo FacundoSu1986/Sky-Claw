@@ -24,6 +24,7 @@
 - [Operaciones](operations/README.md)
 - [Política de seguridad](../SECURITY.md)
 - [Validación en rig real](operations/real_rig_validation.md)
+- [R0: re-certificación de la etapa 9 en rig real](operations/r0_recertificacion_en_rig.md)
 
 ## Comprender y extender
 
