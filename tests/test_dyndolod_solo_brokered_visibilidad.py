@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 import sky_claw.local.mo2.brokered_dyndolod as brokered
+from sky_claw.local.mo2.vfs_attestation import read_enabled_plugins
 from sky_claw.local.mo2.vfs_contracts import VfsJob
 from tests.test_dyndolod_spawn_handoff_binding import (
     _PERFIL,
@@ -54,9 +55,18 @@ def _declarar_plugins_activos(esc: Any) -> None:
     (perfil / "plugins.txt").write_text("".join(f"*{p}\n" for p in PLUGINS_ACTIVOS), encoding="utf-8")
 
 
-async def _spawn_dyndolod(tmp_path: pathlib.Path, *, con_handoff: bool) -> VfsJob:
+async def _spawn_dyndolod(tmp_path: pathlib.Path, *, con_handoff: bool) -> tuple[VfsJob, tuple[str, ...]]:
+    """El job con el que spawneó la strategy y lo que el ORÁCULO dice que hay que demostrar visible.
+
+    El oráculo es la misma función que define «plugins activos esperados» (``read_enabled_plugins``): masters base +
+    los marcados con ``*`` en ``plugins.txt``. Comparar contra ella —y no contra la lista que escribió el test— es
+    lo que permite exigir IGUALDAD: ``read_enabled_plugins`` suma masters que el test no declara.
+    """
     esc = _escenario(tmp_path)
     _declarar_plugins_activos(esc)
+    oraculo = read_enabled_plugins(
+        esc.data_root / "profiles" / _PERFIL / "plugins.txt", game_data_dir=esc.physical_data
+    )
     bridge = _BridgeQueRegistraElJob()
     approval = await _gate_pasa(esc, bridge, tmp_path) if con_handoff else None
     await _strategy(esc, bridge, tmp_path).spawn(
@@ -68,7 +78,7 @@ async def _spawn_dyndolod(tmp_path: pathlib.Path, *, con_handoff: bool) -> VfsJo
         handoff=approval,
     )
     assert len(bridge.jobs) == 1
-    return bridge.jobs[0]
+    return bridge.jobs[0], oraculo
 
 
 @pytest.mark.parametrize(
@@ -77,18 +87,25 @@ async def _spawn_dyndolod(tmp_path: pathlib.Path, *, con_handoff: bool) -> VfsJo
 async def test_todo_spawn_brokered_de_dyndolod_lleva_el_conjunto_completo_de_plugins_activos(
     tmp_path: pathlib.Path, con_handoff: bool
 ) -> None:
-    """Las dos rutas de ``spawn`` entregan al worker lo que tiene que demostrar visible bajo USVFS."""
-    job = await _spawn_dyndolod(tmp_path, con_handoff=con_handoff)
+    """Las dos rutas de ``spawn`` entregan al worker EXACTAMENTE lo que tiene que demostrar visible bajo USVFS.
+
+    Igualdad y no subconjunto (review PR-Agent en #953): con ``<=`` un plugin de MÁS en el job pasaba el test y el
+    worker rechazaría el dispatch por un plugin que no hay que exigir; uno de MENOS, también, y la prueba sería
+    incompleta. Además se conserva la comprobación de que lo declarado en ``plugins.txt`` está adentro: sin ella,
+    un oráculo vacío haría trivial la igualdad.
+    """
+    job, oraculo = await _spawn_dyndolod(tmp_path, con_handoff=con_handoff)
 
     esperados = job.payload["expected_plugins"]
     assert isinstance(esperados, list)
+    assert sorted(esperados) == sorted(oraculo)
     assert {nombre.lower() for nombre in PLUGINS_ACTIVOS} <= {nombre.lower() for nombre in esperados}
 
 
 async def test_las_dos_rutas_piden_la_misma_evidencia_de_visibilidad(tmp_path: pathlib.Path) -> None:
     """Sin handoff no se pide MENOS que con handoff: el conjunto es el mismo (no depende del artifact gateado)."""
-    sin = await _spawn_dyndolod(tmp_path / "sin", con_handoff=False)
-    con = await _spawn_dyndolod(tmp_path / "con", con_handoff=True)
+    sin, _ = await _spawn_dyndolod(tmp_path / "sin", con_handoff=False)
+    con, _ = await _spawn_dyndolod(tmp_path / "con", con_handoff=True)
 
     assert sorted(sin.payload["expected_plugins"]) == sorted(con.payload["expected_plugins"])  # type: ignore[arg-type]
 
@@ -100,6 +117,40 @@ def _funcion_spawn() -> ast.AsyncFunctionDef:
     return spawn
 
 
+def _es_creacion_de_vfsjob(nodo: ast.AST) -> bool:
+    """``<algo>.VfsJob.create(...)``: se compara el NOMBRE FINAL, no la forma del import.
+
+    Con ``from ...vfs_contracts import VfsJob`` la llamada es ``VfsJob.create``; con ``import ... as vfs`` es
+    ``vfs.VfsJob.create``; con la ruta completa, ``sky_claw...VfsJob.create``. Las tres son el mismo sitio (review
+    PR-Agent en #953: el ancla no puede depender de cómo se importe la clase, o un refactor legítimo del import la
+    rompe, o peor, la deja sin ver el sitio).
+    """
+    return (
+        isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and nodo.func.attr == "create"
+        and ast.unparse(nodo.func.value).split(".")[-1] == "VfsJob"
+    )
+
+
+@pytest.mark.parametrize(
+    ("fuente", "esperadas"),
+    [
+        ("VfsJob.create(a=1)", 1),
+        ("vfs.VfsJob.create(a=1)", 1),
+        ("sky_claw.local.mo2.vfs_contracts.VfsJob.create(a=1)", 1),
+        ("OtraCosa.create(a=1)", 0),
+        ("VfsJob.otra(a=1)", 0),
+        ("VfsJobExtendido.create(a=1)", 0),
+    ],
+    ids=["import_directo", "alias_de_modulo", "ruta_completa", "otra_clase", "otro_metodo", "nombre_parecido"],
+)
+def test_el_detector_de_creaciones_no_depende_del_estilo_de_import(fuente: str, esperadas: int) -> None:
+    arbol = ast.parse(fuente)
+
+    assert sum(_es_creacion_de_vfsjob(n) for n in ast.walk(arbol)) == esperadas
+
+
 def test_el_unico_job_de_spawn_se_arma_fuera_de_las_ramas_y_con_expected_plugins() -> None:
     """Estructura, no muestreo: ``spawn`` arma UN job, incondicionalmente (fuera de toda rama) y con la evidencia.
 
@@ -107,15 +158,7 @@ def test_el_unico_job_de_spawn_se_arma_fuera_de_las_ramas_y_con_expected_plugins
     hasta que alguien decida si lleva ``expected_plugins``: es el hermano que el handoff dejaba sin red.
     """
     spawn = _funcion_spawn()
-    creaciones = [
-        n
-        for n in ast.walk(spawn)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "create"
-        and isinstance(n.func.value, ast.Name)
-        and n.func.value.id == "VfsJob"
-    ]
+    creaciones = [n for n in ast.walk(spawn) if _es_creacion_de_vfsjob(n)]
     assert len(creaciones) == 1, "cambió la familia de sitios que construyen el VfsJob de spawn: decidir su evidencia"
 
     # incondicional: la asignación vive en el cuerpo de la función, no dentro de un if/try/with
