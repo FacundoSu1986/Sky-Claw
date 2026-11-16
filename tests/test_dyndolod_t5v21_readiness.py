@@ -317,7 +317,7 @@ async def _correr(runner, proc: ProcesoFalso, *, tool: str = "TexGen", timeout: 
 
 
 async def _timeout_otorgado_a_proc_wait(proc: ProcesoFalso, orig, aw, timeout=None, **kwargs):
-    """Envuelve ``wait_for`` y captura el timeout SOLO cuando arranca ``proc.wait()``."""
+    """Envuelve el helper de plazos del runner y captura el timeout SOLO cuando arranca ``proc.wait()``."""
     esperas_antes = proc.esperas
     try:
         return await orig(aw, timeout=timeout, **kwargs)
@@ -936,12 +936,14 @@ async def test_proc_wait_recibe_solo_el_presupuesto_restante(tmp_path, tool, mon
     confirmador = ConfirmadorFalso(al_confirmar=_consumir_presupuesto)
     runner, _layout = _correr_con_layout_windows(tmp_path, _capacidad(guion, confirmador))
 
-    orig = ddl.asyncio.wait_for
+    # El seam es el helper de plazos del runner y NO ``asyncio.wait_for``: el runner ya no lo usa (en 3.11 puede tragarse la
+    # cancelación externa) y parchear el global capturaría el plazo de OTROS ``wait_for`` (los de los módulos UIA).
+    orig = ddl._esperar_con_plazo  # noqa: SLF001
 
     async def _espiar(aw, timeout=None, **kwargs):
         return await _timeout_otorgado_a_proc_wait(proc, orig, aw, timeout=timeout, **kwargs)
 
-    monkeypatch.setattr(ddl.asyncio, "wait_for", _espiar)
+    monkeypatch.setattr(ddl, "_esperar_con_plazo", _espiar)
 
     with pytest.raises(DynDOLODTimeoutError) as excinfo:
         await _correr(runner, proc, tool=tool, timeout=1)
