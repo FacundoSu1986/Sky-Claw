@@ -2310,3 +2310,675 @@ def test_t7_compatibilidad_consumidores_dataclass_fields_asdict_y_replace(tmp_pa
     assert degradado.status == ParallaxRAssistedStatus.MISSING
     assert degradado.success is False
     assert dataclasses.asdict(degradado)["success"] is False
+
+
+# =============================================================================
+# 11. IDENTIDAD LÓGICA MO2 FRENTE A IDENTIDAD FÍSICA DEL FILESYSTEM (#667-A4)
+# =============================================================================
+
+
+@contextmanager
+def _junction(destino: Path, enlace: Path) -> Iterator[Path]:
+    """Crea una junction NTFS `enlace -> destino` y la retira al salir del contexto.
+
+    Las junctions son el único reparse point de directorio reproducible en Windows
+    sin privilegios de symlink: permiten modelar los Casos A y B de MO2 (dos
+    carpetas hijas lógicas que comparten el mismo destino físico).
+    """
+    if sys.platform != "win32":
+        pytest.skip("Junctions NTFS solo reproducibles en Windows")
+    import _winapi
+
+    _winapi.CreateJunction(str(destino), str(enlace))
+    try:
+        yield enlace
+    finally:
+        with suppress(OSError):
+            enlace.rmdir()
+
+
+@contextmanager
+def _junction_rota(raiz: Path, enlace: Path) -> Iterator[Path]:
+    """Crea una junction cuyo destino se borra de inmediato, dejándola rota y reproducible."""
+    if sys.platform != "win32":
+        pytest.skip("Junctions NTFS solo reproducibles en Windows")
+    import _winapi
+
+    # CreateJunction valida el destino: se crea real y se elimina después para romperla.
+    destino = raiz / f"destino_temporal_{enlace.name}"
+    destino.mkdir()
+    _winapi.CreateJunction(str(destino), str(enlace))
+    destino.rmdir()
+    try:
+        yield enlace
+    finally:
+        with suppress(OSError):
+            enlace.rmdir()
+
+
+def test_t1_caso_a_sin_seleccion_conserva_ambas_identidades_logicas(tmp_path: Path) -> None:
+    """T1 (#667-A4): un mod real y su alias comparten destino físico pero son dos identidades MO2."""
+    # Arrange: Caso A — 01_Real con el entrypoint oficial y 02_Alias -> 01_Real.
+    mods_dir = tmp_path / "mods"
+    mod_real = mods_dir / "01_Real"
+    mod_real.mkdir(parents=True)
+    (mod_real / "ParallaxR.BAT").write_bytes(b"@echo caso_a")
+    resolved_mods_dir = mods_dir.resolve()
+
+    # Act + Assert: sin selección la ambigüedad es entre dos carpetas lógicas, no entre dos rutas iguales.
+    with _junction(mod_real, mods_dir / "02_Alias"):
+        preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+        assert preflight.status is ParallaxRAssistedStatus.AMBIGUOUS
+        assert preflight.success is False
+        assert preflight.installation is None
+        assert preflight.candidate_mod_roots == (
+            resolved_mods_dir / "01_Real",
+            resolved_mods_dir / "02_Alias",
+        )
+        with pytest.raises(ValueError):
+            prepare_parallaxr_manual_handoff(preflight)
+
+
+def test_t2_seleccion_de_alias_preserva_identidad_logica_y_round_trip(tmp_path: Path) -> None:
+    """T2 (#667-A4): seleccionar 02_Alias devuelve esa identidad lógica y conserva la procedencia física."""
+    # Arrange
+    mods_dir = tmp_path / "mods"
+    mod_real = mods_dir / "01_Real"
+    mod_real.mkdir(parents=True)
+    bat_bytes = b"@echo off\necho caso_a\n"
+    (mod_real / "ParallaxR.BAT").write_bytes(bat_bytes)
+    resolved_mods_dir = mods_dir.resolve()
+    logical_real = resolved_mods_dir / "01_Real"
+    logical_alias = resolved_mods_dir / "02_Alias"
+
+    with _junction(mod_real, mods_dir / "02_Alias"):
+        # Act: selección por la carpeta lógica del alias (Forma 1).
+        preflight = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=mods_dir / "02_Alias")
+
+        # Assert: identidad lógica MO2 en toda la superficie pública.
+        assert preflight.status is ParallaxRAssistedStatus.READY
+        assert preflight.success is True
+        assert preflight.message == ""
+        installation = preflight.installation
+        assert installation is not None
+        assert installation.mod_root == logical_alias
+        assert installation.entrypoint == logical_alias / "ParallaxR.BAT"
+        assert installation.mod_root in preflight.candidate_mod_roots
+
+        # Assert: procedencia física verificada, separada de la identidad lógica.
+        assert installation.resolved_mod_root == logical_real
+        assert installation.resolved_entrypoint == logical_real / "ParallaxR.BAT"
+        assert installation.size_bytes == len(bat_bytes)
+        assert installation.sha256 == hashlib.sha256(bat_bytes).hexdigest()
+
+        # Assert: handoff lógico y round-trip estable con explicit_selection=handoff.mod_root.
+        handoff = prepare_parallaxr_manual_handoff(preflight)
+        assert handoff.mod_root == installation.mod_root
+        assert handoff.entrypoint == installation.entrypoint
+        assert handoff.fingerprint is installation
+
+        round_trip = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=handoff.mod_root)
+        assert round_trip.status is ParallaxRAssistedStatus.READY
+        assert round_trip.installation is not None
+        assert round_trip.installation.mod_root == logical_alias
+        assert round_trip.installation.resolved_mod_root == logical_real
+
+        # Assert: Forma 2 — selección por el entrypoint lógico oficial.
+        via_entrypoint = run_parallaxr_assisted_preflight(
+            mods_dir, explicit_selection=mods_dir / "02_Alias" / "ParallaxR.BAT"
+        )
+        assert via_entrypoint.status is ParallaxRAssistedStatus.READY
+        assert via_entrypoint.installation is not None
+        assert via_entrypoint.installation.mod_root == logical_alias
+
+
+def test_t2_variantes_relativas_se_anclan_al_cwd_y_conservan_el_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T2 (#667-A4): mods_dir y selección relativas se anclan a cwd, nunca a mods_dir por conveniencia."""
+    # Arrange
+    mods_dir = tmp_path / "mods"
+    mod_real = mods_dir / "01_Real"
+    mod_real.mkdir(parents=True)
+    (mod_real / "ParallaxR.BAT").write_bytes(b"@echo relativo")
+    resolved_mods_dir = mods_dir.resolve()
+    logical_alias = resolved_mods_dir / "02_Alias"
+
+    with _junction(mod_real, mods_dir / "02_Alias"):
+        monkeypatch.chdir(tmp_path)
+
+        # Act
+        por_carpeta = run_parallaxr_assisted_preflight(Path("mods"), explicit_selection=Path("mods/02_Alias"))
+        por_entrypoint = run_parallaxr_assisted_preflight(
+            Path("mods"), explicit_selection=Path("mods/02_Alias/ParallaxR.BAT")
+        )
+
+        # Assert
+        for preflight in (por_carpeta, por_entrypoint):
+            assert preflight.status is ParallaxRAssistedStatus.READY
+            assert preflight.installation is not None
+            assert preflight.installation.mod_root == logical_alias
+            assert preflight.installation.resolved_mod_root == resolved_mods_dir / "01_Real"
+
+
+def test_t2_mods_dir_mediante_junction_padre_conserva_identidad(tmp_path: Path) -> None:
+    """T2 (#667-A4): un mods_dir alcanzado por una junction padre resuelve igual y conserva el alias."""
+    # Arrange
+    parent_real = tmp_path / "parent_real"
+    mods_real = parent_real / "mods"
+    mod_real = mods_real / "01_Real"
+    mod_real.mkdir(parents=True)
+    (mod_real / "ParallaxR.BAT").write_bytes(b"@echo junction_padre")
+    resolved_mods_dir = mods_real.resolve()
+
+    with _junction(mod_real, mods_real / "02_Alias"), _junction(parent_real, tmp_path / "parent_link"):
+        parent_link = tmp_path / "parent_link"
+
+        # Act
+        preflight = run_parallaxr_assisted_preflight(
+            parent_link / "mods", explicit_selection=parent_link / "mods" / "02_Alias"
+        )
+
+        # Assert
+        assert preflight.status is ParallaxRAssistedStatus.READY
+        assert preflight.installation is not None
+        assert preflight.installation.mod_root == resolved_mods_dir / "02_Alias"
+        assert preflight.installation.resolved_mod_root == resolved_mods_dir / "01_Real"
+
+
+def test_t3_caso_b_alias_multiples_rechazan_el_destino_fisico(tmp_path: Path) -> None:
+    """T3 (#667-A4): dos alias hacia un destino no seleccionable distinguen identidad y rechazan lo físico."""
+    # Arrange: Caso B — Alias_A y Alias_B -> _pool/Real (dos niveles bajo mods_dir).
+    mods_dir = tmp_path / "mods"
+    pool = mods_dir / "_pool" / "Real"
+    pool.mkdir(parents=True)
+    (pool / "ParallaxR.BAT").write_bytes(b"@echo pool")
+    resolved_mods_dir = mods_dir.resolve()
+
+    with _junction(pool, mods_dir / "Alias_A"), _junction(pool, mods_dir / "Alias_B"):
+        # Assert (a): sin selección hay dos identidades lógicas distintas.
+        sin_seleccion = run_parallaxr_assisted_preflight(mods_dir)
+        assert sin_seleccion.status is ParallaxRAssistedStatus.AMBIGUOUS
+        assert sin_seleccion.success is False
+        assert sin_seleccion.candidate_mod_roots == (
+            resolved_mods_dir / "Alias_A",
+            resolved_mods_dir / "Alias_B",
+        )
+
+        # Assert (b): seleccionar Alias_B preserva Alias_B y registra el destino físico real.
+        seleccion_b = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=mods_dir / "Alias_B")
+        assert seleccion_b.status is ParallaxRAssistedStatus.READY
+        assert seleccion_b.installation is not None
+        assert seleccion_b.installation.mod_root == resolved_mods_dir / "Alias_B"
+        assert seleccion_b.installation.resolved_mod_root == resolved_mods_dir / "_pool" / "Real"
+
+        # Assert (c): la ruta física compartida no es una selección válida de MO2.
+        for fisica in (mods_dir / "_pool" / "Real", mods_dir / "_pool" / "Real" / "ParallaxR.BAT"):
+            rechazo = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=fisica)
+            assert rechazo.status is ParallaxRAssistedStatus.INVALID_SELECTION
+            assert rechazo.success is False
+            assert rechazo.installation is None
+            assert rechazo.candidate_mod_roots == (
+                resolved_mods_dir / "Alias_A",
+                resolved_mods_dir / "Alias_B",
+            )
+
+
+def test_t3b_unico_alias_no_habilita_el_destino_compartido(tmp_path: Path) -> None:
+    """T3 (#667-A4): con un único alias, el destino físico compartido sigue sin ser seleccionable."""
+    # Arrange
+    mods_dir = tmp_path / "mods"
+    pool = mods_dir / "_pool" / "Real"
+    pool.mkdir(parents=True)
+    (pool / "ParallaxR.BAT").write_bytes(b"@echo unico_pool")
+    resolved_mods_dir = mods_dir.resolve()
+
+    with _junction(pool, mods_dir / "Alias_A"):
+        # Assert: el único candidato se resuelve por identidad lógica.
+        automatico = run_parallaxr_assisted_preflight(mods_dir)
+        assert automatico.status is ParallaxRAssistedStatus.READY
+        assert automatico.installation is not None
+        assert automatico.installation.mod_root == resolved_mods_dir / "Alias_A"
+        assert automatico.installation.resolved_mod_root == resolved_mods_dir / "_pool" / "Real"
+
+        # Assert: seleccionar el destino físico (carpeta o entrypoint) falla cerrado.
+        for fisica in (mods_dir / "_pool" / "Real", mods_dir / "_pool" / "Real" / "ParallaxR.BAT"):
+            rechazo = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=fisica)
+            assert rechazo.status is ParallaxRAssistedStatus.INVALID_SELECTION
+            assert rechazo.success is False
+            assert rechazo.installation is None
+
+
+def test_t4_esquema_de_evidencia_extendido_y_paridad_fail_closed(tmp_path: Path) -> None:
+    """T4 (#667-A4): ParallaxRInstallationEvidence pasa de 5 a 7 campos y exige paridad resolved_*."""
+    # Arrange
+    mod_root = tmp_path / "mods" / "Mod_A"
+    entrypoint = mod_root / "ParallaxR.BAT"
+    campos_base = {
+        "mod_root": mod_root,
+        "entrypoint": entrypoint,
+        "size_bytes": 3,
+        "mtime_ns": 7,
+        "sha256": "a" * 64,
+    }
+
+    # Act + Assert: constructor heredado de 5 argumentos conserva los defaults (None, None).
+    heredada = ParallaxRInstallationEvidence(**campos_base)
+    assert heredada.resolved_mod_root is None
+    assert heredada.resolved_entrypoint is None
+
+    nombres = tuple(f.name for f in dataclasses.fields(ParallaxRInstallationEvidence))
+    assert nombres == (
+        "mod_root",
+        "entrypoint",
+        "size_bytes",
+        "mtime_ns",
+        "sha256",
+        "resolved_mod_root",
+        "resolved_entrypoint",
+    )
+    assert ParallaxRInstallationEvidence.__dataclass_params__.frozen is True
+    assert hasattr(ParallaxRInstallationEvidence, "__slots__")
+
+    completa = ParallaxRInstallationEvidence(
+        **campos_base,
+        resolved_mod_root=mod_root,
+        resolved_entrypoint=entrypoint,
+    )
+    assert set(dataclasses.asdict(completa)) == set(nombres)
+
+    # Assert: mitad-poblado falla cerrado en __init__ y también vía dataclasses.replace().
+    with pytest.raises(ValueError, match="resolved_mod_root"):
+        ParallaxRInstallationEvidence(**campos_base, resolved_mod_root=mod_root)
+    with pytest.raises(ValueError):
+        ParallaxRInstallationEvidence(**campos_base, resolved_entrypoint=entrypoint)
+    with pytest.raises(ValueError):
+        dataclasses.replace(completa, resolved_entrypoint=None)
+
+    # Assert: los contratos congelados #949 permanecen intactos.
+    assert tuple(f.name for f in dataclasses.fields(ParallaxRAssistedPreflight)) == (
+        "status",
+        "success",
+        "installation",
+        "existing_output_candidates",
+        "candidate_mod_roots",
+        "message",
+    )
+    assert tuple(f.name for f in dataclasses.fields(ParallaxRManualHandoff)) == (
+        "mode",
+        "entrypoint",
+        "mod_root",
+        "fingerprint",
+        "requires_user_launch",
+        "recommended_launcher",
+        "direct_helper_invocation",
+        "sky_claw_launches_process",
+        "instruction",
+        "success",
+        "message",
+    )
+
+
+def test_t5_descubrimiento_emite_identidades_logicas_y_parciales_alineados(tmp_path: Path) -> None:
+    """T5 (#667-A4): el motor único proyecta rutas lógicas en el resultado y en los parciales #944."""
+    # Arrange (a): Caso A sano.
+    mods_sano = tmp_path / "mods_sano"
+    mod_real = mods_sano / "01_Real"
+    mod_real.mkdir(parents=True)
+    (mod_real / "ParallaxR.BAT").write_bytes(b"@echo sano")
+    resolved_sano = mods_sano.resolve()
+
+    with _junction(mod_real, mods_sano / "02_Alias"):
+        # Act + Assert: dos entrypoints lógicos distintos, no dos copias de la ruta física.
+        candidatos = discover_parallaxr_candidates(mods_sano)
+        assert candidatos == (
+            resolved_sano / "01_Real" / "ParallaxR.BAT",
+            resolved_sano / "02_Alias" / "ParallaxR.BAT",
+        )
+
+    # Arrange (b): Caso B con un alias válido y una entrada hija rota (#944).
+    mods_roto = tmp_path / "mods_roto"
+    pool = mods_roto / "_pool" / "Real"
+    pool.mkdir(parents=True)
+    (pool / "ParallaxR.BAT").write_bytes(b"@echo parcial")
+    resolved_roto = mods_roto.resolve()
+
+    with _junction(pool, mods_roto / "01_Alias"), _junction_rota(mods_roto, mods_roto / "Z_Roto"):
+        # Act
+        with pytest.raises(ParallaxREvidenceIncompleteError) as exc_info:
+            discover_parallaxr_candidates(mods_roto)
+        preflight = run_parallaxr_assisted_preflight(mods_roto, explicit_selection=mods_roto / "01_Alias")
+
+        # Assert: los parciales son lógicos y coinciden 1:1 con candidate_mod_roots.
+        assert exc_info.value.partial_candidates == (resolved_roto / "01_Alias" / "ParallaxR.BAT",)
+        assert preflight.status is ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+        assert preflight.success is False
+        assert preflight.installation is None
+        assert preflight.candidate_mod_roots == (resolved_roto / "01_Alias",)
+
+
+def test_t6_entrypoints_anidados_y_escapes_no_producen_candidatos(tmp_path: Path) -> None:
+    """T6 (#667-A4): sólo el archivo directo bajo un hijo directo es candidato; escapes y anidados no."""
+    # Arrange: entrypoint anidado, junction externa y archivo suelto en la raíz de mods_dir.
+    mods_dir = tmp_path / "mods"
+    anidado = mods_dir / "Mod_Anidado" / "scripts"
+    anidado.mkdir(parents=True)
+    (anidado / "ParallaxR.BAT").write_bytes(b"@echo anidado")
+    externo = tmp_path / "externo"
+    externo.mkdir()
+    (externo / "ParallaxR.BAT").write_bytes(b"@echo fuera")
+
+    # Act + Assert: la junction externa se descarta por contención física.
+    with _junction(externo, mods_dir / "Mod_Escape"):
+        assert discover_parallaxr_candidates(mods_dir) == ()
+        escape = run_parallaxr_assisted_preflight(mods_dir)
+        assert escape.status is ParallaxRAssistedStatus.MISSING
+        assert escape.success is False
+        assert escape.installation is None
+
+    # Assert: un ParallaxR.BAT suelto en la raíz de mods_dir tampoco es un candidato.
+    (mods_dir / "ParallaxR.BAT").write_bytes(b"@echo suelto")
+    assert discover_parallaxr_candidates(mods_dir) == ()
+    assert run_parallaxr_assisted_preflight(mods_dir).status is ParallaxRAssistedStatus.MISSING
+
+
+def test_t6b_entrypoint_symlink_dentro_del_mod_separa_procedencia_fisica(tmp_path: Path) -> None:
+    """T6 (#667-A4): un symlink de archivo dentro del mod separa entrypoint lógico y archivo físico."""
+    # Arrange
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "Mod_A"
+    scripts = mod_dir / "scripts"
+    scripts.mkdir(parents=True)
+    archivo_real = scripts / "ParallaxR.BAT"
+    archivo_real.write_bytes(b"@echo symlink_interno")
+    try:
+        os.symlink(str(archivo_real), str(mod_dir / "ParallaxR.BAT"))
+    except OSError as exc:
+        # WinError 1314: el host no otorga SeCreateSymbolicLinkPrivilege. Limitación documentada del SO.
+        pytest.skip(f"El host no permite symlinks de archivo sin privilegio de Windows: {exc}")
+    resolved_mods_dir = mods_dir.resolve()
+
+    # Act
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+    # Assert: el entrypoint lógico es el oficial; el físico es el destino inspeccionado y hasheado.
+    assert preflight.status is ParallaxRAssistedStatus.READY
+    installation = preflight.installation
+    assert installation is not None
+    assert installation.mod_root == resolved_mods_dir / "Mod_A"
+    assert installation.entrypoint == resolved_mods_dir / "Mod_A" / "ParallaxR.BAT"
+    assert installation.resolved_mod_root == resolved_mods_dir / "Mod_A"
+    assert installation.resolved_entrypoint == resolved_mods_dir / "Mod_A" / "scripts" / "ParallaxR.BAT"
+    assert installation.resolved_entrypoint.parent != installation.resolved_mod_root
+
+
+def test_t7_self_junction_excluida_de_candidatos_marcadores_y_seleccion(tmp_path: Path) -> None:
+    """T7 (#667-A4): SelfLink -> mods_dir no aporta candidatos ni marcadores y no es seleccionable."""
+    # Arrange: mod legítimo, archivos sueltos en la raíz y una self-junction.
+    mods_dir = tmp_path / "mods"
+    mod_real = mods_dir / "Mod_Real"
+    mod_real.mkdir(parents=True)
+    (mod_real / "ParallaxR.BAT").write_bytes(b"@echo selflink")
+    (mods_dir / "ParallaxR.BAT").write_bytes(b"@echo suelto")
+    (mods_dir / "ParallaxROutput.tmp").write_bytes(b"marcador_suelto")
+    resolved_mods_dir = mods_dir.resolve()
+
+    with _junction(mods_dir, mods_dir / "SelfLink"):
+        # Assert: la self-junction (profundidad +0) no es candidato ni marcador.
+        assert discover_parallaxr_candidates(mods_dir) == (resolved_mods_dir / "Mod_Real" / "ParallaxR.BAT",)
+        assert discover_output_markers(mods_dir) == ()
+
+        # Assert: el mod legítimo sigue siendo válido y el handoff funciona.
+        preflight = run_parallaxr_assisted_preflight(mods_dir)
+        assert preflight.status is ParallaxRAssistedStatus.READY
+        assert preflight.installation is not None
+        assert preflight.installation.mod_root == resolved_mods_dir / "Mod_Real"
+        assert prepare_parallaxr_manual_handoff(preflight).mod_root == resolved_mods_dir / "Mod_Real"
+
+        # Assert: la self-junction tampoco es una selección válida.
+        rechazo = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=mods_dir / "SelfLink")
+        assert rechazo.status is ParallaxRAssistedStatus.INVALID_SELECTION
+        assert rechazo.success is False
+        assert rechazo.installation is None
+
+
+def test_t7b_contencion_inclusiva_y_hermanos_case_sensitive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """T7b (#667-A4): validate_path_containment es inclusiva pero no pliega casing de componentes."""
+    # Arrange: contenedor `Mods` y un hermano que difiere sólo en casing (`mods`).
+    base_dir = tmp_path / "base"
+    parent = base_dir / "Mods"
+    (parent / "ModA").mkdir(parents=True)
+    (parent / "ModA" / "a.txt").write_text("contenido", encoding="utf-8")
+    sibling = base_dir / "mods"
+
+    if sys.platform == "win32":
+        # En NTFS estándar `mods` y `Mods` son el mismo objeto: se simula la resolución canónica
+        # de un volumen case-sensitive para probar la comparación por componentes, no `Path.__eq__`.
+        from sky_claw.local.tools import parallaxr_assisted as modulo
+
+        real_resolve = modulo._resolve_path
+        prefijo_plegado = os.fspath(sibling)
+
+        def resolve_sin_plegado(path: Path, *, strict: bool = False) -> Path:
+            crudo = os.fspath(path)
+            if crudo == prefijo_plegado or crudo.startswith(prefijo_plegado + os.sep):
+                return path
+            return real_resolve(path, strict=strict)
+
+        monkeypatch.setattr(modulo, "_resolve_path", resolve_sin_plegado)
+    else:
+        sibling.mkdir()
+        (sibling / "ModA").mkdir()
+
+    # Act + Assert: inclusiva en el contenedor, estricta entre hermanos que difieren en casing.
+    assert validate_path_containment(parent, parent) is True
+    assert validate_path_containment(parent / "ModA" / "a.txt", parent) is True
+    assert validate_path_containment(sibling, parent) is False
+    assert validate_path_containment(sibling / "ModA" / "a.txt", parent) is False
+
+
+def test_t8a_guardias_de_entrada_casing_y_hardlinks_fallan_cerrado(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T8a (#667-A4): Boundary-Split rechaza casing, hardlinks, traversal, ADS y enlaces externos."""
+    # Arrange: Mod_A real, alias de directorio, hardlink alternativo y enlace externo hacia el alias.
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "Mod_A"
+    mod_a.mkdir(parents=True)
+    bat = mod_a / "ParallaxR.BAT"
+    bat.write_bytes(b"@echo mod_a")
+    os.link(bat, mod_a / "evil.bat")
+    resolved_mods_dir = mods_dir.resolve()
+
+    with _junction(mod_a, mods_dir / "02_Alias"), _junction(mod_a, tmp_path / "ext_link"):
+        rechazos: tuple[Path, ...] = (
+            mods_dir / "02_alias",
+            mods_dir / "02_Alias" / "parallaxr.bat",
+            mod_a / "evil.bat",
+            mods_dir / "Mod_A" / ".." / "Mod_B",
+            Path("../mods/02_Alias"),
+            Path("mods/*"),
+            Path("mods/?"),
+            mods_dir / "02_Alias:flujo_ads",
+            Path("C:Mod_A"),
+            Path("\\mods\\02_Alias"),
+            tmp_path / "InexistenteRelativo",
+            tmp_path / "ext_link",
+            Path(""),
+            Path("."),
+        )
+
+        # Act + Assert: toda entrada no canónica falla cerrado como INVALID_SELECTION.
+        for seleccion in rechazos:
+            preflight = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=seleccion)
+            assert preflight.status is ParallaxRAssistedStatus.INVALID_SELECTION, str(seleccion)
+            assert preflight.success is False, str(seleccion)
+            assert preflight.installation is None, str(seleccion)
+
+        # Assert: con cwd dentro de un mod, Path("")/Path(".") no pueden seleccionarlo por anclaje ingenuo.
+        monkeypatch.chdir(mod_a)
+        for vacuo in (Path(""), Path(".")):
+            preflight = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=vacuo)
+            assert preflight.status is ParallaxRAssistedStatus.INVALID_SELECTION, str(vacuo)
+
+        # Assert (Windows): el casing distinto sólo en un ancestro case-insensitive lo resuelve el kernel
+        # y no invalida la selección, porque los segmentos lógicos son exactos.
+        if sys.platform == "win32":
+            mods_mayusculas = tmp_path / "MODS"
+            assert mods_mayusculas.is_dir()
+            positivo = run_parallaxr_assisted_preflight(mods_mayusculas, explicit_selection=mods_mayusculas / "Mod_A")
+            assert positivo.status is ParallaxRAssistedStatus.READY
+            assert positivo.installation is not None
+            assert positivo.installation.mod_root == resolved_mods_dir / "Mod_A"
+
+
+def test_t8b_comparacion_de_contenedor_sin_path_eq(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """T8b (#667-A4): 'Mods' y 'mods' nunca se colapsan aunque Path.__eq__ los considere iguales."""
+    # Arrange
+    base_dir = tmp_path / "base"
+    mods_dir = base_dir / "Mods"
+    mod_a = mods_dir / "Mod_A"
+    mod_a.mkdir(parents=True)
+    (mod_a / "ParallaxR.BAT").write_bytes(b"@echo casing_contenedor")
+    sibling = base_dir / "mods"
+
+    from sky_claw.local.tools import parallaxr_assisted as modulo
+
+    real_resolve = modulo._resolve_path
+    prefijo_plegado = os.fspath(sibling)
+
+    def resolve_sin_plegado(path: Path, *, strict: bool = False) -> Path:
+        crudo = os.fspath(path)
+        if crudo == prefijo_plegado or crudo.startswith(prefijo_plegado + os.sep):
+            return path
+        return real_resolve(path, strict=strict)
+
+    monkeypatch.setattr(modulo, "_resolve_path", resolve_sin_plegado)
+
+    # Act + Assert: ninguna de las dos formas estructurales acepta el contenedor plegado.
+    por_carpeta = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=sibling / "Mod_A")
+    por_entrypoint = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=sibling / "Mod_A" / "ParallaxR.BAT")
+
+    for preflight in (por_carpeta, por_entrypoint):
+        assert preflight.status is ParallaxRAssistedStatus.INVALID_SELECTION
+        assert preflight.success is False
+        assert preflight.installation is None
+
+
+def test_t8c_dos_padres_realmente_case_sensitive(tmp_path: Path) -> None:
+    """T8c (#667-A4): con dos directorios padre que difieren de verdad en casing jamás se selecciona el ajeno."""
+    # Arrange: en POSIX es nativo; en Windows requiere NTFS con case-sensitivity por directorio.
+    base_dir = tmp_path / "base"
+    upper = base_dir / "Mods"
+    (upper / "Mod_A").mkdir(parents=True)
+    (upper / "Mod_A" / "ParallaxR.BAT").write_bytes(b"@echo mayusculas")
+    lower = base_dir / "mods"
+
+    try:
+        (lower / "Mod_A").mkdir(parents=True)
+        (lower / "Mod_A" / "ParallaxR.BAT").write_bytes(b"@echo minusculas")
+    except OSError:
+        pytest.skip("El filesystem del host no permite dos padres que difieran sólo en casing")
+
+    if os.fspath(lower.resolve()) == os.fspath(upper.resolve()):
+        # NTFS estándar pliega casing: haría falta `fsutil file setCaseSensitiveInfo` (elevación).
+        pytest.skip("El filesystem del host pliega casing: falta case-sensitivity por directorio")
+
+    # Act
+    preflight = run_parallaxr_assisted_preflight(upper, explicit_selection=lower / "Mod_A")
+
+    # Assert: el contenedor resuelto difiere => jamás se selecciona Mod_A del padre ajeno.
+    assert preflight.status is ParallaxRAssistedStatus.INVALID_SELECTION
+    assert preflight.success is False
+    assert preflight.installation is None
+
+
+def test_t9_particion_entre_seleccion_invalida_y_evidencia_incompleta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T9 (#667-A4): bucles externos son INVALID_SELECTION; anomalías internas son EVIDENCE_INCOMPLETE."""
+    # Arrange (a): árbol sano y un bucle de junctions externo al árbol de mods.
+    mods_dir = tmp_path / "mods"
+    for nombre in ("Alias_A", "Alias_B"):
+        carpeta = mods_dir / nombre
+        carpeta.mkdir(parents=True)
+        (carpeta / "ParallaxR.BAT").write_bytes(b"@echo sano")
+
+    # Act + Assert: `j1` y `j1/sub` son selecciones externas, no anomalías de la inspección interna.
+    with _arena_bucle_junctions_windows(tmp_path) as (_arena, j1, _j2):
+        for bucle in (j1, j1 / "sub"):
+            preflight = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=bucle)
+            assert preflight.status is ParallaxRAssistedStatus.INVALID_SELECTION
+            assert preflight.success is False
+            assert preflight.installation is None
+
+    # Arrange (b): anomalía interna #944 con una selección explícita válida.
+    mods_roto = tmp_path / "mods_roto"
+    mod_ok = mods_roto / "A_Ok"
+    mod_ok.mkdir(parents=True)
+    (mod_ok / "ParallaxR.BAT").write_bytes(b"@echo ok")
+    resolved_roto = mods_roto.resolve()
+
+    with _junction_rota(mods_roto, mods_roto / "Z_Roto"):
+        # Act
+        incompleto = run_parallaxr_assisted_preflight(mods_roto, explicit_selection=mods_roto / "A_Ok")
+
+        # Assert: la anomalía interna prevalece sobre la selección y conserva los parciales lógicos.
+        assert incompleto.status is ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+        assert incompleto.success is False
+        assert incompleto.installation is None
+        assert incompleto.candidate_mod_roots == (resolved_roto / "A_Ok",)
+
+    # Arrange (c): un RuntimeError ajeno a un bucle de symlinks no puede enmascararse.
+    real_resolve = Path.resolve
+    entrypoint_ok = mod_ok / "ParallaxR.BAT"
+
+    def resolve_con_runtimeerror_ajeno(self: Path, strict: bool = False) -> Path:
+        if self == entrypoint_ok:
+            raise RuntimeError("bug interno no relacionado")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve_con_runtimeerror_ajeno)
+
+    # Act + Assert
+    with pytest.raises(RuntimeError, match="bug interno no relacionado"):
+        run_parallaxr_assisted_preflight(mods_roto)
+
+
+def test_t10_guardias_estaticas_anti_ffi_plegado_y_path_eq() -> None:
+    """T10 (#667-A4): anclas estáticas — sin FFI, sin is_relative_to y sin plegado de casing en rutas."""
+    # Arrange
+    module_path = Path(__file__).resolve().parent.parent / "sky_claw" / "local" / "tools" / "parallaxr_assisted.py"
+    source = module_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(module_path))
+
+    # Assert: sin FFI Win32 ni biblioteca de tipos externos.
+    assert "ctypes" not in source
+    assert "FindFirstFileW" not in source
+
+    # Assert: `is_relative_to` pliega casing en Windows y no puede sobrevivir en contención.
+    assert not [n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "is_relative_to"]
+
+    # Assert: el único plegado de caso admitido es la traducción de bucle en _resolve_path (str(err).lower()).
+    assert "normcase" not in source
+    plegados = [
+        nodo
+        for nodo in ast.walk(tree)
+        if isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Attribute)
+        and nodo.func.attr in {"lower", "casefold"}
+    ]
+    assert len(plegados) == 1
+    unico_plegado = plegados[0]
+    assert isinstance(unico_plegado.func.value, ast.Call)
+    funcion_base = unico_plegado.func.value.func
+    assert isinstance(funcion_base, ast.Name) and funcion_base.id == "str"
+
+    # Assert: la identidad de contenedor se compara por componentes + cadena OS, no por Path.__eq__.
+    funciones = {nodo.name: nodo for nodo in tree.body if isinstance(nodo, ast.FunctionDef)}
+    assert "_is_same_resolved_container" in funciones
+    contrato_contenedor = ast.unparse(funciones["_is_same_resolved_container"])
+    assert "parts ==" in contrato_contenedor
+    assert "os.fspath" in contrato_contenedor
+    assert "is_relative_to" not in contrato_contenedor
