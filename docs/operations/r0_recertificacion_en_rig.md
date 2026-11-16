@@ -38,7 +38,10 @@ Salen del rig anterior (§8-bis y §11 de su informe) y de [la validación base]
 1. **MO2 aislado:** una copia en modo **portable** (`portable.txt`), perfil descartable y canary propio. **Está prohibido** usar o
    modificar la instancia global de MO2 del operador. El único contacto accidental del rig anterior se detectó, se revirtió y quedó
    documentado.
-2. **MO2 lo abre el operador, una vez, desde el Explorador** (límite F3 del rig anterior). Ver [R0-6](#r0-6-f3-lanzar-mo2-sin-sesión-interactiva).
+2. **MO2 lo abre el operador, una vez, desde el Explorador** (límite F3 del rig anterior). La única excepción es
+   [R0-6](#r0-6-f3-lanzar-mo2-sin-sesión-interactiva), que lanza MO2 desde un proceso no interactivo **solo sobre la copia aislada**
+   de la regla 1 para medir justamente ese límite; todo otro paquete abre MO2 desde el Explorador, y la instancia global sigue
+   vedada también ahí.
 3. **Se certifica código sin cambios.** Nada se arregla durante el rig.
 4. **Baseline y backup externos al árbol bajo prueba;** los presets de TexGen/DynDOLOD se restauran byte a byte y se registra su SHA-256
    antes y después.
@@ -62,6 +65,7 @@ Los paquetes marcan su backend. Los que no dependen del HOLD son `vfs-health` (m
 los que pueden correr en `standalone` sin perder lo que miden. Quien aprueba decide además:
 
 - **N de la serie de [R0-1](#r0-1-contención-con-el-exe-congelado).** El precedente son 24 corridas; un N mayor da más margen.
+- **Si una cuarentena cuenta como `FAIL` de R0-1.** Se fija antes de empezar la serie, no después de ver el resultado.
 - **Qué arnés** (a) se usa y quién lo revisa.
 - **Quién es el auditor independiente** y qué evidencia propia va a pedir (condición 2 del HOLD).
 
@@ -112,6 +116,11 @@ Explorador. El precedente fue de 24 corridas: 23 completas (`rc=0`), 1 en cuaren
 Registrar por corrida: `rc`, si llegó el `hello`, si hubo cuarentena y su causa, si hubo salida con código 72, los tiempos de
 `startApplication`, `assign` y `total_to_ack` (en `mo_interface.log`) y la demora entre `job_result` y `worker_exit`.
 
+**Esperado.** Una corrida es verde si termina con `rc=0` y el `hello` llegó. Una salida con código 72 (`EXIT_IDENTIDAD_DEL_JOB` en
+`sky_claw/local/mo2/vfs_arranque.py`: el worker no pudo probar su contención y cerró en forma segura) o sin `hello` **es `FAIL` de
+R0-1**: cerrar seguro no equivale a haber verificado el Job, que es lo que la condición 1 pide probar. Una cuarentena se registra con
+su causa, y quien aprueba fijó antes de la serie si cuenta como `FAIL` (en el precedente hubo una, espuria, con el `hello` en 24/24).
+
 Correr además, en la misma máquina, los tests de laboratorio contra el `.exe` congelado (`SKYCLAW_FROZEN_EXE` apuntando a él):
 `tests/test_vfs_job_identity_e2e_windows.py`. Registrar cuántos pasan (el precedente: 6 e2e, 23 de 23 en total con los de laboratorio).
 
@@ -139,6 +148,15 @@ teardown): el precedente tuvo una cuarentena espuria por una cola lenta de la sa
 Con MO2 **cerrado** o con el bridge no conectado, pedir una corrida desatendida de la etapa 9. Esperado: el operador se entera de que
 el backend no está listo **antes** de que se le pida ninguna aprobación, y la corrida no arranca. Repetir con MO2 abierto y el
 bridge conectado: el preflight pasa y recién ahí aparecen las aprobaciones. Registrar los mensajes tal como los ve el operador.
+
+**Por dónde entra el arnés (se registra siempre).** La strategy llega al preflight por una sola cadena:
+`AppContext.dyndolod_spawn_strategy` (`sky_claw/app_context.py`, donde hoy la asigna el resolver) → `SupervisorAgent`
+(`sky_claw/app/gui/_bootloader.py`) → `sky_claw/app/orchestrator/orchestration_composition.py` → el `spawn_strategy` del servicio de
+DynDOLOD, que es el que la consulta con `preflight_del_backend` antes de cada pregunta, tanto para la GUI como para el agente remoto.
+El arnés tiene que entrar por esa cadena, típicamente asignando `AppContext.dyndolod_spawn_strategy` en lugar de lo que devuelve el
+resolver: uno que invoque `preflight_backend` por su cuenta no mide el camino de aprobación. La evidencia registra el archivo y la
+función donde el arnés inyecta su strategy y, *(propuesto)*, una traza con marca de tiempo de cada llamada a `preflight_backend`, para
+compararla con la primera aprobación que vio el operador. **Sin esos dos registros R0-3 no se marca `PASS`: queda `BLOQUEADO`.**
 
 ## R0-4 `F1_RIG`: TexGen con el modal *stitched*
 
@@ -177,8 +195,8 @@ El rig anterior dio `ERROR_ACCESS_DENIED (0x5)` en `IOrganizer.startApplication`
 ejecutable**, con MO2 lanzado por el arnés (`subprocess.Popen` desde el proceso de la sesión), y pasó todo con MO2 abierto por el
 operador desde el Explorador.
 
-1. Repetir el lanzamiento desde un proceso no interactivo, como el arnés anterior, y registrar el resultado de `startApplication` y
-   el log de USVFS.
+1. Repetir el lanzamiento desde un proceso no interactivo, como el arnés anterior —**solo sobre la copia aislada de MO2**: es la
+   excepción de la regla 2 de «Reglas que no se negocian»—, y registrar el resultado de `startApplication` y el log de USVFS.
 2. Como control, abrir MO2 desde el Explorador y correr lo mismo.
 3. Registrar si el preflight de breakaway de #871 aparece en el log y qué dice.
 
@@ -210,14 +228,15 @@ general. El N de ensayos lo fija quien aprueba.
 **Fuente:** informe 2026-10-19 §12 («No certifica: aliases de ruta no probados (8.3, `\\?\`, `subst`, junction, UNC)»).
 
 Para cada alias —8.3, prefijo `\\?\`, unidad `subst`, junction, UNC y rutas con caracteres no ASCII— configurar la ruta (Data, root de
-salida, `-t:`) y verificar si el eco `Using Output Path:` de cada binario coincide con lo configurado y si los archivos caen donde
-Sky-Claw los busca. Resultados válidos por fila:
+salida, `-t:`) y observar dos cosas por separado: si el eco `Using Output Path:` de cada binario coincide con lo configurado y si los
+archivos esperados caen en el root donde Sky-Claw los busca. Un eco que coincide **no** prueba que los archivos estén: se miran los dos.
+Resultados válidos por fila:
 
 | Resultado | Significado |
 |---|---|
-| `PASS` | El eco coincide y los archivos caen en el root. |
-| `FALLA CERRADA` | No coincide y la corrida **falla por evidencia de rutas**. Es un resultado aceptable: no hay falso verde. |
-| **`FALSO VERDE`** | No coincide y la corrida **termina en verde**. Es el único resultado inaceptable y se reporta como defecto. |
+| `PASS` | El eco coincide **y** los archivos esperados están en el root. |
+| `FALLA CERRADA` | El eco no coincide **o** faltan archivos esperados, y la corrida **falla** por evidencia de rutas o por salida ausente. Es un resultado aceptable: no hay falso verde. |
+| **`FALSO VERDE`** | El eco no coincide **o** faltan archivos esperados en el root, y la corrida **termina en verde**. Es el único resultado inaceptable y se reporta como defecto. |
 
 TexGen y DynDOLOD se miden **por separado**: son binarios distintos y uno que pasa no dice nada del otro.
 
@@ -282,7 +301,7 @@ de cada paquete.
 | TexGen / DynDOLOD / Resources SE / DLL NG | <versiones y hashes; «ausente» si falta> |
 | Token e integridad | <elevado o filtrado, con la captura> |
 | Aislamiento | MO2 portable, perfil <nombre>; **no** se tocó la instancia global |
-| Arnés brokered | <ninguno / descripción y revisor; no se commitea> |
+| Arnés brokered | <ninguno / descripción, revisor y punto de inyección (archivo y función) de la strategy; no se commitea> |
 
 ## Resultados
 
