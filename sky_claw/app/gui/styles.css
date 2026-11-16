@@ -447,28 +447,10 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 .sky-mod-toggle .q-toggle__inner--falsy .q-toggle__thumb::after { background: #6b6151 !important; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   9. PANEL AVANZADO + REGISTRO
+   9. SEPARADOR
    ═══════════════════════════════════════════════════════════════════════════════════ */
 
-.sky-advanced-panel {
-    background: var(--sky-panel-glass) !important;
-    border: 1px solid var(--sky-border) !important; border-radius: 8px !important; margin-top: 1rem;
-    box-shadow: 0 16px 34px -18px rgba(0, 0, 0, 0.8);
-}
-.sky-advanced-title { font-family: var(--sky-font-display); font-size: 0.85rem; font-weight: 700; color: var(--sky-gold-bright); letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 0.4rem; }
-.sky-advanced-section { margin: 0.6rem 0; }
-.sky-advanced-tool-row { gap: 0.5rem; align-items: center; padding: 0.2rem 0; }
-.sky-advanced-tool-name { font-weight: 600; color: var(--sky-text-primary); font-size: 0.85rem; }
-.sky-advanced-tool-path { font-family: var(--sky-font-mono); font-size: 0.7rem; color: var(--sky-text-muted); word-break: break-all; }
-.sky-advanced-link { font-size: 0.8rem; color: var(--sky-gold-bright) !important; text-decoration: underline !important; text-underline-offset: 3px; }
-.sky-info-row { gap: 0.5rem; padding: 0.15rem 0; }
-.sky-info-label { font-size: 0.8rem; color: var(--sky-text-muted); min-width: 80px; font-weight: 600; }
-.sky-info-value { font-family: var(--sky-font-mono); font-size: 0.8rem; color: var(--sky-text-primary); word-break: break-all; }
-.sky-log-entry { font-family: var(--sky-font-mono); font-size: 0.78rem; color: var(--sky-text-secondary); padding: 0.15rem 0; }
-.sky-text-warning { color: #e0b341; font-size: 0.85rem; }
-.sky-text-muted { color: var(--sky-text-muted); }
 .sky-separator { background: var(--sky-border) !important; margin: 0.5rem 0 !important; }
-.sky-separator-subtle { background: rgba(255, 255, 255, 0.05) !important; margin: 0.3rem 0 !important; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
    10. BANNER DE SALUD (Estado de la Forja)
