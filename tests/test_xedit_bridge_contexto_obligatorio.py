@@ -28,7 +28,10 @@ from sky_claw.app.agent.tools.xedit_bridge_tools import (
     GestorDeAdmisionesNativas,
     admitir_plugin_nativo,
 )
-from sky_claw.app.orchestrator.tool_strategies.admitir_plugin_nativo import AdmitirPluginNativoStrategy
+from sky_claw.app.orchestrator.tool_strategies.admitir_plugin_nativo import (
+    _SCOPE_CONTEXT_KEY,
+    AdmitirPluginNativoStrategy,
+)
 from sky_claw.app.orchestrator.tool_strategies.middleware import _hitl_invocation_state
 from sky_claw.app.security.hitl import Decision
 from sky_claw.local.tools.xedit_bridge_service import ContextoAdmision
@@ -134,7 +137,13 @@ async def test_contexto_valido_y_aprobacion_efectiva_permite_continuar() -> None
 
     assert salida["success"] is True
     assert gestor.actual is not None and gestor.actual.estado == "exitosa"
+    # El pedido HITL no es decoración: la categoría y el texto son lo que el operador ve y aprueba.
+    # Si el nombre real o el contexto no llegan al pedido, la aprobación sería para otra cosa.
     guard.request_approval.assert_awaited_once()
+    args_hitl = guard.request_approval.call_args.kwargs
+    assert args_hitl["category"] == "tool_execution"
+    assert "Mod.esp" in args_hitl["reason"], "el nombre real del plugin tiene que estar en el pedido HITL"
+    assert CONTEXTO.resumen() in args_hitl["reason"], "el pedido HITL tiene que mostrar el contexto COMPLETO"
     servicio.admitir.assert_awaited_once_with("Mod.esp", contexto=CONTEXTO, requerir_contexto=True)
 
 
@@ -178,7 +187,12 @@ async def test_contexto_de_otra_solicitud_hitl_se_rechaza_sin_copiar() -> None:
     token = _hitl_invocation_state.set({"request_id": "tool-R1"})
     try:
         estrategia.describe_for_approval({"plugin": "Mod.esp"})  # liga el contexto a R1
-        _hitl_invocation_state.set({"request_id": "tool-R2"})  # execute() corre bajo OTRA solicitud
+        alcance = _hitl_invocation_state.get()
+        assert alcance is not None and _SCOPE_CONTEXT_KEY in alcance, "R1 tiene que dejar su autorización en el scope"
+        # Cambiar SOLO el request_id, en el MISMO dict: la autorización de R1 sigue presente pero ahora
+        # execute() corre bajo R2. Reemplazar el dict entero borraría la autorización y el test pasaría
+        # aunque el consumidor no comparara request_id (mutante sobreviviente).
+        alcance["request_id"] = "tool-R2"
 
         resultado = await estrategia.execute({"plugin": "Mod.esp"})
     finally:
