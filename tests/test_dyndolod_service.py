@@ -1048,6 +1048,54 @@ async def test_cancelacion_durante_cierre_de_tx_no_pierde_el_log_del_incidente(
 
 
 @pytest.mark.asyncio
+async def test_cancelacion_durante_cierre_de_tx_descarta_el_progreso_de_la_corrida(
+    service: DynDOLODPipelineService,
+    mock_journal: AsyncMock,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Hallazgo de CodeRabbit en #937: la última muestra no puede sobrevivir a la corrida que terminó.
+
+    Una corrida emite un latido y después falla; el handler del fallo hace ``await _cerrar_tx_tras_rollback`` y la
+    cancelación cae AHÍ, antes de ``_publicar_evento_terminal`` → ``_publish_completed`` (lo único que descartaba la
+    muestra). Mismo escenario que el test de arriba (el manifiesto falla ANTES de ``mutation_started``, así que ese
+    await es alcanzable con datos reales), con un latido de por medio.
+    """
+    from sky_claw.local.tools.dyndolod_runner import ProgresoDeHerramienta
+
+    mock_runner = AsyncMock(spec=DynDOLODRunner)
+    mock_config = _mock_config(tmp_path)
+    mock_config.mo2_mods_path = tmp_path / "mods"
+    mock_runner._config = mock_config
+    mock_runner.DYNDOLLOD_MOD_NAME = "DynDOLOD Output"
+    mock_runner.TEXGEN_MOD_NAME = "TexGen Output"
+    service._runner = mock_runner
+    mock_journal.mark_transaction_rolled_back = AsyncMock(side_effect=asyncio.CancelledError)
+    muestra_viva: list[bool] = []
+
+    async def _latido_y_falla(*_args: object, **_kwargs: object) -> None:
+        await service._al_progresar(  # noqa: SLF001
+            ProgresoDeHerramienta(
+                tool_name="DynDOLOD",
+                elapsed_seconds=125.5,
+                log_path="C:/DynDOLOD/Logs/DynDOLOD_SSE_log.txt",
+                log_bytes=4096,
+                log_idle_seconds=7.25,
+            )
+        )
+        muestra_viva.append(service.progreso_actual is not None)
+        raise sky_claw.local.tools.dyndolod_service._ActionManifestError("boom del manifiesto")
+
+    with (
+        patch.object(service, "_emit_action_manifest", AsyncMock(side_effect=_latido_y_falla)),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await service.execute(preset="Medium", run_texgen=False, create_snapshot=False)
+
+    assert muestra_viva == [True], "precondición: hubo una muestra viva cuando la corrida falló"
+    assert service.progreso_actual is None
+
+
+@pytest.mark.asyncio
 async def test_cancelacion_durante_commit_sella_todos_los_outputs_antes_de_liberar_lock(
     service: DynDOLODPipelineService,
     mock_lock_manager: AsyncMock,
