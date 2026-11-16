@@ -156,7 +156,9 @@ DynDOLOD, que es el que la consulta con `preflight_del_backend` antes de cada pr
 El arnés tiene que entrar por esa cadena, típicamente asignando `AppContext.dyndolod_spawn_strategy` en lugar de lo que devuelve el
 resolver: uno que invoque `preflight_backend` por su cuenta no mide el camino de aprobación. La evidencia registra el archivo y la
 función donde el arnés inyecta su strategy y, *(propuesto)*, una traza con marca de tiempo de cada llamada a `preflight_backend`, para
-compararla con la primera aprobación que vio el operador. **Sin esos dos registros R0-3 no se marca `PASS`: queda `BLOQUEADO`.**
+compararla con **cada** aprobación que vio el operador: cada una debe tener una llamada previa a `preflight_backend`, también las
+posteriores a la primera (por ejemplo, si el bridge se desconecta entre una y otra). **Sin esos dos registros R0-3 no se marca
+`PASS`: queda `BLOQUEADO`.**
 
 ## R0-4 `F1_RIG`: TexGen con el modal *stitched*
 
@@ -229,12 +231,19 @@ general. El N de ensayos lo fija quien aprueba.
 
 Para cada alias —8.3, prefijo `\\?\`, unidad `subst`, junction, UNC y rutas con caracteres no ASCII— configurar la ruta (Data, root de
 salida, `-t:`) y observar dos cosas por separado: si el eco `Using Output Path:` de cada binario coincide con lo configurado y si los
-archivos esperados caen en el root donde Sky-Claw los busca. Un eco que coincide **no** prueba que los archivos estén: se miran los dos.
+archivos esperados caen en el root donde Sky-Claw los busca **y los escribió esta corrida**. Un eco que coincide **no** prueba que los
+archivos estén: se miran los dos.
+
+**Frescura.** Un archivo que ya estaba de una corrida anterior no cuenta: sin esto, un alias defectuoso que escribe en otro destino
+pasaría por `PASS` porque el root conserva lo de la fila anterior. Antes de cada corrida se vacía el root de salida **del perfil
+descartable** (con su backup, regla 4), que es lo preferible; la alternativa es exigir que los archivos tengan una marca de tiempo
+posterior al inicio de la corrida. Abajo, «archivos esperados» significa los esperados **de esta corrida**.
+
 Resultados válidos por fila:
 
 | Resultado | Significado |
 |---|---|
-| `PASS` | El eco coincide **y** los archivos esperados están en el root. |
+| `PASS` | El eco coincide **y** los archivos esperados están en el root **y los escribió esta corrida** (ver «Frescura»). |
 | `FALLA CERRADA` | El eco no coincide **o** faltan archivos esperados, y la corrida **falla** por evidencia de rutas o por salida ausente. Es un resultado aceptable: no hay falso verde. |
 | **`FALSO VERDE`** | El eco no coincide **o** faltan archivos esperados en el root, y la corrida **termina en verde**. Es el único resultado inaceptable y se reporta como defecto. |
 
