@@ -12,12 +12,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
+import inspect
 import logging
 import os
 import pathlib
 import tempfile
 import time
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from sky_claw.app.core.event_bus import CoreEventBus, Event
 from sky_claw.app.core.event_payloads import (
@@ -168,6 +171,52 @@ def _modo_de_interaccion_o_none(valor: object) -> ModoDeInteraccion | None:
         return modo_de_interaccion_desde(valor)
     except ValueError:
         return None
+
+
+_R = TypeVar("_R")
+
+
+def _es_una_corrida(*, dry_run: object, interaction_mode: object) -> bool:
+    """``True`` si una llamada a ``execute`` con estos argumentos CORRE el pipeline.
+
+    Es lo que hace dueña a una llamada de la muestra de progreso. Las dos salidas tempranas de ``execute`` que no
+    corren nada —un modo desconocido, que se rechaza sin tocar nada, y el ``dry_run``, que es de solo lectura— no
+    pueden descartar la muestra de OTRA corrida que está en curso: no son suyas. Misma noción de «corrida» que las
+    dos salidas tempranas del cuerpo de ``execute``; lo anclan los tests de ``test_dyndolod_progreso_servicio.py``.
+    """
+    return not dry_run and _modo_de_interaccion_o_none(interaction_mode) is not None
+
+
+def _descarta_el_progreso_al_salir(metodo: Callable[..., Awaitable[_R]]) -> Callable[..., Awaitable[_R]]:
+    """Descarta la muestra de progreso en TODA salida de una corrida de ``execute`` (H-11; CodeRabbit en #937).
+
+    La muestra es de UNA corrida: se descartaba al iniciar y en ``_publish_completed``, que es lo único que alcanzan
+    las salidas «normales». Una salida que no llega ahí —una excepción, una cancelación dentro de un handler de
+    fallo (``await _cerrar_tx_tras_rollback`` antes de ``_publicar_evento_terminal``), un retorno temprano— dejaba la
+    última muestra de una corrida que ya había terminado, y ``lods_status`` y la GUI la seguían mostrando.
+
+    El mecanismo vive en el LÍMITE de ``execute`` y no en cada handler: ``finally`` corre en toda salida, también ante
+    ``CancelledError``, y la asignación es síncrona (sin ``await``), así que ni una segunda cancelación puede
+    interrumpirla. Por eso es un decorador y no un ``try`` dentro de ``execute``: no re-indenta ~1500 líneas ni toca
+    la familia de handlers congelada (``test_la_familia_de_handlers_de_execute_esta_congelada``). El resto de las
+    salidas de la corrida conservan su camino: este descarte es la red de seguridad, no su reemplazo.
+    """
+    firma = inspect.signature(metodo)
+
+    @functools.wraps(metodo)
+    async def envuelto(self: Any, *args: Any, **kwargs: Any) -> _R:
+        argumentos = firma.bind(self, *args, **kwargs)
+        argumentos.apply_defaults()
+        if not _es_una_corrida(
+            dry_run=argumentos.arguments["dry_run"], interaction_mode=argumentos.arguments["interaction_mode"]
+        ):
+            return await metodo(self, *args, **kwargs)
+        try:
+            return await metodo(self, *args, **kwargs)
+        finally:
+            self._progreso_actual = None
+
+    return envuelto
 
 
 def _codigos_desatendidos_mencionados(texto: str) -> list[str]:
@@ -1418,6 +1467,7 @@ class DynDOLODPipelineService:
     # Pipeline principal
     # ------------------------------------------------------------------
 
+    @_descarta_el_progreso_al_salir
     async def execute(
         self,
         preset: str = "Medium",
@@ -3045,7 +3095,8 @@ class DynDOLODPipelineService:
     def progreso_actual(self) -> DynDOLODPipelineProgressPayload | None:
         """Última muestra de progreso de la corrida EN CURSO (H-11), o ``None`` si no hay.
 
-        Es de UNA corrida: se descarta al iniciar la siguiente y al terminar. La leen las superficies que
+        Es de UNA corrida: se descarta al iniciar la siguiente y en TODA salida de ``execute``
+        (``_descarta_el_progreso_al_salir``), no solo al completar. La leen las superficies que
         muestran el estado (``lods_status`` del agente); el mismo dato viaja por el evento
         ``pipeline.dyndolod.progress`` para quien prefiera suscribirse.
         """
