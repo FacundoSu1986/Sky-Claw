@@ -431,9 +431,13 @@ def _violaciones_de_ruta_productiva(codigo: str) -> list[str]:
             hallazgos.append(f"{linea}: nombre {nodo.id}")
         elif isinstance(nodo, ast.keyword) and nodo.arg in prohibidos:
             hallazgos.append(f"{linea}: keyword {nodo.arg}")
-        elif isinstance(nodo, ast.Constant) and isinstance(nodo.value, str) and id(nodo) not in docstrings:
-            if nodo.value in prohibidos:
-                hallazgos.append(f"{linea}: literal {nodo.value!r}")
+        elif (
+            isinstance(nodo, ast.Constant)
+            and isinstance(nodo.value, str)
+            and id(nodo) not in docstrings
+            and nodo.value in prohibidos
+        ):
+            hallazgos.append(f"{linea}: literal {nodo.value!r}")
     return hallazgos
 
 
