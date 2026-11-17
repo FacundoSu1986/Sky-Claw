@@ -594,7 +594,10 @@ def test_rearmar_cierra_el_gestor_anterior_y_no_deja_tareas_vivas(tmp_path: Path
     ctx = _montar(tmp_path)
 
     async def escenario() -> None:
-        await h.pedir_admision(ctx, h.PLUGIN_VALIDO)  # queda esperando la aprobación del operador
+        await h.pedir_admision(ctx, h.PLUGIN_VALIDO)
+        # La tarea ya corrió: quedó bloqueada en request_approval, esperando al operador (no es una tarea sin arrancar).
+        solicitud = await asyncio.wait_for(ctx.solicitudes.get(), 5)
+        assert solicitud.request_id
         anterior = ctx.gestor
         tarea = anterior.actual.tarea
         try:
@@ -619,6 +622,7 @@ def test_ejecutar_con_cierre_cancela_lo_pendiente_aunque_la_corrida_falle(
 
     async def correr_que_falla(c: Any) -> None:
         await h.pedir_admision(c, h.PLUGIN_VALIDO)
+        await asyncio.wait_for(c.solicitudes.get(), 5)  # la admisión ya está bloqueada esperando al operador
         raise RuntimeError("falla a mitad de la corrida")
 
     monkeypatch.setattr(h, "correr", correr_que_falla)
