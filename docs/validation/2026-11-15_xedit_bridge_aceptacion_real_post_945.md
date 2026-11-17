@@ -54,3 +54,10 @@ Inventario SHA-256 de `Laboratorio\` (lab histórico, 30 415 archivos), `SSEEdit
 
 ## 7. Rollback
 No fue necesario. Quedan intactos para revisión: `G:\Modding\SSEDIT\QA-20261115\` (lab, MO2 QA, evidencias). Eliminarlos queda a decisión del propietario, quitando antes las ACL de denegación.
+
+## 8. Adenda 2026-11-17 — oráculo del harness (cierre adversarial del PR #954)
+- La ejecución real de §3 y sus JSON (`evidence-xedit-bridge-llm-real-20261115/`) son **evidencia histórica congelada sobre `28ce8345`** (anterior a #955). Se produjeron con la primera versión del harness, que registraba datos pero **no emitía veredicto**: las conclusiones de §3 son una lectura manual de esos datos. Los JSON no se modificaron (SHA-256 `80fd8560…6ea1`, `3cd99b72…390`, `b442bab2…92b4`).
+- El harness actual añade un oráculo explícito por escenario (`PASS`/`FAIL` con `fallas`), código de salida ≠ 0 ante cualquier FAIL, excepción o escenario requerido ausente, escritura atómica del resultado tras cada escenario, registro parcial (con `admission_id` y estado) si un escenario falla después de una admisión terminada, y rechazo a sobrescribir evidencia existente.
+- `tests/test_qa_xedit_bridge_acceptance_oraculo.py` (22 tests, sin SSEEdit) demuestra con dobles que el oráculo detecta: denegación que termina en éxito, aprobación sin `admission_id`, copia que no es el fixture, plugin inválido declarado aprobado, respuesta MCP malformada aceptada y excepción posterior a una admisión terminada. Se verificó por mutación controlada que cada familia de pruebas falla cuando se debilita el oráculo (archivo restaurado, hash idéntico).
+- Compatibilidad con #955: el harness solo admite por `admitir_plugin_nativo` → gestor, que en `origin/main` (`db85bd58`) pasa `requerir_contexto=True`; nunca llama a `service.admitir`. Los 22 tests y mypy pasan también sobre ese `origin/main` (copia temporal, ya eliminada).
+- **No se ha re-ejecutado la aceptación real sobre el código post-#955**: este informe no declara `XEDIT_BRIDGE_ACCEPTED`.
