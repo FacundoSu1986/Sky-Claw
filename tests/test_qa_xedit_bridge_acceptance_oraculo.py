@@ -593,18 +593,22 @@ def test_un_fail_en_la_secuencia_real_detiene_la_corrida_sin_seguir_mutando_el_l
 def test_rearmar_cierra_el_gestor_anterior_y_no_deja_tareas_vivas(tmp_path: Path) -> None:
     ctx = _montar(tmp_path)
 
-    async def escenario() -> tuple[Any, Any]:
+    async def escenario() -> None:
         await h.pedir_admision(ctx, h.PLUGIN_VALIDO)  # queda esperando la aprobación del operador
         anterior = ctx.gestor
         tarea = anterior.actual.tarea
-        assert not tarea.done()
-        await h.rearmar(ctx)
-        return anterior, tarea
+        try:
+            assert not tarea.done()
+            await h.rearmar(ctx)
+            # Se verifica DENTRO de la corrutina: asyncio.run cancelaría la tarea al cerrar, y eso taparía la fuga.
+            assert tarea.done() and tarea.cancelled(), "rearmar dejó viva la tarea de la admisión anterior"
+            assert anterior.actual.estado == "cancelada"
+        finally:
+            if not tarea.done():
+                tarea.cancel()  # limpieza de respaldo, posterior a las aserciones
 
-    anterior, tarea = _correr(escenario())
+    _correr(escenario())
 
-    assert tarea.done() and tarea.cancelled()
-    assert anterior.actual.estado == "cancelada"
     assert len(ctx.servicio.llamadas) == 0  # cancelar no copia nada
 
 
@@ -612,16 +616,23 @@ def test_ejecutar_con_cierre_cancela_lo_pendiente_aunque_la_corrida_falle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _montar(tmp_path)
-    tareas: list[Any] = []
 
     async def correr_que_falla(c: Any) -> None:
         await h.pedir_admision(c, h.PLUGIN_VALIDO)
-        tareas.append(c.gestor.actual.tarea)
         raise RuntimeError("falla a mitad de la corrida")
 
     monkeypatch.setattr(h, "correr", correr_que_falla)
 
-    with pytest.raises(RuntimeError, match="falla a mitad"):
-        _correr(h.ejecutar_con_cierre(ctx, None))
+    async def escenario() -> None:
+        try:
+            with pytest.raises(RuntimeError, match="falla a mitad"):
+                await h.ejecutar_con_cierre(ctx, None)
+            tarea = ctx.gestor.actual.tarea
+            # Dentro de la corrutina: lo cancela el harness, no el cierre de asyncio.run.
+            assert tarea.done() and tarea.cancelled(), "ejecutar_con_cierre dejó viva la admisión pendiente"
+        finally:
+            actual = ctx.gestor.actual
+            if actual is not None and actual.tarea is not None and not actual.tarea.done():
+                actual.tarea.cancel()  # limpieza de respaldo, posterior a las aserciones
 
-    assert tareas[0].done() and tareas[0].cancelled()
+    _correr(escenario())
