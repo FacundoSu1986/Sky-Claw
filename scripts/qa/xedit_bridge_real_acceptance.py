@@ -87,6 +87,10 @@ def diferencias(antes: dict[str, str], despues: dict[str, str]) -> tuple[list[st
     return nuevos, modificados, borrados
 
 
+class EscenarioFallidoError(RuntimeError):
+    """Un escenario real no cumplió su criterio: la corrida se detiene."""
+
+
 class Contexto:
     def __init__(self, qa_root: Path, out: Path | None) -> None:
         self.qa_root = qa_root.resolve()
@@ -106,6 +110,8 @@ class Contexto:
         self.resolver: Any = None
         self.meta: dict[str, Any] = {}
         self.error: str | None = None
+        self.finalizado = False  # hasta finalizar() el artefacto nunca declara PASS
+        self.detener_si_falla = True  # un FAIL en la secuencia real detiene la corrida (no se sigue mutando el lab)
         self.resultados: list[dict[str, Any]] = []
         #: Punto de extensión: arma hitl/gestor/registry/resolver. Los tests lo reemplazan por dobles.
         self.armar: Callable[..., None] = lambda timeout_hitl=120.0: armar(self, timeout_hitl)
@@ -122,7 +128,7 @@ class Contexto:
             return
         payload = {
             "meta": self.meta,
-            "veredicto_global": veredicto_global(self, requeridos=None),
+            "veredicto_global": veredicto_global(self, requeridos=None, finalizado=self.finalizado),
             "error": self.error,
             "pruebas": self.resultados,
         }
@@ -274,6 +280,9 @@ def oraculo_t2(
         "admissions.json no se creó/actualizó",
     )
     _req(fallas, datos.get("admitidos_cambio") is True, "Admitidos no cambió")
+    _req(fallas, _lista(datos, "archivos_borrados") == [], "se borraron archivos previamente admitidos")
+    previos_modificados = [m for m in _lista(datos, "archivos_modificados") if m != "admissions.json"]
+    _req(fallas, previos_modificados == [], f"se modificaron archivos admitidos previamente: {previos_modificados}")
     copia = (datos.get("copias") or {}).get(plugin)
     esperado = SHA16_FIXTURES.get(plugin)
     _req(
@@ -294,6 +303,16 @@ def _auditoria_comun(fallas: list[str], datos: dict[str, Any], plugin: str) -> d
     corrida = cuerpo.get("run_id")
     _req(
         fallas, isinstance(corrida, str) and ID_CORRIDA.fullmatch(corrida) is not None, f"run_id inválido: {corrida!r}"
+    )
+    _req(
+        fallas,
+        isinstance(corrida, str) and corrida in _lista(datos, "corridas_nuevas"),
+        "el run_id no pertenece a una corrida nueva (posible respuesta reutilizada)",
+    )
+    _req(
+        fallas,
+        isinstance(corrida, str) and Path(str(cuerpo.get("log_path") or "")).parent.name == corrida,
+        "log_path no corresponde a la corrida informada",
     )
     _req(
         fallas,
@@ -484,7 +503,7 @@ def evaluar(nombre: str, datos: dict[str, Any]) -> list[str]:
         return [f"el oráculo lanzó {type(exc).__name__}: {exc}"]
 
 
-def veredicto_global(ctx: Contexto, requeridos: tuple[str, ...] | None) -> str:
+def veredicto_global(ctx: Contexto, requeridos: tuple[str, ...] | None, finalizado: bool = True) -> str:
     """``PASS`` solo si no hay error, ningún FAIL y (si se pasan) todos los escenarios requeridos están."""
     if ctx.error is not None:
         return "FAIL"
@@ -492,6 +511,8 @@ def veredicto_global(ctx: Contexto, requeridos: tuple[str, ...] | None) -> str:
         return "FAIL"
     if requeridos is not None and not set(requeridos) <= {r["prueba"] for r in ctx.resultados}:
         return "FAIL"
+    if not finalizado:
+        return "EN_CURSO"  # una corrida interrumpida (kill, Ctrl+C) nunca deja un PASS en el artefacto
     return "PASS" if ctx.resultados else "FAIL"
 
 
@@ -544,7 +565,11 @@ async def ejecutar_escenario(
             parcial["inventario_admitidos_error"] = f"{type(exc2).__name__}: {exc2}"
         registrar(ctx, nombre, tipo, parcial, doble, forzadas=[f"el escenario lanzó {parcial['excepcion']}"])
         raise
-    return registrar(ctx, nombre, tipo, datos, doble)
+    registro = registrar(ctx, nombre, tipo, datos, doble)
+    if registro["veredicto"] != "PASS" and ctx.detener_si_falla:
+        # No se sigue mutando el laboratorio tras detectar un resultado incorrecto: la evidencia ya está guardada.
+        raise EscenarioFallidoError(f"{nombre}: {'; '.join(registro['fallas'])}")
+    return registro
 
 
 # --------------------------------------------------------------------------------------------------
@@ -839,6 +864,7 @@ async def correr_solo_mcp(ctx: Contexto) -> None:
 
 def finalizar(ctx: Contexto, requeridos: tuple[str, ...]) -> int:
     """Persiste el resultado final y devuelve el código de salida (0 solo con PASS global)."""
+    ctx.finalizado = True
     veredicto = veredicto_global(ctx, requeridos)
     if ctx.error is None and veredicto == "FAIL":
         faltan = sorted(set(requeridos) - {r["prueba"] for r in ctx.resultados})

@@ -48,7 +48,7 @@ Inventario SHA-256 de `Laboratorio\` (lab histórico, 30 415 archivos), `SSEEdit
 
 ## 6. Limitaciones y riesgos residuales (motivo del dictamen)
 - **No hubo LLM real decidiendo la invocación**: `respond()` lo llamó el harness; el tramo Telegram/DeepSeek no se repitió en esta ronda (sí en la ronda 2026-11-12 previa a #945).
-- Una admisión real, un solo plugin y fixtures sintéticos mínimos: no certifica mods grandes ni MO2 en ejecución.
+- Dos admisiones reales exitosas (`T0_ValidCandidate.esp` y `T1_InvalidReference.esp`, con `admission_id` distintos y su auditoría) sobre fixtures sintéticos mínimos: no certifica mods grandes ni MO2 en ejecución.
 - Los cambios de la VM ajena en `Laboratorio\VMs\` impiden afirmar "cero cambios" en todo `Laboratorio\`; sí en todo lo que pertenece al bridge.
 - No se midió concurrencia de dos admisiones.
 

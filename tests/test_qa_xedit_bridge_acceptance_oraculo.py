@@ -22,6 +22,8 @@ from sky_claw.app.agent.tools.xedit_bridge_tools import GestorDeAdmisionesNativa
 from sky_claw.app.security.hitl import Decision, HITLGuard
 from sky_claw.local.tools.xedit_bridge_service import ContextoAdmision
 
+RUN_ID = "20261115_201029_926e80"
+RUNS = "G:/QA/inst/Laboratorio/Temporales/Bridge/runs"
 RUTA_HARNESS = Path(__file__).resolve().parents[1] / "scripts" / "qa" / "xedit_bridge_real_acceptance.py"
 
 
@@ -89,6 +91,7 @@ def _montar(
 ) -> Any:
     ctx = h.Contexto(tmp_path, tmp_path / "evidencia")
     ctx.armar = lambda timeout_hitl=120.0: None  # type: ignore[assignment]
+    ctx.detener_si_falla = False  # los casos negativos necesitan ver el FAIL registrado, no la parada
     ctx.admitidos.mkdir(parents=True)
 
     async def notify(req: Any) -> None:
@@ -191,14 +194,20 @@ def _auditoria(**cambios: Any) -> dict[str, Any]:
         "hallazgos": [{"signature": "LVLI", "formid": h.FORMID_HALLAZGO}],
         "integridad": "PASS",
         "bridge_version": "1.1.0",
-        "run_id": "20261115_201029_926e80",
-        "log_path": "x",
+        "run_id": RUN_ID,
+        "log_path": f"{RUNS}/{RUN_ID}/run.log",
     }
     return {**base, **cambios}
 
 
 def _datos_auditoria(cuerpo: dict[str, Any], **extra: Any) -> dict[str, Any]:
-    base = {"json": cuerpo, "log_existe": True, "log_dentro_del_lab": True, "admitidos_intactos": True}
+    base = {
+        "json": cuerpo,
+        "log_existe": True,
+        "log_dentro_del_lab": True,
+        "admitidos_intactos": True,
+        "corridas_nuevas": [RUN_ID],
+    }
     return {**base, **extra}
 
 
@@ -472,3 +481,82 @@ def test_el_harness_admite_solo_por_la_ruta_productiva_y_nunca_llama_a_service_a
     codigo = RUTA_HARNESS.read_text(encoding="utf-8")
     assert _violaciones_de_ruta_productiva(codigo) == []  # el gestor productivo impone el contexto (#955)
     assert '"admitir_plugin_nativo"' in codigo  # y las admisiones salen por la tool, no por el servicio
+
+
+# ---------------------------------------------------------------- revisión CodeRabbit: PASS prematuro, T2, T3 y parada
+
+
+def test_el_artefacto_no_declara_pass_antes_de_finalizar(tmp_path: Path) -> None:
+    ctx = h.Contexto(tmp_path, tmp_path / "ev")
+    nombre = "T4_mcp_invalida/admitidos_intactos"
+    h.registrar(ctx, nombre, "sintetica", {"intactos": True})
+    # corrida interrumpida (kill/Ctrl+C): nunca se llegó a finalizar()
+    assert json.loads(ctx.destino.read_text(encoding="utf-8"))["veredicto_global"] == "EN_CURSO"
+
+    assert h.finalizar(ctx, (nombre,)) == 0
+    assert json.loads(ctx.destino.read_text(encoding="utf-8"))["veredicto_global"] == "PASS"
+
+
+def _datos_t2(**cambios: Any) -> dict[str, Any]:
+    import hashlib
+
+    base = {
+        "estado_final": "exitosa",
+        "resultado": {"success": True, "admission_id": ID_VALIDO, "copiados": [h.PLUGIN_VALIDO]},
+        "hitl": {"respond_ack": True, "reason": "perfil «QA» de la instancia MO2 «Bin» (X/MO2QA/Bin)"},
+        "contexto_aprobado": "perfil «QA» de la instancia MO2 «Bin» (X/MO2QA/Bin)",
+        "archivos_nuevos": [f"Data/{h.PLUGIN_VALIDO}", "admissions.json"],
+        "archivos_modificados": [],
+        "archivos_borrados": [],
+        "admitidos_cambio": True,
+        "copias": {h.PLUGIN_VALIDO: hashlib.sha256(BYTES_FIXTURE).hexdigest()},
+    }
+    return {**base, **cambios}
+
+
+def test_t2_acepta_solo_altas_y_la_actualizacion_de_admissions_json() -> None:
+    assert h.oraculo_t2(_datos_t2()) == []
+    reemplazo = _datos_t2(archivos_nuevos=[f"Data/{h.PLUGIN_VALIDO}"], archivos_modificados=["admissions.json"])
+    assert h.oraculo_t2(reemplazo) == []
+
+
+@pytest.mark.parametrize(
+    ("cambios", "fragmento"),
+    [
+        ({"archivos_borrados": ["Data/Skyrim.esm"]}, "se borraron archivos previamente admitidos"),
+        ({"archivos_modificados": ["Data/Skyrim.esm"]}, "se modificaron archivos admitidos previamente"),
+        ({"archivos_modificados": ["admissions.json", "Data/Otro.esp"]}, "se modificaron archivos admitidos"),
+    ],
+)
+def test_t2_rechaza_borrar_o_pisar_plugins_admitidos_antes(cambios: dict[str, Any], fragmento: str) -> None:
+    fallas = h.oraculo_t2(_datos_t2(**cambios))
+    assert any(fragmento in f for f in fallas)
+
+
+def test_t3_rechaza_una_respuesta_reutilizada_sin_corrida_nueva() -> None:
+    reutilizada = _datos_auditoria(_auditoria(), corridas_nuevas=[])
+    assert any("posible respuesta reutilizada" in f for f in h.oraculo_t3_hallazgo(reutilizada))
+    otra = _datos_auditoria(_auditoria(), corridas_nuevas=["20261115_999999_ffffff"])
+    assert any("posible respuesta reutilizada" in f for f in h.oraculo_t3_hallazgo(otra))
+
+
+def test_t3_rechaza_un_log_que_no_es_de_la_corrida_informada() -> None:
+    ajeno = _datos_auditoria(_auditoria(log_path=f"{RUNS}/20261115_000000_aaaaaa/run.log"))
+    assert any("log_path no corresponde a la corrida" in f for f in h.oraculo_t3_hallazgo(ajeno))
+
+
+def test_un_fail_en_la_secuencia_real_detiene_la_corrida_sin_seguir_mutando_el_lab(tmp_path: Path) -> None:
+    ctx = _montar(tmp_path, guard=GuardQueAprueba)  # T1 aprobará y copiará: resultado incorrecto
+    ctx.detener_si_falla = True
+    ctx.resolver = types.SimpleNamespace(
+        get_mo2_instance_ini_dir=lambda: ctx.mo2,
+        get_xedit_bridge_root=lambda: ctx.bridge,
+        get_active_profile=lambda: ctx.perfil,
+    )
+
+    with pytest.raises(h.EscenarioFallidoError, match="T1_denegacion"):
+        _correr(h.correr(ctx))
+
+    assert [r["prueba"] for r in ctx.resultados] == ["aislamiento", "T1_denegacion"]
+    assert ctx.resultados[-1]["veredicto"] == "FAIL"
+    assert len(ctx.servicio.llamadas) == 1  # no se lanzó T2 ni ninguna otra admisión
