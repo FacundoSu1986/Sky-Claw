@@ -383,6 +383,12 @@ class XEditBridgeService:
 
         Solo debe llamarse después de una aprobación humana: la impone cada superficie. ``contexto`` es el que
         se mostró al operador al pedirla: si el vigente es otro, no se copia nada (la aprobación era para ese).
+
+        Las DOS superficies productivas pasan ``requerir_contexto=True`` explícitamente. El default sigue
+        siendo ``False`` porque este método también es la primitiva de bajo nivel que usan los tests con el
+        bridge falso y el smoke real opt-in (sin operador en el loop, por diseño): cambiarlo rompería ese
+        contrato legítimo. ``requerir_contexto`` NO reemplaza la aprobación HITL: es defensa en profundidad
+        para que una ruta productiva no pueda copiar sin el contexto que el operador aprobó.
         """
         base: dict[str, Any] = {"plugin": _texto_una_linea(plugin, _LARGO_NOMBRE)}
         if requerir_contexto and contexto is None:

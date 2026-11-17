@@ -148,6 +148,9 @@ _ITEMS = frozenset(
         # así que la fila NO se declara como evidencia externa (`fuera del repo`).
         "Etapa 9 desatendida — defectos medidos en la corrida real 2026-10-19 (F1/F2/F3)",
         "Golden Master P7 — adaptador HITL Telegram (PR 4) y transición MO2",
+        # Decisión de producto, no defecto: el botón maestro del home pre-Forge era un esqueleto
+        # (#101) y el «PREPARAR JUEGO» del Forge sólo navega. Ver la fila.
+        "GUI — «Preparar Juego» (secuencia completa en un clic)",
     }
 )
 
