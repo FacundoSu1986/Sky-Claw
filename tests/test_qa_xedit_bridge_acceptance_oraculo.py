@@ -92,7 +92,7 @@ def _montar(
     ctx = h.Contexto(tmp_path, tmp_path / "evidencia")
     ctx.armar = lambda timeout_hitl=120.0: None  # type: ignore[assignment]
     ctx.detener_si_falla = False  # los casos negativos necesitan ver el FAIL registrado, no la parada
-    ctx.admitidos.mkdir(parents=True)
+    ctx.admitidos.mkdir(parents=True, exist_ok=True)
 
     async def notify(req: Any) -> None:
         await ctx.solicitudes.put(req)
@@ -207,6 +207,7 @@ def _datos_auditoria(cuerpo: dict[str, Any], **extra: Any) -> dict[str, Any]:
         "log_dentro_del_lab": True,
         "admitidos_intactos": True,
         "corridas_nuevas": [RUN_ID],
+        "log_en_directorio_de_la_corrida": True,
     }
     return {**base, **extra}
 
@@ -541,8 +542,35 @@ def test_t3_rechaza_una_respuesta_reutilizada_sin_corrida_nueva() -> None:
 
 
 def test_t3_rechaza_un_log_que_no_es_de_la_corrida_informada() -> None:
-    ajeno = _datos_auditoria(_auditoria(log_path=f"{RUNS}/20261115_000000_aaaaaa/run.log"))
-    assert any("log_path no corresponde a la corrida" in f for f in h.oraculo_t3_hallazgo(ajeno))
+    ajeno = _datos_auditoria(_auditoria(), log_en_directorio_de_la_corrida=False)
+    assert any("log_path no es <runs>/<run_id>/run.log" in f for f in h.oraculo_t3_hallazgo(ajeno))
+
+
+def _auditar_con_log(tmp_path: Path, ruta_del_log: Any) -> dict[str, Any]:
+    """``datos_de_auditoria`` real con un auditor falso que informa ``log_path`` = ``ruta_del_log``."""
+
+    async def auditor(_plugin: str) -> str:
+        return json.dumps(_auditoria(log_path=str(ruta_del_log) if ruta_del_log else ""))
+
+    ctx = _montar(tmp_path, auditor=auditor)
+    return _correr(h.datos_de_auditoria(ctx, {}, h.PLUGIN_CON_HALLAZGO))
+
+
+def test_el_log_solo_cuenta_si_esta_en_la_carpeta_de_su_corrida(tmp_path: Path) -> None:
+    corridas = tmp_path / "inst" / "Laboratorio" / "Temporales" / "Bridge" / "runs"
+    propio = corridas / RUN_ID / "run.log"
+    otra_carpeta = tmp_path / "inst" / "Laboratorio" / "otra_carpeta" / RUN_ID / "run.log"
+    otra_corrida = corridas / "20261115_000000_aaaaaa" / "run.log"
+    otro_nombre = corridas / RUN_ID / "otro.log"
+    for ruta in (propio, otra_carpeta, otra_corrida, otro_nombre):
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        ruta.write_text("log", encoding="utf-8")
+
+    assert _auditar_con_log(tmp_path, propio)["log_en_directorio_de_la_corrida"] is True
+    for ajeno in (otra_carpeta, otra_corrida, otro_nombre, None):
+        datos = _auditar_con_log(tmp_path, ajeno)
+        assert datos["log_en_directorio_de_la_corrida"] is False, ajeno
+        assert any("log_path no es <runs>/<run_id>/run.log" in f for f in h.oraculo_t3_hallazgo({**datos}))
 
 
 def test_un_fail_en_la_secuencia_real_detiene_la_corrida_sin_seguir_mutando_el_lab(tmp_path: Path) -> None:

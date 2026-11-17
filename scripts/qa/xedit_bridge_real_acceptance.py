@@ -311,8 +311,8 @@ def _auditoria_comun(fallas: list[str], datos: dict[str, Any], plugin: str) -> d
     )
     _req(
         fallas,
-        isinstance(corrida, str) and Path(str(cuerpo.get("log_path") or "")).parent.name == corrida,
-        "log_path no corresponde a la corrida informada",
+        datos.get("log_en_directorio_de_la_corrida") is True,
+        "log_path no es <runs>/<run_id>/run.log del laboratorio QA (otra carpeta o corrida)",
     )
     _req(
         fallas,
@@ -636,6 +636,17 @@ async def datos_de_admision(
     return datos
 
 
+def _log_de_la_corrida(ctx: Contexto, cuerpo: dict[str, Any]) -> bool:
+    """El log informado es EXACTAMENTE ``<corridas>/<run_id>/run.log`` (rutas resueltas, no solo el nombre)."""
+    corrida, ruta = cuerpo.get("run_id"), cuerpo.get("log_path")
+    if not isinstance(corrida, str) or not isinstance(ruta, str) or not ruta:
+        return False
+    try:
+        return Path(ruta).resolve() == (ctx.corridas / corrida / "run.log").resolve()
+    except OSError:
+        return False
+
+
 async def datos_de_auditoria(ctx: Contexto, parcial: dict[str, Any], plugin: str) -> dict[str, Any]:
     antes = ctx.estado_admitidos()
     corridas = ctx.corridas_existentes()
@@ -657,6 +668,7 @@ async def datos_de_auditoria(ctx: Contexto, parcial: dict[str, Any], plugin: str
         "admitidos_intactos": antes == ctx.estado_admitidos(),
         "corridas_nuevas": sorted(set(ctx.corridas_existentes()) - set(corridas)),
         "log_dentro_del_lab": dentro,
+        "log_en_directorio_de_la_corrida": _log_de_la_corrida(ctx, cuerpo),
         "log_existe": existe,
         "log_sha256": _sha(registro) if existe else None,
     }
