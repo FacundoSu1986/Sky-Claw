@@ -134,12 +134,16 @@ async def _t2(ctx: Any) -> dict[str, Any]:
 
 def test_controles_positivos_t1_y_t2_pasan_con_el_guard_real(tmp_path: Path) -> None:
     ctx = _montar(tmp_path)
-    t1 = _correr(_t1(ctx))
-    assert t1["veredicto"] == "PASS", t1["fallas"]
-    assert not (ctx.admitidos / "Data").exists()  # denegada: nada copiado
 
-    ctx.avisos.clear()
-    t2 = _correr(_t2(ctx))
+    async def ambos() -> tuple[dict[str, Any], dict[str, Any]]:
+        # Un solo event loop: la Queue del contexto queda ligada al loop (py3.12).
+        primero = await _t1(ctx)
+        assert not (ctx.admitidos / "Data").exists()  # denegada: nada copiado
+        ctx.avisos.clear()
+        return primero, await _t2(ctx)
+
+    t1, t2 = _correr(ambos())
+    assert t1["veredicto"] == "PASS", t1["fallas"]
     assert t2["veredicto"] == "PASS", t2["fallas"]
     assert t2["datos"]["resultado"]["admission_id"] == ID_VALIDO
     assert ctx.servicio.llamadas[0]["contexto"] is not None  # el gestor liga la copia al contexto aprobado
