@@ -800,6 +800,25 @@ async def mcp_invalida(ctx: Contexto) -> None:
     await ejecutar_escenario(ctx, "T4_mcp_invalida/admitidos_intactos", "sintetica", intactos)
 
 
+async def cerrar_gestor(ctx: Contexto) -> None:
+    """Cancela cualquier admisión viva del gestor actual (``cerrar`` espera sus tareas): nada queda huérfano."""
+    if ctx.gestor is not None:
+        await ctx.gestor.cerrar()
+
+
+async def rearmar(ctx: Contexto, **opciones: Any) -> None:
+    """Cierra el gestor anterior y arma guard/gestor/registry nuevos (no se acumulan tareas entre escenarios)."""
+    await cerrar_gestor(ctx)
+    ctx.armar(**opciones)
+
+
+async def ejecutar_con_cierre(ctx: Contexto, solo: str | None) -> None:
+    try:
+        await (correr_solo_mcp(ctx) if solo == "mcp_invalida" else correr(ctx))
+    finally:
+        await cerrar_gestor(ctx)
+
+
 async def correr(ctx: Contexto) -> None:
     ctx.armar()
 
@@ -820,7 +839,7 @@ async def correr(ctx: Contexto) -> None:
     await ejecutar_escenario(ctx, "T4_no_admitido", "real", aud(ctx, PLUGIN_NO_ADMITIDO))
     await ejecutar_escenario(ctx, "T4_inexistente", "real", esc(ctx, PLUGIN_INEXISTENTE, True))
 
-    ctx.armar(timeout_hitl=2)
+    await rearmar(ctx, timeout_hitl=2)
     await ejecutar_escenario(
         ctx,
         "T4_timeout_hitl",
@@ -829,7 +848,7 @@ async def correr(ctx: Contexto) -> None:
         "HITLGuard real con timeout=2 s en lugar de 120 s; nadie responde",
     )
 
-    ctx.armar()
+    await rearmar(ctx)
 
     async def contexto(parcial: dict[str, Any]) -> dict[str, Any]:
         return await t4_contexto_cambiado(ctx, parcial)
@@ -842,14 +861,14 @@ async def correr(ctx: Contexto) -> None:
         "se muta resolver._profile_name tras el pedido, antes de aprobar",
     )
 
-    ctx.armar()
+    await rearmar(ctx)
 
     async def estricto(parcial: dict[str, Any]) -> dict[str, Any]:
         return await t4_bool_estricto(ctx, parcial)
 
     await ejecutar_escenario(ctx, "T4_bool_estricto", "real", estricto)
 
-    ctx.armar()
+    await rearmar(ctx)
 
     async def ambigua(parcial: dict[str, Any]) -> dict[str, Any]:
         return await t4_admision_ambigua(ctx, parcial)
@@ -858,12 +877,12 @@ async def correr(ctx: Contexto) -> None:
         ctx, "T4_admision_ambigua", "sintetica", ambigua, "svc.admitir_plugin devuelve ok=true sin admission_id"
     )
 
-    ctx.armar()
+    await rearmar(ctx)
     await mcp_invalida(ctx)
 
 
 async def correr_solo_mcp(ctx: Contexto) -> None:
-    ctx.armar()
+    await rearmar(ctx)
 
     async def aislamiento(_p: dict[str, Any]) -> dict[str, Any]:
         return control_de_aislamiento(ctx)
@@ -906,7 +925,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     requeridos = REQUERIDOS_MCP if args.solo == "mcp_invalida" else REQUERIDOS_COMPLETA
     try:
-        asyncio.run(correr_solo_mcp(ctx) if args.solo == "mcp_invalida" else correr(ctx))
+        asyncio.run(ejecutar_con_cierre(ctx, args.solo))
     except Exception as exc:  # noqa: BLE001 -- el resultado parcial ya está persistido por escenario
         import traceback
 

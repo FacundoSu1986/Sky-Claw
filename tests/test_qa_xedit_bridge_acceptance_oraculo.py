@@ -588,3 +588,40 @@ def test_un_fail_en_la_secuencia_real_detiene_la_corrida_sin_seguir_mutando_el_l
     assert [r["prueba"] for r in ctx.resultados] == ["aislamiento", "T1_denegacion"]
     assert ctx.resultados[-1]["veredicto"] == "FAIL"
     assert len(ctx.servicio.llamadas) == 1  # no se lanzó T2 ni ninguna otra admisión
+
+
+def test_rearmar_cierra_el_gestor_anterior_y_no_deja_tareas_vivas(tmp_path: Path) -> None:
+    ctx = _montar(tmp_path)
+
+    async def escenario() -> tuple[Any, Any]:
+        await h.pedir_admision(ctx, h.PLUGIN_VALIDO)  # queda esperando la aprobación del operador
+        anterior = ctx.gestor
+        tarea = anterior.actual.tarea
+        assert not tarea.done()
+        await h.rearmar(ctx)
+        return anterior, tarea
+
+    anterior, tarea = _correr(escenario())
+
+    assert tarea.done() and tarea.cancelled()
+    assert anterior.actual.estado == "cancelada"
+    assert len(ctx.servicio.llamadas) == 0  # cancelar no copia nada
+
+
+def test_ejecutar_con_cierre_cancela_lo_pendiente_aunque_la_corrida_falle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _montar(tmp_path)
+    tareas: list[Any] = []
+
+    async def correr_que_falla(c: Any) -> None:
+        await h.pedir_admision(c, h.PLUGIN_VALIDO)
+        tareas.append(c.gestor.actual.tarea)
+        raise RuntimeError("falla a mitad de la corrida")
+
+    monkeypatch.setattr(h, "correr", correr_que_falla)
+
+    with pytest.raises(RuntimeError, match="falla a mitad"):
+        _correr(h.ejecutar_con_cierre(ctx, None))
+
+    assert tareas[0].done() and tareas[0].cancelled()
