@@ -1,0 +1,279 @@
+"""Sonda v3: QSettings 6.7.x contra el INI retenido con FILE_SHARE_NONE.
+
+Cada escenario corre en un PROCESO NUEVO (Qt cachea QConfFile por proceso: medir
+desde el proceso que autoró el archivo mediría el caché, no el disco).
+
+Uso: python probe_qsettings.py <python_con_sky_claw> <run_dir>
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+import time
+
+from PyQt6.QtCore import QByteArray, QSettings, QT_VERSION_STR, qVersion
+
+PROBES = pathlib.Path(__file__).resolve().parent
+PY = sys.argv[1]
+RUN = pathlib.Path(sys.argv[2]).resolve()
+INSTANCIA = RUN / "instance"
+INI = INSTANCIA / "modorganizer.ini"
+
+CAMPOS = ("title", "binary", "arguments", "workingDirectory")
+
+EJECUTABLES = [
+    {
+        "title": "SKSE",
+        "binary": "G:/Lab_Compat/FrozenClones/clone-lab-01/skse64_loader.exe",
+        "arguments": '-p "Golden Master"',
+        "workingDirectory": "G:/Lab_Compat/FrozenClones/clone-lab-01",
+        "steamAppID": "",
+        "hide": "false",
+        "ownicon": "true",
+        "toolbar": "false",
+    },
+    {
+        "title": "SSEEdit",
+        "binary": "G:/Lab_Compat/Tools/SSEEdit/SSEEdit.exe",
+        "arguments": "-IKnowWhatImDoing -quickautoclean",
+        "workingDirectory": "G:/Lab_Compat/Tools/SSEEdit",
+        "steamAppID": "",
+        "hide": "false",
+        "ownicon": "true",
+        "toolbar": "false",
+    },
+    {
+        "title": "Pandora",
+        "binary": "G:/Lab_Compat/Tools/Pandora/Pandora.exe",
+        "arguments": "",
+        "workingDirectory": "G:/Lab_Compat/Tools/Pandora",
+        "steamAppID": "",
+        "hide": "false",
+        "ownicon": "true",
+        "toolbar": "false",
+    },
+]
+
+GAMEPATH = QByteArray(b"G:\\\\Lab_Compat\\\\Skyrim_Runtime_1.6.1170")
+PERFIL = QByteArray(b"Golden Master")
+
+
+def sha256(path: pathlib.Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def autorar_ini() -> None:
+    INSTANCIA.mkdir(parents=True, exist_ok=True)
+    INI.unlink(missing_ok=True)
+    qs = QSettings(str(INI), QSettings.Format.IniFormat)
+    qs.setValue("gameName", "Skyrim Special Edition")
+    qs.setValue("selected_profile", PERFIL)
+    qs.setValue("gamePath", GAMEPATH)
+    qs.setValue("game_edition", "Steam")
+    qs.setValue("version", "2.5.2")
+    qs.setValue("first_start", "false")
+    qs.setValue("iniFiles/Skyrim.ini", "G:/Lab_Compat/Skyrim.ini")
+    qs.beginWriteArray("customExecutables", len(EJECUTABLES))
+    for indice, exe in enumerate(EJECUTABLES, start=1):
+        qs.setArrayIndex(indice)
+        for campo, valor in exe.items():
+            qs.setValue(campo, valor)
+    qs.endArray()
+    qs.setValue("Settings/language", "en")
+    qs.setValue("recentDirectories/0", "\\\\NAS-SINTETICO\\share\\Data")
+    qs.sync()
+    del qs
+
+
+def texto() -> str:
+    return INI.read_text(encoding="utf-8", errors="replace")
+
+
+class Tenedor:
+    def __init__(self, etiqueta: str) -> None:
+        self.ready = RUN / f"holder-{etiqueta}.ready"
+        self.release = RUN / f"holder-{etiqueta}.release"
+        self.released = RUN / f"holder-{etiqueta}.released"
+        for ruta in (self.ready, self.release, self.released):
+            ruta.unlink(missing_ok=True)
+        self.proc = subprocess.Popen(
+            [PY, str(PROBES / "holder.py"), str(INI), str(self.ready), str(self.release), str(self.released)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    def esperar_ready(self, limite_s: float = 60.0) -> dict[str, object]:
+        limite = time.monotonic() + limite_s
+        while time.monotonic() < limite:
+            if self.ready.exists():
+                return json.loads(self.ready.read_text(encoding="utf-8"))
+            if self.proc.poll() is not None:
+                break
+            time.sleep(0.01)
+        raise RuntimeError(f"el tenedor no quedó listo: rc={self.proc.poll()}")
+
+    def liberar(self, limite_s: float = 60.0) -> None:
+        self.release.write_text("go", encoding="utf-8")
+        limite = time.monotonic() + limite_s
+        while time.monotonic() < limite and not self.released.exists():
+            time.sleep(0.01)
+        self.proc.wait(timeout=30)
+
+
+def hijo(modo: str, etiqueta: str, *extra: str, esperar_ready: float = 60.0) -> dict[str, object]:
+    salida = RUN / f"{etiqueta}.json"
+    salida.unlink(missing_ok=True)
+    ready = RUN / f"{etiqueta}.ready"
+    release = RUN / f"{etiqueta}.release"
+    args = [str(sys.executable), str(PROBES / "qsettings_child.py"), str(INI), modo, str(salida)]
+    if extra or modo in {"deferred", "dtor", "hold"}:
+        args += [str(ready), str(release)]
+    args += list(extra)
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return {"proc": proc, "salida": salida, "ready": ready, "release": release, "stderr": proc.stderr}
+
+
+def esperar_archivo(path: pathlib.Path, limite_s: float = 60.0) -> bool:
+    limite = time.monotonic() + limite_s
+    while time.monotonic() < limite:
+        if path.exists():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def leer_json(path: pathlib.Path) -> dict[str, object]:
+    if not path.exists():
+        return {"error": "sin archivo de resultado"}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def exigir_tendedor(diagnostico: dict[str, object], etiqueta: str) -> None:
+    if not diagnostico.get("autoriza"):
+        raise RuntimeError(f"el tenedor {etiqueta} no tomó la exclusión: {diagnostico}")
+
+
+def run_probe(name: str, *args: str) -> dict[str, object]:
+    proc = subprocess.run([PY, str(PROBES / name), *args], capture_output=True, text=True, timeout=180, check=False)
+    for linea in reversed((proc.stdout or "").splitlines()):
+        if linea.strip().startswith("{"):
+            return json.loads(linea)
+    return {"error": "sin salida JSON", "stderr": proc.stderr, "rc": proc.returncode}
+
+
+def semantica_esperada() -> list[dict[str, object]]:
+    return [{campo: exe[campo] for campo in CAMPOS} for exe in EJECUTABLES]
+
+
+def medir() -> dict[str, object]:
+    RUN.mkdir(parents=True, exist_ok=True)
+    resultados: dict[str, object] = {"qt_runtime": qVersion(), "qt_build": QT_VERSION_STR, "ini": str(INI)}
+
+    autorar_ini()
+    shutil.copyfile(INI, RUN / "ini_canonico.ini")
+    sha0 = sha256(INI)
+    resultados["K0_ini_canonico"] = {
+        "sha": sha0,
+        "tamano": INI.stat().st_size,
+        "texto": texto(),
+        "n_ejecutables": len(EJECUTABLES),
+    }
+
+    # A) lectura con el lock retenido, en proceso nuevo
+    tenedor = Tenedor("A")
+    resultados["A_tenedor"] = tenedor.esperar_ready()
+    exigir_tendedor(resultados["A_tenedor"], "A")
+    h = hijo("read", "A")
+    h["proc"].wait(timeout=120)
+    resultados["A_lectura_con_lock"] = leer_json(h["salida"])
+    tenedor.liberar()
+    resultados["A_archivo_intacto"] = sha256(INI) == sha0
+
+    # B) escritura con el lock retenido, en proceso nuevo
+    autorar_ini()
+    sha0 = sha256(INI)
+    tenedor = Tenedor("B")
+    resultados["B_tenedor"] = tenedor.esperar_ready()
+    exigir_tendedor(resultados["B_tenedor"], "B")
+    h = hijo("write", "B")
+    h["proc"].wait(timeout=120)
+    resultados["B_escritura_con_lock"] = leer_json(h["salida"])
+    tenedor.liberar()
+    resultados["B_archivo_intacto"] = sha256(INI) == sha0
+
+    # C) sync diferido: el proceso sobrevive al lock y sincroniza después
+    autorar_ini()
+    sha0 = sha256(INI)
+    tenedor = Tenedor("C")
+    resultados["C_tenedor"] = tenedor.esperar_ready()
+    exigir_tendedor(resultados["C_tenedor"], "C")
+    h = hijo("deferred", "C")
+    listo = esperar_archivo(h["ready"])
+    tenedor.liberar()
+    h["proc"].wait(timeout=120)
+    deferido = leer_json(h["salida"])
+    resultados["C_sync_diferido"] = deferido
+    resultados["C_ready_observado"] = listo
+    hc2 = hijo("read", "C2")
+    hc2["proc"].wait(timeout=120)
+    fresco = leer_json(hc2["salida"])
+    resultados["C_lectura_fresca"] = fresco
+    resultados["C_semantica"] = {
+        "conserva_ejecutables": fresco.get("n_ejecutables") == len(EJECUTABLES),
+        "gamePath": fresco.get("gamePath"),
+        "n_claves": fresco.get("n_claves"),
+        "gameName": fresco.get("gameName"),
+    }
+
+    # D) destructor que sincroniza después de la liberación
+    autorar_ini()
+    sha0 = sha256(INI)
+    tenedor = Tenedor("D")
+    resultados["D_tenedor"] = tenedor.esperar_ready()
+    exigir_tendedor(resultados["D_tenedor"], "D")
+    h = hijo("dtor", "D")
+    listo = esperar_archivo(h["ready"])
+    tenedor.liberar()
+    h["proc"].wait(timeout=120)
+    resultados["D_ready_observado"] = listo
+    # releer la semántica en un proceso nuevo
+    h2 = hijo("read", "D2")
+    h2["proc"].wait(timeout=120)
+    resultados["D_semantica_tras_destructor"] = leer_json(h2["salida"])
+    resultados["D_sha_cambio"] = sha256(INI) != sha0
+    resultados["D_conserva_ejecutables"] = (
+        resultados["D_semantica_tras_destructor"].get("n_ejecutables") == len(EJECUTABLES)
+    )
+
+    # E) objeto QSettings vivo: ¿retiene el archivo?
+    autorar_ini()
+    h = hijo("hold", "E")
+    esperar_archivo(h["ready"])
+    resultados["E_adquisicion_con_objeto_vivo"] = run_probe("acquirer.py", str(INI))
+    h["release"].write_text("go", encoding="utf-8")
+    h["proc"].wait(timeout=120)
+
+    # F) efecto de una reescritura sobre comentarios/orden
+    resultados["F_reescritura"] = {
+        "secciones": [ln.strip() for ln in texto().splitlines() if ln.strip().startswith("[")],
+        "conserva_comentarios": ";" in texto(),
+    }
+    return resultados
+
+
+def main() -> int:
+    resultado = medir()
+    destino = RUN / "qsettings.json"
+    destino.write_text(json.dumps(resultado, indent=2, ensure_ascii=True), encoding="utf-8")
+    print(json.dumps({"ok": True, "destino": str(destino)}, ensure_ascii=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

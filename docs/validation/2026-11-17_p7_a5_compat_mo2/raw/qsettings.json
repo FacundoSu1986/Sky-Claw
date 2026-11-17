@@ -1,0 +1,147 @@
+{
+  "qt_runtime": "6.7.3",
+  "qt_build": "6.7.1",
+  "ini": "E:\\Skyclaw_Rig_MO2_Compat\\out\\run7-20261117-182817\\instance\\modorganizer.ini",
+  "K0_ini_canonico": {
+    "sha": "25ee879a5706057724d6f78c363ebb52b58d71bcf1c00ae0e01bd7e09494ffa2",
+    "tamano": 1027,
+    "texto": "[General]\ngameName=Skyrim Special Edition\nselected_profile=@ByteArray(Golden Master)\ngamePath=@ByteArray(G:\\\\\\\\Lab_Compat\\\\\\\\Skyrim_Runtime_1.6.1170)\ngame_edition=Steam\nversion=2.5.2\nfirst_start=false\n\n[iniFiles]\nSkyrim.ini=G:/Lab_Compat/Skyrim.ini\n\n[customExecutables]\nsize=3\n2\\title=SKSE\n2\\binary=G:/Lab_Compat/FrozenClones/clone-lab-01/skse64_loader.exe\n2\\arguments=-p \\\"Golden Master\\\"\n2\\workingDirectory=G:/Lab_Compat/FrozenClones/clone-lab-01\n2\\steamAppID=\n2\\hide=false\n2\\ownicon=true\n2\\toolbar=false\n3\\title=SSEEdit\n3\\binary=G:/Lab_Compat/Tools/SSEEdit/SSEEdit.exe\n3\\arguments=-IKnowWhatImDoing -quickautoclean\n3\\workingDirectory=G:/Lab_Compat/Tools/SSEEdit\n3\\steamAppID=\n3\\hide=false\n3\\ownicon=true\n3\\toolbar=false\n4\\title=Pandora\n4\\binary=G:/Lab_Compat/Tools/Pandora/Pandora.exe\n4\\arguments=\n4\\workingDirectory=G:/Lab_Compat/Tools/Pandora\n4\\steamAppID=\n4\\hide=false\n4\\ownicon=true\n4\\toolbar=false\n\n[Settings]\nlanguage=en\n\n[recentDirectories]\n0=\\\\\\\\NAS-SINTETICO\\\\share\\\\Data\n",
+    "n_ejecutables": 3
+  },
+  "A_tenedor": {
+    "estado": "EXCLUSION_ESTABLISHED",
+    "autoriza": true,
+    "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
+    "intentos": 1,
+    "identidad": "9ea83c6f:000c0000002d8acb",
+    "pid": 20320
+  },
+  "A_lectura_con_lock": {
+    "modo": "read",
+    "qt_runtime": "6.7.3",
+    "pid": 7908,
+    "status_tras_ctor": "AccessError",
+    "status_tras_leer": "AccessError",
+    "n_claves": 0,
+    "gamePath": null,
+    "gameName": null,
+    "n_ejecutables": 0
+  },
+  "A_archivo_intacto": true,
+  "B_tenedor": {
+    "estado": "EXCLUSION_ESTABLISHED",
+    "autoriza": true,
+    "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
+    "intentos": 1,
+    "identidad": "9ea83c6f:000b0000002d8ad4",
+    "pid": 14232
+  },
+  "B_escritura_con_lock": {
+    "modo": "write",
+    "qt_runtime": "6.7.3",
+    "pid": 10792,
+    "n_claves_leidas": 0,
+    "status_tras_sync": "AccessError"
+  },
+  "B_archivo_intacto": true,
+  "C_tenedor": {
+    "estado": "EXCLUSION_ESTABLISHED",
+    "autoriza": true,
+    "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
+    "intentos": 1,
+    "identidad": "9ea83c6f:000a0000002d8adb",
+    "pid": 2404
+  },
+  "C_sync_diferido": {
+    "modo": "deferred",
+    "qt_runtime": "6.7.3",
+    "pid": 2272,
+    "n_claves_leidas_con_lock": 0,
+    "status_tras_leer": "AccessError",
+    "status_sync_con_lock": "AccessError",
+    "status_sync_tras_liberar": "AccessError",
+    "semantica_final": {
+      "gameName": "Skyrim Special Edition",
+      "gamePath": "G:\\\\Lab_Compat\\\\Skyrim_Runtime_1.6.1170",
+      "selected_profile": "Golden Master",
+      "n_ejecutables": 3,
+      "ejecutables": [
+        {
+          "title": null,
+          "binary": null,
+          "arguments": null,
+          "workingDirectory": null
+        },
+        {
+          "title": "SKSE",
+          "binary": "G:/Lab_Compat/FrozenClones/clone-lab-01/skse64_loader.exe",
+          "arguments": "-p \"Golden Master\"",
+          "workingDirectory": "G:/Lab_Compat/FrozenClones/clone-lab-01"
+        },
+        {
+          "title": "SSEEdit",
+          "binary": "G:/Lab_Compat/Tools/SSEEdit/SSEEdit.exe",
+          "arguments": "-IKnowWhatImDoing -quickautoclean",
+          "workingDirectory": "G:/Lab_Compat/Tools/SSEEdit"
+        }
+      ],
+      "n_keys": 36,
+      "status": "NoError"
+    }
+  },
+  "C_ready_observado": true,
+  "C_lectura_fresca": {
+    "modo": "read",
+    "qt_runtime": "6.7.3",
+    "pid": 19636,
+    "status_tras_ctor": "NoError",
+    "status_tras_leer": "NoError",
+    "n_claves": 36,
+    "gamePath": "G:\\\\Lab_Compat\\\\Skyrim_Runtime_1.6.1170",
+    "gameName": "Skyrim Special Edition",
+    "n_ejecutables": 3
+  },
+  "C_semantica": {
+    "conserva_ejecutables": true,
+    "gamePath": "G:\\\\Lab_Compat\\\\Skyrim_Runtime_1.6.1170",
+    "n_claves": 36,
+    "gameName": "Skyrim Special Edition"
+  },
+  "D_tenedor": {
+    "estado": "EXCLUSION_ESTABLISHED",
+    "autoriza": true,
+    "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
+    "intentos": 1,
+    "identidad": "9ea83c6f:000a0000002d8af8",
+    "pid": 9116
+  },
+  "D_ready_observado": true,
+  "D_semantica_tras_destructor": {
+    "modo": "read",
+    "qt_runtime": "6.7.3",
+    "pid": 16072,
+    "status_tras_ctor": "NoError",
+    "status_tras_leer": "NoError",
+    "n_claves": 35,
+    "gamePath": "G:\\\\Lab_Compat\\\\Skyrim_Runtime_1.6.1170",
+    "gameName": "Skyrim Special Edition",
+    "n_ejecutables": 3
+  },
+  "D_sha_cambio": true,
+  "D_conserva_ejecutables": true,
+  "E_adquisicion_con_objeto_vivo": {
+    "estado": "EXCLUSION_ESTABLISHED",
+    "autoriza": true,
+    "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido"
+  },
+  "F_reescritura": {
+    "secciones": [
+      "[General]",
+      "[iniFiles]",
+      "[customExecutables]",
+      "[Settings]",
+      "[recentDirectories]"
+    ],
+    "conserva_comentarios": false
+  }
+}
