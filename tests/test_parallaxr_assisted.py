@@ -2713,6 +2713,87 @@ def test_t6b_entrypoint_symlink_dentro_del_mod_separa_procedencia_fisica(tmp_pat
     assert installation.resolved_entrypoint.parent != installation.resolved_mod_root
 
 
+def _simular_reparse_de_archivo(monkeypatch: pytest.MonkeyPatch, archivo_logico: Path, destino_fisico: Path) -> None:
+    """Hace que `_resolve_path` resuelva un archivo lógico a un destino físico dado.
+
+    Mock acotado: simula el kernel resolviendo un reparse point de archivo sin exigir
+    privilegios de symlink en Windows. Sólo intercepta la ruta exacta indicada; el resto
+    delega en la implementación real del módulo.
+    """
+    from sky_claw.local.tools import parallaxr_assisted as modulo
+
+    resolver_real = modulo._resolve_path
+    objetivo = os.fspath(archivo_logico)
+
+    def resolver_con_reparse_simulado(path: Path, *, strict: bool = False) -> Path:
+        if os.fspath(path) == objetivo:
+            return destino_fisico
+        return resolver_real(path, strict=strict)
+
+    monkeypatch.setattr(modulo, "_resolve_path", resolver_con_reparse_simulado)
+
+
+def test_t6c_archivo_resuelto_a_profundidad_mas_uno_es_descartado(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T6c (#667-A4): un ParallaxR.BAT que resuelve a mods_dir/ParallaxR.BAT (profundidad +1) se descarta.
+
+    El archivo aparece lógicamente dentro de Mod_A, pero su destino físico queda un solo
+    componente bajo `resolved_mods_dir`. El guard de descendencia estricta +2 debe excluirlo
+    sin fabricar EVIDENCE_INCOMPLETE y sin afectar al hermano legítimo.
+    """
+    # Arrange: Mod_A con un entrypoint que resuelve a la raíz, Mod_B legítimo y el archivo raíz.
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "Mod_A"
+    mod_b = mods_dir / "Mod_B"
+    mod_b.mkdir(parents=True)
+    (mod_b / "ParallaxR.BAT").write_bytes(b"@echo mod_b")
+    mod_a.mkdir()
+    (mod_a / "ParallaxR.BAT").write_bytes(b"@echo mod_a_logico")
+    (mods_dir / "ParallaxR.BAT").write_bytes(b"@echo raiz")
+    resolved_mods_dir = mods_dir.resolve()
+    _simular_reparse_de_archivo(monkeypatch, mod_a / "ParallaxR.BAT", resolved_mods_dir / "ParallaxR.BAT")
+
+    # Act
+    candidatos = discover_parallaxr_candidates(mods_dir)
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+    rechazo = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=mods_dir / "Mod_A")
+
+    # Assert: excluido por +2, hermano legítimo intacto y descarte sin EVIDENCE_INCOMPLETE.
+    assert candidatos == (resolved_mods_dir / "Mod_B" / "ParallaxR.BAT",)
+    assert preflight.status is ParallaxRAssistedStatus.READY
+    assert preflight.status is not ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+    assert preflight.installation is not None
+    assert preflight.installation.mod_root == resolved_mods_dir / "Mod_B"
+    assert preflight.candidate_mod_roots == (resolved_mods_dir / "Mod_B",)
+    assert rechazo.status is ParallaxRAssistedStatus.INVALID_SELECTION
+
+
+def test_t6d_archivo_fuera_de_profundidad_sin_hermanos_retorna_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T6d (#667-A4): si el único entrypoint resuelve a +1, el resultado es MISSING, no EVIDENCE_INCOMPLETE."""
+    # Arrange
+    mods_dir = tmp_path / "mods"
+    mod_a = mods_dir / "Mod_A"
+    mod_a.mkdir(parents=True)
+    (mod_a / "ParallaxR.BAT").write_bytes(b"@echo mod_a_logico")
+    (mods_dir / "ParallaxR.BAT").write_bytes(b"@echo raiz")
+    resolved_mods_dir = mods_dir.resolve()
+    _simular_reparse_de_archivo(monkeypatch, mod_a / "ParallaxR.BAT", resolved_mods_dir / "ParallaxR.BAT")
+
+    # Act
+    candidatos = discover_parallaxr_candidates(mods_dir)
+    preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+    # Assert: el descarte es limpio (ausencia de candidatos), no una anomalía de inspección.
+    assert candidatos == ()
+    assert preflight.status is ParallaxRAssistedStatus.MISSING
+    assert preflight.status is not ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+    assert preflight.success is False
+    assert preflight.candidate_mod_roots == ()
+
+
 def test_t7_self_junction_excluida_de_candidatos_marcadores_y_seleccion(tmp_path: Path) -> None:
     """T7 (#667-A4): SelfLink -> mods_dir no aporta candidatos ni marcadores y no es seleccionable."""
     # Arrange: mod legítimo, archivos sueltos en la raíz y una self-junction.
