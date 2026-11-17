@@ -258,8 +258,20 @@ primero), y los otros dos mueren exactamente donde ya morían los existentes.
 
 ## 17. Estado de CI
 
-Pendiente al redactar: se ejecuta al abrir el PR (Draft). Los gates locales son
-§16.
+PR #965 (Draft). Primera corrida: 12 checks verdes y **dos fallos reales** en la
+suite Windows completa (`20083 passed, 2 failed, 53 skipped`, 56:50).
+
+Causa: `probe/matrix_win32.py` se guardó con **BOM UTF-8** (`U+FEFF`) al
+parchearlo con `Set-Content -Encoding UTF8` de PowerShell 5.1, y los censos AST
+del repo (`test_contrato_argumentos_cli.py`,
+`test_dyndolod_t5v21_wiring.py`) parsean **todo** `docs/validation/**/*.py` con
+`ast.parse`. El gate del repo atajó un defecto real de esta fase, no una
+inestabilidad. Corregido eliminando los tres bytes del BOM (sin re-codificar) y
+verificado en local con **los dos tests que fallaron**, que pasan (`2 passed`); la
+suite de exclusión sigue en 78 passed / 1 skipped.
+
+Lección para futuras fases: un archivo versionado bajo `docs/validation/` entra en
+el censo AST aunque no lo ejecute CI, así que no puede llevar BOM.
 
 ## 18. Colisiones con otros PRs
 

@@ -1,4 +1,4 @@
-﻿"""Matriz FILE_SHARE_NONE con procesos externos reales, cÃƒÂ³digos Win32 medidos.
+"""Matriz FILE_SHARE_NONE con procesos externos reales, cÃƒÂ³digos Win32 medidos.
 
 El tenedor usa el mÃƒÂ³dulo real de Sky-Claw.  Cada agresor corre en un PROCESO
 SEPARADO (lo que hace vÃƒÂ¡lida la mediciÃƒÂ³n) y reporta el cÃƒÂ³digo Win32 exacto.
