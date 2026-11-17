@@ -405,14 +405,66 @@ def test_la_persistencia_es_atomica_y_no_sobrescribe_evidencia_previa(tmp_path: 
 # ---------------------------------------------------------------- compatibilidad con el contrato post-#955 (estática)
 
 
-def test_el_harness_admite_solo_por_la_ruta_productiva_y_nunca_llama_a_service_admitir() -> None:
-    arbol = ast.parse(RUTA_HARNESS.read_text(encoding="utf-8"))
-    llamadas_directas = [
-        n.lineno
+def _violaciones_de_ruta_productiva(codigo: str) -> list[str]:
+    """Accesos a ``admitir`` / ``requerir_contexto`` en el CÓDIGO (AST), no en comentarios ni docstrings.
+
+    Detecta ``x.admitir`` (llamado o no), ``getattr(x, "admitir")``, ``x.__dict__["admitir"]`` y cualquier
+    literal de texto ``"admitir"``/``"requerir_contexto"`` fuera de docstrings, y el uso del identificador o
+    del keyword ``requerir_contexto``.
+    """
+    arbol = ast.parse(codigo)
+    docstrings = {
+        id(n.body[0].value)
         for n in ast.walk(arbol)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "admitir"
-    ]
-    assert llamadas_directas == []  # contexto obligatorio (#955) lo impone el gestor; el harness no lo esquiva
-    texto = RUTA_HARNESS.read_text(encoding="utf-8")
-    assert '"admitir_plugin_nativo"' in texto
-    assert "requerir_contexto" not in texto  # el flag lo pasa el gestor productivo, no el harness
+        if isinstance(n, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+        and n.body
+        and isinstance(n.body[0], ast.Expr)
+        and isinstance(n.body[0].value, ast.Constant)
+    }
+    prohibidos = {"admitir", "requerir_contexto"}
+    hallazgos: list[str] = []
+    for nodo in ast.walk(arbol):
+        linea = getattr(nodo, "lineno", 0)
+        if isinstance(nodo, ast.Attribute) and nodo.attr in prohibidos:
+            hallazgos.append(f"{linea}: atributo {nodo.attr}")
+        elif isinstance(nodo, ast.Name) and nodo.id in prohibidos:
+            hallazgos.append(f"{linea}: nombre {nodo.id}")
+        elif isinstance(nodo, ast.keyword) and nodo.arg in prohibidos:
+            hallazgos.append(f"{linea}: keyword {nodo.arg}")
+        elif isinstance(nodo, ast.Constant) and isinstance(nodo.value, str) and id(nodo) not in docstrings:
+            if nodo.value in prohibidos:
+                hallazgos.append(f"{linea}: literal {nodo.value!r}")
+    return hallazgos
+
+
+@pytest.mark.parametrize(
+    "codigo",
+    [
+        "servicio.admitir(plugin)",
+        "f = servicio.admitir",
+        "getattr(servicio, 'admitir')(plugin)",
+        "servicio.__dict__['admitir'](plugin)",
+        "gestor(requerir_contexto=False)",
+        "requerir_contexto = True",
+    ],
+)
+def test_el_detector_de_ruta_productiva_ve_los_accesos_directos_y_dinamicos(codigo: str) -> None:
+    assert _violaciones_de_ruta_productiva(codigo) != []
+
+
+def test_el_detector_ignora_comentarios_y_docstrings() -> None:
+    codigo = (
+        '"""menciona admitir y requerir_contexto"""'
+        + chr(10)
+        + "# admitir requerir_contexto"
+        + chr(10)
+        + "x = 1"
+        + chr(10)
+    )
+    assert _violaciones_de_ruta_productiva(codigo) == []
+
+
+def test_el_harness_admite_solo_por_la_ruta_productiva_y_nunca_llama_a_service_admitir() -> None:
+    codigo = RUTA_HARNESS.read_text(encoding="utf-8")
+    assert _violaciones_de_ruta_productiva(codigo) == []  # el gestor productivo impone el contexto (#955)
+    assert '"admitir_plugin_nativo"' in codigo  # y las admisiones salen por la tool, no por el servicio
