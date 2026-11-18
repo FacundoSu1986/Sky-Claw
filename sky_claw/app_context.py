@@ -15,7 +15,7 @@ from typing import Any, TypeVar
 import aiohttp
 import keyring
 
-from sky_claw.aislamiento import aplicar_aislamiento
+from sky_claw.aislamiento import aplicar_aislamiento, perfil_aislado
 from sky_claw.app.agent.providers import ProviderConfigError, create_provider
 from sky_claw.app.agent.router import LLMRouter
 from sky_claw.app.agent.tools_facade import AsyncToolRegistry
@@ -763,7 +763,13 @@ class AppContext:
         sobre un VFS/unidad lenta bloquearía el shutdown pese a la cancelación
         del arranque. Un hilo daemon se abandona al salir el intérprete (mismo
         invariante que ``AutoDetector``, hazard cerrado en #337).
+
+        Con el perfil aislado (``SKYCLAW_ISOLATED``) no escanea: las rutas comunes (Program Files, raíces de modding)
+        son de la MÁQUINA y el arranque PERSISTE lo que encuentra en la config del perfil. Es el único llamador de
+        ``scan_common_paths`` (lo ancla ``tests/test_aislamiento_perfil.py``), así que cubre LOOT y xEdit.
         """
+        if perfil_aislado():
+            return None
         return await run_off_loop(functools.partial(scan_common_paths, common_paths, exe_name))
 
     def _push_startup_cleanup(

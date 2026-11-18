@@ -908,6 +908,80 @@ def test_la_migracion_legada_se_completa_cuando_el_keyring_vuelve_a_funcionar(
 
 
 # ---------------------------------------------------------------------------
+# El escaneo de rutas comunes del ARRANQUE (LOOT y xEdit) es de la máquina real (hallazgo de CodeRabbit)
+# ---------------------------------------------------------------------------
+
+
+def _referencias_a(nombre: str) -> set[tuple[str, str]]:
+    """``(archivo, función que la contiene)`` de TODA referencia a ``nombre`` en ``sky_claw/``: llamada, pasado como
+    valor (``functools.partial(nombre, ...)``) o atributo. No cuenta el import ni la definición."""
+    encontradas: set[tuple[str, str]] = set()
+
+    def visitar(nodo: ast.AST, archivo: str, funcion: str) -> None:
+        if isinstance(nodo, ast.FunctionDef | ast.AsyncFunctionDef):
+            funcion = nodo.name
+        if isinstance(nodo, ast.Name) and nodo.id == nombre and isinstance(nodo.ctx, ast.Load):
+            encontradas.add((archivo, funcion))
+        if isinstance(nodo, ast.Attribute) and nodo.attr == nombre:
+            encontradas.add((archivo, funcion))
+        for hijo in ast.iter_child_nodes(nodo):
+            visitar(hijo, archivo, funcion)
+
+    for ruta in sorted((RAIZ / "sky_claw").rglob("*.py")):
+        visitar(ast.parse(ruta.read_text(encoding="utf-8")), ruta.relative_to(RAIZ).as_posix(), "<módulo>")
+    return encontradas
+
+
+async def test_con_el_perfil_aislado_el_arranque_no_escanea_las_rutas_comunes_del_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``start_full`` busca LOOT y xEdit en Program Files y las raíces de modding y PERSISTE lo que encuentra en la
+    config del perfil (``escribir_campo``): con el perfil aislado terminaría con una ruta del host escrita."""
+    from sky_claw.app_context import AppContext
+
+    (tmp_path / "loot.exe").write_bytes(b"")
+    monkeypatch.setenv(ENV_PERFIL_AISLADO, "1")
+
+    assert await AppContext._scan_tool_paths(SimpleNamespace(), (tmp_path,), "loot.exe") is None  # type: ignore[arg-type]
+
+
+async def test_sin_aislamiento_el_arranque_escanea_las_rutas_comunes_control(tmp_path: Path) -> None:
+    """Control: sin el interruptor el mismo escaneo SÍ encuentra el ejecutable. Prueba que el test anterior mide el
+    escaneo y no un directorio vacío."""
+    from sky_claw.app_context import AppContext
+
+    (tmp_path / "loot.exe").write_bytes(b"")
+
+    encontrado = await AppContext._scan_tool_paths(SimpleNamespace(), (tmp_path,), "loot.exe")  # type: ignore[arg-type]
+
+    assert encontrado == tmp_path / "loot.exe"
+
+
+def test_toda_referencia_a_scan_common_paths_pasa_por_el_unico_punto_guardado() -> None:
+    """Enumera, no muestrea: el escaneo de rutas comunes tiene UN solo llamador y es el que consulta el interruptor.
+    Un llamador nuevo (otra superficie que persista rutas del host) rompe el ancla hasta que se decide su receta."""
+    assert _referencias_a("scan_common_paths") == {("sky_claw/app_context.py", "_scan_tool_paths")}
+
+
+def test_scan_tool_paths_consulta_el_interruptor_antes_de_escanear() -> None:
+    arbol = ast.parse((RAIZ / "sky_claw" / "app_context.py").read_text(encoding="utf-8"))
+    metodo = next(
+        nodo
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.AsyncFunctionDef | ast.FunctionDef) and nodo.name == "_scan_tool_paths"
+    )
+    consultas = [
+        n.lineno
+        for n in ast.walk(metodo)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "perfil_aislado"
+    ]
+    escaneos = [n.lineno for n in ast.walk(metodo) if isinstance(n, ast.Name) and n.id == "scan_common_paths"]
+
+    assert consultas and escaneos, "`_scan_tool_paths` tiene que consultar `perfil_aislado()` y escanear"
+    assert min(consultas) < min(escaneos), "el interruptor se consulta ANTES de escanear"
+
+
+# ---------------------------------------------------------------------------
 # El runbook del rig tiene que decirle al ejecutor que lo active
 # ---------------------------------------------------------------------------
 
