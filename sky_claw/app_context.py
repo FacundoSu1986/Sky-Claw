@@ -2713,7 +2713,9 @@ class AppContext:
         If sky_claw_config.json exists, reads all values, merges them into
         the TOML Config, saves the TOML, and ONLY THEN deletes the JSON.
         This ensures no data loss — the JSON is purged only after a
-        successful TOML write.
+        successful TOML write AND only if every legacy secret was persisted
+        (keyring accepted it): otherwise the JSON is the sole copy and is kept
+        for the next startup to retry.
         """
         legacy_path = pathlib.Path.cwd() / "sky_claw_config.json"
         if not legacy_path.exists():
@@ -2785,6 +2787,19 @@ class AppContext:
         # Atomic: save TOML first, then delete JSON
         toml_cfg.save()
         logger.info("CFG-01: TOML config saved to %s", self.config_path)
+
+        # Fail-closed en las dos direcciones (AGENTS.md, «Secretos en Config.save()»): `save()` NO baja un secreto nuevo
+        # al TOML cuando el keyring no lo acepta y lo deja pendiente. Si queda alguno, el JSON legado es la ÚNICA copia
+        # (con el perfil aislado, o en un Linux sin backend): se conserva y la migración se reintenta en el próximo
+        # arranque. Perder el secreto es tan malo como filtrarlo.
+        if toml_cfg._secretos_pendientes:
+            logger.warning(
+                "CFG-01: %d credencial(es) legada(s) no se pudieron guardar (keyring no disponible); "
+                "se CONSERVA %s y la migración se reintenta en el próximo arranque.",
+                len(toml_cfg._secretos_pendientes),
+                legacy_path,
+            )
+            return
 
         legacy_path.unlink(missing_ok=True)
         logger.info("CFG-01: Legacy JSON purged — single source of truth established")

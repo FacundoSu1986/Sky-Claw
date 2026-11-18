@@ -54,8 +54,9 @@ Salen del rig anterior (§8-bis y §11 de su informe) y de [la validación base]
    *usuario*: en el rig anterior un `AppContext` con `HOME` aislado leyó el token de Telegram del operador (más de 700 llamadas de
    long-polling, todas 401) y el autodetect escribió el Skyrim real del operador en la config aislada y lo admitió como raíz del
    sandbox. Con la variable activa el keyring pasa a un backend que **falla** (todo secreto se trata como «no configurado» y no se
-   escribe nada) y el descubrimiento de la máquina real se apaga. **Las rutas que el perfil fija en su `config.toml` siguen
-   valiendo**, así que el perfil trae `skyrim_path` y demás rutas explícitas. Una corrida que necesite un token real (R0-12) usa un
+   escribe nada; Sky-Claw fija `PYTHON_KEYRING_BACKEND` en el proceso y pisa la que el arnés haya puesto) y el descubrimiento de la
+   máquina real se apaga (Skyrim, MO2 y las herramientas de las raíces comunes, Program Files y `PATH`). **Las rutas y ejecutables
+   que el perfil fija en su `config.toml` siguen valiendo**, así que el perfil trae `skyrim_path` y demás rutas explícitas. Una corrida que necesite un token real (R0-12) usa un
    **bot de prueba dedicado** con su token en el `config.toml` del perfil, nunca el del operador. Se declara en `isolation.json`.
    Límite conocido: la lectura de solo lectura de `HKCU` que hace la identidad de la instancia de MO2 no se aísla (ver
    `tests/test_aislamiento_perfil.py`, `LECTORES_DEL_REGISTRO`).

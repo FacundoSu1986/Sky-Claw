@@ -18,11 +18,12 @@ except PackageNotFoundError:
     # the exe's VERSIONINFO resource. Bump it to match the release.
     __version__ = "0.2.4"
 
-# Perfil aislado (``SKYCLAW_ISOLATED``): se aplica AL IMPORTAR el paquete, antes de que cualquier módulo lea el keyring.
-# Sin la variable es un no-op que no importa ``keyring`` (ver ``sky_claw/aislamiento.py``).
-from sky_claw.aislamiento import aplicar_aislamiento as _aplicar_aislamiento
+# Perfil aislado (``SKYCLAW_ISOLATED``): se declara AL IMPORTAR el paquete, antes de que cualquier módulo lea el keyring.
+# NUNCA importa ``keyring`` acá (con ni sin el interruptor): el worker VFS importa este paquete antes de probar su Job y
+# ``import keyring`` llama a ``platform.system()``, que en Windows lanza ``cmd.exe /c ver`` (ver ``sky_claw/aislamiento.py``).
+from sky_claw.aislamiento import preparar_aislamiento as _preparar_aislamiento
 
-_aplicar_aislamiento()
+_preparar_aislamiento()
 
 if TYPE_CHECKING:
     # FASE 5: Asset Conflict Detection Module

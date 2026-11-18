@@ -9,7 +9,11 @@ La propiedad: *el aislamiento solo protege si TODOS los accesos participan*. Por
 
 * **keyring**: todas las llamadas del producto pasan por el backend global de ``keyring``. Este módulo instala UN backend
   que **falla** (``keyring.backends.fail``) y así cubre por construcción cada sitio, incluidos los que se agreguen. Los
-  sitios ya tratan ese estado como «no configurado» (es el de un Linux headless sin backend).
+  sitios ya tratan ese estado como «no configurado» (es el de un Linux headless sin backend). Se instala en dos
+  tiempos: al importar el paquete solo se FIJA ``PYTHON_KEYRING_BACKEND`` (``preparar_aislamiento``, sin importar
+  ``keyring``), que ``keyring`` lee en su primer uso, así que cubre cualquier acceso en cualquier orden; al construir
+  ``Config``/``AppContext`` se instala explícitamente (``aplicar_aislamiento``), por si ``keyring`` ya había elegido
+  backend (el arnés activa el interruptor DESPUÉS de importar).
 * **descubrimiento de la máquina real** (``AutoDetector`` y ``EnvironmentScanner``): consultan ``perfil_aislado()`` y
   devuelven «no encontrado». Una ruta que el perfil fijó en su config sigue valiendo: se apaga el descubrimiento, no la
   configuración.
@@ -22,9 +26,17 @@ TOML. Con el que falla el secreto se queda donde estaba (contrato fail-closed de
 El aislamiento es irreversible dentro del proceso (el backend no se «des-instala»): un perfil aislado no vuelve a ver el
 keyring real por apagar la variable después. Anclas: ``tests/test_aislamiento_perfil.py``.
 
-Este módulo lo importa ``sky_claw/__init__.py`` en CADA arranque: no importa nada fuera de la librería estándar (``keyring``
-se importa dentro de ``aplicar_aislamiento`` y solo si el interruptor está activo), para que los workers livianos no
-arrastren ``config``/``keyring``.
+Este módulo lo importa ``sky_claw/__init__.py`` en CADA arranque, también el del worker VFS, que prueba su Job antes de
+importar nada pesado (``vfs_arranque.py``, H-02): ``sky_claw/__main__.py`` importa el paquete ANTES de despachar a
+``arrancar_worker``. ``import keyring`` llama a ``platform.system()`` a nivel de módulo (``keyring/util/platform_.py``) y
+en Windows esa llamada lanza ``cmd.exe /c ver``: un subproceso creado antes de probar la contención. Por eso el hook del
+PAQUETE no importa ``keyring`` (ni nada fuera de la librería estándar): solo fija la variable de entorno. ``keyring`` se
+importa dentro de ``aplicar_aislamiento``, que corre al construir ``Config``/``AppContext`` (nunca en el worker). Anclado
+por ``test_importar_sky_claw_no_importa_keyring_ni_llama_a_platform_system``.
+
+Verificado con ``keyring`` 25.7.0 (el del lock), cuyo backend se elige de forma perezosa en el primer uso; el mínimo
+declarado es 24.0 y no lo verifiqué. Con una versión que eligiera el backend al importar, el orden «leer keyring antes de
+construir ``Config``/``AppContext``» quedaría sin cubrir (los hooks explícitos de esos dos siguen valiendo).
 """
 
 from __future__ import annotations
@@ -49,6 +61,26 @@ def perfil_aislado() -> bool:
     if valor is None:
         return False
     return valor.strip().casefold() not in _VALORES_QUE_LO_APAGAN
+
+
+#: Variable que ``keyring`` consulta en su primer uso para elegir backend (``keyring.core.load_env``).
+ENV_BACKEND_KEYRING = "PYTHON_KEYRING_BACKEND"
+
+#: El backend que falla, por el nombre con el que ``keyring`` lo carga desde ``ENV_BACKEND_KEYRING``.
+BACKEND_QUE_FALLA = "keyring.backends.fail.Keyring"
+
+
+def preparar_aislamiento() -> bool:
+    """Fija el backend de keyring que falla SIN importar ``keyring``. Devuelve si el perfil es aislado.
+
+    Es lo único que hace el hook del paquete (``sky_claw/__init__.py``): ver el docstring del módulo (el worker VFS no
+    puede importar ``keyring`` antes de probar su Job). El perfil aislado gana sobre un backend que el arnés haya fijado
+    en la misma variable. La variable la heredan los procesos hijos, que además heredan el interruptor.
+    """
+    if not perfil_aislado():
+        return False
+    os.environ[ENV_BACKEND_KEYRING] = BACKEND_QUE_FALLA
+    return True
 
 
 def aplicar_aislamiento() -> bool:

@@ -238,6 +238,71 @@ def test_importar_sky_claw_sin_el_interruptor_no_toca_el_backend(valor: str | No
     assert _backend_tras_importar_sky_claw(**entorno) == "keyring.backends.null"
 
 
+def _importar_sky_claw_con_platform_prohibido(**entorno: str) -> subprocess.CompletedProcess[str]:
+    """Importa ``sky_claw`` en un proceso NUEVO donde ``platform.system()`` está prohibido.
+
+    En Windows la primera llamada a ``platform.system()`` lanza ``cmd.exe /c ver``, y ``import keyring`` la hace a nivel
+    de módulo (``keyring/util/platform_.py``). Es el subproceso que el worker VFS no puede crear antes de probar que
+    vive en el Job (``vfs_arranque.py``, H-02): ``sky_claw/__main__.py`` importa el paquete ANTES de despachar a
+    ``arrancar_worker``, así que lo que haga ``sky_claw/__init__.py`` corre sin contención probada.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in {ENV_PERFIL_AISLADO, "PYTHON_KEYRING_BACKEND"}}
+    env["PYTHONPATH"] = str(RAIZ)
+    env.update(entorno)
+    snippet = (
+        "import platform, sys\n"
+        "def _prohibido(*a, **k):\n"
+        "    raise AssertionError('platform.system() llamado al importar sky_claw')\n"
+        "platform.system = _prohibido\n"
+        "import sky_claw\n"
+        "assert 'keyring' not in sys.modules, 'import sky_claw importo keyring'\n"
+        "print('ok')\n"
+    )
+    return subprocess.run(  # noqa: S603 -- ejecuta el intérprete actual sobre un snippet fijo
+        [sys.executable, "-c", snippet], capture_output=True, text=True, env=env, timeout=120, check=False
+    )
+
+
+@pytest.mark.parametrize("valor", [None, "1"], ids=["sin_interruptor_control", "con_interruptor"])
+def test_importar_sky_claw_no_importa_keyring_ni_llama_a_platform_system(valor: str | None) -> None:
+    """El worker VFS prueba su Job ANTES de importar nada pesado; el aislamiento no puede romper esa propiedad.
+
+    Con el interruptor el hook del paquete NO puede importar ``keyring`` (lo haría ``set_keyring``): fija el backend por
+    la variable de entorno que ``keyring`` lee en su primer uso. El control sin interruptor prueba que el test mide el
+    paquete y no el entorno."""
+    entorno = {} if valor is None else {ENV_PERFIL_AISLADO: valor}
+
+    resultado = _importar_sky_claw_con_platform_prohibido(**entorno)
+
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert resultado.stdout.strip().splitlines()[-1] == "ok"
+
+
+def test_preparar_aislamiento_fija_el_backend_que_falla_sin_importar_keyring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(ENV_PERFIL_AISLADO, "1")
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.null.Keyring")
+
+    assert aislamiento.preparar_aislamiento() is True
+    # El perfil aislado gana sobre un backend que el arnés haya fijado antes: igual que `aplicar_aislamiento`.
+    assert os.environ["PYTHON_KEYRING_BACKEND"] == "keyring.backends.fail.Keyring"
+
+
+@pytest.mark.parametrize("valor", [None, "", "0", "false"])
+def test_preparar_aislamiento_sin_el_interruptor_no_toca_el_entorno(
+    valor: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if valor is None:
+        monkeypatch.delenv(ENV_PERFIL_AISLADO, raising=False)
+    else:
+        monkeypatch.setenv(ENV_PERFIL_AISLADO, valor)
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.null.Keyring")
+
+    assert aislamiento.preparar_aislamiento() is False
+    assert os.environ["PYTHON_KEYRING_BACKEND"] == "keyring.backends.null.Keyring"
+
+
 def test_config_aplica_el_aislamiento_antes_de_leer_el_keyring(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, keyring_del_operador: _KeyringReal
 ) -> None:
@@ -626,6 +691,220 @@ async def test_con_el_perfil_aislado_la_ruta_configurada_explicitamente_sigue_va
     monkeypatch.setenv(ENV_PERFIL_AISLADO, "1")
 
     assert await EnvironmentScanner(skyrim_path=fijado)._find_skyrim() == fijado
+
+
+# ---------------------------------------------------------------------------
+# Las HERRAMIENTAS externas también son de la máquina real (hallazgo de Codex): se enumera el registro entero
+# ---------------------------------------------------------------------------
+
+#: Las herramientas con su propio detector (no pasan por el resolutor genérico ``_resolve_tool_path``).
+_HERRAMIENTAS_CON_DETECTOR_PROPIO = frozenset({"skse", "community_shaders"})
+
+
+def _herramientas_del_resolutor_generico() -> list[Any]:
+    """Todas las del registro que resuelve ``_resolve_tool_path``: la familia que el aislamiento tiene que cubrir."""
+    from sky_claw.local.discovery import scanner
+
+    return [
+        pytest.param(spec, id=spec.key)
+        for spec in scanner.iter_external_tool_specs()
+        if spec.key not in _HERRAMIENTAS_CON_DETECTOR_PROPIO
+    ]
+
+
+@pytest.fixture
+def herramientas_del_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
+    """Una máquina con TODAS las herramientas externas en una raíz común (``COMMON_TOOL_ROOTS``), sin ``PATH``."""
+    from sky_claw.local.discovery import scanner
+
+    raiz = tmp_path / "ModdingDelHost"
+    raiz.mkdir()
+    for spec in scanner.iter_external_tool_specs():
+        for nombre in spec.exe_names:
+            (raiz / nombre).write_bytes(b"")
+    monkeypatch.setattr(scanner, "COMMON_TOOL_ROOTS", (str(raiz),))
+    monkeypatch.setattr(scanner.shutil, "which", lambda *_a, **_k: None)
+    return SimpleNamespace(raiz=raiz)
+
+
+@pytest.mark.parametrize("spec", _herramientas_del_resolutor_generico())
+def test_el_scanner_encuentra_las_herramientas_del_host_sin_el_perfil_aislado_control(
+    spec: Any, herramientas_del_host: SimpleNamespace
+) -> None:
+    from sky_claw.local.discovery.scanner import EnvironmentScanner
+
+    scanner = EnvironmentScanner()
+
+    encontrada = scanner._resolve_tool_path(spec.key, spec.exe_names, scanner._build_search_roots(None, None))
+
+    assert encontrada is not None and encontrada.parent == herramientas_del_host.raiz
+
+
+@pytest.mark.parametrize("spec", _herramientas_del_resolutor_generico())
+def test_con_el_perfil_aislado_el_scanner_no_descubre_las_herramientas_del_host(
+    spec: Any, herramientas_del_host: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sky_claw.local.discovery.scanner import EnvironmentScanner
+
+    monkeypatch.setenv(ENV_PERFIL_AISLADO, "1")
+    scanner = EnvironmentScanner()
+
+    assert scanner._resolve_tool_path(spec.key, spec.exe_names, scanner._build_search_roots(None, None)) is None
+
+
+@pytest.mark.parametrize("aislado", [False, True], ids=["control_sin_aislamiento", "aislado"])
+def test_el_scanner_busca_las_herramientas_en_el_path_solo_sin_el_perfil_aislado(
+    aislado: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El ``PATH`` del arnés es el de la máquina (el rig necesita los directorios del sistema): también es el host."""
+    from sky_claw.local.discovery import scanner as modulo
+    from sky_claw.local.discovery.scanner import EnvironmentScanner
+
+    en_path = tmp_path / "EnPath"
+    en_path.mkdir()
+    exe = en_path / "LOOT.exe"
+    exe.write_bytes(b"")
+    monkeypatch.setattr(modulo, "COMMON_TOOL_ROOTS", ())
+    monkeypatch.setattr(modulo.shutil, "which", lambda *_a, **_k: str(exe))
+    if aislado:
+        monkeypatch.setenv(ENV_PERFIL_AISLADO, "1")
+
+    encontrada = EnvironmentScanner()._find_tool(("LOOT.exe",), [])
+
+    assert encontrada == (None if aislado else exe)
+
+
+def test_con_el_perfil_aislado_un_ejecutable_de_herramienta_configurado_sigue_valiendo(
+    herramientas_del_host: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Se apaga el DESCUBRIMIENTO, no la configuración: el ``SSEEdit.exe`` que fijó el perfil gana, el del host no."""
+    from sky_claw.local.discovery.scanner import EnvironmentScanner
+
+    fijado = tmp_path / "PerfilAislado" / "SSEEdit.exe"
+    fijado.parent.mkdir()
+    fijado.write_bytes(b"")
+    monkeypatch.setenv(ENV_PERFIL_AISLADO, "1")
+    scanner = EnvironmentScanner(tool_paths={"xedit": str(fijado)})
+
+    resuelta = scanner._resolve_tool_path("xedit", ("SSEEdit.exe",), scanner._build_search_roots(None, None))
+
+    assert resuelta == fijado
+
+
+async def test_un_escaneo_aislado_con_xedit_fijado_no_descubre_ni_ejecuta_herramientas_del_host(
+    maquina_real_simulada: SimpleNamespace,
+    herramientas_del_host: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El escenario que reprodujo Codex: solo xEdit fijado, un LOOT ajeno en el host. Ni se lo descubre ni se lo
+    ejecuta (la sonda de versión ejecuta el binario), y la GUI no exporta una ruta del host al despacho de rituales."""
+    from sky_claw.local.discovery import scanner as modulo
+    from sky_claw.local.discovery.scanner import EnvironmentScanner
+
+    juego = tmp_path / "SkyrimDelPerfil"
+    juego.mkdir()
+    (juego / "SkyrimSE.exe").write_bytes(b"")
+    xedit = tmp_path / "PerfilAislado" / "SSEEdit.exe"
+    xedit.parent.mkdir()
+    xedit.write_bytes(b"")
+    sondeadas: list[Path] = []
+
+    async def _sonda(_clave: str, ruta: Path, **_k: Any) -> str:
+        sondeadas.append(Path(ruta))
+        return ""
+
+    monkeypatch.setattr(modulo, "detect_tool_version", _sonda)
+    monkeypatch.setenv(ENV_PERFIL_AISLADO, "1")
+
+    snap = await EnvironmentScanner(skyrim_path=juego, tool_paths={"xedit": str(xedit)})._scan_inner()
+
+    assert "loot" not in snap.tools
+    assert all(ruta.parent != herramientas_del_host.raiz for ruta in sondeadas), sondeadas
+    assert all(info.exe_path.parent != herramientas_del_host.raiz for info in snap.tools.values()), snap.tools
+    # El ejecutable que el perfil fijó SÍ se reporta: se apagó el descubrimiento, no la configuración.
+    assert snap.tools["xedit"].exe_path == xedit
+
+
+# ---------------------------------------------------------------------------
+# «Fail-closed en las dos direcciones»: el backend que falla no puede costar el secreto legado (hallazgo de Codex)
+# ---------------------------------------------------------------------------
+
+TOKEN_LEGADO = "token-del-json-legado"
+
+
+def _json_legado_con_token(directorio: Path) -> Path:
+    """Un ``sky_claw_config.json`` legado (base64) con un token de Telegram, donde ``AppContext`` lo busca (cwd)."""
+    import base64
+    import json
+
+    ruta = directorio / "sky_claw_config.json"
+    ruta.write_text(
+        json.dumps({"telegram_bot_token_b64": base64.b64encode(TOKEN_LEGADO.encode()).decode()}), encoding="utf-8"
+    )
+    return ruta
+
+
+def _migrar_json_legado(config_path: Path) -> None:
+    """Ejecuta ``AppContext._migrate_legacy_json`` de verdad (los demás tests lo reemplazan por un ``MagicMock``)."""
+    from sky_claw.app_context import AppContext
+
+    AppContext._migrate_legacy_json(SimpleNamespace(config_path=config_path))  # type: ignore[arg-type]
+
+
+def test_con_el_perfil_aislado_la_migracion_legada_conserva_el_json_porque_nada_guardo_el_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Con el backend que falla ``Config.save()`` se NIEGA a bajar el token al TOML (a propósito: contrato fail-closed).
+    Borrar entonces el JSON dejaría el token en ningún lado: perderlo es tan malo como filtrarlo."""
+    monkeypatch.chdir(tmp_path)
+    json_legado = _json_legado_con_token(tmp_path)
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setenv(ENV_PERFIL_AISLADO, "1")
+    aplicar_aislamiento()
+
+    _migrar_json_legado(config_path)
+
+    texto_toml = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    assert json_legado.exists(), "el JSON legado era la única copia del token"
+    assert TOKEN_LEGADO not in texto_toml, "el token no puede bajar en plano al TOML"
+
+
+def test_sin_aislamiento_la_migracion_legada_guarda_el_token_en_el_keyring_y_purga_el_json_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Control: con un keyring que SÍ guarda, la migración sigue purgando el JSON. Prueba que el guardado de arriba es
+    por el secreto pendiente y no un «nunca borrar»."""
+    monkeypatch.chdir(tmp_path)
+    json_legado = _json_legado_con_token(tmp_path)
+    real = _KeyringReal({})
+    keyring.set_keyring(real)
+
+    _migrar_json_legado(tmp_path / "config.toml")
+
+    assert not json_legado.exists()
+    assert real.secretos["telegram_bot_token"] == TOKEN_LEGADO
+
+
+def test_la_migracion_legada_se_completa_cuando_el_keyring_vuelve_a_funcionar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """«Una escritura rechazada queda pendiente para reintento»: conservar el JSON es lo que hace posible el reintento."""
+    monkeypatch.chdir(tmp_path)
+    json_legado = _json_legado_con_token(tmp_path)
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setenv(ENV_PERFIL_AISLADO, "1")
+    aplicar_aislamiento()
+    _migrar_json_legado(config_path)
+    assert json_legado.exists()
+
+    monkeypatch.delenv(ENV_PERFIL_AISLADO)
+    real = _KeyringReal({})
+    keyring.set_keyring(real)
+    _migrar_json_legado(config_path)
+
+    assert not json_legado.exists()
+    assert real.secretos["telegram_bot_token"] == TOKEN_LEGADO
 
 
 # ---------------------------------------------------------------------------
