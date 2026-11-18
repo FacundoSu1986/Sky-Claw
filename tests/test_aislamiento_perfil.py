@@ -325,6 +325,46 @@ async def test_el_bridge_del_frontend_trata_el_backend_ausente_como_token_no_con
     ws.send.assert_not_awaited()
 
 
+def _puente_con_keyring_que_falla(error: BaseException) -> Any:
+    """Un ``FrontendBridge`` cuyo cliente de keyring (inyectable) levanta ``error`` al leer el token."""
+    from sky_claw.app.comms.frontend_bridge import FrontendBridge
+
+    cliente = MagicMock()
+    cliente.get_password.side_effect = error
+    return FrontendBridge(
+        router=MagicMock(), session=MagicMock(), config=MagicMock(), app_context=MagicMock(), keyring_client=cliente
+    )
+
+
+@pytest.mark.parametrize("clase", [keyring.errors.KeyringError, keyring.errors.NoKeyringError, OSError])
+async def test_el_bridge_trata_la_jerarquia_del_keyring_como_token_no_configurado(clase: type[Exception]) -> None:
+    """Lo que el resto del producto llama «backend ausente o caído» (``config.py``: ``KeyringError`` y ``OSError``)
+    se degrada al ``AuthError`` documentado, y el token no sale por el websocket."""
+    from sky_claw.app.comms.frontend_bridge import AuthError
+
+    puente = _puente_con_keyring_que_falla(clase("backend caído"))
+    ws = AsyncMock()
+
+    with pytest.raises(AuthError, match="no configurado"):
+        await puente._authenticate(ws)
+
+    ws.send.assert_not_awaited()
+
+
+@pytest.mark.parametrize("clase", [RuntimeError, AttributeError, TypeError])
+async def test_el_bridge_no_traga_un_error_de_programacion_como_token_no_configurado(clase: type[Exception]) -> None:
+    """Un bug NO es «token no configurado». ``_authenticate`` corre dentro del bucle de reconexión, que ya es el borde
+    que registra lo inesperado con su traza completa: tragarlo acá lo dejaría en un warning con solo el nombre de la
+    clase. Falla cerrado igual (no se envía el token) y propaga para que se vea."""
+    puente = _puente_con_keyring_que_falla(clase("bug"))
+    ws = AsyncMock()
+
+    with pytest.raises(clase):
+        await puente._authenticate(ws)
+
+    ws.send.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Censos por AST: enumeran la familia (un sitio nuevo rompe el ancla hasta que se decide su receta)
 # ---------------------------------------------------------------------------
