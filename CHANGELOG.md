@@ -736,14 +736,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   le tocan (reparto voraz por cantidad de tests, determinista y independiente del orden): no hay una lista de archivos que
   mantener, y un subdirectorio nuevo de tests queda cubierto por construcción (`tests/` ya tiene `agent/`, `bdd/` y `security/`).
   - **El riesgo de repartir es que un test no corra en ningún shard sin que nada falle.** Cada shard deja un manifiesto (archivos,
-    cantidad de tests, huella de la suite colectada, duración por archivo) y el job `test` —que conserva el nombre del check por
+    cantidad de tests, huella de la suite colectada, tiempo de tests por archivo) y el job `test` —que conserva el nombre del check por
     versión, `🧪 Tests / windows-latest / py3.x`— exige que entre todos hayan seleccionado exactamente la suite: misma huella, mismo
-    total, ningún archivo en dos shards y la suma de tests igual al total colectado. Un `SKYCLAW_SHARD` mal escrito aborta la
+    total, ningún archivo
+    en dos shards, la suma de tests igual al total colectado y la huella declarada igual a la recalculada con los archivos que de verdad
+    seleccionaron (un shard que declara otro archivo del mismo peso ya no pasa). Un manifiesto mal formado (conteo de texto, `true`, 0) se reporta
+    como error con su ruta en vez de reventar con `TypeError`, y `--total` no positivo es un error de uso (antes `--total 0` sobre un directorio
+    vacío daba OK). Un `SKYCLAW_SHARD` mal escrito aborta la
     sesión en vez de degradar en silencio a «correr todo».
   - **La cobertura sigue siendo un gate bloqueante** (`--fail-under=60`): se mide en cada shard y se exige sobre los datos combinados
-    de todos (un shard solo cubre una parte). El artefacto `coverage-report-*` conserva su nombre y su ruta.
+    de todos (un shard solo cubre una parte); el verificador exige, con `--con-cobertura`, la base `coverage.sqlite` de CADA shard (`coverage combine`
+    sobre un glob con una base de menos no falla y las restantes pueden igual cruzar el umbral). `coverage xml` corre antes del umbral para que el
+    artefacto `coverage-report-*` exista aun si el umbral falla; conserva su nombre y su ruta.
   - **Un shard rojo deja rojo el veredicto** (no «skipped», que GitHub da por satisfecho en un check requerido). El agregador
-    `🧪 Tests (Pytest)` y el job `Build` no cambian. Los artefactos intermedios duran 1 día.
+    `🧪 Tests (Pytest)` y el job `Build` no cambian. Los artefactos intermedios duran 1 día: pasado ese plazo, «Re-run failed jobs» no sirve para
+    reintentar solo el veredicto (los shards verdes no se repiten y sus artefactos expiraron); hay que usar «Re-run all jobs».
   - **Anclas:** `tests/test_ci_particion.py` (propiedades del reparto enumeradas para N de 1 a 9 sobre casos sintéticos y sobre el árbol
     de tests real, cada modo de falla del verificador y el plugin ejercido en un subproceso) y `tests/test_ci_platform_policy.py`
     (la cantidad de shards atada a la matriz, a `SKYCLAW_SHARD` y al `--total`; el piso del `timeout-minutes` pasa a anclar el job
@@ -751,7 +758,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Medido en la CI de su propio PR (Windows, UNA corrida):** los 8 shards verdes, de 9:28 a 14:57 min cada uno (py3.12: 9:28-12:12;
     py3.11: 10:48-14:57), el veredicto por versión en ~2 min y todo el run, hasta `Build` verde, en ~20 min contra los 60-72 min de la
     suite entera en un job. El reparto por cantidad de tests no equilibra perfecto (el shard más lento de py3.11 tarda ~4 min más que
-    el más rápido); cada manifiesto registra la duración por archivo para calibrarlo con datos.
+    el más rápido); cada manifiesto registra el tiempo de los tests por archivo para calibrarlo con datos (es la suma de las fases setup/call/teardown: no incluye
+    la colección ni el arranque, así que para decidir el `timeout-minutes` manda la duración del job entero que muestra Actions).
   - **El shell importa:** la primera versión corría `pytest` desde `bash` y dos tests que asumen un proceso sin privilegios
     (`test_tgr_unelevated_without_privilege_fails_closed` y `test_ns_unelevated_without_privilege_fails_closed`) fallaron con «DID NOT
     RAISE» en los shards 2 y 3; con PowerShell, el shell que usaba el job único, pasan los 8 shards. Se midió que el resultado cambia con

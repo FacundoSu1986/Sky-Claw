@@ -8,11 +8,14 @@ falla y el verde miente. Por eso este módulo tiene dos mitades que se prueban j
   pytest, no una lista de archivos mantenida a mano (``tests/`` tiene subdirectorios, y una lista los omitiría sin
   avisar). Se activa con ``SKYCLAW_SHARD=<indice>/<total>``; sin la variable no hace nada;
 * un **verificador** (``python -m scripts.ci_particion verificar``) que lee el manifiesto que cada shard deja y exige
-  que, entre todos, hayan seleccionado exactamente la suite: misma huella, mismo total, sin archivos repetidos y con la
-  suma de tests igual al total colectado.
+  que, entre todos, hayan seleccionado exactamente la suite: misma huella (recalculada con los archivos que de verdad
+  declararon), mismo total, sin archivos repetidos y con la suma de tests igual al total
+  colectado. Con ``--con-cobertura`` exige además la base de ``coverage`` de cada shard.
 
 El peso de un archivo es su cantidad de tests: es un proxy de su duración, no la duración. Cada manifiesto registra
-también cuánto tardó cada archivo, para calibrar el reparto con datos reales en vez de adivinar.
+también cuánto tardaron los tests de cada archivo (suma de sus fases setup/call/teardown, SIN la colección ni el
+arranque del job), para calibrar el reparto con datos reales en vez de adivinar. No es la duración del job: para decidir
+un ``timeout-minutes`` manda la duración del job entero que muestra Actions.
 """
 
 from __future__ import annotations
@@ -36,6 +39,8 @@ ENV_MANIFIESTO = "SKYCLAW_SHARD_MANIFEST"
 #: Nombre propio y NO ``manifest.json``: los tests (y el producto) escriben ese nombre en muchos árboles temporales
 #: (p. ej. ``.skyclaw-output/manifest.json``) y una búsqueda por nombre genérico los recogería como si fueran de un shard.
 NOMBRE_DEL_MANIFIESTO = "shard-manifest.json"
+#: Base de datos de ``coverage`` que cada shard deja junto a su manifiesto (``COVERAGE_FILE`` del workflow).
+NOMBRE_DE_LA_COBERTURA = "coverage.sqlite"
 VERSION_DEL_MANIFIESTO = 1
 
 _FORMA_SHARD = re.compile(r"[0-9]+/[0-9]+")
@@ -95,7 +100,13 @@ def repartir(pesos: Mapping[str, int], total: int) -> tuple[frozenset[str], ...]
 
 def huella_de_suite(pesos: Mapping[str, int]) -> str:
     """Identifica la suite colectada (archivo y cantidad de tests), sin importar el orden: dos shards que vieron la
-    misma suite tienen la misma huella."""
+    misma suite tienen la misma huella.
+
+    Es por archivo y conteo, A PROPÓSITO, y no sobre los node IDs completos: algunos IDs reales no son deterministas
+    entre procesos (medido en ``tests/``: 2 de 20296, un ``parametrize`` con ``object()`` cuyo ID lleva la dirección de
+    memoria y otro con ``uuid1()``). Una huella de IDs haría rojo el veredicto en toda corrida, y no agrega protección: el
+    shard dueño de un archivo corre una colección completa de ese archivo, y si colectó MENOS casos, el conteo ya lo marca.
+    """
     contenido = "\n".join(f"{nombre}\t{pesos[nombre]}" for nombre in sorted(pesos))
     return hashlib.sha256(contenido.encode("utf-8")).hexdigest()
 
@@ -106,7 +117,10 @@ def construir_manifiesto(
     propios: Collection[str],
     duraciones: Mapping[str, float],
 ) -> dict[str, Any]:
-    """Lo que un shard declara haber seleccionado, para que el verificador lo contraste con los demás."""
+    """Lo que un shard declara haber seleccionado, para que el verificador lo contraste con los demás.
+
+    ``duraciones`` es el tiempo de las fases de los tests de cada archivo (no incluye colección ni arranque del job).
+    """
     archivos = {nombre: pesos[nombre] for nombre in sorted(propios)}
     por_archivo = {nombre: round(duraciones.get(nombre, 0.0), 3) for nombre in archivos}
     return {
@@ -117,8 +131,8 @@ def construir_manifiesto(
         "seleccionados": sum(archivos.values()),
         "huella": huella_de_suite(pesos),
         "archivos": archivos,
-        "duraciones_s": por_archivo,
-        "duracion_total_s": round(sum(por_archivo.values()), 3),
+        "tiempo_de_tests_por_archivo_s": por_archivo,
+        "tiempo_de_tests_s": round(sum(por_archivo.values()), 3),
     }
 
 
@@ -189,15 +203,36 @@ def pytest_configure(config: pytest.Config) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _rutas_de_manifiestos(directorio: Path) -> list[Path]:
+    """Un manifiesto por artefacto, a UN solo nivel (``<directorio>/<artefacto>/shard-manifest.json``): es como
+    ``download-artifact`` deja cada artefacto, y evita recoger archivos de un árbol temporal de tests que casualmente
+    esté bajo el mismo directorio."""
+    return sorted(directorio.glob(f"*/{NOMBRE_DEL_MANIFIESTO}"))
+
+
+def _es_entero(valor: object) -> bool:
+    """``int`` de verdad: ``bool`` es subclase de ``int`` y ``True`` no es un índice ni un conteo."""
+    return isinstance(valor, int) and not isinstance(valor, bool)
+
+
+def _tiene_el_tipo(valor: object, tipo: type) -> bool:
+    return _es_entero(valor) if tipo is int else isinstance(valor, tipo)
+
+
+def _conteos_invalidos(archivos: Mapping[Any, Any]) -> list[str]:
+    """Los archivos cuyo conteo no es un entero >= 1: ``sum()`` sobre ellos revienta (texto) o miente (``True``, 0, <0)."""
+    return sorted(str(nombre) for nombre, conteo in archivos.items() if not _es_entero(conteo) or conteo < 1)
+
+
 def _cargar_manifiestos(directorio: Path) -> tuple[list[dict[str, Any]], list[str]]:
     """Lee el manifiesto de cada artefacto de shard; devuelve los bien formados y los errores del resto.
 
-    Busca a UN solo nivel (``<directorio>/<artefacto>/shard-manifest.json``): es como ``download-artifact`` deja cada
-    artefacto, y evita recoger archivos de un árbol temporal de tests que casualmente esté bajo el mismo directorio.
+    Un manifiesto mal formado (campo ausente, tipo incorrecto, conteo inválido) se REPORTA como error con su ruta: nunca
+    llega a las sumas del verificador, donde reventaría con un ``TypeError`` que no dice cuál archivo está roto.
     """
     manifiestos: list[dict[str, Any]] = []
     errores: list[str] = []
-    for ruta in sorted(directorio.glob(f"*/{NOMBRE_DEL_MANIFIESTO}")):
+    for ruta in _rutas_de_manifiestos(directorio):
         try:
             contenido = json.loads(ruta.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -206,21 +241,57 @@ def _cargar_manifiestos(directorio: Path) -> tuple[list[dict[str, Any]], list[st
         faltantes = [
             campo
             for campo, tipo in _CAMPOS_REQUERIDOS.items()
-            if not isinstance(contenido, dict) or not isinstance(contenido.get(campo), tipo)
+            if not isinstance(contenido, dict) or not _tiene_el_tipo(contenido.get(campo), tipo)
         ]
         if faltantes:
             errores.append(f"{ruta}: {NOMBRE_DEL_MANIFIESTO} sin los campos esperados o mal tipados: {faltantes}")
+            continue
+        invalidos = _conteos_invalidos(contenido["archivos"])
+        if invalidos:
+            errores.append(
+                f"{ruta}: {NOMBRE_DEL_MANIFIESTO} con conteos inválidos en 'archivos' "
+                f"(se exige un entero >= 1 por archivo): {invalidos}"
+            )
             continue
         manifiestos.append(contenido)
     return manifiestos, errores
 
 
-def verificar(directorio: Path, total: int) -> list[str]:
-    """Contrasta los manifiestos de todos los shards; devuelve la lista de problemas (vacía si la suite está completa)."""
+def _bases_de_cobertura_faltantes(directorio: Path) -> list[str]:
+    """Un error por cada shard (carpeta con manifiesto) al que le falta su base de ``coverage`` o la trae vacía.
+
+    ``coverage combine`` sobre un glob al que le falta una base NO falla: combina las que hay y, si esas alcanzan el
+    umbral, el job queda verde y publica una cobertura parcial como si fuera la de toda la suite.
+    """
+    errores = []
+    for ruta in _rutas_de_manifiestos(directorio):
+        base = ruta.parent / NOMBRE_DE_LA_COBERTURA
+        try:
+            completa = base.is_file() and base.stat().st_size > 0
+        except OSError:
+            completa = False
+        if not completa:
+            errores.append(
+                f"{ruta.parent.name}: falta {NOMBRE_DE_LA_COBERTURA} (o está vacío): "
+                "la cobertura combinada quedaría sin los datos de ese shard"
+            )
+    return errores
+
+
+def verificar(directorio: Path, total: int, *, con_cobertura: bool = False) -> list[str]:
+    """Contrasta los manifiestos de todos los shards; devuelve la lista de problemas (vacía si la suite está completa).
+
+    Con ``con_cobertura`` exige además la base de ``coverage`` de cada shard (ver ``_bases_de_cobertura_faltantes``).
+    """
+    if total < 1:
+        # Con ``total=0`` y ningún manifiesto, «0 esperados y 0 hallados» cuadraba y devolvía OK sin verificar nada.
+        return [f"total de shards inválido: {total} (debe ser >= 1)"]
     manifiestos, errores = _cargar_manifiestos(directorio)
     cantidad = len(manifiestos) + len(errores)
     if cantidad != total:
         errores.append(f"se esperaban {total} manifiestos y hay {cantidad} en {directorio}")
+    if con_cobertura:
+        errores.extend(_bases_de_cobertura_faltantes(directorio))
     if not manifiestos:
         return errores
 
@@ -270,6 +341,19 @@ def verificar(directorio: Path, total: int) -> list[str]:
         for archivo, shards in sorted(dueños.items())
         if len(shards) > 1
     )
+
+    # La huella declarada es un dato de cada shard; lo que de verdad seleccionaron es la unión de sus ``archivos``. Si no
+    # coinciden, algún shard declara un archivo que no es el de la suite colectada (p. ej. otro del mismo peso: el conteo
+    # local, el total y los duplicados siguen cuadrando).
+    if len(huellas) == 1:
+        (declarada,) = huellas
+        seleccionados_por_archivo = {archivo: peso for m in manifiestos for archivo, peso in m["archivos"].items()}
+        recalculada = huella_de_suite(seleccionados_por_archivo)
+        if recalculada != declarada:
+            errores.append(
+                f"la huella declarada por los shards ({declarada[:12]}) no corresponde a los archivos que seleccionaron "
+                f"entre todos (recalculada: {recalculada[:12]}): algún shard declara un archivo distinto del de la suite"
+            )
     return errores
 
 
@@ -278,12 +362,23 @@ def _resumen(directorio: Path) -> list[str]:
     manifiestos, _ = _cargar_manifiestos(directorio)
     lineas = []
     for m in sorted(manifiestos, key=lambda x: x["shard"]):
-        duracion = m.get("duracion_total_s")
-        tiempo = f"{duracion:.0f} s" if isinstance(duracion, int | float) else "sin dato"
+        duracion = m.get("tiempo_de_tests_s")
+        tiempo = f"{duracion:.0f} s de tests" if isinstance(duracion, int | float) else "sin dato de tiempo"
         lineas.append(
             f"  shard {m['shard']}/{m['total_shards']}: {m['seleccionados']} tests en {len(m['archivos'])} archivos, {tiempo}"
         )
     return lineas
+
+
+def _entero_positivo(texto: str) -> int:
+    """``type=`` de argparse: un ``--total`` no positivo (o no entero) es un error de uso, no un caso a verificar."""
+    try:
+        valor = int(texto)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{texto!r} no es un entero") from exc
+    if valor < 1:
+        raise argparse.ArgumentTypeError(f"debe ser >= 1 (se recibió {valor})")
+    return valor
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -291,10 +386,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="orden", required=True)
     verif = sub.add_parser("verificar", help="exige que los manifiestos de los shards cubran la suite exactamente")
     verif.add_argument("directorio", type=Path, help="carpeta con los artefactos de los shards")
-    verif.add_argument("--total", type=int, required=True, help="cantidad de shards esperada")
+    verif.add_argument("--total", type=_entero_positivo, required=True, help="cantidad de shards esperada (>= 1)")
+    verif.add_argument(
+        "--con-cobertura",
+        action="store_true",
+        help=f"exige además la base {NOMBRE_DE_LA_COBERTURA} de coverage en la carpeta de cada shard",
+    )
     args = parser.parse_args(argv)
 
-    errores = verificar(args.directorio, args.total)
+    errores = verificar(args.directorio, args.total, con_cobertura=args.con_cobertura)
     if errores:
         for error in errores:
             print(f"ERROR: {error}", file=sys.stderr)

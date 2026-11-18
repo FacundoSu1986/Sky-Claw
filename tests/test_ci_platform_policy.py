@@ -173,8 +173,15 @@ def test_un_shard_rojo_deja_rojo_el_veredicto_en_vez_de_omitirlo() -> None:
 
     assert veredicto["if"] == "${{ !cancelled() }}"
     assert primero["name"] == "Require every shard to have passed"
-    assert "needs.test-shard.result" in primero["run"]
-    assert "exit 1" in primero["run"]
+    assert primero["shell"] == "bash"
+    # El guard COMPLETO, no solo sus ingredientes: con ``== "success"`` en vez de ``!= "success"`` seguirían estando
+    # ``needs.test-shard.result`` y ``exit 1`` en el texto, pero un shard rojo dejaría pasar y uno verde fallaría.
+    assert _lineas_de_run(primero) == [
+        'if [[ "${{ needs.test-shard.result }}" != "success" ]]; then',
+        'echo "Test shards failed: ${{ needs.test-shard.result }}"',
+        "exit 1",
+        "fi",
+    ]
 
 
 def test_el_veredicto_verifica_que_no_se_perdio_ningun_test_y_exige_la_cobertura_combinada() -> None:
@@ -186,13 +193,17 @@ def test_el_veredicto_verifica_que_no_se_perdio_ningun_test_y_exige_la_cobertura
     prefijo = str(subida_de_shard["with"]["name"]).rsplit("-", 1)[0] + "-"
     assert descarga["with"] == {"pattern": f"{prefijo}*", "path": "shards"}
 
+    # ``--con-cobertura``: la cobertura combinada solo es la de toda la suite si CADA shard aportó su base; ``coverage
+    # combine`` sobre un glob con una base de menos no falla y con las restantes puede igual cruzar el umbral.
     assert _lineas_de_run(_paso_por_nombre(veredicto, "Verify shard completeness")) == [
-        f"python -m scripts.ci_particion verificar shards --total {TOTAL_DE_SHARDS}",
+        f"python -m scripts.ci_particion verificar shards --total {TOTAL_DE_SHARDS} --con-cobertura",
     ]
+    # ``xml`` ANTES de ``report --fail-under``: el umbral hace salir con error al ``report`` y, con ``bash -e``, lo que
+    # viene después no corre; el XML es justo lo que permite ver qué líneas no se cubren cuando el umbral falla.
     assert _lineas_de_run(_paso_por_nombre(veredicto, "Combine coverage and enforce threshold")) == [
         "python -m coverage combine shards/*/coverage.sqlite",
-        f"python -m coverage report --fail-under={UMBRAL_DE_COBERTURA}",
         "python -m coverage xml",
+        f"python -m coverage report --fail-under={UMBRAL_DE_COBERTURA}",
     ]
 
     # El artefacto de cobertura conserva su nombre y su ruta: nada fuera de ci.yml tuvo que enterarse del reparto.
@@ -215,7 +226,7 @@ def test_la_cantidad_de_shards_es_la_misma_en_la_matriz_la_variable_y_el_verific
         f"🧪 Shard ${{{{ matrix.shard }}}}/{len(en_matriz)} / py${{{{ matrix.python-version }}}}"
     )
     assert en_matriz == list(range(1, len(en_matriz) + 1))
-    assert verificador.endswith(f"--total {len(en_matriz)}")
+    assert re.search(rf"--total {len(en_matriz)}(?:\s|$)", verificador), verificador
     assert len(en_matriz) == TOTAL_DE_SHARDS
 
 

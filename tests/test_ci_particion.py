@@ -12,7 +12,7 @@ import os
 import random
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -171,11 +171,13 @@ def _manifiestos_validos() -> list[dict[str, Any]]:
     ]
 
 
-def _escribir(directorio: Path, manifiestos: list[dict[str, Any]]) -> Path:
+def _escribir(directorio: Path, manifiestos: list[dict[str, Any]], *, con_cobertura: bool = False) -> Path:
     for i, manifiesto in enumerate(manifiestos):
         carpeta = directorio / f"test-shard-py3.11-{i + 1}"
         carpeta.mkdir(parents=True)
         (carpeta / ci_particion.NOMBRE_DEL_MANIFIESTO).write_text(json.dumps(manifiesto), encoding="utf-8")
+        if con_cobertura:
+            (carpeta / ci_particion.NOMBRE_DE_LA_COBERTURA).write_bytes(b"SQLite format 3\x00 datos de cobertura")
     return directorio
 
 
@@ -231,6 +233,39 @@ def _con_version_desconocida(m: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [m[0], {**m[1], "version": 99}]
 
 
+def _con_otro_archivo_del_mismo_peso(m: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """El shard 2 reemplaza uno de sus archivos por OTRO de igual peso y deja la huella declarada intacta: el conteo local,
+    la suma total y los duplicados siguen cuadrando. Solo se ve recalculando la huella con lo que de verdad seleccionaron."""
+    reemplazado = sorted(m[1]["archivos"])[0]
+    archivos = {("tests/test_otro.py" if k == reemplazado else k): v for k, v in m[1]["archivos"].items()}
+    return [m[0], {**m[1], "archivos": archivos}]
+
+
+def _con_un_conteo_de_texto(m: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    archivo = sorted(m[1]["archivos"])[0]
+    return [m[0], {**m[1], "archivos": {**m[1]["archivos"], archivo: str(m[1]["archivos"][archivo])}}]
+
+
+def _con_un_conteo_booleano(m: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    archivo = sorted(m[1]["archivos"])[0]
+    return [m[0], {**m[1], "archivos": {**m[1]["archivos"], archivo: True}}]
+
+
+def _con_un_conteo_cero(m: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    archivo = sorted(m[1]["archivos"])[0]
+    return [m[0], {**m[1], "archivos": {**m[1]["archivos"], archivo: 0}}]
+
+
+def _con_un_conteo_negativo(m: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    archivo = sorted(m[1]["archivos"])[0]
+    return [m[0], {**m[1], "archivos": {**m[1]["archivos"], archivo: -2}}]
+
+
+def _con_un_shard_booleano(m: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``True`` es un ``int`` para Python: sin excluirlo, un manifiesto con ``"shard": true`` pasaría por el índice 1."""
+    return [{**m[0], "shard": True}, m[1]]
+
+
 @pytest.mark.parametrize(
     ("mutador", "fragmento_del_error"),
     [
@@ -244,6 +279,12 @@ def _con_version_desconocida(m: list[dict[str, Any]]) -> list[dict[str, Any]]:
         (_con_un_archivo_en_dos_shards, "más de un shard"),
         (_con_seleccionados_que_no_suman_sus_archivos, "declara"),
         (_con_version_desconocida, "versión"),
+        (_con_otro_archivo_del_mismo_peso, "no corresponde"),
+        (_con_un_conteo_de_texto, "conteos"),
+        (_con_un_conteo_booleano, "conteos"),
+        (_con_un_conteo_cero, "conteos"),
+        (_con_un_conteo_negativo, "conteos"),
+        (_con_un_shard_booleano, "sin los campos"),
     ],
 )
 def test_verificar_rechaza_cada_modo_de_falla(mutador: Any, fragmento_del_error: str, tmp_path: Path) -> None:
@@ -251,6 +292,84 @@ def test_verificar_rechaza_cada_modo_de_falla(mutador: Any, fragmento_del_error:
 
     assert errores, "el verificador dejó pasar un conjunto de manifiestos roto"
     assert any(fragmento_del_error in e for e in errores), errores
+
+
+@pytest.mark.parametrize("total", [0, -1, -7])
+def test_verificar_rechaza_una_cantidad_de_shards_no_positiva_aun_con_el_directorio_vacio(
+    total: int, tmp_path: Path
+) -> None:
+    """Con ``total=0`` y ningún manifiesto, «0 esperados y 0 hallados» cuadraba: el verificador devolvía OK sin haber
+    verificado nada (y ``main`` reventaba con ``IndexError`` al imprimir el resumen)."""
+    errores = verificar(tmp_path, total)
+
+    assert any("total de shards" in e for e in errores), errores
+
+
+@pytest.mark.parametrize("total", ["0", "-3", "x", "1.5"])
+def test_la_linea_de_comandos_rechaza_un_total_no_positivo_con_un_error_de_uso(
+    total: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as salida:
+        ci_particion.main(["verificar", str(tmp_path), "--total", total])
+
+    assert salida.value.code == 2
+    assert "--total" in capsys.readouterr().err
+
+
+def test_un_conteo_invalido_se_reporta_como_error_y_no_revienta_el_verificador(tmp_path: Path) -> None:
+    """Antes, ``sum()`` sobre un conteo de texto lanzaba ``TypeError`` y no se sabía cuál manifiesto estaba roto."""
+    directorio = _escribir(tmp_path, _con_un_conteo_de_texto(_manifiestos_validos()))
+
+    errores = verificar(directorio, TOTAL_DEL_VERIFICADOR)
+
+    assert any("shard-manifest.json" in e and "conteos" in e for e in errores), errores
+
+
+# La cobertura combinada solo es la de TODA la suite si cada shard aportó su base de datos: ``coverage combine`` sobre un
+# glob con una base de menos no falla, y con las tres restantes puede igual cruzar el umbral.
+
+
+def test_verificar_con_cobertura_acepta_cuando_cada_shard_trae_su_base(tmp_path: Path) -> None:
+    directorio = _escribir(tmp_path, _manifiestos_validos(), con_cobertura=True)
+
+    assert verificar(directorio, TOTAL_DEL_VERIFICADOR, con_cobertura=True) == []
+
+
+def test_verificar_con_cobertura_nombra_el_shard_al_que_le_falta_su_base(tmp_path: Path) -> None:
+    directorio = _escribir(tmp_path, _manifiestos_validos(), con_cobertura=True)
+    (directorio / "test-shard-py3.11-2" / ci_particion.NOMBRE_DE_LA_COBERTURA).unlink()
+
+    errores = verificar(directorio, TOTAL_DEL_VERIFICADOR, con_cobertura=True)
+
+    assert any("test-shard-py3.11-2" in e and ci_particion.NOMBRE_DE_LA_COBERTURA in e for e in errores), errores
+    assert not any("test-shard-py3.11-1" in e for e in errores)
+
+
+def test_verificar_con_cobertura_rechaza_una_base_vacia(tmp_path: Path) -> None:
+    directorio = _escribir(tmp_path, _manifiestos_validos(), con_cobertura=True)
+    (directorio / "test-shard-py3.11-1" / ci_particion.NOMBRE_DE_LA_COBERTURA).write_bytes(b"")
+
+    errores = verificar(directorio, TOTAL_DEL_VERIFICADOR, con_cobertura=True)
+
+    assert any("test-shard-py3.11-1" in e for e in errores), errores
+
+
+def test_verificar_sin_pedir_cobertura_no_la_exige(tmp_path: Path) -> None:
+    """La exigencia es opt-in (``--con-cobertura``): quien solo verifica la suite no tiene por qué tener bases de coverage."""
+    assert verificar(_escribir(tmp_path, _manifiestos_validos()), TOTAL_DEL_VERIFICADOR) == []
+
+
+def test_la_linea_de_comandos_con_cobertura_falla_si_falta_una_base(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    directorio = _escribir(tmp_path, _manifiestos_validos(), con_cobertura=True)
+    (directorio / "test-shard-py3.11-2" / ci_particion.NOMBRE_DE_LA_COBERTURA).unlink()
+    argumentos = ["verificar", str(directorio), "--total", str(TOTAL_DEL_VERIFICADOR)]
+
+    assert ci_particion.main(argumentos) == 0, "sin --con-cobertura no se exige"
+    capsys.readouterr()
+    assert ci_particion.main([*argumentos, "--con-cobertura"]) == 1
+    assert ci_particion.NOMBRE_DE_LA_COBERTURA in capsys.readouterr().err
 
 
 def test_verificar_falla_si_el_directorio_no_tiene_ningun_manifiesto(tmp_path: Path) -> None:
@@ -351,19 +470,31 @@ def _arbol_minimo(destino: Path) -> Path:
     return destino
 
 
+#: Variables de pytest del proceso padre que NO deben llegar al hijo: ``PYTEST_ADDOPTS`` filtraría (``-k``, ``-m``) o
+#: reconfiguraría la suite mínima y ``PYTEST_PLUGINS`` cargaría plugins ajenos; ni el ``pytest.ini`` vacío las pisa.
+_VARIABLES_DE_PYTEST_DEL_PADRE = ("PYTEST_ADDOPTS", "PYTEST_PLUGINS")
+
+
 def _correr_pytest(
     carpeta: Path,
     *args: str,
     shard: str | None = None,
     manifiesto: Path | None = None,
+    entorno: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("SKYCLAW_SHARD")}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("SKYCLAW_SHARD") and k not in _VARIABLES_DE_PYTEST_DEL_PADRE
+    }
     env["PYTHONPATH"] = str(RAIZ)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"  # solo el plugin de partición: la prueba no depende de otros plugins
     if shard is not None:
         env["SKYCLAW_SHARD"] = shard
     if manifiesto is not None:
         env["SKYCLAW_SHARD_MANIFEST"] = str(manifiesto)
+    if entorno is not None:
+        env.update(entorno)
     return subprocess.run(  # noqa: S603 -- ejecuta el pytest del propio intérprete sobre un árbol temporal
         [sys.executable, "-m", "pytest", "-p", "scripts.ci_particion", "-p", "no:cacheprovider", *args],
         cwd=carpeta,
@@ -380,6 +511,22 @@ def _nodeids(salida: str) -> list[str]:
 
 
 def test_sin_la_variable_el_plugin_no_toca_la_coleccion(tmp_path: Path) -> None:
+    carpeta = _arbol_minimo(tmp_path / "suite")
+
+    resultado = _correr_pytest(carpeta, "--collect-only", "-q")
+
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert len(_nodeids(resultado.stdout)) == TOTAL_DEL_ARBOL_MINIMO
+
+
+@pytest.mark.parametrize("variable", ["PYTEST_ADDOPTS", "PYTEST_PLUGINS"])
+def test_el_subproceso_no_hereda_la_configuracion_de_pytest_del_proceso_padre(
+    variable: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Un desarrollador que corre ``PYTEST_ADDOPTS="-k este_test" pytest`` filtraría también la suite mínima del hijo
+    (el ``pytest.ini`` vacío no pisa esa variable) y el test pasaría o fallaría por el entorno de quien lo corre."""
+    valor = {"PYTEST_ADDOPTS": "-k nada_coincide_con_este_filtro", "PYTEST_PLUGINS": "modulo_que_no_existe"}[variable]
+    monkeypatch.setenv(variable, valor)
     carpeta = _arbol_minimo(tmp_path / "suite")
 
     resultado = _correr_pytest(carpeta, "--collect-only", "-q")
@@ -406,12 +553,19 @@ def test_los_shards_juntos_colectan_exactamente_la_suite_sin_repetir_ni_perder(t
     assert len(juntos) == len(set(juntos)), "un test quedó en dos shards"
 
 
+def _colectar_ids(carpeta: Path, shard: str) -> list[str]:
+    """Node IDs que colecta un shard. Exige que el hijo termine bien y traiga algo: un hijo que falla antes de imprimir
+    daría una lista vacía y haría pasar por válida cualquier aserción sobre conjuntos disjuntos o iguales."""
+    resultado = _correr_pytest(carpeta, "--collect-only", "-q", shard=shard)
+    assert resultado.returncode == 0, f"el shard {shard} no colectó: {resultado.stdout}{resultado.stderr}"
+    ids = _nodeids(resultado.stdout)
+    assert ids, f"el shard {shard} no colectó ningún test: {resultado.stdout}{resultado.stderr}"
+    return ids
+
+
 def test_un_archivo_nunca_se_parte_entre_shards(tmp_path: Path) -> None:
     carpeta = _arbol_minimo(tmp_path / "suite")
-    archivos_por_shard = []
-    for indice in (1, 2):
-        ids = _nodeids(_correr_pytest(carpeta, "--collect-only", "-q", shard=f"{indice}/2").stdout)
-        archivos_por_shard.append({n.split("::", 1)[0] for n in ids})
+    archivos_por_shard = [{n.split("::", 1)[0] for n in _colectar_ids(carpeta, f"{i}/2")} for i in (1, 2)]
 
     assert not (archivos_por_shard[0] & archivos_por_shard[1])
 
@@ -419,10 +573,20 @@ def test_un_archivo_nunca_se_parte_entre_shards(tmp_path: Path) -> None:
 def test_el_reparto_de_cada_shard_es_el_mismo_en_dos_corridas(tmp_path: Path) -> None:
     carpeta = _arbol_minimo(tmp_path / "suite")
 
-    primera = _nodeids(_correr_pytest(carpeta, "--collect-only", "-q", shard="2/3").stdout)
-    segunda = _nodeids(_correr_pytest(carpeta, "--collect-only", "-q", shard="2/3").stdout)
+    primera = _colectar_ids(carpeta, "2/3")
+    segunda = _colectar_ids(carpeta, "2/3")
 
     assert primera == segunda
+
+
+def test_un_shard_sin_archivos_sale_con_5_y_no_pasa_por_verde(tmp_path: Path) -> None:
+    """Con más shards que archivos, el sobrante queda vacío y pytest sale con 5 («no tests collected»): el job del shard
+    falla de forma visible en vez de pasar sin haber corrido nada. (El árbol mínimo tiene 5 archivos; el shard 6/6 sobra.)"""
+    carpeta = _arbol_minimo(tmp_path / "suite")
+
+    resultado = _correr_pytest(carpeta, "-q", shard="6/6")
+
+    assert resultado.returncode == 5, resultado.stdout + resultado.stderr
 
 
 @pytest.mark.parametrize("valor", ["0/2", "3/2", "x", "1/0", "1/2/3", " 1/2"])
@@ -460,15 +624,77 @@ def test_el_manifiesto_describe_lo_que_el_shard_selecciono_y_alimenta_al_verific
         assert contenido["total_shards"] == total
         assert contenido["total_colectado"] == TOTAL_DEL_ARBOL_MINIMO
         assert contenido["seleccionados"] == sum(contenido["archivos"].values())
-        assert set(contenido["duraciones_s"]) == set(contenido["archivos"]), "una duración por archivo propio"
-        assert all(d >= 0 for d in contenido["duraciones_s"].values())
+        por_archivo = contenido["tiempo_de_tests_por_archivo_s"]
+        assert set(por_archivo) == set(contenido["archivos"]), "un tiempo por archivo propio"
+        assert all(d >= 0 for d in por_archivo.values())
+        assert contenido["tiempo_de_tests_s"] == pytest.approx(sum(por_archivo.values()), abs=0.01)
+        # Es tiempo de las fases de los tests, NO la duración del job: el nombre no puede sugerir lo contrario.
+        assert "duracion_total_s" not in contenido
 
     assert verificar(raiz_manifiestos, total) == []
 
 
-def test_ejecutar_el_modulo_como_script_verifica_los_manifiestos(tmp_path: Path) -> None:
-    """``python -m scripts.ci_particion verificar`` es lo que corre el workflow: el punto de entrada tiene que andar."""
-    directorio = _escribir(tmp_path / "m", _manifiestos_validos())
+def _arbol_con_casos_segun_el_entorno(destino: Path) -> Path:
+    """El archivo ``test_variable.py`` parametriza según ``CASOS``: dos runners del MISMO commit pueden colectar distinto."""
+    carpeta = _arbol_minimo(destino)
+    (carpeta / "test_variable.py").write_text(
+        "import os\nimport pytest\n\n"
+        "@pytest.mark.parametrize('caso', os.environ.get('CASOS', 'a,b,c').split(','))\n"
+        "def test_variable(caso):\n    assert caso\n",
+        encoding="utf-8",
+    )
+    return carpeta
+
+
+def _correr_shards_con_casos(carpeta: Path, raiz: Path, casos_por_shard: Sequence[str]) -> None:
+    total = len(casos_por_shard)
+    for indice, casos in enumerate(casos_por_shard, start=1):
+        manifiesto = raiz / f"test-shard-py3.11-{indice}" / ci_particion.NOMBRE_DEL_MANIFIESTO
+        resultado = _correr_pytest(
+            carpeta, "-q", shard=f"{indice}/{total}", manifiesto=manifiesto, entorno={"CASOS": casos}
+        )
+        assert resultado.returncode in (0, 5), resultado.stdout + resultado.stderr
+
+
+def test_el_verificador_detecta_de_punta_a_punta_dos_shards_que_colectaron_distinta_cantidad(tmp_path: Path) -> None:
+    """El plugin real en dos procesos que colectan distinto (3 casos contra 2 del mismo archivo): los manifiestos que
+    escribe de verdad alimentan al verificador, que lo marca. Es el modo de falla que el reparto por archivo no ve solo."""
+    carpeta = _arbol_con_casos_segun_el_entorno(tmp_path / "suite")
+    manifiestos = tmp_path / "divergente"
+
+    _correr_shards_con_casos(carpeta, manifiestos, ["a,b,c", "a,b"])
+
+    errores = verificar(manifiestos, 2)
+    assert any("misma suite" in e for e in errores), errores
+
+
+def test_el_verificador_acepta_de_punta_a_punta_shards_con_la_misma_coleccion(tmp_path: Path) -> None:
+    carpeta = _arbol_con_casos_segun_el_entorno(tmp_path / "suite")
+    manifiestos = tmp_path / "igual"
+
+    _correr_shards_con_casos(carpeta, manifiestos, ["a,b,c", "a,b,c"])
+
+    assert verificar(manifiestos, 2) == []
+
+
+def test_distintas_etiquetas_con_el_mismo_conteo_no_son_una_divergencia(tmp_path: Path) -> None:
+    """DECISIÓN ANCLADA: la huella es por archivo y conteo, no por node ID. En el árbol real de ``tests/`` hay IDs que no son
+    deterministas entre procesos (medido: 2 de 20296 — un ``parametrize`` con ``object()`` cuyo ID lleva la dirección de
+    memoria y otro con ``uuid1()``): una huella de IDs haría rojo el veredicto en toda corrida. El archivo dueño corre una
+    colección completa suya; si colectara MENOS casos, el conteo ya lo marca (test anterior)."""
+    carpeta = _arbol_con_casos_segun_el_entorno(tmp_path / "suite")
+    manifiestos = tmp_path / "etiquetas"
+
+    _correr_shards_con_casos(carpeta, manifiestos, ["a,b,c", "a,b,z"])
+
+    assert verificar(manifiestos, 2) == []
+
+
+@pytest.mark.parametrize("extra", [[], ["--con-cobertura"]])
+def test_ejecutar_el_modulo_como_script_verifica_los_manifiestos(extra: list[str], tmp_path: Path) -> None:
+    """``python -m scripts.ci_particion verificar`` es lo que corre el workflow (con ``--con-cobertura``): el punto de
+    entrada tiene que andar con la misma línea de comandos que el job."""
+    directorio = _escribir(tmp_path / "m", _manifiestos_validos(), con_cobertura=True)
     env = {**os.environ, "PYTHONPATH": str(RAIZ)}
 
     resultado = subprocess.run(  # noqa: S603 -- ejecuta el propio módulo del repo con el intérprete actual
@@ -480,6 +706,7 @@ def test_ejecutar_el_modulo_como_script_verifica_los_manifiestos(tmp_path: Path)
             str(directorio),
             "--total",
             str(TOTAL_DEL_VERIFICADOR),
+            *extra,
         ],
         capture_output=True,
         text=True,

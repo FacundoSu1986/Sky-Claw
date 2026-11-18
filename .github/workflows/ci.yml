@@ -122,8 +122,10 @@ jobs:
     # repartirla en shards en vez de subir el tope otra vez.
     # 2026-11-17: ese paso se dio. Cada shard hace ~1/4 del trabajo (~15-20 min esperados), pero
     # NINGUN shard esta medido todavia en CI, asi que el tope se conserva en 90 a proposito: se baja
-    # (y se baja el piso anclado) en un PR aparte, con las duraciones por shard que imprime el job
-    # `test` (y que quedan en cada manifiesto), no por intuicion.
+    # (y se baja el piso anclado) en un PR aparte y con datos, no por intuicion. El dato que decide es la
+    # duracion del JOB entero que muestra Actions (instalacion y coleccion incluidas); el job `test` imprime ademas
+    # el tiempo de los TESTS de cada shard (queda en su manifiesto), que sirve para equilibrar el reparto pero NO
+    # incluye ni la coleccion ni el arranque, asi que subestima lo que consume el tope.
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -155,9 +157,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force shard-out | Out-Null
           python -m pytest -p scripts.ci_particion --cov=sky_claw --cov=scripts --cov-report= tests/
-      # `if: always()`: aun si un shard falla, sus duraciones y su cobertura sirven para diagnosticar.
+      # `if: always()`: aun si un shard falla, sus tiempos y su cobertura sirven para diagnosticar.
       # retention-days: 1: son intermedios que el job `test` consume dentro de la MISMA corrida; no hay motivo
       # para ocupar la cuota de almacenamiento (el job Build ya sube un .exe de ~88 MB por corrida verde).
+      # Consecuencia: pasado un dia, «Re-run failed jobs» NO sirve para reintentar solo el veredicto (los shards verdes
+      # no se vuelven a correr y sus artefactos ya expiraron: la descarga falla). Para ese caso: «Re-run all jobs», que
+      # regenera los 4 artefactos por version de Python.
       - name: Upload shard results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -206,17 +211,21 @@ jobs:
         with:
           pattern: test-shard-py${{ matrix.python-version }}-*
           path: shards
+      # `--con-cobertura`: `coverage combine` sobre un glob al que le falta una base NO falla; combina las que hay y,
+      # si esas alcanzan el umbral, el job queda verde con una cobertura parcial. El verificador exige las 4 bases.
       - name: Verify shard completeness
         shell: bash
-        run: python -m scripts.ci_particion verificar shards --total 4
+        run: python -m scripts.ci_particion verificar shards --total 4 --con-cobertura
       # Los datos de cada shard ya incluyen los modulos no ejecutados (coverage los registra al guardar), asi
       # que combinarlos da el mismo total que una corrida unica: la union de lo ejecutado por los 4 shards.
+      # `xml` ANTES de `report --fail-under`: el umbral hace salir con error al `report` y el paso se corta ahi; con
+      # el XML ya escrito, el artefacto `coverage-report-*` permite ver que lineas no se cubren cuando el umbral falla.
       - name: Combine coverage and enforce threshold
         shell: bash
         run: |
           python -m coverage combine shards/*/coverage.sqlite
-          python -m coverage report --fail-under=60
           python -m coverage xml
+          python -m coverage report --fail-under=60
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
