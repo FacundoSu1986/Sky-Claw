@@ -163,6 +163,11 @@ jobs:
       # Consecuencia: pasado un dia, «Re-run failed jobs» NO sirve para reintentar solo el veredicto (los shards verdes
       # no se vuelven a correr y sus artefactos ya expiraron: la descarga falla). Para ese caso: «Re-run all jobs», que
       # regenera los 4 artefactos por version de Python.
+      # overwrite: true: con `always()` el artefacto queda subido aunque el shard falle, y `upload-artifact` falla por
+      # defecto si el nombre ya existe en la corrida: el reintento del mismo shard chocaria con el de su primer intento
+      # y quedaria rojo aunque pytest pase. Reemplaza el anterior y el patron de descarga sigue viendo UN artefacto por
+      # shard. NO usar un sufijo con run_attempt en el nombre: el patron recogeria el del intento fallido Y el del
+      # reintento, y el verificador veria un shard repetido. tests/test_ci_platform_policy.py enumera estas subidas.
       - name: Upload shard results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -170,6 +175,7 @@ jobs:
           name: test-shard-py${{ matrix.python-version }}-${{ matrix.shard }}
           path: shard-out/
           retention-days: 1
+          overwrite: true
 
   # Veredicto por version de Python: conserva el nombre del check que existia antes del reparto (por si algo
   # lo exigia) y es donde se decide si la suite quedo completa y si la cobertura combinada alcanza el umbral.
@@ -226,12 +232,14 @@ jobs:
           python -m coverage combine shards/*/coverage.sqlite
           python -m coverage xml
           python -m coverage report --fail-under=60
+      # overwrite: true por lo mismo que la subida de los shards: `always()` + nombre fijo + reintento del veredicto.
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report-${{ matrix.os }}-py${{ matrix.python-version }}
           path: coverage.xml
+          overwrite: true
 
   # Linux/WSL2 ejecuta parte del core async, pero no es plataforma de entrega.
   # Esta señal POSIX es informativa y deliberadamente menor que la suite Windows.

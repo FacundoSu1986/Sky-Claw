@@ -745,12 +745,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     vacío daba OK). Un `SKYCLAW_SHARD` mal escrito aborta la
     sesión en vez de degradar en silencio a «correr todo».
   - **La cobertura sigue siendo un gate bloqueante** (`--fail-under=60`): se mide en cada shard y se exige sobre los datos combinados
-    de todos (un shard solo cubre una parte); el verificador exige, con `--con-cobertura`, la base `coverage.sqlite` de CADA shard (`coverage combine`
-    sobre un glob con una base de menos no falla y las restantes pueden igual cruzar el umbral). `coverage xml` corre antes del umbral para que el
+    de todos (un shard solo cubre una parte); el verificador exige, con `--con-cobertura`, la base `coverage.sqlite` de CADA shard, presente y legible
+    (`coverage combine` sobre un glob con una base de menos no falla, y una truncada la omite con una advertencia: las restantes pueden igual cruzar el umbral). `coverage xml` corre antes del umbral para que el
     artefacto `coverage-report-*` exista aun si el umbral falla; conserva su nombre y su ruta.
   - **Un shard rojo deja rojo el veredicto** (no «skipped», que GitHub da por satisfecho en un check requerido). El agregador
     `🧪 Tests (Pytest)` y el job `Build` no cambian. Los artefactos intermedios duran 1 día: pasado ese plazo, «Re-run failed jobs» no sirve para
-    reintentar solo el veredicto (los shards verdes no se repiten y sus artefactos expiraron); hay que usar «Re-run all jobs».
+    reintentar solo el veredicto (los shards verdes no se repiten y sus artefactos expiraron); hay que usar «Re-run all jobs». Las dos subidas con
+    `if: always()` (`Upload shard results` y `Upload coverage`) llevan `overwrite: true`: el artefacto queda subido aunque el job falle y, con el valor por
+    defecto, el reintento del mismo shard chocaba con el nombre de su primer intento y quedaba rojo aunque pytest pasara (un sufijo con `run_attempt` no
+    sirve: el verificador vería un shard repetido). Un test enumera toda subida con `always()` y congela ese censo.
   - **Anclas:** `tests/test_ci_particion.py` (propiedades del reparto enumeradas para N de 1 a 9 sobre casos sintéticos y sobre el árbol
     de tests real, cada modo de falla del verificador y el plugin ejercido en un subproceso) y `tests/test_ci_platform_policy.py`
     (la cantidad de shards atada a la matriz, a `SKYCLAW_SHARD` y al `--total`; el piso del `timeout-minutes` pasa a anclar el job

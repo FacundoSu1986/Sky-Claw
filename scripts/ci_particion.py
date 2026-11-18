@@ -10,7 +10,7 @@ falla y el verde miente. Por eso este módulo tiene dos mitades que se prueban j
 * un **verificador** (``python -m scripts.ci_particion verificar``) que lee el manifiesto que cada shard deja y exige
   que, entre todos, hayan seleccionado exactamente la suite: misma huella (recalculada con los archivos que de verdad
   declararon), mismo total, sin archivos repetidos y con la suma de tests igual al total
-  colectado. Con ``--con-cobertura`` exige además la base de ``coverage`` de cada shard.
+  colectado. Con ``--con-cobertura`` exige además la base de ``coverage`` de cada shard, presente y legible.
 
 El peso de un archivo es su cantidad de tests: es un proxy de su duración, no la duración. Cada manifiesto registra
 también cuánto tardaron los tests de cada archivo (suma de sus fases setup/call/teardown, SIN la colección ni el
@@ -25,9 +25,11 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -257,23 +259,39 @@ def _cargar_manifiestos(directorio: Path) -> tuple[list[dict[str, Any]], list[st
     return manifiestos, errores
 
 
-def _bases_de_cobertura_faltantes(directorio: Path) -> list[str]:
-    """Un error por cada shard (carpeta con manifiesto) al que le falta su base de ``coverage`` o la trae vacía.
+def _base_legible(base: Path) -> bool:
+    """¿SQLite puede leer TODAS las páginas de la base? ``quick_check`` recorre el archivo entero y detecta una base
+    truncada o corrupta; abre en solo lectura para no tocar el artefacto. No depende del esquema interno de ``coverage``."""
+    try:
+        with closing(sqlite3.connect(f"{base.resolve().as_uri()}?mode=ro", uri=True)) as conexion:
+            return conexion.execute("PRAGMA quick_check").fetchall() == [("ok",)]
+    except (sqlite3.Error, OSError):
+        return False
 
-    ``coverage combine`` sobre un glob al que le falta una base NO falla: combina las que hay y, si esas alcanzan el
-    umbral, el job queda verde y publica una cobertura parcial como si fuera la de toda la suite.
+
+def _problemas_de_las_bases_de_cobertura(directorio: Path) -> list[str]:
+    """Un error por cada shard (carpeta con manifiesto) cuya base de ``coverage`` falta, está vacía o no se puede leer.
+
+    ``coverage combine`` sobre un glob al que le falta una base NO falla, y una base que no puede leer la OMITE con una
+    advertencia (``--strict`` solo exige que haya algún dato): si las restantes alcanzan el umbral, el job queda verde y
+    publica una cobertura que no incluye a ese shard.
     """
     errores = []
     for ruta in _rutas_de_manifiestos(directorio):
         base = ruta.parent / NOMBRE_DE_LA_COBERTURA
         try:
-            completa = base.is_file() and base.stat().st_size > 0
+            hay_datos = base.is_file() and base.stat().st_size > 0
         except OSError:
-            completa = False
-        if not completa:
+            hay_datos = False
+        if not hay_datos:
             errores.append(
                 f"{ruta.parent.name}: falta {NOMBRE_DE_LA_COBERTURA} (o está vacío): "
                 "la cobertura combinada quedaría sin los datos de ese shard"
+            )
+        elif not _base_legible(base):
+            errores.append(
+                f"{ruta.parent.name}: {NOMBRE_DE_LA_COBERTURA} ilegible (truncada o corrupta): "
+                "`coverage combine` la omitiría con una advertencia y la cobertura quedaría sin los datos de ese shard"
             )
     return errores
 
@@ -281,7 +299,8 @@ def _bases_de_cobertura_faltantes(directorio: Path) -> list[str]:
 def verificar(directorio: Path, total: int, *, con_cobertura: bool = False) -> list[str]:
     """Contrasta los manifiestos de todos los shards; devuelve la lista de problemas (vacía si la suite está completa).
 
-    Con ``con_cobertura`` exige además la base de ``coverage`` de cada shard (ver ``_bases_de_cobertura_faltantes``).
+    Con ``con_cobertura`` exige además la base de ``coverage`` de cada shard, presente y legible
+    (ver ``_problemas_de_las_bases_de_cobertura``).
     """
     if total < 1:
         # Con ``total=0`` y ningún manifiesto, «0 esperados y 0 hallados» cuadraba y devolvía OK sin verificar nada.
@@ -291,7 +310,7 @@ def verificar(directorio: Path, total: int, *, con_cobertura: bool = False) -> l
     if cantidad != total:
         errores.append(f"se esperaban {total} manifiestos y hay {cantidad} en {directorio}")
     if con_cobertura:
-        errores.extend(_bases_de_cobertura_faltantes(directorio))
+        errores.extend(_problemas_de_las_bases_de_cobertura(directorio))
     if not manifiestos:
         return errores
 

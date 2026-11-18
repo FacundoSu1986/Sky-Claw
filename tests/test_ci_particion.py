@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -171,13 +172,48 @@ def _manifiestos_validos() -> list[dict[str, Any]]:
     ]
 
 
-def _escribir(directorio: Path, manifiestos: list[dict[str, Any]], *, con_cobertura: bool = False) -> Path:
+@pytest.fixture(scope="module")
+def base_de_coverage(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Una base de datos REAL de Coverage.py, no bytes inventados: ``coverage run`` en un subproceso.
+
+    En un subproceso a propósito: si esta suite corre con ``--cov`` (como en CI), una segunda medición anidada en el mismo
+    proceso pisaría la del shard. Se limpian ``COVERAGE_*`` y ``COV_CORE_*`` para que el hijo no escriba sobre la base del
+    shard ni se enganche a la medición del padre, y se usa un ``.coveragerc`` vacío para no heredar el del repo.
+    """
+    carpeta = tmp_path_factory.mktemp("base_de_coverage")
+    (carpeta / "modulo.py").write_text("def f():\n    return 1\n\n\nf()\n", encoding="utf-8")
+    (carpeta / ".coveragerc").write_text("[run]\n", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("COVERAGE", "COV_CORE"))}
+    resultado = subprocess.run(  # noqa: S603 -- ejecuta coverage del propio intérprete sobre un módulo temporal
+        [
+            sys.executable,
+            "-m",
+            "coverage",
+            "run",
+            f"--rcfile={carpeta / '.coveragerc'}",
+            f"--data-file={carpeta / 'coverage.sqlite'}",
+            "modulo.py",
+        ],
+        cwd=carpeta,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    base = carpeta / "coverage.sqlite"
+    assert base.is_file() and base.stat().st_size > 0
+    return base
+
+
+def _escribir(directorio: Path, manifiestos: list[dict[str, Any]], *, base_de_cobertura: Path | None = None) -> Path:
     for i, manifiesto in enumerate(manifiestos):
         carpeta = directorio / f"test-shard-py3.11-{i + 1}"
         carpeta.mkdir(parents=True)
         (carpeta / ci_particion.NOMBRE_DEL_MANIFIESTO).write_text(json.dumps(manifiesto), encoding="utf-8")
-        if con_cobertura:
-            (carpeta / ci_particion.NOMBRE_DE_LA_COBERTURA).write_bytes(b"SQLite format 3\x00 datos de cobertura")
+        if base_de_cobertura is not None:
+            shutil.copyfile(base_de_cobertura, carpeta / ci_particion.NOMBRE_DE_LA_COBERTURA)
     return directorio
 
 
@@ -329,14 +365,16 @@ def test_un_conteo_invalido_se_reporta_como_error_y_no_revienta_el_verificador(t
 # glob con una base de menos no falla, y con las tres restantes puede igual cruzar el umbral.
 
 
-def test_verificar_con_cobertura_acepta_cuando_cada_shard_trae_su_base(tmp_path: Path) -> None:
-    directorio = _escribir(tmp_path, _manifiestos_validos(), con_cobertura=True)
+def test_verificar_con_cobertura_acepta_cuando_cada_shard_trae_su_base(tmp_path: Path, base_de_coverage: Path) -> None:
+    directorio = _escribir(tmp_path, _manifiestos_validos(), base_de_cobertura=base_de_coverage)
 
     assert verificar(directorio, TOTAL_DEL_VERIFICADOR, con_cobertura=True) == []
 
 
-def test_verificar_con_cobertura_nombra_el_shard_al_que_le_falta_su_base(tmp_path: Path) -> None:
-    directorio = _escribir(tmp_path, _manifiestos_validos(), con_cobertura=True)
+def test_verificar_con_cobertura_nombra_el_shard_al_que_le_falta_su_base(
+    tmp_path: Path, base_de_coverage: Path
+) -> None:
+    directorio = _escribir(tmp_path, _manifiestos_validos(), base_de_cobertura=base_de_coverage)
     (directorio / "test-shard-py3.11-2" / ci_particion.NOMBRE_DE_LA_COBERTURA).unlink()
 
     errores = verificar(directorio, TOTAL_DEL_VERIFICADOR, con_cobertura=True)
@@ -345,13 +383,44 @@ def test_verificar_con_cobertura_nombra_el_shard_al_que_le_falta_su_base(tmp_pat
     assert not any("test-shard-py3.11-1" in e for e in errores)
 
 
-def test_verificar_con_cobertura_rechaza_una_base_vacia(tmp_path: Path) -> None:
-    directorio = _escribir(tmp_path, _manifiestos_validos(), con_cobertura=True)
+def test_verificar_con_cobertura_rechaza_una_base_vacia(tmp_path: Path, base_de_coverage: Path) -> None:
+    directorio = _escribir(tmp_path, _manifiestos_validos(), base_de_cobertura=base_de_coverage)
     (directorio / "test-shard-py3.11-1" / ci_particion.NOMBRE_DE_LA_COBERTURA).write_bytes(b"")
 
     errores = verificar(directorio, TOTAL_DEL_VERIFICADOR, con_cobertura=True)
 
     assert any("test-shard-py3.11-1" in e for e in errores), errores
+
+
+@pytest.mark.parametrize("fraccion", [0.5, 0.9])
+def test_verificar_con_cobertura_rechaza_una_base_truncada_aunque_no_este_vacia(
+    fraccion: float, tmp_path: Path, base_de_coverage: Path
+) -> None:
+    """``coverage combine`` (sin ``--strict``) OMITE con una advertencia una base que no puede leer: si las restantes cruzan
+    el umbral, el job queda verde con la cobertura de un shard menos. No alcanza con que exista y no esté vacía."""
+    directorio = _escribir(tmp_path, _manifiestos_validos(), base_de_cobertura=base_de_coverage)
+    dañada = directorio / "test-shard-py3.11-2" / ci_particion.NOMBRE_DE_LA_COBERTURA
+    contenido = dañada.read_bytes()
+    dañada.write_bytes(contenido[: int(len(contenido) * fraccion)])
+    assert 0 < dañada.stat().st_size < len(contenido), "precondición: truncada y NO vacía"
+
+    errores = verificar(directorio, TOTAL_DEL_VERIFICADOR, con_cobertura=True)
+
+    assert any("test-shard-py3.11-2" in e and "ilegible" in e for e in errores), errores
+    assert not any("test-shard-py3.11-1" in e for e in errores)
+
+
+def test_verificar_con_cobertura_rechaza_un_archivo_que_no_es_una_base_de_datos(
+    tmp_path: Path, base_de_coverage: Path
+) -> None:
+    directorio = _escribir(tmp_path, _manifiestos_validos(), base_de_cobertura=base_de_coverage)
+    (directorio / "test-shard-py3.11-1" / ci_particion.NOMBRE_DE_LA_COBERTURA).write_text(
+        "no soy sqlite", encoding="utf-8"
+    )
+
+    errores = verificar(directorio, TOTAL_DEL_VERIFICADOR, con_cobertura=True)
+
+    assert any("test-shard-py3.11-1" in e and "ilegible" in e for e in errores), errores
 
 
 def test_verificar_sin_pedir_cobertura_no_la_exige(tmp_path: Path) -> None:
@@ -360,9 +429,9 @@ def test_verificar_sin_pedir_cobertura_no_la_exige(tmp_path: Path) -> None:
 
 
 def test_la_linea_de_comandos_con_cobertura_falla_si_falta_una_base(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], base_de_coverage: Path
 ) -> None:
-    directorio = _escribir(tmp_path, _manifiestos_validos(), con_cobertura=True)
+    directorio = _escribir(tmp_path, _manifiestos_validos(), base_de_cobertura=base_de_coverage)
     (directorio / "test-shard-py3.11-2" / ci_particion.NOMBRE_DE_LA_COBERTURA).unlink()
     argumentos = ["verificar", str(directorio), "--total", str(TOTAL_DEL_VERIFICADOR)]
 
@@ -635,25 +704,42 @@ def test_el_manifiesto_describe_lo_que_el_shard_selecciono_y_alimenta_al_verific
 
 
 def _arbol_con_casos_segun_el_entorno(destino: Path) -> Path:
-    """El archivo ``test_variable.py`` parametriza según ``CASOS``: dos runners del MISMO commit pueden colectar distinto."""
+    """``test_variable.py`` parametriza según el entorno: ``CASOS`` fija los VALORES y ``ETIQUETAS`` (opcional) solo los IDs.
+
+    Así un shard puede colectar otra cantidad de valores (divergencia real) o los mismos valores con otras etiquetas
+    (lo que pasa con un ``object()`` o un ``uuid1()`` en el ID), sin confundir una cosa con la otra.
+    """
     carpeta = _arbol_minimo(destino)
     (carpeta / "test_variable.py").write_text(
         "import os\nimport pytest\n\n"
-        "@pytest.mark.parametrize('caso', os.environ.get('CASOS', 'a,b,c').split(','))\n"
+        "_ETIQUETAS = os.environ.get('ETIQUETAS')\n"
+        "@pytest.mark.parametrize(\n"
+        "    'caso',\n"
+        "    os.environ.get('CASOS', 'a,b,c').split(','),\n"
+        "    ids=_ETIQUETAS.split(',') if _ETIQUETAS else None,\n"
+        ")\n"
         "def test_variable(caso):\n    assert caso\n",
         encoding="utf-8",
     )
     return carpeta
 
 
-def _correr_shards_con_casos(carpeta: Path, raiz: Path, casos_por_shard: Sequence[str]) -> None:
-    total = len(casos_por_shard)
-    for indice, casos in enumerate(casos_por_shard, start=1):
+def _correr_shards_con_entornos(carpeta: Path, raiz: Path, entornos: Sequence[Mapping[str, str]]) -> None:
+    """Corre cada shard con SU entorno (el índice del shard es la posición en ``entornos``) y deja sus manifiestos."""
+    total = len(entornos)
+    for indice, entorno in enumerate(entornos, start=1):
         manifiesto = raiz / f"test-shard-py3.11-{indice}" / ci_particion.NOMBRE_DEL_MANIFIESTO
-        resultado = _correr_pytest(
-            carpeta, "-q", shard=f"{indice}/{total}", manifiesto=manifiesto, entorno={"CASOS": casos}
-        )
+        resultado = _correr_pytest(carpeta, "-q", shard=f"{indice}/{total}", manifiesto=manifiesto, entorno=entorno)
         assert resultado.returncode in (0, 5), resultado.stdout + resultado.stderr
+
+
+def _ids_de_test_variable(carpeta: Path, entorno: Mapping[str, str]) -> set[str]:
+    """Los node IDs de ``test_variable.py`` que colecta un proceso con ese entorno (sin repartir)."""
+    resultado = _correr_pytest(carpeta, "--collect-only", "-q", entorno=entorno)
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    ids = {n for n in _nodeids(resultado.stdout) if n.startswith("test_variable.py::")}
+    assert ids, resultado.stdout
+    return ids
 
 
 def test_el_verificador_detecta_de_punta_a_punta_dos_shards_que_colectaron_distinta_cantidad(tmp_path: Path) -> None:
@@ -662,7 +748,7 @@ def test_el_verificador_detecta_de_punta_a_punta_dos_shards_que_colectaron_disti
     carpeta = _arbol_con_casos_segun_el_entorno(tmp_path / "suite")
     manifiestos = tmp_path / "divergente"
 
-    _correr_shards_con_casos(carpeta, manifiestos, ["a,b,c", "a,b"])
+    _correr_shards_con_entornos(carpeta, manifiestos, [{"CASOS": "a,b,c"}, {"CASOS": "a,b"}])
 
     errores = verificar(manifiestos, 2)
     assert any("misma suite" in e for e in errores), errores
@@ -672,29 +758,40 @@ def test_el_verificador_acepta_de_punta_a_punta_shards_con_la_misma_coleccion(tm
     carpeta = _arbol_con_casos_segun_el_entorno(tmp_path / "suite")
     manifiestos = tmp_path / "igual"
 
-    _correr_shards_con_casos(carpeta, manifiestos, ["a,b,c", "a,b,c"])
+    _correr_shards_con_entornos(carpeta, manifiestos, [{"CASOS": "a,b,c"}, {"CASOS": "a,b,c"}])
 
     assert verificar(manifiestos, 2) == []
 
 
-def test_distintas_etiquetas_con_el_mismo_conteo_no_son_una_divergencia(tmp_path: Path) -> None:
+def test_distintas_etiquetas_con_los_mismos_valores_no_son_una_divergencia(tmp_path: Path) -> None:
     """DECISIÓN ANCLADA: la huella es por archivo y conteo, no por node ID. En el árbol real de ``tests/`` hay IDs que no son
     deterministas entre procesos (medido: 2 de 20296 — un ``parametrize`` con ``object()`` cuyo ID lleva la dirección de
-    memoria y otro con ``uuid1()``): una huella de IDs haría rojo el veredicto en toda corrida. El archivo dueño corre una
-    colección completa suya; si colectara MENOS casos, el conteo ya lo marca (test anterior)."""
+    memoria y otro con ``uuid1()``): una huella de IDs haría rojo el veredicto en toda corrida.
+
+    Los VALORES son los mismos (``a,b,c``) en los dos shards y solo cambian las etiquetas: lo que se afirma es que el
+    reparto no trata como divergencia un ID inestable, NO que dos entradas distintas sean equivalentes (eso cambia el conteo
+    o los valores, y la parte del conteo la marca el test de ``distinta_cantidad``).
+    """
     carpeta = _arbol_con_casos_segun_el_entorno(tmp_path / "suite")
     manifiestos = tmp_path / "etiquetas"
+    primero = {"CASOS": "a,b,c", "ETIQUETAS": "x,y,z"}
+    segundo = {"CASOS": "a,b,c", "ETIQUETAS": "x,y,w"}
+    assert _ids_de_test_variable(carpeta, primero) != _ids_de_test_variable(carpeta, segundo), (
+        "precondición: los IDs de los dos shards DEBEN diferir, o el test no prueba nada"
+    )
 
-    _correr_shards_con_casos(carpeta, manifiestos, ["a,b,c", "a,b,z"])
+    _correr_shards_con_entornos(carpeta, manifiestos, [primero, segundo])
 
     assert verificar(manifiestos, 2) == []
 
 
 @pytest.mark.parametrize("extra", [[], ["--con-cobertura"]])
-def test_ejecutar_el_modulo_como_script_verifica_los_manifiestos(extra: list[str], tmp_path: Path) -> None:
+def test_ejecutar_el_modulo_como_script_verifica_los_manifiestos(
+    extra: list[str], tmp_path: Path, base_de_coverage: Path
+) -> None:
     """``python -m scripts.ci_particion verificar`` es lo que corre el workflow (con ``--con-cobertura``): el punto de
     entrada tiene que andar con la misma línea de comandos que el job."""
-    directorio = _escribir(tmp_path / "m", _manifiestos_validos(), con_cobertura=True)
+    directorio = _escribir(tmp_path / "m", _manifiestos_validos(), base_de_cobertura=base_de_coverage)
     env = {**os.environ, "PYTHONPATH": str(RAIZ)}
 
     resultado = subprocess.run(  # noqa: S603 -- ejecuta el propio módulo del repo con el intérprete actual

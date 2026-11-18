@@ -211,7 +211,49 @@ def test_el_veredicto_verifica_que_no_se_perdio_ningun_test_y_exige_la_cobertura
     assert cobertura["with"] == {
         "name": "coverage-report-${{ matrix.os }}-py${{ matrix.python-version }}",
         "path": "coverage.xml",
+        "overwrite": True,
     }
+
+
+def _subidas_que_corren_aun_si_el_job_falla() -> dict[tuple[str, str], dict[str, Any]]:
+    """TODOS los pasos ``upload-artifact`` de TODOS los jobs cuya condición incluye ``always()``, por (job, paso)."""
+    return {
+        (job, str(paso.get("name"))): paso
+        for job, definicion in _jobs().items()
+        for paso in definicion.get("steps", [])
+        if str(paso.get("uses", "")).startswith("actions/upload-artifact@") and "always()" in str(paso.get("if", ""))
+    }
+
+
+def test_las_subidas_que_corren_aun_si_el_job_falla_estan_censadas() -> None:
+    """Censo congelado por igualdad: una subida nueva con ``always()`` rompe esto hasta que se decide si necesita
+    ``overwrite`` (ver el test siguiente). Que el censo no sea vacío evita que la regla de abajo pase sin mirar nada."""
+    assert set(_subidas_que_corren_aun_si_el_job_falla()) == {
+        ("test-shard", "Upload shard results"),
+        ("test", "Upload coverage"),
+    }
+
+
+def test_una_subida_que_corre_aun_si_el_job_falla_no_bloquea_su_propio_reintento() -> None:
+    """Con ``if: always()`` el artefacto queda subido aunque el job falle. ``upload-artifact`` falla por defecto si el
+    nombre ya existe en la corrida (``overwrite: false``), así que el reintento («Re-run failed jobs») del mismo shard
+    subiría el mismo nombre, chocaría con el de su primer intento y quedaría rojo aunque pytest pase. ``overwrite: true``
+    reemplaza el anterior y el patrón de descarga sigue viendo UN artefacto por shard.
+
+    Un sufijo con ``github.run_attempt`` en el nombre NO sirve: el patrón de descarga recogería el artefacto del intento
+    fallido y el del reintento, y el verificador recibiría un shard repetido.
+    """
+    sin_overwrite = [
+        f"{job}: {nombre}"
+        for (job, nombre), paso in _subidas_que_corren_aun_si_el_job_falla().items()
+        if paso.get("with", {}).get("overwrite") is not True
+    ]
+
+    assert not sin_overwrite, f"subidas con always() sin overwrite: true (su reintento chocaría): {sin_overwrite}"
+    for (_, nombre), paso in _subidas_que_corren_aun_si_el_job_falla().items():
+        assert "run_attempt" not in str(paso["with"]["name"]), (
+            f"{nombre}: el nombre no puede depender del intento (el verificador vería shards repetidos)"
+        )
 
 
 def test_la_cantidad_de_shards_es_la_misma_en_la_matriz_la_variable_y_el_verificador() -> None:
