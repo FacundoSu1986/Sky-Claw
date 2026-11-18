@@ -43,8 +43,12 @@ prohíbe, y la medición de la capa Qt —aun siendo favorable— **no es MO2**.
 - Base: `28ce8345a6dffb1bbf4773229fa5d229e9a432b0` — `Merge pull request #947`,
   2026-11-15 16:55:49 -0300.
 - `origin/main` al iniciar: `db85bd581537f906f166ec0cacafeedf9ee17d02`, 13
-  commits por delante de la base. No se sincronizó: el encargo fija la base en
-  #947.
+  commits por delante de la base.
+- **Sincronización (2026-11-18):** `origin/main` = `9ef7a895` integrado con
+  `git merge --no-ff` en `6ed6e622` (14 commits). Cero archivos en común con este
+  PR; el riesgo era el sharding nuevo de CI (`scripts/ci_particion.py`), que
+  particiona **por archivo** y por eso no reasigna este cambio. Los gates de §16
+  se repitieron sobre el árbol mergeado.
 - SHA final: el commit que agrega este informe (ver PR).
 
 ## 2. Rama y worktree
@@ -236,6 +240,17 @@ Comandos en la forma que exige `AGENTS.md`, desde el worktree:
 | `.venv\Scripts\python.exe -m mypy sky_claw/ scripts/` | Success: 457 source files |
 | `git diff --check` | sin errores |
 
+Tras la sincronización con `main` (`6ed6e622`) se repitieron: suites de exclusión
+y de transacción P7-A5 juntas → **270 passed, 1 skipped**; anclas que dependen de
+la sincronización (sharding de CI, estado OODA, clean-room, censos, convención de
+worktrees) → **630 passed, 1 failed**. El fallo es **ambiental y preexistente**:
+`test_los_worktrees_no_principales_viven_bajo_la_convencion` lee el registro
+`git worktree list` de esta máquina, donde otras sesiones dejaron checkouts fuera
+de convención (`E:/Sectores/Sector_Proyectos_WorkBuddy/Skyclaw_Worktree` y dos
+`.claude/worktrees/**` detached). No está en el diff de este PR, CI no lo
+reproduce (el runner tiene un solo worktree) y **no se borraron worktrees ajenos**
+para forzar el verde.
+
 **Test agregado (uno solo), con su mutante medido.** Se agregó
 `test_escritura_externa_con_comparticion_plena_queda_bloqueada`: un escritor
 `CreateFileW(GENERIC_WRITE, share=READ|WRITE|DELETE)` con el lock retenido, más
@@ -276,8 +291,13 @@ el censo AST aunque no lo ejecute CI, así que no puede llevar BOM.
 ## 18. Colisiones con otros PRs
 
 - No había PR abierto para `test/p7-a5-compat-mo2` (`gh pr list` vacío).
-- La rama está 13 commits detrás de `origin/main`; no se hizo merge para no mover
-  la base fijada por el encargo.
+- **Anticolisión:** de los 14 commits de `origin/main` (`db85bd58..9ef7a895`)
+  ninguno comparte archivo con este PR (intersección vacía). El único riesgo
+  semántico era el sharding de CI de #966, que reparte la suite **por archivo**:
+  este cambio toca un archivo existente, así que no altera la partición ni la
+  verificación de «ningún test perdido».
+- La rama se sincronizó con `git merge origin/main --no-ff` (`6ed6e622`); sin
+  rebase ni force-push.
 - No se tocó el worktree ni la rama de #947.
 
 ## 19. Preflight productivo (read-only)
