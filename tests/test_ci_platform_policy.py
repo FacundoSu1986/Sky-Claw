@@ -140,13 +140,16 @@ def test_cada_shard_corre_su_parte_con_cobertura_y_deja_su_manifiesto() -> None:
 
     assert paso["env"] == {
         "SKYCLAW_SHARD": f"${{{{ matrix.shard }}}}/{TOTAL_DE_SHARDS}",
-        "SKYCLAW_SHARD_MANIFEST": "shard-out/manifest.json",
+        "SKYCLAW_SHARD_MANIFEST": "shard-out/shard-manifest.json",
         "COVERAGE_FILE": "shard-out/coverage.sqlite",
     }
     assert _lineas_de_run(paso) == [
-        "mkdir -p shard-out",
+        "New-Item -ItemType Directory -Force shard-out | Out-Null",
         "python -m pytest -p scripts.ci_particion --cov=sky_claw --cov=scripts --cov-report= tests/",
     ]
+    # Sin ``shell``: PowerShell, el shell por defecto de Windows y el que usaba el job único. Con ``bash`` dos tests que
+    # dependen del token del proceso fallaron en el primer ensayo de CI (#966): no se cambia el entorno sin necesidad.
+    assert "shell" not in paso
     subida = _paso_por_nombre(shard, "Upload shard results")
     assert subida["if"] == "always()"
     assert subida["with"]["name"] == "test-shard-py${{ matrix.python-version }}-${{ matrix.shard }}"

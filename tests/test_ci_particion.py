@@ -175,7 +175,7 @@ def _escribir(directorio: Path, manifiestos: list[dict[str, Any]]) -> Path:
     for i, manifiesto in enumerate(manifiestos):
         carpeta = directorio / f"test-shard-py3.11-{i + 1}"
         carpeta.mkdir(parents=True)
-        (carpeta / "manifest.json").write_text(json.dumps(manifiesto), encoding="utf-8")
+        (carpeta / ci_particion.NOMBRE_DEL_MANIFIESTO).write_text(json.dumps(manifiesto), encoding="utf-8")
     return directorio
 
 
@@ -262,11 +262,50 @@ def test_verificar_falla_si_el_directorio_no_tiene_ningun_manifiesto(tmp_path: P
 def test_verificar_falla_con_un_manifiesto_que_no_es_json(tmp_path: Path) -> None:
     carpeta = tmp_path / "test-shard-py3.11-1"
     carpeta.mkdir()
-    (carpeta / "manifest.json").write_text("{no es json", encoding="utf-8")
+    (carpeta / ci_particion.NOMBRE_DEL_MANIFIESTO).write_text("{no es json", encoding="utf-8")
 
     errores = verificar(tmp_path, 1)
 
-    assert any("manifest.json" in e for e in errores)
+    assert any(ci_particion.NOMBRE_DEL_MANIFIESTO in e for e in errores)
+
+
+def test_el_manifiesto_tiene_un_nombre_propio_que_el_producto_no_genera() -> None:
+    """Los tests (y el producto) escriben ``manifest.json`` por todos lados, p. ej. ``.skyclaw-output/manifest.json``:
+    un nombre genérico en una búsqueda recursiva recoge archivos ajenos. Lo descubrió el ensayo local de los 4 shards."""
+    assert ci_particion.NOMBRE_DEL_MANIFIESTO == "shard-manifest.json"
+
+
+def test_verificar_ignora_cualquier_manifest_json_ajeno_en_cualquier_nivel(tmp_path: Path) -> None:
+    directorio = _escribir(tmp_path, _manifiestos_validos())
+    for ajeno in (
+        directorio / "manifest.json",
+        directorio / "test-shard-py3.11-1" / "manifest.json",
+        directorio
+        / "test-shard-py3.11-1"
+        / "tmp"
+        / "test_x0"
+        / "mods"
+        / "Salida"
+        / ".skyclaw-output"
+        / "manifest.json",
+    ):
+        ajeno.parent.mkdir(parents=True, exist_ok=True)
+        ajeno.write_text("esto no es JSON ni un manifiesto de shard", encoding="utf-8")
+
+    assert verificar(directorio, TOTAL_DEL_VERIFICADOR) == []
+
+
+def test_verificar_solo_busca_un_manifiesto_por_artefacto_a_un_nivel(tmp_path: Path) -> None:
+    """``download-artifact`` deja cada artefacto en su carpeta directamente bajo el destino: un manifiesto más hondo no es de
+    un shard (es de un árbol temporal de tests) y no puede contar."""
+    for i, manifiesto in enumerate(_manifiestos_validos()):
+        hondo = tmp_path / f"test-shard-py3.11-{i + 1}" / "anidado"
+        hondo.mkdir(parents=True)
+        (hondo / ci_particion.NOMBRE_DEL_MANIFIESTO).write_text(json.dumps(manifiesto), encoding="utf-8")
+
+    errores = verificar(tmp_path, TOTAL_DEL_VERIFICADOR)
+
+    assert any("esperaban" in e for e in errores)
 
 
 def test_la_huella_depende_del_contenido_de_la_suite_y_no_del_orden() -> None:
@@ -413,7 +452,7 @@ def test_el_manifiesto_describe_lo_que_el_shard_selecciono_y_alimenta_al_verific
     raiz_manifiestos = tmp_path / "manifiestos"
 
     for indice in range(1, total + 1):
-        manifiesto = raiz_manifiestos / f"test-shard-py3.11-{indice}" / "manifest.json"
+        manifiesto = raiz_manifiestos / f"test-shard-py3.11-{indice}" / ci_particion.NOMBRE_DEL_MANIFIESTO
         resultado = _correr_pytest(carpeta, "-q", shard=f"{indice}/{total}", manifiesto=manifiesto)
         assert resultado.returncode == 0, resultado.stdout + resultado.stderr
         contenido = json.loads(manifiesto.read_text(encoding="utf-8"))

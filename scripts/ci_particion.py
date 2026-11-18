@@ -33,7 +33,9 @@ import pytest
 
 ENV_SHARD = "SKYCLAW_SHARD"
 ENV_MANIFIESTO = "SKYCLAW_SHARD_MANIFEST"
-NOMBRE_DEL_MANIFIESTO = "manifest.json"
+#: Nombre propio y NO ``manifest.json``: los tests (y el producto) escriben ese nombre en muchos árboles temporales
+#: (p. ej. ``.skyclaw-output/manifest.json``) y una búsqueda por nombre genérico los recogería como si fueran de un shard.
+NOMBRE_DEL_MANIFIESTO = "shard-manifest.json"
 VERSION_DEL_MANIFIESTO = 1
 
 _FORMA_SHARD = re.compile(r"[0-9]+/[0-9]+")
@@ -188,10 +190,14 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def _cargar_manifiestos(directorio: Path) -> tuple[list[dict[str, Any]], list[str]]:
-    """Lee todos los ``manifest.json`` bajo ``directorio``; devuelve los bien formados y los errores del resto."""
+    """Lee el manifiesto de cada artefacto de shard; devuelve los bien formados y los errores del resto.
+
+    Busca a UN solo nivel (``<directorio>/<artefacto>/shard-manifest.json``): es como ``download-artifact`` deja cada
+    artefacto, y evita recoger archivos de un árbol temporal de tests que casualmente esté bajo el mismo directorio.
+    """
     manifiestos: list[dict[str, Any]] = []
     errores: list[str] = []
-    for ruta in sorted(directorio.rglob(NOMBRE_DEL_MANIFIESTO)):
+    for ruta in sorted(directorio.glob(f"*/{NOMBRE_DEL_MANIFIESTO}")):
         try:
             contenido = json.loads(ruta.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
