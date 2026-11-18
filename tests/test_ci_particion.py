@@ -11,9 +11,11 @@ import json
 import os
 import random
 import shutil
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -421,6 +423,42 @@ def test_verificar_con_cobertura_rechaza_un_archivo_que_no_es_una_base_de_datos(
     errores = verificar(directorio, TOTAL_DEL_VERIFICADOR, con_cobertura=True)
 
     assert any("test-shard-py3.11-1" in e and "ilegible" in e for e in errores), errores
+
+
+def test_verificar_con_cobertura_rechaza_una_base_sqlite_integra_pero_sin_el_esquema_de_coverage(
+    tmp_path: Path, base_de_coverage: Path
+) -> None:
+    """Reproducido con Coverage.py 7.13.5: sin la tabla ``file``, ``PRAGMA quick_check`` devuelve ``ok``, pero ``coverage
+    combine`` la omite con una advertencia y sale con 0. «Legible» es lo que lee Coverage.py, no lo que SQLite considera
+    íntegro."""
+    directorio = _escribir(tmp_path, _manifiestos_validos(), base_de_cobertura=base_de_coverage)
+    dañada = directorio / "test-shard-py3.11-2" / ci_particion.NOMBRE_DE_LA_COBERTURA
+    with closing(sqlite3.connect(dañada)) as conexion, conexion:
+        conexion.execute("DROP TABLE file")
+    with closing(sqlite3.connect(dañada)) as conexion:
+        assert conexion.execute("PRAGMA quick_check").fetchall() == [("ok",)], "precondición: SQLite la ve íntegra"
+
+    errores = verificar(directorio, TOTAL_DEL_VERIFICADOR, con_cobertura=True)
+
+    assert any("test-shard-py3.11-2" in e and "ilegible" in e for e in errores), errores
+    assert not any("test-shard-py3.11-1" in e for e in errores)
+
+
+def test_verificar_con_cobertura_rechaza_una_base_sqlite_ajena_sin_archivos_medidos(
+    tmp_path: Path, base_de_coverage: Path
+) -> None:
+    """Una base SQLite válida que no es de coverage (o sin ningún archivo medido) aporta cero a ``coverage combine``: todo
+    shard real mide al menos ``sky_claw`` o ``scripts``, así que cero archivos es un shard sin datos."""
+    directorio = _escribir(tmp_path, _manifiestos_validos(), base_de_cobertura=base_de_coverage)
+    ajena = directorio / "test-shard-py3.11-1" / ci_particion.NOMBRE_DE_LA_COBERTURA
+    ajena.unlink()
+    with closing(sqlite3.connect(ajena)) as conexion, conexion:
+        conexion.execute("CREATE TABLE otra_cosa (valor INTEGER)")
+
+    errores = verificar(directorio, TOTAL_DEL_VERIFICADOR, con_cobertura=True)
+
+    assert any("test-shard-py3.11-1" in e and "ilegible" in e for e in errores), errores
+    assert not any("test-shard-py3.11-2" in e for e in errores)
 
 
 def test_verificar_sin_pedir_cobertura_no_la_exige(tmp_path: Path) -> None:

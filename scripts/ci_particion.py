@@ -29,7 +29,6 @@ import sqlite3
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping, Sequence
-from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -260,12 +259,23 @@ def _cargar_manifiestos(directorio: Path) -> tuple[list[dict[str, Any]], list[st
 
 
 def _base_legible(base: Path) -> bool:
-    """¿SQLite puede leer TODAS las páginas de la base? ``quick_check`` recorre el archivo entero y detecta una base
-    truncada o corrupta; abre en solo lectura para no tocar el artefacto. No depende del esquema interno de ``coverage``."""
+    """¿La lee Coverage.py (el MISMO lector que usa ``coverage combine``) y trae al menos un archivo medido?
+
+    ``PRAGMA quick_check`` de SQLite no alcanza: una base íntegra pero sin la tabla ``file`` da ``ok`` y ``coverage combine``
+    la omite con una advertencia y sale con 0 (reproducido con Coverage.py 7.13.5). Y una base SQLite ajena la lee como una
+    base nueva y vacía. Todo shard real mide al menos ``sky_claw`` o ``scripts``, así que cero archivos es un shard sin datos.
+
+    El import es perezoso: solo lo necesita ``--con-cobertura``, y así los shards (que cargan este módulo como plugin) no
+    importan ``coverage`` por su cuenta.
+    """
+    from coverage import CoverageData
+    from coverage.exceptions import CoverageException
+
     try:
-        with closing(sqlite3.connect(f"{base.resolve().as_uri()}?mode=ro", uri=True)) as conexion:
-            return conexion.execute("PRAGMA quick_check").fetchall() == [("ok",)]
-    except (sqlite3.Error, OSError):
+        datos = CoverageData(basename=str(base))
+        datos.read()
+        return bool(datos.measured_files())
+    except (CoverageException, sqlite3.Error, OSError):
         return False
 
 
@@ -273,8 +283,8 @@ def _problemas_de_las_bases_de_cobertura(directorio: Path) -> list[str]:
     """Un error por cada shard (carpeta con manifiesto) cuya base de ``coverage`` falta, está vacía o no se puede leer.
 
     ``coverage combine`` sobre un glob al que le falta una base NO falla, y una base que no puede leer la OMITE con una
-    advertencia (``--strict`` solo exige que haya algún dato): si las restantes alcanzan el umbral, el job queda verde y
-    publica una cobertura que no incluye a ese shard.
+    advertencia y exit 0 (``--strict`` solo exige que haya algún dato): si las restantes alcanzan el umbral, el job queda
+    verde y publica una cobertura que no incluye a ese shard.
     """
     errores = []
     for ruta in _rutas_de_manifiestos(directorio):
@@ -290,8 +300,9 @@ def _problemas_de_las_bases_de_cobertura(directorio: Path) -> list[str]:
             )
         elif not _base_legible(base):
             errores.append(
-                f"{ruta.parent.name}: {NOMBRE_DE_LA_COBERTURA} ilegible (truncada o corrupta): "
-                "`coverage combine` la omitiría con una advertencia y la cobertura quedaría sin los datos de ese shard"
+                f"{ruta.parent.name}: {NOMBRE_DE_LA_COBERTURA} ilegible para Coverage.py (truncada, corrupta, sin su esquema "
+                "o sin archivos medidos): `coverage combine` la omitiría con una advertencia y la cobertura quedaría sin los "
+                "datos de ese shard"
             )
     return errores
 

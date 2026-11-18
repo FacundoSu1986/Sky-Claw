@@ -745,8 +745,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     vacío daba OK). Un `SKYCLAW_SHARD` mal escrito aborta la
     sesión en vez de degradar en silencio a «correr todo».
   - **La cobertura sigue siendo un gate bloqueante** (`--fail-under=60`): se mide en cada shard y se exige sobre los datos combinados
-    de todos (un shard solo cubre una parte); el verificador exige, con `--con-cobertura`, la base `coverage.sqlite` de CADA shard, presente y legible
-    (`coverage combine` sobre un glob con una base de menos no falla, y una truncada la omite con una advertencia: las restantes pueden igual cruzar el umbral). `coverage xml` corre antes del umbral para que el
+    de todos (un shard solo cubre una parte); el verificador exige, con `--con-cobertura`, la base `coverage.sqlite` de CADA shard, presente y legible **por Coverage.py** con al menos un
+    archivo medido (`coverage combine` sobre un glob con una base de menos no falla, y una truncada o sin su esquema la omite con una advertencia y exit 0:
+    las restantes pueden igual cruzar el umbral; `PRAGMA quick_check` de SQLite no alcanzaba: una base sin la tabla `file` da `ok`). `coverage xml` corre antes del umbral para que el
     artefacto `coverage-report-*` exista aun si el umbral falla; conserva su nombre y su ruta.
   - **Un shard rojo deja rojo el veredicto** (no «skipped», que GitHub da por satisfecho en un check requerido). El agregador
     `🧪 Tests (Pytest)` y el job `Build` no cambian. Los artefactos intermedios duran 1 día: pasado ese plazo, «Re-run failed jobs» no sirve para
