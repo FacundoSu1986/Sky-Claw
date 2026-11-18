@@ -1,0 +1,102 @@
+{
+ "meta": {
+  "sky_claw_file": "E:\\Skyclaw_Main_Sync\\.worktrees\\xedit-bridge-llm-real-20261115\\sky_claw\\__init__.py",
+  "python": "3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]",
+  "utc": "2026-11-15T23:11:20Z"
+ },
+ "pruebas": [
+  {
+   "prueba": "T4_mcp_invalida/linea_no_json",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobado": false,
+     "success": false,
+     "message": "el xEdit Bridge devolvió una línea que no es JSON-RPC"
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/ok_con_iserror_incoherente",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobado": false,
+     "success": false,
+     "message": "respuesta de xedit_check incoherente: isError no coincide con ok"
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/payload_sin_ok_booleano",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobado": false,
+     "success": false,
+     "message": "el resultado de xedit_check no trae un ok booleano: no hay veredicto"
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/servidor_ajeno",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobado": false,
+     "success": false,
+     "message": "el servidor no es el xEdit Bridge: 'otro'"
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/id_duplicado",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobado": false,
+     "success": false,
+     "message": "el xEdit Bridge devolvió dos respuestas con el mismo id JSON-RPC (1)"
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/veredicto_limpio_falso_sin_log",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "success": false,
+     "message": "el xEdit Bridge no auditó T0_ValidCandidate.esp: el bridge no devolvió datos de auditoría",
+     "aprobado": false,
+     "no_admitido": false
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/admitidos_intactos",
+   "tipo": "sintetica",
+   "doble": null,
+   "datos": {
+    "intactos": true
+   }
+  }
+ ]
+}
