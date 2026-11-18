@@ -34,9 +34,10 @@ PAQUETE no importa ``keyring`` (ni nada fuera de la librería estándar): solo f
 importa dentro de ``aplicar_aislamiento``, que corre al construir ``Config``/``AppContext`` (nunca en el worker). Anclado
 por ``test_importar_sky_claw_no_importa_keyring_ni_llama_a_platform_system``.
 
-Verificado con ``keyring`` 25.7.0 (el del lock), cuyo backend se elige de forma perezosa en el primer uso; el mínimo
-declarado es 24.0 y no lo verifiqué. Con una versión que eligiera el backend al importar, el orden «leer keyring antes de
-construir ``Config``/``AppContext``» quedaría sin cubrir (los hooks explícitos de esos dos siguen valiendo).
+Verificado leyendo el código de ``keyring`` 24.0.0 (el mínimo declarado) y 25.7.0 (el del lock): los dos eligen el backend
+de forma perezosa en el primer uso (``get_keyring`` → ``init_backend`` → ``load_env``) y ninguno lo inicializa al importar;
+las versiones intermedias no se revisaron. Con una versión que eligiera el backend al importar, el orden «leer keyring
+antes de construir ``Config``/``AppContext``» quedaría sin cubrir (los hooks explícitos de esos dos siguen valiendo).
 """
 
 from __future__ import annotations
