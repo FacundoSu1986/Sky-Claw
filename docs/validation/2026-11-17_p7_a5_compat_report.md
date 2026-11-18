@@ -295,7 +295,7 @@ el censo AST aunque no lo ejecute CI, así que no puede llevar BOM.
 | Codex (`chatgpt-codex-connector`) | **2 findings P2**, ambos en la sonda y **ambos demostrados**: índices 1-based del array (perdía Pandora y la verificación sólo comparaba la cantidad) y archivos de coordinación rancios en un rerun. Corregidos; evidencia regenerada (§9, Anexo B.6–7) |
 | Qodo — Revisor Adversarial | sin hallazgos («No se detectaron problemas importantes») |
 | Qodo — Regression & Test Oracle | `success`, sin comentarios |
-| CodeRabbit | quedó en «review in progress»; sin findings al cierre de esta ronda |
+| CodeRabbit | **10 findings** (1 Major, 9 Minor), **todos demostrables**: 5 cerrados en `d70f9d7` (índices 0-based, coordinación rancia, señal de release, comparación campo a campo) y 5 en el commit siguiente: publicación atómica del `ready`, exigir el checkpoint en C/D/E, `esperar()` del cliente que ahora falla en vez de seguir, comandos del README desde la raíz del repo, y `$env:LOCALAPPDATA` en el comando del preflight (en PowerShell `%LOCALAPPDATA%` no se expande) |
 
 ## 18. Colisiones con otros PRs
 
@@ -316,9 +316,14 @@ Se ejecutó el inspector oficial, sin escribir nada:
 ```powershell
 .venv\Scripts\python.exe scripts\p7_readonly_inspection.py `
   --storage-root G:\Modding\FrozenRuntime `
-  --mo2-instance "%LOCALAPPDATA%\ModOrganizer\Skyrim Special Edition" `
+  --mo2-instance "$env:LOCALAPPDATA\ModOrganizer\Skyrim Special Edition" `
   --config <config.toml> --clone-id clone-p7-01 --mostrar-rutas
 ```
+
+En PowerShell hay que usar `$env:LOCALAPPDATA`: `%LOCALAPPDATA%` **no** se expande
+y llegaría literal. La corrida registrada usó esa forma expandida; el valor
+documentado con `%…%` era un error de transcripción del informe, no del
+comando ejecutado.
 
 **Veredicto: `BLOCKED` · `listo_para_p7: False` · exit code 1.**
 

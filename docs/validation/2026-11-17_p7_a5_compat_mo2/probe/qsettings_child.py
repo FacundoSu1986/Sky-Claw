@@ -59,9 +59,18 @@ def semantica(ini: pathlib.Path) -> dict[str, object]:
 
 
 def esperar(path: pathlib.Path, limite_s: float = 60.0) -> None:
+    """Espera el marcador; si no llega, FALLA.
+
+    Devolver normalmente al vencer dejaría que ``deferred`` registre un
+    ``status_sync_tras_liberar`` que quizá ocurrió con la exclusión todavía
+    tomada: mediría un escenario que no es el declarado.
+    """
     limite = time.monotonic() + limite_s
-    while time.monotonic() < limite and not path.exists():
+    while time.monotonic() < limite:
+        if path.exists():
+            return
         time.sleep(0.005)
+    raise TimeoutError(f"no llegó {path.name} en {limite_s}s: la liberación no ocurrió")
 
 
 def main() -> int:

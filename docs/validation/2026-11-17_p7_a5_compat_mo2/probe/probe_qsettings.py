@@ -164,6 +164,20 @@ def leer_json(path: pathlib.Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def exigir_checkpoint(h: dict, etiqueta: str) -> None:
+    """Falla si el cliente no llegó a su checkpoint.
+
+    Sin esto, un cliente muerto o colgado dejaría que el escenario libere la
+    exclusión y registre un resultado que no mide lo que dice medir.
+    """
+    if esperar_archivo(h["ready"]):
+        return
+    proc = h["proc"]
+    proc.kill()
+    _, err = proc.communicate(timeout=10)
+    raise RuntimeError(f"el cliente {etiqueta} no llegó a su checkpoint: {err}")
+
+
 def exigir_tendedor(diagnostico: dict[str, object], etiqueta: str) -> None:
     if not diagnostico.get("autoriza"):
         raise RuntimeError(f"el tenedor {etiqueta} no tomó la exclusión: {diagnostico}")
@@ -224,13 +238,13 @@ def medir() -> dict[str, object]:
     resultados["C_tenedor"] = tenedor.esperar_ready()
     exigir_tendedor(resultados["C_tenedor"], "C")
     h = hijo("deferred", "C")
-    listo = esperar_archivo(h["ready"])
+    exigir_checkpoint(h, "C")
     tenedor.liberar()
     h["release"].write_text("go", encoding="utf-8")  # sin esto el hijo espera su timeout
     h["proc"].wait(timeout=120)
     deferido = leer_json(h["salida"])
     resultados["C_sync_diferido"] = deferido
-    resultados["C_ready_observado"] = listo
+    resultados["C_ready_observado"] = True
     hc2 = hijo("read", "C2")
     hc2["proc"].wait(timeout=120)
     fresco = leer_json(hc2["salida"])
@@ -250,11 +264,11 @@ def medir() -> dict[str, object]:
     resultados["D_tenedor"] = tenedor.esperar_ready()
     exigir_tendedor(resultados["D_tenedor"], "D")
     h = hijo("dtor", "D")
-    listo = esperar_archivo(h["ready"])
+    exigir_checkpoint(h, "D")
     tenedor.liberar()
     h["release"].write_text("go", encoding="utf-8")  # idem: el destructor corre al salir
     h["proc"].wait(timeout=120)
-    resultados["D_ready_observado"] = listo
+    resultados["D_ready_observado"] = True
     # releer la semántica en un proceso nuevo
     h2 = hijo("read", "D2")
     h2["proc"].wait(timeout=120)
@@ -267,7 +281,7 @@ def medir() -> dict[str, object]:
     # E) objeto QSettings vivo: ¿retiene el archivo?
     autorar_ini()
     h = hijo("hold", "E")
-    esperar_archivo(h["ready"])
+    exigir_checkpoint(h, "E")
     resultados["E_adquisicion_con_objeto_vivo"] = run_probe("acquirer.py", str(INI))
     h["release"].write_text("go", encoding="utf-8")
     h["proc"].wait(timeout=120)

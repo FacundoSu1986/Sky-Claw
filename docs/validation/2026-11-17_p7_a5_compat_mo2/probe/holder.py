@@ -36,7 +36,12 @@ def main() -> int:
         "identidad": None if exclusion.identidad is None else str(exclusion.identidad),
         "pid": os.getpid(),
     }
-    ready.write_text(json.dumps(diagnostico), encoding="utf-8")
+    # Publicación atómica: el padre parsea apenas el archivo existe, así que un
+    # write_text directo le puede dejar JSON a medias y abortar la corrida.
+    ready.parent.mkdir(parents=True, exist_ok=True)
+    temporal = ready.with_name(ready.name + ".tmp")
+    temporal.write_text(json.dumps(diagnostico), encoding="utf-8")
+    temporal.replace(ready)
 
     limite = time.monotonic() + timeout_s
     while not release.exists():

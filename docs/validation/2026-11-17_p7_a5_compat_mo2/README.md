@@ -16,8 +16,10 @@
 
 ## Matriz Win32 (códigos medidos)
 
+Todos los comandos se ejecutan desde la **raíz del repo** (ahí resuelve `.venv`).
+
 ```powershell
-.venv\Scripts\python.exe probe\matrix_win32.py <run_dir>
+.venv\Scripts\python.exe docs\validation\2026-11-17_p7_a5_compat_mo2\probe\matrix_win32.py <run_dir>
 ```
 
 Escribe `<run_dir>/matrix.json`. Cada agresor corre en un proceso separado; el
@@ -29,8 +31,8 @@ informe): `DeleteFile` 32, `MoveFileExW` 5, `ReplaceFileW` 32,
 ## Sonda de QSettings bajo el lock
 
 ```powershell
-<venv-pyqt>\python.exe probe\probe_qsettings.py `
-  <repo>\.venv\Scripts\python.exe `
+<venv-pyqt>\python.exe docs\validation\2026-11-17_p7_a5_compat_mo2\probe\probe_qsettings.py `
+  .venv\Scripts\python.exe `
   <run_dir>
 ```
 

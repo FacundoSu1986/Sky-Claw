@@ -1,7 +1,7 @@
 {
   "qt_runtime": "6.7.3",
   "qt_build": "6.7.1",
-  "ini": "E:\\Skyclaw_Rig_MO2_Compat\\out\\final-20261118-174611\\instance\\modorganizer.ini",
+  "ini": "E:\\Skyclaw_Rig_MO2_Compat\\out\\final2-20261118-175844\\instance\\modorganizer.ini",
   "K0_ini_canonico": {
     "sha": "b231f31aaa7168b7ad21e3e00fd6872b5bed3fdce9c686ccb0c1f9a2f9ce9633",
     "tamano": 1027,
@@ -13,13 +13,13 @@
     "autoriza": true,
     "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
     "intentos": 1,
-    "identidad": "9ea83c6f:00200000002bb8ee",
-    "pid": 1756
+    "identidad": "9ea83c6f:00280000002c3df9",
+    "pid": 18248
   },
   "A_lectura_con_lock": {
     "modo": "read",
     "qt_runtime": "6.7.3",
-    "pid": 1628,
+    "pid": 12892,
     "status_tras_ctor": "AccessError",
     "status_tras_leer": "AccessError",
     "n_claves": 0,
@@ -34,13 +34,13 @@
     "autoriza": true,
     "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
     "intentos": 1,
-    "identidad": "9ea83c6f:002d0000002bfa8a",
-    "pid": 17404
+    "identidad": "9ea83c6f:001f0000002c3dfe",
+    "pid": 17600
   },
   "B_escritura_con_lock": {
     "modo": "write",
     "qt_runtime": "6.7.3",
-    "pid": 7560,
+    "pid": 17860,
     "n_claves_leidas": 0,
     "status_tras_sync": "AccessError"
   },
@@ -50,13 +50,13 @@
     "autoriza": true,
     "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
     "intentos": 1,
-    "identidad": "9ea83c6f:00310000002bfa99",
-    "pid": 10476
+    "identidad": "9ea83c6f:00250000002c3ebb",
+    "pid": 16400
   },
   "C_sync_diferido": {
     "modo": "deferred",
     "qt_runtime": "6.7.3",
-    "pid": 14592,
+    "pid": 17508,
     "n_claves_leidas_con_lock": 0,
     "status_tras_leer": "AccessError",
     "status_sync_con_lock": "AccessError",
@@ -94,7 +94,7 @@
   "C_lectura_fresca": {
     "modo": "read",
     "qt_runtime": "6.7.3",
-    "pid": 15580,
+    "pid": 10944,
     "status_tras_ctor": "NoError",
     "status_tras_leer": "NoError",
     "n_claves": 36,
@@ -153,14 +153,14 @@
     "autoriza": true,
     "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
     "intentos": 1,
-    "identidad": "9ea83c6f:001f0000002c3dda",
-    "pid": 6232
+    "identidad": "9ea83c6f:00270000002c3ecc",
+    "pid": 5052
   },
   "D_ready_observado": true,
   "D_semantica_tras_destructor": {
     "modo": "read",
     "qt_runtime": "6.7.3",
-    "pid": 9928,
+    "pid": 14116,
     "status_tras_ctor": "NoError",
     "status_tras_leer": "NoError",
     "n_claves": 35,
