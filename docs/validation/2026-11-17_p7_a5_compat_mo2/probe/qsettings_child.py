@@ -84,6 +84,10 @@ def main() -> int:
         resultado["n_ejecutables"] = qs.beginReadArray("customExecutables")
         qs.endArray()
         del qs
+        # La cantidad sola no prueba preservación: con índices corridos devuelve
+        # 3 igual aunque un elemento esté vacío y otro se haya perdido. Se
+        # reportan los campos para compararlos contra el original.
+        resultado["ejecutables"] = semantica(ini)["ejecutables"]
 
     elif modo == "write":
         qs = QSettings(str(ini), QSettings.Format.IniFormat)

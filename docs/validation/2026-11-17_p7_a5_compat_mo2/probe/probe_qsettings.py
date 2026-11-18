@@ -79,7 +79,11 @@ def autorar_ini() -> None:
     qs.setValue("first_start", "false")
     qs.setValue("iniFiles/Skyrim.ini", "G:/Lab_Compat/Skyrim.ini")
     qs.beginWriteArray("customExecutables", len(EJECUTABLES))
-    for indice, exe in enumerate(EJECUTABLES, start=1):
+    # Índice CERO: ``setArrayIndex`` es 0-based y escribe ``1\`` en el archivo.
+    # Con ``start=1`` se escribían ``2\..4\`` con ``size=3``: el primer elemento
+    # salía vacío y el último se perdía. Lo encontró Codex sobre #965 y está
+    # anotado en el Anexo B del informe.
+    for indice, exe in enumerate(EJECUTABLES, start=0):
         qs.setArrayIndex(indice)
         for campo, valor in exe.items():
             qs.setValue(campo, valor)
@@ -135,6 +139,12 @@ def hijo(modo: str, etiqueta: str, *extra: str, esperar_ready: float = 60.0) -> 
     if extra or modo in {"deferred", "dtor", "hold"}:
         args += [str(ready), str(release)]
     args += list(extra)
+    # Un rerun en el MISMO run_dir heredaría los archivos de coordinación de la
+    # corrida anterior: ``esperar_archivo`` volvería al instante y el hijo no
+    # esperaría el checkpoint. Se limpian antes de lanzarlo (el tenedor ya lo
+    # hace con los suyos).
+    ready.unlink(missing_ok=True)
+    release.unlink(missing_ok=True)
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return {"proc": proc, "salida": salida, "ready": ready, "release": release, "stderr": proc.stderr}
 
@@ -216,6 +226,7 @@ def medir() -> dict[str, object]:
     h = hijo("deferred", "C")
     listo = esperar_archivo(h["ready"])
     tenedor.liberar()
+    h["release"].write_text("go", encoding="utf-8")  # sin esto el hijo espera su timeout
     h["proc"].wait(timeout=120)
     deferido = leer_json(h["salida"])
     resultados["C_sync_diferido"] = deferido
@@ -225,10 +236,11 @@ def medir() -> dict[str, object]:
     fresco = leer_json(hc2["salida"])
     resultados["C_lectura_fresca"] = fresco
     resultados["C_semantica"] = {
-        "conserva_ejecutables": fresco.get("n_ejecutables") == len(EJECUTABLES),
+        "conserva_ejecutables": fresco.get("ejecutables") == semantica_esperada(),
         "gamePath": fresco.get("gamePath"),
         "n_claves": fresco.get("n_claves"),
         "gameName": fresco.get("gameName"),
+        "ejecutables": fresco.get("ejecutables"),
     }
 
     # D) destructor que sincroniza después de la liberación
@@ -240,6 +252,7 @@ def medir() -> dict[str, object]:
     h = hijo("dtor", "D")
     listo = esperar_archivo(h["ready"])
     tenedor.liberar()
+    h["release"].write_text("go", encoding="utf-8")  # idem: el destructor corre al salir
     h["proc"].wait(timeout=120)
     resultados["D_ready_observado"] = listo
     # releer la semántica en un proceso nuevo
@@ -248,7 +261,7 @@ def medir() -> dict[str, object]:
     resultados["D_semantica_tras_destructor"] = leer_json(h2["salida"])
     resultados["D_sha_cambio"] = sha256(INI) != sha0
     resultados["D_conserva_ejecutables"] = (
-        resultados["D_semantica_tras_destructor"].get("n_ejecutables") == len(EJECUTABLES)
+        resultados["D_semantica_tras_destructor"].get("ejecutables") == semantica_esperada()
     )
 
     # E) objeto QSettings vivo: ¿retiene el archivo?

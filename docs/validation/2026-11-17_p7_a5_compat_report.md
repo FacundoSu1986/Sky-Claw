@@ -169,8 +169,8 @@ INI de laboratorio **autorado con `QSettings`**: 34 claves, `gamePath` como
 |---|---|
 | **A** — cliente arranca con el lock retenido | `status` tras ctor `AccessError`; **0 claves**; `gamePath` nulo; **0 ejecutables**; INI intacto |
 | **B** — escritura con el lock retenido | 0 claves leídas; `setValue`+`sync` → `AccessError`; **INI intacto** |
-| **C** — `sync` diferido | 1.er `sync` `AccessError`; tras liberar escribe y una lectura fresca ve **36 claves** (34+2) con los **3 ejecutables y `gamePath` intactos** |
-| **D** — destructor tras liberar | escribió; 35 claves; **3 ejecutables y `gamePath` preservados** |
+| **C** — `sync` diferido | 1.er `sync` `AccessError`; tras liberar escribe y una lectura fresca ve **36 claves** (34+2) con los **3 ejecutables (SKSE, SSEEdit, Pandora con sus argumentos) y `gamePath` intactos**, comparados **campo a campo** |
+| **D** — destructor tras liberar | escribió; 35 claves; **3 ejecutables y `gamePath` preservados**, también campo a campo |
 | **E** — objeto `QSettings` vivo, sin lock | adquisición `ESTABLISHED` ⇒ **`QSettings` no retiene el archivo** |
 
 Hallazgo con consecuencia: **`status()` es pegajoso.** En C el segundo `sync`
@@ -288,6 +288,15 @@ suite de exclusión sigue en 78 passed / 1 skipped.
 Lección para futuras fases: un archivo versionado bajo `docs/validation/` entra en
 el censo AST aunque no lo ejecute CI, así que no puede llevar BOM.
 
+### Revisiones de #965 (ronda 1, HEAD `6081dd26`)
+
+| Revisor | Resultado |
+|---|---|
+| Codex (`chatgpt-codex-connector`) | **2 findings P2**, ambos en la sonda y **ambos demostrados**: índices 1-based del array (perdía Pandora y la verificación sólo comparaba la cantidad) y archivos de coordinación rancios en un rerun. Corregidos; evidencia regenerada (§9, Anexo B.6–7) |
+| Qodo — Revisor Adversarial | sin hallazgos («No se detectaron problemas importantes») |
+| Qodo — Regression & Test Oracle | `success`, sin comentarios |
+| CodeRabbit | quedó en «review in progress»; sin findings al cierre de esta ronda |
+
 ## 18. Colisiones con otros PRs
 
 - No había PR abierto para `test/p7-a5-compat-mo2` (`gh pr list` vacío).
@@ -386,6 +395,18 @@ en `%LOCALAPPDATA%\ModOrganizer` o en `.sky_claw\config.toml`.
 5. **Tres tests descartados.** Se escribieron truncado, `ReplaceFileW` y alias;
    el análisis de mutantes mostró que ninguno mata un mutante propio, y sus
    docstrings afirmaban más de lo que probaban. Se retiraron (ver §16).
+6. **Fixture de arrays 1-based (finding de Codex en #965).** La sonda escribía
+   los índices 1–3 con `beginWriteArray(..., 3)`, pero `setArrayIndex` es
+   **0-based**: el archivo quedaba con `2\..4\` y `size=3`, así que la primera
+   entrada salía vacía y **Pandora se perdía**. La verificación sólo comparaba la
+   CANTIDAD de ejecutables (3) y por eso daba `True`. Corregido a índice cero y a
+   comparación **campo a campo** contra el original; la evidencia cruda se
+   regeneró (§9). El hallazgo es del revisor, no propio, y queda anotado.
+7. **Archivos de coordinación rancios (finding de Codex en #965).** Un rerun en el
+   mismo `run_dir` heredaba `.ready`/`.release` de la corrida anterior, con lo que
+   el cliente no esperaba su checkpoint (en E podía reportarse «objeto vivo» sin
+   serlo). Ahora `hijo()` los borra antes de lanzar y el probe escribe también el
+   `release` del cliente, así que la corrida bajó de ~2 min a **3,7 s**.
 
 ## Anexo C — Datos que NO se publican
 
