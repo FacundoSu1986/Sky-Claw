@@ -729,6 +729,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frontera con lock/journal/rollback. Ancla: `tests/test_xedit_agent_readonly_policy.py`.
 
 ### Changed
+- **La suite completa de Windows se reparte en 4 shards por archivo, con una verificación de que ningún test quedó sin correr.**
+  En un solo job la suite tardaba 50-72 min (py3.11 y py3.12) y cada push de cada PR reiniciaba esa espera; el propio
+  comentario de `ci.yml` ya señalaba repartirla como el paso siguiente. Ahora el job `test-shard` (matriz Windows × py3.11/3.12 ×
+  4 shards) corre `pytest` con el plugin `scripts/ci_particion.py`, que colecta la suite **entera** y se queda con los archivos que
+  le tocan (reparto voraz por cantidad de tests, determinista y independiente del orden): no hay una lista de archivos que
+  mantener, y un subdirectorio nuevo de tests queda cubierto por construcción (`tests/` ya tiene `agent/`, `bdd/` y `security/`).
+  - **El riesgo de repartir es que un test no corra en ningún shard sin que nada falle.** Cada shard deja un manifiesto (archivos,
+    cantidad de tests, huella de la suite colectada, tiempo de tests por archivo) y el job `test` —que conserva el nombre del check por
+    versión, `🧪 Tests / windows-latest / py3.x`— exige que entre todos hayan seleccionado exactamente la suite: misma huella, mismo
+    total, ningún archivo
+    en dos shards, la suma de tests igual al total colectado y la huella declarada igual a la recalculada con los archivos que de verdad
+    seleccionaron (un shard que declara otro archivo del mismo peso ya no pasa). Un manifiesto mal formado (conteo de texto, `true`, 0) se reporta
+    como error con su ruta en vez de reventar con `TypeError`, y `--total` no positivo es un error de uso (antes `--total 0` sobre un directorio
+    vacío daba OK). Un `SKYCLAW_SHARD` mal escrito aborta la
+    sesión en vez de degradar en silencio a «correr todo».
+  - **La cobertura sigue siendo un gate bloqueante** (`--fail-under=60`): se mide en cada shard y se exige sobre los datos combinados
+    de todos (un shard solo cubre una parte); el verificador exige, con `--con-cobertura`, la base `coverage.sqlite` de CADA shard, presente y legible **por Coverage.py** con al menos un
+    archivo medido (`coverage combine` sobre un glob con una base de menos no falla, y una truncada o sin su esquema la omite con una advertencia y exit 0:
+    las restantes pueden igual cruzar el umbral; `PRAGMA quick_check` de SQLite no alcanzaba: una base sin la tabla `file` da `ok`). `coverage xml` corre antes del umbral para que el
+    artefacto `coverage-report-*` exista aun si el umbral falla; conserva su nombre y su ruta.
+  - **Un shard rojo deja rojo el veredicto** (no «skipped», que GitHub da por satisfecho en un check requerido). El agregador
+    `🧪 Tests (Pytest)` y el job `Build` no cambian. Los artefactos intermedios duran 1 día: pasado ese plazo, «Re-run failed jobs» no sirve para
+    reintentar solo el veredicto (los shards verdes no se repiten y sus artefactos expiraron); hay que usar «Re-run all jobs». Las dos subidas con
+    `if: always()` (`Upload shard results` y `Upload coverage`) llevan `overwrite: true`: el artefacto queda subido aunque el job falle y, con el valor por
+    defecto, el reintento del mismo shard chocaba con el nombre de su primer intento y quedaba rojo aunque pytest pasara (un sufijo con `run_attempt` no
+    sirve: el verificador vería un shard repetido). Un test enumera toda subida con `always()` y congela ese censo.
+  - **Anclas:** `tests/test_ci_particion.py` (propiedades del reparto enumeradas para N de 1 a 9 sobre casos sintéticos y sobre el árbol
+    de tests real, cada modo de falla del verificador y el plugin ejercido en un subproceso) y `tests/test_ci_platform_policy.py`
+    (la cantidad de shards atada a la matriz, a `SKYCLAW_SHARD` y al `--total`; el piso del `timeout-minutes` pasa a anclar el job
+    que corre la suite; todas las acciones fijadas por SHA completo, incluido el nuevo `download-artifact`).
+  - **Medido en la CI de su propio PR (Windows, UNA corrida):** los 8 shards verdes, de 9:28 a 14:57 min cada uno (py3.12: 9:28-12:12;
+    py3.11: 10:48-14:57), el veredicto por versión en ~2 min y todo el run, hasta `Build` verde, en ~20 min contra los 60-72 min de la
+    suite entera en un job. El reparto por cantidad de tests no equilibra perfecto (el shard más lento de py3.11 tarda ~4 min más que
+    el más rápido); cada manifiesto registra el tiempo de los tests por archivo para calibrarlo con datos (es la suma de las fases setup/call/teardown: no incluye
+    la colección ni el arranque, así que para decidir el `timeout-minutes` manda la duración del job entero que muestra Actions).
+  - **El shell importa:** la primera versión corría `pytest` desde `bash` y dos tests que asumen un proceso sin privilegios
+    (`test_tgr_unelevated_without_privilege_fails_closed` y `test_ns_unelevated_without_privilege_fails_closed`) fallaron con «DID NOT
+    RAISE» en los shards 2 y 3; con PowerShell, el shell que usaba el job único, pasan los 8 shards. Se midió que el resultado cambia con
+    el shell, **no por qué** (la hipótesis es el estado del token del proceso). Esos tests no establecen la condición que asumen:
+    corregirlo es un seguimiento aparte, no un motivo para cambiar el shell.
+  - **No verificado:** el `timeout-minutes` de los shards se conserva en 90 a propósito: una sola corrida no alcanza para bajar un piso
+    que el historial muestra volátil (el runner lento de py3.11 llegó a +30 %). Tampoco se midió la concurrencia de runners con varios
+    PRs a la vez ni la protección de rama (se asume, por el comentario de `ci.yml`, que exige los agregadores).
 - **Política de plataformas de CI acotada a Windows para la suite completa (#546).**
   La suite `pytest` con coverage se certifica en **Windows** (Python 3.11 y 3.12) y es
   el único blocker duro; Linux queda como señal **POSIX acotada e informativa**
