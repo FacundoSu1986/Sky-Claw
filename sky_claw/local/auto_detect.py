@@ -16,6 +16,7 @@ import threading
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from sky_claw.aislamiento import perfil_aislado
 from sky_claw.config import (
     LOOT_SEARCH_PATHS,
     MO2_COMMON_PATHS,
@@ -177,6 +178,9 @@ class AutoDetector:
     @staticmethod
     async def find_mo2() -> pathlib.Path | None:
         """Locate Mod Organizer 2 (portable install with profiles)."""
+        if perfil_aislado():
+            logger.info("Perfil aislado: se omite la autodetección de MO2 en la máquina real.")
+            return None
         return await asyncio.wait_for(
             run_off_loop(AutoDetector._find_mo2_inner),
             timeout=_SEARCH_TIMEOUT,
@@ -213,6 +217,9 @@ class AutoDetector:
     @staticmethod
     async def find_skyrim() -> pathlib.Path | None:
         """Ubica Skyrim (SE/AE/LE) vía registro, librerías de Steam y rutas comunes."""
+        if perfil_aislado():
+            logger.info("Perfil aislado: se omite la autodetección de Skyrim en la máquina real.")
+            return None
         return await asyncio.wait_for(
             run_off_loop(AutoDetector._find_skyrim_inner),
             timeout=_SEARCH_TIMEOUT,
@@ -278,6 +285,9 @@ class AutoDetector:
     @staticmethod
     async def find_loot() -> pathlib.Path | None:
         """Locate the LOOT executable."""
+        if perfil_aislado():
+            logger.info("Perfil aislado: se omite la autodetección de LOOT en la máquina real.")
+            return None
         return await asyncio.wait_for(
             run_off_loop(AutoDetector._find_loot_inner),
             timeout=_SEARCH_TIMEOUT,
@@ -305,6 +315,9 @@ class AutoDetector:
     @staticmethod
     async def find_xedit() -> pathlib.Path | None:
         """Locate the SSEEdit executable."""
+        if perfil_aislado():
+            logger.info("Perfil aislado: se omite la autodetección de xEdit en la máquina real.")
+            return None
         return await asyncio.wait_for(
             run_off_loop(AutoDetector._find_xedit_inner),
             timeout=_SEARCH_TIMEOUT,

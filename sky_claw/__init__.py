@@ -18,6 +18,12 @@ except PackageNotFoundError:
     # the exe's VERSIONINFO resource. Bump it to match the release.
     __version__ = "0.2.4"
 
+# Perfil aislado (``SKYCLAW_ISOLATED``): se aplica AL IMPORTAR el paquete, antes de que cualquier módulo lea el keyring.
+# Sin la variable es un no-op que no importa ``keyring`` (ver ``sky_claw/aislamiento.py``).
+from sky_claw.aislamiento import aplicar_aislamiento as _aplicar_aislamiento
+
+_aplicar_aislamiento()
+
 if TYPE_CHECKING:
     # FASE 5: Asset Conflict Detection Module
     from sky_claw.local.assets import (

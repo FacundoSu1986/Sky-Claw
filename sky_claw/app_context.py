@@ -15,6 +15,7 @@ from typing import Any, TypeVar
 import aiohttp
 import keyring
 
+from sky_claw.aislamiento import aplicar_aislamiento
 from sky_claw.app.agent.providers import ProviderConfigError, create_provider
 from sky_claw.app.agent.router import LLMRouter
 from sky_claw.app.agent.tools_facade import AsyncToolRegistry
@@ -484,6 +485,8 @@ class AppContext:
     """Manages lifecycle of all async resources."""
 
     def __init__(self, args) -> None:
+        # Perfil aislado (R0): un AppContext con HOME aislado leyó el token de Telegram del keyring GLOBAL del operador.
+        aplicar_aislamiento()
         self._args = args
         self.config_path: pathlib.Path | None = None
 

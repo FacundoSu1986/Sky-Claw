@@ -18,6 +18,7 @@ import pathlib
 import shutil
 from typing import Final
 
+from sky_claw.aislamiento import perfil_aislado
 from sky_claw.config import (
     AE_MIN_MINOR_VERSION,
     AE_MIN_SIZE_MB,
@@ -622,6 +623,12 @@ class EnvironmentScanner:
         if configured and ((configured / "SkyrimSE.exe").exists() or (configured / "Skyrim.exe").exists()):
             return configured
 
+        # Perfil aislado: lo que sigue (registro, Steam, GOG, rutas comunes) es la máquina REAL del usuario. Se apaga el
+        # descubrimiento, no la configuración: la ruta fijada arriba ya ganó. Paridad con `AutoDetector.find_skyrim`.
+        if perfil_aislado():
+            logger.info("Perfil aislado: se omite la detección de Skyrim en la máquina real.")
+            return None
+
         # 1. Registry — Steam
         for reg_key in (
             r"SOFTWARE\Bethesda Softworks\Skyrim Special Edition",
@@ -673,6 +680,11 @@ class EnvironmentScanner:
 
     async def _find_mo2(self) -> pathlib.Path | None:
         """Locate Mod Organizer 2."""
+        # Perfil aislado: rutas comunes, AppData y Program Files son la máquina REAL del usuario. Paridad con
+        # `AutoDetector.find_mo2`.
+        if perfil_aislado():
+            logger.info("Perfil aislado: se omite la detección de MO2 en la máquina real.")
+            return None
         for raw in MO2_COMMON_PATHS:
             p = pathlib.Path(raw)
             if (p / "ModOrganizer.exe").exists():
