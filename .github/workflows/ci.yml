@@ -139,29 +139,14 @@ jobs:
           cache: pip
       - name: Install dev dependencies
         run: pip install -e ".[dev]"
-      # TEMPORAL (investigacion de #966, se quita al cerrarla): dos tests "sin privilegios => falla cerrado" pasaban en la
-      # corrida unica y fallaron en el reparto. Se corren AISLADOS bajo cada shell (solo en un shard) para separar
-      # "el shell cambia el token del proceso" de "estado que dejaban otros archivos". Tambien imprimen el token.
-      - name: Diagnostic isolated under bash (temporary)
-        if: matrix.shard == 1 && matrix.python-version == '3.12'
-        shell: bash
-        continue-on-error: true
-        run: |
-          whoami /groups | grep -i "Mandatory Label" || true
-          whoami /priv | grep -i -E "SeRestorePrivilege|SeTakeOwnershipPrivilege|SeBackupPrivilege" || true
-          python -m pytest -p no:cacheprovider --basetemp=.pytest-diag-bash -q "tests/test_runtime_vault_trusted_registry.py::TestTrustedGoldenRegistryAtomicStorage::test_tgr_unelevated_without_privilege_fails_closed" "tests/test_runtime_vault_trusted_namespace.py::TestNamespaceBootstrapWindows::test_ns_unelevated_without_privilege_fails_closed"
-      - name: Diagnostic isolated under pwsh (temporary)
-        if: matrix.shard == 1 && matrix.python-version == '3.12'
-        continue-on-error: true
-        run: |
-          whoami /groups | Select-String "Mandatory Label"
-          whoami /priv | Select-String "SeRestorePrivilege|SeTakeOwnershipPrivilege|SeBackupPrivilege"
-          python -m pytest -p no:cacheprovider --basetemp=.pytest-diag-pwsh -q "tests/test_runtime_vault_trusted_registry.py::TestTrustedGoldenRegistryAtomicStorage::test_tgr_unelevated_without_privilege_fails_closed" "tests/test_runtime_vault_trusted_namespace.py::TestNamespaceBootstrapWindows::test_ns_unelevated_without_privilege_fails_closed"
       # La cobertura se mide aca y se EXIGE en el job `test` sobre los datos combinados de todos los shards:
       # un shard solo cubre una parte de la suite y no puede cumplir el umbral por su cuenta.
       # SIN `shell:`: usa el shell por defecto de Windows (PowerShell), el MISMO que usaba el job unico. La primera
-      # version de este paso usaba `bash` y dos tests que dependen del token del proceso fallaron; no se cambia
-      # el entorno de ejecucion de la suite sin necesidad.
+      # version de este paso usaba `bash` y dos tests que asumen un proceso SIN privilegios fallaron con "DID NOT
+      # RAISE" (test_tgr_unelevated_without_privilege_fails_closed y test_ns_unelevated_without_privilege_fails_closed,
+      # en los shards 2 y 3 de las dos versiones de Python); con PowerShell pasan los 8 shards. Medido: el resultado
+      # cambia con el shell; NO se midio por que (el estado del token del proceso es la hipotesis). Esos tests no
+      # establecen la condicion que asumen: es una dependencia del entorno a corregir aparte, no se cambia el shell.
       - name: Run test shard
         env:
           SKYCLAW_SHARD: ${{ matrix.shard }}/4

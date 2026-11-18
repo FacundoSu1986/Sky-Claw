@@ -148,7 +148,8 @@ def test_cada_shard_corre_su_parte_con_cobertura_y_deja_su_manifiesto() -> None:
         "python -m pytest -p scripts.ci_particion --cov=sky_claw --cov=scripts --cov-report= tests/",
     ]
     # Sin ``shell``: PowerShell, el shell por defecto de Windows y el que usaba el job único. Con ``bash`` dos tests que
-    # dependen del token del proceso fallaron en el primer ensayo de CI (#966): no se cambia el entorno sin necesidad.
+    # asumen un proceso sin privilegios fallaron en el primer ensayo de CI (#966) y con PowerShell pasan: el resultado
+    # cambia con el shell, y no se cambia el entorno de la suite sin necesidad.
     assert "shell" not in paso
     subida = _paso_por_nombre(shard, "Upload shard results")
     assert subida["if"] == "always()"

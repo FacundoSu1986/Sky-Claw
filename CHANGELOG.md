@@ -748,9 +748,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     de tests real, cada modo de falla del verificador y el plugin ejercido en un subproceso) y `tests/test_ci_platform_policy.py`
     (la cantidad de shards atada a la matriz, a `SKYCLAW_SHARD` y al `--total`; el piso del `timeout-minutes` pasa a anclar el job
     que corre la suite; todas las acciones fijadas por SHA completo, incluido el nuevo `download-artifact`).
-  - **No verificado:** el workflow solo se ejerce de verdad en la CI de su propio PR (Windows); localmente se validó el reparto sobre la
-    suite real, la combinación de cobertura y el esquema del workflow, no la ejecución en los runners. El `timeout-minutes` de los
-    shards se conserva en 90 a propósito hasta medir cuánto tarda un shard en CI.
+  - **Medido en la CI de su propio PR (Windows, UNA corrida):** los 8 shards verdes, de 9:28 a 14:57 min cada uno (py3.12: 9:28-12:12;
+    py3.11: 10:48-14:57), el veredicto por versión en ~2 min y todo el run, hasta `Build` verde, en ~20 min contra los 60-72 min de la
+    suite entera en un job. El reparto por cantidad de tests no equilibra perfecto (el shard más lento de py3.11 tarda ~4 min más que
+    el más rápido); cada manifiesto registra la duración por archivo para calibrarlo con datos.
+  - **El shell importa:** la primera versión corría `pytest` desde `bash` y dos tests que asumen un proceso sin privilegios
+    (`test_tgr_unelevated_without_privilege_fails_closed` y `test_ns_unelevated_without_privilege_fails_closed`) fallaron con «DID NOT
+    RAISE» en los shards 2 y 3; con PowerShell, el shell que usaba el job único, pasan los 8 shards. Se midió que el resultado cambia con
+    el shell, **no por qué** (la hipótesis es el estado del token del proceso). Esos tests no establecen la condición que asumen:
+    corregirlo es un seguimiento aparte, no un motivo para cambiar el shell.
+  - **No verificado:** el `timeout-minutes` de los shards se conserva en 90 a propósito: una sola corrida no alcanza para bajar un piso
+    que el historial muestra volátil (el runner lento de py3.11 llegó a +30 %). Tampoco se midió la concurrencia de runners con varios
+    PRs a la vez ni la protección de rama (se asume, por el comentario de `ci.yml`, que exige los agregadores).
 - **Política de plataformas de CI acotada a Windows para la suite completa (#546).**
   La suite `pytest` con coverage se certifica en **Windows** (Python 3.11 y 3.12) y es
   el único blocker duro; Linux queda como señal **POSIX acotada e informativa**
