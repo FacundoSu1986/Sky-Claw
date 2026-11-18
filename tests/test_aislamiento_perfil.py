@@ -600,6 +600,14 @@ def test_el_runbook_del_rig_exige_activar_el_perfil_aislado() -> None:
     assert ENV_PERFIL_AISLADO in runbook
 
 
+def test_agents_md_documenta_el_perfil_aislado_y_sus_anclas() -> None:
+    """AGENTS.md es la fuente canónica para los agentes: la regla y su ancla no se borran en silencio."""
+    agents = (RAIZ / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert ENV_PERFIL_AISLADO in agents
+    assert "tests/test_aislamiento_perfil.py" in agents
+
+
 def test_el_modulo_de_aislamiento_no_importa_nada_pesado_al_cargarse() -> None:
     """``import sky_claw`` lo ejecuta SIEMPRE (los workers livianos no deben arrastrar ``config``/``keyring``)."""
     importaciones = [

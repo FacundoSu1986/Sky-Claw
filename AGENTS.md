@@ -314,6 +314,20 @@ el valor vivo del keyring prevalece sobre memoria o plaintext obsoletos; una
 escritura rechazada queda pendiente para reintento. Ancla:
 `tests/test_config_secretos_sin_keyring.py`.
 
+**Perfil aislado (`SKYCLAW_ISOLATED=1`).** Un `HOME` aislado **no** aísla el keyring de Windows, el
+registro ni las bibliotecas de Steam: son del usuario, no del perfil. Todo arnés, rig o script que
+construya `AppContext`/`Config` fuera de producción activa la variable (el runbook del rig la exige,
+regla 7). Con ella el keyring pasa a un backend que **falla** —nunca el nulo, con el que
+`set_password` «funciona» sin guardar y `Config._load_from_keyring` borraría el secreto del TOML— y
+`AutoDetector`/`EnvironmentScanner` dejan de descubrir la máquina real; las rutas que el perfil fija
+en su config siguen valiendo. La propiedad del mecanismo: *el aislamiento solo protege si TODOS los
+accesos participan*. Todo acceso al keyring pasa por el backend global (`sky_claw/aislamiento.py`
+instala uno solo) y lo anclan los censos por AST de `tests/test_aislamiento_perfil.py`: los módulos
+que importan `keyring` o `winreg` están congelados por igualdad, ninguno instancia un backend propio
+y toda llamada sobrevive a un backend que falla. Un módulo nuevo que toque keyring o lea el registro
+rompe el ancla hasta que se decide su receta. *Historia: en R0 un `AppContext` con `HOME` aislado leyó
+el token de Telegram del operador y ejecutó long-polling (más de 700 llamadas, todas 401).*
+
 **Propiedad del `external_work_root` (P0 de [ADR 0011](docs/adr/0011-dyndolod-external-work-root.md)).**
 `sky_claw/local/tools/dyndolod_workspace.py` contesta **una sola vez** las cuatro
 preguntas del work root externo —admisión, binding, estado y coordinación— porque
