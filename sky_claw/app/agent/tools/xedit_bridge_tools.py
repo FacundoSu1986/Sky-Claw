@@ -275,18 +275,25 @@ class GestorDeAdmisionesNativas:
     async def _correr(self, trabajo: TrabajoDeAdmision, service: XEditBridgeService, hitl: HITLGuard) -> None:
         try:
             decision = await _pedir_aprobacion_de_admision(hitl, trabajo.visible, trabajo.contexto)
-            if decision is not Decision.APPROVED:
-                logger.warning("Admisión de %s no aprobada: %s", trabajo.visible, decision.value)
+            # Solo un ``Decision.APPROVED`` autoriza. Un guard que devuelve otro TIPO (texto, None, bool)
+            # no es una aprobación: se rechaza como decisión, sin leer ``.value`` ni caer en "error
+            # inesperado". Presencia de contexto y autorización HITL siguen siendo controles separados.
+            if not isinstance(decision, Decision) or decision is not Decision.APPROVED:
+                valor = decision.value if isinstance(decision, Decision) else texto_una_linea(decision)
+                logger.warning("Admisión de %s no aprobada: %s", trabajo.visible, valor)
                 trabajo.estado = "rechazada"
                 resultado: dict[str, Any] = {
                     "success": False,
                     "message": "Admisión rechazada por el operador: no se copió nada.",
                     "status": "denied",
-                    "decision": decision.value,
+                    "decision": valor,
                 }
             else:
                 trabajo.estado = "en_curso"
-                resultado = await service.admitir(trabajo.plugin, contexto=trabajo.contexto)
+                # ``requerir_contexto=True``: el contexto que se mostró al operador no es opcional. La
+                # aprobación HITL ya se verificó arriba; acá se exige que la copia quede ligada a ESE
+                # contexto y no a uno re-derivado en silencio por el servicio.
+                resultado = await service.admitir(trabajo.plugin, contexto=trabajo.contexto, requerir_contexto=True)
         except asyncio.CancelledError:
             await self._registrar_cancelacion(trabajo)
             raise

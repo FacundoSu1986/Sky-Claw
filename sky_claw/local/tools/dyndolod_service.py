@@ -12,12 +12,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
+import inspect
 import logging
 import os
 import pathlib
 import tempfile
 import time
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from sky_claw.app.core.event_bus import CoreEventBus, Event
 from sky_claw.app.core.event_payloads import (
@@ -55,9 +58,11 @@ from sky_claw.local.tools.dyndolod_runner import (
     DynDOLODSpawnStrategy,
     DynDOLODTimeoutError,
     InteraccionDeCorrida,
+    PreflightDeBackend,
     ProgresoDeHerramienta,
     ReadinessMode,
     normalize_dyndolod_spawn_strategy,
+    preflight_del_backend,
     resolve_data_visibility_domain,
 )
 from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido, ModoDeInteraccion, modo_de_interaccion_desde
@@ -166,6 +171,52 @@ def _modo_de_interaccion_o_none(valor: object) -> ModoDeInteraccion | None:
         return modo_de_interaccion_desde(valor)
     except ValueError:
         return None
+
+
+_R = TypeVar("_R")
+
+
+def _es_una_corrida(*, dry_run: object, interaction_mode: object) -> bool:
+    """``True`` si una llamada a ``execute`` con estos argumentos CORRE el pipeline.
+
+    Es lo que hace dueña a una llamada de la muestra de progreso. Las dos salidas tempranas de ``execute`` que no
+    corren nada —un modo desconocido, que se rechaza sin tocar nada, y el ``dry_run``, que es de solo lectura— no
+    pueden descartar la muestra de OTRA corrida que está en curso: no son suyas. Misma noción de «corrida» que las
+    dos salidas tempranas del cuerpo de ``execute``; lo anclan los tests de ``test_dyndolod_progreso_servicio.py``.
+    """
+    return not dry_run and _modo_de_interaccion_o_none(interaction_mode) is not None
+
+
+def _descarta_el_progreso_al_salir(metodo: Callable[..., Awaitable[_R]]) -> Callable[..., Awaitable[_R]]:
+    """Descarta la muestra de progreso en TODA salida de una corrida de ``execute`` (H-11; CodeRabbit en #937).
+
+    La muestra es de UNA corrida: se descartaba al iniciar y en ``_publish_completed``, que es lo único que alcanzan
+    las salidas «normales». Una salida que no llega ahí —una excepción, una cancelación dentro de un handler de
+    fallo (``await _cerrar_tx_tras_rollback`` antes de ``_publicar_evento_terminal``), un retorno temprano— dejaba la
+    última muestra de una corrida que ya había terminado, y ``lods_status`` y la GUI la seguían mostrando.
+
+    El mecanismo vive en el LÍMITE de ``execute`` y no en cada handler: ``finally`` corre en toda salida, también ante
+    ``CancelledError``, y la asignación es síncrona (sin ``await``), así que ni una segunda cancelación puede
+    interrumpirla. Por eso es un decorador y no un ``try`` dentro de ``execute``: no re-indenta ~1500 líneas ni toca
+    la familia de handlers congelada (``test_la_familia_de_handlers_de_execute_esta_congelada``). El resto de las
+    salidas de la corrida conservan su camino: este descarte es la red de seguridad, no su reemplazo.
+    """
+    firma = inspect.signature(metodo)
+
+    @functools.wraps(metodo)
+    async def envuelto(self: Any, *args: Any, **kwargs: Any) -> _R:
+        argumentos = firma.bind(self, *args, **kwargs)
+        argumentos.apply_defaults()
+        if not _es_una_corrida(
+            dry_run=argumentos.arguments["dry_run"], interaction_mode=argumentos.arguments["interaction_mode"]
+        ):
+            return await metodo(self, *args, **kwargs)
+        try:
+            return await metodo(self, *args, **kwargs)
+        finally:
+            self._progreso_actual = None
+
+    return envuelto
 
 
 def _codigos_desatendidos_mencionados(texto: str) -> list[str]:
@@ -536,6 +587,15 @@ class DynDOLODPipelineService:
         )
         return self._runner
 
+    async def verificar_backend_listo(self) -> PreflightDeBackend:
+        """¿Puede el backend de ESTA corrida servirla ahora? (B-3 / H-6)
+
+        Lo consultan los guards de etapas previas (GUI asistida y agente remoto) ANTES de pedirle al operador
+        que apruebe seguir sin ellas: lo mismo que hace el runner antes de la aprobación remota de la
+        configuración. Delega en el fail-closed único; el servicio no interpreta la strategy.
+        """
+        return await preflight_del_backend(self._spawn_strategy)
+
     def verificar_etapas_previas(self) -> EvidenciaDeEtapasPrevias:
         """SOP §5.2: artefactos de las etapas 6, 7 y 8 en el perfil activo (#661).
 
@@ -771,11 +831,16 @@ class DynDOLODPipelineService:
           ``omit_unconfigured`` el checkpoint queda honestamente OMITIDO (no se
           midió, no se afirma un verde).
 
-        Defecto hermano conocido (NO cubierto acá): el camino legacy "DynDOLOD
-        solo" (``run_texgen=False`` SIN ``TexGen Output`` preservado) bajo
-        brokered spawnea con fingerprint de perfil + canary + atestación runtime,
-        pero sin una prueba de visibilidad del load order completo — el sensor
-        físico ya no lo cubre ahí por diseño. Follow-up abierto con evidencia.
+        El camino legacy "DynDOLOD solo" (``run_texgen=False`` SIN ``TexGen
+        Output`` preservado, o sea ``handoff=None``) NO queda sin prueba de
+        visibilidad bajo brokered (H-13, B-4): ``spawn`` arma el job con
+        ``expected_plugins`` —el conjunto completo de plugins activos— en TODAS
+        sus rutas, y el worker rechaza el dispatch si alguno no es visible en el
+        Data virtual (anclado por ``test_dyndolod_solo_brokered_visibilidad.py``).
+        Lo que NINGUNA ruta brokered prueba hoy es la visibilidad de los archivos
+        que no son plugins (meshes, texturas) de cada mod: es la hipótesis H-2
+        (el overlay podría mostrar un árbol viejo o parcial y el canary acertar
+        igual), a medir en rig (S-2) antes de diseñar un muestreo.
 
         El cache de ``self._preflight`` es seguro bajo la premisa —anclada en
         tests— de que ``_spawn_strategy``/``_data_visibility_domain`` se fijan
@@ -1402,6 +1467,7 @@ class DynDOLODPipelineService:
     # Pipeline principal
     # ------------------------------------------------------------------
 
+    @_descarta_el_progreso_al_salir
     async def execute(
         self,
         preset: str = "Medium",
@@ -3029,7 +3095,8 @@ class DynDOLODPipelineService:
     def progreso_actual(self) -> DynDOLODPipelineProgressPayload | None:
         """Última muestra de progreso de la corrida EN CURSO (H-11), o ``None`` si no hay.
 
-        Es de UNA corrida: se descarta al iniciar la siguiente y al terminar. La leen las superficies que
+        Es de UNA corrida: se descarta al iniciar la siguiente y en TODA salida de ``execute``
+        (``_descarta_el_progreso_al_salir``), no solo al completar. La leen las superficies que
         muestran el estado (``lods_status`` del agente); el mismo dato viaja por el evento
         ``pipeline.dyndolod.progress`` para quien prefiera suscribirse.
         """

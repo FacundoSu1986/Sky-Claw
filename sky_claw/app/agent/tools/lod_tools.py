@@ -47,6 +47,7 @@ from typing import Any, Literal
 
 from sky_claw.app.agent.tools.job_ids import nuevo_id_de_trabajo
 from sky_claw.local.tools.dyndolod_progreso import progreso_en_hechos
+from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
 from sky_claw.local.validators.etapas_previas_lods import etapas_previas_faltantes
 
@@ -134,6 +135,21 @@ def resumen_para_el_operador(trabajo: TrabajoDeLods) -> str:
     if resultado.get("needs_deployment"):
         accion = f" Acción pendiente: {resultado.get('handoff_action') or 'despliegue del TexGen Output'}."
     return f"❌ Etapa 9 ({modo}) falló tras {duracion} min: {prefijo}{detalle[:900]}{accion}"
+
+
+def _resultado_por_backend_no_listo(motivo: str, trabajo: TrabajoDeLods) -> dict[str, Any]:
+    """Resultado del trabajo cuando el backend no puede servir la corrida y por eso NO se le preguntó al operador."""
+    mensaje = (
+        f"{CodigoDesatendido.BACKEND_NOT_READY.value}: la etapa 9 no se lanzó y no se te pidió confirmar las "
+        f"etapas previas faltantes porque el backend no está listo: {motivo}"
+    )
+    return {
+        "success": False,
+        "message": mensaje,
+        "errors": [mensaje],
+        "etapas_faltantes": list(trabajo.etapas_faltantes),
+        "backend_no_listo": motivo,
+    }
 
 
 class GestorDeTrabajosDeLods:
@@ -241,9 +257,16 @@ class GestorDeTrabajosDeLods:
 
     async def _correr(self, trabajo: TrabajoDeLods, servicio: Any) -> None:
         try:
-            if trabajo.etapas_faltantes and not await self._operador_aprueba_seguir(trabajo):
-                await self._terminar(trabajo, trabajo.resultado or {"success": False, "message": ""})
-                return
+            if trabajo.etapas_faltantes:
+                # B-3 (H-6): antes de preguntarle al operador remoto si sigue sin las etapas previas, el backend
+                # tiene que poder servir la corrida: aprobar una que va a morir en el spawn es aprobar nada.
+                backend = await servicio.verificar_backend_listo()
+                if not backend.listo:
+                    await self._terminar(trabajo, _resultado_por_backend_no_listo(backend.motivo, trabajo))
+                    return
+                if not await self._operador_aprueba_seguir(trabajo):
+                    await self._terminar(trabajo, trabajo.resultado or {"success": False, "message": ""})
+                    return
             trabajo.estado = "en_curso"
             resultado = await servicio.execute(**trabajo.parametros)
         except asyncio.CancelledError:

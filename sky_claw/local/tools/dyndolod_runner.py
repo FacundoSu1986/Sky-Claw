@@ -29,7 +29,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal, NamedTuple, Protocol
+from typing import Any, Literal, NamedTuple, Protocol, TypeVar
 
 from sky_claw.app.security.links import (
     exigir_arbol_copiable_sin_reparse,
@@ -733,6 +733,28 @@ async def _cerrar_recursos_del_proceso(
     return intencion, falla
 
 
+_T = TypeVar("_T")
+
+
+async def _esperar_con_plazo(aw: Awaitable[_T], timeout: float | None) -> _T:
+    """``asyncio.wait_for`` sin su defecto de 3.11: la cancelación externa NUNCA se pierde.
+
+    En 3.11 ``wait_for`` envuelve el awaitable en una tarea interna. Si la cancelación de quien espera llega desde que el
+    interno quedó liberado hasta que el plazo resume, ``wait_for`` devuelve el resultado y la cancelación se pierde. En el
+    latido del runner eso dejaba a la tarea viva y a la limpieza esperándola para siempre (``gather(heartbeat)`` no tiene
+    plazo): ``cancelling() == 1`` y detenida en su ``sleep``, 48 cuelgues en 480 corridas bajo carga.
+    ``asyncio.timeout`` espera EN LÍNEA, en la misma tarea (sin tarea interna no hay ventana), y es lo que usa ``wait_for``
+    desde 3.12.
+
+    Misma forma de llamada y mismo contrato que ``wait_for``: ``TimeoutError`` al vencer (el awaitable queda cancelado) y
+    ``timeout=None`` espera sin cota. Es la ÚNICA pieza de este módulo que sabe envolver un plazo: ``wait_for`` está
+    prohibido acá (``tests/test_dyndolod_plazos_y_cancelacion.py``), porque cada sitio que lo use es un sitio donde el
+    shutdown externo puede perderse.
+    """
+    async with asyncio.timeout(timeout):
+        return await aw
+
+
 async def _limpiar_helpers_en_salida_normal(
     tool_name: str,
     heartbeat: asyncio.Task[Any],
@@ -771,8 +793,13 @@ async def _limpiar_helpers_en_salida_normal(
         # timeout, que sí cancela los drains). Agotada la gracia, cancelamos los
         # drains y seguimos con el output parcial (el proceso ya reportó éxito).
         try:
-            results = await asyncio.wait_for(
-                asyncio.gather(drain_out, drain_err, return_exceptions=True),
+            # ``shield``: los drains son helpers de ESTA limpieza y las cancelaciones REPETIDAS del caller no pueden
+            # reenviárseles a mitad de su propio cleanup (R3: terminales ANTES de ``close_job``). Esperar el ``gather`` en
+            # línea reenvía cada ``cancel()`` a sus hijos, y ``wait_for`` lo evitaba sin que nadie lo hubiera escrito: su
+            # propio waiter absorbía la segunda cancelación. Ancla:
+            # ``test_r3_salida_normal_cancelacion_durante_drain_grace_espera_helpers_antes_de_close_job``.
+            results = await _esperar_con_plazo(
+                asyncio.shield(asyncio.gather(drain_out, drain_err, return_exceptions=True)),
                 timeout=_DRAIN_GRACE_SECONDS,
             )
         except TimeoutError:
@@ -2065,10 +2092,83 @@ def normalize_dyndolod_spawn_strategy(
     return spawn_strategy
 
 
+@dataclass(frozen=True, slots=True)
+class PreflightDeBackend:
+    """Veredicto de «¿este backend puede servir una corrida AHORA?» (B-3 / H-6).
+
+    ``listo=False`` siempre trae un ``motivo`` legible por el operador: quien recibe el corte
+    tiene que poder leer POR QUÉ no hay backend (bridge sin conectar, bundle viejo, barrera de
+    contención puesta) sin ir a buscarlo a un log. Se construye con :meth:`ok` y
+    :meth:`bloqueado`.
+    """
+
+    listo: bool
+    motivo: str = ""
+
+    @classmethod
+    def ok(cls) -> PreflightDeBackend:
+        return cls(listo=True)
+
+    @classmethod
+    def bloqueado(cls, motivo: str) -> PreflightDeBackend:
+        if not motivo.strip():
+            raise ValueError("un backend no listo tiene que decir por qué: el motivo no puede ser vacío")
+        return cls(listo=False, motivo=motivo)
+
+
+async def preflight_del_backend(spawn_strategy: object) -> PreflightDeBackend:
+    """La ÚNICA pieza que le pregunta a una strategy si su backend está listo. Fail-closed.
+
+    Toda pregunta al operador anterior al ``spawn`` (la aprobación remota de la configuración
+    del runner, el guard de etapas previas de la GUI asistida y el del agente remoto) pasa por
+    acá antes de preguntar: aprobar una corrida que el backend no puede arrancar es aprobar
+    nada. El fail-closed vive en UNA pieza —en vez de repartirlo en tres sitios, que es como
+    nace el defecto del hermano que quedó sin el chequeo— y cubre tres casos:
+
+    * la strategy no declara la capability ⇒ no listo (no se adivina el backend);
+    * devuelve algo que no es un :class:`PreflightDeBackend` ⇒ no listo;
+    * la capability lanza ⇒ no listo, con el error en el motivo.
+
+    ``asyncio.CancelledError`` NO se traga: cancelar la corrida tiene que seguir cancelándola.
+
+    **Log once (SOP §5 regla 5):** el registro de la excepción es el DIAGNÓSTICO (lleva la traza local que no
+    viaja al operador) y por eso no lleva ``pipeline_stage``; el que cuenta como registro de la etapa es el del
+    corte, que decide el desenlace en cada sitio. Etiquetar los dos contaría dos veces el mismo intento.
+    """
+    nombre = type(spawn_strategy).__name__
+    preflight = getattr(spawn_strategy, "preflight_backend", None)
+    if preflight is None:
+        return PreflightDeBackend.bloqueado(
+            f"el backend de spawn {nombre} no expone la capability preflight_backend: "
+            "sin poder probar que el backend está listo no se le pregunta nada al operador"
+        )
+    try:
+        veredicto = await preflight()
+    except Exception as exc:  # noqa: BLE001 -- frontera: cualquier fallo del backend es "no listo", nunca "seguir"
+        logger.warning(
+            "preflight del backend %s falló: %s",
+            nombre,
+            exc,
+            extra={"operation_type": "dyndolod_preflight_backend_fallo", "tx_id": _tx_id()},
+            exc_info=True,
+        )
+        # El motivo viaja al operador (Telegram / GUI): una excepción inesperada puede traer rutas locales o detalles
+        # internos, así que acá va SOLO el tipo; la traza completa quedó en el log de arriba (mismo criterio que B-1).
+        # Los motivos pensados para el operador (el ``VfsBrokerError`` del broker) los devuelve la strategy tal cual.
+        return PreflightDeBackend.bloqueado(
+            f"el preflight del backend {nombre} falló ({type(exc).__name__}); revisá el log de Sky-Claw"
+        )
+    if not isinstance(veredicto, PreflightDeBackend):
+        return PreflightDeBackend.bloqueado(
+            f"el preflight del backend {nombre} devolvió {type(veredicto).__name__} y no un PreflightDeBackend"
+        )
+    return veredicto
+
+
 class DynDOLODSpawnStrategy(Protocol):
     """Única frontera de backend; el resto del runner es backend-agnóstico.
 
-    Tres capabilities, una por pregunta distinta:
+    Cuatro capabilities, una por pregunta distinta:
 
     * ``spawn`` — cómo nace el proceso (subprocess local vs sesión USVFS).
     * ``verify_texgen_handoff`` — en qué namespace debe demostrarse la
@@ -2082,6 +2182,12 @@ class DynDOLODSpawnStrategy(Protocol):
       sólo es semánticamente válido cuando el proceso consume ese ``Data``.
       Resuelta por :func:`resolve_data_visibility_domain` — ``None`` (sin
       strategy) conserva ``"physical"``; lo indeterminado falla cerrado.
+    * ``preflight_backend`` — ¿puede el backend servir una corrida AHORA? (B-3).
+      Lo consulta :func:`preflight_del_backend` justo antes de CUALQUIER pregunta al
+      operador previa al ``spawn``: standalone responde listo sin esperar a nadie;
+      brokered espera (plazo corto) a que el bridge de MO2 esté conectado y con un
+      bundle que el host acepta. Es una pregunta barata y SIN efectos: no abre sesiones
+      ni lanza jobs.
 
     **Binding gate→spawn (anti-TOCTOU):** cuando el gate aprobó, ``spawn``
     recibe por parámetro explícito el ``TexGenHandoffApproval`` —el estado
@@ -2110,6 +2216,8 @@ class DynDOLODSpawnStrategy(Protocol):
     ) -> DynDOLODProcess: ...
 
     async def verify_texgen_handoff(self, request: TexGenHandoffRequest) -> TexGenHandoffResult: ...
+
+    async def preflight_backend(self) -> PreflightDeBackend: ...
 
     @property
     def data_visibility_domain(self) -> DataVisibilityDomain: ...
@@ -2174,6 +2282,10 @@ class StandaloneDynDOLODSpawnStrategy:
     @property
     def data_visibility_domain(self) -> DataVisibilityDomain:
         return "physical"
+
+    async def preflight_backend(self) -> PreflightDeBackend:
+        """El backend local no depende de ningún servicio externo: nada que esperar."""
+        return PreflightDeBackend.ok()
 
     async def spawn(
         self,
@@ -2795,7 +2907,7 @@ class DynDOLODRunner:
                 presupuesto_spawn = remaining_budget()
                 if presupuesto_spawn <= 0:
                     raise TimeoutError()
-                proc = await asyncio.wait_for(
+                proc = await _esperar_con_plazo(
                     self._spawn_strategy.spawn(
                         executable=executable,
                         args=args,
@@ -2895,7 +3007,7 @@ class DynDOLODRunner:
             presupuesto = remaining_budget()
             if presupuesto <= 0:
                 raise TimeoutError()
-            await asyncio.wait_for(
+            await _esperar_con_plazo(
                 self._protocolo_de_readiness(
                     tool_name=tool_name,
                     executable=executable,
@@ -2907,7 +3019,7 @@ class DynDOLODRunner:
             presupuesto = remaining_budget()
             if presupuesto <= 0:
                 raise TimeoutError()
-            await asyncio.wait_for(proc.wait(), timeout=presupuesto)
+            await _esperar_con_plazo(proc.wait(), timeout=presupuesto)
         except asyncio.CancelledError as exc:
             # R3 — RUNNER_P2_DOUBLE_CANCEL. Un shutdown externo debe matar el
             # árbol antes de propagar la cancelación: de otro modo DynDOLOD/TexGen
@@ -3294,7 +3406,7 @@ class DynDOLODRunner:
         """Acota el callable del canal humano y aplasta sus fallos a fail-closed."""
         capacidad = self._capacidad_de_readiness()
         try:
-            resultado = await asyncio.wait_for(
+            resultado = await _esperar_con_plazo(
                 capacidad.confirmador.confirmar(solicitud),
                 timeout=solicitud.timeout_seconds + capacidad.gracia_externa_segundos,
             )
@@ -3331,7 +3443,7 @@ class DynDOLODRunner:
         """Aviso post-final-MATCH. Best-effort: nunca gatea una corrida ya verificada."""
         capacidad = self._capacidad_de_readiness()
         try:
-            await asyncio.wait_for(
+            await _esperar_con_plazo(
                 capacidad.confirmador.informar(tool=tool_name, mensaje=mensaje),
                 timeout=capacidad.gracia_externa_segundos,
             )
@@ -3423,6 +3535,10 @@ class DynDOLODRunner:
         if modo is ModoDeInteraccion.ASISTIDO:
             return InteraccionDeCorrida(modo=modo)
         return await self.preparar_interaccion_desatendida(run_texgen=run_texgen, preset=preset)
+
+    async def verificar_backend_listo(self) -> PreflightDeBackend:
+        """¿Puede el backend de ESTA corrida servirla ahora? Delega en el fail-closed único."""
+        return await preflight_del_backend(self._spawn_strategy)
 
     async def preparar_interaccion_desatendida(
         self,
@@ -3517,6 +3633,13 @@ class DynDOLODRunner:
                     output_esperado=str(self._expected_output_de(tool_name)),
                 )
             )
+
+        # B-3: lo barato y determinista (contrato, presets) corrió arriba y corta por su propia causa SIN
+        # hacer esperar al bridge; acá, ya sólo falta preguntar. Ninguna pregunta al operador sale hacia un
+        # backend que no puede arrancar la corrida: aprobarla sería aprobar una corrida condenada.
+        backend = await self.verificar_backend_listo()
+        if not backend.listo:
+            return self._resultado_de_corte(CodigoDesatendido.BACKEND_NOT_READY, backend.motivo)
 
         decision = await consultar_aprobador(
             lambda: capacidad.aprobador.aprobar_configuracion(
@@ -4983,10 +5106,11 @@ class DynDOLODRunner:
 
         try:
             # Acotado: un observador (o un ``stat`` sobre un disco de red caído) que no vuelve dejaría al latido sin
-            # llegar a su próximo ``sleep`` ni a su próximo log durante horas. Al vencer, ``wait_for`` cancela la entrega
-            # y levanta ``TimeoutError``, que cae en el ``except Exception`` de abajo (se registra y el latido sigue).
-            # La cancelación EXTERNA (la limpieza de la corrida) atraviesa ``wait_for`` y se propaga abajo.
-            await asyncio.wait_for(_medir_y_entregar(), timeout=_PLAZO_DEL_AVISO_DE_PROGRESO_S)
+            # llegar a su próximo ``sleep`` ni a su próximo log durante horas. Al vencer, el plazo cancela la entrega y
+            # levanta ``TimeoutError``, que cae en el ``except Exception`` de abajo (se registra y el latido sigue).
+            # La cancelación EXTERNA (la limpieza de la corrida) atraviesa el plazo y se propaga abajo: por eso es
+            # ``_esperar_con_plazo`` y NO ``asyncio.wait_for``, que en 3.11 puede tragársela y dejar vivo al latido.
+            await _esperar_con_plazo(_medir_y_entregar(), timeout=_PLAZO_DEL_AVISO_DE_PROGRESO_S)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 -- observador best-effort: nunca decide ni rompe la corrida
@@ -6084,5 +6208,7 @@ __all__ = [
     "DynDOLODPipelineResult",
     "DynDOLODRunner",
     "DynDOLODTimeoutError",
+    "PreflightDeBackend",
+    "preflight_del_backend",
     "resolve_data_visibility_domain",
 ]

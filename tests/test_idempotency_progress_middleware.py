@@ -311,6 +311,30 @@ class TestIdempotencyAcquireRechazado:
         assert sm.guard.is_active(key)
 
     @pytest.mark.asyncio
+    async def test_los_dos_caminos_de_rechazo_devuelven_exactamente_el_mismo_resultado(self) -> None:
+        """Hermano en el mismo archivo: el rechazo del pre-check y el del ``acquire`` no pueden divergir.
+
+        Los otros tests miran ``status`` y ``reason``; el texto de ``details`` es lo que ve el operador.
+        """
+        # Arrange
+        payload = {"x": 1}
+        inner = AsyncMock(return_value={"status": "success"})
+        sm_precheck = ToolStateMachine()
+        sm_precheck.guard.acquire(sm_precheck.guard.make_key("list_mods", payload), "rival")
+        sm_acquire = _MaquinaConRival()
+
+        # Act
+        por_precheck = await IdempotencyMiddleware(state_machine=sm_precheck)(
+            _make_strategy("list_mods"), payload, inner
+        )
+        por_acquire = await IdempotencyMiddleware(state_machine=sm_acquire)(_make_strategy("list_mods"), payload, inner)
+
+        # Assert
+        assert por_precheck["reason"] == "DuplicateExecution"
+        assert por_acquire == por_precheck
+        inner.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_dos_ejecuciones_concurrentes_solo_una_llega_al_inner_chain(self) -> None:
         # Arrange
         sm = ToolStateMachine()

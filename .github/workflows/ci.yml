@@ -80,8 +80,19 @@ jobs:
         run: python -m mypy sky_claw/ scripts/ --ignore-missing-imports --no-error-summary
 
   # ── Gate 3: Test Suite ───────────────────────────────────────
-  test:
-    name: "🧪 Tests / ${{ matrix.os }} / py${{ matrix.python-version }}"
+  # La suite completa de Windows se reparte en shards: en un solo job tardaba 50-72 min y cada push de cada PR
+  # reiniciaba esa espera. Cada shard colecta la suite ENTERA con pytest y corre solo los archivos que le tocan
+  # (`scripts/ci_particion.py`, activado con SKYCLAW_SHARD): no hay una lista de archivos que mantener, y un
+  # subdirectorio nuevo de tests queda cubierto por construcción.
+  #
+  # Repartir tiene un modo de falla silencioso: que un test no corra en NINGÚN shard (un shard de menos en la matriz,
+  # una colección que cambia entre jobs). Ningún job falla y el verde miente. Por eso el job `test` de más abajo no se
+  # limita a esperar: exige, con los manifiestos que deja cada shard, que entre todos hayan seleccionado EXACTAMENTE la
+  # suite (misma huella, mismo total, sin archivos repetidos, suma de tests igual al total colectado). La cantidad de
+  # shards vive en tres lugares (la matriz, SKYCLAW_SHARD y el --total del verificador) y
+  # tests/test_ci_platform_policy.py los ata al mismo número.
+  test-shard:
+    name: "🧪 Shard ${{ matrix.shard }}/4 / py${{ matrix.python-version }}"
     runs-on: ${{ matrix.os }}
     # 2026-10-09: 30 min era insuficiente. Medido en las corridas recientes, pytest
     # tarda 1057-1719 s segun el runner asignado (py3.11 es el volatil; py3.12 se
@@ -106,15 +117,22 @@ jobs:
     # de py3.11 llega a ~72 min (el peor caso de 2026-10-22 era 2322 s). El agregador
     # `Tests (Pytest)` solo ve el `cancelled` y bloquea el merge de un PR sano. 90 min
     # deja el peor caso extrapolado al ~80 %. El piso esta anclado en
-    # tests/test_ci_platform_policy.py (TOPE_MINIMO_DE_LA_MATRIZ_WINDOWS). Es un
-    # parche al sintoma: si la suite vuelve a rozar el limite, el paso siguiente es
-    # repartirla en shards, no subir el tope otra vez.
+    # tests/test_ci_platform_policy.py (TOPE_MINIMO_DE_LA_MATRIZ_WINDOWS). Ese comentario
+    # terminaba diciendo que, si la suite volvia a rozar el limite, el paso siguiente era
+    # repartirla en shards en vez de subir el tope otra vez.
+    # 2026-11-17: ese paso se dio. Cada shard hace ~1/4 del trabajo (~15-20 min esperados), pero
+    # NINGUN shard esta medido todavia en CI, asi que el tope se conserva en 90 a proposito: se baja
+    # (y se baja el piso anclado) en un PR aparte y con datos, no por intuicion. El dato que decide es la
+    # duracion del JOB entero que muestra Actions (instalacion y coleccion incluidas); el job `test` imprime ademas
+    # el tiempo de los TESTS de cada shard (queda en su manifiesto), que sirve para equilibrar el reparto pero NO
+    # incluye ni la coleccion ni el arranque, asi que subestima lo que consume el tope.
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest]
         python-version: ["3.11", "3.12"]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -123,14 +141,105 @@ jobs:
           cache: pip
       - name: Install dev dependencies
         run: pip install -e ".[dev]"
-      - name: Run tests with coverage
-        run: pytest --cov=sky_claw --cov=scripts --cov-report=xml --cov-fail-under=60 tests/
+      # La cobertura se mide aca y se EXIGE en el job `test` sobre los datos combinados de todos los shards:
+      # un shard solo cubre una parte de la suite y no puede cumplir el umbral por su cuenta.
+      # SIN `shell:`: usa el shell por defecto de Windows (PowerShell), el MISMO que usaba el job unico. La primera
+      # version de este paso usaba `bash` y dos tests que asumen un proceso SIN privilegios fallaron con "DID NOT
+      # RAISE" (test_tgr_unelevated_without_privilege_fails_closed y test_ns_unelevated_without_privilege_fails_closed,
+      # en los shards 2 y 3 de las dos versiones de Python); con PowerShell pasan los 8 shards. Medido: el resultado
+      # cambia con el shell; NO se midio por que (el estado del token del proceso es la hipotesis). Esos tests no
+      # establecen la condicion que asumen: es una dependencia del entorno a corregir aparte, no se cambia el shell.
+      - name: Run test shard
+        env:
+          SKYCLAW_SHARD: ${{ matrix.shard }}/4
+          SKYCLAW_SHARD_MANIFEST: shard-out/shard-manifest.json
+          COVERAGE_FILE: shard-out/coverage.sqlite
+        run: |
+          New-Item -ItemType Directory -Force shard-out | Out-Null
+          python -m pytest -p scripts.ci_particion --cov=sky_claw --cov=scripts --cov-report= tests/
+      # `if: always()`: aun si un shard falla, sus tiempos y su cobertura sirven para diagnosticar.
+      # retention-days: 1: son intermedios que el job `test` consume dentro de la MISMA corrida; no hay motivo
+      # para ocupar la cuota de almacenamiento (el job Build ya sube un .exe de ~88 MB por corrida verde).
+      # Consecuencia: pasado un dia, «Re-run failed jobs» NO sirve para reintentar solo el veredicto (los shards verdes
+      # no se vuelven a correr y sus artefactos ya expiraron: la descarga falla). Para ese caso: «Re-run all jobs», que
+      # regenera los 4 artefactos por version de Python.
+      # overwrite: true: con `always()` el artefacto queda subido aunque el shard falle, y `upload-artifact` falla por
+      # defecto si el nombre ya existe en la corrida: el reintento del mismo shard chocaria con el de su primer intento
+      # y quedaria rojo aunque pytest pase. Reemplaza el anterior y el patron de descarga sigue viendo UN artefacto por
+      # shard. NO usar un sufijo con run_attempt en el nombre: el patron recogeria el del intento fallido Y el del
+      # reintento, y el verificador veria un shard repetido. tests/test_ci_platform_policy.py enumera estas subidas.
+      - name: Upload shard results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-shard-py${{ matrix.python-version }}-${{ matrix.shard }}
+          path: shard-out/
+          retention-days: 1
+          overwrite: true
+
+  # Veredicto por version de Python: conserva el nombre del check que existia antes del reparto (por si algo
+  # lo exigia) y es donde se decide si la suite quedo completa y si la cobertura combinada alcanza el umbral.
+  # `!cancelled()` y no el `needs` por defecto: un shard que falla debe dejar ESTE check en rojo, no "skipped"
+  # (GitHub da por satisfecho un check requerido que se omitio).
+  # Ojo: `needs.test-shard.result` agrega TODA la matriz de shards (las dos versiones de Python): un shard rojo
+  # de py3.12 deja rojos ambos veredictos, y ninguno arranca hasta que terminan los 8 shards. No cambia que el
+  # merge quede bloqueado; el log del shard que fallo dice cual fue y de que version.
+  test:
+    name: "🧪 Tests / ${{ matrix.os }} / py${{ matrix.python-version }}"
+    needs: [test-shard]
+    if: ${{ !cancelled() }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Require every shard to have passed
+        shell: bash
+        run: |
+          if [[ "${{ needs.test-shard.result }}" != "success" ]]; then
+            echo "Test shards failed: ${{ needs.test-shard.result }}"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dev dependencies
+        run: pip install -e ".[dev]"
+      # SHA resuelto contra el upstream (refs/tags/v7.0.0 de actions/download-artifact); misma major que
+      # el upload-artifact@v7 que ya usa este repo.
+      - name: Download shard results
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: test-shard-py${{ matrix.python-version }}-*
+          path: shards
+      # `--con-cobertura`: `coverage combine` sobre un glob al que le falta una base NO falla; combina las que hay y,
+      # si esas alcanzan el umbral, el job queda verde con una cobertura parcial. El verificador exige las 4 bases.
+      - name: Verify shard completeness
+        shell: bash
+        run: python -m scripts.ci_particion verificar shards --total 4 --con-cobertura
+      # Los datos de cada shard ya incluyen los modulos no ejecutados (coverage los registra al guardar), asi
+      # que combinarlos da el mismo total que una corrida unica: la union de lo ejecutado por los 4 shards.
+      # `xml` ANTES de `report --fail-under`: el umbral hace salir con error al `report` y el paso se corta ahi; con
+      # el XML ya escrito, el artefacto `coverage-report-*` permite ver que lineas no se cubren cuando el umbral falla.
+      - name: Combine coverage and enforce threshold
+        shell: bash
+        run: |
+          python -m coverage combine shards/*/coverage.sqlite
+          python -m coverage xml
+          python -m coverage report --fail-under=60
+      # overwrite: true por lo mismo que la subida de los shards: `always()` + nombre fijo + reintento del veredicto.
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report-${{ matrix.os }}-py${{ matrix.python-version }}
           path: coverage.xml
+          overwrite: true
 
   # Linux/WSL2 ejecuta parte del core async, pero no es plataforma de entrega.
   # Esta señal POSIX es informativa y deliberadamente menor que la suite Windows.

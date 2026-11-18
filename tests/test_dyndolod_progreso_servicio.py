@@ -12,6 +12,7 @@ Complementa ``tests/test_dyndolod_progreso.py`` (el runner mide y entrega). Acá
 from __future__ import annotations
 
 import ast
+import asyncio
 import pathlib
 from unittest.mock import AsyncMock, MagicMock
 
@@ -192,6 +193,162 @@ async def test_un_preview_no_borra_el_progreso_de_una_corrida_viva(monkeypatch: 
     await servicio.execute(dry_run=True)
 
     assert servicio.progreso_actual is not None
+
+
+# ---------------------------------------------------------------------------
+# TODA salida de una corrida descarta el snapshot (hallazgo de CodeRabbit en #937)
+# ---------------------------------------------------------------------------
+#
+# Antes el snapshot se descartaba al iniciar y en ``_publish_completed``, que es lo único que las salidas «normales»
+# alcanzan. Una salida que no llega ahí (una excepción, una cancelación dentro de un handler de fallo, un retorno
+# temprano) dejaba la última muestra de una corrida que ya terminó, y ``lods_status`` / la GUI la seguían mostrando.
+# El mecanismo es UNO, en el límite de ``execute`` (``_descarta_el_progreso_al_salir``): no depende de qué handler
+# fue el que salió. La matriz de abajo lo ejercita sobre el ``execute`` REAL, una fila por clase de salida.
+
+
+class _PreflightQueSiembraYSale:
+    """Entre el inicio de la corrida y su salida el latido del runner deja una muestra: acá la deja el preflight.
+
+    ``execute`` descarta la muestra de forma síncrona al arrancar, así que sembrarla antes de llamarlo no prueba nada:
+    tiene que aparecer DURANTE la corrida, como un latido real, y la salida tiene que ocurrir sin pasar por
+    ``_publish_completed``.
+    """
+
+    def __init__(self, servicio_ref: list[DynDOLODPipelineService], desenlace: str) -> None:
+        self._servicio_ref = servicio_ref
+        self._desenlace = desenlace
+        self.muestra_sembrada = False
+
+    async def run(self) -> MagicMock:
+        servicio = self._servicio_ref[0]
+        await servicio._al_progresar(_muestra())  # noqa: SLF001
+        self.muestra_sembrada = servicio.progreso_actual is not None
+        if self._desenlace == "excepcion":
+            raise RuntimeError("falla inesperada del preflight")
+        if self._desenlace == "cancelacion":
+            raise asyncio.CancelledError
+        return MagicMock(blocks_mutations=True, checks=[])  # "retorno_temprano": PreflightBlocked
+
+
+def _servicio_con_preflight(desenlace: str) -> tuple[DynDOLODPipelineService, _PreflightQueSiembraYSale]:
+    ref: list[DynDOLODPipelineService] = []
+    preflight = _PreflightQueSiembraYSale(ref, desenlace)
+    servicio = DynDOLODPipelineService(
+        lock_manager=AsyncMock(),
+        snapshot_manager=AsyncMock(),
+        journal=AsyncMock(),
+        path_resolver=MagicMock(),
+        event_bus=_bus(),
+        mo2_profile="Default",
+        preflight=preflight,  # type: ignore[arg-type]
+    )
+    ref.append(servicio)
+    return servicio, preflight
+
+
+@pytest.mark.parametrize(
+    ("desenlace", "esperado"),
+    [
+        ("retorno_temprano", None),
+        ("excepcion", RuntimeError),
+        ("cancelacion", asyncio.CancelledError),
+    ],
+)
+async def test_toda_salida_de_una_corrida_descarta_el_progreso(desenlace: str, esperado: object) -> None:
+    servicio, preflight = _servicio_con_preflight(desenlace)
+
+    if esperado is None:
+        await servicio.execute()
+    else:
+        with pytest.raises(esperado):  # type: ignore[call-overload]
+            await servicio.execute()
+
+    assert preflight.muestra_sembrada, "precondición: la corrida llegó a tener una muestra"
+    assert servicio.progreso_actual is None
+
+
+@pytest.mark.parametrize("pedido", [{"dry_run": True}, {"interaction_mode": "no-es-un-modo"}])
+async def test_lo_que_no_es_una_corrida_no_descarta_la_muestra_de_la_que_esta_en_curso(
+    pedido: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El preview (``dry_run``) y un modo desconocido no corren nada: la muestra de otra corrida en curso no es suya."""
+    servicio = _servicio(_bus())
+    monkeypatch.setattr(servicio, "_preview", AsyncMock(return_value={"success": True, "message": ""}))
+    await servicio._al_progresar(_muestra())  # noqa: SLF001
+
+    await servicio.execute(**pedido)  # type: ignore[arg-type]
+
+    assert servicio.progreso_actual is not None
+
+
+def _arbol_del_servicio() -> ast.Module:
+    return ast.parse(pathlib.Path(modulo_servicio.__file__).read_text(encoding="utf-8"))
+
+
+def _funciones_con_su_clase(arbol: ast.Module) -> list[tuple[str, ast.AST]]:
+    encontradas: list[tuple[str, ast.AST]] = []
+
+    def _recorrer(nodo: ast.AST, prefijo: str) -> None:
+        for hijo in ast.iter_child_nodes(nodo):
+            if isinstance(hijo, ast.ClassDef):
+                _recorrer(hijo, f"{prefijo}{hijo.name}.")
+            elif isinstance(hijo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                encontradas.append((f"{prefijo}{hijo.name}", hijo))
+                _recorrer(hijo, f"{prefijo}{hijo.name}.")
+
+    _recorrer(arbol, "")
+    return encontradas
+
+
+def test_execute_es_el_unico_camino_que_corre_el_pipeline_y_lleva_el_descarte_al_salir() -> None:
+    """Si otro método corriera el pipeline, tendría una salida sin descarte: se enumera por el LLAMADOR del runner."""
+    funciones = _funciones_con_su_clase(_arbol_del_servicio())
+    corren = {
+        nombre
+        for nombre, nodo in funciones
+        if any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "run_full_pipeline"
+            for n in ast.walk(nodo)
+        )
+    }
+    assert corren == {"DynDOLODPipelineService.execute"}
+    (execute,) = [nodo for nombre, nodo in funciones if nombre == "DynDOLODPipelineService.execute"]
+    decoradores = [ast.unparse(d) for d in execute.decorator_list]  # type: ignore[attr-defined]
+    assert decoradores == ["_descarta_el_progreso_al_salir"]
+
+
+def test_quien_escribe_la_muestra_de_progreso_esta_enumerado() -> None:
+    """Un escritor nuevo de ``_progreso_actual`` rompe esto hasta decidir si participa del ciclo de vida de la corrida."""
+
+    def _propios(nodo: ast.AST) -> list[ast.AST]:
+        """Los nodos de ``nodo`` SIN entrar a las funciones anidadas: cada escritura se atribuye a la más interna."""
+        propios: list[ast.AST] = []
+        pendientes = list(ast.iter_child_nodes(nodo))
+        while pendientes:
+            n = pendientes.pop()
+            propios.append(n)
+            if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                pendientes.extend(ast.iter_child_nodes(n))
+        return propios
+
+    escritores: set[str] = set()
+    for nombre, nodo in _funciones_con_su_clase(_arbol_del_servicio()):
+        for n in _propios(nodo):
+            objetivos = []
+            if isinstance(n, ast.Assign):
+                objetivos = n.targets
+            elif isinstance(n, ast.AnnAssign):
+                objetivos = [n.target]
+            if any(isinstance(t, ast.Attribute) and t.attr == "_progreso_actual" for t in objetivos):
+                escritores.add(nombre)
+    assert escritores == {
+        "DynDOLODPipelineService.__init__",
+        "DynDOLODPipelineService.execute",  # el descarte síncrono al arrancar (H-11)
+        "DynDOLODPipelineService._al_progresar",
+        "DynDOLODPipelineService._publish_started",
+        "DynDOLODPipelineService._publish_completed",
+        "_descarta_el_progreso_al_salir.envuelto",  # el descarte en TODA salida (este mecanismo)
+    }
 
 
 # ---------------------------------------------------------------------------
