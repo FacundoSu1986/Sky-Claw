@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import contextlib
@@ -980,3 +981,170 @@ async def test_eventos_no_crecen_sin_limite(tmp_path: pathlib.Path) -> None:
     while not broker._events.empty():
         last = broker._events.get_nowait()
     assert last is not None and last["seq"] == 4999
+
+
+# --- Atribución de fase del timeout del job -------------------------------------------------------------------------
+# En el rig real un job que no entrega resultado a tiempo se reportaba igual (``excedió Ns``) tanto si el bridge nunca
+# confirmó el lanzamiento, como si el worker no llegó a conectarse (arranque lento del ejecutable), como si ya estaba
+# trabajando. El broker guarda los hitos del job y el timeout dice en cuál se quedó.
+
+
+async def _provocar_timeout(
+    tmp_path: pathlib.Path,
+    *,
+    enviar_launch_ack: bool,
+    conectar_worker: bool,
+) -> tuple[VfsJobTimeoutError, VfsExecutionBroker]:
+    mo2, data, challenge, _job = _entorno(tmp_path)
+    job = VfsJob.create(
+        instance_id="portable-main",
+        profile="Default",
+        tool_id="health",
+        payload={},
+        timeout_seconds=0.3,
+        expected_fingerprint=challenge.profile_fingerprint,
+        mutation_targets=(),
+    )
+    broker = VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=tmp_path / "state",
+        secret=b"x" * 32,
+        descriptor_hardener=lambda _path: None,
+    )
+    await broker.start()
+    reader, writer, secret = await _conectar_bridge(broker)
+    worker_writer: asyncio.StreamWriter | None = None
+    try:
+        pending = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+        launch = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=1)
+        assert launch["type"] == "launch_worker"
+        if enviar_launch_ack:
+            await write_authenticated_message(
+                writer,
+                {
+                    "protocol_version": VFS_PROTOCOL_VERSION,
+                    "type": "launch_ack",
+                    "job_id": job.job_id,
+                    "job_object": launch["job_object"],
+                },
+                secret,
+            )
+        if conectar_worker:
+            descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+            w_reader, worker_writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
+            await write_authenticated_message(
+                worker_writer,
+                {
+                    "protocol_version": VFS_PROTOCOL_VERSION,
+                    "type": "hello",
+                    "role": "worker",
+                    "supervision_fence": True,
+                    "job_object": launch["job_object"],
+                    "instance_id": "portable-main",
+                    "session_id": descriptor["session_id"],
+                    "job_id": job.job_id,
+                },
+                base64.urlsafe_b64decode(descriptor["token"]),
+            )
+            ack = await read_authenticated_message(w_reader, base64.urlsafe_b64decode(descriptor["token"]))
+            assert ack["type"] == "hello_ack"
+        cancel = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=2)
+        assert cancel["type"] == "cancel"
+        await _reportar_salida_bridge(writer, secret, job_id=job.job_id, exit_code=1)
+        with pytest.raises(VfsJobTimeoutError) as excinfo:
+            await asyncio.wait_for(pending, timeout=2)
+        return excinfo.value, broker
+    finally:
+        if worker_writer is not None:
+            worker_writer.close()
+            await worker_writer.wait_closed()
+        writer.close()
+        await writer.wait_closed()
+        await broker.close()
+
+
+async def test_timeout_sin_launch_ack_informa_la_fase_de_lanzamiento(tmp_path: pathlib.Path) -> None:
+    error, _broker = await _provocar_timeout(tmp_path, enviar_launch_ack=False, conectar_worker=False)
+
+    assert error.fase == "lanzamiento"
+    assert "fase de lanzamiento" in str(error)
+    assert "launch_ack" not in error.hitos
+
+
+async def test_timeout_con_ack_y_sin_hello_informa_la_fase_de_arranque(tmp_path: pathlib.Path) -> None:
+    error, _broker = await _provocar_timeout(tmp_path, enviar_launch_ack=True, conectar_worker=False)
+
+    assert error.fase == "arranque"
+    assert "fase de arranque" in str(error)
+    assert "launch_ack" in error.hitos
+    assert "worker_hello" not in error.hitos
+
+
+async def test_timeout_con_hello_y_sin_resultado_informa_la_fase_de_ejecucion(tmp_path: pathlib.Path) -> None:
+    error, _broker = await _provocar_timeout(tmp_path, enviar_launch_ack=True, conectar_worker=True)
+
+    assert error.fase == "ejecucion"
+    assert {"launch_ack", "worker_hello"} <= set(error.hitos)
+    assert "job_result" not in error.hitos
+
+
+async def test_el_timeout_conserva_el_prefijo_y_los_hitos_se_limpian_con_el_job(tmp_path: pathlib.Path) -> None:
+    error, broker = await _provocar_timeout(tmp_path, enviar_launch_ack=True, conectar_worker=True)
+
+    assert str(error).startswith("job ")
+    assert " excedió 0,3s" in str(error).replace(".", ",") or " excedió 0.3s" in str(error)
+    assert broker._hitos == {}
+
+
+def _funciones_del_broker_con_llamadas() -> dict[str, list[ast.Call]]:
+    ruta = pathlib.Path(sys.modules[VfsExecutionBroker.__module__].__file__ or "")
+    arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+    por_funcion: dict[str, list[ast.Call]] = {}
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            por_funcion[nodo.name] = [n for n in ast.walk(nodo) if isinstance(n, ast.Call)]
+    return por_funcion
+
+
+def _es_llamada(nodo: ast.Call, *, nombre: str) -> bool:
+    destino = nodo.func
+    return (isinstance(destino, ast.Name) and destino.id == nombre) or (
+        isinstance(destino, ast.Attribute) and destino.attr == nombre
+    )
+
+
+def test_todo_timeout_del_job_se_construye_con_sus_hitos() -> None:
+    """Hay DOS superficies que esperan el resultado (``submit`` y la sesión): las dos deben informar la fase."""
+    funciones = _funciones_del_broker_con_llamadas()
+
+    constructores = {
+        n for n, llamadas in funciones.items() if any(_es_llamada(c, nombre="VfsJobTimeoutError") for c in llamadas)
+    }
+    usuarios = {
+        n for n, llamadas in funciones.items() if any(_es_llamada(c, nombre="_error_de_timeout") for c in llamadas)
+    }
+
+    assert constructores == {"_error_de_timeout"}
+    assert len(usuarios) == 2
+
+
+def test_toda_limpieza_de_job_borra_tambien_sus_hitos() -> None:
+    """La limpieza del registro existe en dos funciones hermanas: si una olvida los hitos, quedan colgados."""
+    funciones = _funciones_del_broker_con_llamadas()
+
+    def _llama_pop(nombre_atributo: str) -> set[str]:
+        resultado: set[str] = set()
+        for nombre, llamadas in funciones.items():
+            for c in llamadas:
+                if (
+                    isinstance(c.func, ast.Attribute)
+                    and c.func.attr == "pop"
+                    and isinstance(c.func.value, ast.Attribute)
+                    and c.func.value.attr == nombre_atributo
+                ):
+                    resultado.add(nombre)
+        return resultado
+
+    limpiezas = _llama_pop("_job_objects")
+    assert len(limpiezas) == 2
+    assert limpiezas == _llama_pop("_hitos")

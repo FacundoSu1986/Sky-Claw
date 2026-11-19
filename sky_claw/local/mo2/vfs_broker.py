@@ -165,7 +165,17 @@ class VfsBridgeLaunchError(VfsBrokerError):
 
 
 class VfsJobTimeoutError(VfsBrokerError):
-    """El worker no reportó resultado antes del timeout del job."""
+    """El worker no reportó resultado antes del timeout del job.
+
+    ``fase`` dice dónde se quedó (``lanzamiento``: el bridge no confirmó el launch; ``arranque``: el worker no llegó a
+    conectarse; ``ejecucion``: ya estaba trabajando) y ``hitos`` los segundos, desde el registro del job, de cada hito
+    alcanzado. Ambos son ``None``/vacíos si el error no lo construyó el broker.
+    """
+
+    def __init__(self, message: str = "", *, fase: str | None = None, hitos: Mapping[str, float] | None = None) -> None:
+        super().__init__(message)
+        self.fase = fase
+        self.hitos: dict[str, float] = dict(hitos or {})
 
 
 class VfsWorkerDisconnectedError(VfsBrokerError):
@@ -267,6 +277,9 @@ class VfsExecutionBroker:
         self._pending: dict[str, asyncio.Future[VfsJobResult]] = {}
         self._pending_context: dict[str, tuple[VfsJob, VfsAttestationChallenge]] = {}
         self._worker_exit: dict[str, asyncio.Future[int | None]] = {}
+        # Hitos por job (reloj monótono): ``registrado`` más los que llegan (``launch_ack``, ``worker_hello``,
+        # ``job_result``, ``worker_exit``). Solo sirven para atribuir la fase de un timeout; no deciden nada.
+        self._hitos: dict[str, dict[str, float]] = {}
         self._termination_tasks: dict[str, asyncio.Task[None]] = {}
         # Routing de eventos mid-job por job: una sesión se suscribe ANTES de
         # enviar launch_worker, así que un tool_started jamás puede caer en una
@@ -698,6 +711,7 @@ class VfsExecutionBroker:
         self._pending[job.job_id] = result_future
         self._pending_context[job.job_id] = (job, challenge)
         self._worker_exit[job.job_id] = exit_future
+        self._hitos[job.job_id] = {"registrado": time.monotonic()}
         # Único punto por el que pasan `submit` y `open_session`: ambas superficies piden un Job con nombre.
         self._job_objects[job.job_id] = generar_nombre_de_job()
         return result_future, exit_future
@@ -723,6 +737,7 @@ class VfsExecutionBroker:
         self._launch_acked.discard(job_id)
         self._supervised_sent.discard(job_id)
         self._job_objects.pop(job_id, None)
+        self._hitos.pop(job_id, None)
         if session is not None:
             await session._detener_recolector()
             self._job_event_queues.pop(job_id, None)
@@ -791,7 +806,7 @@ class VfsExecutionBroker:
                         await self._send_cancel(job.job_id)
                     except VfsTeardownError as t_exc:
                         td_err = t_exc
-                    err = VfsJobTimeoutError(f"job {job.job_id} excedió {job.timeout_seconds:g}s")
+                    err = self._error_de_timeout(job.job_id, job.timeout_seconds)
                     err.__cause__ = exc
                     if td_err is not None:
                         from sky_claw.app.db.rollback_veto import mark_unknown_terminality
@@ -949,7 +964,7 @@ class VfsExecutionBroker:
                     await self._send_cancel(sesion.job_id)
                 except VfsTeardownError as t_exc:
                     td_err = t_exc
-                err = VfsJobTimeoutError(f"job {sesion.job_id} excedió {timeout:g}s")
+                err = self._error_de_timeout(sesion.job_id, timeout)
                 err.__cause__ = exc
                 if td_err is not None:
                     from sky_claw.app.db.rollback_veto import mark_unknown_terminality
@@ -1011,6 +1026,7 @@ class VfsExecutionBroker:
         self._launch_acked.discard(job_id)
         self._supervised_sent.discard(job_id)
         self._job_objects.pop(job_id, None)
+        self._hitos.pop(job_id, None)
         await asyncio.to_thread((self._jobs_dir / f"{job_id}.json").unlink, missing_ok=True)
 
     async def _cancelar_job_de_sesion(self, job_id: str) -> None:
@@ -1373,6 +1389,7 @@ class VfsExecutionBroker:
                 assert worker_job_id is not None
                 self._worker_writers.add(writer)
                 self._worker_by_job[worker_job_id] = writer
+                self._marcar_hito(worker_job_id, "worker_hello")
             await write_authenticated_message(
                 writer,
                 {
@@ -1436,6 +1453,42 @@ class VfsExecutionBroker:
             with contextlib.suppress(ConnectionError, OSError):
                 await writer.wait_closed()
 
+    def _marcar_hito(self, job_id: str, hito: str) -> None:
+        """Anota el instante del primer ``hito`` de un job vigente (un job ya limpiado no se resucita)."""
+        hitos = self._hitos.get(job_id)
+        if hitos is not None:
+            hitos.setdefault(hito, time.monotonic())
+
+    def _error_de_timeout(self, job_id: str, timeout: float) -> VfsJobTimeoutError:
+        """Construye el timeout del job diciendo en qué fase se quedó. Único constructor: ``submit`` y la sesión lo usan."""
+        hitos = self._hitos.get(job_id, {})
+        base = hitos.get("registrado")
+        offsets = {} if base is None else {k: round(v - base, 3) for k, v in hitos.items() if k != "registrado"}
+        if "launch_ack" not in hitos:
+            fase = "lanzamiento"
+        elif "worker_hello" not in hitos:
+            fase = "arranque"
+        else:
+            fase = "ejecucion"
+        detalle = ", ".join(f"{k} +{v:g}s" for k, v in offsets.items()) or "ninguno"
+        logger.warning(
+            "El job VFS %s excedió %gs en la fase de %s (hitos: %s)",
+            job_id,
+            timeout,
+            fase,
+            detalle,
+            extra={
+                "event": "vfs_job_timeout",
+                "operation": "vfs_broker",
+                "job_id": job_id,
+                "fase": fase,
+                "hitos": offsets,
+            },
+        )
+        return VfsJobTimeoutError(
+            f"job {job_id} excedió {timeout:g}s en la fase de {fase} (hitos: {detalle})", fase=fase, hitos=offsets
+        )
+
     async def _registrar_launch_ack(self, job_id: object, job_object: object = None) -> None:
         """Registra la confirmación de supervisión del bridge y autoriza al worker de ESE job.
 
@@ -1466,6 +1519,7 @@ class VfsExecutionBroker:
             self._denegar_supervision(job_id)
             return
         self._launch_acked.add(job_id)
+        self._marcar_hito(job_id, "launch_ack")
         await self._autorizar_worker_si_corresponde(job_id)
 
     def _supervision_vigente(self, job_id: str, writer: asyncio.StreamWriter | None) -> bool:
@@ -1645,6 +1699,8 @@ class VfsExecutionBroker:
                 parsed_exit_code = exit_code if type(exit_code) is int else None
                 if exit_future is not None and not exit_future.done():
                     exit_future.set_result(parsed_exit_code)
+                    if isinstance(job_id, str):
+                        self._marcar_hito(job_id, "worker_exit")
                     ts_utc = datetime.now(UTC).isoformat()
                     logger.info(
                         "VFS worker_exit confirmado ts=%s job_id=%s exit_code=%r",
@@ -1726,6 +1782,7 @@ class VfsExecutionBroker:
             future.set_exception(exc)
             raise
         future.set_result(result)
+        self._marcar_hito(expected_job_id, "job_result")
         ts_utc = datetime.now(UTC).isoformat()
         logger.info(
             "VFS job_result recibido ts=%s job_id=%s success=%s",
