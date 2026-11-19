@@ -23,6 +23,7 @@ se ancla).
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -99,12 +100,18 @@ CAMPOS_DE_LA_TARJETA: tuple[str, ...] = (
     "- **Recomendación al propietario:**",
     "- **SHA / Versión verificada:**",
     "- **Honestidad de verificación:**",
-    "*Ejecutado:*",
-    "*Leído en código:*",
-    "*No verificado:*",
+    "- *Ejecutado:*",
+    "- *Leído en código:*",
+    "- *No verificado:*",
     "- **Hallazgos clasificados:**",
+    f"- {ROJO} Bloqueantes (P0/P1):",
+    f"- {AMARILLO} Diferidos / Limitaciones (P2):",
+    f"- {VERDE} Descartados (P3 / ruido de bots):",
     "- **Por qué corresponde detenerse (o seguir) ahora:**",
 )
+
+#: Módulos que `pyproject.toml` exime de `mypy` y que §3 del documento cita como zona exenta.
+MODULOS_EXENTOS_DE_MYPY: tuple[str, ...] = ("sky_claw.app.gui.*", "sky_claw.local.tools_installer")
 
 #: Prefijos de ruta que los documentos citan y que tienen que existir en el árbol.
 PREFIJOS_DE_RUTA = ("sky_claw/", "tests/", "docs/", "scripts/", ".github/")
@@ -127,6 +134,14 @@ _SEMAFORO_EN_TABLA = re.compile(
 
 #: Documento, §7: «- **`DONE`** (`🟢 VERDE`): ...».
 _ESTADO_CON_COLOR = re.compile(r"^- \*\*`([A-Z_]+)`\*\*\s*\(([^)]*)\)", re.MULTILINE)
+
+#: Etiqueta de campo de la tarjeta de §8: el encabezado, «- **Campo:**», «- *Subcampo:*» o
+#: «- 🔴 Hallazgo:». Se extraen TODAS las que hay para comparar la secuencia completa, no solo
+#: que estén las esperadas.
+_ETIQUETA_DE_LA_TARJETA = re.compile(
+    r"^[ \t]*(###[ \t]+[^:\n]+:|-[ \t]+\*\*[^*\n]+:\*\*|-[ \t]+\*[^*\n]+:\*|-[ \t]+[\U0001f534\U0001f7e1\U0001f7e2][ \t]+[^:\n]+:)",
+    re.MULTILINE,
+)
 
 
 def _leer(ruta: Path) -> str:
@@ -180,13 +195,57 @@ def _rutas_citadas(texto: str) -> set[str]:
 
 
 def _prioridad_de(texto: str) -> tuple[str, ...]:
-    """Cadena `a > b > c` de la prioridad, partida en sus criterios."""
-    # Se une el texto antes de buscar, para que reajustar el ancho de un párrafo (o partir un
-    # bloque `>` en varias líneas) no rompa el ancla.
-    plano = re.sub(r"\s*\n\s*>?\s*", " ", texto)
-    coincidencias = re.findall(r"seguridad\s*>.*?rendimiento", plano)
-    assert len(coincidencias) == 1, f"se esperaba una sola cadena de prioridad, hay {len(coincidencias)}"
-    return tuple(parte.strip() for parte in coincidencias[0].split(">"))
+    """Cadena COMPLETA `a > b > ... > z` de la prioridad, partida en sus criterios.
+
+    Se toma desde `seguridad >` hasta el fin de la línea o del código en línea, y no hasta el
+    último criterio conocido: así un criterio agregado al final ensancha la cadena y rompe la
+    igualdad con `PRIORIDAD` en vez de quedar fuera de la captura.
+    """
+    cadenas = re.findall(r"seguridad\s*>[^`\n]*", texto)
+    assert len(cadenas) == 1, f"se esperaba una sola cadena de prioridad, hay {len(cadenas)}"
+    return tuple(parte.strip() for parte in cadenas[0].rstrip(" .").split(">"))
+
+
+def _reapertura_en_agents(seccion: str) -> tuple[str, ...]:
+    """Causas de reapertura de `AGENTS.md`: «Solo por a, b, c o d.» partido en sus causas."""
+    linea = next((linea for linea in seccion.splitlines() if "**Reapertura:**" in linea), "")
+    assert linea, "AGENTS.md ya no tiene la línea «**Reapertura:**»"
+    cuerpo = linea.split("**Reapertura:**", 1)[1].strip().rstrip(".")
+    cuerpo = re.sub(r"^Solo por\s+", "", cuerpo)
+    return tuple(causa.strip() for causa in re.split(r",\s*|\s+o\s+", cuerpo))
+
+
+def _reapertura_en_documento(seccion: str) -> tuple[str, ...]:
+    """Causas de reapertura del documento: «(1) a, (2) b (aclaración), (3) c o (4) d.»
+
+    Se parte por los marcadores `(N)` y se descartan las aclaraciones entre paréntesis, de modo
+    que una causa agregada, con o sin numerar, aparece como un elemento más (o como texto extra
+    pegado a una causa) y rompe la igualdad con `REAPERTURA`.
+    """
+    plano = seccion.replace("**", "")
+    assert "Reapertura:" in plano, "el documento ya no tiene el párrafo «Reapertura:»"
+    parrafo = plano[plano.index("Reapertura:") + len("Reapertura:") :]
+    causas = []
+    for item in re.split(r"\(\d\)", parrafo)[1:]:
+        limpio = re.sub(r"\([^)]*\)", "", item)
+        limpio = re.sub(r"\s+", " ", limpio).strip()
+        causas.append(re.sub(r"(?:,| o)?\.?$", "", limpio).strip())
+    return tuple(causas)
+
+
+def _etiquetas_de_la_tarjeta(bloque: str) -> tuple[str, ...]:
+    """Todas las etiquetas de campo de la tarjeta, en orden y con los espacios normalizados."""
+    return tuple(re.sub(r"\s+", " ", etiqueta) for etiqueta in _ETIQUETA_DE_LA_TARJETA.findall(bloque))
+
+
+def _overrides_de_mypy() -> list[tuple[tuple[str, ...], object]]:
+    """(módulos, ignore_errors) de cada `[[tool.mypy.overrides]]` de `pyproject.toml`."""
+    datos = tomllib.loads(_leer(PYPROJECT))
+    resultado: list[tuple[tuple[str, ...], object]] = []
+    for override in datos["tool"]["mypy"]["overrides"]:
+        modulos = override.get("module", [])
+        resultado.append(((modulos,) if isinstance(modulos, str) else tuple(modulos), override.get("ignore_errors")))
+    return resultado
 
 
 def _estados_de(linea: str) -> tuple[str, ...]:
@@ -266,19 +325,11 @@ def test_la_prioridad_esta_congelada_en_las_dos_copias() -> None:
 
 def test_la_reapertura_esta_congelada_en_las_dos_copias() -> None:
     """Un cierre solo se reabre por las causas declaradas, y ninguna otra se agrega sola."""
-    seccion = _seccion_de_agents().lower()
-    # Sin el énfasis, para que un `**...**` no parta la frase buscada.
-    bloque = _seccion_del_documento(7).replace("**", "")
-    inicio = bloque.index("Reapertura:")
-    parrafo = bloque[inicio:].lower()
+    en_agents = _reapertura_en_agents(_seccion_de_agents())
+    en_documento = _reapertura_en_documento(_seccion_del_documento(7))
 
-    for causa in (c.lower() for c in REAPERTURA):
-        assert causa in seccion, f"AGENTS.md ya no declara la causa de reapertura: {causa}"
-        assert causa in parrafo, f"el documento ya no declara la causa de reapertura: {causa}"
-
-    # El documento las numera (1)..(N); una causa extra rompe el ancla.
-    numeradas = re.findall(r"\((\d)\)", parrafo)
-    assert numeradas == [str(i) for i in range(1, len(REAPERTURA) + 1)], f"causas numeradas: {numeradas}"
+    assert en_agents == REAPERTURA, f"causas de reapertura de AGENTS.md: {en_agents}"
+    assert en_documento == REAPERTURA, f"causas de reapertura del documento: {en_documento}"
 
 
 def test_el_metodo_y_el_presupuesto_siguen_declarados() -> None:
@@ -300,11 +351,9 @@ def test_la_tarjeta_de_cierre_conserva_sus_campos_en_orden() -> None:
     bloque = re.search(r"```markdown\n(.*?)```", seccion, flags=re.DOTALL)
     assert bloque is not None, "la tarjeta de §8 ya no está en un bloque ```markdown"
 
-    posiciones = []
-    for campo in CAMPOS_DE_LA_TARJETA:
-        assert campo in bloque.group(1), f"la tarjeta ya no tiene el campo {ascii(campo)}"
-        posiciones.append(bloque.group(1).index(campo))
-    assert posiciones == sorted(posiciones), "los campos de la tarjeta cambiaron de orden"
+    # Igualdad de la secuencia completa: un campo duplicado, agregado, ausente o reordenado rompe el ancla.
+    en_la_tarjeta = _etiquetas_de_la_tarjeta(bloque.group(1))
+    assert en_la_tarjeta == CAMPOS_DE_LA_TARJETA, f"campos de la tarjeta: {ascii(en_la_tarjeta)}"
 
 
 def test_el_documento_declara_los_metadatos_minimos() -> None:
@@ -329,9 +378,15 @@ def test_los_hechos_de_ci_que_el_documento_da_por_ciertos_siguen_existiendo() ->
     assert "Tests (Pytest)" in _leer(CI), "ci.yml ya no tiene el job agregador `Tests (Pytest)` que §5 cita"
     assert ":free" in _leer(QODO), "qodo-merge-adversarial.yml ya no usa un modelo `:free` (falso rojo de §5)"
 
-    pyproject = _leer(PYPROJECT)
-    for modulo in ("sky_claw.app.gui.*", "sky_claw.local.tools_installer"):
-        assert f'"{modulo}"' in pyproject, f"pyproject.toml ya no lista {modulo} en las zonas exentas de mypy (§3)"
+    # No alcanza con que el nombre esté escrito: el override que lo lista tiene que seguir
+    # ignorando errores (`ignore_errors = true`), que es lo que hace que la zona esté exenta.
+    overrides = _overrides_de_mypy()
+    for modulo in MODULOS_EXENTOS_DE_MYPY:
+        veredictos = [ignora for modulos, ignora in overrides if modulo in modulos]
+        assert veredictos, f"pyproject.toml ya no lista {modulo} en ningún override de mypy (§3)"
+        assert all(ignora is True for ignora in veredictos), (
+            f"{modulo} dejó de estar exento de mypy: sus overrides dan ignore_errors={veredictos} (§3)"
+        )
 
 
 def test_los_enlaces_y_las_rutas_citadas_existen() -> None:
