@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from collections.abc import Iterable
 from typing import Any
 
 
@@ -50,11 +51,14 @@ def exigir_resultado(nombre: str, condicion: bool, detalle: object = "") -> None
         raise HarnessError(f"escenario {nombre}: resultado inesperado {detalle!r}")
 
 
-def exigir_bloqueo(salida: str, etiqueta: str) -> str:
-    """Exige ``BLOQUEADO:<código>`` y devuelve el código.
+def exigir_bloqueo(salida: str, etiqueta: str, permitidos: Iterable[str]) -> str:
+    """Exige ``BLOQUEADO:<código>`` con un código que DEMUESTRE el bloqueo.
 
     Distingue un bloqueo medido de una salida vacía, truncada o de un error del
-    propio agresor (que antes se colaba como si fuera un resultado).
+    propio agresor. ``permitidos`` es el conjunto que ese agresor puede producir
+    cuando la exclusión funciona: un ``ERROR_INVALID_PARAMETER`` (87) por una
+    firma mal declarada también imprime ``BLOQUEADO``, y aceptarlo convertiría un
+    agresor roto en evidencia de compartición.
     """
     texto = (salida or "").strip()
     if not texto.startswith("BLOQUEADO:"):
@@ -62,6 +66,12 @@ def exigir_bloqueo(salida: str, etiqueta: str) -> str:
     codigo = texto.split(":", 1)[1].strip()
     if not codigo.isdigit():
         raise HarnessError(f"{etiqueta}: bloqueo sin código Win32 ({texto!r})")
+    validos = {str(c) for c in permitidos}
+    if codigo not in validos:
+        raise HarnessError(
+            f"{etiqueta}: el código {codigo} no demuestra el bloqueo esperado "
+            f"(permitidos: {sorted(validos)}); la salida fue {texto!r}"
+        )
     return codigo
 
 

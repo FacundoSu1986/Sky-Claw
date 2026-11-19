@@ -82,6 +82,11 @@ def main() -> int:
 
     resultado: dict[str, object] = {"modo": modo, "qt_runtime": qVersion(), "pid": __import__("os").getpid()}
 
+    if modo in {"deferred", "dtor", "hold"} and (ready is None or release is None):
+        # Sin marcadores, el modo no puede observar la liberación: publicar un
+        # resultado equivaldría a medir un escenario que no ocurrió.
+        raise SystemExit(f"modo {modo}: requiere <ready> y <release>")
+
     if modo == "read":
         qs = QSettings(str(ini), QSettings.Format.IniFormat)
         resultado["status_tras_ctor"] = qs.status().name
@@ -92,6 +97,13 @@ def main() -> int:
         resultado["gameName"] = _norm(qs.value("gameName"))
         resultado["n_ejecutables"] = qs.beginReadArray("customExecutables")
         qs.endArray()
+        # Claves que el escenario esperaba persistir: sin ellas, «conserva los
+        # ejecutables» no prueba que el sync haya escrito nada.
+        resultado["p7probe"] = {
+            "deferred_1": _norm(qs.value("p7probe/deferred_1")),
+            "deferred_2": _norm(qs.value("p7probe/deferred_2")),
+            "dtor": _norm(qs.value("p7probe/dtor")),
+        }
         del qs
         # La cantidad sola no prueba preservación: con índices corridos devuelve
         # 3 igual aunque un elemento esté vacío y otro se haya perdido. Se

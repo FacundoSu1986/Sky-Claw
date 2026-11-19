@@ -20,6 +20,7 @@ from harness_validacion import HarnessError, exigir_codigo, exigir_resultado, le
 
 PROBES = pathlib.Path(__file__).resolve().parent
 _HIJOS: list[dict] = []
+_TENEDORES: list["Tenedor"] = []
 #: Se completan en :func:`configurar`; así el módulo se puede importar desde los
 #: tests sin depender de ``sys.argv`` ni de PyQt6.
 PY: str = ""
@@ -119,6 +120,7 @@ class Tenedor:
             stderr=subprocess.PIPE,
             text=True,
         )
+        _TENEDORES.append(self)
 
     def esperar_ready(self, limite_s: float = 60.0) -> dict[str, object]:
         limite = time.monotonic() + limite_s
@@ -138,11 +140,8 @@ class Tenedor:
         volver a tomar. Sin eso, «liberado» sería una suposición.
         """
         self.release.write_text("go", encoding="utf-8")
-        limite = time.monotonic() + limite_s
-        while time.monotonic() < limite and not self.released.exists():
-            time.sleep(0.01)
         try:
-            self.proc.wait(timeout=30)
+            self.proc.wait(timeout=limite_s)
         except subprocess.TimeoutExpired:
             self.proc.kill()
             raise HarnessError(f"tenedor {self.etiqueta}: no terminó al liberarlo") from None
@@ -185,6 +184,23 @@ def _matar_hijos() -> None:
             except subprocess.TimeoutExpired:
                 pass
     _HIJOS.clear()
+
+
+def _cerrar_tenedores() -> None:
+    """Un escenario que falla no deja la exclusión tomada por un tenedor vivo."""
+    for tenedor in _TENEDORES:
+        proc = tenedor.proc
+        if proc.poll() is not None:
+            continue
+        try:
+            tenedor.release.write_text("go", encoding="utf-8")
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    _TENEDORES.clear()
 
 
 def esperar_archivo(path: pathlib.Path, limite_s: float = 60.0) -> bool:
@@ -335,6 +351,11 @@ def medir() -> dict[str, object]:
         "C/preservacion", resultados["C_semantica"]["conserva_ejecutables"] is True,
         resultados["C_semantica"].get("ejecutables"),
     )
+    exigir_resultado(
+        "C/claves_diferidas",
+        fresco.get("p7probe", {}).get("deferred_1") == "1" and fresco.get("p7probe", {}).get("deferred_2") == "2",
+        fresco.get("p7probe"),
+    )
 
     # D) destructor que sincroniza después de la liberación
     autorar_ini()
@@ -357,6 +378,11 @@ def medir() -> dict[str, object]:
     )
     exigir_resultado("D/sha", resultados["D_sha_cambio"] is True, "el destructor no escribió")
     exigir_resultado(
+        "D/clave_dtor",
+        resultados["D_semantica_tras_destructor"].get("p7probe", {}).get("dtor") == "1",
+        resultados["D_semantica_tras_destructor"].get("p7probe"),
+    )
+    exigir_resultado(
         "D/preservacion", resultados["D_conserva_ejecutables"] is True,
         resultados["D_semantica_tras_destructor"].get("ejecutables"),
     )
@@ -370,12 +396,6 @@ def medir() -> dict[str, object]:
     exigir_resultado("E/adquisicion", estado_e.get("autoriza") is True, estado_e)
     h["release"].write_text("go", encoding="utf-8")
     exigir_exito(h, "E")
-
-    # F) efecto de una reescritura sobre comentarios/orden
-    resultados["F_reescritura"] = {
-        "secciones": [ln.strip() for ln in texto().splitlines() if ln.strip().startswith("[")],
-        "conserva_comentarios": ";" in texto(),
-    }
     return resultados
 
 
@@ -403,14 +423,18 @@ _ESCENARIOS_OBLIGATORIOS = (
 
 def main() -> int:
     configurar(sys.argv)
+    destino = RUN / "qsettings.json"
+    # Un aborto no puede dejar en la ruta de salida la evidencia de una corrida
+    # anterior: el archivo y el exit code tienen que contar la misma historia.
+    destino.unlink(missing_ok=True)
     try:
         resultado = medir()
     finally:
         _matar_hijos()
+        _cerrar_tenedores()
     faltan = [clave for clave in _ESCENARIOS_OBLIGATORIOS if clave not in resultado]
     if faltan:
         raise HarnessError(f"resultado incompleto: faltan {faltan}")
-    destino = RUN / "qsettings.json"
     destino.write_text(json.dumps(resultado, indent=2, ensure_ascii=True), encoding="utf-8")
     # Sólo se llega acá si TODOS los escenarios dieron lo esperado: cualquier
     # desvío levanta y el proceso termina sin publicar ok.

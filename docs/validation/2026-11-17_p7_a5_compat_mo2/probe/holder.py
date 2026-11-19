@@ -44,12 +44,19 @@ def main() -> int:
     temporal.replace(ready)
 
     limite = time.monotonic() + timeout_s
-    while not release.exists():
-        if time.monotonic() > limite:
+    solicitada = False
+    while time.monotonic() < limite:
+        if release.exists():
+            solicitada = True
             break
         time.sleep(0.005)
 
     exclusion.cerrar()
+    if not solicitada:
+        # El plazo venció sin pedido de liberación. Se cierra por higiene, pero
+        # NO se declara liberación: el padre tiene que verlo como fallo, porque
+        # el escenario que dependía del lock corrió con el lock puesto de más.
+        return 3
     released.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
     return 0
 

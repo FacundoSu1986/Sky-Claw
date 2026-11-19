@@ -305,15 +305,33 @@ La revisión del propietario (`5965536673`) señaló que las sondas podían publ
 `wait()` no miraban `returncode` y ambos `main()` publicaban éxito sin condición.
 
 Corregido con un módulo sin dependencias (`probe/harness_validacion.py`) y anclas
-en `tests/test_p7_a5_compat_probe_harness.py` (**33 casos**), con **controles
-positivos** para que un bloqueo esperado (`32`/`5`/`13`) y un `AccessError` de
-QSettings sigan siendo resultados válidos, no fallos. Los dos `main()` además
-declaran sus escenarios/filas obligatorias y fallan si el resultado viene
-incompleto. Seis mutantes de la validación mueren (`leer_json` devolviendo dict,
+en `tests/test_p7_a5_compat_probe_harness.py` (**35 casos**), con **controles
+positivos** para que un bloqueo esperado y un `AccessError` de QSettings sigan
+siendo resultados válidos, no fallos.
+
+Segunda vuelta de revisión (CodeRabbit sobre `2644128f`), también aplicada:
+
+- `exigir_bloqueo` recibe **los códigos que cada operación puede producir**: un
+  `ERROR_INVALID_PARAMETER` (87) por una firma mal declarada ya no se toma por
+  conflicto de compartición, y `BLOQUEADO:0` se rechaza.
+- El vencimiento del tenedor **no** se declara liberación: cierra el handle por
+  higiene y sale con código 3, así `liberar()` falla en vez de aceptarlo.
+- C y D exigen las **claves que el `sync` debía persistir** (`p7probe/deferred_1`,
+  `deferred_2`, `p7probe/dtor`), no sólo que los ejecutables sigan ahí.
+- El control de liberación corre **sobre el mismo INI** que estuvo retenido, con
+  el agresor Win32, y verifica que los bytes cambien.
+- Matriz: alias limpio antes de recrearlo, `a.autoriza` exigido antes del
+  cronómetro, `matrix.json` invalidado al inicio, y centinela de handle inválido
+  del ancho del puntero (no `1<<64` fijo).
+- Se retiró el escenario F, que sólo enumeraba secciones de un INI sin comentarios:
+  no medía lo que su nombre insinuaba.
+- `main()` invalida la salida previa, y un fallo limpia clientes y tenedores.
+
+**Seis mutantes de la validación mueren** (`leer_json` devolviendo dict,
 `exigir_codigo` sin mirar `returncode`, `exigir_bloqueo` sin validar, `agredir`
-devolviendo `SIN_SALIDA`, y los dos `main()` sin exigir completitud).
-La sonda y la matriz reales siguen midiendo y son **idempotentes** en el mismo
-`run_dir`.
+devolviendo `SIN_SALIDA`, y los dos `main()` sin exigir completitud). La sonda y
+la matriz reales siguen midiendo y son **idempotentes** en el mismo `run_dir`
+(dos corridas completas de cada una).
 
 ## 18. Colisiones con otros PRs
 

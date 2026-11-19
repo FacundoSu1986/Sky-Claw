@@ -25,6 +25,22 @@ from harness_validacion import HarnessError, exigir_bloqueo, exigir_marca, exigi
 RUN: pathlib.Path = pathlib.Path()
 CONTENIDO = b"[General]\ngameName=Skyrim Special Edition\ngamePath=G:/Lab_Compat/Runtime\n"
 
+#: Código que cada agresor produce cuando la exclusión funciona. Un
+#: ``ERROR_INVALID_PARAMETER`` (87) por una firma mal declarada también imprime
+#: ``BLOQUEADO``; aceptarlo sería tomar un agresor roto por evidencia.
+CODIGOS_ESPERADOS: dict[str, set[str]] = {
+    "escribir": {"13"},  # CRT: EACCES, no es el código Win32
+    "escribir_win32": {"32"},
+    "truncar": {"13"},  # CRT
+    "borrar": {"32"},
+    "mover_encima": {"5"},
+    "replacefilew": {"32"},
+    "leer_crt": {"13"},  # CRT
+    "leer_win32": {"32"},
+    "abrir_solo_delete": {"32"},
+    "alias": {"13"},  # CRT
+}
+
 AGRESORES: dict[str, str] = {
     "escribir": """
 import sys
@@ -97,7 +113,7 @@ kernel32.WriteFile.argtypes = [ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD,
 kernel32.WriteFile.restype = wintypes.BOOL
 GENERIC_WRITE = 0x40000000
 h = kernel32.CreateFileW(sys.argv[1], GENERIC_WRITE, 7, None, 3, 0x80, None)
-INVALIDO = (1 << 64) - 1
+INVALIDO = (1 << (8 * ctypes.sizeof(ctypes.c_void_p))) - 1
 if not h or int(h) == INVALIDO:
     print(f"BLOQUEADO:{ctypes.get_last_error()}")
 else:
@@ -114,7 +130,7 @@ kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWOR
 kernel32.CreateFileW.restype = ctypes.c_void_p
 GENERIC_READ = 0x80000000
 h = kernel32.CreateFileW(sys.argv[1], GENERIC_READ, 7, None, 3, 0x80, None)
-INVALIDO = (1 << 64) - 1
+INVALIDO = (1 << (8 * ctypes.sizeof(ctypes.c_void_p))) - 1
 if not h or int(h) == INVALIDO:
     print(f"BLOQUEADO:{ctypes.get_last_error()}")
 else:
@@ -128,7 +144,7 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
 kernel32.CreateFileW.restype = ctypes.c_void_p
 h = kernel32.CreateFileW(sys.argv[1], 0x00010000, 7, None, 3, 0x80, None)
-INVALIDO = (1 << 64) - 1
+INVALIDO = (1 << (8 * ctypes.sizeof(ctypes.c_void_p))) - 1
 if not h or int(h) == INVALIDO:
     print(f"BLOQUEADO:{ctypes.get_last_error()}")
 else:
@@ -184,7 +200,7 @@ def medir() -> dict[str, object]:
         finally:
             exclusion.cerrar()
         intacto = sha(ini) == previo if ini.exists() else False
-        exigir_bloqueo(salida, f"matriz/{nombre}")
+        exigir_bloqueo(salida, f"matriz/{nombre}", CODIGOS_ESPERADOS[nombre])
         exigir_resultado(f"matriz/{nombre}", intacto, "el INI cambió bajo la exclusión")
         resultados[nombre] = {
             "resultado": salida,
@@ -192,14 +208,29 @@ def medir() -> dict[str, object]:
             "archivo_existe": ini.exists(),
         }
 
-    # --- control: liberado el handle, el mismo agresor escribe ---
+    # --- control: liberado el handle, el MISMO agresor Win32 escribe ese INI ---
     ini = nuevo_ini("control_liberacion")
-    resultados["control_tras_cerrar"] = agredir("escribir", ini)
+    previo_control = sha(ini)
+    exclusion = gate.adquirir_exclusion_ini(ini)
+    try:
+        assert exclusion.autoriza, exclusion.diagnostico.motivo
+        exigir_bloqueo(
+            agredir("escribir_win32", ini), "control/con_lock", CODIGOS_ESPERADOS["escribir_win32"]
+        )
+    finally:
+        exclusion.cerrar()
+    resultados["control_tras_cerrar"] = agredir("escribir_win32", ini)
     exigir_marca(resultados["control_tras_cerrar"], "control_tras_cerrar", "EXITO")
+    exigir_resultado(
+        "control/escritura", sha(ini) != previo_control, "el INI no cambió tras liberar la exclusión"
+    )
 
     # --- alias hardlink: la exclusión es sobre el OBJETO ---
     ini = nuevo_ini("alias")
     alias = ini.parent / "alias.ini"
+    # Un rerun en el mismo run_dir dejó el alias: os.link fallaría y la matriz
+    # terminaría por una causa que no es la que quiere medir.
+    alias.unlink(missing_ok=True)
     previo = sha(ini)
     exclusion = gate.adquirir_exclusion_ini(ini)
     try:
@@ -216,7 +247,7 @@ def medir() -> dict[str, object]:
         "nlinks_reportados_por_la_adquisicion": nlinks,
         "objeto_intacto": sha(ini) == previo,
     }
-    exigir_bloqueo(salida_alias, "matriz/alias")
+    exigir_bloqueo(salida_alias, "matriz/alias", CODIGOS_ESPERADOS["alias"])
     exigir_resultado("matriz/alias", sha(ini) == previo, "el objeto cambió por el alias")
 
     # --- muerte abrupta del tenedor ---
@@ -248,6 +279,9 @@ def medir() -> dict[str, object]:
     # --- contención transitoria: reintento acotado ---
     ini = nuevo_ini("reintento")
     a = gate.adquirir_exclusion_ini(ini)
+    # Si la PRIMERA adquisición no retuvo nada, la segunda falla por otra causa y
+    # la fila pasaría sin haber medido contención.
+    exigir_resultado("contencion/adquisicion_previa", a.autoriza, a.diagnostico.motivo)
     inicio = time.monotonic()
     b = gate.adquirir_exclusion_ini(ini, intentos=3, espera_s=0.005)
     transcurrido = time.monotonic() - inicio
@@ -300,6 +334,7 @@ _FILAS_OBLIGATORIAS = (
 
 def main() -> int:
     configurar(sys.argv)
+    (RUN / "matrix.json").unlink(missing_ok=True)
     resultados = medir()
     faltan = [fila for fila in _FILAS_OBLIGATORIAS if fila not in resultados]
     if faltan:

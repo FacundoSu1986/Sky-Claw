@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
+import subprocess
 import sys
 import types
 
@@ -32,6 +34,8 @@ PROBE = RAIZ / "docs" / "validation" / "2026-11-17_p7_a5_compat_mo2" / "probe"
 
 if str(PROBE) not in sys.path:
     sys.path.insert(0, str(PROBE))
+
+SOLO_WINDOWS = pytest.mark.skipif(os.name != "nt", reason="la exclusión de archivos compartidos es de Windows")
 
 
 def _cargar(nombre: str, archivo: str) -> types.ModuleType:
@@ -126,13 +130,19 @@ def test_exigir_codigo_acepta_cero(sonda: types.ModuleType) -> None:
 
 @pytest.mark.parametrize("codigo", ["32", "5", "13"])
 def test_exigir_bloqueo_acepta_un_bloqueo_medido(matriz: types.ModuleType, codigo: str) -> None:
-    assert matriz.exigir_bloqueo(f"BLOQUEADO:{codigo}", "matriz/escribir") == codigo
+    assert matriz.exigir_bloqueo(f"BLOQUEADO:{codigo}", "matriz/escribir", {codigo}) == codigo
 
 
 @pytest.mark.parametrize("salida", ["", "   ", "SIN_SALIDA(rc=1,err='boom')", "BLOQUEADO:", "EXITO"])
 def test_exigir_bloqueo_rechaza_salidas_que_no_son_bloqueo(matriz: types.ModuleType, salida: str) -> None:
     with pytest.raises(matriz.HarnessError):
-        matriz.exigir_bloqueo(salida, "matriz/escribir")
+        matriz.exigir_bloqueo(salida, "matriz/escribir", {"32", "5", "13"})
+
+
+def test_exigir_bloqueo_rechaza_un_codigo_ajeno_al_escenario(matriz: types.ModuleType) -> None:
+    """Un 87 por firma mal declarada no demuestra un bloqueo de compartición."""
+    with pytest.raises(matriz.HarnessError, match="no demuestra"):
+        matriz.exigir_bloqueo("BLOQUEADO:87", "matriz/replacefilew", {"32"})
 
 
 def test_exigir_marca_acepta_el_exito_esperado(matriz: types.ModuleType) -> None:
@@ -201,6 +211,35 @@ def test_exigir_exito_devuelve_el_json_del_cliente(sonda: types.ModuleType, tmp_
     """Control positivo: AccessError como VALOR es un resultado aceptado."""
     h = _handle(tmp_path, _ProcFalso(returncode=0), json.dumps({"status_tras_leer": "AccessError"}))
     assert sonda.exigir_exito(h, "A") == {"status_tras_leer": "AccessError"}
+
+
+@SOLO_WINDOWS
+def test_holder_vencido_no_declara_liberacion(tmp_path: pathlib.Path) -> None:
+    """Si nadie pide la liberación, el tenedor cierra pero NO la declara.
+
+    Aceptar ese vencimiento como liberación haría pasar un escenario que corrió
+    con la exclusión tomada más tiempo del previsto.
+    """
+    ini = tmp_path / "modorganizer.ini"
+    ini.write_bytes(b"[General]\ngameName=Skyrim Special Edition\n")
+    ready = tmp_path / "ready"
+    release = tmp_path / "release"
+    released = tmp_path / "released"
+
+    entorno = dict(os.environ)
+    entorno["PYTHONPATH"] = str(RAIZ) + (os.pathsep + entorno["PYTHONPATH"] if entorno.get("PYTHONPATH") else "")
+    proc = subprocess.run(
+        [sys.executable, str(PROBE / "holder.py"), str(ini), str(ready), str(release), str(released), "0.3"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=entorno,
+        check=False,
+    )
+
+    assert proc.returncode == 3, f"el holder debía salir con 3: rc={proc.returncode} err={proc.stderr}"
+    assert ready.exists(), "el holder no llegó a mostrar su diagnóstico"
+    assert not released.exists(), "declaró liberación sin que nadie la pidiera"
 
 
 # ---------------------------------------------------------------------------
