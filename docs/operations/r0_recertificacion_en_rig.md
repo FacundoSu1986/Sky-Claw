@@ -49,6 +49,17 @@ Salen del rig anterior (§8-bis y §11 de su informe) y de [la validación base]
    rutas (`C:\Users\<usuario>\`).
 6. **Un paquete bloqueado no sustituye una corrida verde** ([validación base](real_rig_validation.md), «Evidencia fechada»). Se
    registra `BLOQUEADO` con el motivo, no se omite.
+7. **Perfil aislado del proceso: todo proceso de Sky-Claw del rig arranca con `SKYCLAW_ISOLATED=1`** (el arnés, el `.exe` congelado
+   y sus workers). Un `HOME` aislado **no** aísla el keyring de Windows, el registro ni las bibliotecas de Steam, que son del
+   *usuario*: en el rig anterior un `AppContext` con `HOME` aislado leyó el token de Telegram del operador (más de 700 llamadas de
+   long-polling, todas 401) y el autodetect escribió el Skyrim real del operador en la config aislada y lo admitió como raíz del
+   sandbox. Con la variable activa el keyring pasa a un backend que **falla** (todo secreto se trata como «no configurado» y no se
+   escribe nada; Sky-Claw fija `PYTHON_KEYRING_BACKEND` en el proceso y pisa la que el arnés haya puesto) y el descubrimiento de la
+   máquina real se apaga (Skyrim, MO2 y las herramientas de las raíces comunes, Program Files y `PATH`). **Las rutas y ejecutables
+   que el perfil fija en su `config.toml` siguen valiendo**, así que el perfil trae `skyrim_path` y demás rutas explícitas. Una corrida que necesite un token real (R0-12) usa un
+   **bot de prueba dedicado** con su token en el `config.toml` del perfil, nunca el del operador. Se declara en `isolation.json`.
+   Límite conocido: la lectura de solo lectura de `HKCU` que hace la identidad de la instancia de MO2 no se aísla (ver
+   `tests/test_aislamiento_perfil.py`, `LECTORES_DEL_REGISTRO`).
 
 ## Decisiones previas del aprobador
 
@@ -102,7 +113,8 @@ Se hace una sola vez y su salida alimenta todos los paquetes.
 - **Token e integridad.** Registrar si el proceso corre con token elevado o filtrado, con una captura (por ejemplo la etiqueta de
   integridad que muestra `whoami /groups`) *(propuesto)*. El informe de identidad (§11.5) dice que el agente anterior informó haber
   corrido con un token filtrado pero no quedó un registro verificable.
-- **Aislamiento.** Copia portable de MO2, perfil descartable, rutas con el usuario redactado. Declararlo en `isolation.json`.
+- **Aislamiento.** Copia portable de MO2, perfil descartable, rutas con el usuario redactado y `SKYCLAW_ISOLATED=1` en todo
+  proceso de Sky-Claw (regla 7). Declararlo en `isolation.json`.
 - **Bridge.** Instalarlo con el `.exe` congelado (`--mode install-vfs-bridge`) y registrar el digest del bundle instalado.
 - **Estado del HOLD.** Confirmar y registrar que `_CONTENCION_DEL_WORKER_VERIFICADA` es `False` en el SHA certificado.
 
@@ -309,7 +321,7 @@ de cada paquete.
 | Windows / MO2 / USVFS / Skyrim | <versiones> |
 | TexGen / DynDOLOD / Resources SE / DLL NG | <versiones y hashes; «ausente» si falta> |
 | Token e integridad | <elevado o filtrado, con la captura> |
-| Aislamiento | MO2 portable, perfil <nombre>; **no** se tocó la instancia global |
+| Aislamiento | MO2 portable, perfil <nombre>, `SKYCLAW_ISOLATED=1`; **no** se tocó la instancia global ni el keyring del operador |
 | Arnés brokered | <ninguno / descripción, revisor y punto de inyección (archivo y función) de la strategy; no se commitea> |
 
 ## Resultados

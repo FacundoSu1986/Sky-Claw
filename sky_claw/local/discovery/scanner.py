@@ -18,6 +18,7 @@ import pathlib
 import shutil
 from typing import Final
 
+from sky_claw.aislamiento import perfil_aislado
 from sky_claw.config import (
     AE_MIN_MINOR_VERSION,
     AE_MIN_SIZE_MB,
@@ -622,6 +623,12 @@ class EnvironmentScanner:
         if configured and ((configured / "SkyrimSE.exe").exists() or (configured / "Skyrim.exe").exists()):
             return configured
 
+        # Perfil aislado: lo que sigue (registro, Steam, GOG, rutas comunes) es la máquina REAL del usuario. Se apaga el
+        # descubrimiento, no la configuración: la ruta fijada arriba ya ganó. Paridad con `AutoDetector.find_skyrim`.
+        if perfil_aislado():
+            logger.info("Perfil aislado: se omite la detección de Skyrim en la máquina real.")
+            return None
+
         # 1. Registry — Steam
         for reg_key in (
             r"SOFTWARE\Bethesda Softworks\Skyrim Special Edition",
@@ -673,6 +680,11 @@ class EnvironmentScanner:
 
     async def _find_mo2(self) -> pathlib.Path | None:
         """Locate Mod Organizer 2."""
+        # Perfil aislado: rutas comunes, AppData y Program Files son la máquina REAL del usuario. Paridad con
+        # `AutoDetector.find_mo2`.
+        if perfil_aislado():
+            logger.info("Perfil aislado: se omite la detección de MO2 en la máquina real.")
+            return None
         for raw in MO2_COMMON_PATHS:
             p = pathlib.Path(raw)
             if (p / "ModOrganizer.exe").exists():
@@ -767,6 +779,11 @@ class EnvironmentScanner:
                     if candidate.is_file():
                         return candidate
 
+        # `PATH` también es de la MÁQUINA: el rig la hereda junto con los directorios del sistema. Con el perfil aislado no
+        # se consulta (se apaga el descubrimiento; el ejecutable que el perfil fijó lo resuelve `_resolve_tool_path`).
+        if perfil_aislado():
+            return None
+
         # Check PATH as fallback
         for exe_name in exe_names:
             in_path = shutil.which(exe_name.replace(".exe", ""))
@@ -786,6 +803,10 @@ class EnvironmentScanner:
         Instead, adds specific known tool locations within PF.
         """
         roots: list[pathlib.Path] = []
+        # Las raíces comunes y Program Files son de la MÁQUINA, no del perfil: con el perfil aislado no se recorren (el
+        # descubrimiento de herramientas ejecutaría la sonda de versión sobre un binario ajeno). Las raíces derivadas de
+        # rutas CONFIGURADAS (MO2 y el juego) se conservan.
+        aislado = perfil_aislado()
 
         # MO2-internal tools (highest priority)
         if mo2_root:
@@ -795,7 +816,7 @@ class EnvironmentScanner:
                 roots.append(tools_dir)
 
         # Common modding roots
-        for raw in COMMON_TOOL_ROOTS:
+        for raw in () if aislado else COMMON_TOOL_ROOTS:
             p = pathlib.Path(raw)
             if p.is_dir():
                 roots.append(p)
@@ -805,7 +826,7 @@ class EnvironmentScanner:
             roots.append(skyrim_path)
 
         # Specific PF locations (NOT generic Program Files scan)
-        for pf_str in (r"C:\Program Files", r"C:\Program Files (x86)"):
+        for pf_str in () if aislado else (r"C:\Program Files", r"C:\Program Files (x86)"):
             for tool_name in ("LOOT", "SSEEdit", "Mod Organizer 2", "Wrye Bash"):
                 candidate = pathlib.Path(pf_str) / tool_name
                 if candidate.is_dir():

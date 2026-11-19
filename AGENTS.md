@@ -314,6 +314,31 @@ el valor vivo del keyring prevalece sobre memoria o plaintext obsoletos; una
 escritura rechazada queda pendiente para reintento. Ancla:
 `tests/test_config_secretos_sin_keyring.py`.
 
+**Perfil aislado (`SKYCLAW_ISOLATED=1`).** Un `HOME` aislado **no** aísla el keyring de Windows, el
+registro ni las bibliotecas de Steam: son del usuario, no del perfil. Todo arnés, rig o script que
+construya `AppContext`/`Config` fuera de producción activa la variable (el runbook del rig la exige,
+regla 7). Con ella el keyring pasa a un backend que **falla** —nunca el nulo, con el que
+`set_password` «funciona» sin guardar y `Config._load_from_keyring` borraría el secreto del TOML— y
+`AutoDetector`/`EnvironmentScanner` dejan de descubrir la máquina real (Skyrim, MO2 y las herramientas
+de las raíces comunes, Program Files y `PATH`), y el arranque de `AppContext` tampoco escanea LOOT ni
+xEdit en rutas comunes (`_scan_tool_paths`, único llamador de `scan_common_paths`, anclado por AST);
+las rutas y ejecutables que el perfil fija en su config
+siguen valiendo, y `_migrate_legacy_json` conserva el JSON legado si algún secreto no se pudo guardar
+(perder la key es tan malo como filtrarla). La propiedad del mecanismo: *el aislamiento solo protege si TODOS los
+accesos participan*. Todo acceso al keyring pasa por el backend global (`sky_claw/aislamiento.py`
+instala uno solo) y lo anclan los censos por AST de `tests/test_aislamiento_perfil.py`: los módulos
+que importan `keyring` o `winreg` están congelados por igualdad, ninguno instancia un backend propio
+y toda llamada sobrevive a un backend que falla. Un módulo nuevo que toque keyring o lea el registro
+rompe el ancla hasta que se decide su receta. **Excepción abierta:** la lectura de solo lectura de
+`HKCU\...\CurrentInstance` de `mo2_instance.py` (la identidad de la instancia de MO2 que el runtime
+congelado compara) **no** se aísla: figura como «exento» en el censo y la decisión de aislarla sigue
+abierta. **El hook del paquete no importa `keyring`**: solo fija
+`PYTHON_KEYRING_BACKEND`, porque `import keyring` llama a `platform.system()` (en Windows lanza
+`cmd.exe /c ver`) y el worker VFS importa el paquete antes de probar su Job (H-02); lo ancla
+`test_importar_sky_claw_no_importa_keyring_ni_llama_a_platform_system`. Los descubridores de
+herramientas se enumeran por el registro (`iter_external_tool_specs`), no por caso. *Historia: en R0 un `AppContext` con `HOME` aislado leyó
+el token de Telegram del operador y ejecutó long-polling (más de 700 llamadas, todas 401).*
+
 **Propiedad del `external_work_root` (P0 de [ADR 0011](docs/adr/0011-dyndolod-external-work-root.md)).**
 `sky_claw/local/tools/dyndolod_workspace.py` contesta **una sola vez** las cuatro
 preguntas del work root externo —admisión, binding, estado y coordinación— porque
