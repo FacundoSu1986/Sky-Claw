@@ -305,6 +305,86 @@ def test_escritura_externa_bloqueada_mientras_se_retiene(tmp_path: pathlib.Path)
     assert ini.read_bytes() == original
 
 
+_ESCRITOR_COMPARTICION_PLENA = """
+import ctypes, sys
+from ctypes import wintypes
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.CreateFileW.argtypes = [
+    wintypes.LPCWSTR,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    ctypes.c_void_p,
+]
+kernel32.CreateFileW.restype = ctypes.c_void_p
+kernel32.WriteFile.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.c_void_p,
+]
+kernel32.WriteFile.restype = wintypes.BOOL
+kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+INVALIDO = (1 << 64) - 1
+GENERIC_WRITE = 0x40000000
+COMPARTIR_TODO = 0x00000007
+
+handle = kernel32.CreateFileW(sys.argv[1], GENERIC_WRITE, COMPARTIR_TODO, None, 3, 0x80, None)
+if not handle or int(handle) == INVALIDO:
+    print(f"BLOQUEADO:{ctypes.get_last_error()}")
+else:
+    escritos = wintypes.DWORD(0)
+    if kernel32.WriteFile(ctypes.c_void_p(handle), b"PWNED", 5, ctypes.byref(escritos), None):
+        print("ESCRIBIO")
+    else:
+        print(f"BLOQUEADO:{ctypes.get_last_error()}")
+    kernel32.CloseHandle(ctypes.c_void_p(handle))
+"""
+
+
+@SOLO_WINDOWS
+def test_escritura_externa_con_comparticion_plena_queda_bloqueada(tmp_path: pathlib.Path) -> None:
+    """Un escritor que concede ``READ|WRITE|DELETE`` tampoco entra: es LA fila discriminante.
+
+    Los demás escritores de este archivo abren por el CRT, cuyo ``dwShareMode`` es
+    ``READ|WRITE``. Con el acceso propio en ``GENERIC_READ|GENERIC_WRITE|DELETE``,
+    ese escritor queda bloqueado incluso si la exclusión concediera ``WRITE``,
+    porque el CRT no comparte ``DELETE``. Medido con ``COMPARTICION_EXCLUSIVA = 2``
+    (``FILE_SHARE_WRITE``): el escritor del CRT sigue bloqueado y la suite entera
+    pasa, mientras **este** escritor de compartición plena abre y escribe el INI.
+    Es el único caso de la suite que mata ese mutante; sin él, una regresión de
+    ``dwShareMode`` que admita escritores reales queda en verde.
+
+    El código se compara con ``{32, 5}`` y no con ``32`` a secas por portabilidad
+    entre versiones de Windows: ambos son «bloqueado por el sistema», y ninguno de
+    los dos se confunde con «escribió».
+    """
+    ini = _ini_sintetico(tmp_path)
+    original = ini.read_bytes()
+    codigo = _ESCRITOR_COMPARTICION_PLENA.replace("sys.argv[1]", repr(str(ini)))
+
+    gate = exclusion.adquirir_exclusion_ini(ini)
+    try:
+        proc = _en_subproceso(codigo)
+        assert "BLOQUEADO:32" in proc.stdout or "BLOQUEADO:5" in proc.stdout, (
+            f"la escritura con compartición plena pasó: {proc.stdout} {proc.stderr}"
+        )
+    finally:
+        gate.cerrar()
+    assert ini.read_bytes() == original, "el INI cambió bajo la exclusión"
+
+    # Control positivo: la sonda SÍ puede escribir cuando el handle se liberó. Sin
+    # esto, un error de la sonda (argtypes, código 87) dejaría el test en verde
+    # para siempre sin haber probado la exclusión.
+    proc = _en_subproceso(codigo)
+    assert "ESCRIBIO" in proc.stdout, f"la sonda no escribe ni sin la exclusión: {proc.stdout} {proc.stderr}"
+
+
 @SOLO_WINDOWS
 def test_borrado_externo_bloqueado_mientras_se_retiene(tmp_path: pathlib.Path) -> None:
     """``os.unlink`` externo falla: el nombre no se puede liberar por debajo."""
