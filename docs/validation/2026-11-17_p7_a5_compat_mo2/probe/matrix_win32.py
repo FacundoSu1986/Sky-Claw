@@ -280,9 +280,30 @@ def configurar(argv: list[str]) -> None:
     RUN = pathlib.Path(argv[1]).resolve()
 
 
+#: Filas que ``main`` exige antes de publicar evidencia.
+_FILAS_OBLIGATORIAS = (
+    "escribir",
+    "escribir_win32",
+    "truncar",
+    "borrar",
+    "mover_encima",
+    "replacefilew",
+    "leer_crt",
+    "leer_win32",
+    "abrir_solo_delete",
+    "control_tras_cerrar",
+    "alias_hardlink",
+    "muerte_abrupta",
+    "contencion_con_reintento",
+)
+
+
 def main() -> int:
     configurar(sys.argv)
     resultados = medir()
+    faltan = [fila for fila in _FILAS_OBLIGATORIAS if fila not in resultados]
+    if faltan:
+        raise HarnessError(f"resultado incompleto: faltan {faltan}")
     (RUN / "matrix.json").write_text(json.dumps(resultados, indent=2, ensure_ascii=True), encoding="utf-8")
     # Sólo se publica ok si ``medir`` llegó al final: cualquier escenario fuera de
     # contrato levanta y el proceso termina sin este JSON.

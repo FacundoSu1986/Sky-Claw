@@ -283,6 +283,27 @@ def test_main_no_publica_ok_si_medir_falla(
     assert "ok" not in capsys.readouterr().out
 
 
+def test_main_rechaza_resultado_incompleto(
+    sonda: types.ModuleType, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Punto 5: ``main`` no publica ok por el solo hecho de que ``medir`` retorne."""
+    monkeypatch.setattr(sonda.sys, "argv", ["probe_qsettings.py", sys.executable, str(tmp_path)])
+    monkeypatch.setattr(sonda, "medir", lambda: {"A_lectura_con_lock": {}})
+    with pytest.raises(sonda.HarnessError, match="resultado incompleto"):
+        sonda.main()
+    assert "ok" not in capsys.readouterr().out
+
+
+def test_main_publica_ok_con_resultado_completo(
+    sonda: types.ModuleType, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Control positivo: el camino bueno sigue publicando ok."""
+    monkeypatch.setattr(sonda.sys, "argv", ["probe_qsettings.py", sys.executable, str(tmp_path)])
+    monkeypatch.setattr(sonda, "medir", lambda: {clave: {} for clave in sonda._ESCENARIOS_OBLIGATORIOS})
+    assert sonda.main() == 0
+    assert '"ok": true' in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # G — matriz: SIN_SALIDA ya no es un resultado
 # ---------------------------------------------------------------------------
@@ -326,3 +347,30 @@ def test_matrix_main_no_publica_ok_si_medir_falla(
     with pytest.raises(matriz.HarnessError):
         matriz.main()
     assert "ok" not in capsys.readouterr().out
+
+
+def test_matrix_main_rechaza_resultado_incompleto(
+    matriz: types.ModuleType,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Punto 5 también en la matriz: no publica ok con filas faltantes."""
+    monkeypatch.setattr(matriz.sys, "argv", ["matrix_win32.py", str(tmp_path)])
+    monkeypatch.setattr(matriz, "medir", lambda: {"escribir": {}})
+    with pytest.raises(matriz.HarnessError, match="resultado incompleto"):
+        matriz.main()
+    assert "ok" not in capsys.readouterr().out
+
+
+def test_matrix_main_publica_ok_con_resultado_completo(
+    matriz: types.ModuleType,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Control positivo: con todas las filas, la matriz publica ok."""
+    monkeypatch.setattr(matriz.sys, "argv", ["matrix_win32.py", str(tmp_path)])
+    monkeypatch.setattr(matriz, "medir", lambda: {fila: {} for fila in matriz._FILAS_OBLIGATORIAS})
+    assert matriz.main() == 0
+    assert '"ok": true' in capsys.readouterr().out

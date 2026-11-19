@@ -305,13 +305,15 @@ La revisión del propietario (`5965536673`) señaló que las sondas podían publ
 `wait()` no miraban `returncode` y ambos `main()` publicaban éxito sin condición.
 
 Corregido con un módulo sin dependencias (`probe/harness_validacion.py`) y anclas
-en `tests/test_p7_a5_compat_probe_harness.py` (**29 casos**), con **controles
+en `tests/test_p7_a5_compat_probe_harness.py` (**33 casos**), con **controles
 positivos** para que un bloqueo esperado (`32`/`5`/`13`) y un `AccessError` de
-QSettings sigan siendo resultados válidos, no fallos. Cuatro mutantes de la
-validación mueren (`leer_json` devolviendo dict, `exigir_codigo` sin mirar
-`returncode`, `exigir_bloqueo` sin validar, `agredir` devolviendo `SIN_SALIDA`).
-La sonda y la matriz reales siguen midiendo (5,3 s) y son **idempotentes** en el
-mismo `run_dir`.
+QSettings sigan siendo resultados válidos, no fallos. Los dos `main()` además
+declaran sus escenarios/filas obligatorias y fallan si el resultado viene
+incompleto. Seis mutantes de la validación mueren (`leer_json` devolviendo dict,
+`exigir_codigo` sin mirar `returncode`, `exigir_bloqueo` sin validar, `agredir`
+devolviendo `SIN_SALIDA`, y los dos `main()` sin exigir completitud).
+La sonda y la matriz reales siguen midiendo y son **idempotentes** en el mismo
+`run_dir`.
 
 ## 18. Colisiones con otros PRs
 

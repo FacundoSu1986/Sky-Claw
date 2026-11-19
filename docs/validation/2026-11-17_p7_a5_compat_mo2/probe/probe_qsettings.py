@@ -390,12 +390,26 @@ def configurar(argv: list[str]) -> None:
     INI = INSTANCIA / "modorganizer.ini"
 
 
+#: Escenarios que ``main`` exige antes de publicar evidencia. No alcanza con que
+#: ``medir`` no haya levantado: el resultado tiene que estar COMPLETO.
+_ESCENARIOS_OBLIGATORIOS = (
+    "A_lectura_con_lock",
+    "B_escritura_con_lock",
+    "C_semantica",
+    "D_semantica_tras_destructor",
+    "E_adquisicion_con_objeto_vivo",
+)
+
+
 def main() -> int:
     configurar(sys.argv)
     try:
         resultado = medir()
     finally:
         _matar_hijos()
+    faltan = [clave for clave in _ESCENARIOS_OBLIGATORIOS if clave not in resultado]
+    if faltan:
+        raise HarnessError(f"resultado incompleto: faltan {faltan}")
     destino = RUN / "qsettings.json"
     destino.write_text(json.dumps(resultado, indent=2, ensure_ascii=True), encoding="utf-8")
     # Sólo se llega acá si TODOS los escenarios dieron lo esperado: cualquier
