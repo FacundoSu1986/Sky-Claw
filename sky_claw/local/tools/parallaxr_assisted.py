@@ -566,6 +566,32 @@ def _match_explicit_selection(
     return matches[0] if len(matches) == 1 else None
 
 
+def _identidad_seleccionada_sigue_vigente(selected: _DirectModEntry, resolved_mods_dir: Path) -> bool:
+    """Indica si la identidad lógica del candidato sigue resolviendo a la identidad física inspeccionada.
+
+    Revalida, de forma estricta, `logical_mod_root` y `logical_target` contra los destinos
+    registrados durante el descubrimiento y exige que ambos sigan dentro de la frontera física
+    autorizada con descendencia `+1`/`+2`. La comparación es por componentes y cadena OS
+    (sensible al caso), nunca por igualdad de rutas del lenguaje.
+
+    Propaga `OSError` cuando la revalidación no puede completarse; un `RuntimeError` ajeno a un
+    bucle de symlinks se propaga sin enmascararse (mismo contrato que `_resolve_path`).
+    """
+    resolved_root_ahora = _resolve_path(selected.logical_mod_root, strict=True)
+    resolved_target_ahora = _resolve_path(selected.logical_target, strict=True)
+    if not _es_prefijo_de_componentes(resolved_root_ahora, resolved_mods_dir):
+        return False
+    if len(resolved_root_ahora.parts) < len(resolved_mods_dir.parts) + 1:
+        return False
+    if not _es_prefijo_de_componentes(resolved_target_ahora, resolved_mods_dir):
+        return False
+    if len(resolved_target_ahora.parts) < len(resolved_mods_dir.parts) + 2:
+        return False
+    return _is_same_resolved_container(resolved_root_ahora, selected.resolved_mod_root) and _is_same_resolved_container(
+        resolved_target_ahora, selected.resolved_target
+    )
+
+
 def run_parallaxr_assisted_preflight(
     mods_dir: Path, explicit_selection: Path | None = None
 ) -> ParallaxRAssistedPreflight:
@@ -696,6 +722,36 @@ def run_parallaxr_assisted_preflight(
             candidate_mod_roots=candidate_mod_roots,
             message=(
                 "No se pudo leer el entrypoint seleccionado de ParallaxR por un error de acceso al sistema de archivos."
+            ),
+        )
+
+    # Revalidación final de identidad (#667-A4, P2). Cierra la ventana entre el descubrimiento
+    # (que registró los destinos físicos) y la emisión de READY: si la identidad lógica dejó de
+    # resolver a lo inspeccionado, la evidencia y el handoff describirían objetos distintos.
+    # NO elimina TOCTOU posterior al retorno (A1): un enlace puede cambiar después de READY.
+    try:
+        identidad_vigente = _identidad_seleccionada_sigue_vigente(selected, resolved_mods_dir)
+    except OSError:
+        return ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
+            success=False,
+            existing_output_candidates=existing_output,
+            candidate_mod_roots=candidate_mod_roots,
+            message=(
+                "No se pudo revalidar la identidad del entrypoint seleccionado de ParallaxR por "
+                "un error de acceso al sistema de archivos."
+            ),
+        )
+
+    if not identidad_vigente:
+        return ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.EVIDENCE_UNSTABLE,
+            success=False,
+            existing_output_candidates=existing_output,
+            candidate_mod_roots=candidate_mod_roots,
+            message=(
+                "La identidad lógica seleccionada dejó de resolver al destino físico inspeccionado "
+                "durante el preflight; reintente cuando el árbol de mods esté estable."
             ),
         )
 

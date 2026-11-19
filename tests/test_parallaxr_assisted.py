@@ -3063,3 +3063,285 @@ def test_t10_guardias_estaticas_anti_ffi_plegado_y_path_eq() -> None:
     assert "parts ==" in contrato_contenedor
     assert "os.fspath" in contrato_contenedor
     assert "is_relative_to" not in contrato_contenedor
+
+
+# =============================================================================
+# 12. REMEDIACIÓN P2 — REVALIDACIÓN DE IDENTIDAD LÓGICA ANTES DE READY
+# =============================================================================
+
+
+def _crear_junction(destino: Path, enlace: Path) -> None:
+    """Crea una junction NTFS en `enlace` hacia `destino` (sin privilegios de symlink)."""
+    if sys.platform != "win32":
+        pytest.skip("Junctions NTFS solo reproducibles en Windows")
+    import _winapi
+
+    _winapi.CreateJunction(str(destino), str(enlace))
+
+
+def _retargetear_junction(enlace: Path, destino: Path) -> None:
+    """Re-apunta una junction existente hacia otro destino (rmdir + CreateJunction)."""
+    enlace.rmdir()
+    _crear_junction(destino, enlace)
+
+
+def _armar_mod_con_dos_destinos(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """Arma el caso P2: `Mod_A` (junction) -> `_pool/A`, con `_pool/B` como destino alternativo.
+
+    Devuelve `(mods_dir, mod_a, destino_a, destino_b)` e incluye un marcador B9 neutro en un
+    hermano legítimo para verificar que el descarte preserva `existing_output_candidates`.
+    """
+    mods_dir = tmp_path / "mods"
+    pool = mods_dir / "_pool"
+    destino_a = pool / "A"
+    destino_b = pool / "B"
+    for destino, contenido in ((destino_a, b"@echo destino_a"), (destino_b, b"@echo destino_b")):
+        destino.mkdir(parents=True)
+        (destino / "ParallaxR.BAT").write_bytes(contenido)
+    salida = mods_dir / "Out_X"
+    salida.mkdir()
+    (salida / "ParallaxROutput.tmp").write_bytes(b"marcador")
+    mod_a = mods_dir / "Mod_A"
+    _crear_junction(destino_a, mod_a)
+    return mods_dir, mod_a, destino_a, destino_b
+
+
+@contextmanager
+def _retarget_durante_marcadores(retarget: Callable[[], None]) -> Iterator[None]:
+    """Ejecuta `retarget()` justo cuando el preflight escanea marcadores (tras el descubrimiento)."""
+    from sky_claw.local.tools import parallaxr_assisted as modulo
+
+    escanear_real = modulo.discover_output_markers
+
+    def escanear_con_retarget(mods_dir: Path):
+        retarget()
+        return escanear_real(mods_dir)
+
+    with patch.object(modulo, "discover_output_markers", escanear_con_retarget):
+        yield
+
+
+@contextmanager
+def _retarget_tras_fingerprint(retarget: Callable[[], None]) -> Iterator[None]:
+    """Ejecuta `retarget()` inmediatamente después de hashear el entrypoint y antes del retorno."""
+    from sky_claw.local.tools import parallaxr_assisted as modulo
+
+    fingerprint_real = modulo._fingerprint_file_consistently
+    estado = {"hecho": False}
+
+    def fingerprint_con_retarget(path: Path, max_attempts: int = _FINGERPRINT_MAX_ATTEMPTS):
+        snapshot = fingerprint_real(path, max_attempts)
+        if not estado["hecho"] and path.name == "ParallaxR.BAT":
+            estado["hecho"] = True
+            retarget()
+        return snapshot
+
+    with patch.object(modulo, "_fingerprint_file_consistently", fingerprint_con_retarget):
+        yield
+
+
+def test_p2_retarget_de_junction_durante_marcadores_no_emite_ready(tmp_path: Path) -> None:
+    """P2 (#667-A4): si la junction del mod cambia de destino tras el descubrimiento, no hay READY.
+
+    La identidad física inspeccionada (A) deja de ser el destino de la identidad lógica (ahora B):
+    el preflight no puede emitir READY con evidencia que ya no corresponde a lo que entregará
+    el handoff lógico.
+    """
+    # Arrange
+    mods_dir, mod_a, destino_a, destino_b = _armar_mod_con_dos_destinos(tmp_path)
+    try:
+        # Act: el re-apuntado ocurre durante discover_output_markers().
+        with _retarget_durante_marcadores(lambda: _retargetear_junction(mod_a, destino_b)):
+            preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+        # Assert: la evidencia de A y la ruta lógica hacia B no pueden convivir en READY.
+        sha_a = hashlib.sha256((destino_a / "ParallaxR.BAT").read_bytes()).hexdigest()
+        sha_b = hashlib.sha256((destino_b / "ParallaxR.BAT").read_bytes()).hexdigest()
+        assert sha_a != sha_b
+        assert preflight.status is ParallaxRAssistedStatus.EVIDENCE_UNSTABLE, (
+            f"status={preflight.status.value}; la evidencia física es {sha_a[:12]} y la ruta lógica "
+            f"resuelve ahora a {sha_b[:12]}"
+        )
+        assert preflight.success is False
+        assert preflight.installation is None
+        assert preflight.candidate_mod_roots == (mods_dir.resolve() / "Mod_A",)
+        assert [m.path for m in preflight.existing_output_candidates] == [
+            (mods_dir / "Out_X" / "ParallaxROutput.tmp").resolve()
+        ]
+    finally:
+        with suppress(OSError):
+            mod_a.rmdir()
+
+
+def test_p2_retarget_de_entrypoint_simulado_durante_marcadores_no_emite_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2 (#667-A4): si el entrypoint lógico cambia de destino físico, no hay READY.
+
+    Variante determinista sin symlinks: un mock acotado de `_resolve_path` hace que
+    `Mod_A/ParallaxR.BAT` resuelva a `_pool/A/ParallaxR.BAT` y, durante el escaneo de
+    marcadores, pase a resolver a `_pool/B/ParallaxR.BAT`.
+    """
+    # Arrange
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "Mod_A"
+    mod_dir.mkdir(parents=True)
+    (mod_dir / "ParallaxR.BAT").write_bytes(b"@echo logico")
+    pool = mods_dir / "_pool"
+    destino_a = pool / "A"
+    destino_b = pool / "B"
+    for destino, contenido in ((destino_a, b"@echo fisico_a"), (destino_b, b"@echo fisico_b")):
+        destino.mkdir(parents=True)
+        (destino / "ParallaxR.BAT").write_bytes(contenido)
+
+    from sky_claw.local.tools import parallaxr_assisted as modulo
+
+    resolver_real = modulo._resolve_path
+    objetivo = os.fspath(mod_dir / "ParallaxR.BAT")
+    destino_actual = {"ruta": destino_a / "ParallaxR.BAT"}
+
+    def resolver_con_enlace_simulado(path: Path, *, strict: bool = False) -> Path:
+        if os.fspath(path) == objetivo:
+            return destino_actual["ruta"]
+        return resolver_real(path, strict=strict)
+
+    monkeypatch.setattr(modulo, "_resolve_path", resolver_con_enlace_simulado)
+
+    # Act
+    with _retarget_durante_marcadores(lambda: destino_actual.update(ruta=destino_b / "ParallaxR.BAT")):
+        preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+    # Assert
+    assert preflight.status is ParallaxRAssistedStatus.EVIDENCE_UNSTABLE
+    assert preflight.success is False
+    assert preflight.installation is None
+    assert preflight.candidate_mod_roots == (mods_dir.resolve() / "Mod_A",)
+
+
+def test_p2_retarget_despues_del_fingerprint_antes_del_retorno_no_emite_ready(tmp_path: Path) -> None:
+    """P2 (#667-A4): un re-apuntado posterior al fingerprint pero previo al retorno se detecta."""
+    # Arrange
+    mods_dir, mod_a, _destino_a, destino_b = _armar_mod_con_dos_destinos(tmp_path)
+    try:
+        # Act: el fingerprint del entrypoint ya se calculó; el enlace cambia después.
+        with _retarget_tras_fingerprint(lambda: _retargetear_junction(mod_a, destino_b)):
+            preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+        # Assert: la revalidación final impide emitir READY con identidad cambiada.
+        assert preflight.status is ParallaxRAssistedStatus.EVIDENCE_UNSTABLE
+        assert preflight.success is False
+        assert preflight.installation is None
+    finally:
+        with suppress(OSError):
+            mod_a.rmdir()
+
+
+def test_p2_junction_rota_durante_revalidacion_es_evidence_incomplete(tmp_path: Path) -> None:
+    """P2 (#667-A4): si el enlace queda roto antes de revalidar, EVIDENCE_INCOMPLETE (no READY)."""
+    # Arrange
+    mods_dir, mod_a, _destino_a, _destino_b = _armar_mod_con_dos_destinos(tmp_path)
+    fantasma = tmp_path / "fantasma"
+    fantasma.mkdir()
+
+    def romper_junction() -> None:
+        mod_a.rmdir()
+        _crear_junction(fantasma, mod_a)
+        fantasma.rmdir()
+
+    try:
+        # Act
+        with _retarget_tras_fingerprint(romper_junction):
+            preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+        # Assert: un fallo de resolución no se disfraza de READY ni de selección inválida.
+        assert preflight.status is ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+        assert preflight.success is False
+        assert preflight.installation is None
+        assert preflight.candidate_mod_roots == (mods_dir.resolve() / "Mod_A",)
+    finally:
+        with suppress(OSError):
+            mod_a.rmdir()
+
+
+def test_p2_bucle_de_junction_durante_revalidacion_es_evidence_incomplete(tmp_path: Path) -> None:
+    """P2 (#667-A4): un bucle de junctions detectado al revalidar degrada a EVIDENCE_INCOMPLETE."""
+    # Arrange
+    mods_dir, mod_a, _destino_a, _destino_b = _armar_mod_con_dos_destinos(tmp_path)
+    try:
+        with _arena_bucle_junctions_windows(tmp_path) as (_arena, j1, _j2):
+            # Act: tras hashear el entrypoint, la junction del mod entra en un ciclo.
+            with _retarget_tras_fingerprint(lambda: _retargetear_junction(mod_a, j1)):
+                preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+            # Assert
+            assert preflight.status is ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+            assert preflight.success is False
+            assert preflight.installation is None
+    finally:
+        with suppress(OSError):
+            mod_a.rmdir()
+
+
+def test_p2_error_de_permiso_durante_revalidacion_es_evidence_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2 (#667-A4): un error de acceso al revalidar no se degrada a READY ni a UNSTABLE."""
+    # Arrange
+    mods_dir, mod_a, _destino_a, _destino_b = _armar_mod_con_dos_destinos(tmp_path)
+
+    from sky_claw.local.tools import parallaxr_assisted as modulo
+
+    resolver_real = modulo._resolve_path
+    bandera = {"activa": False}
+    objetivo_root = os.fspath(mods_dir / "Mod_A")
+    objetivo_target = os.fspath(mods_dir / "Mod_A" / "ParallaxR.BAT")
+
+    def resolver_con_permiso_denegado(path: Path, *, strict: bool = False) -> Path:
+        if bandera["activa"] and os.fspath(path) in (objetivo_root, objetivo_target):
+            raise PermissionError("acceso denegado simulado al revalidar")
+        return resolver_real(path, strict=strict)
+
+    monkeypatch.setattr(modulo, "_resolve_path", resolver_con_permiso_denegado)
+    try:
+        # Act
+        with _retarget_tras_fingerprint(lambda: bandera.update(activa=True)):
+            preflight = run_parallaxr_assisted_preflight(mods_dir)
+
+        # Assert
+        assert preflight.status is ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+        assert preflight.success is False
+        assert preflight.installation is None
+        assert "denegado simulado" not in preflight.message
+    finally:
+        with suppress(OSError):
+            mod_a.rmdir()
+
+
+def test_p2_runtimeerror_ajeno_durante_revalidacion_se_propaga(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """P2 (#667-A4): un RuntimeError ajeno a un bucle de symlinks no se enmascara al revalidar."""
+    # Arrange
+    mods_dir, mod_a, _destino_a, _destino_b = _armar_mod_con_dos_destinos(tmp_path)
+
+    from sky_claw.local.tools import parallaxr_assisted as modulo
+
+    resolver_real = modulo._resolve_path
+    bandera = {"activa": False}
+    objetivo_root = os.fspath(mods_dir / "Mod_A")
+    objetivo_target = os.fspath(mods_dir / "Mod_A" / "ParallaxR.BAT")
+
+    def resolver_con_runtimeerror_ajeno(path: Path, *, strict: bool = False) -> Path:
+        if bandera["activa"] and os.fspath(path) in (objetivo_root, objetivo_target):
+            raise RuntimeError("bug interno no relacionado al revalidar")
+        return resolver_real(path, strict=strict)
+
+    monkeypatch.setattr(modulo, "_resolve_path", resolver_con_runtimeerror_ajeno)
+    try:
+        # Act + Assert
+        with (
+            _retarget_tras_fingerprint(lambda: bandera.update(activa=True)),
+            pytest.raises(RuntimeError, match="bug interno no relacionado al revalidar"),
+        ):
+            run_parallaxr_assisted_preflight(mods_dir)
+    finally:
+        with suppress(OSError):
+            mod_a.rmdir()

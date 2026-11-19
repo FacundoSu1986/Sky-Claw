@@ -105,6 +105,11 @@ Para evitar inconsistencias donde `size`/`mtime_ns` correspondan a un estado del
 6. **Misma operación para entrypoints y marcadores:** Tanto `ParallaxR.BAT` como `ParallaxROutput.tmp` son capturados mediante la misma función interna `_fingerprint_file_consistently`.
 7. **Alcance de la garantía:** La captura garantiza coherencia fotográfica **durante** la operación de fingerprint. No constituye un lock persistente ni previene cambios posteriores al preflight. La revalidación de evidencia corresponderá a futuras fases en el borde de ejecución (PR-A1/A2).
 8. **Semántica:** El hash SHA-256 constituye **evidencia local de identidad e inmutabilidad** capturada durante el preflight. **NO** representa firma criptográfica de editor, verificación de autenticidad de upstream ni condición de "código confiable".
+9. **Revalidación final de identidad (#667-A4, P2):** inmediatamente antes de emitir `READY`, el preflight vuelve a resolver de forma estricta `logical_mod_root` y `logical_target` y exige que coincidan —comparación por componentes resueltos y cadena OS, sensible al caso, sin igualdad de rutas del lenguaje— con `resolved_mod_root` y `resolved_entrypoint`, y que ambos sigan dentro de `mods_dir` con descendencia `+1`/`+2`.
+   - **Cambio observado de identidad** (la ruta lógica ya no resuelve a lo inspeccionado, o resuelve fuera de la frontera autorizada): `status = EVIDENCE_UNSTABLE`, `success = False`, preservando `candidate_mod_roots` y `existing_output_candidates`.
+   - **Error de acceso o de resolución que impide completar la revalidación** (`OSError`, `ELOOP`, `PermissionError`, `WinError` de inspección): `status = EVIDENCE_INCOMPLETE`, `success = False`, preservando la evidencia parcial.
+   - Un `RuntimeError` ajeno a un bucle de symlinks se propaga sin enmascararse.
+   - Esta revalidación **reduce** la ventana entre el descubrimiento y la emisión de `READY`, pero **no elimina TOCTOU** (A1): un enlace puede cambiar después de que el preflight retorne. No es un lock ni una garantía de ejecución, y no convierte el handoff en autenticación.
 
 ---
 
