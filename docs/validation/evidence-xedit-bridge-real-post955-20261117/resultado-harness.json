@@ -1,0 +1,628 @@
+{
+ "meta": {
+  "sky_claw_file": "E:\\Skyclaw_Main_Sync\\.worktrees\\qa954-real-post955\\sky_claw\\__init__.py",
+  "python": "3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]",
+  "utc": "2026-11-17T21:30:45Z",
+  "modo": "completa"
+ },
+ "veredicto_global": "PASS",
+ "error": null,
+ "pruebas": [
+  {
+   "prueba": "aislamiento",
+   "tipo": "real",
+   "doble": null,
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "mo2_ini_dir": "G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin",
+    "bridge_root": "G:\\Modding\\SSEDIT\\QA-20261117\\inst\\Laboratorio\\BridgeTrabajo",
+    "perfil": "QA",
+    "mo2_es_qa": true,
+    "bridge_es_qa": true,
+    "perfil_es_qa": true
+   }
+  },
+  {
+   "prueba": "T1_denegacion",
+   "tipo": "real",
+   "doble": null,
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "respuesta_tool": {
+     "success": true,
+     "message": "",
+     "estado": "esperando_aprobacion",
+     "trabajo_id": "admision-20261117-213051-16e083",
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobacion_solicitada": true,
+     "instrucciones": "El pedido de aprobación YA se le mandó al operador por este canal; 'esperando_aprobacion' es el estado inicial, no significa que falte pedirla. No vuelvas a pedirla ni consultes el estado: sin su aprobación no se copia nada y Sky-Claw avisa cuando la admisión termina; después, auditar_plugin_nativo."
+    },
+    "t_respuesta_s": 0.016,
+    "hitl": {
+     "request_id": "xedit-bridge-admit-f7d3e718393d",
+     "reason": "Admitir T0_ValidCandidate.esp (perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)) en el laboratorio del xEdit Bridge",
+     "category": "tool_execution",
+     "respond_ack": true
+    },
+    "estado_final": "rechazada",
+    "resultado": {
+     "success": false,
+     "message": "Admisión rechazada por el operador: no se copió nada.",
+     "status": "denied",
+     "decision": "denied"
+    },
+    "contexto_aprobado": "perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)",
+    "admitidos_cambio": false,
+    "archivos_nuevos": [],
+    "archivos_modificados": [],
+    "archivos_borrados": [],
+    "avisos": [
+     "Admisión de T0_ValidCandidate.esp: denied; no se copió nada."
+    ],
+    "copias": {}
+   }
+  },
+  {
+   "prueba": "T2_aprobacion",
+   "tipo": "real",
+   "doble": null,
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "respuesta_tool": {
+     "success": true,
+     "message": "",
+     "estado": "esperando_aprobacion",
+     "trabajo_id": "admision-20261117-213051-f6ca75",
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobacion_solicitada": true,
+     "instrucciones": "El pedido de aprobación YA se le mandó al operador por este canal; 'esperando_aprobacion' es el estado inicial, no significa que falte pedirla. No vuelvas a pedirla ni consultes el estado: sin su aprobación no se copia nada y Sky-Claw avisa cuando la admisión termina; después, auditar_plugin_nativo."
+    },
+    "t_respuesta_s": 0.0,
+    "hitl": {
+     "request_id": "xedit-bridge-admit-bfc4d508e612",
+     "reason": "Admitir T0_ValidCandidate.esp (perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)) en el laboratorio del xEdit Bridge",
+     "category": "tool_execution",
+     "respond_ack": true
+    },
+    "estado_final": "exitosa",
+    "resultado": {
+     "plugin": "T0_ValidCandidate.esp",
+     "success": true,
+     "message": "",
+     "admission_id": "20261117-183052-50483a",
+     "clausura": [
+      "Skyrim.esm",
+      "Update.esm",
+      "Dawnguard.esm",
+      "HearthFires.esm",
+      "Dragonborn.esm",
+      "T0_ValidCandidate.esp"
+     ],
+     "copiados": [
+      "Skyrim.esm",
+      "Update.esm",
+      "Dawnguard.esm",
+      "HearthFires.esm",
+      "Dragonborn.esm",
+      "T0_ValidCandidate.esp"
+     ],
+     "reutilizados": [],
+     "reemplazados": [],
+     "siguiente": "auditar_plugin_nativo"
+    },
+    "contexto_aprobado": "perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)",
+    "admitidos_cambio": true,
+    "archivos_nuevos": [
+     "Data/Dawnguard.esm",
+     "Data/Dragonborn.esm",
+     "Data/HearthFires.esm",
+     "Data/Skyrim.esm",
+     "Data/T0_ValidCandidate.esp",
+     "Data/Update.esm",
+     "admissions.json"
+    ],
+    "archivos_modificados": [],
+    "archivos_borrados": [],
+    "avisos": [
+     "✅ T0_ValidCandidate.esp quedó admitido en el xEdit Bridge (20261117-183052-50483a): ya se puede auditar con auditar_plugin_nativo."
+    ],
+    "copias": {
+     "Skyrim.esm": "2bbc77fdec35a70ef96b710f8c525e50a1db9e63e11a391a0eb9ee8f56d36107",
+     "Update.esm": "c1795e0a1218da45dbfd523f064f1857b42805c49714c46091e75277e525aed9",
+     "Dawnguard.esm": "1bda804009a21228acf6b30aa6aa7a692b247ff8a0313fe9aa69b3617ed4a6c4",
+     "HearthFires.esm": "ad4ca9f32c81e7ddd3e39ec95e03b07841f20712989e598778442ea69b6e6a97",
+     "Dragonborn.esm": "5f44f343552688c04f73bf83de58b90f70c7376b133fbbcb56b6fe33acf8778b",
+     "T0_ValidCandidate.esp": "36dd1e63b48f6e3f85c7fdb160819ea1681de6e196daf343f3def9e9c3be5f81"
+    }
+   }
+  },
+  {
+   "prueba": "T3_auditoria_valido",
+   "tipo": "real",
+   "doble": null,
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "salida_cruda": "{\"plugin\": \"T0_ValidCandidate.esp\", \"success\": true, \"message\": \"\", \"aprobado\": true, \"clean\": true, \"check_complete\": true, \"errores_nativos\": 0, \"registros_procesados\": 2, \"avisos\": 0, \"hallazgos\": [], \"hallazgos_omitidos\": 0, \"fallas\": [], \"integridad\": \"PASS\", \"recortado\": false, \"bridge_version\": \"1.1.0\", \"run_id\": \"20261117_183058_83fa68\", \"log_path\": \"G:\\\\Modding\\\\SSEDIT\\\\QA-20261117\\\\inst\\\\Laboratorio\\\\Temporales\\\\Bridge\\\\runs\\\\20261117_183058_83fa68\\\\run.log\", \"no_admitido\": false}",
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "success": true,
+     "message": "",
+     "aprobado": true,
+     "clean": true,
+     "check_complete": true,
+     "errores_nativos": 0,
+     "registros_procesados": 2,
+     "avisos": 0,
+     "hallazgos": [],
+     "hallazgos_omitidos": 0,
+     "fallas": [],
+     "integridad": "PASS",
+     "recortado": false,
+     "bridge_version": "1.1.0",
+     "run_id": "20261117_183058_83fa68",
+     "log_path": "G:\\Modding\\SSEDIT\\QA-20261117\\inst\\Laboratorio\\Temporales\\Bridge\\runs\\20261117_183058_83fa68\\run.log",
+     "no_admitido": false
+    },
+    "duracion_s": 11.52,
+    "admitidos_intactos": true,
+    "corridas_nuevas": [
+     "20261117_183058_83fa68"
+    ],
+    "log_dentro_del_lab": true,
+    "log_en_directorio_de_la_corrida": true,
+    "log_existe": true,
+    "log_sha256": "405fc69235a041f393c0ee5f30784805c44c8ad3de67200d64029755a6c90176"
+   }
+  },
+  {
+   "prueba": "T3_admision_invalido",
+   "tipo": "real",
+   "doble": null,
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "respuesta_tool": {
+     "success": true,
+     "message": "",
+     "estado": "esperando_aprobacion",
+     "trabajo_id": "admision-20261117-213110-f1c959",
+     "plugin": "T1_InvalidReference.esp",
+     "aprobacion_solicitada": true,
+     "instrucciones": "El pedido de aprobación YA se le mandó al operador por este canal; 'esperando_aprobacion' es el estado inicial, no significa que falte pedirla. No vuelvas a pedirla ni consultes el estado: sin su aprobación no se copia nada y Sky-Claw avisa cuando la admisión termina; después, auditar_plugin_nativo."
+    },
+    "t_respuesta_s": 0.0,
+    "hitl": {
+     "request_id": "xedit-bridge-admit-3aa349c23b5e",
+     "reason": "Admitir T1_InvalidReference.esp (perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)) en el laboratorio del xEdit Bridge",
+     "category": "tool_execution",
+     "respond_ack": true
+    },
+    "estado_final": "exitosa",
+    "resultado": {
+     "plugin": "T1_InvalidReference.esp",
+     "success": true,
+     "message": "",
+     "admission_id": "20261117-183110-001968",
+     "clausura": [
+      "Skyrim.esm",
+      "Update.esm",
+      "Dawnguard.esm",
+      "HearthFires.esm",
+      "Dragonborn.esm",
+      "T1_InvalidReference.esp"
+     ],
+     "copiados": [
+      "T1_InvalidReference.esp"
+     ],
+     "reutilizados": [
+      "Skyrim.esm",
+      "Update.esm",
+      "Dawnguard.esm",
+      "HearthFires.esm",
+      "Dragonborn.esm"
+     ],
+     "reemplazados": [],
+     "siguiente": "auditar_plugin_nativo"
+    },
+    "contexto_aprobado": "perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)",
+    "admitidos_cambio": true,
+    "archivos_nuevos": [
+     "Data/T1_InvalidReference.esp"
+    ],
+    "archivos_modificados": [
+     "admissions.json"
+    ],
+    "archivos_borrados": [],
+    "avisos": [
+     "✅ T0_ValidCandidate.esp quedó admitido en el xEdit Bridge (20261117-183052-50483a): ya se puede auditar con auditar_plugin_nativo.",
+     "✅ T1_InvalidReference.esp quedó admitido en el xEdit Bridge (20261117-183110-001968): ya se puede auditar con auditar_plugin_nativo."
+    ],
+    "copias": {
+     "T1_InvalidReference.esp": "ae8b2e15f3c803bdd9d72efdb30ff96e69b205c7d7535f301ef0967fa0d4c645"
+    }
+   }
+  },
+  {
+   "prueba": "T3_auditoria_invalido",
+   "tipo": "real",
+   "doble": null,
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "salida_cruda": "{\"plugin\": \"T1_InvalidReference.esp\", \"success\": true, \"message\": \"\", \"aprobado\": false, \"clean\": false, \"check_complete\": true, \"errores_nativos\": 1, \"registros_procesados\": 2, \"avisos\": 0, \"hallazgos\": [{\"signature\": \"LVLI\", \"formid\": \"05000800\", \"record_name\": \"AuditMissingReference\", \"path\": \"LVLI \\\\ Leveled List Entries \\\\ Leveled List Entry \\\\ LVLO - Base Data \\\\ Reference\", \"description\": \"[0500DEAD] <Error: Could not be resolved>\"}], \"hallazgos_omitidos\": 0, \"fallas\": [], \"integridad\": \"PASS\", \"recortado\": false, \"bridge_version\": \"1.1.0\", \"run_id\": \"20261117_183115_b8a77e\", \"log_path\": \"G:\\\\Modding\\\\SSEDIT\\\\QA-20261117\\\\inst\\\\Laboratorio\\\\Temporales\\\\Bridge\\\\runs\\\\20261117_183115_b8a77e\\\\run.log\", \"no_admitido\": false}",
+    "json": {
+     "plugin": "T1_InvalidReference.esp",
+     "success": true,
+     "message": "",
+     "aprobado": false,
+     "clean": false,
+     "check_complete": true,
+     "errores_nativos": 1,
+     "registros_procesados": 2,
+     "avisos": 0,
+     "hallazgos": [
+      {
+       "signature": "LVLI",
+       "formid": "05000800",
+       "record_name": "AuditMissingReference",
+       "path": "LVLI \\ Leveled List Entries \\ Leveled List Entry \\ LVLO - Base Data \\ Reference",
+       "description": "[0500DEAD] <Error: Could not be resolved>"
+      }
+     ],
+     "hallazgos_omitidos": 0,
+     "fallas": [],
+     "integridad": "PASS",
+     "recortado": false,
+     "bridge_version": "1.1.0",
+     "run_id": "20261117_183115_b8a77e",
+     "log_path": "G:\\Modding\\SSEDIT\\QA-20261117\\inst\\Laboratorio\\Temporales\\Bridge\\runs\\20261117_183115_b8a77e\\run.log",
+     "no_admitido": false
+    },
+    "duracion_s": 10.94,
+    "admitidos_intactos": true,
+    "corridas_nuevas": [
+     "20261117_183115_b8a77e"
+    ],
+    "log_dentro_del_lab": true,
+    "log_en_directorio_de_la_corrida": true,
+    "log_existe": true,
+    "log_sha256": "6005100dc493c3912184bff57d04d310619a698171d8133628ff55ac2e217780"
+   }
+  },
+  {
+   "prueba": "T4_no_admitido",
+   "tipo": "real",
+   "doble": null,
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "salida_cruda": "{\"plugin\": \"T5_LegitimateOverride.esp\", \"success\": false, \"message\": \"T5_LegitimateOverride.esp no est\\u00e1 admitido en el xEdit Bridge: us\\u00e1 admitir_plugin_nativo (requiere aprobaci\\u00f3n)\", \"aprobado\": false, \"no_admitido\": true}",
+    "json": {
+     "plugin": "T5_LegitimateOverride.esp",
+     "success": false,
+     "message": "T5_LegitimateOverride.esp no está admitido en el xEdit Bridge: usá admitir_plugin_nativo (requiere aprobación)",
+     "aprobado": false,
+     "no_admitido": true
+    },
+    "duracion_s": 0.12,
+    "admitidos_intactos": true,
+    "corridas_nuevas": [],
+    "log_dentro_del_lab": false,
+    "log_en_directorio_de_la_corrida": false,
+    "log_existe": false,
+    "log_sha256": null
+   }
+  },
+  {
+   "prueba": "T4_inexistente",
+   "tipo": "real",
+   "doble": null,
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "respuesta_tool": {
+     "success": true,
+     "message": "",
+     "estado": "esperando_aprobacion",
+     "trabajo_id": "admision-20261117-213127-72e502",
+     "plugin": "NoExiste_QA.esp",
+     "aprobacion_solicitada": true,
+     "instrucciones": "El pedido de aprobación YA se le mandó al operador por este canal; 'esperando_aprobacion' es el estado inicial, no significa que falte pedirla. No vuelvas a pedirla ni consultes el estado: sin su aprobación no se copia nada y Sky-Claw avisa cuando la admisión termina; después, auditar_plugin_nativo."
+    },
+    "t_respuesta_s": 0.0,
+    "hitl": {
+     "request_id": "xedit-bridge-admit-359c44665cdd",
+     "reason": "Admitir NoExiste_QA.esp (perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)) en el laboratorio del xEdit Bridge",
+     "category": "tool_execution",
+     "respond_ack": true
+    },
+    "estado_final": "fallida",
+    "resultado": {
+     "plugin": "NoExiste_QA.esp",
+     "success": false,
+     "message": "ValueError: NoExiste_QA.esp not found in the overwrite, enabled mods or game Data of MO2 profile 'QA'"
+    },
+    "contexto_aprobado": "perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)",
+    "admitidos_cambio": false,
+    "archivos_nuevos": [],
+    "archivos_modificados": [],
+    "archivos_borrados": [],
+    "avisos": [
+     "✅ T0_ValidCandidate.esp quedó admitido en el xEdit Bridge (20261117-183052-50483a): ya se puede auditar con auditar_plugin_nativo.",
+     "✅ T1_InvalidReference.esp quedó admitido en el xEdit Bridge (20261117-183110-001968): ya se puede auditar con auditar_plugin_nativo.",
+     "❌ La admisión de NoExiste_QA.esp no se hizo: ValueError: NoExiste_QA.esp not found in the overwrite, enabled mods or game Data of MO2 profile 'QA'"
+    ],
+    "copias": {}
+   }
+  },
+  {
+   "prueba": "T4_timeout_hitl",
+   "tipo": "sintetica",
+   "doble": "HITLGuard real con timeout=2 s en lugar de 120 s; nadie responde",
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "respuesta_tool": {
+     "success": true,
+     "message": "",
+     "estado": "esperando_aprobacion",
+     "trabajo_id": "admision-20261117-213127-e7840e",
+     "plugin": "T5_LegitimateOverride.esp",
+     "aprobacion_solicitada": true,
+     "instrucciones": "El pedido de aprobación YA se le mandó al operador por este canal; 'esperando_aprobacion' es el estado inicial, no significa que falte pedirla. No vuelvas a pedirla ni consultes el estado: sin su aprobación no se copia nada y Sky-Claw avisa cuando la admisión termina; después, auditar_plugin_nativo."
+    },
+    "t_respuesta_s": 0.016,
+    "hitl": {
+     "request_id": "xedit-bridge-admit-aa98dda1485d",
+     "reason": "Admitir T5_LegitimateOverride.esp (perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)) en el laboratorio del xEdit Bridge",
+     "category": "tool_execution"
+    },
+    "estado_final": "rechazada",
+    "resultado": {
+     "success": false,
+     "message": "Admisión rechazada por el operador: no se copió nada.",
+     "status": "denied",
+     "decision": "timeout"
+    },
+    "contexto_aprobado": "perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)",
+    "admitidos_cambio": false,
+    "archivos_nuevos": [],
+    "archivos_modificados": [],
+    "archivos_borrados": [],
+    "avisos": [
+     "✅ T0_ValidCandidate.esp quedó admitido en el xEdit Bridge (20261117-183052-50483a): ya se puede auditar con auditar_plugin_nativo.",
+     "✅ T1_InvalidReference.esp quedó admitido en el xEdit Bridge (20261117-183110-001968): ya se puede auditar con auditar_plugin_nativo.",
+     "❌ La admisión de NoExiste_QA.esp no se hizo: ValueError: NoExiste_QA.esp not found in the overwrite, enabled mods or game Data of MO2 profile 'QA'",
+     "Admisión de T5_LegitimateOverride.esp: timeout; no se copió nada."
+    ],
+    "copias": {}
+   }
+  },
+  {
+   "prueba": "T4_contexto_cambiado",
+   "tipo": "sintetica",
+   "doble": "se muta resolver._profile_name tras el pedido, antes de aprobar",
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "respuesta_tool": {
+     "success": true,
+     "message": "",
+     "estado": "esperando_aprobacion",
+     "trabajo_id": "admision-20261117-213130-9e5168",
+     "plugin": "T5_LegitimateOverride.esp",
+     "aprobacion_solicitada": true,
+     "instrucciones": "El pedido de aprobación YA se le mandó al operador por este canal; 'esperando_aprobacion' es el estado inicial, no significa que falte pedirla. No vuelvas a pedirla ni consultes el estado: sin su aprobación no se copia nada y Sky-Claw avisa cuando la admisión termina; después, auditar_plugin_nativo."
+    },
+    "t_respuesta_s": 0.0,
+    "respond_ack": true,
+    "estado_final": "fallida",
+    "resultado": {
+     "plugin": "T5_LegitimateOverride.esp",
+     "success": false,
+     "message": "el contexto de MO2 cambió durante la espera de la aprobación (se aprobó perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin); ahora es perfil «OtroPerfil» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)): no se copió nada, volvé a pedir la admisión"
+    },
+    "admitidos_cambio": false,
+    "archivos_nuevos": [],
+    "archivos_modificados": [],
+    "archivos_borrados": []
+   }
+  },
+  {
+   "prueba": "T4_bool_estricto",
+   "tipo": "real",
+   "doble": null,
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "respuesta_tool": {
+     "success": true,
+     "message": "",
+     "estado": "esperando_aprobacion",
+     "trabajo_id": "admision-20261117-213130-358e2d",
+     "plugin": "T5_LegitimateOverride.esp",
+     "aprobacion_solicitada": true,
+     "instrucciones": "El pedido de aprobación YA se le mandó al operador por este canal; 'esperando_aprobacion' es el estado inicial, no significa que falte pedirla. No vuelvas a pedirla ni consultes el estado: sin su aprobación no se copia nada y Sky-Claw avisa cuando la admisión termina; después, auditar_plugin_nativo."
+    },
+    "t_respuesta_s": 0.0,
+    "errores": {
+     "int_1": "TypeError: approved debe ser bool estricto; se recibió int",
+     "str_true": "TypeError: approved debe ser bool estricto; se recibió str",
+     "None": "TypeError: approved debe ser bool estricto; se recibió NoneType"
+    },
+    "seguia_pendiente_tras_no_bool": true,
+    "estado_final": "rechazada",
+    "admitidos_cambio": false,
+    "archivos_nuevos": [],
+    "archivos_modificados": [],
+    "archivos_borrados": []
+   }
+  },
+  {
+   "prueba": "T4_admision_ambigua",
+   "tipo": "sintetica",
+   "doble": "svc.admitir_plugin devuelve ok=true sin admission_id",
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "respuesta_tool": {
+     "success": true,
+     "message": "",
+     "estado": "esperando_aprobacion",
+     "trabajo_id": "admision-20261117-213131-230edd",
+     "plugin": "T5_LegitimateOverride.esp",
+     "aprobacion_solicitada": true,
+     "instrucciones": "El pedido de aprobación YA se le mandó al operador por este canal; 'esperando_aprobacion' es el estado inicial, no significa que falte pedirla. No vuelvas a pedirla ni consultes el estado: sin su aprobación no se copia nada y Sky-Claw avisa cuando la admisión termina; después, auditar_plugin_nativo."
+    },
+    "t_respuesta_s": 0.0,
+    "hitl": {
+     "request_id": "xedit-bridge-admit-765bf9c7d83e",
+     "reason": "Admitir T5_LegitimateOverride.esp (perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)) en el laboratorio del xEdit Bridge",
+     "category": "tool_execution",
+     "respond_ack": true
+    },
+    "estado_final": "fallida",
+    "resultado": {
+     "plugin": "T5_LegitimateOverride.esp",
+     "success": false,
+     "message": "admisión con resultado ambiguo: el bridge respondió ok=true sin admission_id válido (la copia pudo haberse realizado; verificá el laboratorio antes de auditar)",
+     "admission_id": null,
+     "estado_admision": "ambigua",
+     "clausura": [],
+     "copiados": [
+      "x.esp"
+     ],
+     "reutilizados": [],
+     "reemplazados": []
+    },
+    "contexto_aprobado": "perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)",
+    "admitidos_cambio": false,
+    "archivos_nuevos": [],
+    "archivos_modificados": [],
+    "archivos_borrados": [],
+    "avisos": [
+     "✅ T0_ValidCandidate.esp quedó admitido en el xEdit Bridge (20261117-183052-50483a): ya se puede auditar con auditar_plugin_nativo.",
+     "✅ T1_InvalidReference.esp quedó admitido en el xEdit Bridge (20261117-183110-001968): ya se puede auditar con auditar_plugin_nativo.",
+     "❌ La admisión de NoExiste_QA.esp no se hizo: ValueError: NoExiste_QA.esp not found in the overwrite, enabled mods or game Data of MO2 profile 'QA'",
+     "Admisión de T5_LegitimateOverride.esp: timeout; no se copió nada.",
+     "❌ La admisión de T5_LegitimateOverride.esp no se hizo: el contexto de MO2 cambió durante la espera de la aprobación (se aprobó perfil «QA» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin); ahora es perfil «OtroPerfil» de la instancia MO2 «Bin» (G:\\Modding\\SSEDIT\\QA-20261117\\MO2QA\\Bin)): no se copió nada, volvé a pedir la admisión",
+     "Admisión de T5_LegitimateOverride.esp: denied; no se copió nada.",
+     "⚠️ La admisión de T5_LegitimateOverride.esp quedó en estado ambiguo (la copia pudo haberse realizado): admisión con resultado ambiguo: el bridge respondió ok=true sin admission_id válido (la copia pudo haberse realizado; verificá el laboratorio antes de auditar)"
+    ],
+    "copias": {},
+    "llamadas_al_bridge": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/linea_no_json",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobado": false,
+     "success": false,
+     "message": "el xEdit Bridge devolvió una línea que no es JSON-RPC"
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/ok_con_iserror_incoherente",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobado": false,
+     "success": false,
+     "message": "respuesta de xedit_check incoherente: isError no coincide con ok"
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/payload_sin_ok_booleano",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobado": false,
+     "success": false,
+     "message": "el resultado de xedit_check no trae un ok booleano: no hay veredicto"
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/servidor_ajeno",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobado": false,
+     "success": false,
+     "message": "el servidor no es el xEdit Bridge: 'otro'"
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/id_duplicado",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "aprobado": false,
+     "success": false,
+     "message": "el xEdit Bridge devolvió dos respuestas con el mismo id JSON-RPC (1)"
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/veredicto_limpio_falso_sin_log",
+   "tipo": "sintetica",
+   "doble": "cli._ejecutar devuelve stdout sintético",
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "json": {
+     "plugin": "T0_ValidCandidate.esp",
+     "success": false,
+     "message": "el xEdit Bridge no auditó T0_ValidCandidate.esp: el bridge no devolvió datos de auditoría",
+     "aprobado": false,
+     "no_admitido": false
+    },
+    "llamadas_al_proceso": 1
+   }
+  },
+  {
+   "prueba": "T4_mcp_invalida/admitidos_intactos",
+   "tipo": "sintetica",
+   "doble": null,
+   "veredicto": "PASS",
+   "fallas": [],
+   "datos": {
+    "intactos": true
+   }
+  }
+ ]
+}

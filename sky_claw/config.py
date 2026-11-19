@@ -15,6 +15,8 @@ from typing import Any
 import keyring
 import keyring.errors
 
+from sky_claw.aislamiento import aplicar_aislamiento
+
 logger = logging.getLogger(__name__)
 
 _CLAVES_SENSIBLES = (
@@ -256,6 +258,9 @@ class Config:
     DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.toml"
 
     def __init__(self, config_path: pathlib.Path | None = None) -> None:
+        # Perfil aislado: el keyring es global al USUARIO, no al perfil. Si el interruptor se activó después de importar
+        # (el caso del arnés del rig), se aplica acá, antes de la primera lectura de `_load_from_keyring`.
+        aplicar_aislamiento()
         self._config_path = config_path or self.DEFAULT_CONFIG_FILE
         self._data: _DatosConfig = _DatosConfig(self._load_defaults())
         #: Baseline para el merge-on-save de `save()`: snapshot de `_data`
