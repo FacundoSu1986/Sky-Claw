@@ -89,6 +89,26 @@ el revisor lo revirtió igual.
 > un comando o rompen un test. Si agregás una regla acá, traé con qué se verifica
 > — o va a envejecer como las demás.
 
+## Política de cierre y Semáforo Anti-Mejora Infinita
+
+Antes de implementar y antes de declarar una tarea cerrada, leer
+[`docs/agents/completion_policy.md`](docs/agents/completion_policy.md).
+
+- **Principio rector:** Cumplir el contrato de aceptación acordado; no perseguir perfección indefinida ni ampliar el alcance por iniciativa propia.
+- **Prioridad:** seguridad > integridad de datos > correctitud (incluidos hermanos del mismo cambio y fail-closed) > tests/anclas AST > mantenibilidad > rendimiento.
+- **Semáforo obligatorio en todo cierre y triage de bots:**
+  - **🔴 ROJO (Recomendación ALTA — Frenar y corregir):** P0/P1 confirmado con evidencia (seguridad, pérdida/corrupción de datos, falso verde, hermano omitido del mismo alcance, falla en zona exenta de `mypy`, o gate obligatorio roto). Prohibido declarar `DONE`.
+  - **🟡 AMARILLO (Recomendación MEDIA — Decisión del propietario / Diferir):** P2 real pero no bloqueante, limitación conocida de rig real Windows/MO2 compatible con el alcance, o mejora útil fuera del `Write-Set`. Documentar sin abrir otro PR ni ampliar el actual sin autorización.
+  - **🟢 VERDE (Recomendación BAJA — Cerrar y detenerse):** P3 (estilo, refactor opcional, renombrar tests, «Trivial / Quick win» sin defecto demostrado, hipótesis `NO_VERIFICADO` o fallo transitorio de proveedor en Qodo/PR-Agent). Justificar brevemente el descarte y NO commitear (evita reiniciar ~40 min de CI Windows).
+- **Verificación de bots/agentes:** Aplicar `CLAIM → EXTRACT → DOUBT → RECONCILE` contra el código real antes de tocar nada.
+- **Presupuesto ordinario:** 1 revisión adversarial acotada al cambio + 1 ronda de corrección y revalidación. Si persisten bloqueantes, detener y escalar.
+- **Estados finales únicos:** `DONE`, `DONE_WITH_LIMITATIONS`, `BLOCKED`, `OUT_OF_SCOPE`.
+- **Reapertura:** Solo por regresión reproducida, defecto P0/P1 demostrado, incumplimiento del contrato original o nueva orden explícita del propietario.
+
+**Ancla:** `tests/test_completion_policy_invariant.py` congela por igualdad literal los colores,
+los estados finales, la prioridad y las condiciones de reapertura. No verifica que un cierre
+concreto los cumpla: eso lo revisa el propietario sobre el cuerpo del PR.
+
 ## Una sesión, un worktree
 
 Este repo se trabaja desde **varias sesiones a la vez** (Claude Code, Codex, Kilo,
