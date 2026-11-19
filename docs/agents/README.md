@@ -16,6 +16,8 @@
 3. [Matriz de impacto](change_impact.md).
 4. [Creación de tools](tool_creation.md).
 5. [Validación de schemas](schema_validation.md).
+6. [Política de cierre y Semáforo Anti-Mejora Infinita](completion_policy.md): leerla antes
+   de implementar y antes de declarar una tarea cerrada.
 
 Los archivos `AGENTS.md` forman una jerarquía: raíz más punteros locales. El
 SOP del pipeline vive únicamente en `sky_claw/local/AGENTS.md`.
