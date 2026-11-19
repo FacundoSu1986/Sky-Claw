@@ -1,7 +1,7 @@
-"""Matriz FILE_SHARE_NONE con procesos externos reales, cÃƒÂ³digos Win32 medidos.
+"""Matriz FILE_SHARE_NONE con procesos externos reales, códigos Win32 medidos.
 
-El tenedor usa el mÃƒÂ³dulo real de Sky-Claw.  Cada agresor corre en un PROCESO
-SEPARADO (lo que hace vÃƒÂ¡lida la mediciÃƒÂ³n) y reporta el cÃƒÂ³digo Win32 exacto.
+El tenedor usa el módulo real de Sky-Claw.  Cada agresor corre en un PROCESO
+SEPARADO (lo que hace válida la medición) y reporta el código Win32 exacto.
 
 Uso: python matrix_win32.py <run_dir>
 """
@@ -18,7 +18,11 @@ import time
 
 from sky_claw.local.frozen_runtime import mo2_ini_exclusion as gate
 
-RUN = pathlib.Path(sys.argv[1]).resolve()
+from harness_validacion import HarnessError, exigir_bloqueo, exigir_marca, exigir_resultado
+
+#: Se completa en :func:`configurar`; así el módulo se puede importar desde los
+#: tests sin depender de ``sys.argv``.
+RUN: pathlib.Path = pathlib.Path()
 CONTENIDO = b"[General]\ngameName=Skyrim Special Edition\ngamePath=G:/Lab_Compat/Runtime\n"
 
 AGRESORES: dict[str, str] = {
@@ -144,8 +148,11 @@ def agredir(nombre: str, ini: pathlib.Path, extra: list[str] | None = None) -> s
     args = [sys.executable, str(script), str(ini)] + list(extra or [])
     proc = subprocess.run(args, capture_output=True, text=True, timeout=60, check=False)
     salida = (proc.stdout or "").strip()
-    if not salida:
-        return f"SIN_SALIDA(rc={proc.returncode},err={(proc.stderr or '').strip()[:120]})"
+    if proc.returncode != 0 or not salida:
+        raise HarnessError(
+            f"agresor {nombre}: sin resultado válido (rc={proc.returncode}) "
+            f"stdout={salida!r} stderr={(proc.stderr or '').strip()[:200]!r}"
+        )
     return salida
 
 
@@ -176,17 +183,21 @@ def medir() -> dict[str, object]:
                 salida = agredir(nombre, ini)
         finally:
             exclusion.cerrar()
+        intacto = sha(ini) == previo if ini.exists() else False
+        exigir_bloqueo(salida, f"matriz/{nombre}")
+        exigir_resultado(f"matriz/{nombre}", intacto, "el INI cambió bajo la exclusión")
         resultados[nombre] = {
             "resultado": salida,
-            "archivo_intacto": sha(ini) == previo if ini.exists() else False,
+            "archivo_intacto": intacto,
             "archivo_existe": ini.exists(),
         }
 
     # --- control: liberado el handle, el mismo agresor escribe ---
     ini = nuevo_ini("control_liberacion")
     resultados["control_tras_cerrar"] = agredir("escribir", ini)
+    exigir_marca(resultados["control_tras_cerrar"], "control_tras_cerrar", "EXITO")
 
-    # --- alias hardlink: la exclusiÃƒÂ³n es sobre el OBJETO ---
+    # --- alias hardlink: la exclusión es sobre el OBJETO ---
     ini = nuevo_ini("alias")
     alias = ini.parent / "alias.ini"
     previo = sha(ini)
@@ -205,6 +216,8 @@ def medir() -> dict[str, object]:
         "nlinks_reportados_por_la_adquisicion": nlinks,
         "objeto_intacto": sha(ini) == previo,
     }
+    exigir_bloqueo(salida_alias, "matriz/alias")
+    exigir_resultado("matriz/alias", sha(ini) == previo, "el objeto cambió por el alias")
 
     # --- muerte abrupta del tenedor ---
     ini = nuevo_ini("muerte")
@@ -227,7 +240,12 @@ def medir() -> dict[str, object]:
     finally:
         reacquire.cerrar()
 
-    # --- contenciÃƒÂ³n transitoria: reintento acotado ---
+    # El tenedor debía morir con 9 y, al morir, el kernel libera el handle: si la
+    # readquisición no autoriza, el escenario no mide lo que declara.
+    exigir_resultado("muerte_abrupta/rc", proc.returncode == 9, proc.returncode)
+    exigir_resultado("muerte_abrupta/readquisicion", reacquire.autoriza, reacquire.diagnostico.motivo)
+
+    # --- contención transitoria: reintento acotado ---
     ini = nuevo_ini("reintento")
     a = gate.adquirir_exclusion_ini(ini)
     inicio = time.monotonic()
@@ -240,6 +258,11 @@ def medir() -> dict[str, object]:
             "motivo": b.diagnostico.motivo,
             "segundos": round(transcurrido, 4),
         }
+        exigir_resultado(
+            "contencion_con_reintento",
+            b.estado.value == "EXCLUSION_NOT_ESTABLISHED" and not b.autoriza,
+            b.estado.value,
+        )
     finally:
         b.cerrar()
         a.cerrar()
@@ -249,9 +272,20 @@ def medir() -> dict[str, object]:
     return resultados
 
 
+def configurar(argv: list[str]) -> None:
+    """Fija ``RUN`` desde argv. Fuera de ``main`` el módulo es importable."""
+    global RUN
+    if len(argv) < 2:
+        raise SystemExit("uso: matrix_win32.py <run_dir>")
+    RUN = pathlib.Path(argv[1]).resolve()
+
+
 def main() -> int:
+    configurar(sys.argv)
     resultados = medir()
     (RUN / "matrix.json").write_text(json.dumps(resultados, indent=2, ensure_ascii=True), encoding="utf-8")
+    # Sólo se publica ok si ``medir`` llegó al final: cualquier escenario fuera de
+    # contrato levanta y el proceso termina sin este JSON.
     print(json.dumps({"ok": True, "run": str(RUN)}, ensure_ascii=True))
     return 0
 

@@ -297,6 +297,22 @@ el censo AST aunque no lo ejecute CI, así que no puede llevar BOM.
 | Qodo — Regression & Test Oracle | `success`, sin comentarios |
 | CodeRabbit | **10 findings** (1 Major, 9 Minor), **todos demostrables**: 5 cerrados en `d70f9d7` (índices 0-based, coordinación rancia, señal de release, comparación campo a campo) y 5 en el commit siguiente: publicación atómica del `ready`, exigir el checkpoint en C/D/E, `esperar()` del cliente que ahora falla en vez de seguir, comandos del README desde la raíz del repo, y `$env:LOCALAPPDATA` en el comando del preflight (en PowerShell `%LOCALAPPDATA%` no se expande) |
 
+### Cierre del hallazgo P2 de validación (2026-11-19)
+
+La revisión del propietario (`5965536673`) señaló que las sondas podían publicar
+`ok: true` con una medición inválida: `leer_json` devolvía un dict de error,
+`run_probe` y `matrix.agredir` trataban un fallo de ejecución como resultado, los
+`wait()` no miraban `returncode` y ambos `main()` publicaban éxito sin condición.
+
+Corregido con un módulo sin dependencias (`probe/harness_validacion.py`) y anclas
+en `tests/test_p7_a5_compat_probe_harness.py` (**29 casos**), con **controles
+positivos** para que un bloqueo esperado (`32`/`5`/`13`) y un `AccessError` de
+QSettings sigan siendo resultados válidos, no fallos. Cuatro mutantes de la
+validación mueren (`leer_json` devolviendo dict, `exigir_codigo` sin mirar
+`returncode`, `exigir_bloqueo` sin validar, `agredir` devolviendo `SIN_SALIDA`).
+La sonda y la matriz reales siguen midiendo (5,3 s) y son **idempotentes** en el
+mismo `run_dir`.
+
 ## 18. Colisiones con otros PRs
 
 - No había PR abierto para `test/p7-a5-compat-mo2` (`gh pr list` vacío).

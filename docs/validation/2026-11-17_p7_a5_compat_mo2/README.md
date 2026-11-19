@@ -13,6 +13,10 @@
 - `holder.py`, `acquirer.py` y `matrix_win32.py`: el venv del repo
   (`.venv/Scripts/python.exe`), porque importan
   `sky_claw.local.frozen_runtime.mo2_ini_exclusion`.
+- `harness_validacion.py`: sin dependencias; lo importan las dos sondas y
+  `tests/test_p7_a5_compat_probe_harness.py`. Un resultado parcial (proceso
+  muerto, JSON ausente) **no** se publica como éxito; un bloqueo esperado sí es
+  un resultado válido.
 
 ## Matriz Win32 (códigos medidos)
 
