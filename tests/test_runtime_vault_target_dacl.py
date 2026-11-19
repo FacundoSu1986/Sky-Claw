@@ -120,6 +120,24 @@ class TestT18LecturaPreviaHermetica:
         ]
         assert parametrizaciones == ["_CASOS_T18_ACE_NO_SOPORTADO"]
 
+    def test_el_test_de_comportamiento_no_reabre_el_nodo_tras_reemplazar_la_dacl(self) -> None:
+        """Reabrir con WRITE_OWNER tras la DACL de prueba (que no lo concede) depende de privilegios del token."""
+        arbol = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+        funcion = next(
+            nodo
+            for nodo in ast.walk(arbol)
+            if isinstance(nodo, ast.FunctionDef)
+            and nodo.name == "test_t18_ace_tipo_no_soportado_en_pre_dacl_fail_closed"
+        )
+        aperturas = [
+            nodo
+            for nodo in ast.walk(funcion)
+            if isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Name)
+            and nodo.func.id == "open_node_security_handle"
+        ]
+        assert len(aperturas) == 1
+
     def test_los_cuatro_tipos_de_ace_siguen_cubiertos(self) -> None:
         assert [tipo for _, tipo in _CASOS_T18_ACE_NO_SOPORTADO] == ["0x09", "0x0a", "0x05", "0x06"]
 
@@ -1238,18 +1256,18 @@ class TestTargetDaclOraclesAndMutations:
                 assert _advapi32.GetSecurityDescriptorDacl(
                     p_sd, ctypes.byref(dacl_present), ctypes.byref(dacl_p), ctypes.byref(def_val)
                 )
-                h_pre = open_node_security_handle(test_file)
-                try:
-                    ret_set = _advapi32.SetSecurityInfo(h_pre, 1, 4, None, None, dacl_p, None)
-                    assert ret_set == 0
-                finally:
-                    close_security_handle(h_pre)
-
-                evidences = probe_node_evidence(tmpdir)
-                pre = [e.backup for e in evidences if e.backup.relative_path != "."][0]
-
+                # Un solo handle: se abre ANTES de reemplazar la DACL (con WRITE_DAC | WRITE_OWNER ya concedidos) y se
+                # reutiliza. Reabrir después pediría WRITE_OWNER contra una DACL que no lo concede, y eso solo funciona
+                # si el token tiene un privilegio habilitado (dependencia ambiental). El sondeo solo pide
+                # READ_CONTROL | FILE_READ_ATTRIBUTES (derechos de atributos, no chocan con el modo de compartición).
                 h = open_node_security_handle(test_file)
                 try:
+                    ret_set = _advapi32.SetSecurityInfo(h, 1, 4, None, None, dacl_p, None)
+                    assert ret_set == 0
+
+                    evidences = probe_node_evidence(tmpdir)
+                    pre = [e.backup for e in evidences if e.backup.relative_path != "."][0]
+
                     # 1. apply_target_dacl_by_handle debe abortar fail-closed antes de mutar (Codex P1 #4057722506)
                     with (
                         patch("sky_claw.local.runtime_vault.target_dacl._advapi32.SetSecurityInfo") as mock_set,
