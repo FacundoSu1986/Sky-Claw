@@ -36,7 +36,7 @@ Todo hallazgo requiere evidencia (`archivo:línea`, escenario concreto de fallo 
 | Semáforo | Recomendación | Severidad | Qué incluye en Sky-Claw | Acción obligatoria |
 | --- | --- | --- | --- | --- |
 | **🔴 ROJO** | **ALTA (Frenar)** | **P0 — Crítico** | Riesgo grave de seguridad, corrupción/pérdida de datos, fuga fuera de raíces administradas, uso de `shutil.rmtree` o violación Clean-Room. | Detener, contener y corregir antes de seguir. |
-| **🔴 ROJO** | **ALTA (Frenar)** | **P1 — Bloqueante** | Defecto demostrado que viola el contrato actual, falso verde (`exit_code == 0` sin validar artefacto/log), **hermano olvidado del mismo cambio**, fallo real en zona exenta de `mypy` (`sky_claw/app/**`, `tools_installer.py`), test/ancla AST rota o falta de prueba de rig exigida por el contrato original. | Corregir antes de aprobar. Prohibido declarar `DONE`. |
+| **🔴 ROJO** | **ALTA (Frenar)** | **P1 — Bloqueante** | Defecto demostrado que viola el contrato actual, falso verde (`exit_code == 0` sin validar artefacto/log), **hermano olvidado del mismo cambio**, fallo real en zona exenta de `mypy` (módulos con `ignore_errors = true` en `pyproject.toml`: `sky_claw.app.gui.*`, `sky_claw.app.web.*`, `sky_claw.local.tools.*`, `sky_claw.local.tools_installer`, entre otros), test/ancla AST rota o falta de prueba de rig exigida por el contrato original. | Corregir antes de aprobar. Prohibido declarar `DONE`. |
 | **🟡 AMARILLO** | **MEDIA (Decidir)** | **P2 — No bloqueante** | Defecto real acotado que no rompe la aceptación actual, mejora arquitectónica válida pero fuera del `Write-Set`, o limitación conocida de rig Windows/MO2 declarada como deuda aceptada. | Registrar en el cierre. El propietario decide si va a backlog/issue aparte. No implementar en este PR. |
 | **🟢 VERDE** | **BAJA (Cerrar)** | **P3 — Opcional / Ruido** | Estilo, refactors cosméticos, rendimiento no exigido, renombrar tests, comentarios «Trivial / Low value / Quick win» sin bug demostrado, hipótesis `NO_VERIFICADO`, o rojo por caída de modelo gratuito en Qodo/PR-Agent. | Descartar con 1-2 líneas de evidencia y **detenerse**. No generar commits nuevos. |
 
@@ -109,10 +109,13 @@ Todo cierre de tarea o revisión debe empezar con este bloque en español simple
 - **Verificado por test** (`tests/test_completion_policy_invariant.py`): que la sección exista
   en `AGENTS.md` y apunte a este documento; que el semáforo (colores, recomendaciones y
   severidades), los estados finales con su color, la prioridad, las condiciones de reapertura
-  y los campos de la tarjeta de §8 estén congelados por igualdad literal; que los enlaces y
-  las rutas citadas existan; que los «falsos rojos» de §5 (`Tests (Pytest)`, el modelo
-  `:free` de Qodo) y la zona exenta de `mypy` de §3 sigan existiendo en `ci.yml`,
-  `qodo-merge-adversarial.yml` y `pyproject.toml`; y que el documento esté indexado en
+  y los campos de la tarjeta de §8 estén congelados por igualdad literal, con extracción
+  estructural: cada línea de esos bloques entra en la comparación, y una con otra forma rompe
+  el test en vez de quedar afuera; que los enlaces y las rutas citadas existan; que los «falsos
+  rojos» de §5 sigan existiendo como job de `ci.yml` (`Tests (Pytest)`) y como modelo `:free`
+  configurado en `qodo-merge-adversarial.yml`, leídos del YAML y no de comentarios; que los
+  módulos que §3 cita como exentos de `mypy` sean exactamente los congelados y tengan
+  `ignore_errors = true` en `pyproject.toml`; y que el documento esté indexado en
   [README.md](README.md).
 - **No verificado:** que un agente clasifique bien un hallazgo, que un cierre concreto
   respete el presupuesto de §4 o que la tarjeta de §8 se emita. Eso depende de la revisión del

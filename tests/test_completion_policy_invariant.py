@@ -13,6 +13,13 @@ de degradación que sí son mecánicamente detectables:
    hace descubrible al documento y los hechos de CI que el documento da por ciertos (el job
    `Tests (Pytest)`, el modelo `:free` de Qodo, la zona exenta de `mypy`).
 
+La propiedad que hace valer la igualdad: **la extracción es estructural, no por patrón**. Se
+recorre cada línea del bloque (sub-lista del semáforo, filas de la tabla, viñetas de estados,
+párrafo de reapertura, líneas de la tarjeta) y una línea que no tiene la forma esperada rompe el
+ancla en vez de quedar fuera de la captura. Buscar solo lo conocido (los tres emojis, el formato
+de hoy) deja pasar en verde justamente lo nuevo, que es lo que el ancla tiene que atajar. Los
+hechos de CI se leen parseando el YAML/TOML, no buscando texto: un comentario no cuenta.
+
 Lo que estas anclas **no** cubren: que un agente clasifique bien un hallazgo, que un cierre
 concreto respete el presupuesto o que emita la tarjeta. Eso lo revisa el propietario sobre el
 cuerpo del PR; no hay forma de verificarlo desde un test sin acceso a él. Un test verde sobre
@@ -24,7 +31,10 @@ from __future__ import annotations
 
 import re
 import tomllib
+from collections.abc import Iterator
 from pathlib import Path
+
+import yaml
 
 RAIZ = Path(__file__).resolve().parents[1]
 AGENTS = RAIZ / "AGENTS.md"
@@ -82,13 +92,26 @@ PRIORIDAD: tuple[str, ...] = (
     "rendimiento",
 )
 
-#: Únicas causas de reapertura de un cierre.
+#: Únicas causas de reapertura de un cierre (forma de `AGENTS.md`).
 REAPERTURA: tuple[str, ...] = (
     "regresión reproducida",
     "defecto P0/P1 demostrado",
     "incumplimiento del contrato original",
     "nueva orden explícita del propietario",
 )
+
+#: Las mismas causas como las escribe el documento, con sus aclaraciones. Se congelan enteras:
+#: descartar las aclaraciones antes de comparar dejaría pasar una causa nueva escrita entre
+#: paréntesis. Sin las aclaraciones, tienen que dar exactamente `REAPERTURA`.
+REAPERTURA_EN_EL_DOCUMENTO: tuple[str, ...] = (
+    "regresión reproducida",
+    "defecto P0/P1 demostrado (vulnerabilidad o fallo de integridad)",
+    "incumplimiento del contrato original (un criterio original descubierto sin cumplir)",
+    "nueva orden explícita del propietario",
+)
+
+#: Lo que precede a `(1)` en el párrafo de reapertura del documento.
+PREAMBULO_DE_REAPERTURA = "Una tarea cerrada solo se reabre por"
 
 #: Método de verificación de hallazgos ajenos, en orden.
 METODO = "CLAIM → EXTRACT → DOUBT → RECONCILE"
@@ -110,8 +133,18 @@ CAMPOS_DE_LA_TARJETA: tuple[str, ...] = (
     "- **Por qué corresponde detenerse (o seguir) ahora:**",
 )
 
-#: Módulos que `pyproject.toml` exime de `mypy` y que §3 del documento cita como zona exenta.
-MODULOS_EXENTOS_DE_MYPY: tuple[str, ...] = ("sky_claw.app.gui.*", "sky_claw.local.tools_installer")
+#: Módulos que §3 del documento cita como zona exenta de `mypy`, en orden. Se comparan por
+#: igualdad contra lo que §3 cita y cada uno contra `pyproject.toml`: la política no puede
+#: nombrar una zona exenta que la configuración no exime.
+MODULOS_EXENTOS_DE_MYPY: tuple[str, ...] = (
+    "sky_claw.app.gui.*",
+    "sky_claw.app.web.*",
+    "sky_claw.local.tools.*",
+    "sky_claw.local.tools_installer",
+)
+
+#: Nombre (o parte del nombre) del job agregador de pytest que §5 cita como falso rojo conocido.
+JOB_AGREGADOR = "Tests (Pytest)"
 
 #: Prefijos de ruta que los documentos citan y que tienen que existir en el árbol.
 PREFIJOS_DE_RUTA = ("sky_claw/", "tests/", "docs/", "scripts/", ".github/")
@@ -119,28 +152,21 @@ PREFIJOS_DE_RUTA = ("sky_claw/", "tests/", "docs/", "scripts/", ".github/")
 _ENLACE_MARKDOWN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 _ENTRE_COMILLAS_INVERTIDAS = re.compile(r"`([^`\n]+)`")
 _ENCABEZADO_DE_SECCION = re.compile(r"^## ", re.MULTILINE)
-_EMOJI = r"(\U0001f534|\U0001f7e1|\U0001f7e2)"
 
-#: `AGENTS.md`: «🔴 ROJO (Recomendación ALTA — ...)».
-_SEMAFORO_EN_LISTA = re.compile(_EMOJI + r"\s+(ROJO|AMARILLO|VERDE)\s*\(Recomendación\s+(ALTA|MEDIA|BAJA)\b")
+#: `AGENTS.md`, cada sub-viñeta del semáforo: «- **🔴 ROJO (Recomendación ALTA — ...)».
+#: Genérico a propósito (cualquier emoji y nombre): un color nuevo se parsea y rompe la igualdad.
+_SEMAFORO_EN_LISTA = re.compile(r"^- \*\*(\S+)[ \t]+(\S+)[ \t]*\(Recomendación[ \t]+(\S+)")
 
-#: Documento: fila de tabla «| **🔴 ROJO** | **ALTA (Frenar)** | **P0 — Crítico** | ...».
-_SEMAFORO_EN_TABLA = re.compile(
-    r"^\|\s*\*{0,2}"
-    + _EMOJI
-    + r"\s+(ROJO|AMARILLO|VERDE)\*{0,2}\s*\|\s*\*{0,2}(ALTA|MEDIA|BAJA)\b[^|]*\|\s*\*{0,2}(P\d)\b",
-    re.MULTILINE,
-)
+#: Separador de una tabla Markdown: «| --- | --- |».
+_SEPARADOR_DE_TABLA = re.compile(r"^\|[\s:|-]+\|$")
 
 #: Documento, §7: «- **`DONE`** (`🟢 VERDE`): ...».
-_ESTADO_CON_COLOR = re.compile(r"^- \*\*`([A-Z_]+)`\*\*\s*\(([^)]*)\)", re.MULTILINE)
+_ESTADO_CON_COLOR = re.compile(r"^- \*\*`([A-Z_]+)`\*\*\s*\(([^)]*)\)")
 
 #: Etiqueta de campo de la tarjeta de §8: el encabezado, «- **Campo:**», «- *Subcampo:*» o
-#: «- 🔴 Hallazgo:». Se extraen TODAS las que hay para comparar la secuencia completa, no solo
-#: que estén las esperadas.
+#: «- 🔴 Hallazgo:». Toda línea de la tarjeta tiene que empezar con una de estas formas.
 _ETIQUETA_DE_LA_TARJETA = re.compile(
-    r"^[ \t]*(###[ \t]+[^:\n]+:|-[ \t]+\*\*[^*\n]+:\*\*|-[ \t]+\*[^*\n]+:\*|-[ \t]+[\U0001f534\U0001f7e1\U0001f7e2][ \t]+[^:\n]+:)",
-    re.MULTILINE,
+    r"^[ \t]*(###[ \t]+[^:\n]+:|-[ \t]+\*\*[^*\n]+:\*\*|-[ \t]+\*[^*\n]+:\*|-[ \t]+[\U0001f534\U0001f7e1\U0001f7e2][ \t]+[^:\n]+:)"
 )
 
 
@@ -215,27 +241,100 @@ def _reapertura_en_agents(seccion: str) -> tuple[str, ...]:
     return tuple(causa.strip() for causa in re.split(r",\s*|\s+o\s+", cuerpo))
 
 
-def _reapertura_en_documento(seccion: str) -> tuple[str, ...]:
-    """Causas de reapertura del documento: «(1) a, (2) b (aclaración), (3) c o (4) d.»
+def _reapertura_en_documento(seccion: str) -> tuple[str, tuple[str, ...]]:
+    """(preámbulo, causas) del párrafo «Reapertura:» del documento, hasta el fin de §7.
 
-    Se parte por los marcadores `(N)` y se descartan las aclaraciones entre paréntesis, de modo
-    que una causa agregada, con o sin numerar, aparece como un elemento más (o como texto extra
-    pegado a una causa) y rompe la igualdad con `REAPERTURA`.
+    Se parte por los marcadores `(N)` y cada causa conserva sus aclaraciones: todo el texto del
+    párrafo queda en el preámbulo o en alguna causa, así que un agregado en cualquier lugar —con
+    o sin numerar, dentro o fuera de paréntesis— cambia la tupla y rompe la igualdad.
     """
-    plano = seccion.replace("**", "")
+    plano = re.sub(r"\s+", " ", seccion.replace("**", ""))
     assert "Reapertura:" in plano, "el documento ya no tiene el párrafo «Reapertura:»"
-    parrafo = plano[plano.index("Reapertura:") + len("Reapertura:") :]
-    causas = []
-    for item in re.split(r"\(\d\)", parrafo)[1:]:
-        limpio = re.sub(r"\([^)]*\)", "", item)
-        limpio = re.sub(r"\s+", " ", limpio).strip()
-        causas.append(re.sub(r"(?:,| o)?\.?$", "", limpio).strip())
-    return tuple(causas)
+    partes = re.split(r"\(\d\)", plano[plano.index("Reapertura:") + len("Reapertura:") :])
+    causas = tuple(re.sub(r"(?:,| o)?\.?$", "", parte.strip()).strip() for parte in partes[1:])
+    return partes[0].strip(), causas
+
+
+def _semaforo_en_agents(seccion: str) -> tuple[tuple[str, str, str], ...]:
+    """(emoji, nombre, recomendación) de CADA sub-viñeta del «Semáforo obligatorio».
+
+    Se toman todas las líneas indentadas que siguen a la viñeta del semáforo hasta la próxima
+    viñeta de primer nivel; una que no tenga la forma esperada rompe el ancla.
+    """
+    lineas = seccion.splitlines()
+    inicio = next((i for i, linea in enumerate(lineas) if "**Semáforo obligatorio" in linea), None)
+    assert inicio is not None, "AGENTS.md ya no tiene la viñeta «Semáforo obligatorio»"
+    filas = []
+    for linea in lineas[inicio + 1 :]:
+        if not linea.startswith((" ", "\t")):
+            break
+        if not linea.strip():
+            continue
+        coincidencia = _SEMAFORO_EN_LISTA.match(linea.strip())
+        assert coincidencia, f"sub-viñeta del semáforo sin la forma esperada: {ascii(linea.strip())}"
+        filas.append((coincidencia.group(1), coincidencia.group(2), coincidencia.group(3)))
+    return tuple(filas)
+
+
+def _semaforo_en_documento() -> tuple[tuple[str, str, str, str], ...]:
+    """(emoji, nombre, recomendación, severidad) de CADA fila de la tabla de §3."""
+    filas_de_tabla = [linea.strip() for linea in _seccion_del_documento(3).splitlines() if linea.startswith("|")]
+    assert len(filas_de_tabla) >= 2, "§3 ya no tiene la tabla del semáforo"
+    filas = []
+    for fila in filas_de_tabla[1:]:  # la primera es el encabezado
+        if _SEPARADOR_DE_TABLA.match(fila):
+            continue
+        celdas = [celda.replace("**", "").strip() for celda in fila.strip("|").split("|")]
+        color = celdas[0].split()
+        assert len(celdas) >= 3 and len(color) == 2, f"fila del semáforo sin la forma esperada: {ascii(fila)}"
+        filas.append((color[0], color[1], celdas[1].split()[0], celdas[2].split()[0]))
+    return tuple(filas)
+
+
+def _estados_del_documento() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """(estado, colores) de CADA viñeta de primer nivel de §7; una sin la forma esperada rompe el ancla."""
+    estados = []
+    for linea in _seccion_del_documento(7).splitlines():
+        if not linea.startswith("- "):
+            continue
+        coincidencia = _ESTADO_CON_COLOR.match(linea)
+        assert coincidencia, f"viñeta de §7 sin la forma «- **`ESTADO`** (color)»: {ascii(linea)}"
+        estados.append((coincidencia.group(1), tuple(re.findall(r"ROJO|AMARILLO|VERDE", coincidencia.group(2)))))
+    return tuple(estados)
 
 
 def _etiquetas_de_la_tarjeta(bloque: str) -> tuple[str, ...]:
-    """Todas las etiquetas de campo de la tarjeta, en orden y con los espacios normalizados."""
-    return tuple(re.sub(r"\s+", " ", etiqueta) for etiqueta in _ETIQUETA_DE_LA_TARJETA.findall(bloque))
+    """La etiqueta de CADA línea de la tarjeta, en orden y con los espacios normalizados.
+
+    Una línea que no empieza con una etiqueta reconocible rompe el ancla: un campo nuevo escrito
+    en otro formato no puede quedar fuera de la comparación.
+    """
+    etiquetas = []
+    for linea in bloque.splitlines():
+        if not linea.strip():
+            continue
+        coincidencia = _ETIQUETA_DE_LA_TARJETA.match(linea)
+        assert coincidencia, f"línea de la tarjeta sin etiqueta reconocible: {ascii(linea)}"
+        etiquetas.append(re.sub(r"\s+", " ", coincidencia.group(1)))
+    return tuple(etiquetas)
+
+
+def _nombres_de_jobs(ruta: Path) -> list[str]:
+    """Nombre de cada job del workflow, leído del YAML parseado (un comentario no cuenta)."""
+    datos = yaml.safe_load(_leer(ruta))
+    return [str(job.get("name", clave)) for clave, job in datos["jobs"].items()]
+
+
+def _valores_escalares(nodo: object) -> Iterator[str]:
+    """Todos los valores escalares de un YAML parseado, como texto (sin comentarios)."""
+    if isinstance(nodo, dict):
+        for valor in nodo.values():
+            yield from _valores_escalares(valor)
+    elif isinstance(nodo, list):
+        for valor in nodo:
+            yield from _valores_escalares(valor)
+    elif nodo is not None:
+        yield str(nodo)
 
 
 def _overrides_de_mypy() -> list[tuple[tuple[str, ...], object]]:
@@ -266,12 +365,10 @@ def test_agents_md_declara_la_seccion_y_apunta_al_documento() -> None:
 
 def test_el_semaforo_esta_congelado_en_las_dos_copias() -> None:
     """Rojo/amarillo/verde con su recomendación (y severidad): igualdad literal."""
-    en_agents = tuple((m.group(1), m.group(2), m.group(3)) for m in _SEMAFORO_EN_LISTA.finditer(_seccion_de_agents()))
+    en_agents = _semaforo_en_agents(_seccion_de_agents())
     assert en_agents == SEMAFORO, f"semáforo de AGENTS.md cambió: {ascii(en_agents)}"
 
-    en_politica = tuple(
-        (m.group(1), m.group(2), m.group(3), m.group(4)) for m in _SEMAFORO_EN_TABLA.finditer(_leer(POLITICA))
-    )
+    en_politica = _semaforo_en_documento()
     assert en_politica == SEMAFORO_DETALLADO, f"semáforo del documento cambió: {ascii(en_politica)}"
 
     # Las dos copias coinciden: quitar la severidad y colapsar el rojo de dos filas da el de AGENTS.md.
@@ -303,16 +400,13 @@ def test_los_estados_finales_estan_congelados_en_las_dos_copias() -> None:
     )
     assert _estados_de(linea) == ESTADOS_FINALES, f"AGENTS.md: {_estados_de(linea)}"
 
-    en_documento = tuple(m.group(1) for m in _ESTADO_CON_COLOR.finditer(_seccion_del_documento(7)))
+    en_documento = tuple(estado for estado, _ in _estados_del_documento())
     assert en_documento == ESTADOS_FINALES, f"documento: {en_documento}"
 
 
 def test_cada_estado_cierra_con_el_color_que_le_corresponde() -> None:
     """`BLOCKED` es rojo y `DONE` es verde: el estado técnico y lo que el propietario lee no divergen."""
-    por_estado = {
-        m.group(1): tuple(re.findall(r"ROJO|AMARILLO|VERDE", m.group(2)))
-        for m in _ESTADO_CON_COLOR.finditer(_seccion_del_documento(7))
-    }
+    por_estado = dict(_estados_del_documento())
 
     assert por_estado == COLOR_POR_ESTADO, f"estado→color cambió: {por_estado}"
 
@@ -326,10 +420,15 @@ def test_la_prioridad_esta_congelada_en_las_dos_copias() -> None:
 def test_la_reapertura_esta_congelada_en_las_dos_copias() -> None:
     """Un cierre solo se reabre por las causas declaradas, y ninguna otra se agrega sola."""
     en_agents = _reapertura_en_agents(_seccion_de_agents())
-    en_documento = _reapertura_en_documento(_seccion_del_documento(7))
+    preambulo, en_documento = _reapertura_en_documento(_seccion_del_documento(7))
 
     assert en_agents == REAPERTURA, f"causas de reapertura de AGENTS.md: {en_agents}"
-    assert en_documento == REAPERTURA, f"causas de reapertura del documento: {en_documento}"
+    assert preambulo == PREAMBULO_DE_REAPERTURA, f"preámbulo de reapertura del documento: {preambulo}"
+    assert en_documento == REAPERTURA_EN_EL_DOCUMENTO, f"causas de reapertura del documento: {en_documento}"
+
+    # Las dos copias dicen lo mismo: sin las aclaraciones, las causas del documento son las de AGENTS.md.
+    nucleo = tuple(re.sub(r"\s*\([^)]*\)", "", causa) for causa in REAPERTURA_EN_EL_DOCUMENTO)
+    assert nucleo == REAPERTURA, f"el documento y AGENTS.md divergen en las causas de reapertura: {nucleo}"
 
 
 def test_el_metodo_y_el_presupuesto_siguen_declarados() -> None:
@@ -375,8 +474,18 @@ def test_el_documento_declara_lo_que_el_repo_no_verifica() -> None:
 
 def test_los_hechos_de_ci_que_el_documento_da_por_ciertos_siguen_existiendo() -> None:
     """§5 y §3 nombran cosas de CI y de `mypy`; si se renombran, la política enseña un falso rojo que ya no existe."""
-    assert "Tests (Pytest)" in _leer(CI), "ci.yml ya no tiene el job agregador `Tests (Pytest)` que §5 cita"
-    assert ":free" in _leer(QODO), "qodo-merge-adversarial.yml ya no usa un modelo `:free` (falso rojo de §5)"
+    # Se parsea el YAML: `Tests (Pytest)` también aparece en comentarios de ci.yml, que no son un job.
+    assert any(JOB_AGREGADOR in nombre for nombre in _nombres_de_jobs(CI)), (
+        f"ci.yml ya no tiene un job llamado `{JOB_AGREGADOR}` (el falso rojo que §5 cita)"
+    )
+    assert any(":free" in valor for valor in _valores_escalares(yaml.safe_load(_leer(QODO)))), (
+        "qodo-merge-adversarial.yml ya no configura un modelo `:free` (el falso rojo que §5 cita)"
+    )
+
+    # Lo que §3 cita como zona exenta de mypy es exactamente lo congelado, ni más ni menos.
+    fila_p1 = next((linea for linea in _seccion_del_documento(3).splitlines() if "P1 — Bloqueante" in linea), "")
+    citados = tuple(re.findall(r"`(sky_claw\.[^`]+)`", fila_p1))
+    assert citados == MODULOS_EXENTOS_DE_MYPY, f"§3 cita como exentos de mypy: {citados}"
 
     # No alcanza con que el nombre esté escrito: el override que lo lista tiene que seguir
     # ignorando errores (`ignore_errors = true`), que es lo que hace que la zona esté exenta.
