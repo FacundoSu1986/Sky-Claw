@@ -13,3 +13,4 @@ runner.
 - [Inventario GA del 2026-07-30](2026-07-30_ga_rig_inventory.md)
 - [Gate T5-v2 DynDOLOD etapa 9 — 2026-09-10](2026-09-10_t5v2_dyndolod_stage9.md)
 - [Gate UIA de Output (T5-v2.1) — rig limitado 2026-09-15](2026-09-15_uia_gate_v2_rig.md)
+- [P7-A5-COMPAT — MO2 2.5.2 vs FILE_SHARE_NONE — 2026-11-17 (INCONCLUSIVE; MO2 real no ejecutado)](2026-11-17_p7_a5_compat_report.md)
