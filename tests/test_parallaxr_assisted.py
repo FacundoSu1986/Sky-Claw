@@ -421,7 +421,7 @@ def test_preflight_retorna_evidence_unstable_si_marcador_cambia(tmp_path: Path) 
     (mods_dir / "Output" / "ParallaxROutput.tmp").write_bytes(b"marker")
 
     with patch(
-        "sky_claw.local.tools.parallaxr_assisted.discover_output_markers",
+        "sky_claw.local.tools.parallaxr_assisted._discover_output_markers",
         side_effect=ParallaxREvidenceUnstableError("marcador inestable"),
     ):
         preflight = run_parallaxr_assisted_preflight(mods_dir)
@@ -2833,8 +2833,8 @@ def test_t7b_contencion_inclusiva_y_hermanos_case_sensitive(tmp_path: Path, monk
     (parent / "ModA" / "a.txt").write_text("contenido", encoding="utf-8")
     sibling = base_dir / "mods"
 
-    if sys.platform == "win32":
-        # En NTFS estándar `mods` y `Mods` son el mismo objeto: se simula la resolución canónica
+    if sibling.exists():
+        # En un volumen que pliega casing, `mods` y `Mods` son el mismo objeto. Se simula la resolución
         # de un volumen case-sensitive para probar la comparación por componentes, no `Path.__eq__`.
         from sky_claw.local.tools import parallaxr_assisted as modulo
 
@@ -2903,11 +2903,9 @@ def test_t8a_guardias_de_entrada_casing_y_hardlinks_fallan_cerrado(
             preflight = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=vacuo)
             assert preflight.status is ParallaxRAssistedStatus.INVALID_SELECTION, str(vacuo)
 
-        # Assert (Windows): el casing distinto sólo en un ancestro case-insensitive lo resuelve el kernel
-        # y no invalida la selección, porque los segmentos lógicos son exactos.
-        if sys.platform == "win32":
-            mods_mayusculas = tmp_path / "MODS"
-            assert mods_mayusculas.is_dir()
+        # Assert: si el volumen admite la grafía alternativa, el kernel resuelve ese ancestro.
+        mods_mayusculas = tmp_path / "MODS"
+        if mods_mayusculas.exists() and os.fspath(mods_mayusculas.resolve()) == os.fspath(resolved_mods_dir):
             positivo = run_parallaxr_assisted_preflight(mods_mayusculas, explicit_selection=mods_mayusculas / "Mod_A")
             assert positivo.status is ParallaxRAssistedStatus.READY
             assert positivo.installation is not None
@@ -3111,13 +3109,13 @@ def _retarget_durante_marcadores(retarget: Callable[[], None]) -> Iterator[None]
     """Ejecuta `retarget()` justo cuando el preflight escanea marcadores (tras el descubrimiento)."""
     from sky_claw.local.tools import parallaxr_assisted as modulo
 
-    escanear_real = modulo.discover_output_markers
+    escanear_real = modulo._discover_output_markers
 
-    def escanear_con_retarget(mods_dir: Path):
+    def escanear_con_retarget(mods_dir: Path, *, resolved_mods_dir: Path | None = None):
         retarget()
-        return escanear_real(mods_dir)
+        return escanear_real(mods_dir, resolved_mods_dir=resolved_mods_dir)
 
-    with patch.object(modulo, "discover_output_markers", escanear_con_retarget):
+    with patch.object(modulo, "_discover_output_markers", escanear_con_retarget):
         yield
 
 
@@ -3345,3 +3343,132 @@ def test_p2_runtimeerror_ajeno_durante_revalidacion_se_propaga(tmp_path: Path, m
     finally:
         with suppress(OSError):
             mod_a.rmdir()
+
+
+@pytest.mark.parametrize("relativa", [True, False], ids=["relativa", "absoluta"])
+def test_seleccion_con_directorio_de_trabajo_inaccesible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relativa: bool
+) -> None:
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "Mod_A"
+    mod_dir.mkdir(parents=True)
+    (mod_dir / "ParallaxR.BAT").write_bytes(b"@echo mod")
+    seleccion = Path("mods/Mod_A") if relativa else mod_dir
+
+    def cwd_inaccesible() -> Path:
+        raise FileNotFoundError(errno.ENOENT, "directorio de trabajo ausente")
+
+    with monkeypatch.context() as parche:
+        parche.setattr(Path, "cwd", staticmethod(cwd_inaccesible))
+        resultado = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=seleccion)
+
+    esperado = ParallaxRAssistedStatus.INVALID_SELECTION if relativa else ParallaxRAssistedStatus.READY
+    assert resultado.status is esperado
+    assert resultado.candidate_mod_roots == (mod_dir.resolve(),)
+
+
+@pytest.mark.parametrize("nombre", ["ParallaxR.BAT", "Otro_Mod"])
+def test_seleccion_bajo_self_junction_no_se_reinterpreta_como_mod_hermano(tmp_path: Path, nombre: str) -> None:
+    mods_dir = tmp_path / "mods"
+    hermano = mods_dir / nombre
+    hermano.mkdir(parents=True)
+    (hermano / "ParallaxR.BAT").write_bytes(b"@echo hermano")
+
+    with _junction(mods_dir, mods_dir / "SelfLink") as enlace:
+        rechazo = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=enlace / nombre)
+        seleccion_directa = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=hermano)
+
+    assert rechazo.status is ParallaxRAssistedStatus.INVALID_SELECTION
+    assert rechazo.installation is None
+    assert seleccion_directa.status is ParallaxRAssistedStatus.READY
+    assert seleccion_directa.installation is not None
+    assert seleccion_directa.installation.mod_root == hermano.resolve()
+
+
+@pytest.mark.parametrize("restaurar", [True, False], ids=["transitorio", "persistente"])
+def test_preflight_conserva_un_contenedor_para_ambos_descubrimientos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restaurar: bool
+) -> None:
+    from sky_claw.local.tools import parallaxr_assisted as modulo
+
+    contenedor_a = tmp_path / "A"
+    contenedor_b = tmp_path / "B"
+    for contenedor in (contenedor_a, contenedor_b):
+        mod = contenedor / "Mod_A"
+        mod.mkdir(parents=True)
+        (mod / "ParallaxR.BAT").write_bytes(b"@echo mod")
+        (mod / "ParallaxROutput.tmp").write_bytes(contenedor.name.encode())
+
+    escanear = modulo._discover_direct_mod_entries
+    with _junction(contenedor_a, tmp_path / "mods") as enlace:
+
+        def cambiar_contenedor(destino: Path) -> None:
+            if sys.platform == "win32":
+                _retargetear_junction(enlace, destino)
+            else:
+                enlace.unlink()
+                enlace.symlink_to(destino, target_is_directory=True)
+
+        def escanear_con_cambio(mods_dir: Path, objetivo: str, construir: Callable, **kwargs: Any):
+            if objetivo != modulo.OUTPUT_MARKER_NAME:
+                return escanear(mods_dir, objetivo, construir, **kwargs)
+            cambiar_contenedor(contenedor_b)
+            try:
+                return escanear(mods_dir, objetivo, construir, **kwargs)
+            finally:
+                if restaurar:
+                    cambiar_contenedor(contenedor_a)
+
+        monkeypatch.setattr(modulo, "_discover_direct_mod_entries", escanear_con_cambio)
+        resultado = run_parallaxr_assisted_preflight(enlace)
+
+    esperado = ParallaxRAssistedStatus.READY if restaurar else ParallaxRAssistedStatus.EVIDENCE_UNSTABLE
+    assert resultado.status is esperado
+    assert resultado.candidate_mod_roots == (contenedor_a.resolve() / "Mod_A",)
+    assert [marca.path for marca in resultado.existing_output_candidates] == [
+        contenedor_a.resolve() / "Mod_A" / "ParallaxROutput.tmp"
+    ]
+
+
+@pytest.mark.parametrize("cambio", ["reemplazo", "escritura", "error_de_stat"])
+def test_preflight_revalida_el_archivo_hasheado_en_la_misma_ruta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cambio: str
+) -> None:
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "Mod_A"
+    mod_dir.mkdir(parents=True)
+    bat = (mod_dir / "ParallaxR.BAT").resolve()
+    bat.write_bytes(b"@echo A")
+    marker = mod_dir / "ParallaxROutput.tmp"
+    marker.write_bytes(b"marca")
+    reemplazo = tmp_path / "reemplazo.bat"
+    reemplazo.write_bytes(b"@echo B")
+    original = bat.stat()
+    os.utime(reemplazo, ns=(original.st_atime_ns, original.st_mtime_ns))
+    stat_real = Path.stat
+
+    def stat_sin_permiso(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self == bat:
+            raise PermissionError(errno.EACCES, "archivo inaccesible")
+        return stat_real(self, follow_symlinks=follow_symlinks)
+
+    def aplicar_cambio() -> None:
+        if cambio == "reemplazo":
+            reemplazo.replace(bat)
+        elif cambio == "escritura":
+            bat.write_bytes(b"@echo contenido distinto")
+        else:
+            parche.setattr(Path, "stat", stat_sin_permiso)
+
+    with monkeypatch.context() as parche, _retarget_tras_fingerprint(aplicar_cambio):
+        resultado = run_parallaxr_assisted_preflight(mods_dir)
+
+    esperado = (
+        ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE
+        if cambio == "error_de_stat"
+        else ParallaxRAssistedStatus.EVIDENCE_UNSTABLE
+    )
+    assert resultado.status is esperado
+    assert resultado.installation is None
+    assert resultado.candidate_mod_roots == (mod_dir.resolve(),)
+    assert [marca.path for marca in resultado.existing_output_candidates] == [marker.resolve()]

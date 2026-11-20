@@ -11,11 +11,10 @@ Contrato arquitectónico:
 - Read-only y side-effect-free respecto del filesystem: 0 mutaciones en archivos o MO2.
 - Determinista para un snapshot de filesystem estable.
 - Cero subprocesos, cero ejecución de código externo y cero acceso a red.
-- Identidad (#667-A4): toda la superficie pública expone la identidad LÓGICA de MO2 (el hijo
-  directo de `mods_dir` tal como el gestor lo presenta) y la procedencia FÍSICA verificada
-  viaja únicamente en `ParallaxRInstallationEvidence.resolved_mod_root`/`resolved_entrypoint`.
-  Dos carpetas hijas que comparten destino físico (junctions o symlinks) son dos identidades
-  independientes: nunca se deduplican por ruta resuelta, hash ni inodo.
+- Identidad (#667-A4): los candidatos de instalación y el handoff identifican al hijo
+  directo de `mods_dir` que presenta MO2. Dos hijos que comparten destino físico conservan
+  sus identidades lógicas. La procedencia de la instalación viaja en `resolved_mod_root` y
+  `resolved_entrypoint`. Los marcadores de salida conservan su ruta física y pueden repetirse.
 """
 
 from __future__ import annotations
@@ -82,6 +81,12 @@ class _FileFingerprintSnapshot:
     size_bytes: int
     mtime_ns: int
     sha256: str
+    device: int
+    inode: int
+
+    def matches(self, file_stat: os.stat_result) -> bool:
+        """Comprueba que los metadatos del archivo sigan identificando la captura."""
+        return (self.device, self.inode, self.size_bytes, self.mtime_ns) == _file_identity(file_stat)
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +300,11 @@ def validate_path_containment(child_path: Path, parent_dir: Path) -> bool:
         return False
 
 
+def _file_identity(file_stat: os.stat_result) -> tuple[int, int, int, int]:
+    """Devuelve la identidad y los metadatos que deben coincidir con el archivo leído."""
+    return file_stat.st_dev, file_stat.st_ino, file_stat.st_size, file_stat.st_mtime_ns
+
+
 def _fingerprint_file_consistently(
     file_path: Path, max_attempts: int = _FINGERPRINT_MAX_ATTEMPTS
 ) -> _FileFingerprintSnapshot:
@@ -315,13 +325,7 @@ def _fingerprint_file_consistently(
             after = os.fstat(handle.fileno())
 
             # Validar que el descriptor no haya cambiado mientras se leía
-            descriptor_stable = (
-                before.st_size == after.st_size
-                and before.st_mtime_ns == after.st_mtime_ns
-                and before.st_ino == after.st_ino
-                and before.st_dev == after.st_dev
-            )
-            if not descriptor_stable:
+            if _file_identity(before) != _file_identity(after):
                 continue
 
             # Validar que la ruta siga resolviendo al mismo archivo físico
@@ -332,19 +336,15 @@ def _fingerprint_file_consistently(
                     continue
                 raise
 
-            path_matches = (
-                path_stat.st_dev == after.st_dev
-                and path_stat.st_ino == after.st_ino
-                and path_stat.st_size == after.st_size
-                and path_stat.st_mtime_ns == after.st_mtime_ns
-            )
-            if not path_matches:
+            if _file_identity(path_stat) != _file_identity(after):
                 continue
 
             return _FileFingerprintSnapshot(
                 size_bytes=after.st_size,
                 mtime_ns=after.st_mtime_ns,
                 sha256=hasher.hexdigest(),
+                device=after.st_dev,
+                inode=after.st_ino,
             )
 
     raise ParallaxREvidenceUnstableError(
@@ -356,20 +356,25 @@ def _discover_direct_mod_entries(
     mods_dir: Path,
     target_name: str,
     build_item: Callable[[_DirectModEntry], _ItemT],
+    *,
+    resolved_mods_dir: Path | None = None,
 ) -> tuple[tuple[_ItemT, ...], bool]:
     """Enumera entradas directas de mods_dir sin convertir errores de E/S en ausencia.
 
     Motor único de descubrimiento: por cada hijo directo válido emite un `_DirectModEntry` con
     las cuatro coordenadas (lógica de carpeta y archivo, física de carpeta y archivo). Preserva
     el orden de sondeo de `#944` sobre la entrada hija tal como se iteró y sobre su objetivo
-    directo; la coordenada lógica se proyecta recién al construir el registro.
+    directo; la coordenada lógica se proyecta recién al construir el registro. El preflight
+    aporta el mismo contenedor resuelto a ambos escaneos.
     """
     items: list[_ItemT] = []
     try:
-        if not _is_accessible_dir(mods_dir):
-            return (), True
-        resolved_mods_dir = _resolve_path(mods_dir, strict=True)
-        for child in sorted(mods_dir.iterdir(), key=lambda p: p.name):
+        scan_dir = resolved_mods_dir if resolved_mods_dir is not None else mods_dir
+        if not _is_accessible_dir(scan_dir):
+            return (), resolved_mods_dir is None
+        if resolved_mods_dir is None:
+            resolved_mods_dir = _resolve_path(mods_dir, strict=True)
+        for child in sorted(scan_dir.iterdir(), key=lambda p: p.name):
             if not _is_accessible_dir(child):
                 continue
             resolved_child = _resolve_if_contained(
@@ -415,12 +420,15 @@ def _discover_direct_mod_entries(
     return tuple(items), True
 
 
-def _discover_candidate_identities(mods_dir: Path) -> tuple[_DirectModEntry, ...]:
+def _discover_candidate_identities(
+    mods_dir: Path, *, resolved_mods_dir: Path | None = None
+) -> tuple[_DirectModEntry, ...]:
     """Descubre candidatos de ParallaxR con identidad dual o eleva evidencia incompleta (#944)."""
     identities, complete = _discover_direct_mod_entries(
         mods_dir,
         OFFICIAL_ENTRYPOINT_NAME,
         lambda entry: entry,
+        resolved_mods_dir=resolved_mods_dir,
     )
     if not complete:
         raise ParallaxREvidenceIncompleteError(
@@ -459,14 +467,22 @@ def discover_output_markers(mods_dir: Path) -> tuple[ParallaxROutputMarkerEviden
     Operación read-only y side-effect-free respecto del filesystem. No prejuzga frescura.
     Si un marcador está en mutación continua, eleva ParallaxREvidenceUnstableError.
     Si ocurre un error de E/S durante la inspección, eleva ParallaxREvidenceIncompleteError
-    preservando los marcadores válidos ya observados.
+    preservando los marcadores válidos ya observados. Las coordenadas son físicas y pueden
+    repetirse si dos hijos lógicos comparten destino.
     """
+    return _discover_output_markers(mods_dir)
+
+
+def _discover_output_markers(
+    mods_dir: Path, *, resolved_mods_dir: Path | None = None
+) -> tuple[ParallaxROutputMarkerEvidence, ...]:
     markers, complete = _discover_direct_mod_entries(
         mods_dir,
         OUTPUT_MARKER_NAME,
         # B9 fuera de alcance: el marcador conserva su ruta FÍSICA verificada, pero hereda del
         # motor compartido el cierre de self-junctions y la profundidad mínima +2.
         lambda entry: _build_output_marker_evidence(entry.resolved_target),
+        resolved_mods_dir=resolved_mods_dir,
     )
     if not complete:
         raise ParallaxREvidenceIncompleteError(
@@ -527,26 +543,26 @@ def _decompose_explicit_selection(explicit_selection: Path, resolved_mods_dir: P
     if ".." in explicit_selection.parts:
         return None
 
-    anchored = explicit_selection if explicit_selection.is_absolute() else Path.cwd() / explicit_selection
+    anchored = explicit_selection
     if not anchored.is_absolute():
+        try:
+            anchored = Path.cwd() / anchored
+        except OSError:
+            return None
+
+    entry_segment = anchored.name
+    if not _validate_selection_segment(entry_segment):
         return None
 
-    # Forma 1: raíz lógica del mod (`.../<mods_dir>/<mod>`).
-    mod_segment = anchored.name
-    if _validate_selection_segment(mod_segment) and _resolves_to_authorized_container(
-        anchored.parent, resolved_mods_dir
-    ):
-        return (mod_segment, None)
-
-    # Forma 2: entrypoint lógico oficial (`.../<mods_dir>/<mod>/ParallaxR.BAT`).
-    mod_segment = anchored.parent.name
-    entry_segment = anchored.name
-    if (
-        _validate_selection_segment(mod_segment)
-        and _validate_selection_segment(entry_segment)
-        and _resolves_to_authorized_container(anchored.parent.parent, resolved_mods_dir)
-    ):
-        return (mod_segment, entry_segment)
+    # Una ruta bajo un hijo del contenedor se interpreta como entrypoint, incluso si el hijo
+    # es una self-junction. Así nunca se selecciona otro mod usando sólo el último componente.
+    if _resolves_to_authorized_container(anchored.parent.parent, resolved_mods_dir):
+        mod_segment = anchored.parent.name
+        if _validate_selection_segment(mod_segment):
+            return (mod_segment, entry_segment)
+        return None
+    if _resolves_to_authorized_container(anchored.parent, resolved_mods_dir):
+        return (entry_segment, None)
 
     return None
 
@@ -566,27 +582,10 @@ def _match_explicit_selection(
     return matches[0] if len(matches) == 1 else None
 
 
-def _identidad_seleccionada_sigue_vigente(selected: _DirectModEntry, resolved_mods_dir: Path) -> bool:
-    """Indica si la identidad lógica del candidato sigue resolviendo a la identidad física inspeccionada.
-
-    Revalida, de forma estricta, `logical_mod_root` y `logical_target` contra los destinos
-    registrados durante el descubrimiento y exige que ambos sigan dentro de la frontera física
-    autorizada con descendencia `+1`/`+2`. La comparación es por componentes y cadena OS
-    (sensible al caso), nunca por igualdad de rutas del lenguaje.
-
-    Propaga `OSError` cuando la revalidación no puede completarse; un `RuntimeError` ajeno a un
-    bucle de symlinks se propaga sin enmascararse (mismo contrato que `_resolve_path`).
-    """
+def _identidad_seleccionada_sigue_vigente(selected: _DirectModEntry) -> bool:
+    """Comprueba que la carpeta y el entrypoint siguen en los destinos admitidos por el descubrimiento."""
     resolved_root_ahora = _resolve_path(selected.logical_mod_root, strict=True)
     resolved_target_ahora = _resolve_path(selected.logical_target, strict=True)
-    if not _es_prefijo_de_componentes(resolved_root_ahora, resolved_mods_dir):
-        return False
-    if len(resolved_root_ahora.parts) < len(resolved_mods_dir.parts) + 1:
-        return False
-    if not _es_prefijo_de_componentes(resolved_target_ahora, resolved_mods_dir):
-        return False
-    if len(resolved_target_ahora.parts) < len(resolved_mods_dir.parts) + 2:
-        return False
     return _is_same_resolved_container(resolved_root_ahora, selected.resolved_mod_root) and _is_same_resolved_container(
         resolved_target_ahora, selected.resolved_target
     )
@@ -597,12 +596,12 @@ def run_parallaxr_assisted_preflight(
 ) -> ParallaxRAssistedPreflight:
     """Ejecuta el preflight asistido de ParallaxR de forma determinista y side-effect-free.
 
-    Toda la superficie pública del resultado habla identidad lógica MO2; la procedencia física
-    verificada viaja en `ParallaxRInstallationEvidence.resolved_mod_root`/`resolved_entrypoint`
-    y es la única que se usa para contención y fingerprinting anti-TOCTOU.
+    Las rutas de instalación y `candidate_mod_roots` identifican al hijo lógico de MO2.
+    `existing_output_candidates` conserva las rutas físicas de los marcadores y puede contener
+    rutas repetidas. Ambos escaneos usan el mismo contenedor resuelto.
     """
     try:
-        mods_dir_accessible = _is_accessible_dir(mods_dir)
+        resolved_mods_dir = _resolve_path(mods_dir, strict=True) if _is_accessible_dir(mods_dir) else None
     except OSError:
         return ParallaxRAssistedPreflight(
             status=ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
@@ -612,7 +611,7 @@ def run_parallaxr_assisted_preflight(
             ),
         )
 
-    if not mods_dir_accessible:
+    if resolved_mods_dir is None:
         return ParallaxRAssistedPreflight(
             status=ParallaxRAssistedStatus.MISSING,
             success=False,
@@ -623,7 +622,7 @@ def run_parallaxr_assisted_preflight(
     candidate_mod_roots: tuple[Path, ...] = ()
     candidates_incomplete = False
     try:
-        identities = _discover_candidate_identities(mods_dir)
+        identities = _discover_candidate_identities(mods_dir, resolved_mods_dir=resolved_mods_dir)
     except ParallaxREvidenceIncompleteError as err:
         # #944: los parciales ya son entrypoints lógicos; su padre es la raíz lógica del mod.
         candidate_mod_roots = tuple(entrypoint.parent for entrypoint in err.partial_candidates)
@@ -636,7 +635,7 @@ def run_parallaxr_assisted_preflight(
     markers_incomplete = False
     markers_unstable = False
     try:
-        existing_output = discover_output_markers(mods_dir)
+        existing_output = _discover_output_markers(mods_dir, resolved_mods_dir=resolved_mods_dir)
     except ParallaxREvidenceIncompleteError as err:
         existing_output = err.partial_markers
         markers_incomplete = True
@@ -676,8 +675,6 @@ def run_parallaxr_assisted_preflight(
             message="No se encontró ninguna instalación de ParallaxR bajo los mods de MO2.",
         )
 
-    # El contenedor autorizado ya fue validado y resuelto por el motor de descubrimiento.
-    resolved_mods_dir = identities[0].logical_mod_root.parent
     selected: _DirectModEntry | None = None
 
     if explicit_selection is not None:
@@ -725,12 +722,13 @@ def run_parallaxr_assisted_preflight(
             ),
         )
 
-    # Revalidación final de identidad (#667-A4, P2). Cierra la ventana entre el descubrimiento
-    # (que registró los destinos físicos) y la emisión de READY: si la identidad lógica dejó de
-    # resolver a lo inspeccionado, la evidencia y el handoff describirían objetos distintos.
-    # NO elimina TOCTOU posterior al retorno (A1): un enlace puede cambiar después de READY.
+    # La evidencia y el handoff deben seguir describiendo el mismo archivo al emitir READY.
     try:
-        identidad_vigente = _identidad_seleccionada_sigue_vigente(selected, resolved_mods_dir)
+        identidad_vigente = (
+            _is_same_resolved_container(_resolve_path(mods_dir, strict=True), resolved_mods_dir)
+            and _identidad_seleccionada_sigue_vigente(selected)
+            and snapshot.matches(selected.logical_target.stat())
+        )
     except OSError:
         return ParallaxRAssistedPreflight(
             status=ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
@@ -750,8 +748,8 @@ def run_parallaxr_assisted_preflight(
             existing_output_candidates=existing_output,
             candidate_mod_roots=candidate_mod_roots,
             message=(
-                "La identidad lógica seleccionada dejó de resolver al destino físico inspeccionado "
-                "durante el preflight; reintente cuando el árbol de mods esté estable."
+                "El contenedor de mods o el entrypoint seleccionado cambió durante el preflight; "
+                "reintente cuando el árbol de mods esté estable."
             ),
         )
 
