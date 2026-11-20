@@ -9,9 +9,9 @@
   },
   "dependencies": {
     "async-mutex": "^0.5.0",
-    "dotenv": "^18.0.9",
+    "dotenv": "^18.0.10",
     "grammy": "^1.46.0",
-    "ws": "^8.22.1"
+    "ws": "^8.23.0"
   },
   "engines": {
     "node": ">=24.0.0"
