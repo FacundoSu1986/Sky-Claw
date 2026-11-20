@@ -80,11 +80,14 @@ pytestmark = pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptio
 
 # T18 aplica a un archivo real una DACL con un ACE de tipo no soportado y DESPUÉS lo sondea con
 # ``probe_node_evidence`` (que abre el nodo con READ_CONTROL | FILE_READ_ATTRIBUTES). Si ese ACE niega lectura y nada
-# la concede antes, el sondeo depende de cómo el sistema evalúe el ACE y de los privilegios ambientales del proceso
-# (``SeBackupPrivilege`` con FILE_FLAG_BACKUP_SEMANTICS): en CI falló de forma intermitente con ``CreateFileW … código 5``.
-# La DACL de prueba concede primero (DACL no canónica, a propósito) READ_CONTROL | FILE_READ_ATTRIBUTES (0x20080) a
-# Everyone: el sondeo no depende del entorno y el ACE no soportado sigue presente y rechazado igual.
-_SDDL_LECTURA_PREVIA = "(A;;0x20080;;;WD)"
+# la concede antes, el sondeo falla con ``CreateFileW … código 5``.
+# Causa observada en el CI de Windows (diagnóstico de #971, py3.12): ``CreateFileW`` agrega SYNCHRONIZE al acceso pedido,
+# así que TODOS los sondeos fallaron (incluso con máscara 0 y sin FILE_FLAG_BACKUP_SEMANTICS). FILE_GENERIC_READ (``FR``)
+# incluye SYNCHRONIZE y el ``XD`` (denegación con callback, condición desconocida = se aplica) queda evaluado antes del
+# Full heredado de Administradores. Los otros tres ACE no niegan SYNCHRONIZE, por eso solo fallaba ``XD``.
+# La DACL de prueba concede primero (DACL no canónica, a propósito) READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+# (0x120080) a Everyone: el sondeo no depende del entorno y el ACE no soportado sigue presente y rechazado igual.
+_SDDL_LECTURA_PREVIA = "(A;;0x120080;;;WD)"
 
 #: (sddl, tipo de ACE esperado en el mensaje). Una sola lista para el test de comportamiento y su ancla.
 _CASOS_T18_ACE_NO_SOPORTADO: tuple[tuple[str, str], ...] = (
@@ -250,6 +253,23 @@ class TestT18LecturaPreviaHermetica:
             and nodo.func.id == "open_node_security_handle"
         ]
         assert len(aperturas) == 1
+
+    def test_el_ace_previo_concede_tambien_synchronize_que_createfilew_agrega_solo(self) -> None:
+        """``CreateFileW`` suma SYNCHRONIZE al acceso pedido; si el ACE previo no lo cubre, el ``XD`` (FR lo incluye) lo niega.
+
+        Evidencia del CI de Windows (diagnóstico de #971): con el ACE previo en 0x20080 los 32 sondeos fallaron con
+        código 5, incluso con máscara 0, porque FILE_GENERIC_READ (FR) incluye SYNCHRONIZE y el ACE de denegación quedó
+        evaluado antes del Full heredado de Administradores.
+        """
+        import re
+
+        coincidencia = re.fullmatch(r"\(A;;(0x[0-9a-fA-F]+);;;WD\)", _SDDL_LECTURA_PREVIA)
+        assert coincidencia is not None
+        mascara = int(coincidencia.group(1), 16)
+        read_control, file_read_attributes, synchronize = 0x00020000, 0x00000080, 0x00100000
+        assert mascara & (read_control | file_read_attributes | synchronize) == (
+            read_control | file_read_attributes | synchronize
+        )
 
     def test_los_cuatro_tipos_de_ace_siguen_cubiertos(self) -> None:
         assert [tipo for _, tipo in _CASOS_T18_ACE_NO_SOPORTADO] == ["0x09", "0x0a", "0x05", "0x06"]
