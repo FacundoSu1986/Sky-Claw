@@ -801,12 +801,13 @@ class VfsExecutionBroker:
                         timeout=job.timeout_seconds,
                     )
                 except TimeoutError as exc:
+                    hitos_al_vencer = self._instantanea_de_hitos(job.job_id)
                     td_err: VfsTeardownError | None = None
                     try:
                         await self._send_cancel(job.job_id)
                     except VfsTeardownError as t_exc:
                         td_err = t_exc
-                    err = self._error_de_timeout(job.job_id, job.timeout_seconds)
+                    err = self._error_de_timeout(job.job_id, job.timeout_seconds, hitos_al_vencer)
                     err.__cause__ = exc
                     if td_err is not None:
                         from sky_claw.app.db.rollback_veto import mark_unknown_terminality
@@ -959,12 +960,13 @@ class VfsExecutionBroker:
                     timeout=timeout,
                 )
             except TimeoutError as exc:
+                hitos_al_vencer = self._instantanea_de_hitos(sesion.job_id)
                 td_err: VfsTeardownError | None = None
                 try:
                     await self._send_cancel(sesion.job_id)
                 except VfsTeardownError as t_exc:
                     td_err = t_exc
-                err = self._error_de_timeout(sesion.job_id, timeout)
+                err = self._error_de_timeout(sesion.job_id, timeout, hitos_al_vencer)
                 err.__cause__ = exc
                 if td_err is not None:
                     from sky_claw.app.db.rollback_veto import mark_unknown_terminality
@@ -1459,9 +1461,20 @@ class VfsExecutionBroker:
         if hitos is not None:
             hitos.setdefault(hito, time.monotonic())
 
-    def _error_de_timeout(self, job_id: str, timeout: float) -> VfsJobTimeoutError:
-        """Construye el timeout del job diciendo en qué fase se quedó. Único constructor: ``submit`` y la sesión lo usan."""
-        hitos = self._hitos.get(job_id, {})
+    def _instantanea_de_hitos(self, job_id: str) -> dict[str, float]:
+        """Copia los hitos del job al vencer el plazo, ANTES de esperar el cierre del worker.
+
+        Durante el cierre pueden llegar hitos tardíos (un ``worker_hello`` de un worker lento, un ``worker_exit``): no
+        cuentan para la fase en la que el job se quedó al vencer el plazo. ``_error_de_timeout`` usa esta foto, no el
+        registro vivo.
+        """
+        return dict(self._hitos.get(job_id, {}))
+
+    def _error_de_timeout(self, job_id: str, timeout: float, hitos: Mapping[str, float]) -> VfsJobTimeoutError:
+        """Construye el timeout del job diciendo en qué fase se quedó. Único constructor: ``submit`` y la sesión lo usan.
+
+        ``hitos`` es la foto tomada al vencer el plazo (``_instantanea_de_hitos``), no el registro vivo del job.
+        """
         base = hitos.get("registrado")
         offsets = {} if base is None else {k: round(v - base, 3) for k, v in hitos.items() if k != "registrado"}
         if "launch_ack" not in hitos:

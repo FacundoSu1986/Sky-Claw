@@ -994,6 +994,7 @@ async def _provocar_timeout(
     *,
     enviar_launch_ack: bool,
     conectar_worker: bool,
+    conectar_worker_tras_el_cancel: bool = False,
 ) -> tuple[VfsJobTimeoutError, VfsExecutionBroker]:
     mo2, data, challenge, _job = _entorno(tmp_path)
     job = VfsJob.create(
@@ -1029,11 +1030,12 @@ async def _provocar_timeout(
                 },
                 secret,
             )
-        if conectar_worker:
+
+        async def _hello_del_worker() -> asyncio.StreamWriter:
             descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
-            w_reader, worker_writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
+            w_reader, w_writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
             await write_authenticated_message(
-                worker_writer,
+                w_writer,
                 {
                     "protocol_version": VFS_PROTOCOL_VERSION,
                     "type": "hello",
@@ -1048,8 +1050,16 @@ async def _provocar_timeout(
             )
             ack = await read_authenticated_message(w_reader, base64.urlsafe_b64decode(descriptor["token"]))
             assert ack["type"] == "hello_ack"
+            return w_writer
+
+        if conectar_worker:
+            worker_writer = await _hello_del_worker()
         cancel = await asyncio.wait_for(read_authenticated_message(reader, secret), timeout=2)
         assert cancel["type"] == "cancel"
+        if conectar_worker_tras_el_cancel:
+            # El plazo ya venció y el broker espera el cierre: un worker lento que recién ahora se conecta NO cambia
+            # la fase en la que el job se quedó.
+            worker_writer = await _hello_del_worker()
         await _reportar_salida_bridge(writer, secret, job_id=job.job_id, exit_code=1)
         with pytest.raises(VfsJobTimeoutError) as excinfo:
             await asyncio.wait_for(pending, timeout=2)
@@ -1086,6 +1096,23 @@ async def test_timeout_con_hello_y_sin_resultado_informa_la_fase_de_ejecucion(tm
     assert error.fase == "ejecucion"
     assert {"launch_ack", "worker_hello"} <= set(error.hitos)
     assert "job_result" not in error.hitos
+
+
+async def test_un_hello_que_llega_durante_el_cierre_no_cambia_la_fase_del_timeout(tmp_path: pathlib.Path) -> None:
+    """La fase se fotografía cuando vence el plazo, ANTES de esperar el cierre del worker.
+
+    Un worker lento que se conecta mientras el broker espera el ``worker_exit`` no estaba trabajando al vencer el plazo:
+    reportar ``ejecucion`` (y un ``worker_hello`` posterior al plazo) borraría justo la distinción que este
+    diagnóstico existe para hacer en los arranques lentos.
+    """
+    error, _broker = await _provocar_timeout(
+        tmp_path, enviar_launch_ack=True, conectar_worker=False, conectar_worker_tras_el_cancel=True
+    )
+
+    assert error.fase == "arranque"
+    assert "fase de arranque" in str(error)
+    assert "launch_ack" in error.hitos
+    assert "worker_hello" not in error.hitos
 
 
 async def test_el_timeout_conserva_el_prefijo_y_los_hitos_se_limpian_con_el_job(tmp_path: pathlib.Path) -> None:
@@ -1126,6 +1153,38 @@ def test_todo_timeout_del_job_se_construye_con_sus_hitos() -> None:
 
     assert constructores == {"_error_de_timeout"}
     assert len(usuarios) == 2
+
+
+def test_la_fase_se_fotografia_antes_de_esperar_el_cierre_en_las_dos_superficies() -> None:
+    """``submit`` y la sesión: la foto de los hitos precede al ``_send_cancel`` y éste al error que la usa.
+
+    Enumera los manejadores ``except TimeoutError`` que construyen el timeout del job (no muestrea uno): un tercer sitio
+    que espere el cierre antes de fotografiar vuelve a falsear la fase con los hitos que llegan durante el cierre.
+    """
+    ruta = pathlib.Path(sys.modules[VfsExecutionBroker.__module__].__file__ or "")
+    arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+
+    def _lineas(raiz: ast.AST, nombre: str) -> list[int]:
+        return sorted(n.lineno for n in ast.walk(raiz) if isinstance(n, ast.Call) and _es_llamada(n, nombre=nombre))
+
+    manejadores = [
+        (funcion.name, nodo)
+        for funcion in ast.walk(arbol)
+        if isinstance(funcion, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for nodo in ast.walk(funcion)
+        if isinstance(nodo, ast.ExceptHandler)
+        and isinstance(nodo.type, ast.Name)
+        and nodo.type.id == "TimeoutError"
+        and _lineas(nodo, "_error_de_timeout")
+    ]
+
+    assert sorted(nombre for nombre, _ in manejadores) == ["_conducir_sesion", "submit"]
+    for nombre, manejador in manejadores:
+        foto = _lineas(manejador, "_instantanea_de_hitos")
+        cierre = _lineas(manejador, "_send_cancel")
+        error = _lineas(manejador, "_error_de_timeout")
+        assert len(foto) == 1 and len(cierre) == 1 and len(error) == 1, nombre
+        assert foto[0] < cierre[0] < error[0], nombre
 
 
 def test_toda_limpieza_de_job_borra_tambien_sus_hitos() -> None:
