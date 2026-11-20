@@ -17,26 +17,29 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 RAIZ = Path(__file__).resolve().parents[1]
 WORKFLOWS_DIR = RAIZ / ".github" / "workflows"
 POLICY_FILE = RAIZ / ".github" / "AI_REVIEW_DATA_POLICY.md"
+PR_AGENT_TOML = RAIZ / ".pr_agent.toml"
 
-# SHA del tag v0.49.0 de Codium-ai/pr-agent (el repo upstream ahora se llama
+# SHA del tag v0.50.0 de Codium-ai/pr-agent (el repo upstream ahora se llama
 # The-PR-Agent/pr-agent y GitHub redirige). Verificado con
-# `gh api repos/Codium-ai/pr-agent/git/ref/tags/v0.49.0`: el objeto del tag es
-# este commit, del 2026-10-25.
+# `gh api repos/Codium-ai/pr-agent/git/ref/tags/v0.50.0`: el objeto del tag es
+# este commit (`e673a02076ce09a4726c3d0c3cc85780e59ca52b`).
 #
 # Este congelamiento es deliberado y es el motivo por el que un bump de
 # Dependabot NO puede aterrizar solo: mover el pin exige una decisión humana que
 # audite el release contra `.pr_agent.toml` y contra las recetas de routing de
 # los workflows. Al subir la versión, actualizar este SHA junto con los tres
 # `uses:` de .github/workflows/qodo-*.yml.
-PINNED_ACTION_REF_ESPERADA = "efdde4afe14aa401a3889012c7f3e9ef3081a430"
+PINNED_ACTION_REF_ESPERADA = "e673a02076ce09a4726c3d0c3cc85780e59ca52b"
 CANONICAL_ACTION_REPO = "Codium-ai/pr-agent"
 
 CLAVES_ROUTING = (
@@ -295,3 +298,68 @@ def test_gate_dependabot_en_jobs_automaticos_pull_request() -> None:
     assert jobs_automaticos_evaluados >= 2, (
         f"Se esperaban al menos 2 jobs automáticos bajo pull_request; se evaluaron {jobs_automaticos_evaluados}."
     )
+
+
+# Claves/secciones que pr-agent v0.50.0 convirtió en host-only o retiró en `.pr_agent.toml` raíz
+# (la Action las descarta con warning o son no-op). Si se necesitan, van en `env:` del workflow.
+CLAVES_PROHIBIDAS_EN_PR_AGENT_TOML: dict[str, set[str]] = {
+    "github": {
+        "ratelimit_retries",
+        "api_retries",
+        "seconds_between_requests",
+        "seconds_between_writes",
+        "agent_login",
+        "deployment_type",
+        "polling_repositories",
+    },
+    "config": {
+        "num_retries",
+        "enable_custom_labels",
+        "enable_auto_approval",
+        "extra_config_url",
+        "system_instructions",
+        "global_settings_repo",
+    },
+    "pr_code_suggestions": {
+        "max_number_of_calls",
+        "approve_pr_on_self_review",
+        "fold_suggestions_on_self_review",
+    },
+}
+SECCIONES_PROHIBIDAS_EN_PR_AGENT_TOML: set[str] = {"custom_labels"}
+
+
+def _auditar_pr_agent_toml(toml_path: Path) -> None:
+    data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+    claves_raiz = {k.lower(): k for k in data}
+
+    secciones_invalidas = SECCIONES_PROHIBIDAS_EN_PR_AGENT_TOML & set(claves_raiz)
+    assert not secciones_invalidas, (
+        f"{toml_path.name} contiene secciones host-only en pr-agent v0.50.0: {sorted(secciones_invalidas)}"
+    )
+
+    for seccion, claves_prohibidas in CLAVES_PROHIBIDAS_EN_PR_AGENT_TOML.items():
+        clave_real = claves_raiz.get(seccion)
+        if clave_real is None:
+            continue
+        tabla = data.get(clave_real, {})
+        if not isinstance(tabla, dict):
+            continue
+        presentes = claves_prohibidas & {k.lower() for k in tabla}
+        assert not presentes, (
+            f"{toml_path.name} [{clave_real}] declara claves host-only o removidas en pr-agent v0.50.0: "
+            f"{sorted(presentes)}. Moverlas al host (env del workflow) si se requiere override."
+        )
+
+
+def test_pr_agent_toml_sin_claves_host_only_o_removidas() -> None:
+    """Verifica que `.pr_agent.toml` sea TOML válido y no declare claves host-only/removidas en v0.50.0."""
+    _auditar_pr_agent_toml(PR_AGENT_TOML)
+
+
+def test_auditar_pr_agent_toml_rechaza_claves_host_only(tmp_path: Path) -> None:
+    """Verifica que el oráculo detecte claves host-only (como github.ratelimit_retries en v0.50.0)."""
+    falso_toml = tmp_path / ".pr_agent.toml"
+    falso_toml.write_text("[github]\nratelimit_retries = 5\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match="ratelimit_retries"):
+        _auditar_pr_agent_toml(falso_toml)

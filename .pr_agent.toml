@@ -41,10 +41,11 @@ publish_output_progress = false
 # de forma explícita mediante config.ignore_pr_authors, mientras otros bots pueden
 # seguir siendo revisados si su contexto de ejecución dispone de credenciales válidas.
 ignore_bot_pr = false
-# Corrección sobre push anterior: esta clave se lee desde [github], no desde
-# [config] — ahí no tiene efecto. Quedó mal ubicada en el fix previo (se quitó
-# el duplicado de [pr_reviewer] pero nunca se movió a destino).
-ratelimit_retries = 5
+# En pr-agent >= v0.50.0, `github.ratelimit_retries` (junto con `api_retries`,
+# `seconds_between_requests` y `seconds_between_writes`) pasó a ser host-only:
+# si queda en `.pr_agent.toml`, pr-agent lo descarta con warning. El default
+# integrado en `configuration.toml` de v0.50.0 ya es 5; si alguna vez se
+# necesita cambiarlo, fijar `GITHUB.RATELIMIT_RETRIES` en `env:` del workflow.
 
 [github_action_config]
 # Revisión y descripción automática al abrir/sincronizar PR
@@ -90,9 +91,8 @@ num_max_findings = 5
 #                                  que está apagado por auto_improve=false).
 #   persistent_inline_comments  -> vive en [config], no en [pr_reviewer]; además
 #                                  solo aplica a /improve, no a /review.
-#   ratelimit_retries (acá)     -> vive en [github] y gobierna reintentos contra
-#                                  la API de GitHub, no contra Gemini. Ya está
-#                                  declarada arriba, en la sección correcta.
+#   ratelimit_retries (acá)     -> vivía en [github]; desde v0.50.0 es host-only
+#                                  (default 5 en pr-agent) y ya no va en este archivo.
 
 
 extra_instructions = '''
