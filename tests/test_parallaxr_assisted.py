@@ -3184,13 +3184,14 @@ def test_p2_retarget_de_entrypoint_simulado_durante_marcadores_no_emite_ready(
     mods_dir = tmp_path / "mods"
     mod_dir = mods_dir / "Mod_A"
     mod_dir.mkdir(parents=True)
-    (mod_dir / "ParallaxR.BAT").write_bytes(b"@echo logico")
+    entrypoint_logico = mod_dir / "ParallaxR.BAT"
+    entrypoint_logico.write_bytes(b"@echo logico")
     pool = mods_dir / "_pool"
     destino_a = pool / "A"
     destino_b = pool / "B"
-    for destino, contenido in ((destino_a, b"@echo fisico_a"), (destino_b, b"@echo fisico_b")):
+    for destino in (destino_a, destino_b):
         destino.mkdir(parents=True)
-        (destino / "ParallaxR.BAT").write_bytes(contenido)
+        (destino / "ParallaxR.BAT").hardlink_to(entrypoint_logico)
 
     from sky_claw.local.tools import parallaxr_assisted as modulo
 
@@ -3206,6 +3207,7 @@ def test_p2_retarget_de_entrypoint_simulado_durante_marcadores_no_emite_ready(
     monkeypatch.setattr(modulo, "_resolve_path", resolver_con_enlace_simulado)
 
     # Act
+    assert run_parallaxr_assisted_preflight(mods_dir).status is ParallaxRAssistedStatus.READY
     with _retarget_durante_marcadores(lambda: destino_actual.update(ruta=destino_b / "ParallaxR.BAT")):
         preflight = run_parallaxr_assisted_preflight(mods_dir)
 
@@ -3216,11 +3218,17 @@ def test_p2_retarget_de_entrypoint_simulado_durante_marcadores_no_emite_ready(
     assert preflight.candidate_mod_roots == (mods_dir.resolve() / "Mod_A",)
 
 
-def test_p2_retarget_despues_del_fingerprint_antes_del_retorno_no_emite_ready(tmp_path: Path) -> None:
+@pytest.mark.parametrize("contiene_entrypoint", [True, False], ids=["con_entrypoint", "sin_entrypoint"])
+def test_p2_retarget_despues_del_fingerprint_antes_del_retorno_no_emite_ready(
+    tmp_path: Path, contiene_entrypoint: bool
+) -> None:
     """P2 (#667-A4): un re-apuntado posterior al fingerprint pero previo al retorno se detecta."""
     # Arrange
     mods_dir, mod_a, _destino_a, destino_b = _armar_mod_con_dos_destinos(tmp_path)
     try:
+        if not contiene_entrypoint:
+            (destino_b / "ParallaxR.BAT").unlink()
+
         # Act: el fingerprint del entrypoint ya se calculó; el enlace cambia después.
         with _retarget_tras_fingerprint(lambda: _retargetear_junction(mod_a, destino_b)):
             preflight = run_parallaxr_assisted_preflight(mods_dir)
@@ -3367,6 +3375,34 @@ def test_seleccion_con_directorio_de_trabajo_inaccesible(
     assert resultado.candidate_mod_roots == (mod_dir.resolve(),)
 
 
+@pytest.mark.parametrize("entrypoint", [False, True], ids=["carpeta", "entrypoint"])
+def test_seleccion_con_nul_en_un_ancestro_es_invalida(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: bool
+) -> None:
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "Mod_A"
+    mod_dir.mkdir(parents=True)
+    (mod_dir / "ParallaxR.BAT").write_bytes(b"@echo mod")
+    seleccion = tmp_path / "padre\0invalido" / "Mod_A"
+    if entrypoint:
+        seleccion /= "ParallaxR.BAT"
+
+    resolver = Path.resolve
+
+    def resolver_como_posix(self: Path, strict: bool = False) -> Path:
+        if "\0" in os.fspath(self):
+            raise ValueError("embedded null byte")
+        return resolver(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolver_como_posix)
+
+    resultado = run_parallaxr_assisted_preflight(mods_dir, explicit_selection=seleccion)
+
+    assert resultado.status is ParallaxRAssistedStatus.INVALID_SELECTION
+    assert resultado.installation is None
+    assert resultado.candidate_mod_roots == (mod_dir.resolve(),)
+
+
 @pytest.mark.parametrize("nombre", ["ParallaxR.BAT", "Otro_Mod"])
 def test_seleccion_bajo_self_junction_no_se_reinterpreta_como_mod_hermano(tmp_path: Path, nombre: str) -> None:
     mods_dir = tmp_path / "mods"
@@ -3389,6 +3425,7 @@ def test_seleccion_bajo_self_junction_no_se_reinterpreta_como_mod_hermano(tmp_pa
 def test_preflight_conserva_un_contenedor_para_ambos_descubrimientos(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restaurar: bool
 ) -> None:
+    """Ejercita un cambio real de destino en una junction NTFS del contenedor de mods."""
     from sky_claw.local.tools import parallaxr_assisted as modulo
 
     contenedor_a = tmp_path / "A"
@@ -3402,22 +3439,15 @@ def test_preflight_conserva_un_contenedor_para_ambos_descubrimientos(
     escanear = modulo._discover_direct_mod_entries
     with _junction(contenedor_a, tmp_path / "mods") as enlace:
 
-        def cambiar_contenedor(destino: Path) -> None:
-            if sys.platform == "win32":
-                _retargetear_junction(enlace, destino)
-            else:
-                enlace.unlink()
-                enlace.symlink_to(destino, target_is_directory=True)
-
         def escanear_con_cambio(mods_dir: Path, objetivo: str, construir: Callable, **kwargs: Any):
             if objetivo != modulo.OUTPUT_MARKER_NAME:
                 return escanear(mods_dir, objetivo, construir, **kwargs)
-            cambiar_contenedor(contenedor_b)
+            _retargetear_junction(enlace, contenedor_b)
             try:
                 return escanear(mods_dir, objetivo, construir, **kwargs)
             finally:
                 if restaurar:
-                    cambiar_contenedor(contenedor_a)
+                    _retargetear_junction(enlace, contenedor_a)
 
         monkeypatch.setattr(modulo, "_discover_direct_mod_entries", escanear_con_cambio)
         resultado = run_parallaxr_assisted_preflight(enlace)

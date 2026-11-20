@@ -534,9 +534,9 @@ def _decompose_explicit_selection(explicit_selection: Path, resolved_mods_dir: P
     Boundary-Split: nunca se dereferencia la entrada seleccionada (el alias lógico), sólo se
     resuelve estrictamente su contenedor padre (Forma 1) o abuelo (Forma 2) y se exige igualdad
     canónica contra `resolved_mods_dir`. Se rechazan rutas vacías, `"."`, drive-relative,
-    root-relative sin unidad y cualquier componente `".."`, sin normalización léxica.
+    root-relative sin unidad, componentes `".."` y caracteres NUL.
     """
-    if not explicit_selection.parts:
+    if not explicit_selection.parts or "\0" in os.fspath(explicit_selection):
         return None
     if not explicit_selection.is_absolute() and (explicit_selection.drive or explicit_selection.root):
         return None
@@ -585,10 +585,10 @@ def _match_explicit_selection(
 def _identidad_seleccionada_sigue_vigente(selected: _DirectModEntry) -> bool:
     """Comprueba que la carpeta y el entrypoint siguen en los destinos admitidos por el descubrimiento."""
     resolved_root_ahora = _resolve_path(selected.logical_mod_root, strict=True)
+    if not _is_same_resolved_container(resolved_root_ahora, selected.resolved_mod_root):
+        return False
     resolved_target_ahora = _resolve_path(selected.logical_target, strict=True)
-    return _is_same_resolved_container(resolved_root_ahora, selected.resolved_mod_root) and _is_same_resolved_container(
-        resolved_target_ahora, selected.resolved_target
-    )
+    return _is_same_resolved_container(resolved_target_ahora, selected.resolved_target)
 
 
 def run_parallaxr_assisted_preflight(
