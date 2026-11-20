@@ -19,6 +19,8 @@
 - [Recuperación](recovery.md)
 - [Release](release.md)
 - [Validación en rig real](real_rig_validation.md)
+- [R0: re-certificación de la etapa 9 en rig real](r0_recertificacion_en_rig.md) — runbook de
+  mediciones y plantilla de evidencia para la sesión de rig que precede al levantamiento del HOLD.
 - [Smoke de la etapa 6 asistida en el rig Windows](etapa6_smoke_rig.md) — procedimiento y
   resultado de la corrida de Wrye Bash asistido (MO2 + USVFS); el informe completo queda fuera
   del repo.

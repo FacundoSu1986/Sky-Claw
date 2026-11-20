@@ -89,6 +89,26 @@ el revisor lo revirtió igual.
 > un comando o rompen un test. Si agregás una regla acá, traé con qué se verifica
 > — o va a envejecer como las demás.
 
+## Política de cierre y Semáforo Anti-Mejora Infinita
+
+Antes de implementar y antes de declarar una tarea cerrada, leer
+[`docs/agents/completion_policy.md`](docs/agents/completion_policy.md).
+
+- **Principio rector:** Cumplir el contrato de aceptación acordado; no perseguir perfección indefinida ni ampliar el alcance por iniciativa propia.
+- **Prioridad:** seguridad > integridad de datos > correctitud (incluidos hermanos del mismo cambio y fail-closed) > tests/anclas AST > mantenibilidad > rendimiento.
+- **Semáforo obligatorio en todo cierre y triage de bots:**
+  - **🔴 ROJO (Recomendación ALTA — Frenar y corregir):** P0/P1 confirmado con evidencia (seguridad, pérdida/corrupción de datos, falso verde, hermano omitido del mismo alcance, falla en zona exenta de `mypy`, o gate obligatorio roto). Prohibido declarar `DONE`.
+  - **🟡 AMARILLO (Recomendación MEDIA — Decisión del propietario / Diferir):** P2 real pero no bloqueante, limitación conocida de rig real Windows/MO2 compatible con el alcance, o mejora útil fuera del `Write-Set`. Documentar sin abrir otro PR ni ampliar el actual sin autorización.
+  - **🟢 VERDE (Recomendación BAJA — Cerrar y detenerse):** P3 (estilo, refactor opcional, renombrar tests, «Trivial / Quick win» sin defecto demostrado, hipótesis `NO_VERIFICADO` o fallo transitorio de proveedor en Qodo/PR-Agent). Justificar brevemente el descarte y NO commitear (evita reiniciar ~40 min de CI Windows).
+- **Verificación de bots/agentes:** Aplicar `CLAIM → EXTRACT → DOUBT → RECONCILE` contra el código real antes de tocar nada.
+- **Presupuesto ordinario:** 1 revisión adversarial acotada al cambio + 1 ronda de corrección y revalidación. Si persisten bloqueantes, detener y escalar.
+- **Estados finales únicos:** `DONE`, `DONE_WITH_LIMITATIONS`, `BLOCKED`, `OUT_OF_SCOPE`.
+- **Reapertura:** Solo por regresión reproducida, defecto P0/P1 demostrado, incumplimiento del contrato original o nueva orden explícita del propietario.
+
+**Ancla:** `tests/test_completion_policy_invariant.py` congela por igualdad literal los colores,
+los estados finales, la prioridad y las condiciones de reapertura. No verifica que un cierre
+concreto los cumpla: eso lo revisa el propietario sobre el cuerpo del PR.
+
 ## Una sesión, un worktree
 
 Este repo se trabaja desde **varias sesiones a la vez** (Claude Code, Codex, Kilo,
@@ -313,6 +333,31 @@ filtrarla, y no hay backup ni escritura atómica). Sin una escritura explícita,
 el valor vivo del keyring prevalece sobre memoria o plaintext obsoletos; una
 escritura rechazada queda pendiente para reintento. Ancla:
 `tests/test_config_secretos_sin_keyring.py`.
+
+**Perfil aislado (`SKYCLAW_ISOLATED=1`).** Un `HOME` aislado **no** aísla el keyring de Windows, el
+registro ni las bibliotecas de Steam: son del usuario, no del perfil. Todo arnés, rig o script que
+construya `AppContext`/`Config` fuera de producción activa la variable (el runbook del rig la exige,
+regla 7). Con ella el keyring pasa a un backend que **falla** —nunca el nulo, con el que
+`set_password` «funciona» sin guardar y `Config._load_from_keyring` borraría el secreto del TOML— y
+`AutoDetector`/`EnvironmentScanner` dejan de descubrir la máquina real (Skyrim, MO2 y las herramientas
+de las raíces comunes, Program Files y `PATH`), y el arranque de `AppContext` tampoco escanea LOOT ni
+xEdit en rutas comunes (`_scan_tool_paths`, único llamador de `scan_common_paths`, anclado por AST);
+las rutas y ejecutables que el perfil fija en su config
+siguen valiendo, y `_migrate_legacy_json` conserva el JSON legado si algún secreto no se pudo guardar
+(perder la key es tan malo como filtrarla). La propiedad del mecanismo: *el aislamiento solo protege si TODOS los
+accesos participan*. Todo acceso al keyring pasa por el backend global (`sky_claw/aislamiento.py`
+instala uno solo) y lo anclan los censos por AST de `tests/test_aislamiento_perfil.py`: los módulos
+que importan `keyring` o `winreg` están congelados por igualdad, ninguno instancia un backend propio
+y toda llamada sobrevive a un backend que falla. Un módulo nuevo que toque keyring o lea el registro
+rompe el ancla hasta que se decide su receta. **Excepción abierta:** la lectura de solo lectura de
+`HKCU\...\CurrentInstance` de `mo2_instance.py` (la identidad de la instancia de MO2 que el runtime
+congelado compara) **no** se aísla: figura como «exento» en el censo y la decisión de aislarla sigue
+abierta. **El hook del paquete no importa `keyring`**: solo fija
+`PYTHON_KEYRING_BACKEND`, porque `import keyring` llama a `platform.system()` (en Windows lanza
+`cmd.exe /c ver`) y el worker VFS importa el paquete antes de probar su Job (H-02); lo ancla
+`test_importar_sky_claw_no_importa_keyring_ni_llama_a_platform_system`. Los descubridores de
+herramientas se enumeran por el registro (`iter_external_tool_specs`), no por caso. *Historia: en R0 un `AppContext` con `HOME` aislado leyó
+el token de Telegram del operador y ejecutó long-polling (más de 700 llamadas, todas 401).*
 
 **Propiedad del `external_work_root` (P0 de [ADR 0011](docs/adr/0011-dyndolod-external-work-root.md)).**
 `sky_claw/local/tools/dyndolod_workspace.py` contesta **una sola vez** las cuatro

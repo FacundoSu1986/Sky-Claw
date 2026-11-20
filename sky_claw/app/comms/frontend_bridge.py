@@ -305,7 +305,18 @@ class FrontendBridge:
         Raises AuthError if the token is missing or the Gateway rejects it.
         """
         # Zero-Trust: removed os.environ fallback. Token must be injected or retrieved from keyring.
-        token = self._keyring_client.get_password("sky_claw", "ws_auth_token") or ""
+        try:
+            token = self._keyring_client.get_password("sky_claw", "ws_auth_token") or ""
+        except (keyring.errors.KeyringError, OSError) as exc:
+            # Backend ausente o caído (Linux headless, perfil aislado): se trata como «no configurado» y se cae al
+            # AuthError documentado, no a un NoKeyringError que ningún llamador espera. Es la misma jerarquía que
+            # `config.py` trata así. Solo el nombre de la clase al log. A propósito NO se captura `Exception`: un bug
+            # acá no es «token no configurado», y el bucle de reconexión (`start`) ya es el borde que registra lo
+            # inesperado con su traza completa.
+            logger.warning(
+                "keyring: no se pudo leer ws_auth_token (%s); se trata como no configurado", type(exc).__name__
+            )
+            token = ""
         if not token:
             raise AuthError(
                 "WS_AUTH_TOKEN no configurado en entorno ni en keyring. Ejecuta el setup inicial para generar el token."

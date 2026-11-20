@@ -344,55 +344,8 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     7. EL MOTOR INVISIBLE — RITUALES DE LA FORJA
     ═══════════════════════════════════════════════════════════════════════════════════ */
 
-.sky-action-master { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 1.2rem; margin-bottom: 1rem; }
-
-.sky-action-master-btn {
-    width: 100%; padding: 1rem 2rem !important;
-    font-family: var(--sky-font-display) !important;
-    font-size: 1.3rem !important; letter-spacing: 0.14em !important;
-    color: #1c130a !important;
-    background: linear-gradient(180deg, #f3dca0, var(--sky-gold) 58%, var(--sky-gold-deep)) !important;
-    border: 1.5px solid #f6e6bd !important; border-radius: 4px !important;
-    box-shadow: 0 0 24px var(--sky-glow), inset 0 1px 0 rgba(255, 255, 255, 0.5);
-    transition: all var(--sky-transition);
-}
-.sky-action-master-btn .q-btn__content { color: #1c130a !important; }
-.sky-action-master-btn:hover { box-shadow: 0 0 38px var(--sky-glow); transform: translateY(-2px); }
-.sky-action-master-desc { font-size: 0.85rem; font-style: italic; color: var(--sky-text-muted); text-align: center; }
-
-.sky-actions-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.85rem; padding: 0.5rem 0; }
-
-.sky-action-card {
-    background-image: linear-gradient(168deg, rgba(255, 250, 235, 0.08), rgba(60, 40, 16, 0.12)), url('/assets/parchment.png');
-    background-size: cover; background-color: var(--sky-parchment);
-    border: 2px solid rgba(80, 65, 40, 0.6); border-radius: 6px;
-    padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem;
-    transition: all var(--sky-transition);
-    box-shadow: 0 14px 30px -16px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.18);
-}
-.sky-action-card:hover {
-    border-color: var(--sky-gold);
-    box-shadow: 0 18px 36px -16px rgba(0, 0, 0, 0.8), 0 0 16px var(--sky-glow);
-    transform: translateY(-3px);
-}
-.sky-action-card--disabled { opacity: 0.62; filter: grayscale(40%); }
-.sky-action-card--disabled:hover { transform: none; box-shadow: 0 14px 30px -16px rgba(0, 0, 0, 0.7); }
-
-.sky-action-header { gap: 0.5rem; }
-.sky-action-rune { font-family: var(--sky-font-runic); font-size: 1.8rem; color: var(--sky-gold-deep); text-shadow: 0 0 8px rgba(156, 122, 64, 0.5); line-height: 1; }
-.sky-action-label { font-family: var(--sky-font-display); font-size: 1rem; font-weight: 700; color: var(--sky-parchment-text); letter-spacing: 0.04em; text-transform: uppercase; }
-.sky-action-desc { font-size: 0.82rem; color: #5a4a38; line-height: 1.4; }
-.sky-action-footer { margin-top: auto; padding-top: 0.5rem; }
-
-.sky-action-btn {
-    font-family: var(--sky-font-display) !important; font-size: 0.75rem !important;
-    background: rgba(80, 65, 40, 0.85) !important; color: var(--sky-parchment) !important;
-    border: 1px solid rgba(156, 122, 64, 0.6) !important; letter-spacing: 0.08em !important;
-}
-.sky-action-btn:hover { background: var(--sky-gold-deep) !important; }
-.sky-action-btn--install { background: rgba(200, 100, 20, 0.72) !important; }
-.sky-action-btn--install:hover { background: rgba(255, 157, 0, 0.8) !important; }
-.sky-action-tech-name { font-family: var(--sky-font-mono); font-size: 0.66rem; color: #8a7a68; font-style: italic; text-align: right; }
+/* (Las reglas .sky-action-* y .sky-actions-grid eran del panel de acciones del home pre-Forge,
+   retirado: los rituales viven en las tarjetas del shell Forge — forge_dashboard.py.) */
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
    8. LISTA DE MODS — ORDEN DE CARGA
@@ -447,28 +400,10 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 .sky-mod-toggle .q-toggle__inner--falsy .q-toggle__thumb::after { background: #6b6151 !important; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
-   9. PANEL AVANZADO + REGISTRO
+   9. (SECCIÓN RETIRADA — panel avanzado y separador del home pre-Forge)
    ═══════════════════════════════════════════════════════════════════════════════════ */
 
-.sky-advanced-panel {
-    background: var(--sky-panel-glass) !important;
-    border: 1px solid var(--sky-border) !important; border-radius: 8px !important; margin-top: 1rem;
-    box-shadow: 0 16px 34px -18px rgba(0, 0, 0, 0.8);
-}
-.sky-advanced-title { font-family: var(--sky-font-display); font-size: 0.85rem; font-weight: 700; color: var(--sky-gold-bright); letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 0.4rem; }
-.sky-advanced-section { margin: 0.6rem 0; }
-.sky-advanced-tool-row { gap: 0.5rem; align-items: center; padding: 0.2rem 0; }
-.sky-advanced-tool-name { font-weight: 600; color: var(--sky-text-primary); font-size: 0.85rem; }
-.sky-advanced-tool-path { font-family: var(--sky-font-mono); font-size: 0.7rem; color: var(--sky-text-muted); word-break: break-all; }
-.sky-advanced-link { font-size: 0.8rem; color: var(--sky-gold-bright) !important; text-decoration: underline !important; text-underline-offset: 3px; }
-.sky-info-row { gap: 0.5rem; padding: 0.15rem 0; }
-.sky-info-label { font-size: 0.8rem; color: var(--sky-text-muted); min-width: 80px; font-weight: 600; }
-.sky-info-value { font-family: var(--sky-font-mono); font-size: 0.8rem; color: var(--sky-text-primary); word-break: break-all; }
-.sky-log-entry { font-family: var(--sky-font-mono); font-size: 0.78rem; color: var(--sky-text-secondary); padding: 0.15rem 0; }
-.sky-text-warning { color: #e0b341; font-size: 0.85rem; }
-.sky-text-muted { color: var(--sky-text-muted); }
-.sky-separator { background: var(--sky-border) !important; margin: 0.5rem 0 !important; }
-.sky-separator-subtle { background: rgba(255, 255, 255, 0.05) !important; margin: 0.3rem 0 !important; }
+/* (.sky-separator lo usaba sólo el panel de acciones retirado.) */
 
 /* ═══════════════════════════════════════════════════════════════════════════════════
    10. BANNER DE SALUD (Estado de la Forja)

@@ -29,7 +29,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal, NamedTuple, Protocol
+from typing import Any, Literal, NamedTuple, Protocol, TypeVar
 
 from sky_claw.app.security.links import (
     exigir_arbol_copiable_sin_reparse,
@@ -733,6 +733,28 @@ async def _cerrar_recursos_del_proceso(
     return intencion, falla
 
 
+_T = TypeVar("_T")
+
+
+async def _esperar_con_plazo(aw: Awaitable[_T], timeout: float | None) -> _T:
+    """``asyncio.wait_for`` sin su defecto de 3.11: la cancelación externa NUNCA se pierde.
+
+    En 3.11 ``wait_for`` envuelve el awaitable en una tarea interna. Si la cancelación de quien espera llega desde que el
+    interno quedó liberado hasta que el plazo resume, ``wait_for`` devuelve el resultado y la cancelación se pierde. En el
+    latido del runner eso dejaba a la tarea viva y a la limpieza esperándola para siempre (``gather(heartbeat)`` no tiene
+    plazo): ``cancelling() == 1`` y detenida en su ``sleep``, 48 cuelgues en 480 corridas bajo carga.
+    ``asyncio.timeout`` espera EN LÍNEA, en la misma tarea (sin tarea interna no hay ventana), y es lo que usa ``wait_for``
+    desde 3.12.
+
+    Misma forma de llamada y mismo contrato que ``wait_for``: ``TimeoutError`` al vencer (el awaitable queda cancelado) y
+    ``timeout=None`` espera sin cota. Es la ÚNICA pieza de este módulo que sabe envolver un plazo: ``wait_for`` está
+    prohibido acá (``tests/test_dyndolod_plazos_y_cancelacion.py``), porque cada sitio que lo use es un sitio donde el
+    shutdown externo puede perderse.
+    """
+    async with asyncio.timeout(timeout):
+        return await aw
+
+
 async def _limpiar_helpers_en_salida_normal(
     tool_name: str,
     heartbeat: asyncio.Task[Any],
@@ -771,8 +793,13 @@ async def _limpiar_helpers_en_salida_normal(
         # timeout, que sí cancela los drains). Agotada la gracia, cancelamos los
         # drains y seguimos con el output parcial (el proceso ya reportó éxito).
         try:
-            results = await asyncio.wait_for(
-                asyncio.gather(drain_out, drain_err, return_exceptions=True),
+            # ``shield``: los drains son helpers de ESTA limpieza y las cancelaciones REPETIDAS del caller no pueden
+            # reenviárseles a mitad de su propio cleanup (R3: terminales ANTES de ``close_job``). Esperar el ``gather`` en
+            # línea reenvía cada ``cancel()`` a sus hijos, y ``wait_for`` lo evitaba sin que nadie lo hubiera escrito: su
+            # propio waiter absorbía la segunda cancelación. Ancla:
+            # ``test_r3_salida_normal_cancelacion_durante_drain_grace_espera_helpers_antes_de_close_job``.
+            results = await _esperar_con_plazo(
+                asyncio.shield(asyncio.gather(drain_out, drain_err, return_exceptions=True)),
                 timeout=_DRAIN_GRACE_SECONDS,
             )
         except TimeoutError:
@@ -2880,7 +2907,7 @@ class DynDOLODRunner:
                 presupuesto_spawn = remaining_budget()
                 if presupuesto_spawn <= 0:
                     raise TimeoutError()
-                proc = await asyncio.wait_for(
+                proc = await _esperar_con_plazo(
                     self._spawn_strategy.spawn(
                         executable=executable,
                         args=args,
@@ -2980,7 +3007,7 @@ class DynDOLODRunner:
             presupuesto = remaining_budget()
             if presupuesto <= 0:
                 raise TimeoutError()
-            await asyncio.wait_for(
+            await _esperar_con_plazo(
                 self._protocolo_de_readiness(
                     tool_name=tool_name,
                     executable=executable,
@@ -2992,7 +3019,7 @@ class DynDOLODRunner:
             presupuesto = remaining_budget()
             if presupuesto <= 0:
                 raise TimeoutError()
-            await asyncio.wait_for(proc.wait(), timeout=presupuesto)
+            await _esperar_con_plazo(proc.wait(), timeout=presupuesto)
         except asyncio.CancelledError as exc:
             # R3 — RUNNER_P2_DOUBLE_CANCEL. Un shutdown externo debe matar el
             # árbol antes de propagar la cancelación: de otro modo DynDOLOD/TexGen
@@ -3379,7 +3406,7 @@ class DynDOLODRunner:
         """Acota el callable del canal humano y aplasta sus fallos a fail-closed."""
         capacidad = self._capacidad_de_readiness()
         try:
-            resultado = await asyncio.wait_for(
+            resultado = await _esperar_con_plazo(
                 capacidad.confirmador.confirmar(solicitud),
                 timeout=solicitud.timeout_seconds + capacidad.gracia_externa_segundos,
             )
@@ -3416,7 +3443,7 @@ class DynDOLODRunner:
         """Aviso post-final-MATCH. Best-effort: nunca gatea una corrida ya verificada."""
         capacidad = self._capacidad_de_readiness()
         try:
-            await asyncio.wait_for(
+            await _esperar_con_plazo(
                 capacidad.confirmador.informar(tool=tool_name, mensaje=mensaje),
                 timeout=capacidad.gracia_externa_segundos,
             )
@@ -5079,10 +5106,11 @@ class DynDOLODRunner:
 
         try:
             # Acotado: un observador (o un ``stat`` sobre un disco de red caído) que no vuelve dejaría al latido sin
-            # llegar a su próximo ``sleep`` ni a su próximo log durante horas. Al vencer, ``wait_for`` cancela la entrega
-            # y levanta ``TimeoutError``, que cae en el ``except Exception`` de abajo (se registra y el latido sigue).
-            # La cancelación EXTERNA (la limpieza de la corrida) atraviesa ``wait_for`` y se propaga abajo.
-            await asyncio.wait_for(_medir_y_entregar(), timeout=_PLAZO_DEL_AVISO_DE_PROGRESO_S)
+            # llegar a su próximo ``sleep`` ni a su próximo log durante horas. Al vencer, el plazo cancela la entrega y
+            # levanta ``TimeoutError``, que cae en el ``except Exception`` de abajo (se registra y el latido sigue).
+            # La cancelación EXTERNA (la limpieza de la corrida) atraviesa el plazo y se propaga abajo: por eso es
+            # ``_esperar_con_plazo`` y NO ``asyncio.wait_for``, que en 3.11 puede tragársela y dejar vivo al latido.
+            await _esperar_con_plazo(_medir_y_entregar(), timeout=_PLAZO_DEL_AVISO_DE_PROGRESO_S)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 -- observador best-effort: nunca decide ni rompe la corrida

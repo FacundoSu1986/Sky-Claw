@@ -17,7 +17,7 @@ Estructura:
 El shell Forge se renderiza ENTERO desde ``views/forge_dashboard.py``
 (``render_forge_dashboard``); el paquete ``views`` solo reexporta la fachada
 ``render_dashboard`` que ``sky_claw_gui.py`` consume (delega en el Forge). Los
-módulos pre-Forge (layout/header, sidebar y las secciones del viejo home) ya no
+módulos pre-Forge (layout/header, sidebar, el panel avanzado y las secciones del viejo home) ya no
 existen — dos shells/paletas paralelos fue exactamente el defecto que la
 limpieza cerró; el ancla ``tests/test_gui_theme_contracts.py`` congela la
 superficie pública para no reintroducirlos.

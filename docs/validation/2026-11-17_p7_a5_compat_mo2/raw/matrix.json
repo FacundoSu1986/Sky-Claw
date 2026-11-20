@@ -1,0 +1,67 @@
+{
+  "escribir": {
+    "resultado": "BLOQUEADO:13",
+    "archivo_intacto": true,
+    "archivo_existe": true
+  },
+  "truncar": {
+    "resultado": "BLOQUEADO:13",
+    "archivo_intacto": true,
+    "archivo_existe": true
+  },
+  "borrar": {
+    "resultado": "BLOQUEADO:32",
+    "archivo_intacto": true,
+    "archivo_existe": true
+  },
+  "mover_encima": {
+    "resultado": "BLOQUEADO:5",
+    "archivo_intacto": true,
+    "archivo_existe": true
+  },
+  "replacefilew": {
+    "resultado": "BLOQUEADO:32",
+    "archivo_intacto": true,
+    "archivo_existe": true
+  },
+  "leer_crt": {
+    "resultado": "BLOQUEADO:13",
+    "archivo_intacto": true,
+    "archivo_existe": true
+  },
+  "escribir_win32": {
+    "resultado": "BLOQUEADO:32",
+    "archivo_intacto": true,
+    "archivo_existe": true
+  },
+  "leer_win32": {
+    "resultado": "BLOQUEADO:32",
+    "archivo_intacto": true,
+    "archivo_existe": true
+  },
+  "abrir_solo_delete": {
+    "resultado": "BLOQUEADO:32",
+    "archivo_intacto": true,
+    "archivo_existe": true
+  },
+  "control_tras_cerrar": "EXITO",
+  "alias_hardlink": {
+    "resultado_por_alias": "BLOQUEADO:13",
+    "nlinks_antes_del_alias": 1,
+    "nlinks_reportados_por_la_adquisicion": 1,
+    "objeto_intacto": true
+  },
+  "muerte_abrupta": {
+    "rc_del_tenedor": 9,
+    "readquisicion": "EXCLUSION_ESTABLISHED",
+    "autoriza": true
+  },
+  "contencion_con_reintento": {
+    "segunda_adquisicion": "EXCLUSION_NOT_ESTABLISHED",
+    "autoriza": false,
+    "motivo": "otro proceso mantiene el archivo abierto con un modo incompatible (WinError 32): no se puede tomar la exclusi\u00f3n sin desalojarlo",
+    "segundos": 0.016
+  },
+  "windows_build": 19045,
+  "python": "3.11.9"
+}

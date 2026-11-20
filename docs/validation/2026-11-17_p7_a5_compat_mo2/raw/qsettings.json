@@ -1,0 +1,208 @@
+{
+  "qt_runtime": "6.7.3",
+  "qt_build": "6.7.1",
+  "ini": "E:\\Skyclaw_Rig_MO2_Compat\\out\\final2-20261118-175844\\instance\\modorganizer.ini",
+  "K0_ini_canonico": {
+    "sha": "b231f31aaa7168b7ad21e3e00fd6872b5bed3fdce9c686ccb0c1f9a2f9ce9633",
+    "tamano": 1027,
+    "texto": "[General]\ngameName=Skyrim Special Edition\nselected_profile=@ByteArray(Golden Master)\ngamePath=@ByteArray(G:\\\\\\\\Lab_Compat\\\\\\\\Skyrim_Runtime_1.6.1170)\ngame_edition=Steam\nversion=2.5.2\nfirst_start=false\n\n[iniFiles]\nSkyrim.ini=G:/Lab_Compat/Skyrim.ini\n\n[customExecutables]\nsize=3\n1\\title=SKSE\n1\\binary=G:/Lab_Compat/FrozenClones/clone-lab-01/skse64_loader.exe\n1\\arguments=-p \\\"Golden Master\\\"\n1\\workingDirectory=G:/Lab_Compat/FrozenClones/clone-lab-01\n1\\steamAppID=\n1\\hide=false\n1\\ownicon=true\n1\\toolbar=false\n2\\title=SSEEdit\n2\\binary=G:/Lab_Compat/Tools/SSEEdit/SSEEdit.exe\n2\\arguments=-IKnowWhatImDoing -quickautoclean\n2\\workingDirectory=G:/Lab_Compat/Tools/SSEEdit\n2\\steamAppID=\n2\\hide=false\n2\\ownicon=true\n2\\toolbar=false\n3\\title=Pandora\n3\\binary=G:/Lab_Compat/Tools/Pandora/Pandora.exe\n3\\arguments=\n3\\workingDirectory=G:/Lab_Compat/Tools/Pandora\n3\\steamAppID=\n3\\hide=false\n3\\ownicon=true\n3\\toolbar=false\n\n[Settings]\nlanguage=en\n\n[recentDirectories]\n0=\\\\\\\\NAS-SINTETICO\\\\share\\\\Data\n",
+    "n_ejecutables": 3
+  },
+  "A_tenedor": {
+    "estado": "EXCLUSION_ESTABLISHED",
+    "autoriza": true,
+    "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
+    "intentos": 1,
+    "identidad": "9ea83c6f:00280000002c3df9",
+    "pid": 18248
+  },
+  "A_lectura_con_lock": {
+    "modo": "read",
+    "qt_runtime": "6.7.3",
+    "pid": 12892,
+    "status_tras_ctor": "AccessError",
+    "status_tras_leer": "AccessError",
+    "n_claves": 0,
+    "gamePath": null,
+    "gameName": null,
+    "n_ejecutables": 0,
+    "ejecutables": []
+  },
+  "A_archivo_intacto": true,
+  "B_tenedor": {
+    "estado": "EXCLUSION_ESTABLISHED",
+    "autoriza": true,
+    "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
+    "intentos": 1,
+    "identidad": "9ea83c6f:001f0000002c3dfe",
+    "pid": 17600
+  },
+  "B_escritura_con_lock": {
+    "modo": "write",
+    "qt_runtime": "6.7.3",
+    "pid": 17860,
+    "n_claves_leidas": 0,
+    "status_tras_sync": "AccessError"
+  },
+  "B_archivo_intacto": true,
+  "C_tenedor": {
+    "estado": "EXCLUSION_ESTABLISHED",
+    "autoriza": true,
+    "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
+    "intentos": 1,
+    "identidad": "9ea83c6f:00250000002c3ebb",
+    "pid": 16400
+  },
+  "C_sync_diferido": {
+    "modo": "deferred",
+    "qt_runtime": "6.7.3",
+    "pid": 17508,
+    "n_claves_leidas_con_lock": 0,
+    "status_tras_leer": "AccessError",
+    "status_sync_con_lock": "AccessError",
+    "status_sync_tras_liberar": "AccessError",
+    "semantica_final": {
+      "gameName": "Skyrim Special Edition",
+      "gamePath": "G:\\\\Lab_Compat\\\\Skyrim_Runtime_1.6.1170",
+      "selected_profile": "Golden Master",
+      "n_ejecutables": 3,
+      "ejecutables": [
+        {
+          "title": "SKSE",
+          "binary": "G:/Lab_Compat/FrozenClones/clone-lab-01/skse64_loader.exe",
+          "arguments": "-p \"Golden Master\"",
+          "workingDirectory": "G:/Lab_Compat/FrozenClones/clone-lab-01"
+        },
+        {
+          "title": "SSEEdit",
+          "binary": "G:/Lab_Compat/Tools/SSEEdit/SSEEdit.exe",
+          "arguments": "-IKnowWhatImDoing -quickautoclean",
+          "workingDirectory": "G:/Lab_Compat/Tools/SSEEdit"
+        },
+        {
+          "title": "Pandora",
+          "binary": "G:/Lab_Compat/Tools/Pandora/Pandora.exe",
+          "arguments": "",
+          "workingDirectory": "G:/Lab_Compat/Tools/Pandora"
+        }
+      ],
+      "n_keys": 36,
+      "status": "NoError"
+    }
+  },
+  "C_ready_observado": true,
+  "C_lectura_fresca": {
+    "modo": "read",
+    "qt_runtime": "6.7.3",
+    "pid": 10944,
+    "status_tras_ctor": "NoError",
+    "status_tras_leer": "NoError",
+    "n_claves": 36,
+    "gamePath": "G:\\\\Lab_Compat\\\\Skyrim_Runtime_1.6.1170",
+    "gameName": "Skyrim Special Edition",
+    "n_ejecutables": 3,
+    "ejecutables": [
+      {
+        "title": "SKSE",
+        "binary": "G:/Lab_Compat/FrozenClones/clone-lab-01/skse64_loader.exe",
+        "arguments": "-p \"Golden Master\"",
+        "workingDirectory": "G:/Lab_Compat/FrozenClones/clone-lab-01"
+      },
+      {
+        "title": "SSEEdit",
+        "binary": "G:/Lab_Compat/Tools/SSEEdit/SSEEdit.exe",
+        "arguments": "-IKnowWhatImDoing -quickautoclean",
+        "workingDirectory": "G:/Lab_Compat/Tools/SSEEdit"
+      },
+      {
+        "title": "Pandora",
+        "binary": "G:/Lab_Compat/Tools/Pandora/Pandora.exe",
+        "arguments": "",
+        "workingDirectory": "G:/Lab_Compat/Tools/Pandora"
+      }
+    ]
+  },
+  "C_semantica": {
+    "conserva_ejecutables": true,
+    "gamePath": "G:\\\\Lab_Compat\\\\Skyrim_Runtime_1.6.1170",
+    "n_claves": 36,
+    "gameName": "Skyrim Special Edition",
+    "ejecutables": [
+      {
+        "title": "SKSE",
+        "binary": "G:/Lab_Compat/FrozenClones/clone-lab-01/skse64_loader.exe",
+        "arguments": "-p \"Golden Master\"",
+        "workingDirectory": "G:/Lab_Compat/FrozenClones/clone-lab-01"
+      },
+      {
+        "title": "SSEEdit",
+        "binary": "G:/Lab_Compat/Tools/SSEEdit/SSEEdit.exe",
+        "arguments": "-IKnowWhatImDoing -quickautoclean",
+        "workingDirectory": "G:/Lab_Compat/Tools/SSEEdit"
+      },
+      {
+        "title": "Pandora",
+        "binary": "G:/Lab_Compat/Tools/Pandora/Pandora.exe",
+        "arguments": "",
+        "workingDirectory": "G:/Lab_Compat/Tools/Pandora"
+      }
+    ]
+  },
+  "D_tenedor": {
+    "estado": "EXCLUSION_ESTABLISHED",
+    "autoriza": true,
+    "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido",
+    "intentos": 1,
+    "identidad": "9ea83c6f:00270000002c3ecc",
+    "pid": 5052
+  },
+  "D_ready_observado": true,
+  "D_semantica_tras_destructor": {
+    "modo": "read",
+    "qt_runtime": "6.7.3",
+    "pid": 14116,
+    "status_tras_ctor": "NoError",
+    "status_tras_leer": "NoError",
+    "n_claves": 35,
+    "gamePath": "G:\\\\Lab_Compat\\\\Skyrim_Runtime_1.6.1170",
+    "gameName": "Skyrim Special Edition",
+    "n_ejecutables": 3,
+    "ejecutables": [
+      {
+        "title": "SKSE",
+        "binary": "G:/Lab_Compat/FrozenClones/clone-lab-01/skse64_loader.exe",
+        "arguments": "-p \"Golden Master\"",
+        "workingDirectory": "G:/Lab_Compat/FrozenClones/clone-lab-01"
+      },
+      {
+        "title": "SSEEdit",
+        "binary": "G:/Lab_Compat/Tools/SSEEdit/SSEEdit.exe",
+        "arguments": "-IKnowWhatImDoing -quickautoclean",
+        "workingDirectory": "G:/Lab_Compat/Tools/SSEEdit"
+      },
+      {
+        "title": "Pandora",
+        "binary": "G:/Lab_Compat/Tools/Pandora/Pandora.exe",
+        "arguments": "",
+        "workingDirectory": "G:/Lab_Compat/Tools/Pandora"
+      }
+    ]
+  },
+  "D_sha_cambio": true,
+  "D_conserva_ejecutables": true,
+  "E_adquisicion_con_objeto_vivo": {
+    "estado": "EXCLUSION_ESTABLISHED",
+    "autoriza": true,
+    "motivo": "exclusi\u00f3n de mutaci\u00f3n establecida sobre el archivo retenido"
+  },
+  "F_reescritura": {
+    "secciones": [
+      "[General]",
+      "[iniFiles]",
+      "[customExecutables]",
+      "[Settings]",
+      "[recentDirectories]"
+    ],
+    "conserva_comentarios": false
+  }
+}
