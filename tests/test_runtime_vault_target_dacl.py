@@ -24,8 +24,12 @@ import ctypes
 import hashlib
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Callable, Sequence
+from typing import TypeVar
 from unittest.mock import patch
 
 import pytest
@@ -34,7 +38,7 @@ from sky_claw.local.runtime_vault.golden_protection_plan import (
     GoldenProtectionNodeKind,
 )
 from sky_claw.local.runtime_vault.models import RuntimeVaultError
-from sky_claw.local.runtime_vault.node_evidence import probe_node_evidence
+from sky_claw.local.runtime_vault.node_evidence import NativeEvidenceError, probe_node_evidence
 from sky_claw.local.runtime_vault.protection import GoldenProtectionRight
 from sky_claw.local.runtime_vault.target_dacl import (
     AUTHENTICATED_USERS_SID,
@@ -76,11 +80,14 @@ pytestmark = pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptio
 
 # T18 aplica a un archivo real una DACL con un ACE de tipo no soportado y DESPUÉS lo sondea con
 # ``probe_node_evidence`` (que abre el nodo con READ_CONTROL | FILE_READ_ATTRIBUTES). Si ese ACE niega lectura y nada
-# la concede antes, el sondeo depende de cómo el sistema evalúe el ACE y de los privilegios ambientales del proceso
-# (``SeBackupPrivilege`` con FILE_FLAG_BACKUP_SEMANTICS): en CI falló de forma intermitente con ``CreateFileW … código 5``.
-# La DACL de prueba concede primero (DACL no canónica, a propósito) READ_CONTROL | FILE_READ_ATTRIBUTES (0x20080) a
-# Everyone: el sondeo no depende del entorno y el ACE no soportado sigue presente y rechazado igual.
-_SDDL_LECTURA_PREVIA = "(A;;0x20080;;;WD)"
+# la concede antes, el sondeo falla con ``CreateFileW … código 5``.
+# Causa observada en el CI de Windows (diagnóstico de #971, py3.12): ``CreateFileW`` agrega SYNCHRONIZE al acceso pedido,
+# así que TODOS los sondeos fallaron (incluso con máscara 0 y sin FILE_FLAG_BACKUP_SEMANTICS). FILE_GENERIC_READ (``FR``)
+# incluye SYNCHRONIZE y el ``XD`` (denegación con callback, condición desconocida = se aplica) queda evaluado antes del
+# Full heredado de Administradores. Los otros tres ACE no niegan SYNCHRONIZE, por eso solo fallaba ``XD``.
+# La DACL de prueba concede primero (DACL no canónica, a propósito) READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+# (0x120080) a Everyone: el sondeo no depende del entorno y el ACE no soportado sigue presente y rechazado igual.
+_SDDL_LECTURA_PREVIA = "(A;;0x120080;;;WD)"
 
 #: (sddl, tipo de ACE esperado en el mensaje). Una sola lista para el test de comportamiento y su ancla.
 _CASOS_T18_ACE_NO_SOPORTADO: tuple[tuple[str, str], ...] = (
@@ -93,6 +100,115 @@ _CASOS_T18_ACE_NO_SOPORTADO: tuple[tuple[str, str], ...] = (
     # ACCESS_DENIED_OBJECT_ACE_TYPE (0x06)
     (f"O:SYG:SYD:{_SDDL_LECTURA_PREVIA}(OD;;CR;11111111-2222-3333-4444-555555555555;;WD)", "0x06"),
 )
+
+
+_T = TypeVar("_T")
+
+_LIMITE_DIAGNOSTICO_T18 = 4000
+#: Retardos (s) del reintento de diagnóstico: distinguen un rechazo permanente de uno transitorio.
+_RETARDOS_DIAGNOSTICO_T18 = (0.0, 0.05, 0.25, 1.0)
+
+
+def _recortar_diagnostico(texto: str) -> str:
+    if len(texto) <= _LIMITE_DIAGNOSTICO_T18:
+        return texto
+    return f"{texto[:_LIMITE_DIAGNOSTICO_T18]}\n[... recortado: {len(texto) - _LIMITE_DIAGNOSTICO_T18} caracteres más]"
+
+
+def _formatear_diagnostico_t18(*, sddl: str, acl: str, token: str, sondeos: Sequence[str]) -> str:
+    """Compone el texto del diagnóstico (puro: se prueba en cualquier plataforma)."""
+    return "\n".join(
+        [
+            "[SDDL almacenado (Get-Acl)]",
+            _recortar_diagnostico(sddl),
+            "[ACL vista por icacls]",
+            _recortar_diagnostico(acl),
+            "[Token del proceso (whoami /all)]",
+            _recortar_diagnostico(token),
+            "[Sondeos de CreateFileW: máscara | flags | retardo → resultado]",
+            *sondeos,
+        ]
+    )
+
+
+def _sondear_con_diagnostico(sondear: Callable[[], _T], recolectar: Callable[[], str]) -> _T:
+    """Ejecuta ``sondear``; si falla con ``NativeEvidenceError`` re-lanza el MISMO tipo con el diagnóstico adjunto.
+
+    No altera ninguna aserción de T18: solo hace que el fallo diga por qué. Un diagnóstico roto jamás enmascara el
+    error original (queda registrado en el mensaje).
+    """
+    try:
+        return sondear()
+    except NativeEvidenceError as exc:
+        try:
+            diagnostico = recolectar()
+        except Exception as exc_diagnostico:  # best-effort: el diagnóstico nunca debe tapar el fallo real
+            diagnostico = f"(el diagnóstico falló: {exc_diagnostico!r})"
+        raise NativeEvidenceError(f"{exc}\n--- diagnóstico T18 ---\n{diagnostico}") from exc
+
+
+def _texto_de_comando(argumentos: list[str], env: dict[str, str] | None = None) -> str:
+    try:
+        resultado = subprocess.run(  # noqa: S603 - comandos fijos del sistema, solo en el camino de fallo
+            argumentos, capture_output=True, text=True, errors="replace", timeout=30, check=False, env=env
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"(no se pudo ejecutar {argumentos[0]}: {exc!r})"
+    return f"{resultado.stdout}{resultado.stderr}".strip()
+
+
+def _sondeos_createfile_t18(ruta: pathlib.Path) -> list[str]:
+    """Reintenta ``CreateFileW`` con varias máscaras y flags, a varios retardos (solo Windows)."""
+    from sky_claw.local.runtime_vault import node_evidence as ne
+
+    mascaras = (
+        ("READ_CONTROL|READ_ATTRIBUTES", 0x20080),
+        ("READ_ATTRIBUTES", 0x80),
+        ("READ_CONTROL", 0x20000),
+        ("consulta(0)", 0),
+    )
+    banderas = (
+        ("BACKUP|REPARSE (producción)", ne._FILE_FLAG_BACKUP_SEMANTICS | ne._FILE_FLAG_OPEN_REPARSE_POINT),
+        ("REPARSE", ne._FILE_FLAG_OPEN_REPARSE_POINT),
+    )
+    compartir = ne._FILE_SHARE_READ | ne._FILE_SHARE_WRITE | ne._FILE_SHARE_DELETE
+    inicio = time.monotonic()
+    filas: list[str] = []
+    for retardo in _RETARDOS_DIAGNOSTICO_T18:
+        time.sleep(max(0.0, retardo - (time.monotonic() - inicio)))
+        for nombre_mascara, mascara in mascaras:
+            for nombre_bandera, bandera in banderas:
+                try:
+                    h = ne._kernel32.CreateFileW(str(ruta), mascara, compartir, None, ne._OPEN_EXISTING, bandera, None)
+                    if h in (None, 0) or h == wintypes.HANDLE(-1).value:
+                        resultado = f"error {ctypes.get_last_error()}"
+                    else:
+                        ne._kernel32.CloseHandle(h)
+                        resultado = "ok"
+                except Exception as exc:  # best-effort
+                    resultado = f"excepción {exc!r}"
+                filas.append(f"{nombre_mascara} | {nombre_bandera} | +{retardo:g}s → {resultado}")
+    return filas
+
+
+def _recolectar_diagnostico_t18(ruta: pathlib.Path) -> str:
+    """Recolecta la evidencia del rechazo (solo Windows y solo en el camino de fallo)."""
+    entorno = {**os.environ, "SKYCLAW_T18_RUTA": str(ruta)}
+    return _formatear_diagnostico_t18(
+        sddl=_texto_de_comando(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-Acl -LiteralPath $env:SKYCLAW_T18_RUTA).Sddl",
+            ],
+            env=entorno,
+        ),
+        acl=_texto_de_comando(["icacls", str(ruta)]),
+        token=_texto_de_comando(["whoami", "/all"]),
+        sondeos=_sondeos_createfile_t18(ruta),
+    )
 
 
 class TestT18LecturaPreviaHermetica:
@@ -138,8 +254,108 @@ class TestT18LecturaPreviaHermetica:
         ]
         assert len(aperturas) == 1
 
+    def test_el_ace_previo_concede_tambien_synchronize_que_createfilew_agrega_solo(self) -> None:
+        """``CreateFileW`` suma SYNCHRONIZE al acceso pedido; si el ACE previo no lo cubre, el ``XD`` (FR lo incluye) lo niega.
+
+        Evidencia del CI de Windows (diagnóstico de #971): con el ACE previo en 0x20080 los 32 sondeos fallaron con
+        código 5, incluso con máscara 0, porque FILE_GENERIC_READ (FR) incluye SYNCHRONIZE y el ACE de denegación quedó
+        evaluado antes del Full heredado de Administradores.
+        """
+        import re
+
+        coincidencia = re.fullmatch(r"\(A;;(0x[0-9a-fA-F]+);;;WD\)", _SDDL_LECTURA_PREVIA)
+        assert coincidencia is not None
+        mascara = int(coincidencia.group(1), 16)
+        read_control, file_read_attributes, synchronize = 0x00020000, 0x00000080, 0x00100000
+        assert mascara & (read_control | file_read_attributes | synchronize) == (
+            read_control | file_read_attributes | synchronize
+        )
+
     def test_los_cuatro_tipos_de_ace_siguen_cubiertos(self) -> None:
         assert [tipo for _, tipo in _CASOS_T18_ACE_NO_SOPORTADO] == ["0x09", "0x0a", "0x05", "0x06"]
+
+
+class TestT18DiagnosticoDelSondeo:
+    """El sondeo de T18 falla con la evidencia necesaria para entender POR QUÉ el sistema niega el acceso (código 5).
+
+    Contexto: ``CreateFileW … código 5`` aparece en CI de Windows solo con el ACE de denegación con callback (0x0a) y
+    nadie sabe el mecanismo. Estas anclas no tocan ninguna aserción de T18: garantizan que, cuando el sondeo falla, el
+    error conserva su tipo y su causa y además trae el diagnóstico, y que un diagnóstico roto nunca enmascara el error.
+    """
+
+    def test_un_sondeo_exitoso_devuelve_su_resultado_sin_recolectar(self) -> None:
+        recolecciones: list[str] = []
+
+        def recolectar() -> str:
+            recolecciones.append("llamado")
+            return "no debería usarse"
+
+        assert _sondear_con_diagnostico(lambda: "evidencia", recolectar) == "evidencia"
+        assert recolecciones == []
+
+    def test_un_sondeo_fallido_conserva_el_tipo_la_causa_y_agrega_el_diagnostico(self) -> None:
+        original = NativeEvidenceError("CreateFileW falló al abrir 'x': código 5")
+
+        def sondear() -> str:
+            raise original
+
+        with pytest.raises(NativeEvidenceError) as info:
+            _sondear_con_diagnostico(sondear, lambda: "ACL=… token=…")
+
+        assert "código 5" in str(info.value)
+        assert "ACL=… token=…" in str(info.value)
+        assert info.value.__cause__ is original
+
+    def test_un_diagnostico_roto_no_enmascara_el_error_original(self) -> None:
+        def sondear() -> str:
+            raise NativeEvidenceError("CreateFileW falló al abrir 'x': código 5")
+
+        def recolectar() -> str:
+            raise RuntimeError("icacls no existe")
+
+        with pytest.raises(NativeEvidenceError) as info:
+            _sondear_con_diagnostico(sondear, recolectar)
+
+        assert "código 5" in str(info.value)
+        assert "icacls no existe" in str(info.value)
+
+    def test_otras_excepciones_del_sondeo_no_se_tocan(self) -> None:
+        def sondear() -> str:
+            raise ValueError("no es un error de evidencia")
+
+        with pytest.raises(ValueError, match="no es un error de evidencia"):
+            _sondear_con_diagnostico(sondear, lambda: "no debería usarse")
+
+    def test_el_formato_incluye_las_tres_secciones_y_recorta_lo_largo(self) -> None:
+        texto = _formatear_diagnostico_t18(
+            sddl="D:(A;;0x20080;;;WD)", acl="x" * 10_000, token="usuario S-1-5-21", sondeos=["0x20080 → ok"]
+        )
+        for fragmento in ("D:(A;;0x20080;;;WD)", "usuario S-1-5-21", "0x20080 → ok", "recortado"):
+            assert fragmento in texto
+        assert len(texto) < 9_000
+
+    def test_t18_sondea_solo_a_traves_del_diagnostico(self) -> None:
+        """Todo ``probe_node_evidence`` de T18 vive dentro de ``_sondear_con_diagnostico`` (sin hermano suelto)."""
+        arbol = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+        funcion = next(
+            nodo
+            for nodo in ast.walk(arbol)
+            if isinstance(nodo, ast.FunctionDef)
+            and nodo.name == "test_t18_ace_tipo_no_soportado_en_pre_dacl_fail_closed"
+        )
+
+        def llamadas(raiz: ast.AST, nombre: str) -> list[ast.Call]:
+            return [
+                nodo
+                for nodo in ast.walk(raiz)
+                if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id == nombre
+            ]
+
+        envoltorios = llamadas(funcion, "_sondear_con_diagnostico")
+        assert len(envoltorios) == 1
+        todos = llamadas(funcion, "probe_node_evidence")
+        dentro = llamadas(envoltorios[0], "probe_node_evidence")
+        assert len(todos) == len(dentro) == 1
 
 
 # ============================================================================
@@ -1265,7 +1481,11 @@ class TestTargetDaclOraclesAndMutations:
                     ret_set = _advapi32.SetSecurityInfo(h, 1, 4, None, None, dacl_p, None)
                     assert ret_set == 0
 
-                    evidences = probe_node_evidence(tmpdir)
+                    # Si el sondeo falla, el error trae el diagnóstico (ACL, token y reintentos): ver
+                    # TestT18DiagnosticoDelSondeo. No cambia ninguna aserción.
+                    evidences = _sondear_con_diagnostico(
+                        lambda: probe_node_evidence(tmpdir), lambda: _recolectar_diagnostico_t18(test_file)
+                    )
                     pre = [e.backup for e in evidences if e.backup.relative_path != "."][0]
 
                     # 1. apply_target_dacl_by_handle debe abortar fail-closed antes de mutar (Codex P1 #4057722506)
