@@ -1490,6 +1490,7 @@ STORE_KEY_DIAGNOSTICO_PARALLAX = "parallax_diagnostico"
 #: Nombre de la tool en el dispatcher. Se congela contra la estrategia y el registro del agente en
 #: ``tests/test_parallax_diagnostico_gui.py``: las tres superficies tienen que llamarla igual.
 NOMBRE_TOOL_DIAGNOSTICO_PARALLAX = "diagnosticar_parallax_perfil"
+NOMBRE_TOOL_ELEGIBILIDAD_PARALLAX = "evaluar_parallax_elegibilidad"
 
 #: Clave INTERNA del contenedor por pestaña. Nunca se toca desde la vista: todo read/write/delete pasa por los helpers de abajo.
 _DIAGNOSTICO_POR_PESTANA = "por_pestana"
@@ -1534,13 +1535,13 @@ async def run_diagnostico_parallax(
     supervisor: Any,
     store: ReactiveStore,
     tab_id: str | None = None,
+    elegibilidad: bool = False,
 ) -> None:
-    """Pide el diagnóstico de ``mod_name`` al dispatcher y lo publica en el slot de la pestaña.
+    """Pide el diagnóstico o la elegibilidad de ``mod_name`` por el dispatcher de la GUI.
 
     Nunca levanta: un click es una task fire-and-forget y no puede tumbar el loop. Los fallos (sin supervisor, nombre inválido, excepción
     del dispatcher, resultado que no es un dict) salen como ``ritual_feedback``, el mismo canal de avisos de los rituales. Un
-    ``success: false`` del diagnóstico (p. ej. «mod no habilitado») NO es un fallo de esta función: es un resultado con motivo y se
-    publica para que el panel lo muestre.
+    Un resultado estructurado con ``success: false`` (p. ej. plazo agotado) se publica con su motivo en el panel.
     """
     if not isinstance(mod_name, str) or not mod_name.strip():
         store.set(STORE_KEY_RITUAL_FEEDBACK, {"text": "Elegí un mod para diagnosticar.", "type": "warning"})
@@ -1551,18 +1552,37 @@ async def run_diagnostico_parallax(
             {"text": "El daemon todavía no está listo. Probá de nuevo en un momento.", "type": "negative"},
         )
         return
+    pendiente = None
+    entrada_anterior = diagnostico_parallax_de(store, tab_id)
+    if not elegibilidad and entrada_anterior and entrada_anterior.get("evaluando"):
+        return  # Hay una elegibilidad en curso en esta pestaña: no competir con ella.
+    if elegibilidad:
+        if tab_id is None:
+            store.set(
+                STORE_KEY_RITUAL_FEEDBACK,
+                {"text": "No pude identificar la pestaña: recargá la página y probá de nuevo.", "type": "warning"},
+            )
+            return
+        if entrada_anterior and entrada_anterior.get("evaluando"):
+            return
+        pendiente = {"mod": mod_name, "elegibilidad": True, "evaluando": True}
+        por_pestana = dict(_diagnosticos_por_pestana(store))
+        por_pestana[tab_id] = pendiente
+        _escribir_diagnosticos(store, por_pestana)
+    nombre_tool = NOMBRE_TOOL_ELEGIBILIDAD_PARALLAX if elegibilidad else NOMBRE_TOOL_DIAGNOSTICO_PARALLAX
+    resultado = None
     # Un click del operador ES intervención humana: rearmar el cortacircuitos cognitivo, para que repetir el mismo diagnóstico a mano
     # no se confunda con un bucle del agente (mismo contrato que ``run_ritual``).
-    reset_guardrail = getattr(supervisor, "reset_loop_guardrail", None)
-    if callable(reset_guardrail):
-        reset_guardrail()
     # Hoy esta tool no pide aprobación (el dispatcher la registra SIN gate HITL), pero este módulo trata a todo lanzador igual: la identidad
     # de pestaña y el seguimiento de la aprobación pendiente se arman por task, así que si algún día se la gateara, la aprobación quedaría
     # scoped a ESTA pestaña y su ``finally`` solo limpiaría la propia (P1-7; ancla en ``tests/test_hitl_client_scoping.py``).
     cid_token = _ritual_tab_id.set(tab_id)
     pending_token = _gui_pending_request_id.set(None)
     try:
-        resultado = await supervisor.dispatch_tool(NOMBRE_TOOL_DIAGNOSTICO_PARALLAX, {"mod": mod_name})
+        reset_guardrail = getattr(supervisor, "reset_loop_guardrail", None)
+        if callable(reset_guardrail):
+            reset_guardrail()
+        resultado = await supervisor.dispatch_tool(nombre_tool, {"mod": mod_name})
     except Exception as exc:  # noqa: BLE001 — task fire-and-forget: no puede tumbar el loop
         logger.exception("Diagnóstico de parallax (%s) falló", mod_name)
         store.set(
@@ -1577,6 +1597,12 @@ async def run_diagnostico_parallax(
         # Sin identidad exacta no hay cleanup: nunca inferir ownership por unicidad.
         if pending_request_id is not None:
             clear_owned_hitl(store, tab_id, request_id=pending_request_id)
+        if (
+            pendiente is not None
+            and not isinstance(resultado, dict)
+            and diagnostico_parallax_de(store, tab_id) is pendiente
+        ):
+            limpiar_diagnostico_parallax(store, tab_id)
     if not isinstance(resultado, dict):
         store.set(
             STORE_KEY_RITUAL_FEEDBACK,
@@ -1590,8 +1616,19 @@ async def run_diagnostico_parallax(
             {"text": "No pude identificar la pestaña: recargá la página y probá de nuevo.", "type": "warning"},
         )
         return
+    actual = diagnostico_parallax_de(store, tab_id)
+    if pendiente is not None and actual is not pendiente:
+        return  # Se cerró el panel o se lo reemplazó durante la evaluación.
+    if not elegibilidad and actual is not entrada_anterior and actual and actual.get("elegibilidad"):
+        return  # Un diagnóstico anterior no pisa una evaluación más reciente.
+    if elegibilidad:
+        normalizado = normalize_tool_result(resultado)
+        resultado = {**resultado, "success": normalizado["success"], "message": normalizado["message"]}
+    entrada = {"mod": mod_name, "resultado": resultado}
+    if elegibilidad:
+        entrada["elegibilidad"] = True
     por_pestana = dict(_diagnosticos_por_pestana(store))
-    por_pestana[tab_id] = {"mod": mod_name, "resultado": resultado}
+    por_pestana[tab_id] = entrada
     _escribir_diagnosticos(store, por_pestana)
 
 

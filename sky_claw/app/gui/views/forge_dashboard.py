@@ -1184,9 +1184,45 @@ def _ritual_preflight_panel() -> None:
             ui.html("&times;")
 
 
+def _render_parallax_elegibilidad(entrada: dict[str, Any]) -> None:
+    """Presenta el informe del dispatcher con etiquetas de texto, incluidas las rutas y razones del disco."""
+    if entrada.get("evaluando"):
+        ui.label("Evaluando elegibilidad…").props('role="status"')
+        return
+
+    resultado = entrada["resultado"]
+    alcance = resultado.get("alcance")
+    if alcance:
+        ui.label(str(alcance)).classes("text-sm font-semibold").style("color:#e7d6ad;")
+    if not resultado["success"]:
+        ui.label(resultado["message"] or "No se pudo completar la evaluación.")
+        return
+
+    ui.label("SI · Una forma elegible usaría la textura. Este análisis no verifica su aspecto en el juego.")
+    ui.label("NO · El análisis no encontró un uso elegible. La razón aparece junto a la textura.")
+    ui.label("NO_VERIFICADO · Faltan datos, por ejemplo si las mallas están dentro de un .bsa.")
+    texturas = resultado.get("texturas", [])
+    total = resultado.get("n_texturas", len(texturas))
+    resumen = f"{total} textura(s) evaluadas."
+    if perfil := resultado.get("perfil"):
+        resumen = f"Perfil «{perfil}» · {resumen}"
+    if resultado.get("truncado"):
+        resumen += f" Se muestran {len(texturas)}."
+    ui.label(resumen).classes("font-semibold")
+    for textura in texturas:
+        with ui.column().classes("gap-0 w-full").style("margin-top:8px; overflow-wrap:anywhere;"):
+            ui.label(f"{textura['efecto']} · {textura['ruta_de_salida']}").classes("font-semibold")
+            ui.label(textura["razon"])
+            mallas = textura.get("mallas", [])
+            if mallas:
+                ui.label("Mallas: " + ", ".join(mallas)).classes("text-xs")
+                if textura.get("n_mallas", len(mallas)) > len(mallas):
+                    ui.label(f"Se muestran {len(mallas)} de {textura['n_mallas']} mallas.").classes("text-xs")
+
+
 @ui.refreshable
 def _parallax_diagnostico_panel() -> None:
-    """Resultado del diagnóstico de parallax de ESTA pestaña, como panel descartable (NP-A0i, #817).
+    """Diagnóstico o elegibilidad de parallax de esta pestaña, como panel descartable.
 
     Se muestra solo mientras la pestaña tenga un diagnóstico vigente en su slot del store; el botón ``×`` limpia SOLO ese slot. El texto
     (nombres de mods y rutas que eligió un tercero) se dibuja con ``ui.label``, que lo escapa: nunca como HTML.
@@ -1194,7 +1230,8 @@ def _parallax_diagnostico_panel() -> None:
     entrada = diagnostico_parallax_de(get_store(), current_tab_id())
     if not entrada:
         return
-    lineas = lineas_del_diagnostico_parallax(entrada.get("resultado"))
+    elegibilidad = entrada.get("elegibilidad", False)
+    titulo = "Elegibilidad de parallax" if elegibilidad else "Diagnóstico de parallax"
     wrap = (
         "position:fixed; right:22px; top:84px; z-index:1000; width:min(560px, calc(100vw - 44px));"
         "max-height:70vh; display:flex; align-items:flex-start; gap:8px;"
@@ -1205,13 +1242,20 @@ def _parallax_diagnostico_panel() -> None:
     )
     with ui.element("div").style(wrap):
         with ui.element("div").style(card):
-            ui.label(f"Diagnóstico de parallax · {entrada.get('mod', '')}").style(
+            ui.label(f"{titulo} · {entrada.get('mod', '')}").style(
                 "font-family:'Cinzel',serif; font-weight:700; font-size:13px; letter-spacing:.12em; color:#e7d6ad; margin-bottom:8px;"
             )
-            for linea in lineas:
-                ui.label(linea).style("font-size:12.5px; line-height:1.5; color:#cfc5ad; word-break:break-word;")
-        x = ui.element("button").style(
-            "cursor:pointer; background:none; border:none; color:#8a8270; font-size:15px; line-height:1; padding:0 2px;"
+            if elegibilidad:
+                _render_parallax_elegibilidad(entrada)
+            else:
+                for linea in lineas_del_diagnostico_parallax(entrada.get("resultado")):
+                    ui.label(linea).style("font-size:12.5px; line-height:1.5; color:#cfc5ad; word-break:break-word;")
+        x = (
+            ui.element("button")
+            .props('aria-label="Cerrar informe de parallax"')
+            .style(
+                "cursor:pointer; background:none; border:none; color:#8a8270; font-size:15px; line-height:1; padding:0 2px;"
+            )
         )
         x.on(
             "click",
@@ -1929,6 +1973,7 @@ def _mods_screen(mods: list[dict[str, Any]], callbacks: dict[str, Callable], sea
         on_toggle=callbacks.get("on_mod_toggle"),
         initial_query=search_query,
         on_diagnose=callbacks.get("on_mod_diagnose"),
+        on_evaluate_eligibility=callbacks.get("on_mod_evaluate_eligibility"),
     )
 
 

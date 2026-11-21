@@ -1,0 +1,14 @@
+﻿{
+    "nota":  "isolation.json y perfil_snapshot_post.json dicen modlist ... false por un error del script de medición: el snapshot previo serializó cada línea como objeto PowerShell ({value=...}) y la comparación de strings falló. No se reescriben esos archivos. Comparación correcta (valores):",
+    "pre":  [
+                "+TexGen Output",
+                "+DynDOLOD DLL NG and Scripts",
+                "+R0 Canary"
+            ],
+    "post":  [
+                 "+TexGen Output",
+                 "+DynDOLOD DLL NG and Scripts",
+                 "+R0 Canary"
+             ],
+    "iguales_en_orden":  true
+}

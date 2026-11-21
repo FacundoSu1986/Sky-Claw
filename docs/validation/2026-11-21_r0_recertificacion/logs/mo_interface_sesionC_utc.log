@@ -1,0 +1,33 @@
+﻿[2026-11-21 13:38:50.308 D] command line: '"E:\SkyClaw_R0_Rig\mo2\ModOrganizer.exe" '
+[2026-11-21 13:38:50.308 I] starting Mod Organizer version 2.5.2 revision 9c130cbf in E:/SkyClaw_R0_Rig/mo2, usvfs: 0.5.6.1
+[2026-11-21 13:38:50.308 I] data path: E:/SkyClaw_R0_Rig/mo2
+[2026-11-21 13:38:50.308 I] working directory: E:/SkyClaw_R0_Rig/mo2
+[2026-11-21 13:38:50.308 D] timing: MOApplication setup() 0 ms
+[2026-11-21 13:38:50.992 E] [journal.py:82] [MO2 ApI Bridge] info  plugin loaded, waiting for the user interface
+[2026-11-21 13:38:51.021 I] [plugin.py:255] Sky-Claw VFS Bridge iniciado
+[2026-11-21 13:38:51.031 I] using game plugin 'Skyrim Special Edition' ('SkyrimSE', variant Steam, steam id '489830') at E:/SkyClaw_R0_Rig/skyrim
+[2026-11-21 13:38:51.275 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:38:51.776 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:38:52.679 E] [journal.py:82] [MO2 ApI Bridge] info  interface ready, starting the bridge
+[2026-11-21 13:38:52.687 E] [journal.py:82] [MO2 ApI Bridge] info  bridge listening on 127.0.0.1:8930
+[2026-11-21 13:38:52.785 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:38:54.785 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:38:58.786 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:03.787 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:08.790 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:09.063 E] [journal.py:82] [MO2 ApI Bridge] info  MO2 is starting: E:/SkyClaw_R0_Rig/exe_676f4c29/SkyClawApp.exe
+[2026-11-21 13:39:09.106 I] [plugin.py:276] Sky-Claw VFS Bridge launch timings ts=2026-11-21T13:39:09.105047+00:00 job_id=e2db1f5b-b8ae-412b-adcd-016eb6a95f20 job_object=Local\SkyClawVfs-caab7b88be5d798dd6825daf0dd82d34 create_job_ms=0.843 startApplication_ms=141.693 assign_ms=0.039 adopt_ms=5.214 adopted=0 total_to_ack_ms=147.811
+[2026-11-21 13:39:12.394 I] [plugin.py:276] Sky-Claw VFS Bridge worker_exit confirmed ts=2026-11-21T13:39:12.393661+00:00 job_id=e2db1f5b-b8ae-412b-adcd-016eb6a95f20 wait_ok=True exit_code=0 wait_ms=3288.000 job_empty=True
+[2026-11-21 13:39:12.716 W] [plugin.py:45] Sky-Claw bridge desconectado: conexi\xf3n cerrada con un frame IPC incompleto
+[2026-11-21 13:39:13.219 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:14.219 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:16.220 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:20.220 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:25.221 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:30.222 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:35.223 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:40.224 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:45.227 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:50.227 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:39:52.056 E] [journal.py:82] [MO2 ApI Bridge] info  bridge stopped, token file removed
+

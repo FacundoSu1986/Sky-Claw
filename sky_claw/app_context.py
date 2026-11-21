@@ -13,7 +13,6 @@ from contextlib import AsyncExitStack
 from typing import Any, TypeVar
 
 import aiohttp
-import keyring
 
 from sky_claw.aislamiento import aplicar_aislamiento, perfil_aislado
 from sky_claw.app.agent.providers import ProviderConfigError, create_provider
@@ -56,6 +55,7 @@ from sky_claw.app.scraper.nexus_downloader import NexusDownloader
 from sky_claw.app.security.auth_token_manager import AuthTokenManager
 from sky_claw.app.security.credential_vault import CredentialVault
 from sky_claw.app.security.hitl import Decision, HITLGuard, HITLRequest
+from sky_claw.app.security.keyring_reader import leer_secreto_de_keyring
 from sky_claw.app.security.network_gateway import GatewayTCPConnector, NetworkGateway
 from sky_claw.app.security.path_validator import PathValidator, assert_safe_component
 from sky_claw.app.security.prompt_armor import build_system_header
@@ -606,16 +606,6 @@ class AppContext:
             return False
         provider = provider_name.strip().lower()
 
-        # Algunos backends de keyring lanzan al leer (igual que en Config y
-        # save_settings); tragamos la excepción para caer a False/feedback
-        # consistente en vez de reventar la task de hot-reload (review Copilot #225).
-        def _read_key(name: str) -> str:
-            try:
-                return keyring.get_password("sky_claw", name) or ""
-            except Exception:
-                logger.exception("Hot-reload LLM: fallo leyendo keyring '%s'", name)
-                return ""
-
         # Ollama no usa secreto: ni siquiera sondeamos keyring (que puede lanzar
         # en headless/Linux sin backend) — Codex #225. Para los cloud probamos
         # la clave específica del provider y caemos a la genérica (mismo criterio
@@ -623,7 +613,11 @@ class AppContext:
         # slot propio aún.
         key = api_key
         if not key and provider != "ollama":
-            key = _read_key(f"{provider}_api_key") or _read_key("llm_api_key")
+            key = (
+                leer_secreto_de_keyring(f"{provider}_api_key", logger=logger)
+                or leer_secreto_de_keyring("llm_api_key", logger=logger)
+                or ""
+            )
             if not key:
                 logger.error("Hot-reload LLM: sin API key para el proveedor '%s'.", provider)
                 return False
@@ -2827,10 +2821,10 @@ def _is_configured(config_path: pathlib.Path) -> bool:
         provider = cfg._data.get("llm_provider", "ollama")
         if provider == "ollama":
             return True
-        key = keyring.get_password("sky_claw", f"{provider}_api_key")
-        return bool(key)
+        nombre_de_clave = f"{provider}_api_key"
     except Exception:
         return False
+    return bool(leer_secreto_de_keyring(nombre_de_clave, logger=logger))
 
 
 def _resolve_config_path_static(args) -> pathlib.Path:

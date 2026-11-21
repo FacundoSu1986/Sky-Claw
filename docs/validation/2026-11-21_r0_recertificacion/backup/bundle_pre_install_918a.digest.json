@@ -1,0 +1,45 @@
+{
+  "calculado_utc": "2026-11-21T13:14:04.052039+00:00",
+  "protocol_py": "E:\\Skyclaw_Main_Sync\\.claude\\worktrees\\suspicious-ptolemy-49bb51\\sky_claw\\local\\mo2\\plugin_bundle\\skyclaw_bridge\\protocol.py",
+  "protocol_py_sha256": "cfe05d53479d9e9248b6340c020e9d41e975670bb58790da487d2f93d3987b5f",
+  "carpeta": "E:\\SkyClaw_R0_Rig\\r0_ronda6\\backup\\bundle_pre_install_918a",
+  "bundle_digest": "24a1869e4e6213d799e940934dab0900fac2fc0de30babdceb28517749d256b0",
+  "archivos": {
+    "__init__.py": {
+      "bytes": 293,
+      "sha256": "c4e493cf5820bb7f43ffacff01d63e4b4f9ca5189388c9ff0fe89f8a40140c47"
+    },
+    "__pycache__/__init__.cpython-312.opt-2.pyc": {
+      "bytes": 334,
+      "sha256": "3583937455f1e942cee1e64fddef9d7d78f6fcf52c65e3dfdf500459049a36e0"
+    },
+    "__pycache__/plugin.cpython-312.opt-2.pyc": {
+      "bytes": 19359,
+      "sha256": "1d787e64f244bcff456d83cd630465601b20729a05bca4150b8f5b47e747627e"
+    },
+    "__pycache__/protocol.cpython-312.opt-2.pyc": {
+      "bytes": 7589,
+      "sha256": "83aacb5ba78516c526e7cb128cb8e1ab5e5fc35f9401da21d216c5e9d425471b"
+    },
+    "__pycache__/runtime.cpython-312.opt-2.pyc": {
+      "bytes": 64042,
+      "sha256": "cf4c325a09dab88a2b943acb39a094c30342cd865193ec5cfba2342b0c4f2185"
+    },
+    "bridge_config.json": {
+      "bytes": 407,
+      "sha256": "fbb729a86f41f7a713381825433f045516ba74b8ae937d8cda040833a5c105de"
+    },
+    "plugin.py": {
+      "bytes": 13354,
+      "sha256": "2f350450329e2f0c087dfd99326df66d9f4a3a288eb2fd62fe06524670c3db3f"
+    },
+    "protocol.py": {
+      "bytes": 5842,
+      "sha256": "cfe05d53479d9e9248b6340c020e9d41e975670bb58790da487d2f93d3987b5f"
+    },
+    "runtime.py": {
+      "bytes": 60682,
+      "sha256": "63495829f204f99a239d6bd91e8c674e396766806375761c7b5959e246ddc500"
+    }
+  }
+}

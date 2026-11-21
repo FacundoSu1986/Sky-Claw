@@ -1,0 +1,3 @@
+﻿inicio_ronda_local=2026-11-21T10:13:39.465-03:00
+inicio_ronda_utc=2026-11-21T13:13:39.468Z
+preregistro_sellado_local=2026-11-21T10:15:38.735-03:00

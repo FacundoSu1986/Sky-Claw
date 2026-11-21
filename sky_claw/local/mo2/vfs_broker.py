@@ -14,6 +14,7 @@ import math
 import os
 import pathlib
 import secrets
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -48,11 +49,16 @@ logger = logging.getLogger(__name__)
 
 _BRIDGE_CONNECT_TIMEOUT = 10.0
 _DESCRIPTOR_TTL_SECONDS = 24 * 60 * 60
+# El broker vive toda la sesión de la app y el bridge y el worker rechazan un descriptor vencido: se renueva cada hora
+# (con la misma identidad) para que nunca venza mientras el broker vive. Un fallo se reintenta en el tick siguiente.
+_DESCRIPTOR_RENEWAL_SECONDS = 60 * 60
+# Con un worker arrancando (lee el descriptor una vez, antes de su hello) la renovación se pospone y reintenta cada tanto.
+_DESCRIPTOR_RENEWAL_DEFER_SECONDS = 1.0
 _COOPERATIVE_CANCEL_GRACE_SECONDS = 0.5
-# Si el bridge (MO2) se desconecta con un job en vuelo, el fence terminal espera
-# su reconexión para recibir el worker_exit; pasada esta ventana sin reconectar
-# se asume el worker muerto (el Job Object es kill-on-close: un MO2 caído mata al
-# worker) para que el fence NUNCA cuelgue indefinidamente reteniendo el lock.
+# Si el bridge (MO2) se desconecta con un job en vuelo, el fence terminal espera su reconexión para recibir el
+# worker_exit. Pasada esta ventana sin reconectar, el fence NO asume el worker muerto (F1): que el bridge no vuelva no
+# prueba que MO2 cayó ni que el Job quedó vacío. La instancia queda en CUARENTENA con terminalidad desconocida y el
+# rollback vetado; el fence tampoco cuelga reteniendo el lock. Un worker_exit tardío libera la cuarentena.
 _BRIDGE_LOSS_FENCE_GRACE_SECONDS = 30.0
 # Deadline hard para la confirmación de worker_exit cuando el bridge MO2 permanece
 # conectado tras solicitar terminación.
@@ -156,6 +162,10 @@ class VfsBridgeTerminationError(VfsTeardownError):
     """El bridge reportó un error al intentar terminar el Job Object del worker."""
 
 
+class VfsBridgeLostTeardownError(VfsTeardownError):
+    """El bridge MO2 se perdió y no volvió a tiempo: nadie confirmó que el Job del worker quedó vacío (F1)."""
+
+
 class VfsBridgeDisconnectedError(VfsBrokerError):
     """El bridge MO2 se desconectó con trabajos pendientes."""
 
@@ -226,6 +236,7 @@ class VfsExecutionBroker:
         bridge_reconnect_replay_grace_seconds: float = _BRIDGE_RECONNECT_REPLAY_GRACE_SECONDS,
         post_result_cancel_grace_seconds: float = _POST_RESULT_CANCEL_GRACE_SECONDS,
         expected_bundle_digest: str | None = None,
+        descriptor_renewal_seconds: float = _DESCRIPTOR_RENEWAL_SECONDS,
     ) -> None:
         try:
             self._instance_id = assert_safe_component(instance_id, field="instance_id")
@@ -237,6 +248,28 @@ class VfsExecutionBroker:
                 f"post_result_cancel_grace_seconds debe ser un número positivo y finito: {post_result_cancel_grace_seconds!r}"
             )
         self._post_result_cancel_grace = post_result_cancel_grace_seconds
+        if (
+            not math.isfinite(descriptor_renewal_seconds)
+            or descriptor_renewal_seconds <= 0
+            or descriptor_renewal_seconds >= _DESCRIPTOR_TTL_SECONDS
+        ):
+            # Un intervalo absurdo dejaría vencer el descriptor (o lo reescribiría sin pausa) sin que nadie se entere.
+            raise VfsBrokerError(
+                "descriptor_renewal_seconds debe ser un número positivo, finito y menor que la vida del descriptor "
+                f"({_DESCRIPTOR_TTL_SECONDS}s): {descriptor_renewal_seconds!r}"
+            )
+        self._descriptor_renewal = descriptor_renewal_seconds
+        # Renovación del descriptor (F1). ``_descriptor_port`` es el puerto publicado (la identidad no cambia al renovar).
+        # ``_descriptor_retirado`` lo fija ``close()`` bajo ``_descriptor_lock`` ANTES de borrar el archivo: una escritura
+        # que ya estaba en un hilo no puede resucitarlo después del cierre.
+        self._descriptor_port: int | None = None
+        self._descriptor_lock = threading.Lock()
+        self._descriptor_retirado = False
+        self._renovacion_del_descriptor: asyncio.Task[None] | None = None
+        # Limpio mientras una renovación escribe el descriptor: el registro de un job lo espera (ver
+        # ``_esperar_sin_renovacion_del_descriptor``).
+        self._sin_renovacion_en_vuelo = asyncio.Event()
+        self._sin_renovacion_en_vuelo.set()
         # Identidad del bundle que debe declarar el bridge (H-5). ``None`` = la del bundle de ESTE producto; se inyecta
         # solo para probar. ``_bridge_rechazado`` guarda el último motivo accionable para decírselo a quien espera.
         self._expected_bundle_digest = expected_bundle_digest
@@ -521,7 +554,12 @@ class VfsExecutionBroker:
             socket = server.sockets[0]
             port = int(socket.getsockname()[1])
             await asyncio.to_thread(self._write_descriptor, port)
+            self._renovacion_del_descriptor = asyncio.create_task(
+                self._renovar_el_descriptor(),
+                name=f"vfs-descriptor-renewal-{self._instance_id}",
+            )
         except BaseException:
+            await self._detener_la_renovacion_del_descriptor()
             active_server = self._server
             if active_server is not None:
                 active_server.close()
@@ -615,10 +653,30 @@ class VfsExecutionBroker:
         self._jobs_dir.mkdir(parents=True, exist_ok=True)
         self._hardener(self._state_dir)
         self._hardener(self._jobs_dir)
+        with self._descriptor_lock:
+            self._descriptor_port = port
+            self._descriptor_retirado = False
+            self._publicar_descriptor_bloqueado()
+
+    def _renovar_descriptor(self) -> None:
+        """Reescribe el descriptor con un vencimiento fresco y la MISMA identidad; no-op si ``close()`` ya lo retiró."""
+        with self._descriptor_lock:
+            if self._descriptor_retirado or self._descriptor_port is None:
+                return
+            self._publicar_descriptor_bloqueado()
+
+    def _retirar_descriptor(self) -> None:
+        """Borra el descriptor y prohíbe renovarlo: una renovación en vuelo no puede resucitarlo tras el cierre."""
+        with self._descriptor_lock:
+            self._descriptor_retirado = True
+            self._descriptor_path.unlink(missing_ok=True)
+
+    def _publicar_descriptor_bloqueado(self) -> None:
+        """Escritura atómica (temporal + ``os.replace``). Se llama con ``_descriptor_lock`` tomado."""
         descriptor = {
             "protocol_version": VFS_PROTOCOL_VERSION,
             "host": "127.0.0.1",
-            "port": port,
+            "port": self._descriptor_port,
             "token": base64.urlsafe_b64encode(self._secret).decode("ascii"),
             "instance_id": self._instance_id,
             "session_id": self._session_id,
@@ -633,6 +691,76 @@ class VfsExecutionBroker:
         except Exception:
             tmp.unlink(missing_ok=True)
             raise
+
+    async def _renovar_el_descriptor(self) -> None:
+        """Renueva el descriptor cada ``_descriptor_renewal`` segundos mientras el broker vive (F1).
+
+        El broker vive toda la sesión de la app y el bridge y el worker rechazan un descriptor vencido: sin renovar,
+        pasadas 24 h el bridge no podría reconectar (ni traer el ``worker_exit`` que libera una cuarentena) y ningún
+        worker nuevo arrancaría. Un fallo se loguea y se reintenta en el tick siguiente (en Windows ``os.replace`` falla
+        si un lector tiene el destino abierto justo en ese instante). Si aun así venciera, el bridge no reconecta y el
+        fence termina en cuarentena: sigue siendo fail-closed.
+
+        Exclusión con el arranque del worker: el worker lee el descriptor UNA vez, antes de su hello, y no reintenta; en
+        Windows, leerlo mientras ``os.replace`` lo reemplaza da ``PermissionError``. Por eso no se renueva con un worker
+        arrancando, y mientras dura la escritura ningún job se registra (``_esperar_sin_renovacion_del_descriptor``). El
+        chequeo y el ``clear()`` van sin ``await`` en medio: en el event loop son atómicos respecto del registro.
+        """
+        while True:
+            await asyncio.sleep(self._descriptor_renewal)
+            while self._hay_un_worker_arrancando():
+                await asyncio.sleep(min(self._descriptor_renewal, _DESCRIPTOR_RENEWAL_DEFER_SECONDS))
+            self._sin_renovacion_en_vuelo.clear()
+            escritura = asyncio.ensure_future(asyncio.to_thread(self._renovar_descriptor))
+            try:
+                await asyncio.shield(escritura)
+            except asyncio.CancelledError:
+                # La escritura sigue en su hilo aunque cancelen esta tarea: no se libera a quien registra jobs hasta
+                # que termine (un worker lanzado ahora la encontraría a medio reemplazar).
+                await asyncio.wait({escritura})
+                if not escritura.cancelled() and escritura.exception() is not None:
+                    logger.warning(
+                        "La renovación del descriptor en vuelo al detenerse falló", exc_info=escritura.exception()
+                    )
+                raise
+            except Exception:
+                logger.warning(
+                    "No se pudo renovar el descriptor del broker VFS %s; se reintenta en %.0fs",
+                    self._instance_id,
+                    self._descriptor_renewal,
+                    exc_info=True,
+                    extra={"event": "descriptor_renewal_failed", "operation": "vfs_broker"},
+                )
+            finally:
+                self._sin_renovacion_en_vuelo.set()
+
+    def _hay_un_worker_arrancando(self) -> bool:
+        """¿Hay un job lanzado cuyo worker todavía no dijo hello? Ese worker todavía puede estar leyendo el descriptor."""
+        return any(
+            not salida.done() and "worker_hello" not in self._hitos.get(job_id, {})
+            for job_id, salida in self._worker_exit.items()
+        )
+
+    async def _esperar_sin_renovacion_del_descriptor(self, manifest_path: pathlib.Path) -> None:
+        """Espera a que no haya una renovación del descriptor en vuelo.
+
+        Quien llama registra el job en la sentencia SIGUIENTE, sin otro ``await`` en medio: así ninguna renovación
+        empieza ni está en curso mientras el worker de ese job lee el descriptor (ancla AST en
+        ``tests/test_vfs_teardown_deadline.py``). El manifiesto firmado ya está escrito y todavía no hay registro que
+        lo limpie: si cortan la espera, se borra acá.
+        """
+        try:
+            while not self._sin_renovacion_en_vuelo.is_set():
+                await self._sin_renovacion_en_vuelo.wait()
+        except BaseException:
+            await asyncio.to_thread(manifest_path.unlink, missing_ok=True)
+            raise
+
+    async def _detener_la_renovacion_del_descriptor(self) -> None:
+        tarea = self._renovacion_del_descriptor
+        self._renovacion_del_descriptor = None
+        if tarea is not None and not tarea.done():
+            await _cancel_and_join(tarea)
 
     async def wait_until_ready(self, *, timeout: float = _BRIDGE_CONNECT_TIMEOUT) -> None:
         try:
@@ -790,6 +918,7 @@ class VfsExecutionBroker:
                 )
             await self.wait_until_ready()
             manifest_path = await self._escribir_manifiesto(job, challenge, raices, virtual_data_dir)
+            await self._esperar_sin_renovacion_del_descriptor(manifest_path)
             result_future, exit_future = self._registrar_job(job, challenge)
             try:
                 await self._send_bridge(self._mensaje_de_launch(job, manifest_path, overwrite_mod))
@@ -889,6 +1018,7 @@ class VfsExecutionBroker:
                 )
             await self.wait_until_ready()
             manifest_path = await self._escribir_manifiesto(job, challenge, raices, virtual_data_dir)
+            await self._esperar_sin_renovacion_del_descriptor(manifest_path)
             result_future, exit_future = self._registrar_job(job, challenge)
             # La suscripción existe ANTES de que el launch pueda crear un worker:
             # no hay ventana en la que un tool_started se pierda por llegar antes
@@ -1161,9 +1291,10 @@ class VfsExecutionBroker:
         Resiste la cancelación externa —rollback no puede empezar antes de la
         confirmación terminal— pero si el deadline vence o si el bridge se
         desconecta y no reconecta dentro de ``_fence_grace`` segundos, resuelve
-        el fence. Si el bridge estaba conectado, vence con error tipado
-        (terminalidad indeterminada); si el bridge murió y no reconectó, se
-        asume el worker muerto por kill-on-close.
+        el fence. En los dos casos vence con error tipado (terminalidad
+        indeterminada) y cuarentena: con el bridge conectado,
+        :class:`VfsTeardownDeadlineError`; si el bridge se fue y no reconectó,
+        :class:`VfsBridgeLostTeardownError` (F1: nunca se asume el worker muerto).
 
         La ventana de gracia es un deadline ABSOLUTO fijado antes del loop: una
         ``CancelledError`` absorbida no lo reinicia, así que ni siquiera
@@ -1208,8 +1339,9 @@ class VfsExecutionBroker:
         ``deadline`` es el instante absoluto (loop clock) tras el cual, si el
         worker no confirmó salida, el fence vence. Si el bridge está vivo,
         vence con :class:`VfsTeardownDeadlineError` (sin fingir terminalidad);
-        si el bridge está desconectado y expira la gracia, se asume el worker
-        muerto por kill-on-close.
+        si el bridge está desconectado y expira la gracia, vence con
+        :class:`VfsBridgeLostTeardownError` y la instancia queda en cuarentena
+        (F1: que el bridge no vuelva no prueba que el Job quedó vacío).
         """
         exit_wait: asyncio.Task[Any] = asyncio.create_task(asyncio.wait({exit_future}))
         try:
@@ -1300,28 +1432,43 @@ class VfsExecutionBroker:
             )
             remaining_loss = effective_loss_deadline - asyncio.get_running_loop().time()
             if remaining_loss <= 0:
-                if not exit_future.done():
-                    logger.warning(
-                        "El bridge MO2 no reconectó en %.1fs; se asume el worker muerto para liberar el fence",
-                        self._fence_grace,
-                    )
-                    exit_future.set_result(None)
+                self._fallar_por_perdida_del_bridge(exit_future, resolved_job_id)
                 return
             ready_wait: asyncio.Task[Any] = asyncio.create_task(self._bridge_ready.wait())
             grace = asyncio.create_task(asyncio.sleep(remaining_loss))
             try:
                 await asyncio.wait({exit_wait, ready_wait, grace}, return_when=asyncio.FIRST_COMPLETED)
-                if grace.done() and not ready_wait.done() and not exit_future.done():
-                    logger.warning(
-                        "El bridge MO2 no reconectó en %.1fs; se asume el worker muerto para liberar el fence",
-                        self._fence_grace,
-                    )
-                    exit_future.set_result(None)
+                if grace.done() and not ready_wait.done():
+                    self._fallar_por_perdida_del_bridge(exit_future, resolved_job_id)
             finally:
                 await _cancel_and_join(ready_wait)
                 await _cancel_and_join(grace)
         finally:
             await _cancel_and_join(exit_wait)
+
+    def _fallar_por_perdida_del_bridge(self, exit_future: asyncio.Future[int | None], job_id: str | None) -> None:
+        """Venció la gracia sin bridge: nadie puede confirmar el Job vacío, así que la terminalidad es DESCONOCIDA.
+
+        F1 (auditoría de código sobre 3f8547c8): antes se resolvía el fence con ``set_result(None)`` asumiendo el
+        worker muerto por kill-on-close. La premisa no se sostiene: el bridge puede no volver con MO2 y el Job vivos
+        (un descriptor vencido, un bundle rechazado). Espeja la rama hermana del plazo con el bridge conectado:
+        cuarentena persistida y error tipado (un :class:`VfsTeardownError`, que veta el rollback). Un ``worker_exit``
+        tardío —el bridge reconecta y lo reenvía— libera la cuarentena (``_liberar_cuarentena_por_worker_exit``).
+        """
+        if exit_future.done():
+            return
+        motivo = (
+            f"el bridge MO2 no reconectó en {self._fence_grace:.1f}s y nadie confirmó que el Job del worker quedó vacío"
+        )
+        logger.warning(
+            "El worker VFS %s no confirmó worker_exit: %s; la terminalidad del proceso es indeterminada",
+            job_id or "desconocido",
+            motivo,
+            extra={"event": "bridge_loss_terminality_unknown", "operation": "vfs_broker", "job_id": job_id},
+        )
+        if job_id is not None:
+            self._quarantine_instance(job_id, f"teardown sin confirmación de worker_exit: {motivo}")
+        exit_future.set_exception(VfsBridgeLostTeardownError(f"el teardown del worker no se pudo confirmar: {motivo}"))
 
     async def _request_termination_and_wait(self, job_id: str) -> None:
         message = {
@@ -1443,7 +1590,8 @@ class VfsExecutionBroker:
                 # resultado llega por el socket del worker (independiente) y el
                 # bridge reconecta reenviando el worker_exit. Sólo el cierre real
                 # del broker (_closing) falla los pendientes; el fence acotado
-                # (_await_worker_exit) cubre el caso de bridge muerto sin retorno.
+                # (_await_worker_exit) cubre el caso de bridge sin retorno con
+                # cuarentena y terminalidad desconocida (F1), nunca asumiendo muerte.
                 if self._closing:
                     self._fail_pending(VfsBridgeDisconnectedError("MO2 bridge desconectado"))
             self._worker_writers.discard(writer)
@@ -1890,6 +2038,7 @@ class VfsExecutionBroker:
 
     async def _close_unlocked(self) -> None:
         if self._server is None:
+            await self._detener_la_renovacion_del_descriptor()
             await asyncio.to_thread(self._release_instance_file_lock)
             return
         teardown_error: VfsTeardownError | None = None
@@ -1904,6 +2053,9 @@ class VfsExecutionBroker:
             except asyncio.CancelledError:
                 cancelled_during_cancel = True
         self._closing = True
+        # Hasta acá la renovación siguió viva: mientras se cancelaban los jobs, el bridge pudo reconectar con un
+        # descriptor vigente y traer su worker_exit. Desde acá no se renueva más (el descriptor se retira al final).
+        await self._detener_la_renovacion_del_descriptor()
         server = self._server
         server.close()
         writer = self._bridge_writer
@@ -1960,7 +2112,7 @@ class VfsExecutionBroker:
         self._job_event_queues.clear()
         self._session_drivers.clear()
         try:
-            await asyncio.to_thread(self._descriptor_path.unlink, missing_ok=True)
+            await asyncio.to_thread(self._retirar_descriptor)
         finally:
             await asyncio.to_thread(self._release_instance_file_lock)
         if teardown_error is not None:
