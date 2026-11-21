@@ -9,7 +9,10 @@ el check ``🚦 Main en verde`` de ``.github/workflows/main-en-verde.yml`` y tie
   El PR que arregla ``main`` pasa con la etiqueta ``ci:repara-main``, leída EN VIVO (al re-correr un job, el payload del
   evento es el original y no ve una etiqueta puesta después).
 - ``reevaluar`` (al terminar cada corrida de CI sobre ``main``): vuelve a correr el job del gate en cada PR abierto. Sin
-  esto, un PR que pasó el gate a las 10 seguiría en verde a las 12 aunque ``main`` se hubiera roto a las 11.
+  esto, un PR que pasó el gate a las 10 seguiría en verde a las 12 aunque ``main`` se hubiera roto a las 11. Si no
+  puede (GitHub rechaza el rerun a los 30 días de la corrida inicial o tras 50 reruns), pasa el PR a BORRADOR, que no se
+  puede mergear, y le comenta por qué; marcarlo listo (``ready_for_review``) corre el gate de cero. Los borradores no
+  se re-evalúan.
 
 Solo usa la biblioteca estándar y el ``gh`` del runner: corre con el ``python3`` del sistema, sin instalar el proyecto.
 Una respuesta de ``gh`` que no se entiende es un error, nunca «no hay nada en rojo».
@@ -233,27 +236,62 @@ def reevaluar(ejecutar: Ejecutor = _gh, esperar: Espera = time.sleep) -> int:
                 "--state",
                 "open",
                 "--json",
-                "number,headRefOid,headRefName",
+                "number,headRefOid,headRefName,isDraft",
                 "--limit",
                 "200",
             ],
         ),
-        {"number": int, "headRefOid": str, "headRefName": str},
+        {"number": int, "headRefOid": str, "headRefName": str, "isDraft": bool},
         "pr list",
     )
-    errores = 0
+    sin_proteccion = 0
     presupuesto = Presupuesto()
     for pr in prs:
+        if pr["isDraft"]:
+            # Un borrador no se puede mergear; al marcarlo listo (`ready_for_review`) el gate corre de cero. Saltearlo
+            # además no gasta reruns de su corrida.
+            print(f"PR #{pr['number']}: borrador, no se re-evalúa")
+            continue
         try:
-            print(
-                f"PR #{pr['number']}: {_reevaluar_pr(pr['number'], pr['headRefOid'], pr['headRefName'], ejecutar, esperar, presupuesto)}"
-            )
+            resultado = _reevaluar_pr(pr["number"], pr["headRefOid"], pr["headRefName"], ejecutar, esperar, presupuesto)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as exc:
-            # Seguir con los demás: un PR que no se re-evaluó puede quedar en verde con main roto, así que el job
-            # termina en rojo al final y queda a la vista.
-            errores += 1
-            print(f"ERROR: PR #{pr['number']}: no se pudo re-evaluar: {exc}", file=sys.stderr)
-    return 1 if errores else 0
+            # Su check quedaría fijo en el último veredicto, quizá verde con main roto (p. ej. GitHub rechaza el rerun a
+            # los 30 días de la corrida inicial o tras 50 reruns). Seguir con los demás y bloquear éste.
+            # El mensaje de GitHub (p. ej. el del límite de reruns) viene en el stderr de gh, no en el texto de la excepción.
+            motivo = (getattr(exc, "stderr", None) or str(exc)).strip()
+            print(f"PR #{pr['number']}: no se pudo re-evaluar: {motivo}", file=sys.stderr)
+            if not _pasar_a_borrador(pr["number"], motivo, ejecutar):
+                sin_proteccion += 1
+            continue
+        print(f"PR #{pr['number']}: {resultado}")
+    # Rojo solo si algún PR quedó SIN protección (ni re-evaluado ni en borrador): ése es el que se puede mergear mal.
+    return 1 if sin_proteccion else 0
+
+
+def _pasar_a_borrador(numero: int, motivo: str, ejecutar: Ejecutor) -> bool:
+    """Pasa el PR a borrador (no se puede mergear) y le explica por qué. Devuelve si quedó protegido."""
+    try:
+        ejecutar(["pr", "ready", str(numero), "--undo"])
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(f"ERROR: PR #{numero}: tampoco se pudo pasar a borrador; queda SIN protección: {exc}", file=sys.stderr)
+        return False
+    try:
+        ejecutar(["pr", "comment", str(numero), "--body", _aviso_de_borrador(motivo)])
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        # El borrador ya lo protege; el comentario solo explica.
+        print(f"AVISO: PR #{numero}: quedó en borrador pero no se pudo comentar: {exc}", file=sys.stderr)
+    print(f"PR #{numero}: pasado a borrador")
+    return True
+
+
+def _aviso_de_borrador(motivo: str) -> str:
+    return (
+        f"El gate «{NOMBRE_DEL_GATE}» de este PR no se pudo re-evaluar después de una corrida de CI sobre `main`, así "
+        f"que su check podría estar viejo. Lo pasé a borrador para que no se mergee con ese veredicto.\n\n"
+        f"Motivo: `{motivo[:300]}`\n\n"
+        "Para seguir, marcá el PR como listo (**Ready for review**): el gate corre de cero con el estado actual de "
+        "`main`. GitHub no deja re-correr una corrida pasados 30 días de la inicial ni más de 50 veces."
+    )
 
 
 def main(argumentos: Sequence[str], entorno: Mapping[str, str] | None = None, ejecutar: Ejecutor = _gh) -> int:

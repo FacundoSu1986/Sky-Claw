@@ -61,6 +61,8 @@ class GhFalso:
         corridas_del_gate: dict[str, list[dict[str, Any]]] | None = None,
         rerun_falla: set[int] | None = None,
         estados_sucesivos: dict[int, list[str]] | None = None,
+        borrador_falla: set[int] | None = None,
+        comentario_falla: set[int] | None = None,
     ) -> None:
         self.corridas_de_main = corridas_de_main or []
         self.jobs_por_corrida = jobs_por_corrida or {}
@@ -70,6 +72,8 @@ class GhFalso:
         self.rerun_falla = rerun_falla or set()
         #: Lo que va devolviendo ``gh run view N --json status`` en cada consulta (una corrida que termina mientras se espera).
         self.estados_sucesivos = estados_sucesivos or {}
+        self.borrador_falla = borrador_falla or set()
+        self.comentario_falla = comentario_falla or set()
         self.llamadas: list[list[str]] = []
 
     def __call__(self, argumentos: Sequence[str]) -> str:
@@ -92,10 +96,25 @@ class GhFalso:
             if int(args[2]) in self.rerun_falla:
                 raise subprocess.CalledProcessError(1, ["gh", *args], stderr="gh run rerun falló")
             return ""
+        if args[:2] == ["pr", "ready"]:
+            if int(args[2]) in self.borrador_falla:
+                raise subprocess.CalledProcessError(1, ["gh", *args], stderr="gh pr ready falló")
+            return ""
+        if args[:2] == ["pr", "comment"]:
+            if int(args[2]) in self.comentario_falla:
+                raise subprocess.CalledProcessError(1, ["gh", *args], stderr="gh pr comment falló")
+            return ""
         raise AssertionError(f"llamada a gh no prevista: {args}")
 
     def reruns(self) -> list[list[str]]:
         return [llamada for llamada in self.llamadas if llamada[:2] == ["run", "rerun"]]
+
+    def borradores(self) -> list[int]:
+        """Los PRs que se pasaron a borrador (``gh pr ready N --undo``)."""
+        return [int(c[2]) for c in self.llamadas if c[:2] == ["pr", "ready"] and c[3:] == ["--undo"]]
+
+    def comentarios(self) -> dict[int, str]:
+        return {int(c[2]): c[4] for c in self.llamadas if c[:2] == ["pr", "comment"]}
 
 
 # ── Evaluación ────────────────────────────────────────────────────────
@@ -263,8 +282,8 @@ def _job_del_gate(numero: int) -> list[dict[str, Any]]:
 def test_reevaluar_vuelve_a_correr_el_gate_de_cada_pr_abierto() -> None:
     gh = GhFalso(
         prs_abiertos=[
-            {"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1"},
-            {"number": 2, "headRefOid": "b" * 40, "headRefName": "rama-2"},
+            {"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False},
+            {"number": 2, "headRefOid": "b" * 40, "headRefName": "rama-2", "isDraft": False},
         ],
         corridas_del_gate={"a" * 40: [_corrida_del_gate(51)], "b" * 40: [_corrida_del_gate(52)]},
         jobs_por_corrida={51: _job_del_gate(501), 52: _job_del_gate(502)},
@@ -279,8 +298,8 @@ def test_reevaluar_busca_la_corrida_del_gate_por_commit_y_por_la_rama_del_pr() -
     corrida de uno para los dos, y el otro conservaría su veredicto viejo."""
     gh = GhFalso(
         prs_abiertos=[
-            {"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1"},
-            {"number": 2, "headRefOid": "a" * 40, "headRefName": "rama-2"},
+            {"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False},
+            {"number": 2, "headRefOid": "a" * 40, "headRefName": "rama-2", "isDraft": False},
         ],
     )
 
@@ -303,7 +322,7 @@ def test_reevaluar_lista_solo_los_prs_abiertos_contra_main() -> None:
 
 def test_reevaluar_usa_la_corrida_mas_nueva_del_gate_para_ese_commit() -> None:
     gh = GhFalso(
-        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1"}],
+        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False}],
         corridas_del_gate={"a" * 40: [_corrida_del_gate(60), _corrida_del_gate(51)]},
         jobs_por_corrida={60: _job_del_gate(600), 51: _job_del_gate(501)},
     )
@@ -327,7 +346,7 @@ def test_reevaluar_espera_a_que_termine_un_gate_en_curso_y_despues_lo_re_corre()
     """Un gate en curso pudo haber leído las corridas de main ANTES de que terminara la que disparó esta reevaluación:
     saltearlo dejaría su veredicto viejo fijo hasta el próximo evento del PR. Se espera a que termine y se re-corre."""
     gh = GhFalso(
-        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1"}],
+        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False}],
         corridas_del_gate={"a" * 40: [_corrida_del_gate(51, estado="in_progress")]},
         jobs_por_corrida={51: _job_del_gate(501)},
         estados_sucesivos={51: ["in_progress", "queued", "completed"]},
@@ -339,18 +358,19 @@ def test_reevaluar_espera_a_que_termine_un_gate_en_curso_y_despues_lo_re_corre()
     assert len(espera.pausas) == 3
 
 
-def test_reevaluar_falla_si_el_gate_en_curso_no_termina_a_tiempo() -> None:
-    """Si nunca termina, no se puede garantizar que lea el estado nuevo: el job queda rojo, a la vista."""
+def test_un_gate_en_curso_que_no_termina_a_tiempo_pasa_el_pr_a_borrador() -> None:
+    """Si nunca termina, no se puede garantizar que lea el estado nuevo: el PR pasa a borrador, que no se puede mergear."""
     gh = GhFalso(
-        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1"}],
+        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False}],
         corridas_del_gate={"a" * 40: [_corrida_del_gate(51, estado="in_progress")]},
         jobs_por_corrida={51: _job_del_gate(501)},
         estados_sucesivos={51: ["in_progress"]},
     )
     espera = EsperaFalsa()
 
-    assert gate.reevaluar(gh, espera) == 1
+    assert gate.reevaluar(gh, espera) == 0
     assert gh.reruns() == []
+    assert gh.borradores() == [1]
     assert len(espera.pausas) == gate.INTENTOS_DE_ESPERA
     # La espera total entra en el timeout del job ``reevaluar`` (10 min) con margen.
     assert gate.INTENTOS_DE_ESPERA * gate.PAUSA_DE_ESPERA <= 5 * 60
@@ -358,12 +378,12 @@ def test_reevaluar_falla_si_el_gate_en_curso_no_termina_a_tiempo() -> None:
 
 def test_la_espera_es_un_presupuesto_compartido_por_toda_la_reevaluacion() -> None:
     """Esperas por PR en serie podrían sumar más que el timeout del job: GitHub lo mataría antes de llegar a los PRs que
-    faltan, que conservarían su veredicto viejo. Con un presupuesto común, el job termina (en rojo) y procesa todos."""
+    faltan, que conservarían su veredicto viejo. Con un presupuesto común, el job termina y procesa todos."""
     gh = GhFalso(
         prs_abiertos=[
-            {"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1"},
-            {"number": 2, "headRefOid": "b" * 40, "headRefName": "rama-2"},
-            {"number": 3, "headRefOid": "c" * 40, "headRefName": "rama-3"},
+            {"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False},
+            {"number": 2, "headRefOid": "b" * 40, "headRefName": "rama-2", "isDraft": False},
+            {"number": 3, "headRefOid": "c" * 40, "headRefName": "rama-3", "isDraft": False},
         ],
         corridas_del_gate={
             "a" * 40: [_corrida_del_gate(51, estado="in_progress")],
@@ -375,14 +395,15 @@ def test_la_espera_es_un_presupuesto_compartido_por_toda_la_reevaluacion() -> No
     )
     espera = EsperaFalsa()
 
-    assert gate.reevaluar(gh, espera) == 1
+    assert gate.reevaluar(gh, espera) == 0
     assert len(espera.pausas) == gate.INTENTOS_DE_ESPERA
     assert gh.reruns() == [["run", "rerun", "53", "--job", "503"]]
+    assert gh.borradores() == [1, 2]
 
 
 def test_reevaluar_ignora_corridas_del_gate_que_no_son_de_un_pr() -> None:
     gh = GhFalso(
-        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1"}],
+        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False}],
         corridas_del_gate={"a" * 40: [_corrida_del_gate(70, evento="workflow_dispatch"), _corrida_del_gate(51)]},
         jobs_por_corrida={51: _job_del_gate(501)},
     )
@@ -394,36 +415,85 @@ def test_reevaluar_ignora_corridas_del_gate_que_no_son_de_un_pr() -> None:
 
 def test_reevaluar_sin_corrida_del_gate_no_falla() -> None:
     """Un PR abierto antes de que existiera el gate no tiene corrida: su check falta y eso ya bloquea a la vista."""
-    gh = GhFalso(prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1"}])
+    gh = GhFalso(prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False}])
 
     assert gate.reevaluar(gh) == 0
     assert gh.reruns() == []
 
 
-def test_reevaluar_sigue_con_los_demas_si_uno_falla_y_termina_en_rojo() -> None:
-    """Un PR que no se pudo re-evaluar puede quedar en verde con main roto: el job tiene que quedar rojo."""
+def test_un_rerun_rechazado_pasa_el_pr_a_borrador_y_sigue_con_los_demas() -> None:
+    """GitHub rechaza el rerun a los 30 días de la corrida inicial o tras 50 reruns: el check quedaría fijo en su último
+    veredicto, quizá verde con main roto. Un borrador no se puede mergear; marcarlo listo corre el gate de cero."""
     gh = GhFalso(
         prs_abiertos=[
-            {"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1"},
-            {"number": 2, "headRefOid": "b" * 40, "headRefName": "rama-2"},
+            {"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False},
+            {"number": 2, "headRefOid": "b" * 40, "headRefName": "rama-2", "isDraft": False},
         ],
         corridas_del_gate={"a" * 40: [_corrida_del_gate(51)], "b" * 40: [_corrida_del_gate(52)]},
         jobs_por_corrida={51: _job_del_gate(501), 52: _job_del_gate(502)},
         rerun_falla={51},
     )
 
-    assert gate.reevaluar(gh) == 1
+    assert gate.reevaluar(gh) == 0
     assert ["run", "rerun", "52", "--job", "502"] in gh.reruns()
+    assert gh.borradores() == [1]
+    assert "Ready for review" in gh.comentarios()[1]
+    # El motivo es el mensaje de GitHub (el stderr de gh), no el texto genérico de la excepción.
+    assert "gh run rerun falló" in gh.comentarios()[1]
 
 
-def test_reevaluar_falla_si_la_corrida_no_tiene_el_job_del_gate() -> None:
+def test_una_corrida_sin_el_job_del_gate_pasa_el_pr_a_borrador() -> None:
     gh = GhFalso(
-        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1"}],
+        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False}],
         corridas_del_gate={"a" * 40: [_corrida_del_gate(51)]},
         jobs_por_corrida={51: []},
     )
 
+    assert gate.reevaluar(gh) == 0
+    assert gh.borradores() == [1]
+
+
+def test_si_no_puede_pasarlo_a_borrador_el_job_queda_en_rojo() -> None:
+    """El único caso en que un PR queda SIN protección: el job tiene que quedar rojo, a la vista."""
+    gh = GhFalso(
+        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False}],
+        corridas_del_gate={"a" * 40: [_corrida_del_gate(51)]},
+        jobs_por_corrida={51: _job_del_gate(501)},
+        rerun_falla={51},
+        borrador_falla={1},
+    )
+
     assert gate.reevaluar(gh) == 1
+
+
+def test_si_falla_solo_el_comentario_el_pr_igual_queda_protegido() -> None:
+    gh = GhFalso(
+        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": False}],
+        corridas_del_gate={"a" * 40: [_corrida_del_gate(51)]},
+        jobs_por_corrida={51: _job_del_gate(501)},
+        rerun_falla={51},
+        comentario_falla={1},
+    )
+
+    assert gate.reevaluar(gh) == 0
+    assert gh.borradores() == [1]
+
+
+def test_un_borrador_no_se_reevalua() -> None:
+    """Un borrador no se puede mergear; al marcarlo listo (``ready_for_review``) el gate corre de cero. Saltearlo
+    además no gasta reruns de su corrida."""
+    gh = GhFalso(
+        prs_abiertos=[
+            {"number": 1, "headRefOid": "a" * 40, "headRefName": "rama-1", "isDraft": True},
+            {"number": 2, "headRefOid": "b" * 40, "headRefName": "rama-2", "isDraft": False},
+        ],
+        corridas_del_gate={"a" * 40: [_corrida_del_gate(51)], "b" * 40: [_corrida_del_gate(52)]},
+        jobs_por_corrida={51: _job_del_gate(501), 52: _job_del_gate(502)},
+    )
+
+    assert gate.reevaluar(gh) == 0
+    assert gh.reruns() == [["run", "rerun", "52", "--job", "502"]]
+    assert not [c for c in gh.llamadas if c[:2] == ["run", "list"] and "a" * 40 in c]
 
 
 # ── Punto de entrada ───────────────────────────────────────────────────
@@ -486,7 +556,7 @@ def test_el_gate_corre_en_cada_cambio_del_pr_y_al_terminar_ci_sobre_main() -> No
     assert _disparadores(workflow) == {
         "pull_request": {
             "branches": ["main"],
-            "types": ["opened", "synchronize", "reopened", "labeled", "unlabeled"],
+            "types": ["opened", "synchronize", "reopened", "ready_for_review", "labeled", "unlabeled"],
         },
         "workflow_run": {"workflows": [nombre_de_ci], "types": ["completed"], "branches": ["main"]},
         "workflow_dispatch": None,
@@ -513,7 +583,8 @@ def test_permisos_minimos_enumerados_por_job() -> None:
     assert workflow["permissions"] == {"contents": "read"}
     assert {nombre: job.get("permissions") for nombre, job in workflow["jobs"].items()} == {
         "gate": {"contents": "read", "actions": "read", "pull-requests": "read"},
-        "reevaluar": {"contents": "read", "actions": "write", "pull-requests": "read"},
+        # ``pull-requests: write``: pasar a borrador el PR cuyo gate no se pudo re-evaluar (y comentarle por qué).
+        "reevaluar": {"contents": "read", "actions": "write", "pull-requests": "write"},
     }
 
 

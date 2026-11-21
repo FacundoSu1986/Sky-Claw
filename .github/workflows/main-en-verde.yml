@@ -8,10 +8,10 @@ name: Main en verde
 # relanzar la matriz Windows de 40 min. Lógica y anclas: scripts/ci_main_en_verde.py, tests/test_ci_main_en_verde.py.
 on:
   # En cada cambio del PR contra main. `labeled`/`unlabeled`: la etiqueta de salida `ci:repara-main` (el PR que arregla
-  # main) se evalúa en el acto.
+  # main) se evalúa en el acto. `ready_for_review`: el PR que `reevaluar` pasó a borrador vuelve con una corrida nueva.
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   # Cada vez que termina una corrida de CI sobre main se re-evalúa el gate de TODOS los PRs abiertos: sin esto, un PR
   # que pasó a las 10 seguiría en verde a las 12 aunque main se rompiera a las 11. Corre la versión de main de este
   # archivo y no hace checkout de código de ningún PR.
@@ -58,7 +58,8 @@ jobs:
         run: python3 scripts/ci_main_en_verde.py evaluar
 
   # Solo fuera de un PR: al terminar una corrida de CI de main (no la de un PR desde un fork cuya rama se llama main) o a
-  # pedido. Único job con escritura, y solo sobre Actions (re-correr jobs).
+  # pedido. Único job con escritura: Actions (re-correr el gate) y pull requests (si GitHub rechaza el rerun, a los 30
+  # días de la corrida inicial o tras 50 reruns, pasa el PR a borrador para que no se mergee con un veredicto viejo).
   reevaluar:
     name: "🔁 Re-evaluar el gate de los PRs abiertos"
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.event != 'pull_request') }}
@@ -67,7 +68,7 @@ jobs:
     permissions:
       contents: read
       actions: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
