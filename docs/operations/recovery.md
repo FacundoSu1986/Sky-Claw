@@ -83,7 +83,15 @@ clasificar el incidente.
 
 Cuando un teardown brokered VFS sufre timeout de espera de salida (`worker_exit`)
 o fallo de terminación de Job Object con bridge vivo, la terminalidad del worker
-queda indeterminada (`terminality_unknown = True`). En este escenario:
+queda indeterminada (`terminality_unknown = True`). Lo mismo pasa si el bridge MO2
+se desconecta y **no reconecta** dentro de `fence_grace_seconds` (30 s por defecto,
+`VfsBridgeLostTeardownError`): que el bridge no vuelva no prueba que MO2 cayó ni
+que el Job quedó vacío, así que el broker no asume el worker muerto (F1, auditoría
+de código sobre `3f8547c8`). El descriptor del broker se renueva cada hora mientras
+el broker vive, así que un bridge que reconecta más tarde (MO2 vivo) puede traer el
+`worker_exit` y liberar la cuarentena sola (ver «Recuperación automática tardía»).
+Cerrar Sky-Claw con un job en vuelo y MO2 caído deja la cuarentena persistida para
+el próximo arranque. En este escenario:
 
 1. **Principio de seguridad operacional:** `timeout != terminalidad`. Rollbacks
    automáticos y nuevas operaciones mutantes son vetados (`VfsInstanceQuarantinedError`).

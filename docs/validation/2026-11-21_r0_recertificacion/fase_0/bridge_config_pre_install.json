@@ -1,0 +1,10 @@
+{
+  "bundle_digest": "24a1869e4e6213d799e940934dab0900fac2fc0de30babdceb28517749d256b0",
+  "descriptor_path": "E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json",
+  "instance_id": "mo2-1046376432824bdb",
+  "protocol_version": 1,
+  "worker_executable": "E:\\SkyClaw_R0_Rig\\src_r0r4\\dist\\SkyClawApp.exe",
+  "worker_prefix": [
+    "--vfs-worker"
+  ]
+}

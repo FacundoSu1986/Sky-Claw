@@ -12,7 +12,7 @@ Los logs llevan SOLO el nombre de la clase: ni el mensaje ni el traceback, porqu
 mensaje de un backend puede arrastrar datos sensibles.
 
 La segunda mitad del archivo son anclas AST que enumeran la familia (no un caso a mano):
-quién lee keyring dentro del paquete de tools, y qué ``try`` de producción envuelven
+qué rutas del agente y del contexto delegan sus lecturas, y qué ``try`` de producción envuelven
 ``keyring.get_password`` con un ``except Exception`` sin clasificar.
 """
 
@@ -37,7 +37,7 @@ def _parchear_get_password(monkeypatch: pytest.MonkeyPatch, *, devuelve=None, la
             raise lanza
         return devuelve
 
-    monkeypatch.setattr(f"{_MODULO}.keyring.get_password", _falso)
+    monkeypatch.setattr(keyring, "get_password", _falso)
 
 
 # ---------------------------------------------------------------------------
@@ -254,8 +254,7 @@ def test_detector_de_try_sin_clasificar_sintetico(fuente: str, esperadas: list[s
     assert _try_sin_clasificar(fuente) == esperadas
 
 
-#: Hermanos con el MISMO patrón que #575 §2 describe y que este PR NO toca (viven en
-#: ``app_context.py`` y la GUI, fuera del write-set). Congelados por igualdad literal:
+#: Hermanos de la GUI pendientes de clasificación (#940). Congelados por igualdad literal:
 #: un ``except Exception`` nuevo sobre ``keyring.get_password`` rompe este test, y el
 #: día que se clasifique un hermano hay que sacarlo de acá.
 #:
@@ -269,12 +268,10 @@ def test_detector_de_try_sin_clasificar_sintetico(fuente: str, esperadas: list[s
 #: - ``setup_wizard._validate_and_save``: manejador de FRONTERA de UI (muestra el error al usuario con
 #:   ``ui.notify`` en vez de degradar a «no configurado») y no tiene tests de comportamiento; clasificarlo
 #:   sin uno sería inventar el contrato.
-#: - ``sky_claw_gui.py`` y ``app_context.py``: los tocan PR abiertos de otras sesiones (#923, #936, #937,
-#:   #927, #854); se clasifican cuando aterricen para no abrir conflictos.
+#: - ``sky_claw_gui.py``: se clasifica en un cambio separado de AppContext.
 _HERMANOS_PENDIENTES = {
     "sky_claw/app/gui/setup_wizard.py": ["_validate_and_save"],
     "sky_claw/app/gui/sky_claw_gui.py": ["_configured", "_on_check_updates", "save_settings", "save_settings"],
-    "sky_claw/app_context.py": ["_is_configured", "_read_key"],
 }
 
 
@@ -288,12 +285,13 @@ def test_los_try_sin_clasificar_sobre_keyring_estan_congelados() -> None:
     assert encontrados == _HERMANOS_PENDIENTES
 
 
-def test_el_paquete_de_tools_solo_lee_keyring_dentro_de_safe_keyring_get() -> None:
+def test_tools_y_app_context_canalizan_sus_lecturas_por_el_lector_compartido() -> None:
     fuera: list[str] = []
-    for ruta in sorted((_RAIZ / _PAQUETE_TOOLS).rglob("*.py")):
+    rutas = [*sorted((_RAIZ / _PAQUETE_TOOLS).rglob("*.py")), _RAIZ / "sky_claw/app_context.py"]
+    for ruta in rutas:
         arbol = ast.parse(ruta.read_text(encoding="utf-8"))
         for nodo in ast.walk(arbol):
-            if _es_get_password(nodo) and _funcion_contenedora(arbol, nodo) != "_safe_keyring_get":
+            if _es_get_password(nodo):
                 fuera.append(f"{ruta.relative_to(_RAIZ).as_posix()}:{nodo.lineno}")  # type: ignore[attr-defined]
 
     assert fuera == []

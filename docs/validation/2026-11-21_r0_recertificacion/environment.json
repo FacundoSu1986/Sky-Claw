@@ -1,0 +1,26 @@
+﻿{
+    "round":  "R0_Ronda6",
+    "paquete":  "R0-2",
+    "generated_at_local":  "2026-11-21T10:40:34.3507073-03:00",
+    "git_commit_sha":  "676f4c29ebea50fde8a8817a887521812ea40a2c",
+    "git_fuente_de_lectura":  "worktree detached limpio (porcelain=0) en 676f4c29; el exe lo armó otra sesión desde ese SHA (procedencia.txt)",
+    "hold_constant":  {
+                          "module":  "sky_claw/local/mo2/brokered_dyndolod.py",
+                          "line":  922,
+                          "symbol":  "_CONTENCION_DEL_WORKER_VERIFICADA",
+                          "value":  false,
+                          "verified_by":  "git show 676f4c29 (ejecutado); bytecode en el PYZ (leído de procedencia.txt, no re-verificado)"
+                      },
+    "os":  {
+               "caption":  "Microsoft Windows 10 Pro",
+               "version":  "10.0.19045"
+           },
+    "process_integrity":  "Mandatory Label\\Medium Mandatory Level (S-1-16-8192)",
+    "mo2_version":  "2.5.2 rev 9c130cbf",
+    "usvfs_version":  "0.5.6.1",
+    "skyrim_se_version":  "1.6.1170.0",
+    "texgen_dyndolod":  "no usados en R0-2",
+    "python_medicion":  "3.11.9 base (C:\\Users\\\u003cusuario\u003e\\AppData\\Local\\Programs\\Python\\Python311\\python.exe -I), solo para digest_bundle.py",
+    "harness_brokered":  "ninguno (R0-2 usa vfs-health)",
+    "lanzador":  "scripts/correr_exe.ps1 (no se commitea)"
+}
