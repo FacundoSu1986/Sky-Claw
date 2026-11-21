@@ -8,6 +8,7 @@ informativa y acotada para las ramas POSIX del núcleo async documentadas en
 from __future__ import annotations
 
 import ast
+import json
 import re
 import shlex
 from pathlib import Path
@@ -71,8 +72,36 @@ def test_lint_typecheck_y_seguridad_incluyen_scripts_con_comandos_anclados() -> 
 
 #: Cantidad de shards en que se reparte la suite completa de Windows. Cambiarla exige tocar, a la vez, la matriz
 #: ``shard`` del job ``test-shard``, ``SKYCLAW_SHARD`` y el ``--total`` del verificador: el test de consistencia de abajo
-#: ata las tres cosas a este número.
-TOTAL_DE_SHARDS = 4
+#: ata las tres cosas a este número. 2026-11-21: de 4 a 6, con el reparto por duración medida: el shard más lento por
+#: conteo tardaba 905 s de tests (de 2616 s); por duración, 6 shards quedan en ~436 s cada uno.
+TOTAL_DE_SHARDS = 6
+
+#: Versiones de Python de la suite completa, según el evento. En ``pull_request`` solo 3.11 (el intérprete con el que se
+#: congela el ejecutable, ver el test del intérprete de entrega); en todo otro evento (``push`` a main, y cualquier
+#: disparador que se agregue) las dos. La EXPRESIÓN se congela textual, y ``_versiones_para`` la espeja: el test de abajo
+#: extrae las dos listas del texto para que espejo y workflow no puedan divergir.
+EXPRESION_DE_VERSIONES = (
+    "${{ fromJSON(github.event_name == 'pull_request' && '[\"3.11\"]' || '[\"3.11\", \"3.12\"]') }}"
+)
+VERSIONES_EN_PULL_REQUEST = ["3.11"]
+VERSIONES_FUERA_DE_PULL_REQUEST = ["3.11", "3.12"]
+
+
+def _versiones_para(evento: str) -> list[str]:
+    """Espejo de ``EXPRESION_DE_VERSIONES`` (``cond && a || b`` con ``a`` no vacío es un ternario en Actions)."""
+    return VERSIONES_EN_PULL_REQUEST if evento == "pull_request" else VERSIONES_FUERA_DE_PULL_REQUEST
+
+
+def _eventos_del_workflow() -> list[str]:
+    """Los disparadores de ``ci.yml``. PyYAML lee la clave ``on`` como el booleano ``True`` (YAML 1.1)."""
+    workflow = yaml.safe_load(WORKFLOW_CI.read_text(encoding="utf-8"))
+    disparadores = workflow.get("on", workflow.get(True))
+    if isinstance(disparadores, str):
+        return [disparadores]
+    if isinstance(disparadores, list):
+        return [str(d) for d in disparadores]
+    return [str(d) for d in cast(dict[str, Any], disparadores)]
+
 
 #: Umbral de cobertura de la suite completa (``CONTRIBUTING.md`` y ``.github/coding_conventions.md``): sigue siendo un gate
 #: bloqueante aunque ahora se mida sobre los datos combinados de todos los shards.
@@ -89,14 +118,16 @@ def test_la_suite_completa_solo_certifica_windows() -> None:
     shard = jobs["test-shard"]
     veredicto = jobs["test"]
 
+    # Hermanos: el shard y su veredicto usan la MISMA expresión de versiones. Si divergieran, un veredicto esperaría
+    # artefactos de una versión que ningún shard corrió (rojo) o una versión quedaría sin veredicto (sin cobertura).
     assert shard["strategy"]["matrix"] == {
         "os": ["windows-latest"],
-        "python-version": ["3.11", "3.12"],
+        "python-version": EXPRESION_DE_VERSIONES,
         "shard": list(range(1, TOTAL_DE_SHARDS + 1)),
     }
     assert veredicto["strategy"]["matrix"] == {
         "os": ["windows-latest"],
-        "python-version": ["3.11", "3.12"],
+        "python-version": EXPRESION_DE_VERSIONES,
     }
     assert "continue-on-error" not in shard
     assert "continue-on-error" not in veredicto
@@ -104,6 +135,68 @@ def test_la_suite_completa_solo_certifica_windows() -> None:
     assert jobs["test-summary"]["name"] == "🧪 Tests (Pytest)"
     assert jobs["test-summary"]["needs"] == ["test"]
     assert "test-summary" in jobs["build"]["needs"]
+
+
+def test_el_espejo_de_versiones_coincide_con_el_texto_de_la_expresion() -> None:
+    """Las dos listas salen del TEXTO de la expresión: el espejo de Python no puede afirmar algo que el workflow no hace."""
+    coincidencia = re.fullmatch(
+        r"\$\{\{ fromJSON\(github\.event_name == 'pull_request' && '(\[[^']*\])' \|\| '(\[[^']*\])'\) \}\}",
+        EXPRESION_DE_VERSIONES,
+    )
+
+    assert coincidencia, EXPRESION_DE_VERSIONES
+    assert json.loads(coincidencia.group(1)) == VERSIONES_EN_PULL_REQUEST
+    assert json.loads(coincidencia.group(2)) == VERSIONES_FUERA_DE_PULL_REQUEST
+    assert VERSIONES_EN_PULL_REQUEST, "un ternario con la rama verdadera vacía siempre elegiría la falsa"
+
+
+def test_cada_disparador_del_workflow_certifica_sus_versiones_y_ninguna_queda_huerfana() -> None:
+    """Enumera los disparadores REALES de ``ci.yml`` (no una lista escrita a mano): uno nuevo entra solo al cálculo.
+
+    En PR corre solo 3.11; py3.12 se certifica en todo lo demás. Lo que no puede pasar es que una versión deje de
+    correr en TODOS los eventos: sacar el ``push`` (o volverlo PR-only) dejaría a py3.12 sin certificar en ningún lado.
+    """
+    eventos = _eventos_del_workflow()
+
+    assert "pull_request" in eventos
+    assert "push" in eventos, "sin push a main, py3.12 no se certifica en ningún evento"
+    por_evento = {evento: _versiones_para(evento) for evento in eventos}
+    assert por_evento["pull_request"] == ["3.11"]
+    assert all(versiones == ["3.11", "3.12"] for evento, versiones in por_evento.items() if evento != "pull_request")
+    assert {v for versiones in por_evento.values() for v in versiones} == {"3.11", "3.12"}
+
+
+def _version_de_setup_python(job: dict[str, Any]) -> str:
+    pasos = [p for p in job.get("steps", []) if str(p.get("uses", "")).startswith("actions/setup-python@")]
+    assert len(pasos) == 1, "se esperaba un solo setup-python"
+    return str(pasos[0]["with"]["python-version"])
+
+
+def test_el_pr_certifica_el_interprete_con_el_que_se_congela_el_ejecutable() -> None:
+    """La versión que corre en PR no es arbitraria: es la del ejecutable que se entrega. Se enumeran TODOS los jobs de
+    TODOS los workflows que congelan ``sky_claw.spec``; si alguno pasara a otra versión, el PR tiene que seguirla."""
+    versiones_que_congelan = {
+        _version_de_setup_python(job)
+        for archivo in sorted(WORKFLOW_CI.parent.glob("*.yml"))
+        for job in cast(dict[str, Any], yaml.safe_load(archivo.read_text(encoding="utf-8"))["jobs"]).values()
+        if any("pyinstaller sky_claw.spec" in str(p.get("run", "")) for p in job.get("steps", []))
+    }
+
+    assert versiones_que_congelan, "ningún workflow congela sky_claw.spec: el censo no está mirando nada"
+    assert versiones_que_congelan == set(VERSIONES_EN_PULL_REQUEST)
+
+
+def test_lint_corre_una_vez_en_ubuntu_y_mypy_sigue_en_windows() -> None:
+    """Ruff no depende de la plataforma ni del intérprete (versión fijada en ``dev``, ``target-version`` py311 y
+    ``*.py`` con ``eol=lf`` en ``.gitattributes``): correrlo en dos jobs de Windows solo ocupaba slots. Mypy SÍ depende:
+    estrecha las ramas ``sys.platform == "win32"`` según la plataforma en que corre, así que se queda en Windows."""
+    jobs = _jobs()
+
+    assert jobs["lint"]["runs-on"] == "ubuntu-latest"
+    assert "strategy" not in jobs["lint"]
+    assert jobs["lint-summary"]["needs"] == ["lint"]
+    assert jobs["typecheck"]["runs-on"] == "windows-latest"
+    assert jobs["typecheck"]["strategy"]["matrix"] == {"python-version": ["3.11", "3.12"]}
 
 
 def test_el_veredicto_por_version_conserva_el_nombre_que_la_proteccion_de_rama_pudo_exigir() -> None:
@@ -395,3 +488,94 @@ def test_semantica_concurrencia_para_los_tres_escenarios() -> None:
     assert evaluar_cancel("push") is False, (
         "El re-run del mismo SHA en main no cancela la corrida en curso (cancel-in-progress=false)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Capa posterior al merge: corrida nocturna y alerta de main roto
+# ---------------------------------------------------------------------------
+
+#: 07:00 UTC = 04:00 en Argentina: la corrida completa de la noche no compite con las de día por los 20 slots.
+CRON_NOCTURNO = "0 7 * * *"
+ALERTA = "alerta-main"
+CONDICION_DE_ALERTA = "${{ failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}"
+#: Jobs que por política no bloquean (``continue-on-error``): su rojo no es «main roto».
+JOBS_INFORMATIVOS = {"test-posix-core"}
+
+
+def _disparadores() -> dict[str, Any]:
+    """La sección ``on`` de ``ci.yml``. PyYAML lee la clave ``on`` como el booleano ``True`` (YAML 1.1)."""
+    workflow = yaml.safe_load(WORKFLOW_CI.read_text(encoding="utf-8"))
+    return cast(dict[str, Any], workflow.get("on", workflow.get(True)))
+
+
+def _ancestros(jobs: dict[str, Any], nombre: str) -> set[str]:
+    """Todos los jobs de los que ``nombre`` depende, directa o transitivamente (``failure()`` mira a TODOS)."""
+    pendientes = [nombre]
+    vistos: set[str] = set()
+    while pendientes:
+        needs = jobs[pendientes.pop()].get("needs", [])
+        for padre in [needs] if isinstance(needs, str) else needs:
+            if padre not in vistos:
+                vistos.add(padre)
+                pendientes.append(padre)
+    return vistos
+
+
+def test_el_workflow_corre_cada_noche_y_a_pedido_ademas_de_push_y_pr() -> None:
+    """La corrida nocturna completa (las dos versiones de Python) detecta lo que ningún commit cambió: una dependencia
+    nueva que ``pip`` resuelve distinto (como el ruff 0.17.4 de CI-FIX-003) o un test inestable. ``workflow_dispatch``
+    permite correr la suite completa, py3.12 incluido, sobre una rama antes de mergearla."""
+    disparadores = _disparadores()
+
+    assert set(disparadores) == {"push", "pull_request", "schedule", "workflow_dispatch"}
+    assert disparadores["schedule"] == [{"cron": CRON_NOCTURNO}]
+    assert disparadores["push"] == {"branches": ["main", "master"]}
+
+
+def test_la_alerta_depende_de_todo_job_que_no_sea_informativo() -> None:
+    """Enumera los jobs REALES: uno nuevo que no cuelgue (directa o transitivamente) de la alerta rompe esto, porque su
+    rojo no avisaría a nadie."""
+    jobs = _jobs()
+
+    assert _ancestros(jobs, ALERTA) == set(jobs) - {ALERTA} - JOBS_INFORMATIVOS
+    assert all(jobs[j].get("continue-on-error") is True for j in JOBS_INFORMATIVOS)
+    assert not [
+        n
+        for n, j in jobs.items()
+        if ALERTA in ([j["needs"]] if isinstance(j.get("needs"), str) else j.get("needs", []))
+    ]
+
+
+def test_la_alerta_solo_corre_si_algo_fallo_fuera_de_un_pr_y_sobre_main() -> None:
+    """En un PR el rojo ya lo ve quien lo abrió; un ``workflow_dispatch`` sobre otra rama no es «main roto»."""
+    alerta = _jobs()[ALERTA]
+
+    assert alerta["if"] == CONDICION_DE_ALERTA
+    assert alerta["runs-on"] == "ubuntu-latest"
+    # Buscar y crear el issue no es atómico: un grupo FIJO (no por SHA ni por ref) serializa las alertas de todas las
+    # corridas, y sin cancelar la segunda espera y comenta el issue de la primera en vez de abrir un duplicado.
+    # ``queue: max``: con el default (``single``) solo cabe UNA alerta pendiente y una tercera corrida cancela a la
+    # que esperaba — ``cancel-in-progress: false`` protege a la que corre, no a la pendiente —, así que esa corrida
+    # rota nunca dejaría su commit ni su URL en el issue.
+    assert alerta["concurrency"] == {"group": "alerta-main-roto", "cancel-in-progress": False, "queue": "max"}
+    assert "${{" not in alerta["concurrency"]["group"]
+    assert "continue-on-error" not in alerta
+
+
+def test_la_alerta_es_el_unico_job_que_puede_escribir_y_solo_sobre_issues() -> None:
+    """Mínimo privilegio, enumerado: el workflow sigue en ``contents: read`` y ningún otro job gana permisos."""
+    workflow = yaml.safe_load(WORKFLOW_CI.read_text(encoding="utf-8"))
+    con_permisos_propios = {nombre: job["permissions"] for nombre, job in _jobs().items() if "permissions" in job}
+
+    assert workflow["permissions"] == {"contents": "read"}
+    assert con_permisos_propios == {ALERTA: {"contents": "read", "issues": "write"}}
+
+
+def test_la_alerta_no_interpola_expresiones_en_el_script_ni_deja_credenciales_en_el_checkout() -> None:
+    """Los datos de la corrida entran por ``env``, nunca por ``${{ }}`` dentro de ``run`` (inyección de comandos)."""
+    pasos = _jobs()[ALERTA]["steps"]
+
+    assert all("${{" not in str(paso.get("run", "")) for paso in pasos)
+    checkouts = [p for p in pasos if str(p.get("uses", "")).startswith("actions/checkout@")]
+    assert len(checkouts) == 1
+    assert checkouts[0]["with"] == {"persist-credentials": False}
