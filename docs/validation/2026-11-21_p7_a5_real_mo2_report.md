@@ -1,9 +1,10 @@
 # CERTIFICACIÓN EXPERIMENTAL P7-A5-REAL-MO2 — MOD ORGANIZER 2.5.2 AUTÉNTICO FRENTE A `FILE_SHARE_NONE`
 
-**Fecha:** 2026-11-21  
-**Misión:** `P7-A5-REAL-MO2`  
-**Estado experimental emitido:** **`P7_A5_REAL_MO2_GO`** (condicionado; **NO** autoriza transición productiva de P7-A5)  
-**Rama / Base:** `test/p7-a5-real-mo2-compat` sobre `origin/main` = `dae85a25f5adcde005a3ce9a4e8b38ca6fbc0e85` (sincronizada posteriormente con `origin/main` `959a61114be7d8ec2d1b6c66f5669d195b739bb7`)  
+- **Fecha:** 2026-11-21
+- **Misión:** `P7-A5-REAL-MO2`
+- **Estado experimental emitido:** **`P7_A5_REAL_MO2_GO`** (condicionado; **NO** autoriza transición productiva de P7-A5)
+- **Rama / Base:** `test/p7-a5-real-mo2-compat` sobre `origin/main` = `dae85a25f5adcde005a3ce9a4e8b38ca6fbc0e85` (sincronizada posteriormente con `origin/main` `959a61114be7d8ec2d1b6c66f5669d195b739bb7`)
+
 **`EMISION_PRODUCTIVA_HABILITADA`:** `False` (sin cambios)
 
 ---
