@@ -1,0 +1,32 @@
+﻿{
+    "accion":  "install",
+    "exe":  "E:\\SkyClaw_R0_Rig\\exe_676f4c29\\SkyClawApp.exe",
+    "exe_sha256_pre_corrida":  "ef7777c163e8c03524ae6f08f4171beee2957cfbd677c013db6f3d94bfdc9e55",
+    "exe_hash_coincide":  true,
+    "argv":  "--mode install-vfs-bridge --mo2-root E:\\SkyClaw_R0_Rig\\mo2",
+    "env":  {
+                "SKYCLAW_ISOLATED":  "1",
+                "USERPROFILE":  "E:\\SkyClaw_R0_Rig\\home",
+                "HOME":  "E:\\SkyClaw_R0_Rig\\home",
+                "cwd":  "E:\\SkyClaw_R0_Rig\\work\\r6_cwd"
+            },
+    "procesos_pre":  [
+
+                     ],
+    "estado_vfs_pre":  [
+
+                       ],
+    "inicio_local":  "2026-11-21T10:38:24.277-03:00",
+    "inicio_utc":  "2026-11-21T13:38:24.277Z",
+    "fin_local":  "2026-11-21T10:38:28.491-03:00",
+    "fin_utc":  "2026-11-21T13:38:28.491Z",
+    "elapsed_s":  4.214,
+    "rc":  0,
+    "pid":  6424,
+    "procesos_post":  [
+
+                      ],
+    "estado_vfs_post":  [
+
+                        ]
+}

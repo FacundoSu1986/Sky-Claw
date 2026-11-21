@@ -1,0 +1,26 @@
+﻿Traceback (most recent call last):
+  File "asyncio\tasks.py", line 500, in wait_for
+  File "asyncio\locks.py", line 213, in wait
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "sky_claw\local\mo2\vfs_broker.py", line 767, in wait_until_ready
+  File "asyncio\tasks.py", line 502, in wait_for
+TimeoutError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "__main__.py", line 561, in <module>
+  File "__main__.py", line 548, in main
+  File "asyncio\runners.py", line 190, in run
+  File "asyncio\runners.py", line 118, in run
+  File "asyncio\base_events.py", line 654, in run_until_complete
+  File "__main__.py", line 460, in _main
+  File "__main__.py", line 369, in _run_vfs_health
+  File "sky_claw\local\mo2\vfs_broker.py", line 919, in submit
+  File "sky_claw\local\mo2\vfs_broker.py", line 770, in wait_until_ready
+sky_claw.local.mo2.vfs_broker.VfsBrokerError: MO2 bridge no se conect� al broker: el MO2 bridge instalado (18e25d59d7c3) no es el bundle de esta versi�n de Sky-Claw (24a1869e4e62): reinstalalo con `--mode install-vfs-bridge` y reabr� MO2
+

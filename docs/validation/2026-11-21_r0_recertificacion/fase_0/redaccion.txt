@@ -1,0 +1,1 @@
+﻿redaccion_regla5: fase_0/perfil_snapshot_pre.json tenía el usuario de Windows en metadatos PSDrive (campo Home) que PowerShell serializó por error; se reemplazó por <usuario>. sha256 antes=bc341fa5337bf523d740c27d8137a90ea5767496db019e90f282376c68b46448 despues=d1e5f866e4de612ee3c0257f81e5d1530d7c341364f10b7e69b4254289954bd2

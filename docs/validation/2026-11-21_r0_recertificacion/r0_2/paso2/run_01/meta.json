@@ -1,0 +1,7 @@
+﻿{
+    "accion":  "health",
+    "inicio_local":  "2026-11-21T10:29:13",
+    "rc":  "no capturado (bootloader terminado por timeout externo de 180 s)",
+    "rechazo_en_log":  true,
+    "nota":  "ver hallazgo_proceso_colgado.json"
+}

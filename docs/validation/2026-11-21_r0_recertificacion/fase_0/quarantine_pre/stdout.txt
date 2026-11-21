@@ -1,0 +1,4 @@
+﻿2026-11-21 10:14:14,501 [INFO] [] sky_claw.aislamiento: Perfil aislado (SKYCLAW_ISOLATED): el keyring del usuario queda fuera de este proceso.
+2026-11-21 10:14:14,503 [INFO] [] sky_claw: Sky-Claw starting in vfs-quarantine mode
+2026-11-21 10:14:14,504 [INFO] [] sky_claw: Instancia mo2-1046376432824bdb sin cuarentena persistida
+
