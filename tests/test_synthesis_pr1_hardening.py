@@ -246,11 +246,14 @@ def test_persistence_mode_text_sin_ruta_falla_cerrado_antes_del_spawn(tmp_path: 
 
 
 def test_build_cli_args_emite_opciones_oficiales_0366(tmp_path: pathlib.Path) -> None:
-    extra_data = tmp_path / "extra_data"
+    run_cwd = tmp_path / "run_cwd"
+    extra_data = run_cwd / "Data"
+    extra_data.mkdir(parents=True)
     persistence_dir = tmp_path / "persistence_state"
     runner, _ = _crear_entorno_base(
         tmp_path,
         extra_data_folder=extra_data,
+        working_dir=run_cwd,
         persistence_mode="Text",
         persistence_path=persistence_dir,
         target_runtime="net10.0",
@@ -808,14 +811,28 @@ def test_settings_v2_rechaza_assembly_no_canonico_en_type_y_normaliza_en_copia_c
         assert (
             prof["$type"] == "Synthesis.Bethesda.Execution.Settings.V2.SynthesisProfile, Synthesis.Bethesda.Execution"
         )
+        assert list(prof.keys())[0] == "$type"
         patcher_out = prof["Groups"][0]["Patchers"][0]
         assert "$TYPE" not in patcher_out
         assert (
             patcher_out["$type"]
             == "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, Synthesis.Bethesda.Execution"
         )
+        assert list(patcher_out.keys())[0] == "$type"
     finally:
         temp_path.unlink(missing_ok=True)
+
+    # También preserva "$type" en primera posición cuando ya venía normalizado en la entrada.
+    base_canon = json.loads(json.dumps(base))
+    settings_canon = tmp_path / "PipelineSettingsCanon.json"
+    settings_canon.write_text(json.dumps(base_canon), encoding="utf-8")
+    temp_canon, _ = PatcherPipeline.prepare_synthesis_cli_settings(settings_canon, "Default", ["PatcherLight"])
+    try:
+        written_canon = json.loads(temp_canon.read_text(encoding="utf-8"))
+        patcher_canon = written_canon["Profiles"][0]["Groups"][0]["Patchers"][0]
+        assert list(patcher_canon.keys())[0] == "$type"
+    finally:
+        temp_canon.unlink(missing_ok=True)
 
 
 def test_entorno_filtra_dotnet_x86_incluso_cuando_dotnet_root_es_none(
@@ -962,3 +979,59 @@ async def test_run_pipeline_crea_y_limpia_temp_dir_aislado_cuando_no_se_configur
     assert len(seen_temp_dirs) == 2
     assert seen_temp_dirs[1] != seen_temp_dirs[0]
     assert not seen_temp_dirs[1].exists()
+
+
+def test_extra_data_folder_exige_working_dir_coincidente_y_output_absoluto(tmp_path: pathlib.Path) -> None:
+    """0.36.6 lee ExtraData de cwd/Data: extra_data_folder requiere working_dir coherente y output absoluto."""
+    extra_data = tmp_path / "extra" / "Data"
+    extra_data.mkdir(parents=True)
+    case1 = tmp_path / "case1"
+    case1.mkdir()
+    with pytest.raises(SynthesisExecutionError, match="working_dir"):
+        _crear_entorno_base(case1, extra_data_folder=extra_data, working_dir=None)
+
+    mismatch_cwd = tmp_path / "other_cwd"
+    mismatch_cwd.mkdir()
+    case2 = tmp_path / "case2"
+    case2.mkdir()
+    with pytest.raises(SynthesisExecutionError, match="Data"):
+        _crear_entorno_base(case2, extra_data_folder=extra_data, working_dir=mismatch_cwd)
+
+    exe_path = tmp_path / "Synthesis.Bethesda.CLI.exe"
+    exe_path.touch()
+    with pytest.raises(SynthesisExecutionError, match="output_path"):
+        SynthesisConfig(
+            game_path=tmp_path / "Skyrim",
+            mo2_path=tmp_path / "MO2",
+            output_path=pathlib.Path("relative_output"),
+            synthesis_exe=exe_path,
+            working_dir=tmp_path / "extra",
+        )
+
+
+@pytest.mark.parametrize("bad_limit", [0, -1, True])
+def test_max_output_bytes_invalido_falla_en_config(tmp_path: pathlib.Path, bad_limit: int | bool) -> None:
+    """max_output_bytes debe ser entero positivo no-bool desde SynthesisConfig."""
+    with pytest.raises(SynthesisExecutionError, match="max_output_bytes"):
+        _crear_entorno_base(tmp_path, max_output_bytes=bad_limit)
+
+
+async def test_recibo_export_anclado_no_acepta_frase_citada_en_error(tmp_path: pathlib.Path) -> None:
+    """Una cita incrustada a mitad de línea no cuenta como recibo válido de exportación."""
+    runner, output = _crear_entorno_base(tmp_path, require_patcher_receipts=True)
+
+    async def _run_quoted(_args: list[str], **_kwargs: Any) -> tuple[bytes, bytes, int]:
+        (output / "Synthesis.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+        return (
+            b"[PatcherLight] Starting run.\n"
+            b"[PatcherLight] Run successful.\n"
+            b"Note: Exported patch to final destination: fake.esp\n",
+            b"",
+            0,
+        )
+
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", _run_quoted):
+        result = await runner.run_pipeline(["PatcherLight"])
+
+    assert result.success is False
+    assert any("Exported patch to final destination:" in err for err in result.errors)
