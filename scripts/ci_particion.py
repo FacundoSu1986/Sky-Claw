@@ -12,10 +12,16 @@ falla y el verde miente. Por eso este módulo tiene dos mitades que se prueban j
   declararon), mismo total, sin archivos repetidos y con la suma de tests igual al total
   colectado. Con ``--con-cobertura`` exige además la base de ``coverage`` de cada shard, presente y legible.
 
-El peso de un archivo es su cantidad de tests: es un proxy de su duración, no la duración. Cada manifiesto registra
-también cuánto tardaron los tests de cada archivo (suma de sus fases setup/call/teardown, SIN la colección ni el
-arranque del job), para calibrar el reparto con datos reales en vez de adivinar. No es la duración del job: para decidir
-un ``timeout-minutes`` manda la duración del job entero que muestra Actions.
+El peso de un archivo para repartir es su **duración medida**, tomada de la calibración versionada
+(``scripts/ci_duraciones.json``) y escalada por cuántos tests tiene hoy; un archivo sin medir se estima con el promedio
+por test de la calibración. Sin calibración el peso es la cantidad de tests (el criterio anterior). El conteo era un mal
+proxy: medido en main, los 4 shards por conteo tardaron 574/509/905/628 s de tests y el más lento decide cuándo termina
+el check. La huella, el manifiesto y el verificador siguen trabajando con el CONTEO: el criterio de reparto no cambia
+qué se verifica.
+
+Cada manifiesto registra cuánto tardaron los tests de cada archivo (suma de sus fases setup/call/teardown, SIN la
+colección ni el arranque del job); ``python -m scripts.ci_particion calibrar`` arma la calibración con esos datos. No es
+la duración del job: para decidir un ``timeout-minutes`` manda la duración del job entero que muestra Actions.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -43,6 +50,13 @@ NOMBRE_DEL_MANIFIESTO = "shard-manifest.json"
 #: Base de datos de ``coverage`` que cada shard deja junto a su manifiesto (``COVERAGE_FILE`` del workflow).
 NOMBRE_DE_LA_COBERTURA = "coverage.sqlite"
 VERSION_DEL_MANIFIESTO = 1
+
+#: Ruta de una calibración alternativa. Sin la variable se usa la versionada; si se define y el archivo no existe, la
+#: sesión ABORTA (pedir una calibración que no está es un error de uso, no un permiso para repartir por conteo).
+ENV_DURACIONES = "SKYCLAW_SHARD_DURACIONES"
+#: Calibración versionada: duración medida de los tests de cada archivo. Se regenera con ``calibrar``.
+RUTA_DE_LA_CALIBRACION = Path(__file__).with_name("ci_duraciones.json")
+VERSION_DE_LA_CALIBRACION = 1
 
 _FORMA_SHARD = re.compile(r"[0-9]+/[0-9]+")
 
@@ -99,6 +113,104 @@ def repartir(pesos: Mapping[str, int], total: int) -> tuple[frozenset[str], ...]
     return tuple(frozenset(g) for g in grupos)
 
 
+@dataclass(frozen=True, slots=True)
+class Medicion:
+    """Lo que se midió de un archivo de tests: cuánto tardaron sus tests y cuántos eran en esa corrida."""
+
+    segundos: float
+    tests: int
+
+
+def pesos_de_reparto(conteos: Mapping[str, int], calibracion: Mapping[str, Medicion] | None) -> dict[str, int]:
+    """El peso con que se reparte cada archivo: su duración estimada en milisegundos (entero >= 1).
+
+    * archivo calibrado: su duración medida, escalada por ``conteo_actual / tests_medidos`` (un archivo que ganó tests no
+      se queda con la duración vieja);
+    * archivo sin calibrar: ``conteo_actual`` por el promedio de milisegundos por test de toda la calibración;
+    * sin calibración (``None`` o vacía): el conteo tal cual, que es el reparto de antes.
+
+    Es determinista: depende solo de ``conteos`` y de ``calibracion``, que todos los shards leen iguales.
+    """
+    if not calibracion:
+        return dict(conteos)
+    ms_por_test = 1000 * sum(m.segundos for m in calibracion.values()) / sum(m.tests for m in calibracion.values())
+    pesos: dict[str, int] = {}
+    for nombre, conteo in conteos.items():
+        medicion = calibracion.get(nombre)
+        estimado = 1000 * medicion.segundos * conteo / medicion.tests if medicion is not None else ms_por_test * conteo
+        pesos[nombre] = max(1, round(estimado))
+    return pesos
+
+
+def _es_segundos(valor: object) -> bool:
+    """Un número finito y no negativo: ``bool`` no es un tiempo y ``NaN``/``Infinity`` (que ``json`` acepta) tampoco."""
+    return isinstance(valor, int | float) and not isinstance(valor, bool) and math.isfinite(valor) and valor >= 0
+
+
+def _validar_calibracion(segundos: object, tests: object) -> dict[str, Medicion]:
+    """Arma la calibración desde los dos mapas, o lanza ``ValueError`` con el primer problema encontrado."""
+    if not isinstance(segundos, dict) or not isinstance(tests, dict):
+        raise ValueError("calibración inválida: 'segundos_por_archivo' y 'tests_por_archivo' deben ser objetos")
+    if set(segundos) != set(tests):
+        distintos = sorted(set(segundos) ^ set(tests))
+        raise ValueError(f"calibración inválida: los dos mapas no tienen los mismos archivos ({distintos[:5]})")
+    if not segundos:
+        raise ValueError("calibración inválida: no tiene ningún archivo")
+    malos_segundos = sorted(str(n) for n, v in segundos.items() if not _es_segundos(v))
+    if malos_segundos:
+        raise ValueError(f"calibración inválida: segundos que no son un número finito >= 0: {malos_segundos[:5]}")
+    malos_tests = sorted(str(n) for n, v in tests.items() if not _es_entero(v) or v < 1)
+    if malos_tests:
+        raise ValueError(f"calibración inválida: cantidades de tests que no son un entero >= 1: {malos_tests[:5]}")
+    calibracion = {str(n): Medicion(segundos=float(segundos[n]), tests=int(tests[n])) for n in segundos}
+    if sum(m.segundos for m in calibracion.values()) <= 0:
+        raise ValueError("calibración inválida: sin tiempos medidos (todo en 0 s, ¿una corrida con --collect-only?)")
+    return calibracion
+
+
+def cargar_calibracion(ruta: Path) -> dict[str, Medicion] | None:
+    """Lee una calibración; ``None`` si el archivo no existe. Una calibración mal formada lanza ``ValueError``.
+
+    Mal formada es fail-closed a propósito: el plugin la convierte en un error de uso que aborta el shard. Repartir por
+    conteo en silencio con una calibración rota no rompería la verificación, pero escondería que el balance se perdió.
+    """
+    try:
+        texto = ruta.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError(f"{ruta}: no se pudo leer la calibración ({exc})") from exc
+    try:
+        contenido = json.loads(texto)
+    except ValueError as exc:
+        raise ValueError(f"{ruta}: la calibración no es JSON válido ({exc})") from exc
+    if not isinstance(contenido, dict):
+        raise ValueError(f"{ruta}: la calibración debe ser un objeto JSON")
+    version = contenido.get("version")
+    if not _es_entero(version) or version != VERSION_DE_LA_CALIBRACION:
+        raise ValueError(
+            f"{ruta}: calibración con versión {version!r} no soportada (se espera {VERSION_DE_LA_CALIBRACION})"
+        )
+    try:
+        return _validar_calibracion(contenido.get("segundos_por_archivo"), contenido.get("tests_por_archivo"))
+    except ValueError as exc:
+        raise ValueError(f"{ruta}: {exc}") from exc
+
+
+def escribir_calibracion(calibracion: Mapping[str, Medicion], ruta: Path) -> None:
+    """Escribe la calibración ordenada por archivo (un diff por archivo que cambió, no un bloque reordenado).
+
+    ``newline="\\n"``: los mismos bytes en Windows y en Linux. ``.gitattributes`` solo fija el fin de línea de ``*.py``, y
+    sin esto regenerarla en Windows cambiaría cada línea del archivo de trabajo.
+    """
+    contenido = {
+        "version": VERSION_DE_LA_CALIBRACION,
+        "segundos_por_archivo": {n: round(calibracion[n].segundos, 3) for n in sorted(calibracion)},
+        "tests_por_archivo": {n: calibracion[n].tests for n in sorted(calibracion)},
+    }
+    ruta.write_text(json.dumps(contenido, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+
+
 def huella_de_suite(pesos: Mapping[str, int]) -> str:
     """Identifica la suite colectada (archivo y cantidad de tests), sin importar el orden: dos shards que vieron la
     misma suite tienen la misma huella.
@@ -150,22 +262,43 @@ def _archivo_de(nodeid: str) -> str:
 class _Particion:
     """Deja solo los tests de los archivos que le tocan a este shard y registra qué hizo."""
 
-    def __init__(self, shard: Shard, ruta_manifiesto: Path | None) -> None:
+    def __init__(
+        self, shard: Shard, ruta_manifiesto: Path | None, calibracion: Mapping[str, Medicion] | None = None
+    ) -> None:
         self._shard = shard
         self._ruta_manifiesto = ruta_manifiesto
+        self._calibracion = calibracion
+        #: Conteo de tests por archivo: es lo que entra a la huella y al manifiesto (el verificador trabaja con conteos).
         self._pesos: dict[str, int] = {}
         self._propios: frozenset[str] = frozenset()
         self._reparto_aplicado = False
+        self._sin_calibrar = 0
         self._duraciones: defaultdict[str, float] = defaultdict(float)
 
     def pytest_report_header(self) -> str:
-        return f"skyclaw-particion: shard {self._shard.indice}/{self._shard.total}"
+        criterio = (
+            f"duración medida ({len(self._calibracion)} archivos calibrados)"
+            if self._calibracion
+            else "conteo de tests (sin calibración)"
+        )
+        return f"skyclaw-particion: shard {self._shard.indice}/{self._shard.total}, reparto por {criterio}"
+
+    def pytest_report_collectionfinish(self) -> str | None:
+        """Cuántos archivos se repartieron con un peso estimado: una calibración vieja se nota en el log del shard."""
+        if not self._calibracion or not self._reparto_aplicado:
+            return None
+        return (
+            f"skyclaw-particion: {self._sin_calibrar} de {len(self._pesos)} archivos colectados sin calibrar "
+            "(peso estimado)"
+        )
 
     # trylast: otros filtros (-k, -m) ya actuaron, y se reparte lo que queda: todos los shards ven lo mismo.
     @pytest.hookimpl(trylast=True)
     def pytest_collection_modifyitems(self, config: pytest.Config, items: list[pytest.Item]) -> None:
         self._pesos = dict(Counter(_archivo_de(item.nodeid) for item in items))
-        propios = repartir(self._pesos, self._shard.total)[self._shard.indice - 1]
+        self._sin_calibrar = sum(1 for nombre in self._pesos if nombre not in (self._calibracion or {}))
+        para_repartir = pesos_de_reparto(self._pesos, self._calibracion)
+        propios = repartir(para_repartir, self._shard.total)[self._shard.indice - 1]
         conservados = [item for item in items if _archivo_de(item.nodeid) in propios]
         descartados = [item for item in items if _archivo_de(item.nodeid) not in propios]
         if descartados:
@@ -193,10 +326,22 @@ def pytest_configure(config: pytest.Config) -> None:
         return
     try:
         shard = parsear_shard(valor)
+        calibracion = _calibracion_de_la_sesion()
     except ValueError as exc:
         raise pytest.UsageError(str(exc)) from exc
     ruta = os.environ.get(ENV_MANIFIESTO)
-    config.pluginmanager.register(_Particion(shard, Path(ruta) if ruta else None), "skyclaw-particion")
+    config.pluginmanager.register(_Particion(shard, Path(ruta) if ruta else None, calibracion), "skyclaw-particion")
+
+
+def _calibracion_de_la_sesion() -> dict[str, Medicion] | None:
+    """La calibración que pide ``SKYCLAW_SHARD_DURACIONES`` (obligatoria si se define) o, sin ella, la versionada."""
+    explicita = os.environ.get(ENV_DURACIONES, "")
+    if not explicita:
+        return cargar_calibracion(RUTA_DE_LA_CALIBRACION)
+    calibracion = cargar_calibracion(Path(explicita))
+    if calibracion is None:
+        raise ValueError(f"{ENV_DURACIONES}={explicita!r}: el archivo de calibración no existe")
+    return calibracion
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +545,38 @@ def _resumen(directorio: Path) -> list[str]:
     return lineas
 
 
+def calibracion_desde_manifiestos(directorio: Path, total: int) -> tuple[dict[str, Medicion], list[str]]:
+    """La calibración que dejaron los shards de UNA corrida completa, o los problemas que impiden armarla.
+
+    Exige primero lo mismo que el veredicto (``verificar``): calibrar con un shard de menos dejaría sin medición a sus
+    archivos sin que nada lo diga. Cada archivo seleccionado tiene que traer su tiempo.
+    """
+    errores = verificar(directorio, total)
+    if errores:
+        return {}, errores
+    manifiestos, _ = _cargar_manifiestos(directorio)
+    segundos: dict[str, object] = {}
+    tests: dict[str, object] = {}
+    for m in manifiestos:
+        tiempos = m.get("tiempo_de_tests_por_archivo_s")
+        if not isinstance(tiempos, dict):
+            errores.append(f"el manifiesto del shard {m['shard']} no trae 'tiempo_de_tests_por_archivo_s'")
+            continue
+        sin_tiempo = sorted(set(m["archivos"]) - set(tiempos))
+        if sin_tiempo:
+            errores.append(f"el manifiesto del shard {m['shard']} no trae el tiempo de: {sin_tiempo}")
+        for nombre, conteo in m["archivos"].items():
+            if nombre in tiempos:
+                segundos[nombre] = tiempos[nombre]
+                tests[nombre] = conteo
+    if errores:
+        return {}, errores
+    try:
+        return _validar_calibracion(segundos, tests), []
+    except ValueError as exc:
+        return {}, [str(exc)]
+
+
 def _entero_positivo(texto: str) -> int:
     """``type=`` de argparse: un ``--total`` no positivo (o no entero) es un error de uso, no un caso a verificar."""
     try:
@@ -409,6 +586,18 @@ def _entero_positivo(texto: str) -> int:
     if valor < 1:
         raise argparse.ArgumentTypeError(f"debe ser >= 1 (se recibió {valor})")
     return valor
+
+
+def _calibrar(directorio: Path, total: int, salida: Path) -> int:
+    calibracion, errores = calibracion_desde_manifiestos(directorio, total)
+    if errores:
+        for error in errores:
+            print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    escribir_calibracion(calibracion, salida)
+    total_s = sum(m.segundos for m in calibracion.values())
+    print(f"OK: calibración de {len(calibracion)} archivos ({total_s:.0f} s de tests) escrita en {salida}")
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -422,7 +611,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help=f"exige además la base {NOMBRE_DE_LA_COBERTURA} de coverage en la carpeta de cada shard",
     )
+    calib = sub.add_parser(
+        "calibrar", help="escribe la calibración de duraciones con los manifiestos de una corrida completa"
+    )
+    calib.add_argument("directorio", type=Path, help="carpeta con los artefactos de los shards (una versión de Python)")
+    calib.add_argument("--total", type=_entero_positivo, required=True, help="cantidad de shards de esa corrida (>= 1)")
+    calib.add_argument(
+        "--salida",
+        type=Path,
+        default=RUTA_DE_LA_CALIBRACION,
+        help=f"destino (por defecto {RUTA_DE_LA_CALIBRACION.name})",
+    )
     args = parser.parse_args(argv)
+
+    if args.orden == "calibrar":
+        return _calibrar(args.directorio, args.total, args.salida)
 
     errores = verificar(args.directorio, args.total, con_cobertura=args.con_cobertura)
     if errores:

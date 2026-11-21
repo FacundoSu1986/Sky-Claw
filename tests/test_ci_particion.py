@@ -852,3 +852,346 @@ def test_ejecutar_el_modulo_como_script_verifica_los_manifiestos(
 
     assert resultado.returncode == 0, resultado.stdout + resultado.stderr
     assert "OK" in resultado.stdout
+
+
+# ---------------------------------------------------------------------------
+# Reparto por duración medida: la calibración versionada (scripts/ci_duraciones.json)
+# ---------------------------------------------------------------------------
+#
+# El conteo de tests es un mal proxy de la duración: medido en main (corrida 44905611542, py3.11) los 4 shards
+# por conteo tardaron 574/509/905/628 s de tests, y el más lento decide cuándo termina el check. Con la duración
+# medida de cada archivo el mismo reparto voraz queda en ~654 s por shard. Lo que NO cambia: la huella, el manifiesto
+# y el verificador siguen trabajando con el conteo, así que un reparto por duración se verifica igual que antes.
+
+
+def _medicion(segundos: float, tests: int) -> Any:
+    return ci_particion.Medicion(segundos=segundos, tests=tests)
+
+
+@pytest.mark.parametrize("calibracion", [None, {}])
+def test_sin_calibracion_el_peso_de_reparto_es_el_conteo(calibracion: Any) -> None:
+    """Sin datos medidos el reparto es exactamente el de antes: nada cambia para quien no tiene calibración."""
+    conteos = PESOS_SINTETICOS["con_empates"]
+
+    assert ci_particion.pesos_de_reparto(conteos, calibracion) == conteos
+
+
+def test_un_archivo_calibrado_pesa_su_duracion_medida_en_milisegundos() -> None:
+    pesos = ci_particion.pesos_de_reparto({"tests/a.py": 4}, {"tests/a.py": _medicion(2.5, 4)})
+
+    assert pesos == {"tests/a.py": 2500}
+
+
+@pytest.mark.parametrize(("conteo_actual", "esperado"), [(8, 5000), (2, 1250)])
+def test_un_archivo_calibrado_que_cambio_de_tamano_escala_su_duracion_por_la_cantidad_de_tests(
+    conteo_actual: int, esperado: int
+) -> None:
+    """Un archivo que ganó (o perdió) tests desde la calibración no se queda con la duración vieja."""
+    pesos = ci_particion.pesos_de_reparto({"tests/a.py": conteo_actual}, {"tests/a.py": _medicion(2.5, 4)})
+
+    assert pesos == {"tests/a.py": esperado}
+
+
+def test_un_archivo_sin_calibrar_se_estima_con_el_promedio_por_test_de_la_calibracion() -> None:
+    """Un archivo nuevo no tiene medición: pesa como un archivo promedio de su tamaño (4000 ms / 20 tests = 200 ms)."""
+    calibracion = {"tests/a.py": _medicion(3.0, 10), "tests/b.py": _medicion(1.0, 10)}
+
+    pesos = ci_particion.pesos_de_reparto({"tests/a.py": 10, "tests/b.py": 10, "tests/nuevo.py": 3}, calibracion)
+
+    assert pesos == {"tests/a.py": 3000, "tests/b.py": 1000, "tests/nuevo.py": 600}
+
+
+def test_el_peso_de_reparto_nunca_es_menor_que_uno() -> None:
+    """``repartir`` exige pesos >= 1: un archivo medido en 0 s no puede volverlo inválido."""
+    calibracion = {"tests/a.py": _medicion(0.0, 5), "tests/b.py": _medicion(10.0, 5)}
+
+    pesos = ci_particion.pesos_de_reparto({"tests/a.py": 5, "tests/b.py": 5}, calibracion)
+
+    assert pesos == {"tests/a.py": 1, "tests/b.py": 10000}
+
+
+def test_el_reparto_por_duracion_separa_lo_que_el_conteo_juntaria() -> None:
+    """El caso que motiva el cambio: un archivo con pocos tests pero lentos. Por conteo cae junto a uno de los livianos
+    (100.5 s contra 0.5 s); por duración queda solo y los dos livianos comparten el otro shard."""
+    conteos = {"tests/pesado.py": 1, "tests/liviano_1.py": 50, "tests/liviano_2.py": 50}
+    calibracion = {
+        "tests/pesado.py": _medicion(100.0, 1),
+        "tests/liviano_1.py": _medicion(0.5, 50),
+        "tests/liviano_2.py": _medicion(0.5, 50),
+    }
+    por_duracion = (frozenset({"tests/pesado.py"}), frozenset({"tests/liviano_1.py", "tests/liviano_2.py"}))
+
+    assert repartir(conteos, 2) != por_duracion, "precondición: por conteo el reparto es otro"
+    assert repartir(ci_particion.pesos_de_reparto(conteos, calibracion), 2) == por_duracion
+
+
+def test_los_pesos_de_reparto_no_dependen_del_orden_de_los_archivos() -> None:
+    calibracion = ci_particion.cargar_calibracion(ci_particion.RUTA_DE_LA_CALIBRACION)
+    conteos = _pesos_reales()
+    esperado = repartir(ci_particion.pesos_de_reparto(conteos, calibracion), 6)
+
+    for semilla in range(5):
+        items = list(conteos.items())
+        random.Random(semilla).shuffle(items)
+        assert repartir(ci_particion.pesos_de_reparto(dict(items), calibracion), 6) == esperado
+
+
+@pytest.mark.parametrize("total", TOTALES)
+def test_el_reparto_con_la_calibracion_versionada_es_una_particion_exacta_del_arbol_real(total: int) -> None:
+    conteos = _pesos_reales()
+    pesos = ci_particion.pesos_de_reparto(conteos, ci_particion.cargar_calibracion(ci_particion.RUTA_DE_LA_CALIBRACION))
+    grupos = repartir(pesos, total)
+
+    todos = [n for g in grupos for n in g]
+    assert sorted(todos) == sorted(conteos)
+    assert len(todos) == len(set(todos))
+
+
+def test_la_calibracion_versionada_es_valida_y_trae_tiempos_medidos() -> None:
+    """Una calibración rota aborta TODOS los shards (fail-closed): mejor enterarse acá que en CI."""
+    calibracion = ci_particion.cargar_calibracion(ci_particion.RUTA_DE_LA_CALIBRACION)
+
+    assert calibracion is not None, f"falta {ci_particion.RUTA_DE_LA_CALIBRACION}"
+    assert len(calibracion) > 100
+    assert all(nombre.startswith("tests/") and nombre.endswith(".py") for nombre in calibracion)
+    assert sum(m.segundos for m in calibracion.values()) > 0
+
+
+def test_cargar_una_calibracion_que_no_existe_devuelve_none(tmp_path: Path) -> None:
+    assert ci_particion.cargar_calibracion(tmp_path / "no_existe.json") is None
+
+
+def _calibracion_cruda(
+    segundos: Any = None, tests: Any = None, *, version: Any = 1, quitar: str | None = None
+) -> dict[str, Any]:
+    contenido: dict[str, Any] = {
+        "version": version,
+        "segundos_por_archivo": {"tests/a.py": 1.5, "tests/b.py": 0.25} if segundos is None else segundos,
+        "tests_por_archivo": {"tests/a.py": 3, "tests/b.py": 1} if tests is None else tests,
+    }
+    if quitar is not None:
+        del contenido[quitar]
+    return contenido
+
+
+def test_escribir_y_cargar_la_calibracion_conserva_cada_medicion(tmp_path: Path) -> None:
+    calibracion = {"tests/a.py": _medicion(1.5, 3), "tests/sub/test_b.py": _medicion(0.25, 1)}
+    ruta = tmp_path / "duraciones.json"
+
+    ci_particion.escribir_calibracion(calibracion, ruta)
+
+    assert ci_particion.cargar_calibracion(ruta) == calibracion
+    assert b"\r\n" not in ruta.read_bytes(), "mismos bytes en cualquier SO: fin de línea LF"
+    assert json.loads(ruta.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "segundos_por_archivo": {"tests/a.py": 1.5, "tests/sub/test_b.py": 0.25},
+        "tests_por_archivo": {"tests/a.py": 3, "tests/sub/test_b.py": 1},
+    }
+
+
+@pytest.mark.parametrize(
+    "contenido",
+    [
+        "{no es json",
+        "[]",
+        json.dumps(_calibracion_cruda(version=2)),
+        json.dumps(_calibracion_cruda(version=True)),
+        json.dumps(_calibracion_cruda(quitar="segundos_por_archivo")),
+        json.dumps(_calibracion_cruda(quitar="tests_por_archivo")),
+        json.dumps(_calibracion_cruda(tests={"tests/a.py": 3})),
+        json.dumps(_calibracion_cruda(segundos={"tests/a.py": -1.0, "tests/b.py": 0.25})),
+        json.dumps(_calibracion_cruda(segundos={"tests/a.py": "1.5", "tests/b.py": 0.25})),
+        json.dumps(_calibracion_cruda(segundos={"tests/a.py": True, "tests/b.py": 0.25})),
+        '{"version": 1, "segundos_por_archivo": {"tests/a.py": NaN}, "tests_por_archivo": {"tests/a.py": 1}}',
+        '{"version": 1, "segundos_por_archivo": {"tests/a.py": Infinity}, "tests_por_archivo": {"tests/a.py": 1}}',
+        json.dumps(_calibracion_cruda(tests={"tests/a.py": 0, "tests/b.py": 1})),
+        json.dumps(_calibracion_cruda(tests={"tests/a.py": 1.5, "tests/b.py": 1})),
+        json.dumps(_calibracion_cruda(tests={"tests/a.py": True, "tests/b.py": 1})),
+        json.dumps(_calibracion_cruda(segundos={}, tests={})),
+        json.dumps(_calibracion_cruda(segundos={"tests/a.py": 0.0, "tests/b.py": 0})),
+    ],
+    ids=[
+        "no_json",
+        "no_es_un_objeto",
+        "version_desconocida",
+        "version_booleana",
+        "sin_segundos",
+        "sin_tests",
+        "archivos_distintos_en_cada_mapa",
+        "segundos_negativos",
+        "segundos_de_texto",
+        "segundos_booleanos",
+        "segundos_nan",
+        "segundos_infinitos",
+        "tests_cero",
+        "tests_decimal",
+        "tests_booleano",
+        "vacia",
+        "sin_tiempos_medidos",
+    ],
+)
+def test_cargar_una_calibracion_mal_formada_falla_con_un_error_que_nombra_la_calibracion(
+    contenido: str, tmp_path: Path
+) -> None:
+    ruta = tmp_path / "duraciones.json"
+    ruta.write_text(contenido, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="calibración"):
+        ci_particion.cargar_calibracion(ruta)
+
+
+# --- calibrar: la calibración se regenera desde los manifiestos de una corrida completa ---
+
+
+def _calibrar(directorio: Path, salida: Path) -> int:
+    return ci_particion.main(
+        ["calibrar", str(directorio), "--total", str(TOTAL_DEL_VERIFICADOR), "--salida", str(salida)]
+    )
+
+
+def test_calibrar_desde_manifiestos_completos_escribe_lo_que_midio_cada_shard(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    salida = tmp_path / "duraciones.json"
+
+    codigo = _calibrar(_escribir(tmp_path / "m", _manifiestos_validos()), salida)
+
+    assert codigo == 0, capsys.readouterr().err
+    assert ci_particion.cargar_calibracion(salida) == {
+        nombre: _medicion(0.5, conteo) for nombre, conteo in PESOS_DEL_VERIFICADOR.items()
+    }
+
+
+def test_calibrar_rechaza_manifiestos_incompletos_y_no_escribe_nada(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Calibrar con un shard de menos dejaría sin medición a sus archivos: solo se calibra desde una suite completa."""
+    salida = tmp_path / "duraciones.json"
+
+    codigo = _calibrar(_escribir(tmp_path / "m", _sin_el_segundo_shard(_manifiestos_validos())), salida)
+
+    assert codigo == 1
+    assert "esperaban" in capsys.readouterr().err
+    assert not salida.exists()
+
+
+def test_calibrar_rechaza_un_manifiesto_sin_el_tiempo_de_algun_archivo(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifiestos = _manifiestos_validos()
+    sin_tiempo = sorted(manifiestos[1]["archivos"])[0]
+    manifiestos[1]["tiempo_de_tests_por_archivo_s"] = {
+        k: v for k, v in manifiestos[1]["tiempo_de_tests_por_archivo_s"].items() if k != sin_tiempo
+    }
+    salida = tmp_path / "duraciones.json"
+
+    codigo = _calibrar(_escribir(tmp_path / "m", manifiestos), salida)
+
+    assert codigo == 1
+    assert sin_tiempo in capsys.readouterr().err
+    assert not salida.exists()
+
+
+def test_calibrar_rechaza_una_corrida_sin_tiempos_medidos(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Un ``--collect-only`` deja manifiestos completos con todos los tiempos en 0: no es una medición."""
+    manifiestos = [
+        {**m, "tiempo_de_tests_por_archivo_s": dict.fromkeys(m["archivos"], 0.0)} for m in _manifiestos_validos()
+    ]
+    salida = tmp_path / "duraciones.json"
+
+    codigo = _calibrar(_escribir(tmp_path / "m", manifiestos), salida)
+
+    assert codigo == 1
+    assert "calibración" in capsys.readouterr().err
+    assert not salida.exists()
+
+
+# --- el plugin con calibración, ejercido de verdad en un subproceso ---
+
+CONTEOS_DEL_ARBOL_MINIMO = {"test_a.py": 3, "test_b.py": 1, "test_c.py": 2, "test_d.py": 4, "test_e.py": 1}
+
+
+def _calibracion_del_arbol_minimo(destino: Path) -> Path:
+    """``test_b.py`` tiene UN test pero tarda 100 s; el resto es casi instantáneo."""
+    segundos = {nombre: (100.0 if nombre == "test_b.py" else 0.01) for nombre in CONTEOS_DEL_ARBOL_MINIMO}
+    destino.write_text(
+        json.dumps({"version": 1, "segundos_por_archivo": segundos, "tests_por_archivo": CONTEOS_DEL_ARBOL_MINIMO}),
+        encoding="utf-8",
+    )
+    return destino
+
+
+def test_con_calibracion_el_plugin_reparte_por_la_duracion_medida(tmp_path: Path) -> None:
+    carpeta = _arbol_minimo(tmp_path / "suite")
+    entorno = {ci_particion.ENV_DURACIONES: str(_calibracion_del_arbol_minimo(tmp_path / "duraciones.json"))}
+    assert repartir(CONTEOS_DEL_ARBOL_MINIMO, 2)[0] != frozenset({"test_b.py"}), (
+        "precondición: por conteo test_b.py no queda solo"
+    )
+
+    archivos_por_shard = []
+    for indice in (1, 2):
+        resultado = _correr_pytest(carpeta, "--collect-only", "-q", shard=f"{indice}/2", entorno=entorno)
+        assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+        archivos_por_shard.append({n.split("::", 1)[0] for n in _nodeids(resultado.stdout)})
+
+    assert archivos_por_shard == [{"test_b.py"}, {"test_a.py", "test_c.py", "test_d.py", "test_e.py"}]
+
+
+def test_el_encabezado_dice_con_que_criterio_se_repartio(tmp_path: Path) -> None:
+    carpeta = _arbol_minimo(tmp_path / "suite")
+    entorno = {ci_particion.ENV_DURACIONES: str(_calibracion_del_arbol_minimo(tmp_path / "duraciones.json"))}
+
+    resultado = _correr_pytest(carpeta, "--collect-only", shard="1/2", entorno=entorno)
+
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert "skyclaw-particion: shard 1/2, reparto por duración medida (5 archivos calibrados)" in resultado.stdout
+
+
+def test_por_defecto_el_plugin_usa_la_calibracion_versionada_y_avisa_los_archivos_sin_medir(tmp_path: Path) -> None:
+    """Sin la variable, el plugin lee ``scripts/ci_duraciones.json``. Los archivos del árbol mínimo no están medidos ahí:
+    se estiman y el log lo dice, para que una calibración vieja se note en vez de degradar el balance en silencio."""
+    carpeta = _arbol_minimo(tmp_path / "suite")
+
+    resultado = _correr_pytest(carpeta, "--collect-only", shard="1/2")
+
+    assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+    assert "reparto por duración medida" in resultado.stdout
+    assert "skyclaw-particion: 5 de 5 archivos colectados sin calibrar (peso estimado)" in resultado.stdout
+
+
+def test_una_calibracion_explicita_que_no_existe_aborta_la_sesion(tmp_path: Path) -> None:
+    """Pedir una calibración que no está es un error de uso: nunca se cae en silencio al reparto por conteo."""
+    carpeta = _arbol_minimo(tmp_path / "suite")
+    entorno = {ci_particion.ENV_DURACIONES: str(tmp_path / "no_existe.json")}
+
+    resultado = _correr_pytest(carpeta, "--collect-only", "-q", shard="1/2", entorno=entorno)
+
+    assert resultado.returncode != 0
+    assert ci_particion.ENV_DURACIONES in resultado.stdout + resultado.stderr
+
+
+def test_una_calibracion_mal_formada_aborta_la_sesion_en_vez_de_repartir_por_conteo(tmp_path: Path) -> None:
+    carpeta = _arbol_minimo(tmp_path / "suite")
+    rota = tmp_path / "duraciones.json"
+    rota.write_text("{no es json", encoding="utf-8")
+
+    resultado = _correr_pytest(
+        carpeta, "--collect-only", "-q", shard="1/2", entorno={ci_particion.ENV_DURACIONES: str(rota)}
+    )
+
+    assert resultado.returncode != 0
+    assert "calibración" in resultado.stdout + resultado.stderr
+
+
+def test_los_manifiestos_de_un_reparto_por_duracion_pasan_el_verificador(tmp_path: Path) -> None:
+    """El verificador no sabe nada de duraciones: un reparto distinto se verifica con las mismas reglas de siempre."""
+    carpeta = _arbol_minimo(tmp_path / "suite")
+    entorno = {ci_particion.ENV_DURACIONES: str(_calibracion_del_arbol_minimo(tmp_path / "duraciones.json"))}
+    raiz = tmp_path / "manifiestos"
+
+    for indice in (1, 2):
+        manifiesto = raiz / f"test-shard-py3.11-{indice}" / ci_particion.NOMBRE_DEL_MANIFIESTO
+        resultado = _correr_pytest(carpeta, "-q", shard=f"{indice}/2", manifiesto=manifiesto, entorno=entorno)
+        assert resultado.returncode == 0, resultado.stdout + resultado.stderr
+
+    assert verificar(raiz, 2) == []
