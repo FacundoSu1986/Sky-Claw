@@ -60,6 +60,7 @@ class GhFalso:
         prs_abiertos: list[dict[str, Any]] | None = None,
         corridas_del_gate: dict[str, list[dict[str, Any]]] | None = None,
         rerun_falla: set[int] | None = None,
+        estados_sucesivos: dict[int, list[str]] | None = None,
     ) -> None:
         self.corridas_de_main = corridas_de_main or []
         self.jobs_por_corrida = jobs_por_corrida or {}
@@ -67,6 +68,8 @@ class GhFalso:
         self.prs_abiertos = prs_abiertos or []
         self.corridas_del_gate = corridas_del_gate or {}
         self.rerun_falla = rerun_falla or set()
+        #: Lo que va devolviendo ``gh run view N --json status`` en cada consulta (una corrida que termina mientras se espera).
+        self.estados_sucesivos = estados_sucesivos or {}
         self.llamadas: list[list[str]] = []
 
     def __call__(self, argumentos: Sequence[str]) -> str:
@@ -80,6 +83,9 @@ class GhFalso:
             return json.dumps(self.corridas_de_main)
         if args[:2] == ["run", "list"] and gate.WORKFLOW_DEL_GATE in args:
             return json.dumps(self.corridas_del_gate.get(args[args.index("--commit") + 1], []))
+        if args[:2] == ["run", "view"] and args[-2:] == ["--json", "status"]:
+            estados = self.estados_sucesivos[int(args[2])]
+            return json.dumps({"status": estados.pop(0) if len(estados) > 1 else estados[0]})
         if args[:2] == ["run", "view"]:
             return json.dumps({"jobs": self.jobs_por_corrida.get(int(args[2]), [])})
         if args[:2] == ["run", "rerun"]:
@@ -287,15 +293,47 @@ def test_reevaluar_usa_la_corrida_mas_nueva_del_gate_para_ese_commit() -> None:
     assert gh.reruns() == [["run", "rerun", "60", "--job", "600"]]
 
 
-def test_reevaluar_no_toca_una_corrida_del_gate_en_curso() -> None:
-    """Una corrida en curso no se puede re-correr; la que está corriendo ya lee el estado actual de main."""
+class EsperaFalsa:
+    """Registra cada pausa sin dormir."""
+
+    def __init__(self) -> None:
+        self.pausas: list[float] = []
+
+    def __call__(self, segundos: float) -> None:
+        self.pausas.append(segundos)
+
+
+def test_reevaluar_espera_a_que_termine_un_gate_en_curso_y_despues_lo_re_corre() -> None:
+    """Un gate en curso pudo haber leído las corridas de main ANTES de que terminara la que disparó esta reevaluación:
+    saltearlo dejaría su veredicto viejo fijo hasta el próximo evento del PR. Se espera a que termine y se re-corre."""
     gh = GhFalso(
         prs_abiertos=[{"number": 1, "headRefOid": "a" * 40}],
         corridas_del_gate={"a" * 40: [_corrida_del_gate(51, estado="in_progress")]},
+        jobs_por_corrida={51: _job_del_gate(501)},
+        estados_sucesivos={51: ["in_progress", "queued", "completed"]},
     )
+    espera = EsperaFalsa()
 
-    assert gate.reevaluar(gh) == 0
+    assert gate.reevaluar(gh, espera) == 0
+    assert gh.reruns() == [["run", "rerun", "51", "--job", "501"]]
+    assert len(espera.pausas) == 3
+
+
+def test_reevaluar_falla_si_el_gate_en_curso_no_termina_a_tiempo() -> None:
+    """Si nunca termina, no se puede garantizar que lea el estado nuevo: el job queda rojo, a la vista."""
+    gh = GhFalso(
+        prs_abiertos=[{"number": 1, "headRefOid": "a" * 40}],
+        corridas_del_gate={"a" * 40: [_corrida_del_gate(51, estado="in_progress")]},
+        jobs_por_corrida={51: _job_del_gate(501)},
+        estados_sucesivos={51: ["in_progress"]},
+    )
+    espera = EsperaFalsa()
+
+    assert gate.reevaluar(gh, espera) == 1
     assert gh.reruns() == []
+    assert len(espera.pausas) == gate.INTENTOS_DE_ESPERA
+    # La espera total entra en el timeout del job ``reevaluar`` (10 min) con margen.
+    assert gate.INTENTOS_DE_ESPERA * gate.PAUSA_DE_ESPERA <= 5 * 60
 
 
 def test_reevaluar_ignora_corridas_del_gate_que_no_son_de_un_pr() -> None:

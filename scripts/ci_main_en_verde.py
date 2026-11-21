@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -38,8 +39,12 @@ EVENTOS_DE_MAIN = frozenset({"push", "schedule", "workflow_dispatch"})
 CONCLUSIONES_ROJAS = frozenset({"failure", "timed_out", "startup_failure"})
 #: Cuántas corridas de ``main`` se miran hacia atrás buscando una con veredicto.
 LIMITE_DE_CORRIDAS = 30
+#: Cuánto se espera a que termine un gate en curso antes de re-correrlo (30 × 10 s = 5 min, dentro del timeout del job).
+INTENTOS_DE_ESPERA = 30
+PAUSA_DE_ESPERA = 10.0
 
 Ejecutor = Callable[[Sequence[str]], str]
+Espera = Callable[[float], None]
 
 
 def _gh(argumentos: Sequence[str]) -> str:
@@ -147,7 +152,19 @@ def evaluar(pr: int, ejecutar: Ejecutor = _gh) -> Veredicto:
     )
 
 
-def _reevaluar_pr(numero: int, commit: str, ejecutar: Ejecutor) -> str:
+def _esperar_a_que_termine(corrida: int, ejecutar: Ejecutor, esperar: Espera) -> None:
+    """Espera a que la corrida termine; si no termina a tiempo es un error (no se puede saltear: ver ``_reevaluar_pr``)."""
+    for _ in range(INTENTOS_DE_ESPERA):
+        esperar(PAUSA_DE_ESPERA)
+        datos = _json(ejecutar, ["run", "view", str(corrida), "--json", "status"])
+        if not isinstance(datos, dict) or not isinstance(datos.get("status"), str):
+            raise ValueError(f"gh run view devolvió una forma inesperada: {str(datos)[:200]!r}")
+        if datos["status"] == "completed":
+            return
+    raise ValueError(f"la corrida {corrida} del gate no terminó en {INTENTOS_DE_ESPERA * PAUSA_DE_ESPERA:.0f} s")
+
+
+def _reevaluar_pr(numero: int, commit: str, ejecutar: Ejecutor, esperar: Espera) -> str:
     """Vuelve a correr el job del gate de ese PR; devuelve qué hizo. Un problema real lanza ``ValueError``."""
     corridas = _lista_de_dicts(
         _json(
@@ -175,7 +192,9 @@ def _reevaluar_pr(numero: int, commit: str, ejecutar: Ejecutor) -> str:
         return "sin corrida del gate (su check falta y eso ya bloquea)"
     corrida = del_pr[0]
     if corrida["status"] != "completed":
-        return f"corrida {corrida['databaseId']} en curso: ya lee el estado actual de main"
+        # Un gate en curso pudo haber leído las corridas de main ANTES de que terminara la que disparó esta
+        # reevaluación: saltearlo dejaría su veredicto viejo fijo hasta el próximo evento del PR. Se espera y se re-corre.
+        _esperar_a_que_termine(corrida["databaseId"], ejecutar, esperar)
     jobs = [job for job in _jobs_de(ejecutar, corrida["databaseId"]) if job["name"] == NOMBRE_DEL_GATE]
     if len(jobs) != 1 or not isinstance(jobs[0].get("databaseId"), int):
         raise ValueError(f"la corrida {corrida['databaseId']} no tiene exactamente un job «{NOMBRE_DEL_GATE}»")
@@ -183,7 +202,7 @@ def _reevaluar_pr(numero: int, commit: str, ejecutar: Ejecutor) -> str:
     return f"re-evaluado (corrida {corrida['databaseId']})"
 
 
-def reevaluar(ejecutar: Ejecutor = _gh) -> int:
+def reevaluar(ejecutar: Ejecutor = _gh, esperar: Espera = time.sleep) -> int:
     """Re-corre el gate de cada PR abierto contra ``main``. Devuelve 1 si alguno no se pudo re-evaluar."""
     prs = _lista_de_dicts(
         _json(
@@ -196,7 +215,7 @@ def reevaluar(ejecutar: Ejecutor = _gh) -> int:
     errores = 0
     for pr in prs:
         try:
-            print(f"PR #{pr['number']}: {_reevaluar_pr(pr['number'], pr['headRefOid'], ejecutar)}")
+            print(f"PR #{pr['number']}: {_reevaluar_pr(pr['number'], pr['headRefOid'], ejecutar, esperar)}")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as exc:
             # Seguir con los demás: un PR que no se re-evaluó puede quedar en verde con main roto, así que el job
             # termina en rojo al final y queda a la vista.
