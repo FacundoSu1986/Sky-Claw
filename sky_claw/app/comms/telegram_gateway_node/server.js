@@ -255,15 +255,16 @@ agentServer.on('connection', (ws) => {
         // F2.3: Daemon reconnected — cancel any pending backoff notification timer.
         _cancelReconnectTimer();
 
-        // Cerrar agente previo antes de asignar el nuevo (previene socket huérfano)
-        if (agentSocket && agentSocket !== ws && agentSocket.readyState === ws.OPEN) {
+        // Publicar primero al nuevo agente: el cierre del anterior ya no le pertenece.
+        const agenteAnterior = agentSocket;
+        agentSocket = ws;
+        if (agenteAnterior && agenteAnterior !== ws && agenteAnterior.readyState === ws.OPEN) {
             try {
-                agentSocket.close(4000, 'Replaced by new agent connection');
+                agenteAnterior.close(4000, 'Replaced by new agent connection');
             } catch (closeErr) {
                 console.warn('[AGENT] Error cerrando agente previo:', closeErr.message);
             }
         }
-        agentSocket = ws;
 
         // Procesar cola de comandos pendientes (Resiliencia de Estado)
         while (pendingCommands.length > 0 && agentSocket.readyState === ws.OPEN) {
@@ -300,6 +301,7 @@ agentServer.on('connection', (ws) => {
         });
 
         ws.on('close', () => {
+            if (agentSocket !== ws) return;
             console.warn('[AGENT] Daemon desconectado. Entrando en modo de espera/buffer.');
             agentSocket = null;
             // F2.3: Broadcast immediate disconnect notice then start exponential-backoff

@@ -1,0 +1,9 @@
+﻿{
+    "archivo":  "E:\\SkyClaw_R0_Rig\\mo2\\plugins\\skyclaw_bridge\\__init__.py",
+    "offset":  3,
+    "antes":  "0x4D",
+    "despues":  "0x6D",
+    "sha256_pre":  "c4e493cf5820bb7f43ffacff01d63e4b4f9ca5189388c9ff0fe89f8a40140c47",
+    "sha256_post":  "924cb401607f3690d0113f4337def80f610f30c2851d532a3163173ce93eade2",
+    "hora_utc":  "2026-11-21T13:28:22.2371648Z"
+}

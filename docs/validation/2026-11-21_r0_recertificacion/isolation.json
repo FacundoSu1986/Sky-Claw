@@ -1,0 +1,25 @@
+﻿{
+    "round":  "R0_Ronda6",
+    "paquete":  "R0-2",
+    "mo2_portable_root":  "E:\\SkyClaw_R0_Rig\\mo2",
+    "portable_txt":  true,
+    "mo2_profile":  "R0_Descartable",
+    "mo2_launched_by":  "Operador desde el Explorador (3 sesiones: A, B, C)",
+    "env_vars":  {
+                     "SKYCLAW_ISOLATED":  "1",
+                     "USERPROFILE":  "E:\\SkyClaw_R0_Rig\\home",
+                     "HOME":  "E:\\SkyClaw_R0_Rig\\home"
+                 },
+    "exe_cwd":  "E:\\SkyClaw_R0_Rig\\work\\r6_cwd",
+    "keyring":  "backend que falla (SKYCLAW_ISOLATED, confirmado en cada log: «el keyring del usuario queda fuera de este proceso»)",
+    "no_usado":  "mo2aibridge (127.0.0.1:8930) presente en plugins del rig: no se usó ni se leyó su token; config.toml del perfil aislado no se leyó",
+    "mo2_global_appdata_archivos_modificados_desde_10_12":  0,
+    "mo2_sectores_raiz_modificados":  0,
+    "mo2_sectores_plugins_modificados":  0,
+    "rig_skyrim_data_modificados":  0,
+    "perfil_modlist_semantica_igual":  false,
+    "perfil_plugins_semantica_igual":  true,
+    "bundle_alterado_solo_en":  "E:\\SkyClaw_R0_Rig\\mo2\\plugins\\skyclaw_bridge\\__init__.py",
+    "bundle_estado_final_digest":  "24a1869e4e6213d799e940934dab0900fac2fc0de30babdceb28517749d256b0",
+    "cuarentenas":  0
+}

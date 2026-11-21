@@ -166,8 +166,15 @@ nunca `<MO2>/overwrite` como path.
   con el resultado ya recibido; medición de otra sesión, no reproducida aquí).
 - **Principio de terminalidad demostrada:** La ausencia de evidencia terminal
   (`timeout`, `bridge_error`, `job_unknown`) **no** equivale a terminalidad.
-  El broker jamás asume que un worker está muerto (`set_result(None)`) mientras
-  el bridge siga vivo.
+  El broker jamás asume que un worker está muerto (`set_result(None)`): ni con el
+  bridge vivo ni después de perderlo. Si el bridge se desconecta y no reconecta en
+  `fence_grace_seconds` (30 s por defecto), el fence vence con
+  `VfsBridgeLostTeardownError` y cuarentena (F1, auditoría de código sobre `3f8547c8`:
+  la premisa «sin reconexión = MO2 caído = kill-on-close» no se sostenía, porque el
+  descriptor vencía a las 24 h y el bridge lo rechazaba con MO2 y el Job vivos). El
+  descriptor se renueva cada hora (`descriptor_renewal_seconds`) mientras el broker
+  vive, para que el bridge siempre pueda volver y traer el `worker_exit`. Ancla del
+  censo de `set_result(None)`: `tests/test_vfs_teardown_deadline.py`.
 - **Veto de rollback fail-closed:** Si la terminalidad del worker es desconocida,
   se marca `terminality_unknown = True` y `teardown_error` en la excepción.
   `SnapshotTransactionLock` y `DirectoryRollback` consultan `exception_forbids_rollback(exc)`

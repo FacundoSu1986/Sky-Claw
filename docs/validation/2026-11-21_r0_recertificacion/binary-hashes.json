@@ -1,0 +1,37 @@
+﻿{
+    "SkyClawApp.exe":  {
+                           "path":  "E:\\SkyClaw_R0_Rig\\exe_676f4c29\\SkyClawApp.exe",
+                           "size_bytes":  88296345,
+                           "sha256":  "ef7777c163e8c03524ae6f08f4171beee2957cfbd677c013db6f3d94bfdc9e55",
+                           "recorded_before_use":  true,
+                           "registro":  "SkyClawApp.exe.sha256.json (otra sesión) + fase_0/exe_sha256_pre_uso.json (esta); re-verificado por el lanzador antes de cada corrida"
+                       },
+    "vfs_bridge_bundle_digest_producto":  "24a1869e4e6213d799e940934dab0900fac2fc0de30babdceb28517749d256b0",
+    "vfs_bridge_bundle_digest_alterado":  "18e25d59d7c339fa95cf94417da4e72a1980140839411706beda824e24913848",
+    "__init__.py_bueno":  "c4e493cf5820bb7f43ffacff01d63e4b4f9ca5189388c9ff0fe89f8a40140c47",
+    "__init__.py_alterado":  "924cb401607f3690d0113f4337def80f610f30c2851d532a3163173ce93eade2",
+    "ModOrganizer.exe":  {
+                             "path":  "E:\\SkyClaw_R0_Rig\\mo2\\ModOrganizer.exe",
+                             "version":  "2.5.2",
+                             "product_version":  "2.5.2",
+                             "size_bytes":  5028352,
+                             "sha256":  "442b354a8f34754da0048654c44d27f51628feba54ce46c3187cf58d6c43e622"
+                         },
+    "usvfs_x64.dll":  {
+                          "path":  "E:\\SkyClaw_R0_Rig\\mo2\\usvfs_x64.dll",
+                          "version":  "0.5.6.1",
+                          "product_version":  "0.5.6.1",
+                          "size_bytes":  1854976,
+                          "sha256":  "e2b766f418575021b9d350f384195ce6f23173169b37222cdef3d7fe5495f8b5"
+                      },
+    "SkyrimSE.exe":  {
+                         "path":  "E:\\SkyClaw_R0_Rig\\skyrim\\SkyrimSE.exe",
+                         "version":  "1.6.1170.0",
+                         "product_version":  "1.6.1170.0",
+                         "size_bytes":  37157144,
+                         "sha256":  "c434208894f07f604b852f29b8edc3a58c4de63de783373733e72b2b73f33be9"
+                     },
+    "PREREGISTRO.md":  "fb76fec21d7f6f5e91ccdfca281aeb840ad40898732b8f03d01e627606a09e06",
+    "correr_exe.ps1":  "bc13b213b71ffe8c3d42476698f1d30f8b496fc67f39fe796ef12042a1a90bb4",
+    "digest_bundle.py":  "ef1cee86e46326c6fe64a0065b34d1ff3ec50def95660fd8ee4597df938f08e2"
+}

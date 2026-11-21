@@ -311,6 +311,9 @@ jobs:
       - name: NPM ci (Telegram gateway)
         working-directory: sky_claw/app/comms/telegram_gateway_node
         run: npm ci
+      - name: Test agent reconnect (Telegram gateway)
+        working-directory: sky_claw/app/comms/telegram_gateway_node
+        run: node --test tests/test_agent_reconnect.js
       - name: NPM audit (Telegram gateway)
         working-directory: sky_claw/app/comms/telegram_gateway_node
         run: npm audit --audit-level=high

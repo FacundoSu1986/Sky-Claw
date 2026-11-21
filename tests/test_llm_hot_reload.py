@@ -15,9 +15,12 @@ El feedback del toast del GUI se decide en un seam puro (``_llm_reload_feedback`
 from __future__ import annotations
 
 import asyncio
+import logging
+import pathlib
 from types import SimpleNamespace
 from typing import Any
 
+import keyring.errors
 import pytest
 
 
@@ -53,7 +56,7 @@ def _make_ctx(monkeypatch: pytest.MonkeyPatch, *, router: Any, keys: dict[str, s
     ctx.router = router
     ctx.config_path = None  # forzamos la lectura de modelo por monkeypatch de Config
 
-    monkeypatch.setattr(ac.keyring, "get_password", lambda service, key: keys.get(key))
+    monkeypatch.setattr(keyring, "get_password", lambda service, key: keys.get(key))
 
     created: dict[str, Any] = {}
 
@@ -113,7 +116,7 @@ async def test_reload_ollama_no_sondea_keyring(monkeypatch: pytest.MonkeyPatch) 
     def _boom(*_: Any, **__: Any) -> Any:
         raise RuntimeError("no debería llamarse para ollama")
 
-    monkeypatch.setattr(ac.keyring, "get_password", _boom)
+    monkeypatch.setattr(keyring, "get_password", _boom)
     monkeypatch.setattr(ac, "create_provider", lambda **_: _FakeProvider("ollama"))
     assert await ctx.reload_llm_provider("ollama") is True
 
@@ -161,10 +164,112 @@ async def test_reload_keyring_que_lanza_no_rompe_devuelve_false(monkeypatch: pyt
     def _boom(*_: Any, **__: Any) -> Any:
         raise RuntimeError("keyring backend caído")
 
-    monkeypatch.setattr(ac.keyring, "get_password", _boom)
+    monkeypatch.setattr(keyring, "get_password", _boom)
     ok = await ctx.reload_llm_provider("anthropic")
     assert ok is False
     assert router._provider is viejo
+
+
+_CANARIO_KEYRING = "secreto-sintetico-que-no-debe-llegar-al-log"
+
+
+@pytest.mark.parametrize("entrada", ["reload", "setup"])
+@pytest.mark.parametrize(
+    ("error", "nivel", "detalle"),
+    [
+        (None, None, ""),
+        (keyring.errors.NoKeyringError(_CANARIO_KEYRING), logging.WARNING, "no hay backend"),
+        (keyring.errors.KeyringError(_CANARIO_KEYRING), logging.WARNING, "KeyringError"),
+        (OSError(_CANARIO_KEYRING), logging.WARNING, "OSError"),
+        (RuntimeError(_CANARIO_KEYRING), logging.ERROR, "RuntimeError"),
+    ],
+    ids=["sin-clave", "sin-backend", "keyring-error", "os-error", "inesperado"],
+)
+async def test_app_context_distingue_fallos_de_keyring_sin_volcar_la_excepcion(
+    entrada: str,
+    error: Exception | None,
+    nivel: int | None,
+    detalle: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from sky_claw import app_context as ac
+
+    router = _make_router()
+    proveedor_original = router._provider
+    ctx, creado = _make_ctx(monkeypatch, router=router, keys={})
+    monkeypatch.setattr(
+        ac, "Config", lambda _p: SimpleNamespace(_data={"first_run": False, "llm_provider": "anthropic"})
+    )
+    lecturas = []
+
+    def leer(servicio: str, nombre: str) -> str | None:
+        lecturas.append((servicio, nombre))
+        if error is not None and nombre == "anthropic_api_key":
+            raise error
+        return None
+
+    monkeypatch.setattr(keyring, "get_password", leer)
+    if entrada == "reload":
+        assert await ctx.reload_llm_provider("anthropic") is False
+        assert router._provider is proveedor_original
+        assert creado == {}
+        assert lecturas == [("sky_claw", "anthropic_api_key"), ("sky_claw", "llm_api_key")]
+    else:
+        assert ac._is_configured(pathlib.Path("config.toml")) is False
+        assert lecturas == [("sky_claw", "anthropic_api_key")]
+
+    assert _CANARIO_KEYRING not in caplog.text
+    registros = [r for r in caplog.records if r.getMessage().startswith("keyring:")]
+    if nivel is None:
+        assert registros == []
+    else:
+        assert len(registros) == 1
+        assert registros[0].levelno == nivel
+        assert detalle in registros[0].getMessage()
+        assert registros[0].exc_info is None
+
+
+async def test_reload_puede_usar_clave_generica_aunque_falle_la_lectura_especifica(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router()
+    ctx, creado = _make_ctx(monkeypatch, router=router, keys={})
+
+    def leer(_servicio: str, nombre: str) -> str:
+        if nombre == "anthropic_api_key":
+            raise keyring.errors.KeyringError("backend roto")
+        assert nombre == "llm_api_key"
+        return "generica"
+
+    monkeypatch.setattr(keyring, "get_password", leer)
+
+    assert await ctx.reload_llm_provider("anthropic") is True
+    assert creado["api_key"] == "generica"
+
+
+@pytest.mark.parametrize(
+    ("first_run", "proveedor", "lee", "configurado"),
+    [(True, "anthropic", False, False), (False, "ollama", False, True), (False, "anthropic", True, True)],
+)
+def test_setup_consulta_keyring_solo_para_proveedores_que_lo_necesitan(
+    first_run: bool, proveedor: str, lee: bool, configurado: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sky_claw import app_context as ac
+
+    monkeypatch.setattr(
+        ac, "Config", lambda _p: SimpleNamespace(_data={"first_run": first_run, "llm_provider": proveedor})
+    )
+    lecturas = []
+
+    def leer(servicio: str, nombre: str) -> str:
+        lecturas.append((servicio, nombre))
+        return "secreto-sintetico"
+
+    monkeypatch.setattr(keyring, "get_password", leer)
+
+    assert ac._is_configured(pathlib.Path("config.toml")) is configurado
+    assert lecturas == ([("sky_claw", "anthropic_api_key")] if lee else [])
 
 
 async def test_reload_respeta_el_modelo_por_provider(monkeypatch: pytest.MonkeyPatch) -> None:
