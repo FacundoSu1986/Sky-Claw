@@ -19,6 +19,7 @@ import pathlib
 import tempfile
 import uuid
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -47,6 +48,101 @@ _WINDOWS_RESERVED_NAMES = frozenset(
     | {f"COM{s}" for s in "¹²³"}
     | {f"LPT{s}" for s in "¹²³"}
 )
+
+#: Lista blanca cerrada de tipos polimórficos ``$type`` admitidos por Synthesis V2.
+#: ``Synthesis.Bethesda.Execution/Constants.cs`` deserializa con ``TypeNameHandling.Auto``;
+#: rechazar cualquier tipo fuera de esta familia evita gadgets arbitrarios en el JSON.
+_CANONICAL_SYNTHESIS_ASSEMBLY = "Synthesis.Bethesda.Execution"
+
+_ALLOWED_SYNTHESIS_PROFILE_TYPES = frozenset(
+    {
+        "Synthesis.Bethesda.Execution.Settings.V2.SynthesisProfile",
+    }
+)
+
+_ALLOWED_SYNTHESIS_PATCHER_TYPES = frozenset(
+    {
+        "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings",
+        "Synthesis.Bethesda.Execution.Settings.SolutionPatcherSettings",
+        "Synthesis.Bethesda.Execution.Settings.CliPatcherSettings",
+    }
+)
+
+
+def _validate_allowed_type_tag(
+    obj: dict[str, Any],
+    allowed: frozenset[str],
+    *,
+    kind: str,
+    context: str,
+) -> str | None:
+    """Valida ``($type, assembly)`` contra lista blanca cerrada y devuelve etiqueta canónica."""
+    type_keys = [key for key in obj if key.casefold() == "$type"]
+    if not type_keys:
+        return None
+    if len(type_keys) > 1:
+        raise PatcherPipelineError(f"Duplicate Synthesis {kind} $type keys in {context}")
+    raw_type = obj[type_keys[0]]
+    if not isinstance(raw_type, str):
+        raise PatcherPipelineError(f"Unsupported Synthesis {kind} $type: {raw_type!r}")
+    parts = [part.strip() for part in raw_type.split(",")]
+    if len(parts) != 2 or parts[0] not in allowed or parts[1] != _CANONICAL_SYNTHESIS_ASSEMBLY:
+        raise PatcherPipelineError(f"Unsupported Synthesis {kind} $type: {raw_type!r}")
+    return f"{parts[0]}, {_CANONICAL_SYNTHESIS_ASSEMBLY}"
+
+
+def _normalize_type_tag(obj: dict[str, Any], canonical_type: str | None) -> None:
+    """Reescribe ``$type`` como primera clave con valor canónico al materializar la copia CLI."""
+    if canonical_type is None:
+        return
+    remaining = {k: v for k, v in obj.items() if k.casefold() != "$type"}
+    obj.clear()
+    obj["$type"] = canonical_type
+    obj.update(remaining)
+
+
+def _resolve_patcher_execution_name(patcher: dict[str, Any], canonical_id: str) -> str:
+    """Deriva el nombre efectivo que Synthesis 0.36.6 imprime en ``ConsoleReporter``."""
+    nickname = patcher.get("Nickname")
+    if isinstance(nickname, str) and nickname.strip():
+        return nickname.strip()
+
+    project_subpath = patcher.get("ProjectSubpath")
+    if isinstance(project_subpath, str) and project_subpath.strip():
+        parent_name = PurePosixPath(project_subpath.strip().replace("\\", "/")).parent.name
+        if parent_name and parent_name != ".":
+            return parent_name
+
+    remote_repo = patcher.get("RemoteRepoPath")
+    if isinstance(remote_repo, str):
+        repo_parts = [segment for segment in remote_repo.strip().replace("\\", "/").split("/") if segment.strip()]
+        if repo_parts:
+            return repo_parts[-1].strip()
+        raw_type = next((v for k, v in patcher.items() if k.casefold() == "$type"), None)
+        if isinstance(raw_type, str) and "GithubPatcherSettings" in raw_type:
+            return "Mutagen Git Patcher"
+
+    exe_path = patcher.get("PathToExecutable")
+    if isinstance(exe_path, str) and exe_path.strip():
+        exe_stem = PurePosixPath(exe_path.strip().replace("\\", "/")).stem
+        if exe_stem:
+            return exe_stem
+
+    return canonical_id
+
+
+def _assert_no_type_tags(value: Any, *, context: str) -> None:
+    """Rechaza cualquier ``$type`` anidado donde el esquema V2 espera tipos concretos."""
+    stack: list[Any] = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, nested in current.items():
+                if key.casefold() == "$type":
+                    raise PatcherPipelineError(f"Unexpected $type field in Synthesis settings ({context}): {nested!r}")
+                stack.append(nested)
+        elif isinstance(current, list):
+            stack.extend(current)
 
 
 def _is_split_output_name(group_name: str, candidate: str) -> bool:
@@ -96,6 +192,7 @@ class SynthesisSettingsProfile:
     patcher_ids: tuple[str, ...]
     group_names: tuple[str, ...]
     split_if_max_masters_exceeded: bool | None
+    patcher_nicknames: tuple[str, ...] = ()
 
 
 # =============================================================================
@@ -258,6 +355,10 @@ class PatcherPipeline:
 
         if not isinstance(raw_settings, dict):
             raise PatcherPipelineError("Synthesis pipeline settings must be a JSON object")
+        _assert_no_type_tags(
+            {key: value for key, value in raw_settings.items() if key != "Profiles"},
+            context="root settings",
+        )
         version = raw_settings.get("Version", 2)
         if version != 2:
             raise PatcherPipelineError(f"Synthesis CLI settings version 2 is required (found {version!r})")
@@ -271,13 +372,23 @@ class PatcherPipeline:
         for candidate in raw_profiles:
             if not isinstance(candidate, dict):
                 raise PatcherPipelineError("Every Synthesis profile must be a JSON object")
-            aliases = (candidate.get("Nickname"), candidate.get("ID"))
-            if any(isinstance(alias, str) and alias.casefold() == identifier for alias in aliases):
+            profile_aliases = (candidate.get("Nickname"), candidate.get("ID"))
+            if any(isinstance(alias, str) and alias.casefold() == identifier for alias in profile_aliases):
                 matches.append(candidate)
         if len(matches) != 1:
             reason = "not found" if not matches else "ambiguous"
             raise PatcherPipelineError(f"Synthesis profile {profile_identifier!r} is {reason} in {settings_path}")
         profile = matches[0]
+        _validate_allowed_type_tag(
+            profile,
+            _ALLOWED_SYNTHESIS_PROFILE_TYPES,
+            kind="profile",
+            context="profile",
+        )
+        _assert_no_type_tags(
+            {key: value for key, value in profile.items() if key != "Groups" and key.casefold() != "$type"},
+            context="profile",
+        )
         if profile.get("ExportAsMasterFiles") is True:
             raise PatcherPipelineError("Synthesis ExportAsMasterFiles is unsupported; Sky-Claw manages ESP outputs")
 
@@ -317,10 +428,24 @@ class PatcherPipeline:
             raw_patchers = group.get("Patchers")
             if not isinstance(raw_patchers, list):
                 raise PatcherPipelineError(f"Enabled Synthesis group {name!r} must contain a Patchers array")
+            _assert_no_type_tags(
+                {key: value for key, value in group.items() if key != "Patchers"},
+                context=f"group {name!r}",
+            )
             enabled_patchers: list[tuple[int, dict[str, Any], str, tuple[str, ...]]] = []
             for patcher_index, patcher in enumerate(raw_patchers):
                 if not isinstance(patcher, dict):
                     raise PatcherPipelineError(f"A patcher in Synthesis group {name!r} is not a JSON object")
+                _validate_allowed_type_tag(
+                    patcher,
+                    _ALLOWED_SYNTHESIS_PATCHER_TYPES,
+                    kind="patcher",
+                    context=f"group {name!r}",
+                )
+                _assert_no_type_tags(
+                    {key: value for key, value in patcher.items() if key.casefold() != "$type"},
+                    context=f"patcher {patcher_index} in group {name!r}",
+                )
                 if patcher.get("On") is not True:
                     continue
                 id_value = patcher.get("ID")
@@ -333,11 +458,13 @@ class PatcherPipeline:
                         if alias.casefold() not in seen_aliases:
                             aliases_list.append(alias)
                             seen_aliases.add(alias.casefold())
-                aliases = tuple(aliases_list)
-                if not aliases:
+                patcher_aliases: tuple[str, ...] = tuple(aliases_list)
+                if not patcher_aliases:
                     raise PatcherPipelineError(f"An enabled patcher in group {name!r} has neither ID nor Nickname")
-                canonical_id = id_value.strip() if isinstance(id_value, str) and id_value.strip() else aliases[0]
-                enabled_patchers.append((patcher_index, patcher, canonical_id, aliases))
+                canonical_id = (
+                    id_value.strip() if isinstance(id_value, str) and id_value.strip() else patcher_aliases[0]
+                )
+                enabled_patchers.append((patcher_index, patcher, canonical_id, patcher_aliases))
 
             if enabled_patchers:
                 active_groups.append((group_index, group, name, enabled_patchers))
@@ -413,8 +540,15 @@ class PatcherPipeline:
         _, profile, active_groups = cls._read_synthesis_profile(settings_path, profile_identifier)
         selected_entries = cls._select_synthesis_entries(active_groups, patcher_ids)
         selected_group_indices = {entry[0] for entry in selected_entries}
+        selected_entry_keys = {(entry[0], entry[1]) for entry in selected_entries}
         group_names = tuple(name for index, _, name, _ in active_groups if index in selected_group_indices)
         selected_patcher_ids = tuple(entry[2] for entry in selected_entries)
+        selected_nicknames = tuple(
+            _resolve_patcher_execution_name(patcher, canonical_id)
+            for group_index, _, _, patchers in active_groups
+            for patcher_index, patcher, canonical_id, _ in patchers
+            if (group_index, patcher_index) in selected_entry_keys
+        )
         # Synthesis 0.36.6 model default: SplitIfMaxMastersExceeded = true.
         # Preserve fail-closed behavior for a malformed, explicitly present value.
         split_value = profile.get("SplitIfMaxMastersExceeded", True)
@@ -424,6 +558,7 @@ class PatcherPipeline:
             patcher_ids=selected_patcher_ids,
             group_names=group_names,
             split_if_max_masters_exceeded=split_enabled,
+            patcher_nicknames=selected_nicknames,
         )
 
     @classmethod
@@ -432,36 +567,61 @@ class PatcherPipeline:
         settings_path: pathlib.Path,
         profile_identifier: str,
         patcher_ids: list[str] | None = None,
+        *,
+        split_if_max_masters_exceeded: bool | None = None,
+        dotnet_path_override: str | pathlib.Path | None = None,
     ) -> tuple[pathlib.Path, SynthesisSettingsProfile]:
         """Materializa un settings temporal V2 sin mutar el archivo del usuario.
 
-        El CLI recibe solo el perfil/patchers seleccionados. Además se desactiva
-        ``UpdateLoadOrderAfterRun`` en la copia de ejecución: Sky-Claw no delega
-        al proceso externo una escritura no transaccional sobre el perfil MO2.
+        El CLI recibe solo el perfil/patchers seleccionados (sin entradas
+        deshabilitadas, porque ``PrepForRun.cs:24`` recorre incluso ``On=false``).
+        Además desactiva ``UpdateLoadOrderAfterRun``, serializa explícitamente
+        ``SplitIfMaxMastersExceeded`` (evitando la deriva 0.36.6 vs HEAD) y
+        permite fijar ``DotNetPathOverride`` (``DotNetCommandPathProvider.cs:15``).
         El caller es dueño de borrar el archivo temporal que devuelve.
         """
         raw_settings, profile, active_groups = cls._read_synthesis_profile(settings_path, profile_identifier)
         selected_entries = cls._select_synthesis_entries(active_groups, patcher_ids)
         selected_entry_keys = {(group_index, patcher_index) for group_index, patcher_index, _, _ in selected_entries}
         selected_group_indices = {group_index for group_index, _, _, _ in selected_entries}
+        raw_split = profile.get("SplitIfMaxMastersExceeded", True)
+        effective_split: bool | None
+        if split_if_max_masters_exceeded is not None:
+            effective_split = split_if_max_masters_exceeded
+        else:
+            effective_split = raw_split if type(raw_split) is bool else None
+        selected_nicknames = tuple(
+            _resolve_patcher_execution_name(patcher, canonical_id)
+            for group_index, _, _, patchers in active_groups
+            for patcher_index, patcher, canonical_id, _ in patchers
+            if (group_index, patcher_index) in selected_entry_keys
+        )
         profile_info = SynthesisSettingsProfile(
             profile_identifier=profile_identifier,
             patcher_ids=tuple(entry[2] for entry in selected_entries),
             group_names=tuple(name for index, _, name, _ in active_groups if index in selected_group_indices),
-            split_if_max_masters_exceeded=(
-                profile.get("SplitIfMaxMastersExceeded", True)
-                if type(profile.get("SplitIfMaxMastersExceeded", True)) is bool
-                else None
-            ),
+            split_if_max_masters_exceeded=effective_split,
+            patcher_nicknames=selected_nicknames,
         )
 
         selected_groups: list[dict[str, Any]] = []
         for group_index, group, group_name, patchers in active_groups:
-            chosen_patchers = [
-                copy.deepcopy(patcher)
-                for patcher_index, patcher, _, _ in patchers
-                if (group_index, patcher_index) in selected_entry_keys
-            ]
+            chosen_patchers: list[dict[str, Any]] = []
+            for patcher_index, patcher, canonical_id, _ in patchers:
+                if (group_index, patcher_index) not in selected_entry_keys:
+                    continue
+                patcher_copy = copy.deepcopy(patcher)
+                canonical_patcher_type = _validate_allowed_type_tag(
+                    patcher_copy,
+                    _ALLOWED_SYNTHESIS_PATCHER_TYPES,
+                    kind="patcher",
+                    context=f"group {group_name!r}",
+                )
+                _normalize_type_tag(patcher_copy, canonical_patcher_type)
+                raw_nickname = patcher_copy.get("Nickname")
+                if not isinstance(raw_nickname, str) or not raw_nickname.strip():
+                    patcher_copy["Nickname"] = _resolve_patcher_execution_name(patcher_copy, canonical_id)
+                chosen_patchers.append(patcher_copy)
             if not chosen_patchers:
                 continue
             group_copy = copy.deepcopy(group)
@@ -474,13 +634,24 @@ class PatcherPipeline:
             raise PatcherPipelineError("Selected Synthesis patchers do not map to an enabled output group")
 
         run_profile = copy.deepcopy(profile)
+        canonical_profile_type = _validate_allowed_type_tag(
+            run_profile,
+            _ALLOWED_SYNTHESIS_PROFILE_TYPES,
+            kind="profile",
+            context="profile",
+        )
+        _normalize_type_tag(run_profile, canonical_profile_type)
         run_profile["Groups"] = selected_groups
         # This side effect is not part of the output plugin transaction and
         # would bypass the caller's MO2-profile rollback/USVFS boundary.
         run_profile["UpdateLoadOrderAfterRun"] = False
+        if effective_split is not None:
+            run_profile["SplitIfMaxMastersExceeded"] = effective_split
         run_settings = copy.deepcopy(raw_settings)
         run_settings["Version"] = 2
         run_settings["Profiles"] = [run_profile]
+        if dotnet_path_override is not None:
+            run_settings["DotNetPathOverride"] = str(dotnet_path_override)
 
         temporary_path: pathlib.Path | None = None
         try:
