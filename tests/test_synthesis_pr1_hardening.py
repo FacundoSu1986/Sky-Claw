@@ -22,6 +22,7 @@ import json
 import os
 import pathlib
 import struct
+import sys
 from typing import Any
 from unittest.mock import patch
 
@@ -496,3 +497,255 @@ async def test_validate_synthesis_esp_rechaza_symlink(tmp_path: pathlib.Path) ->
         pytest.skip("El entorno Windows no permite crear symlinks sin privilegios")
 
     assert await runner.validate_synthesis_esp(link) is False
+
+
+# =============================================================================
+# 6. Hardening post-revisión (Codex P1 + Qodo #1/#2/#3)
+# =============================================================================
+
+
+async def test_recibos_exigen_multiplicidad_cuando_dos_patchers_comparten_nickname(tmp_path: pathlib.Path) -> None:
+    """Codex P1: dos IDs distintos con el mismo Nickname no pueden colapsar en un set."""
+    runner, output = _crear_entorno_base(tmp_path, require_patcher_receipts=True)
+    settings_path = runner._config.pipeline_settings_path
+    assert settings_path is not None
+    patcher_type = "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, Synthesis.Bethesda.Execution"
+    payload = {
+        "Version": 2,
+        "Profiles": [
+            {
+                "Nickname": "Default",
+                "ID": "profile-default",
+                "TargetRelease": "SkyrimSE",
+                "Groups": [
+                    {
+                        "On": True,
+                        "Name": "Synthesis",
+                        "Patchers": [
+                            {"$type": patcher_type, "ID": "id-one", "Nickname": "SameName", "On": True},
+                            {"$type": patcher_type, "ID": "id-two", "Nickname": "SameName", "On": True},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    settings_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    async def _solo_un_exito(_args: list[str], **_kwargs: Any) -> tuple[bytes, bytes, int]:
+        (output / "Synthesis.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+        return (
+            b"[SameName] Starting run.\n"
+            b"[SameName] Run successful.\n"
+            b"[SameName] Starting run.\n"
+            b"Exported patch to final destination: out\\Synthesis.esp\n",
+            b"",
+            0,
+        )
+
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", _solo_un_exito):
+        incomplete = await runner.run_pipeline(["id-one", "id-two"])
+
+    assert incomplete.success is False
+    assert incomplete.output_esp is None
+    assert any("SameName" in err for err in incomplete.errors)
+
+    async def _ambos_exitos(_args: list[str], **_kwargs: Any) -> tuple[bytes, bytes, int]:
+        (output / "Synthesis.esp").write_bytes(_construir_tes4(["Skyrim.esm"]) + b"v2")
+        return (
+            b"[SameName] Starting run.\n"
+            b"[SameName] Run successful.\n"
+            b"[SameName] Starting run.\n"
+            b"[SameName] Run successful.\n"
+            b"Exported patch to final destination: out\\Synthesis.esp\n",
+            b"",
+            0,
+        )
+
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", _ambos_exitos):
+        complete = await runner.run_pipeline(["id-one", "id-two"])
+
+    assert complete.success is True
+    assert complete.output_esp == output / "Synthesis.esp"
+
+
+async def test_recibos_exigen_confirmacion_export_por_cada_grupo_habilitado(tmp_path: pathlib.Path) -> None:
+    """Hermano de Codex P1: N grupos habilitados requieren N confirmaciones Exported patch."""
+    runner, output = _crear_entorno_base(tmp_path, require_patcher_receipts=True)
+    settings_path = runner._config.pipeline_settings_path
+    assert settings_path is not None
+    patcher_type = "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, Synthesis.Bethesda.Execution"
+    payload = {
+        "Version": 2,
+        "Profiles": [
+            {
+                "Nickname": "Default",
+                "ID": "profile-default",
+                "TargetRelease": "SkyrimSE",
+                "Groups": [
+                    {
+                        "On": True,
+                        "Name": "GroupA",
+                        "Patchers": [{"$type": patcher_type, "ID": "id-a", "Nickname": "PatcherA", "On": True}],
+                    },
+                    {
+                        "On": True,
+                        "Name": "GroupB",
+                        "Patchers": [{"$type": patcher_type, "ID": "id-b", "Nickname": "PatcherB", "On": True}],
+                    },
+                ],
+            }
+        ],
+    }
+    settings_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    async def _un_solo_export(_args: list[str], **_kwargs: Any) -> tuple[bytes, bytes, int]:
+        (output / "GroupA.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+        (output / "GroupB.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+        return (
+            b"[PatcherA] Starting run.\n"
+            b"[PatcherA] Run successful.\n"
+            b"[PatcherB] Starting run.\n"
+            b"[PatcherB] Run successful.\n"
+            b"Exported patch to final destination: out\\GroupA.esp\n",
+            b"",
+            0,
+        )
+
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", _un_solo_export):
+        incomplete = await runner.run_pipeline(["id-a", "id-b"])
+
+    assert incomplete.success is False
+    assert any("Exported patch to final destination:" in err for err in incomplete.errors)
+
+    async def _dos_exports(_args: list[str], **_kwargs: Any) -> tuple[bytes, bytes, int]:
+        (output / "GroupA.esp").write_bytes(_construir_tes4(["Skyrim.esm"]) + b"2")
+        (output / "GroupB.esp").write_bytes(_construir_tes4(["Skyrim.esm"]) + b"2")
+        return (
+            b"[PatcherA] Starting run.\n"
+            b"[PatcherA] Run successful.\n"
+            b"[PatcherB] Starting run.\n"
+            b"[PatcherB] Run successful.\n"
+            b"Exported patch to final destination: out\\GroupA.esp\n"
+            b"Exported patch to final destination: out\\GroupB.esp\n",
+            b"",
+            0,
+        )
+
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", _dos_exports):
+        complete = await runner.run_pipeline(["id-a", "id-b"])
+
+    assert complete.success is True
+
+
+async def test_dotnet_root_normaliza_ruta_a_ejecutable_y_rechaza_archivo_arbitrario(tmp_path: pathlib.Path) -> None:
+    """Qodo #1: si dotnet_root apunta a dotnet.exe, normalizar al padre; archivo arbitrario falla cerrado."""
+    dotnet_dir = tmp_path / "dotnet64"
+    dotnet_dir.mkdir()
+    dotnet_exe = dotnet_dir / ("dotnet.exe" if sys.platform == "win32" else "dotnet")
+    dotnet_exe.touch()
+
+    runner, output = _crear_entorno_base(tmp_path, dotnet_root=dotnet_exe)
+    assert runner._config.dotnet_root == dotnet_dir
+
+    captured_override: list[str] = []
+    captured_env: dict[str, str] = {}
+
+    async def _inspect_temp(args: list[str], **kwargs: Any) -> tuple[bytes, bytes, int]:
+        temp_settings = pathlib.Path(args[args.index("--PipelineSettingsPath") + 1])
+        data = json.loads(temp_settings.read_text(encoding="utf-8"))
+        captured_override.append(data["DotNetPathOverride"])
+        captured_env.update(kwargs["env"])
+        (output / "Synthesis.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+        return b"Successfully generated patch output", b"", 0
+
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", _inspect_temp):
+        result = await runner.run_pipeline(["PatcherLight"])
+
+    assert result.success is True
+    assert captured_override == [str(dotnet_exe)]
+    assert captured_env["DOTNET_ROOT"] == str(dotnet_dir)
+
+    arbitrary = tmp_path / "not_dotnet.txt"
+    arbitrary.write_text("x", encoding="utf-8")
+    with pytest.raises(SynthesisExecutionError, match="directory"):
+        _crear_entorno_base(tmp_path / "sub", dotnet_root=arbitrary)
+
+
+def test_entorno_filtra_subdirectorios_dotnet_x86_sin_afectar_x64(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Qodo #2: filtrar también subdirectorios bajo Program Files (x86)\\dotnet\\... en PATH."""
+    dotnet_x64 = tmp_path / "Program Files" / "dotnet"
+    dotnet_x64.mkdir(parents=True)
+    x86_root = r"C:\Program Files (x86)\dotnet"
+    x86_sdk = r"C:\Program Files (x86)\dotnet\sdk\8.0.406"
+    x86_tools = "C:/Program Files (x86)/dotnet/tools"
+    unrelated_x86 = r"C:\Program Files (x86)\Steam"
+    unrelated_dotnet_like = r"C:\Program Files (x86)\dotnet-custom"
+    x64_sdk = r"C:\Program Files\dotnet\sdk\10.0.100"
+
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([x86_root, x86_sdk, x86_tools, unrelated_x86, unrelated_dotnet_like, x64_sdk]),
+    )
+    runner, _ = _crear_entorno_base(tmp_path, dotnet_root=dotnet_x64)
+    entries = runner._build_subprocess_env()["PATH"].split(os.pathsep)
+
+    assert entries[0] == str(dotnet_x64)
+    assert x86_root not in entries
+    assert x86_sdk not in entries
+    assert x86_tools not in entries
+    assert unrelated_x86 in entries
+    assert unrelated_dotnet_like in entries
+    assert x64_sdk in entries
+
+
+def test_settings_v2_acepta_type_valido_de_perfil_y_rechaza_type_anidado_o_en_grupo(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Qodo #3: valida $type polimórfico permitido en Profile y rechaza $type en raíz, grupo o subobjetos."""
+    settings_path = tmp_path / "PipelineSettings.json"
+    _escribir_settings_v2(settings_path)
+    base = json.loads(settings_path.read_text(encoding="utf-8"))
+
+    # Caso válido: el perfil declara el tipo polimórfico real ISynthesisProfileSettings -> V2.SynthesisProfile.
+    valid = json.loads(json.dumps(base))
+    valid["Profiles"][0]["$type"] = (
+        "Synthesis.Bethesda.Execution.Settings.V2.SynthesisProfile, Synthesis.Bethesda.Execution"
+    )
+    settings_path.write_text(json.dumps(valid), encoding="utf-8")
+    profile = PatcherPipeline.inspect_synthesis_settings(settings_path, "Default")
+    assert profile.group_names == ("Synthesis",)
+
+    # Caso inválido 1: $type en objeto raíz.
+    bad_root = json.loads(json.dumps(base))
+    bad_root["$type"] = "System.Windows.Data.ObjectDataProvider, PresentationFramework"
+    settings_path.write_text(json.dumps(bad_root), encoding="utf-8")
+    with pytest.raises(PatcherPipelineError, match=r"\$type"):
+        PatcherPipeline.inspect_synthesis_settings(settings_path, "Default")
+
+    # Caso inválido 2: $type no permitido en Profile.
+    bad_profile = json.loads(json.dumps(base))
+    bad_profile["Profiles"][0]["$type"] = "System.Diagnostics.Process, System"
+    settings_path.write_text(json.dumps(bad_profile), encoding="utf-8")
+    with pytest.raises(PatcherPipelineError, match=r"\$type"):
+        PatcherPipeline.inspect_synthesis_settings(settings_path, "Default")
+
+    # Caso inválido 3: $type dentro de un grupo habilitado.
+    bad_group = json.loads(json.dumps(base))
+    bad_group["Profiles"][0]["Groups"][0]["$type"] = "System.Object, mscorlib"
+    settings_path.write_text(json.dumps(bad_group), encoding="utf-8")
+    with pytest.raises(PatcherPipelineError, match=r"\$type"):
+        PatcherPipeline.inspect_synthesis_settings(settings_path, "Default")
+
+    # Caso inválido 4: $type anidado en un subobjeto del patcher (p. ej. LastSuccessfulRun).
+    bad_nested = json.loads(json.dumps(base))
+    bad_nested["Profiles"][0]["Groups"][0]["Patchers"][0]["LastSuccessfulRun"] = {
+        "$type": "System.Windows.Data.ObjectDataProvider, PresentationFramework",
+        "TargetRepo": "https://example.invalid/x",
+    }
+    settings_path.write_text(json.dumps(bad_nested), encoding="utf-8")
+    with pytest.raises(PatcherPipelineError, match=r"\$type"):
+        PatcherPipeline.inspect_synthesis_settings(settings_path, "Default")

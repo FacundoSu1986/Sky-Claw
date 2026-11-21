@@ -51,6 +51,12 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 #: Lista blanca cerrada de tipos polimórficos ``$type`` admitidos por Synthesis V2.
 #: ``Synthesis.Bethesda.Execution/Constants.cs`` deserializa con ``TypeNameHandling.Auto``;
 #: rechazar cualquier tipo fuera de esta familia evita gadgets arbitrarios en el JSON.
+_ALLOWED_SYNTHESIS_PROFILE_TYPES = frozenset(
+    {
+        "Synthesis.Bethesda.Execution.Settings.V2.SynthesisProfile",
+    }
+)
+
 _ALLOWED_SYNTHESIS_PATCHER_TYPES = frozenset(
     {
         "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings",
@@ -58,6 +64,39 @@ _ALLOWED_SYNTHESIS_PATCHER_TYPES = frozenset(
         "Synthesis.Bethesda.Execution.Settings.CliPatcherSettings",
     }
 )
+
+
+def _validate_allowed_type_tag(
+    obj: dict[str, Any],
+    allowed: frozenset[str],
+    *,
+    kind: str,
+    context: str,
+) -> None:
+    """Valida ``$type`` contra lista blanca cerrada (``TypeNameHandling.Auto``)."""
+    type_keys = [key for key in obj if key.casefold() == "$type"]
+    if not type_keys:
+        return
+    if len(type_keys) > 1:
+        raise PatcherPipelineError(f"Duplicate Synthesis {kind} $type keys in {context}")
+    raw_type = obj[type_keys[0]]
+    type_name = raw_type.split(",", 1)[0].strip() if isinstance(raw_type, str) else ""
+    if type_name not in allowed:
+        raise PatcherPipelineError(f"Unsupported Synthesis {kind} $type: {raw_type!r}")
+
+
+def _assert_no_type_tags(value: Any, *, context: str) -> None:
+    """Rechaza cualquier ``$type`` anidado donde el esquema V2 espera tipos concretos."""
+    stack: list[Any] = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, nested in current.items():
+                if key.casefold() == "$type":
+                    raise PatcherPipelineError(f"Unexpected $type field in Synthesis settings ({context}): {nested!r}")
+                stack.append(nested)
+        elif isinstance(current, list):
+            stack.extend(current)
 
 
 def _is_split_output_name(group_name: str, candidate: str) -> bool:
@@ -270,6 +309,10 @@ class PatcherPipeline:
 
         if not isinstance(raw_settings, dict):
             raise PatcherPipelineError("Synthesis pipeline settings must be a JSON object")
+        _assert_no_type_tags(
+            {key: value for key, value in raw_settings.items() if key != "Profiles"},
+            context="root settings",
+        )
         version = raw_settings.get("Version", 2)
         if version != 2:
             raise PatcherPipelineError(f"Synthesis CLI settings version 2 is required (found {version!r})")
@@ -290,6 +333,16 @@ class PatcherPipeline:
             reason = "not found" if not matches else "ambiguous"
             raise PatcherPipelineError(f"Synthesis profile {profile_identifier!r} is {reason} in {settings_path}")
         profile = matches[0]
+        _validate_allowed_type_tag(
+            profile,
+            _ALLOWED_SYNTHESIS_PROFILE_TYPES,
+            kind="profile",
+            context="profile",
+        )
+        _assert_no_type_tags(
+            {key: value for key, value in profile.items() if key != "Groups" and key.casefold() != "$type"},
+            context="profile",
+        )
         if profile.get("ExportAsMasterFiles") is True:
             raise PatcherPipelineError("Synthesis ExportAsMasterFiles is unsupported; Sky-Claw manages ESP outputs")
 
@@ -329,15 +382,24 @@ class PatcherPipeline:
             raw_patchers = group.get("Patchers")
             if not isinstance(raw_patchers, list):
                 raise PatcherPipelineError(f"Enabled Synthesis group {name!r} must contain a Patchers array")
+            _assert_no_type_tags(
+                {key: value for key, value in group.items() if key != "Patchers"},
+                context=f"group {name!r}",
+            )
             enabled_patchers: list[tuple[int, dict[str, Any], str, tuple[str, ...]]] = []
             for patcher_index, patcher in enumerate(raw_patchers):
                 if not isinstance(patcher, dict):
                     raise PatcherPipelineError(f"A patcher in Synthesis group {name!r} is not a JSON object")
-                if "$type" in patcher:
-                    raw_type = patcher["$type"]
-                    type_name = raw_type.split(",", 1)[0].strip() if isinstance(raw_type, str) else ""
-                    if type_name not in _ALLOWED_SYNTHESIS_PATCHER_TYPES:
-                        raise PatcherPipelineError(f"Unsupported Synthesis patcher $type: {raw_type!r}")
+                _validate_allowed_type_tag(
+                    patcher,
+                    _ALLOWED_SYNTHESIS_PATCHER_TYPES,
+                    kind="patcher",
+                    context=f"group {name!r}",
+                )
+                _assert_no_type_tags(
+                    {key: value for key, value in patcher.items() if key.casefold() != "$type"},
+                    context=f"patcher {patcher_index} in group {name!r}",
+                )
                 if patcher.get("On") is not True:
                     continue
                 id_value = patcher.get("ID")

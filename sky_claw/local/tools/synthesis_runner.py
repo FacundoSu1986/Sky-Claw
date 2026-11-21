@@ -20,6 +20,7 @@ import pathlib
 import re
 import sys
 import tempfile
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -125,6 +126,12 @@ async def _probe_esp(esp_path: pathlib.Path) -> _EspProbe:
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _probe_esp_sync, esp_path)
+
+
+def _is_x86_dotnet_path(entry: str) -> bool:
+    """Detecta rutas bajo ``Program Files (x86)\\dotnet`` (incluidos subdirectorios SDK/tools)."""
+    parts = [part for part in entry.replace("/", "\\").casefold().split("\\") if part]
+    return any(part == "program files (x86)" and parts[index + 1] == "dotnet" for index, part in enumerate(parts[:-1]))
 
 
 # =============================================================================
@@ -238,6 +245,19 @@ class SynthesisConfig:
             raise SynthesisExecutionError(
                 "Synthesis persistence_path is required when persistence_mode is 'Text' (RunPersistencePreparer.cs:28)"
             )
+        if self.dotnet_root is not None:
+            dotnet_root = self.dotnet_root
+            dotnet_name = dotnet_root.name.casefold()
+            # Si pasaron el ejecutable dotnet(.exe) en lugar de su directorio raíz,
+            # normalizar al padre para no generar ".../dotnet.exe/dotnet.exe".
+            # Cuidar no truncar un directorio válido llamado "dotnet" (p. ej. Program Files\dotnet).
+            if not dotnet_root.is_dir() and (
+                dotnet_name == "dotnet.exe" or (dotnet_name == "dotnet" and dotnet_root.is_file())
+            ):
+                dotnet_root = dotnet_root.parent
+                object.__setattr__(self, "dotnet_root", dotnet_root)
+            if dotnet_root.exists() and not dotnet_root.is_dir():
+                raise SynthesisExecutionError(f"Synthesis dotnet_root must be a directory, not a file: {dotnet_root}")
         if self.pipeline_settings_path is None:
             object.__setattr__(self, "pipeline_settings_path", pathlib.Path.cwd() / "PipelineSettings.json")
         if self.data_folder_path is None:
@@ -642,19 +662,28 @@ class SynthesisRunner:
                 errors.append(f"Synthesis CLI exited with code {return_code}")
             if self._config.require_patcher_receipts:
                 combined_receipt_output = stdout + "\n" + stderr
-                started_patchers = {
+                started_counts = Counter(
                     m.group(1).strip() for m in self._CONSOLE_START_PATTERN.finditer(combined_receipt_output)
-                }
-                succeeded_patchers = {
+                )
+                succeeded_counts = Counter(
                     m.group(1).strip() for m in self._CONSOLE_SUCCESS_PATTERN.finditer(combined_receipt_output)
-                }
-                for expected_name in profile.patcher_nicknames:
-                    if expected_name not in started_patchers or expected_name not in succeeded_patchers:
+                )
+                expected_counts = Counter(profile.patcher_nicknames)
+                for expected_name, expected_total in expected_counts.items():
+                    started_seen = started_counts[expected_name]
+                    succeeded_seen = succeeded_counts[expected_name]
+                    if started_seen < expected_total or succeeded_seen < expected_total:
                         errors.append(
-                            f"Synthesis patcher {expected_name!r} has no verified Starting/Run successful receipt"
+                            f"Synthesis patcher {expected_name!r} has incomplete execution receipts "
+                            f"(expected {expected_total}, started {started_seen}, succeeded {succeeded_seen})"
                         )
-                if self._CONSOLE_EXPORT_PATTERN.search(combined_receipt_output) is None:
-                    errors.append("Synthesis CLI output has no 'Exported patch to final destination:' confirmation")
+                export_count = sum(1 for _ in self._CONSOLE_EXPORT_PATTERN.finditer(combined_receipt_output))
+                expected_exports = len(profile.group_names)
+                if export_count < expected_exports:
+                    errors.append(
+                        "Synthesis CLI output is missing 'Exported patch to final destination:' "
+                        f"confirmations (expected {expected_exports}, saw {export_count})"
+                    )
 
             try:
                 probe_after = await self._probe_output_files(profile.group_names)
@@ -887,11 +916,8 @@ class SynthesisRunner:
             filtered = [
                 entry
                 for entry in entries
-                if not (
-                    "program files (x86)" in entry.replace("/", "\\").casefold()
-                    and entry.replace("/", "\\").rstrip("\\").casefold().endswith("\\dotnet")
-                )
-                and os.path.normcase(entry) != os.path.normcase(dotnet_dir)
+                if not _is_x86_dotnet_path(entry)
+                and os.path.normcase(os.path.normpath(entry)) != os.path.normcase(os.path.normpath(dotnet_dir))
             ]
             env[path_key] = os.pathsep.join([dotnet_dir, *filtered])
 
