@@ -152,19 +152,33 @@ def evaluar(pr: int, ejecutar: Ejecutor = _gh) -> Veredicto:
     )
 
 
-def _esperar_a_que_termine(corrida: int, ejecutar: Ejecutor, esperar: Espera) -> None:
-    """Espera a que la corrida termine; si no termina a tiempo es un error (no se puede saltear: ver ``_reevaluar_pr``)."""
-    for _ in range(INTENTOS_DE_ESPERA):
+@dataclass
+class Presupuesto:
+    """Pausas que le quedan a TODA la reevaluación: esperas por PR en serie podrían sumar más que el timeout del job, y
+    GitHub lo mataría antes de llegar a los PRs que faltan (que conservarían su veredicto viejo)."""
+
+    pausas: int = INTENTOS_DE_ESPERA
+
+
+def _esperar_a_que_termine(corrida: int, ejecutar: Ejecutor, esperar: Espera, presupuesto: Presupuesto) -> None:
+    """Espera a que la corrida termine; si se agota el presupuesto es un error (no se puede saltear: ver ``_reevaluar_pr``)."""
+    while presupuesto.pausas > 0:
+        presupuesto.pausas -= 1
         esperar(PAUSA_DE_ESPERA)
         datos = _json(ejecutar, ["run", "view", str(corrida), "--json", "status"])
         if not isinstance(datos, dict) or not isinstance(datos.get("status"), str):
             raise ValueError(f"gh run view devolvió una forma inesperada: {str(datos)[:200]!r}")
         if datos["status"] == "completed":
             return
-    raise ValueError(f"la corrida {corrida} del gate no terminó en {INTENTOS_DE_ESPERA * PAUSA_DE_ESPERA:.0f} s")
+    raise ValueError(
+        f"la corrida {corrida} del gate no terminó dentro de los {INTENTOS_DE_ESPERA * PAUSA_DE_ESPERA:.0f} s de espera "
+        "de la reevaluación"
+    )
 
 
-def _reevaluar_pr(numero: int, commit: str, ejecutar: Ejecutor, esperar: Espera) -> str:
+def _reevaluar_pr(
+    numero: int, commit: str, rama: str, ejecutar: Ejecutor, esperar: Espera, presupuesto: Presupuesto
+) -> str:
     """Vuelve a correr el job del gate de ese PR; devuelve qué hizo. Un problema real lanza ``ValueError``."""
     corridas = _lista_de_dicts(
         _json(
@@ -176,6 +190,10 @@ def _reevaluar_pr(numero: int, commit: str, ejecutar: Ejecutor, esperar: Espera)
                 WORKFLOW_DEL_GATE,
                 "--commit",
                 commit,
+                # Dos PRs pueden apuntar al mismo commit desde ramas distintas: solo por commit, uno se llevaría la
+                # corrida del otro y el segundo conservaría su veredicto viejo.
+                "--branch",
+                rama,
                 "--event",
                 "pull_request",
                 "--json",
@@ -194,7 +212,7 @@ def _reevaluar_pr(numero: int, commit: str, ejecutar: Ejecutor, esperar: Espera)
     if corrida["status"] != "completed":
         # Un gate en curso pudo haber leído las corridas de main ANTES de que terminara la que disparó esta
         # reevaluación: saltearlo dejaría su veredicto viejo fijo hasta el próximo evento del PR. Se espera y se re-corre.
-        _esperar_a_que_termine(corrida["databaseId"], ejecutar, esperar)
+        _esperar_a_que_termine(corrida["databaseId"], ejecutar, esperar, presupuesto)
     jobs = [job for job in _jobs_de(ejecutar, corrida["databaseId"]) if job["name"] == NOMBRE_DEL_GATE]
     if len(jobs) != 1 or not isinstance(jobs[0].get("databaseId"), int):
         raise ValueError(f"la corrida {corrida['databaseId']} no tiene exactamente un job «{NOMBRE_DEL_GATE}»")
@@ -207,15 +225,29 @@ def reevaluar(ejecutar: Ejecutor = _gh, esperar: Espera = time.sleep) -> int:
     prs = _lista_de_dicts(
         _json(
             ejecutar,
-            ["pr", "list", "--base", "main", "--state", "open", "--json", "number,headRefOid", "--limit", "200"],
+            [
+                "pr",
+                "list",
+                "--base",
+                "main",
+                "--state",
+                "open",
+                "--json",
+                "number,headRefOid,headRefName",
+                "--limit",
+                "200",
+            ],
         ),
-        {"number": int, "headRefOid": str},
+        {"number": int, "headRefOid": str, "headRefName": str},
         "pr list",
     )
     errores = 0
+    presupuesto = Presupuesto()
     for pr in prs:
         try:
-            print(f"PR #{pr['number']}: {_reevaluar_pr(pr['number'], pr['headRefOid'], ejecutar, esperar)}")
+            print(
+                f"PR #{pr['number']}: {_reevaluar_pr(pr['number'], pr['headRefOid'], pr['headRefName'], ejecutar, esperar, presupuesto)}"
+            )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as exc:
             # Seguir con los demás: un PR que no se re-evaluó puede quedar en verde con main roto, así que el job
             # termina en rojo al final y queda a la vista.
