@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import asyncio
 import json
 import logging
 import pathlib
@@ -18,6 +20,7 @@ from sky_claw.__main__ import (
     _run_vfs_quarantine,
 )
 from sky_claw.config import Config
+from sky_claw.local.mo2.vfs_arranque import FLAGS_VFS
 
 #: Qué hace cada ``--mode`` con el posicional ``command``: ``True`` si ``_main`` lo consume (``oneshot`` lo ejecuta,
 #: ``security`` lo despacha a ``_run_security``), ``False`` si lo ignoraría en silencio. Se congela por igualdad
@@ -635,24 +638,222 @@ def test_main_gui_drena_evento_watchdog_antes_de_cerrar_listener(
     )
 
 
-def test_main_loggea_crash_superior_y_preserva_excepcion(caplog) -> None:
+# ------------------------------------------------------------------
+# Un fallo no manejado nunca deja al .exe congelado esperando un diálogo
+# ------------------------------------------------------------------
+#
+# El .exe es ``console=False``: ante una excepción que escapa del script, el bootloader de PyInstaller abre un diálogo
+# MODAL («Unhandled exception in script») y el proceso espera a que alguien lo cierre. Corrido sin nadie mirando (un
+# arnés, el rig, MO2 lanzando el worker) queda colgado para siempre: R0 ronda 6 lo vio en ``vfs-health`` tras un rechazo
+# del bridge. Propiedad: todo camino NO interactivo convierte la excepción en ``SystemExit(1)`` (el código que da Python
+# sin congelar) con el traceback en stderr; solo la GUI, con un operador delante, conserva el diálogo.
+
+#: Por modo: ``True`` si un fallo no manejado conserva el diálogo (hay un operador mirando la pantalla). Se congela por
+#: igualdad contra los ``choices`` reales del parser: un modo nuevo rompe el ancla hasta que se lo clasifica.
+_MODOS_Y_SI_SU_FALLO_ABRE_EL_DIALOGO: dict[str, bool] = {
+    "cli": False,
+    "telegram": False,
+    "oneshot": False,
+    "gui": True,
+    "security": False,
+    "install-vfs-bridge": False,
+    "vfs-health": False,
+    "vfs-quarantine": False,
+}
+
+
+def test_cada_modo_esta_clasificado_y_solo_la_gui_conserva_el_dialogo() -> None:
     from sky_claw import __main__ as main_module
+
+    accion_mode = next(a for a in _build_parser()._actions if "--mode" in a.option_strings)
+    assert set(accion_mode.choices) == set(_MODOS_Y_SI_SU_FALLO_ABRE_EL_DIALOGO)
+    interactivos = frozenset(modo for modo, abre in _MODOS_Y_SI_SU_FALLO_ABRE_EL_DIALOGO.items() if abre)
+    assert interactivos == main_module._MODOS_INTERACTIVOS
+
+
+def _fallar_en(main_module, modo: str, excepcion: BaseException):  # noqa: ANN001, ANN202
+    """Hace que el modo falle con ``excepcion`` en el mismo punto en que fallaría de verdad."""
 
     def _run(coro) -> None:  # noqa: ANN001
         coro.close()
-        raise RuntimeError("boom superior")
+        raise excepcion
 
+    if modo == "gui":
+        return patch("sky_claw.app.modes.gui_mode.run_gui_mode", side_effect=excepcion)
+    return patch.object(main_module.asyncio, "run", side_effect=_run)
+
+
+@pytest.mark.parametrize("excepcion", [RuntimeError("boom superior"), asyncio.CancelledError("cancelado arriba")])
+@pytest.mark.parametrize(("modo", "abre_el_dialogo"), sorted(_MODOS_Y_SI_SU_FALLO_ABRE_EL_DIALOGO.items()))
+def test_un_fallo_no_manejado_sale_con_codigo_1_y_traceback_salvo_en_la_gui(
+    modo: str, abre_el_dialogo: bool, excepcion: BaseException, caplog, capsys
+) -> None:
+    from sky_claw import __main__ as main_module
+
+    # Arrange
     with (
         patch.object(main_module, "setup_logging"),
         patch.object(main_module, "shutdown_logging", return_value=True) as shutdown,
-        patch.object(main_module.asyncio, "run", side_effect=_run),
+        _fallar_en(main_module, modo, excepcion),
         caplog.at_level(logging.CRITICAL, logger="sky_claw"),
-        pytest.raises(RuntimeError, match="boom superior"),
     ):
-        main_module.main(["--mode", "cli"])
+        # Act
+        if abre_el_dialogo:
+            with pytest.raises(type(excepcion)):
+                main_module.main(["--mode", modo])
+        else:
+            with pytest.raises(SystemExit) as salida:
+                main_module.main(["--mode", modo])
 
-    assert "Fallo no manejado en el proceso principal" in caplog.text
+    # Assert: el crash queda logueado y el logging se cierra una sola vez, en los dos casos.
+    assert "no manejad" in caplog.text
     shutdown.assert_called_once_with()
+    if not abre_el_dialogo:
+        assert salida.value.code == main_module.EXIT_EXCEPCION_NO_MANEJADA == 1
+        assert str(excepcion) in capsys.readouterr().err  # el operador ve el traceback, como sin congelar
+
+
+@pytest.mark.parametrize("excepcion", [KeyError("bug del worker"), asyncio.CancelledError("worker cancelado")])
+@pytest.mark.parametrize("flag", sorted(FLAGS_VFS))
+def test_el_worker_que_falla_sale_con_codigo_1_sin_dialogo(flag: str, excepcion: BaseException, capsys) -> None:
+    """El worker lo lanza MO2 dentro del Job: con el diálogo abierto el Job no se vacía y el fence espera en vano.
+
+    La familia se enumera desde ``FLAGS_VFS``: un flag nuevo que ``main`` no rutee por la misma guarda llega a argparse
+    (``SystemExit(2)``) y rompe el test.
+    """
+    from sky_claw import __main__ as main_module
+
+    with (
+        patch("sky_claw.local.mo2.vfs_arranque.arrancar_worker", side_effect=excepcion) as arranque,
+        pytest.raises(SystemExit) as salida,
+    ):
+        main_module.main([flag, "--job-id", "j-1"])
+
+    arranque.assert_called_once_with(flag, ["--job-id", "j-1"])
+    assert salida.value.code == main_module.EXIT_EXCEPCION_NO_MANEJADA
+    assert str(excepcion).strip("'") in capsys.readouterr().err
+
+
+def _despachos_del_ejecutable(arbol: ast.Module) -> list[tuple[str, str]]:
+    """``(dónde, a quién)`` de cada ``_despachar_sin_dialogo(lambda: <punto de entrada>(...))`` del módulo.
+
+    ``dónde`` es ``"<módulo>"`` para los despachos de nivel de módulo, que en el .exe corren ANTES de ``main()``.
+    """
+    encontrados: list[tuple[str, str]] = []
+
+    def visitar(nodo: ast.AST, donde: str) -> None:
+        for hijo in ast.iter_child_nodes(nodo):
+            if isinstance(hijo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visitar(hijo, hijo.name)
+                continue
+            if (
+                isinstance(hijo, ast.Call)
+                and isinstance(hijo.func, ast.Name)
+                and hijo.func.id == "_despachar_sin_dialogo"
+                and len(hijo.args) == 1
+                and isinstance(hijo.args[0], ast.Lambda)
+                and isinstance(hijo.args[0].body, ast.Call)
+                and isinstance(hijo.args[0].body.func, ast.Name)
+            ):
+                encontrados.append((donde, hijo.args[0].body.func.id))
+            visitar(hijo, donde)
+
+    visitar(arbol, "<módulo>")
+    return sorted(encontrados)
+
+
+def test_todo_punto_de_entrada_del_ejecutable_pasa_por_la_guarda_sin_dialogo() -> None:
+    """Censo AST de ``sky_claw/__main__.py``, la única entrada del .exe (``Analysis(["sky_claw/__main__.py"])``).
+
+    Los despachos de nivel de módulo NO pasan por ``main()``: en el .exe, el worker VFS y los helpers UIA salen desde
+    ahí. Por eso la guarda es una función y el ancla tiene dos mitades: (1) los despachos son exactamente estos, y (2)
+    ningún ``raise SystemExit(<llamada>)`` sale con lo que devuelve un punto de entrada por fuera de la guarda (fue la
+    forma de los cuatro despachos que dejaban escapar la excepción al bootloader).
+    """
+    from sky_claw import __main__ as main_module
+
+    arbol = ast.parse(pathlib.Path(main_module.__file__).read_text(encoding="utf-8"))
+
+    assert _despachos_del_ejecutable(arbol) == [
+        ("<módulo>", "_main_helper_driver"),
+        ("<módulo>", "_main_helper_uia"),
+        ("<módulo>", "arrancar_worker"),
+        ("main", "arrancar_worker"),
+    ]
+    salidas_con_una_llamada = [
+        nodo.lineno
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.Raise)
+        and isinstance(nodo.exc, ast.Call)
+        and isinstance(nodo.exc.func, ast.Name)
+        and nodo.exc.func.id == "SystemExit"
+        and any(isinstance(arg, ast.Call) for arg in nodo.exc.args)
+    ]
+    assert salidas_con_una_llamada == []
+
+
+@pytest.mark.parametrize("excepcion", [KeyError("bug"), RuntimeError("boom"), asyncio.CancelledError("cancelado")])
+def test_la_guarda_convierte_cualquier_excepcion_en_codigo_1_con_traceback(excepcion: BaseException, capsys) -> None:
+    from sky_claw import __main__ as main_module
+
+    def _punto_de_entrada() -> int:
+        raise excepcion
+
+    with pytest.raises(SystemExit) as salida:
+        main_module._despachar_sin_dialogo(_punto_de_entrada)
+
+    assert salida.value.code == main_module.EXIT_EXCEPCION_NO_MANEJADA == 1
+    assert salida.value.__context__ is None or salida.value.__suppress_context__
+    assert type(excepcion).__name__ in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("codigo", [0, 2, 64, 72, None])
+def test_la_guarda_respeta_el_codigo_del_punto_de_entrada(codigo: int | None) -> None:
+    from sky_claw import __main__ as main_module
+
+    with pytest.raises(SystemExit) as salida:
+        main_module._despachar_sin_dialogo(lambda: codigo)
+
+    assert salida.value.code == codigo
+
+
+def test_la_guarda_deja_pasar_un_system_exit_propio_del_punto_de_entrada() -> None:
+    from sky_claw import __main__ as main_module
+
+    def _punto_de_entrada() -> int:
+        raise SystemExit(2)  # p. ej. argparse ante argumentos inválidos
+
+    with pytest.raises(SystemExit) as salida:
+        main_module._despachar_sin_dialogo(_punto_de_entrada)
+
+    assert salida.value.code == 2
+
+
+def test_la_guarda_sale_igual_sin_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``console=False`` sin handles heredados: ``sys.stderr`` es ``None`` y el traceback no tiene adónde ir."""
+    from sky_claw import __main__ as main_module
+
+    monkeypatch.setattr(main_module.sys, "stderr", None)
+
+    def _punto_de_entrada() -> int:
+        raise RuntimeError("sin consola")
+
+    with pytest.raises(SystemExit) as salida:
+        main_module._despachar_sin_dialogo(_punto_de_entrada)
+
+    assert salida.value.code == 1
+
+
+def test_el_codigo_que_devuelve_el_worker_se_respeta_tal_cual() -> None:
+    from sky_claw import __main__ as main_module
+
+    with (
+        patch("sky_claw.local.mo2.vfs_arranque.arrancar_worker", return_value=72),
+        pytest.raises(SystemExit) as salida,
+    ):
+        main_module.main(["--vfs-worker"])
+
+    assert salida.value.code == 72
 
 
 @pytest.mark.asyncio
