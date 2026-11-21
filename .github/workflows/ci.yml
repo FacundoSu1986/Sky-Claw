@@ -14,6 +14,14 @@ on:
   # (base = feature branch). Como push ya no dispara en feature, no hay
   # duplicación. Cubre el caso señalado en revisión (PR a feature sin CI).
   pull_request:
+  # Corrida completa nocturna sobre main (07:00 UTC = 04:00 en Argentina, fuera del horario de los PRs): detecta lo que
+  # ningún commit cambió (una dependencia nueva que pip resuelve distinto, como el ruff 0.17.4 de CI-FIX-003, o un test
+  # inestable). Si falla, avisa el job `alerta-main`. Concurrencia: como push, agrupa por SHA y no cancela.
+  schedule:
+    - cron: "0 7 * * *"
+  # A pedido (Actions → Run workflow): la suite completa sobre cualquier rama, p. ej. para probar py3.12 antes del merge.
+  # Sobre una rama que no es main, un rojo no dispara la alerta.
+  workflow_dispatch:
 
 concurrency:
   # En pull_request: un push nuevo cancela la corrida obsoleta del mismo PR
@@ -391,3 +399,32 @@ jobs:
         with:
           name: SkyClawApp-exe
           path: dist/SkyClawApp.exe
+
+  # ── Alerta: main roto ────────────────────────────────────────────
+  # Fuera de un PR (push, nocturna, a pedido) y solo sobre main: si CUALQUIER job no informativo falló, abre el issue
+  # «CI de main roto» o comenta el que ya está abierto (scripts/ci_alerta_main.py). Sin esto, una regresión que solo
+  # aparece en py3.12 (que los PRs ya no corren) sería una cruz roja en un commit que nadie mira.
+  # `failure()` mira a TODOS los ancestros, no solo a los `needs` directos: con estos cinco cuelgan todos los jobs salvo
+  # `test-posix-core`, que es informativo (continue-on-error). tests/test_ci_platform_policy.py lo enumera.
+  # Es el ÚNICO job con permiso de escritura, y solo sobre issues. Los datos entran por env, nunca por ${{ }} en `run`.
+  alerta-main:
+    name: "🚨 Alerta: main roto"
+    needs: [lint-summary, typecheck-summary, test-summary, security, build]
+    if: ${{ failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Abrir o comentar el issue de main roto
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENTO: ${{ github.event_name }}
+          COMMIT: ${{ github.sha }}
+          URL_DE_LA_CORRIDA: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 scripts/ci_alerta_main.py
