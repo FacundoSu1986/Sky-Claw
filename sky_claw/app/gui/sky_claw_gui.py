@@ -858,6 +858,17 @@ def main_page() -> None:
         name="gui-parallax-diagnostico",
     )
 
+    callbacks["on_mod_evaluate_eligibility"] = lambda mod_name: create_tracked_task(
+        run_diagnostico_parallax(
+            mod_name,
+            supervisor=runtime.supervisor,
+            store=get_store(),
+            tab_id=current_tab_id(),
+            elegibilidad=True,
+        ),
+        name="gui-parallax-elegibilidad",
+    )
+
     def _on_hitl_respond(request_id: str, approved: bool) -> None:
         _dispatch_hitl_response(
             request_id,
