@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from sky_claw.app.core.path_resolver import PathResolutionService
     from sky_claw.app.db.journal import OperationJournal
     from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+    from sky_claw.local.mo2.brokered_synthesis import VfsBrokerProtocol
     from sky_claw.local.validators.preflight import PreflightCheck, PreflightReport, PreflightService
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,9 @@ class SynthesisPipelineService:
         preflight: PreflightService | None = None,
         synthesis_settings_path: pathlib.Path | None = None,
         synthesis_profile_identifier: str | None = None,
+        vfs_broker: VfsBrokerProtocol | None = None,
+        instance_id: str | None = None,
+        synthesis_runner: Any = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -134,16 +138,25 @@ class SynthesisPipelineService:
         # El alias del perfil MO2 solo se usa como convención por defecto; si
         # difieren, se puede mapear explícitamente por parámetro o entorno.
         self._synthesis_profile_identifier = synthesis_profile_identifier
+        self._vfs_broker = vfs_broker
+        self._instance_id = instance_id.strip() if isinstance(instance_id, str) and instance_id.strip() else None
+        if synthesis_runner is not None:
+            domain = getattr(synthesis_runner, "data_visibility_domain", None)
+            self._data_visibility_domain = "virtual_usvfs" if domain == "virtual_usvfs" else "physical"
+        elif vfs_broker is not None:
+            self._data_visibility_domain = "virtual_usvfs"
+        else:
+            self._data_visibility_domain = "physical"
 
         # Lazy init — paths may not be available at construction time
-        self._synthesis_runner: SynthesisRunner | None = None
+        self._synthesis_runner: Any = synthesis_runner
         self._patcher_pipeline: PatcherPipeline | None = None
 
     # ------------------------------------------------------------------
     # Lazy initialization
     # ------------------------------------------------------------------
 
-    def _ensure_synthesis_runner(self) -> SynthesisRunner:
+    def _ensure_synthesis_runner(self) -> Any:
         """Inicializa lazily el SynthesisRunner validando paths del entorno.
 
         Returns:
@@ -179,10 +192,11 @@ class SynthesisPipelineService:
         # overwrite), donde la declaración del INI es load-bearing — con
         # mod_directory declarado e irresoluble aborta con evidencia vía
         # get_mo2_mods_path_para_destino (no fabrica <datos>/mods en silencio).
+        resolve_mods_dir = self._path_resolver.get_mo2_mods_path_para_destino
         output_path = synthesis_output_target(
             mo2=mo2_path,
             override=self._output_path,
-            mods_dir=self._path_resolver.get_mo2_mods_path_para_destino,
+            mods_dir=resolve_mods_dir,
         )
         assert output_path is not None  # mo2_path ya validado arriba
 
@@ -214,6 +228,45 @@ class SynthesisPipelineService:
         settings_path = (
             pathlib.Path(configured_settings) if configured_settings else pathlib.Path.cwd() / "PipelineSettings.json"
         )
+        if self._vfs_broker is not None:
+            if self._instance_id is None:
+                raise SynthesisExecutionError(
+                    "Brokered Synthesis requiere instance_id válido; prohibido fallback silencioso a standalone"
+                )
+            from sky_claw.local.mo2.brokered_synthesis import BrokeredSynthesisRunner
+
+            candidate_mods = resolve_mods_dir()
+            resolved_mods_dir = candidate_mods if isinstance(candidate_mods, pathlib.Path) else None
+            config = SynthesisConfig(
+                game_path=game_path,
+                mo2_path=mo2_path,
+                output_path=output_path,
+                synthesis_exe=synthesis_exe,
+                timeout_seconds=900,
+                profile=synthesis_profile,
+                pipeline_settings_path=settings_path,
+                data_folder_path=game_path / "Data",
+                load_order_file_path=load_order_file,
+                mo2_profile=mo2_profile,
+                block_building_within_mo2=True,
+                shortcircuit=True,
+                require_patcher_receipts=True,
+            )
+            self._synthesis_runner = BrokeredSynthesisRunner(
+                config=config,
+                broker=self._vfs_broker,
+                instance_id=self._instance_id,
+                data_root=mo2_path,
+                mods_dir=resolved_mods_dir,
+            )
+            logger.info(
+                "BrokeredSynthesisRunner inicializado: game=%s, output=%s, instance=%s",
+                game_path,
+                output_path,
+                self._instance_id,
+            )
+            return self._synthesis_runner
+
         config = SynthesisConfig(
             game_path=game_path,
             mo2_path=mo2_path,
@@ -331,16 +384,21 @@ class SynthesisPipelineService:
         # y parcheado por Wrye Bash: un master invertido es CTD, no un warning.
         order_check = self._build_master_order_check(game, mo2, mods_dir)
 
-        # U-01: Synthesis procesa TODO el modlist; sin la USVFS heredada el patch
-        # saldría del juego base. Mismo perfil que alimenta masters/límites.
-        visibility_check = build_vfs_visibility_sensor(
-            game=game,
-            sources_resolver=build_mo2_profile_sources_resolver(
+        # U-01: en dominio físico, cada plugin activo de mods debe ser visible
+        # en <game>/Data físico. En dominio virtual_usvfs, corre dentro del
+        # worker bajo MO2/USVFS y el sensor físico se omite (omit_unconfigured=True).
+        visibility_check = (
+            build_vfs_visibility_sensor(
                 game=game,
-                mo2=mo2,
-                profile=self._path_resolver.get_active_profile(),
-                mods_dir=mods_dir,
-            ),
+                sources_resolver=build_mo2_profile_sources_resolver(
+                    game=game,
+                    mo2=mo2,
+                    profile=self._path_resolver.get_active_profile(),
+                    mods_dir=mods_dir,
+                ),
+            )
+            if self._data_visibility_domain == "physical"
+            else None
         )
 
         self._preflight = PreflightService(
@@ -667,7 +725,11 @@ class SynthesisPipelineService:
             preflight_report = await preflight.run()
         try:
             overflow_check = await asyncio.to_thread(self._build_master_overflow_check, runner, patcher_ids)
-            visibility_check = await asyncio.to_thread(self._build_synthesis_visibility_check, runner)
+            visibility_check = (
+                None
+                if self._data_visibility_domain == "virtual_usvfs"
+                else await asyncio.to_thread(self._build_synthesis_visibility_check, runner)
+            )
             if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
                 raise SynthesisExecutionError("Synthesis PipelineSettings.json changed during preflight")
             if await asyncio.to_thread(runner.load_order_fingerprint) != load_order_fingerprint:
@@ -676,7 +738,8 @@ class SynthesisPipelineService:
             logger.error("No se pudo validar el fan-in/visibilidad de Synthesis: %s", exc)
             return _attach_preflight(self._error_dict(str(exc)), preflight_report)
         preflight_report = self._append_preflight_check(preflight_report, overflow_check)
-        preflight_report = self._append_preflight_check(preflight_report, visibility_check)
+        if visibility_check is not None:
+            preflight_report = self._append_preflight_check(preflight_report, visibility_check)
         if preflight_report.blocks_mutations:
             red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
             logger.warning("Synthesis (stage 7) bloqueado por preflight en rojo: %s", red)

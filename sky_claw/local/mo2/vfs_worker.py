@@ -15,7 +15,7 @@ import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol, TypeAlias
+from typing import Any, Literal, Protocol, TypeAlias
 
 from sky_claw.app.security.path_validator import PathValidator
 from sky_claw.local.loot.cli import (
@@ -34,6 +34,7 @@ from sky_claw.local.mo2.vfs_arranque import abortar_por_identidad, nombre_de_log
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, verify_vfs_attestation
 from sky_claw.local.mo2.vfs_contracts import (
     ALLOWED_VFS_SESSION_TOOL_IDS,
+    SYNTHESIS_CLI_EXECUTABLE_NAMES,
     VFS_PROTOCOL_VERSION,
     VFS_TOOL_EXECUTABLE_NAMES,
     JsonValue,
@@ -51,6 +52,13 @@ from sky_claw.local.mo2.vfs_job_identity import (
 )
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest, read_worker_manifest
 from sky_claw.local.tools._process import kill_and_reap
+from sky_claw.local.tools.synthesis_runner import (
+    SynthesisConfig,
+    SynthesisExecutionError,
+    SynthesisNotFoundError,
+    SynthesisRunner,
+    SynthesisTimeoutError,
+)
 from sky_claw.logging_config import (
     default_log_dir,
     setup_logging,
@@ -63,6 +71,33 @@ logger = logging.getLogger(__name__)
 _GRANDCHILD_TIMEOUT_SECONDS = 10.0
 _MAX_DESCRIPTOR_BYTES = 64 * 1024
 _RESULT_ACK_TIMEOUT_SECONDS = 5.0
+SYNTHESIS_FAILURE_KINDS: frozenset[str] = frozenset({"timeout", "not_found", "execution_error"})
+_SYNTHESIS_REQUIRED_KEYS: frozenset[str] = frozenset(
+    {
+        "synthesis_exe",
+        "output_path",
+        "pipeline_settings_path",
+        "synthesis_profile",
+        "patcher_ids",
+    }
+)
+_SYNTHESIS_OPTIONAL_KEYS: frozenset[str] = frozenset(
+    {
+        "expected_plugins",
+        "extra_data_folder",
+        "working_dir",
+        "temp_dir",
+        "dotnet_root",
+        "persistence_mode",
+        "persistence_path",
+        "target_runtime",
+        "block_building_within_mo2",
+        "shortcircuit",
+        "require_patcher_receipts",
+        "expected_settings_fingerprint",
+        "expected_load_order_fingerprint",
+    }
+)
 #: Plazo MÁXIMO para que el bridge confirme la supervisión. Es una cota de FALLO CERRADO,
 #: no un sustituto de la garantía: vencido el plazo el worker ABORTA sin haber creado el nieto de
 #: la attestation ni despachado la herramienta; jamás prosigue "por las dudas". La confirmación real llega en milisegundos.
@@ -423,6 +458,207 @@ def _loot_failure_execution(
         stderr=message,
         outputs=outputs,
         tool_result={"loot_failure_kind": kind},
+    )
+
+
+def _synthesis_failure_execution(
+    *,
+    kind: str,
+    message: str,
+    outputs: tuple[pathlib.Path, ...],
+) -> VfsToolExecution:
+    """Fallo tipado de Synthesis sin ``SynthesisResult`` (ver ``SYNTHESIS_FAILURE_KINDS``)."""
+    if kind not in SYNTHESIS_FAILURE_KINDS:
+        raise ValueError(f"synthesis_failure_kind no permitido: {kind!r}")
+    return VfsToolExecution(
+        success=False,
+        message=message,
+        exit_code=None,
+        stdout="",
+        stderr=message,
+        outputs=outputs,
+        tool_result={"synthesis_failure_kind": kind},
+    )
+
+
+def _optional_payload_path(payload: Mapping[str, JsonValue], field: str) -> pathlib.Path | None:
+    if field not in payload or payload[field] is None:
+        return None
+    return _session_payload_path(payload, field)
+
+
+def _optional_payload_str(payload: Mapping[str, JsonValue], field: str) -> str | None:
+    if field not in payload or payload[field] is None:
+        return None
+    return _payload_string(payload, field)
+
+
+def _optional_payload_bool(payload: Mapping[str, JsonValue], field: str, *, default: bool) -> bool:
+    if field not in payload:
+        return default
+    value = payload[field]
+    if type(value) is not bool:
+        raise ValueError(f"payload.{field} debe ser bool")
+    return value
+
+
+def _synthesis_patcher_ids(payload: Mapping[str, JsonValue]) -> list[str]:
+    raw = payload.get("patcher_ids")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("payload.patcher_ids debe ser una lista no vacía de strings")
+    result: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("payload.patcher_ids solo admite strings no vacíos")
+        result.append(item)
+    return result
+
+
+async def _synthesis_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
+    """Valida el contrato cerrado de ``tool_id='synthesis'`` y ejecuta bajo USVFS."""
+    if manifest.job.tool_id != "synthesis":
+        raise ValueError("handler Synthesis recibió otro tool_id")
+
+    payload = manifest.job.payload
+    missing = _SYNTHESIS_REQUIRED_KEYS - set(payload)
+    if missing:
+        raise ValueError(f"payload de synthesis omite campo(s) requerido(s): {sorted(missing)}")
+    unexpected = set(payload) - (_SYNTHESIS_REQUIRED_KEYS | _SYNTHESIS_OPTIONAL_KEYS)
+    if unexpected:
+        raise ValueError(f"payload de synthesis contiene campos no permitidos: {sorted(unexpected)}")
+
+    synthesis_exe = _session_payload_path(payload, "synthesis_exe")
+    if synthesis_exe.name.casefold() not in SYNTHESIS_CLI_EXECUTABLE_NAMES:
+        raise ValueError(
+            f"executable incompatible con synthesis: {synthesis_exe.name}; "
+            f"se requiere {sorted(SYNTHESIS_CLI_EXECUTABLE_NAMES)}"
+        )
+    if synthesis_exe.is_symlink() or not synthesis_exe.is_file():
+        raise ValueError("payload.synthesis_exe debe ser un archivo regular real y no un symlink")
+
+    output_path = _session_payload_path(payload, "output_path")
+    declared_outputs = tuple(path.resolve() for path in manifest.job.mutation_targets)
+    if len(declared_outputs) != 1 or output_path != declared_outputs[0]:
+        raise ValueError("payload.output_path debe coincidir con un único mutation_targets declarado")
+
+    pipeline_settings_path = _session_payload_path(payload, "pipeline_settings_path")
+    if pipeline_settings_path.is_symlink() or not pipeline_settings_path.is_file():
+        raise ValueError("payload.pipeline_settings_path debe ser un archivo regular real y no un symlink")
+
+    load_order_file_path = manifest.data_root / "profiles" / manifest.job.profile / "plugins.txt"
+    if load_order_file_path.is_symlink() or not load_order_file_path.is_file():
+        raise ValueError("el perfil MO2 del job no tiene plugins.txt regular legible")
+
+    synthesis_profile = _payload_string(payload, "synthesis_profile")
+    patcher_ids = _synthesis_patcher_ids(payload)
+
+    extra_data_folder = _optional_payload_path(payload, "extra_data_folder")
+    working_dir = _optional_payload_path(payload, "working_dir")
+    temp_dir = _optional_payload_path(payload, "temp_dir")
+    dotnet_root = _optional_payload_path(payload, "dotnet_root")
+    persistence_path = _optional_payload_path(payload, "persistence_path")
+
+    raw_persistence_mode = payload.get("persistence_mode", "None")
+    if raw_persistence_mode not in {"None", "Text"}:
+        raise ValueError(f"payload.persistence_mode no permitido: {raw_persistence_mode!r}")
+    persistence_mode: Literal["None", "Text"] = "Text" if raw_persistence_mode == "Text" else "None"
+    if persistence_mode == "Text" and persistence_path is None:
+        raise ValueError("payload.persistence_path es obligatorio cuando persistence_mode='Text'")
+
+    target_runtime = _optional_payload_str(payload, "target_runtime")
+    expected_settings_fp = _optional_payload_str(payload, "expected_settings_fingerprint")
+    expected_lo_fp = _optional_payload_str(payload, "expected_load_order_fingerprint")
+    block_building_within_mo2 = _optional_payload_bool(payload, "block_building_within_mo2", default=True)
+    shortcircuit = _optional_payload_bool(payload, "shortcircuit", default=True)
+    require_patcher_receipts = _optional_payload_bool(payload, "require_patcher_receipts", default=True)
+
+    virtual_data_dir = manifest.virtual_data_dir.resolve()
+    game_path = virtual_data_dir.parent.resolve()
+    try:
+        config = SynthesisConfig(
+            game_path=game_path,
+            mo2_path=manifest.data_root,
+            output_path=output_path,
+            synthesis_exe=synthesis_exe,
+            timeout_seconds=max(1, int(manifest.job.timeout_seconds)),
+            profile=synthesis_profile,
+            pipeline_settings_path=pipeline_settings_path,
+            data_folder_path=virtual_data_dir,
+            load_order_file_path=load_order_file_path.resolve(),
+            mo2_profile=manifest.job.profile,
+            extra_data_folder=extra_data_folder,
+            working_dir=working_dir,
+            temp_dir=temp_dir,
+            dotnet_root=dotnet_root,
+            persistence_mode=persistence_mode,
+            persistence_path=persistence_path,
+            target_runtime=target_runtime,
+            block_building_within_mo2=block_building_within_mo2,
+            shortcircuit=shortcircuit,
+            require_patcher_receipts=require_patcher_receipts,
+        )
+        runner = SynthesisRunner(config)
+        result = await runner.run_pipeline(
+            patcher_ids,
+            expected_settings_fingerprint=expected_settings_fp,
+            expected_load_order_fingerprint=expected_lo_fp,
+        )
+    except SynthesisTimeoutError as exc:
+        return _synthesis_failure_execution(
+            kind="timeout",
+            message=str(exc),
+            outputs=manifest.job.mutation_targets,
+        )
+    except SynthesisNotFoundError as exc:
+        return _synthesis_failure_execution(
+            kind="not_found",
+            message=str(exc),
+            outputs=(),
+        )
+    except SynthesisExecutionError as exc:
+        return _synthesis_failure_execution(
+            kind="execution_error",
+            message=str(exc),
+            outputs=manifest.job.mutation_targets,
+        )
+
+    errors = list(result.errors)
+    output_esps = tuple(result.output_esps or ((result.output_esp,) if result.output_esp is not None else ()))
+    success = result.success
+    output_esp = result.output_esp
+
+    if success:
+        if not output_esps:
+            success = False
+            errors.append("Synthesis devolvió éxito sin ningún archivo ESP generado")
+        else:
+            for esp_file in output_esps:
+                if not await runner.validate_synthesis_esp(esp_file):
+                    success = False
+                    errors.append(
+                        f"Validación TES4 fallida para {esp_file.name}: plugin inválido, truncado o >254 masters"
+                    )
+        if not success:
+            output_esp = None
+
+    message = (
+        "" if success else ("; ".join(errors) or result.stderr or result.stdout or "Synthesis falló dentro de USVFS")
+    )
+    errors_json: list[JsonValue] = list(errors)
+    tool_result: dict[str, JsonValue] = {
+        "output_esp": str(output_esp.resolve()) if output_esp is not None else None,
+        "output_esps": [str(esp.resolve()) for esp in output_esps],
+        "patchers_executed": list(result.patchers_executed),
+        "errors": errors_json,
+    }
+    return VfsToolExecution(
+        success=success,
+        message=message,
+        exit_code=result.return_code,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        outputs=manifest.job.mutation_targets,
+        tool_result=tool_result,
     )
 
 
@@ -865,7 +1101,11 @@ async def run_brokered_process(
 
 
 def _default_handlers() -> dict[str, VfsToolHandler]:
-    return {"health": _health_handler, "loot_sort": _loot_handler}
+    return {
+        "health": _health_handler,
+        "loot_sort": _loot_handler,
+        "synthesis": _synthesis_handler,
+    }
 
 
 def _default_session_handlers() -> dict[str, VfsSessionToolHandler]:
