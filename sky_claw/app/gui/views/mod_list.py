@@ -40,6 +40,7 @@ def build_mod_list(
     on_search: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
     initial_query: str = "",
     on_diagnose: Callable[[str], None] | None = None,
+    on_evaluate_eligibility: Callable[[str], None] | None = None,
 ) -> None:
     """Build the mod list panel with toggles and search.
 
@@ -52,6 +53,7 @@ def build_mod_list(
         on_diagnose: Callback(mod_name) del botón «Diagnosticar parallax» de cada fila
             (NP-A0i, #817). ``None`` ⇒ la fila no muestra el botón: nunca un control que
             no hace nada.
+        on_evaluate_eligibility: Callback(mod_name) del botón «Evaluar elegibilidad de parallax».
     """
     # ── Header ────────────────────────────────────────────────────────
     with (
@@ -86,7 +88,7 @@ def build_mod_list(
                 return
 
             for mod in mod_list:
-                _build_mod_row(mod, on_toggle, on_diagnose)
+                _build_mod_row(mod, on_toggle, on_diagnose, on_evaluate_eligibility)
 
     # Render inicial ya filtrado por el término que llega del header (A1).
     _render_mods(_filter_mods(mods, initial_query))
@@ -102,6 +104,7 @@ def _build_mod_row(
     mod: dict[str, Any],
     on_toggle: Callable[[str, bool], Awaitable[None]] | None,
     on_diagnose: Callable[[str], None] | None = None,
+    on_evaluate_eligibility: Callable[[str], None] | None = None,
 ) -> None:
     """Render a single mod row with a toggle switch."""
     mod_name = mod.get("name", "Mod desconocido")
@@ -140,6 +143,16 @@ def _build_mod_row(
                 'aria-label="Diagnosticar parallax"'
             ).classes("sky-mod-diagnose").tooltip(
                 "Diagnosticar parallax: ¿algún mod tapa lo que el generador mediría o publicaría?"
+            )
+
+        if on_evaluate_eligibility is not None:
+            ui.button(
+                icon="fact_check",
+                on_click=lambda _=None, name=mod_name: on_evaluate_eligibility(name),
+            ).props("flat dense round size=sm color=sc-tema text-color=sc-tema").props(
+                'aria-label="Evaluar elegibilidad de parallax"'
+            ).classes("sky-mod-diagnose").tooltip(
+                "Evaluar elegibilidad de parallax: ¿las mallas del perfil usarían las texturas de este mod?"
             )
 
         # Status indicator
