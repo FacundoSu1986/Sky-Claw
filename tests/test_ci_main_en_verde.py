@@ -471,12 +471,15 @@ def test_permisos_minimos_enumerados_por_job() -> None:
 
 
 def test_la_concurrencia_agrupa_por_pr_y_deja_una_sola_reevaluacion() -> None:
-    """Por PR: un evento nuevo cancela la evaluación vieja. Reevaluación: la más nueva cancela a la anterior (re-corre
-    TODOS los PRs con el estado más reciente). Un ``workflow_run`` de un PR desde un fork cuya rama se llama ``main``
-    no hace nada y va a su propio grupo: en el de ``reevaluar`` cancelaría una reevaluación real."""
+    """Por PR y COMMIT: un evento nuevo sobre el mismo commit (una etiqueta) cancela la evaluación vieja, pero re-correr
+    el gate de un commit viejo (la reevaluación encontró el head anterior justo antes de un push) no cancela el gate del
+    commit nuevo, que quedaría «cancelado» y bloquearía el PR sin motivo. Reevaluación: la más nueva cancela a la
+    anterior (re-corre TODOS los PRs con el estado más reciente). Un ``workflow_run`` de un PR desde un fork cuya rama
+    se llama ``main`` no hace nada y va a su propio grupo: en el de ``reevaluar`` cancelaría una reevaluación real."""
     assert _cargar(WORKFLOW_GATE)["concurrency"] == {
         "group": (
-            "${{ github.workflow }}-${{ github.event.pull_request.number || "
+            "${{ github.workflow }}-${{ github.event.pull_request && format('{0}-{1}', "
+            "github.event.pull_request.number, github.event.pull_request.head.sha) || "
             "(github.event.workflow_run.event == 'pull_request' && github.run_id) || 'reevaluar' }}"
         ),
         "cancel-in-progress": True,

@@ -23,10 +23,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Por PR, un evento nuevo cancela la evaluación vieja. La reevaluación más nueva cancela a la anterior: re-corre todos
-  # los PRs con el estado más reciente. Un workflow_run de un PR desde un fork cuya rama se llama main no hace nada y va
-  # a su propio grupo para no cancelar una reevaluación real.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event.workflow_run.event == 'pull_request' && github.run_id) || 'reevaluar' }}
+  # Por PR y commit: un evento nuevo sobre el mismo commit (una etiqueta) cancela la evaluación vieja, pero re-correr el
+  # gate de un commit viejo (la reevaluación vio el head anterior justo antes de un push) no cancela el del commit nuevo,
+  # que quedaría «cancelado» y bloquearía el PR sin motivo. La reevaluación más nueva cancela a la anterior: re-corre
+  # todos los PRs con el estado más reciente. Un workflow_run de un PR desde un fork cuya rama se llama main no hace nada
+  # y va a su propio grupo para no cancelar una reevaluación real.
+  group: ${{ github.workflow }}-${{ github.event.pull_request && format('{0}-{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || (github.event.workflow_run.event == 'pull_request' && github.run_id) || 'reevaluar' }}
   cancel-in-progress: true
 
 permissions:
