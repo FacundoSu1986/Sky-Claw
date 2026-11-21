@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import json
 import logging
 import pathlib
@@ -711,6 +712,105 @@ def test_un_fallo_no_manejado_sale_con_codigo_1_y_traceback_salvo_en_la_gui(
     if not abre_el_dialogo:
         assert salida.value.code == main_module.EXIT_EXCEPCION_NO_MANEJADA == 1
         assert str(excepcion) in capsys.readouterr().err  # el operador ve el traceback, como sin congelar
+
+
+#: Las etapas de ``main()`` que corren ANTES de despachar el modo. Si una falla, todavía no hay ``args.mode``: el modo
+#: sale de lo que declaró el argv (PR-Agent en #984: ``setup_logging`` estaba fuera del ``try``, y un ``_parse_args`` que
+#: fallaba caía en el default, que en el .exe es ``gui``, y abría el diálogo aunque el argv pidiera otro modo).
+_ETAPAS_DEL_PREAMBULO = ("setup_logging", "_ensure_std_streams", "_parse_args", "_install_sigterm_handler")
+
+
+@pytest.mark.parametrize("etapa", _ETAPAS_DEL_PREAMBULO)
+@pytest.mark.parametrize(("modo", "abre_el_dialogo"), sorted(_MODOS_Y_SI_SU_FALLO_ABRE_EL_DIALOGO.items()))
+def test_un_fallo_en_el_preambulo_de_main_tampoco_abre_el_dialogo_fuera_de_la_gui(
+    modo: str, abre_el_dialogo: bool, etapa: str, capsys
+) -> None:
+    from sky_claw import __main__ as main_module
+
+    with (
+        patch.object(main_module, etapa, side_effect=RuntimeError(f"falla en {etapa}")),
+        patch.object(main_module, "setup_logging") if etapa != "setup_logging" else contextlib.nullcontext(),
+        patch.object(main_module, "shutdown_logging", return_value=True),
+    ):
+        if abre_el_dialogo:
+            with pytest.raises(RuntimeError):
+                main_module.main(["--mode", modo])
+        else:
+            with pytest.raises(SystemExit) as salida:
+                main_module.main(["--mode", modo])
+
+    if not abre_el_dialogo:
+        assert salida.value.code == 1
+        assert f"falla en {etapa}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("argv", "congelado", "abre_el_dialogo"),
+    [
+        (["--mode=vfs-health"], True, False),  # la forma con «=» también declara el modo
+        (["--mod", "install-vfs-bridge"], True, False),  # argparse acepta el prefijo único
+        ([], True, True),  # doble clic del .exe: el default es la GUI
+        ([], False, False),  # desarrollo: el default es la CLI
+        (["--mode"], True, True),  # argv roto: no declara nada, decide el default
+    ],
+)
+def test_sin_args_parseados_el_modo_sale_del_argv_o_del_default(
+    argv: list[str], congelado: bool, abre_el_dialogo: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sky_claw import __main__ as main_module
+
+    monkeypatch.setattr(main_module.sys, "frozen", congelado, raising=False)
+    with (
+        patch.object(main_module, "_parse_args", side_effect=RuntimeError("falla al armar el parser")),
+        patch.object(main_module, "setup_logging"),
+        patch.object(main_module, "shutdown_logging", return_value=True),
+    ):
+        if abre_el_dialogo:
+            with pytest.raises(RuntimeError):
+                main_module.main(argv)
+        else:
+            with pytest.raises(SystemExit) as salida:
+                main_module.main(argv)
+            assert salida.value.code == 1
+
+
+def test_main_no_corre_nada_fuera_del_try_salvo_lo_que_no_puede_fallar() -> None:
+    """Ancla estructural: una etapa nueva de ``main()`` agregada FUERA del ``try`` reabriría el diálogo.
+
+    Fuera del ``try`` solo quedan el docstring, el argv efectivo, el despacho del worker (que tiene su propia guarda)
+    y el modo declarado, que nunca lanza.
+    """
+    from sky_claw import __main__ as main_module
+
+    arbol = ast.parse(pathlib.Path(main_module.__file__).read_text(encoding="utf-8"))
+    funcion = next(n for n in arbol.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+
+    def firma(sentencia: ast.stmt) -> str:
+        if isinstance(sentencia, ast.Expr) and isinstance(sentencia.value, ast.Constant):
+            return "docstring"
+        if isinstance(sentencia, (ast.Assign, ast.AnnAssign)):
+            destino = sentencia.targets[0] if isinstance(sentencia, ast.Assign) else sentencia.target
+            return f"asigna {ast.unparse(destino)} = {ast.unparse(sentencia.value).split('(')[0]}"
+        return type(sentencia).__name__
+
+    assert [firma(s) for s in funcion.body] == [
+        "docstring",
+        "asigna effective_argv = list",
+        "If",
+        "asigna modo = _modo_declarado",
+        "Try",
+    ]
+
+
+def test_el_modo_declarado_nunca_lanza() -> None:
+    from sky_claw import __main__ as main_module
+
+    for argv in ([], ["--mode"], ["--mode", "vfs-health"], ["--mode=gui"], ["--x", "\x00"], ["--mode", ""]):
+        main_module._modo_declarado(argv)  # no lanza
+    assert main_module._modo_declarado(["--mode", "vfs-health", "--verbose"]) == "vfs-health"
+    assert main_module._modo_declarado(["--mode=gui"]) == "gui"
+    assert main_module._modo_declarado(["--mode"]) is None
+    assert main_module._modo_declarado(["--verbose"]) is None
 
 
 @pytest.mark.parametrize("excepcion", [KeyError("bug del worker"), asyncio.CancelledError("worker cancelado")])

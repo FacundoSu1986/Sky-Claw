@@ -127,8 +127,25 @@ def _modo_por_defecto() -> str:
     return "gui" if getattr(sys, "frozen", False) else "cli"
 
 
+def _modo_declarado(argv: list[str]) -> str | None:
+    """El ``--mode`` que pide el argv, leído SIN el parser completo y sin poder fallar.
+
+    ``main()`` necesita saber si hay un operador mirando aunque falle antes de tener ``args``: en ``setup_logging``,
+    en ``_ensure_std_streams`` o en el propio ``_parse_args``, cuyo ``_build_parser`` arma un ``Config`` (PR-Agent en
+    #984). Un argv que no declara el modo, o que está roto, devuelve ``None`` y decide el default.
+    """
+    try:
+        lector = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+        lector.add_argument("--mode")
+        conocidos, _resto = lector.parse_known_args(argv)
+    except (Exception, SystemExit):  # noqa: BLE001 - argv roto: no declara nada, decide el default
+        return None
+    modo = conocidos.mode
+    return modo if isinstance(modo, str) else None
+
+
 def _es_interactivo(modo: str | None) -> bool:
-    """¿Hay un operador mirando? Sin modo parseado todavía, decide el default (el doble clic del .exe abre la GUI)."""
+    """¿Hay un operador mirando? Sin modo declarado, decide el default (el doble clic del .exe abre la GUI)."""
     return (modo if modo is not None else _modo_por_defecto()) in _MODOS_INTERACTIVOS
 
 
@@ -578,11 +595,12 @@ def main(argv: list[str] | None = None) -> None:
         from sky_claw.local.mo2.vfs_arranque import arrancar_worker
 
         _despachar_sin_dialogo(lambda: arrancar_worker(effective_argv[0], effective_argv[1:]))
-    log_level = logging.DEBUG if "--verbose" in effective_argv or "-v" in effective_argv else logging.INFO
-    setup_logging(level=log_level)
-
-    modo: str | None = None
+    # Todo lo que puede fallar va DENTRO del try: una excepción que escapa de acá abre el diálogo modal de PyInstaller
+    # (ver ``_despachar_sin_dialogo``). Hasta tener ``args``, lo que pide el argv decide si hay un operador mirando.
+    modo: str | None = _modo_declarado(effective_argv)
     try:
+        log_level = logging.DEBUG if "--verbose" in effective_argv or "-v" in effective_argv else logging.INFO
+        setup_logging(level=log_level)
         _ensure_std_streams()
         args = _parse_args(effective_argv)
         modo = args.mode
