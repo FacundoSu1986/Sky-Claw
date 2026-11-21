@@ -1,0 +1,9 @@
+﻿[2026-11-21 13:27:29.116 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:27:29.773 E] [journal.py:82] [MO2 ApI Bridge] info  MO2 is starting: E:/SkyClaw_R0_Rig/exe_676f4c29/SkyClawApp.exe
+[2026-11-21 13:27:29.813 I] [plugin.py:276] Sky-Claw VFS Bridge launch timings ts=2026-11-21T13:27:29.813199+00:00 job_id=7c779b16-f7bc-4bbe-8153-f7d0c54576ae job_object=Local\SkyClawVfs-8157636f1420513b45b7c1b34ce7ccdb create_job_ms=0.785 startApplication_ms=140.959 assign_ms=0.038 adopt_ms=4.652 adopted=0 total_to_ack_ms=146.456
+[2026-11-21 13:27:35.859 I] [plugin.py:276] Sky-Claw VFS Bridge worker_exit confirmed ts=2026-11-21T13:27:35.859137+00:00 job_id=7c779b16-f7bc-4bbe-8153-f7d0c54576ae wait_ok=True exit_code=0 wait_ms=6045.210 job_empty=True
+[2026-11-21 13:27:36.253 W] [plugin.py:45] Sky-Claw bridge desconectado: conexi\xf3n cerrada con un frame IPC incompleto
+[2026-11-21 13:27:36.754 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:27:37.757 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+[2026-11-21 13:27:39.759 W] [plugin.py:45] Sky-Claw bridge desconectado: [WinError 2] El sistema no puede encontrar el archivo especificado: 'E:\\SkyClaw_R0_Rig\\home\\.sky_claw\\vfs_bridge\\mo2-1046376432824bdb\\mo2-1046376432824bdb.json'
+

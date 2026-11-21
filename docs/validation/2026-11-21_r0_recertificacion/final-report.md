@@ -1,5 +1,7 @@
 # R0: re-certificación en rig real — Ronda 6, R0-2 (2026-11-21)
 
+> **Aviso de revisión (agregado en el PR de evidencia):** contra el contrato preregistrado, el **paso 2 es FAIL** (rechazo verificado, sin `rc≠0`) y no PASS como dice la tabla de abajo; el hallazgo 1 sí afecta ese veredicto. Ver [addendum-reclasificacion-paso2.md](addendum-reclasificacion-paso2.md), que manda sobre este informe para el HOLD.
+
 > **Operador:** `<usuario>` (abrió y cerró MO2 desde el Explorador, 3 sesiones) · **Aprobador:** propietario · **Auditor independiente:** pendiente, con evidencia propia.
 > **Alcance:** solo R0-2 (identidad del bundle del bridge, condición 3 del HOLD). Preregistro: `PREREGISTRO.md` (SHA-256 `fb76fec2…a09e06`, sellado antes de abrir MO2).
 
