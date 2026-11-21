@@ -15,16 +15,63 @@ import asyncio
 import enum
 import hashlib
 import logging
+import os
 import pathlib
 import re
+import sys
 import tempfile
 from dataclasses import dataclass, field
+from typing import Literal
 
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.tools._process import run_capture
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline, PatcherPipelineError, SynthesisSettingsProfile
+from sky_claw.local.validators.plugin_header import PluginHeaderError, read_plugin_header
 
 logger = logging.getLogger(__name__)
+
+#: Tope de masters por plugin impuesto por el motor Bethesda y Mutagen (0xFE).
+_MAX_TES4_MASTERS = 254
+
+#: Tope combinado de stdout/stderr capturados desde Synthesis CLI (ADR 0018/0019).
+_DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+
+#: Lista blanca mínima de variables OS heredables por Synthesis CLI sin filtrar secretos
+#: (API keys, tokens de Telegram, credenciales) hacia patchers comunitarios.
+_SYNTHESIS_ALLOWED_OS_ENV: frozenset[str] = frozenset(
+    {
+        "ALLUSERSPROFILE",
+        "APPDATA",
+        "COMMONPROGRAMFILES",
+        "COMMONPROGRAMFILES(X86)",
+        "COMSPEC",
+        "HOME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LOCALAPPDATA",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
+        "PATH",
+        "PATHEXT",
+        "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_IDENTIFIER",
+        "PROCESSOR_LEVEL",
+        "PROCESSOR_REVISION",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "USERPROFILE",
+        "WINDIR",
+    }
+)
 
 
 class _EspStatus(enum.Enum):
@@ -167,11 +214,30 @@ class SynthesisConfig:
     data_folder_path: pathlib.Path | None = None
     load_order_file_path: pathlib.Path | None = None
     mo2_profile: str | None = None
+    extra_data_folder: pathlib.Path | None = None
+    working_dir: pathlib.Path | None = None
+    temp_dir: pathlib.Path | None = None
+    dotnet_root: pathlib.Path | None = None
+    persistence_mode: Literal["None", "Text"] = "None"
+    persistence_path: pathlib.Path | None = None
+    target_runtime: str | None = None
+    block_building_within_mo2: bool = False
+    shortcircuit: bool | None = None
+    max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES
+    require_patcher_receipts: bool = False
 
     def __post_init__(self) -> None:
         """Valida el ejecutable y completa rutas derivables sin adivinar el perfil."""
         if not self.synthesis_exe.exists():
             raise SynthesisNotFoundError(self.synthesis_exe)
+        if self.persistence_mode not in {"None", "Text"}:
+            raise SynthesisExecutionError(f"Unsupported Synthesis persistence_mode: {self.persistence_mode!r}")
+        if self.persistence_mode == "Text" and (
+            self.persistence_path is None or not str(self.persistence_path).strip()
+        ):
+            raise SynthesisExecutionError(
+                "Synthesis persistence_path is required when persistence_mode is 'Text' (RunPersistencePreparer.cs:28)"
+            )
         if self.pipeline_settings_path is None:
             object.__setattr__(self, "pipeline_settings_path", pathlib.Path.cwd() / "PipelineSettings.json")
         if self.data_folder_path is None:
@@ -240,17 +306,29 @@ class SynthesisRunner:
             print(f"ESP generado: {result.output_esp}")
     """
 
-    # Patrones regex para parsear salida de Synthesis
+    # Patrones regex para parsear salida real de Synthesis 0.36.6 (ConsoleReporter / ErrorClassifier)
+    # y conservar compatibilidad con marcadores genéricos.
+    _CONSOLE_START_PATTERN = re.compile(r"^\s*\[([^\]]+)\]\s+Starting run\.\s*$", re.MULTILINE)
+    _CONSOLE_SUCCESS_PATTERN = re.compile(r"^\s*\[([^\]]+)\]\s+Run successful\.\s*$", re.MULTILINE)
+    _CONSOLE_EXPORT_PATTERN = re.compile(r"Exported patch to final destination:\s*(.+?)(?:\n|$)", re.IGNORECASE)
     _PATCHER_PATTERN = re.compile(
         r"(?:Running|Executing|Patchers?:)\s*[:\[]?\s*['\"]?([A-Za-z0-9_.]+)",
         re.IGNORECASE,
     )
     _ERROR_PATTERN = re.compile(
-        r"(?:ERROR|Error|FAIL|Exception|Critical):\s*(.+?)(?:\n|$)",
+        r"(?:"
+        r"(?:Overall error|Error detected|Process exited in failure|\[[^\]]+\]\s+Preparation error):\s*(.*?)"
+        r"|\b(?:Mo2BuildBlockedException|Mo2BuildException|NonAdjacentSplitModsException"
+        r"|TooManyMastersException|MissingModException)\b[^\n]*"
+        r"|\berror\s+(?:MSB|CS)\d+\s*:\s*[^\n]+"
+        r"|(?:ERROR|Error|FAIL|Exception|Critical):\s*(.+?)"
+        r")(?:\n|$)",
         re.IGNORECASE | re.MULTILINE,
     )
     _SUCCESS_PATTERN = re.compile(
-        r"(?:Successfully|Complete|Finished|Generated)\s+(?:patch|output|plugin)",
+        r"(?:Exported patch to final destination:"
+        r"|\[[^\]]+\]\s+Run successful\."
+        r"|(?:Successfully|Complete|Finished|Generated)\s+(?:patch|output|plugin))",
         re.IGNORECASE,
     )
 
@@ -508,12 +586,16 @@ class SynthesisRunner:
         temporary_load_order: pathlib.Path | None = None
         process_error: BaseException | None = None
         try:
+            dotnet_override: pathlib.Path | None = None
+            if self._config.dotnet_root is not None:
+                dotnet_override = self._config.dotnet_root / ("dotnet.exe" if sys.platform == "win32" else "dotnet")
             try:
                 temporary_settings, profile = await asyncio.to_thread(
                     PatcherPipeline.prepare_synthesis_cli_settings,
                     settings_path,
                     self._config.profile,
                     patcher_ids,
+                    dotnet_path_override=dotnet_override,
                 )
             except PatcherPipelineError as exc:
                 raise SynthesisExecutionError(f"Invalid Synthesis pipeline settings: {exc}", stderr=str(exc)) from exc
@@ -558,6 +640,21 @@ class SynthesisRunner:
             _, patchers_executed, errors = self.parse_output(stdout, stderr)
             if return_code != 0:
                 errors.append(f"Synthesis CLI exited with code {return_code}")
+            if self._config.require_patcher_receipts:
+                combined_receipt_output = stdout + "\n" + stderr
+                started_patchers = {
+                    m.group(1).strip() for m in self._CONSOLE_START_PATTERN.finditer(combined_receipt_output)
+                }
+                succeeded_patchers = {
+                    m.group(1).strip() for m in self._CONSOLE_SUCCESS_PATTERN.finditer(combined_receipt_output)
+                }
+                for expected_name in profile.patcher_nicknames:
+                    if expected_name not in started_patchers or expected_name not in succeeded_patchers:
+                        errors.append(
+                            f"Synthesis patcher {expected_name!r} has no verified Starting/Run successful receipt"
+                        )
+                if self._CONSOLE_EXPORT_PATTERN.search(combined_receipt_output) is None:
+                    errors.append("Synthesis CLI output has no 'Exported patch to final destination:' confirmation")
 
             try:
                 probe_after = await self._probe_output_files(profile.group_names)
@@ -706,23 +803,47 @@ class SynthesisRunner:
             args.extend(["--DataFolderPath", str(self._config.data_folder_path)])
         if load_order_path is not None:
             args.extend(["--LoadOrderFilePath", str(load_order_path)])
+        if self._config.extra_data_folder is not None:
+            args.extend(["--ExtraDataFolder", str(self._config.extra_data_folder)])
+        if self._config.persistence_mode == "Text":
+            assert self._config.persistence_path is not None
+            args.extend(
+                [
+                    "--PersistenceMode",
+                    "Text",
+                    "--PersistencePath",
+                    str(self._config.persistence_path),
+                ]
+            )
+        if self._config.target_runtime is not None:
+            args.extend(["--TargetRuntime", self._config.target_runtime])
+        if self._config.block_building_within_mo2:
+            args.append("--BlockBuildingWithinMo2")
+        if self._config.shortcircuit is True:
+            args.append("--Shortcircuit")
         if extra_args:
             protected_flags = {
+                "--blockbuildingwithinmo2",
                 "--datapath",
                 "--datafolderpath",
+                "--extradatafolder",
                 "--game-path",
                 "--loadorderfilepath",
                 "--no-prompt",
                 "--output-path",
                 "--outputdirectory",
                 "--patcher",
+                "--persistencemode",
+                "--persistencepath",
                 "--pipelinesettingspath",
                 "--profile",
                 "--profileidentifier",
+                "--shortcircuit",
+                "--targetruntime",
             }
-            # Alias cortos de CommandLineParser (`-o`, `-s`, `-d`, `-p`, `-l`);
-            # también en forma pegada (`-svalue`).
-            protected_short = ("-o", "-s", "-d", "-p", "-l")
+            # Alias cortos de CommandLineParser (`-o`, `-s`, `-d`, `-p`, `-l`, `-e`, `-r`, `-m`, `-t`);
+            # también en forma pegada (`-svalue`, `-e/x`, `-mNone`).
+            protected_short = ("-o", "-s", "-d", "-p", "-l", "-e", "-r", "-m", "-t")
             for argument in extra_args:
                 option = argument.partition("=")[0].casefold()
                 if option in protected_flags or option.startswith(protected_short):
@@ -732,6 +853,50 @@ class SynthesisRunner:
         logger.debug("CLI args: %s", " ".join(args))
         return args
 
+    def _build_subprocess_env(self) -> dict[str, str]:
+        """Construye un entorno mínimo seguro + controles anti-servidor .NET 10.
+
+        No hereda ``os.environ`` completo para evitar filtrar secretos (API keys,
+        tokens) hacia patchers comunitarios (ADR 0018/0019). Desactiva servidores
+        persistentes de MSBuild/Roslyn y antepone ``dotnet_root`` x64 en ``PATH``.
+        """
+        env: dict[str, str] = {}
+        for key, value in os.environ.items():
+            if key.upper() in _SYNTHESIS_ALLOWED_OS_ENV:
+                env[key] = value
+
+        # Controles .NET 10 / MSBuild / Roslyn (ADR 0019 §2.4).
+        env["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0"
+        env["MSBUILDDISABLENODEREUSE"] = "1"
+        env["UseSharedCompilation"] = "false"
+        env["DOTNET_NOLOGO"] = "1"
+        env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+
+        if self._config.temp_dir is not None:
+            temp_str = str(self._config.temp_dir)
+            env["TEMP"] = temp_str
+            env["TMP"] = temp_str
+            env["TMPDIR"] = temp_str
+
+        if self._config.dotnet_root is not None:
+            dotnet_dir = str(self._config.dotnet_root)
+            env["DOTNET_ROOT"] = dotnet_dir
+            path_key = next((k for k in env if k.upper() == "PATH"), "PATH")
+            raw_path = env.get(path_key, "")
+            entries = [entry for entry in raw_path.split(os.pathsep) if entry]
+            filtered = [
+                entry
+                for entry in entries
+                if not (
+                    "program files (x86)" in entry.replace("/", "\\").casefold()
+                    and entry.replace("/", "\\").rstrip("\\").casefold().endswith("\\dotnet")
+                )
+                and os.path.normcase(entry) != os.path.normcase(dotnet_dir)
+            ]
+            env[path_key] = os.pathsep.join([dotnet_dir, *filtered])
+
+        return env
+
     async def _execute_process(
         self,
         args: list[str],
@@ -739,7 +904,8 @@ class SynthesisRunner:
         """
         Ejecuta el proceso de Synthesis y captura su salida.
 
-        Patrón tomado de xedit/runner.py:975-1021.
+        Patrón tomado de xedit/runner.py:975-1021 y endurecido con Job Object
+        obligatorio, límite de bytes y entorno mínimo (ADR 0019).
 
         Args:
             args: Argumentos del comando a ejecutar.
@@ -751,8 +917,16 @@ class SynthesisRunner:
             SynthesisNotFoundError: Si el ejecutable no existe.
             SynthesisTimeoutError: Si excede el timeout.
         """
+        cwd = str(self._config.working_dir) if self._config.working_dir is not None else None
         try:
-            stdout, stderr, returncode = await run_capture(args, timeout=self._config.timeout_seconds)
+            stdout, stderr, returncode = await run_capture(
+                args,
+                timeout=self._config.timeout_seconds,
+                cwd=cwd,
+                env=self._build_subprocess_env(),
+                require_job=True,
+                max_output_bytes=self._config.max_output_bytes,
+            )
         except FileNotFoundError:
             raise SynthesisNotFoundError(self._config.synthesis_exe) from None
         except TimeoutError:
@@ -780,19 +954,23 @@ class SynthesisRunner:
         """
         combined_output = stdout + "\n" + stderr
 
-        # Detectar patchers ejecutados
+        # Detectar patchers ejecutados (ConsoleReporter real + patrón genérico legacy)
         patchers_executed: list[str] = []
+        for match in self._CONSOLE_SUCCESS_PATTERN.finditer(combined_output):
+            patcher_name = match.group(1).strip()
+            if patcher_name and patcher_name not in patchers_executed:
+                patchers_executed.append(patcher_name)
         for match in self._PATCHER_PATTERN.finditer(combined_output):
             patcher_name = match.group(1)
             if patcher_name not in patchers_executed:
                 patchers_executed.append(patcher_name)
 
-        # Detectar errores
+        # Detectar errores (ConsoleReporter / ErrorClassifier / MSBuild / Roslyn + genéricos)
         errors: list[str] = []
         for match in self._ERROR_PATTERN.finditer(combined_output):
-            error_msg = match.group(1).strip()
-            if error_msg and error_msg not in errors:
-                errors.append(error_msg)
+            captured = match.group(0).strip()
+            if captured and captured not in errors:
+                errors.append(captured)
 
         # Determinar éxito
         success = bool(self._SUCCESS_PATTERN.search(combined_output))
@@ -811,19 +989,14 @@ class SynthesisRunner:
         return success, patchers_executed, errors
 
     async def validate_synthesis_esp(self, esp_path: pathlib.Path) -> bool:
-        """
-        Valida que el ESP generado no esté corrupto.
+        """Valida que el ESP generado sea un plugin TES4 íntegro vía parser canónico.
 
-        Realiza validaciones básicas de integridad:
-        - El archivo existe y tiene tamaño > 0
-        - Tiene el header de archivo TES4 válido
-        - No está vacío o truncado
-
-        Args:
-            esp_path: Path al archivo ESP a validar.
-
-        Returns:
-            True si el ESP parece válido, False en caso contrario.
+        Delega la lectura binaria en :func:`read_plugin_header` (anclado por
+        ``tests/test_tes4_parser_invariant.py``):
+        - Existe como archivo regular (nunca symlink).
+        - Tamaño >= 100 bytes.
+        - Cabecera TES4 y subrecords ``MAST`` legibles sin truncado.
+        - Conteo de masters <= 254 (límite 0xFE del motor / Mutagen).
         """
         logger.debug("Validando ESP: %s", esp_path)
 
@@ -831,21 +1004,28 @@ class SynthesisRunner:
             loop = asyncio.get_running_loop()
 
             def _check_esp() -> tuple[bool, str | int]:
-                if not esp_path.exists():
-                    return False, "ESP no existe"
+                if esp_path.is_symlink():
+                    return False, "ESP es un enlace simbólico"
+                if not esp_path.is_file():
+                    return False, "ESP no existe o no es un archivo regular"
                 file_size = esp_path.stat().st_size
                 if file_size < 100:
                     return False, f"ESP muy pequeño ({file_size} bytes)"
-                with open(esp_path, "rb") as f:
-                    header = f.read(4)
-                    if header != b"TES4":
-                        return False, f"ESP no tiene header TES4 válido (got {header})"
+                try:
+                    header = read_plugin_header(esp_path)
+                except PluginHeaderError as exc:
+                    return False, str(exc)
+                if len(header.masters) > _MAX_TES4_MASTERS:
+                    return (
+                        False,
+                        f"ESP excede el límite de {_MAX_TES4_MASTERS} masters ({len(header.masters)})",
+                    )
                 return True, file_size
 
             valid, result = await loop.run_in_executor(None, _check_esp)
 
             if not valid:
-                logger.warning(f"Error validando ESP {esp_path}: {result}")
+                logger.warning("Error validando ESP %s: %s", esp_path, result)
                 return False
 
             logger.info("ESP validado correctamente: %s (%s bytes)", esp_path, result)

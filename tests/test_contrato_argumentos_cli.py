@@ -282,7 +282,14 @@ PROCEDENCIA_DE_FLAGS = {
         "duplicado por list2cmdline se tolera y normaliza en -o:/-d:/-m:/-t:) y "
         "docs/validation/2026-09-10_t5v2_dyndolod_stage9.md"
     ),
-    "sky_claw/local/tools/synthesis_runner.py": "SIN VERIFICAR — Mutagen-Modding/Synthesis, proyecto Synthesis.Bethesda.CLI",
+    "sky_claw/local/tools/synthesis_runner.py": (
+        "Mutagen-Modding/Synthesis, tag 0.36.6 (d8150fb) — Synthesis.Bethesda.CLI/Program.cs "
+        "(verbo run-pipeline), Synthesis.Bethesda.Execution/Commands/RunPatcherPipelineCommand.cs "
+        "(-o/-s/-p/-d/-l/-e/-r/-m/-t/--BlockBuildingWithinMo2/--Shortcircuit), "
+        "RunPipelineCliModule.cs (bug --ExtraDataFolder no inyectado ⇒ requiere cwd), "
+        "RunPatcherPipeline.cs y RunPersistencePreparer.cs (-m Text exige -r directorio), "
+        "DotNetCommandPathProvider.cs (DotNetPathOverride); pendiente rig Windows con .NET 10 SDK (ADR 0019)"
+    ),
     "sky_claw/local/tools/texconv_runner.py": (
         "microsoft/DirectXTex, tag may2026 — Texconv/texconv.cpp (tabla de opciones: -f, -m, -y, -o; "
         "no existe --mipmap-mode) y EJECUTADO con el binario oficial en Windows "

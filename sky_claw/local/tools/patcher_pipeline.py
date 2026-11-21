@@ -48,6 +48,17 @@ _WINDOWS_RESERVED_NAMES = frozenset(
     | {f"LPT{s}" for s in "¹²³"}
 )
 
+#: Lista blanca cerrada de tipos polimórficos ``$type`` admitidos por Synthesis V2.
+#: ``Synthesis.Bethesda.Execution/Constants.cs`` deserializa con ``TypeNameHandling.Auto``;
+#: rechazar cualquier tipo fuera de esta familia evita gadgets arbitrarios en el JSON.
+_ALLOWED_SYNTHESIS_PATCHER_TYPES = frozenset(
+    {
+        "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings",
+        "Synthesis.Bethesda.Execution.Settings.SolutionPatcherSettings",
+        "Synthesis.Bethesda.Execution.Settings.CliPatcherSettings",
+    }
+)
+
 
 def _is_split_output_name(group_name: str, candidate: str) -> bool:
     """Si ``candidate`` colisiona con el espacio ``<grupo>_N`` de splits."""
@@ -96,6 +107,7 @@ class SynthesisSettingsProfile:
     patcher_ids: tuple[str, ...]
     group_names: tuple[str, ...]
     split_if_max_masters_exceeded: bool | None
+    patcher_nicknames: tuple[str, ...] = ()
 
 
 # =============================================================================
@@ -321,6 +333,11 @@ class PatcherPipeline:
             for patcher_index, patcher in enumerate(raw_patchers):
                 if not isinstance(patcher, dict):
                     raise PatcherPipelineError(f"A patcher in Synthesis group {name!r} is not a JSON object")
+                if "$type" in patcher:
+                    raw_type = patcher["$type"]
+                    type_name = raw_type.split(",", 1)[0].strip() if isinstance(raw_type, str) else ""
+                    if type_name not in _ALLOWED_SYNTHESIS_PATCHER_TYPES:
+                        raise PatcherPipelineError(f"Unsupported Synthesis patcher $type: {raw_type!r}")
                 if patcher.get("On") is not True:
                     continue
                 id_value = patcher.get("ID")
@@ -413,8 +430,19 @@ class PatcherPipeline:
         _, profile, active_groups = cls._read_synthesis_profile(settings_path, profile_identifier)
         selected_entries = cls._select_synthesis_entries(active_groups, patcher_ids)
         selected_group_indices = {entry[0] for entry in selected_entries}
+        selected_entry_keys = {(entry[0], entry[1]) for entry in selected_entries}
         group_names = tuple(name for index, _, name, _ in active_groups if index in selected_group_indices)
         selected_patcher_ids = tuple(entry[2] for entry in selected_entries)
+        selected_nicknames = tuple(
+            (
+                patcher["Nickname"].strip()
+                if isinstance(patcher.get("Nickname"), str) and patcher["Nickname"].strip()
+                else canonical_id
+            )
+            for group_index, _, _, patchers in active_groups
+            for patcher_index, patcher, canonical_id, _ in patchers
+            if (group_index, patcher_index) in selected_entry_keys
+        )
         # Synthesis 0.36.6 model default: SplitIfMaxMastersExceeded = true.
         # Preserve fail-closed behavior for a malformed, explicitly present value.
         split_value = profile.get("SplitIfMaxMastersExceeded", True)
@@ -424,6 +452,7 @@ class PatcherPipeline:
             patcher_ids=selected_patcher_ids,
             group_names=group_names,
             split_if_max_masters_exceeded=split_enabled,
+            patcher_nicknames=selected_nicknames,
         )
 
     @classmethod
@@ -432,27 +461,45 @@ class PatcherPipeline:
         settings_path: pathlib.Path,
         profile_identifier: str,
         patcher_ids: list[str] | None = None,
+        *,
+        split_if_max_masters_exceeded: bool | None = None,
+        dotnet_path_override: str | pathlib.Path | None = None,
     ) -> tuple[pathlib.Path, SynthesisSettingsProfile]:
         """Materializa un settings temporal V2 sin mutar el archivo del usuario.
 
-        El CLI recibe solo el perfil/patchers seleccionados. Además se desactiva
-        ``UpdateLoadOrderAfterRun`` en la copia de ejecución: Sky-Claw no delega
-        al proceso externo una escritura no transaccional sobre el perfil MO2.
+        El CLI recibe solo el perfil/patchers seleccionados (sin entradas
+        deshabilitadas, porque ``PrepForRun.cs:24`` recorre incluso ``On=false``).
+        Además desactiva ``UpdateLoadOrderAfterRun``, serializa explícitamente
+        ``SplitIfMaxMastersExceeded`` (evitando la deriva 0.36.6 vs HEAD) y
+        permite fijar ``DotNetPathOverride`` (``DotNetCommandPathProvider.cs:15``).
         El caller es dueño de borrar el archivo temporal que devuelve.
         """
         raw_settings, profile, active_groups = cls._read_synthesis_profile(settings_path, profile_identifier)
         selected_entries = cls._select_synthesis_entries(active_groups, patcher_ids)
         selected_entry_keys = {(group_index, patcher_index) for group_index, patcher_index, _, _ in selected_entries}
         selected_group_indices = {group_index for group_index, _, _, _ in selected_entries}
+        raw_split = profile.get("SplitIfMaxMastersExceeded", True)
+        effective_split: bool | None
+        if split_if_max_masters_exceeded is not None:
+            effective_split = split_if_max_masters_exceeded
+        else:
+            effective_split = raw_split if type(raw_split) is bool else None
+        selected_nicknames = tuple(
+            (
+                patcher["Nickname"].strip()
+                if isinstance(patcher.get("Nickname"), str) and patcher["Nickname"].strip()
+                else canonical_id
+            )
+            for group_index, _, _, patchers in active_groups
+            for patcher_index, patcher, canonical_id, _ in patchers
+            if (group_index, patcher_index) in selected_entry_keys
+        )
         profile_info = SynthesisSettingsProfile(
             profile_identifier=profile_identifier,
             patcher_ids=tuple(entry[2] for entry in selected_entries),
             group_names=tuple(name for index, _, name, _ in active_groups if index in selected_group_indices),
-            split_if_max_masters_exceeded=(
-                profile.get("SplitIfMaxMastersExceeded", True)
-                if type(profile.get("SplitIfMaxMastersExceeded", True)) is bool
-                else None
-            ),
+            split_if_max_masters_exceeded=effective_split,
+            patcher_nicknames=selected_nicknames,
         )
 
         selected_groups: list[dict[str, Any]] = []
@@ -478,9 +525,13 @@ class PatcherPipeline:
         # This side effect is not part of the output plugin transaction and
         # would bypass the caller's MO2-profile rollback/USVFS boundary.
         run_profile["UpdateLoadOrderAfterRun"] = False
+        if effective_split is not None:
+            run_profile["SplitIfMaxMastersExceeded"] = effective_split
         run_settings = copy.deepcopy(raw_settings)
         run_settings["Version"] = 2
         run_settings["Profiles"] = [run_profile]
+        if dotnet_path_override is not None:
+            run_settings["DotNetPathOverride"] = str(dotnet_path_override)
 
         temporary_path: pathlib.Path | None = None
         try:
