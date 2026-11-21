@@ -194,6 +194,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pendiente_no_ratificado` del PR A **se retiró**: dos campos para una sola decisión vuelven
   a divergir.
 
+### Changed
+- **CI: un PR ocupa la mitad de los runners de Windows y el reparto de la suite es por duración medida.** Medido con `gh api` sobre 16 corridas: sin cola la corrida tardaba 18-22 min, y el freno real era el tope de 20 jobs simultáneos de GitHub Free, que comparten todas las corridas del repo (cada corrida lanzaba 14 a la vez; con dos PRs activos ya había cola, y una ráfaga de 5 merges dejó 27 jobs esperando).
+  - **En `pull_request` la suite corre solo en py3.11**, el intérprete con el que Build y Release congelan el ejecutable. **py3.12 se sigue certificando en cada push a `main`**: una regresión exclusiva de 3.12 aparece después del merge, no antes. La matriz se elige por evento (`fromJSON`), con la misma expresión en los shards y en su veredicto.
+  - **6 shards repartidos por la duración medida de cada archivo** (`scripts/ci_duraciones.json`, 642 archivos, 2616 s) y no por cantidad de tests: por conteo, el shard más lento tardaba 905 s de los 2616. Un archivo sin medir se estima con el promedio por test; una calibración mal formada aborta el shard. Se regenera con `python -m scripts.ci_particion calibrar <carpeta> --total 6`, donde `<carpeta>` tiene los artefactos `test-shard-py3.11-*` de UNA corrida verde (`gh run download <id> -p "test-shard-py3.11-*" -D <carpeta>`); `calibrar` rechaza shards que no terminaron en 0. El verificador no cambia: sigue exigiendo que entre todos los shards se haya corrido exactamente la suite.
+  - **Lint corre una sola vez, en Ubuntu** (ruff no depende de la plataforma). Mypy sigue en Windows × py3.11/3.12.
+  - Los checks requeridos por la protección de `main` conservan sus nombres. El tope de 90 min por shard no cambia en este PR.
+  - **Tests:** `tests/test_ci_particion.py` (pesos, calibración enumerando cada forma mal formada, plugin en subproceso, `calibrar`) y `tests/test_ci_platform_policy.py` (la expresión de versiones congelada y espejada desde su texto, cada disparador real del workflow con sus versiones, el intérprete de entrega censado en todos los workflows que congelan `sky_claw.spec`, lint en Ubuntu y mypy en Windows). **No verificado:** la duración real de los 6 shards en CI (se mide en la primera corrida del PR).
+
 ### Removed
 - **Se retira la compuerta HITL (`HitlGateMiddleware`) sobre `generate_bashed_patch` — PR E de
   [ADR 0016](docs/adr/0016-etapa-6-wrye-bash-asistida.md) §7.** En el PR B (#853) la herramienta
