@@ -6,7 +6,7 @@ Verifica que el teardown brokered:
 3. Despierta de inmediato ante bridge_error de terminación con VfsBridgeTerminationError.
 4. Impide que un rollback que requiere terminalidad demostrada proceda como seguro.
 5. Preserva el camino feliz cuando worker_exit real llega en tiempo.
-6. Preserva el contrato de desconexión del bridge (kill-on-close tras gracia).
+6. F1: perder el bridge sin reconexión NO confirma terminalidad: tras la gracia, cuarentena y veto de rollback.
 7. Resiste cancelaciones externas repetidas sin reiniciar el deadline absoluto ni perder la excepción.
 8. Tolera worker_exit tardío sin corromper el estado del broker ni reactivar el job.
 9. B1: Clasifica carrera benigna pop(job)->worker_exit en bridge sin falso VfsBridgeTerminationError.
@@ -110,6 +110,20 @@ def _entorno(tmp_path: pathlib.Path, *, timeout: float = 10.0):
     return mo2, data, challenge, job
 
 
+def _leer_descriptor(broker: VfsExecutionBroker) -> dict[str, Any]:
+    """Lee como el bridge: en Windows, leer justo mientras ``os.replace`` reemplaza el archivo da ``PermissionError``.
+
+    El bridge lo tolera (reintenta en su bucle de reconexión); un lector de test hace lo mismo. Con la renovación rápida
+    de los tests F1, un lector directo sería flaky.
+    """
+    for _intento in range(200):
+        try:
+            return json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+        except PermissionError:
+            threading.Event().wait(0.005)
+    raise AssertionError("el descriptor siguió ilegible: no es una colisión transitoria con la renovación")
+
+
 class _BridgeFalso:
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, secret: bytes) -> None:
         self.reader = reader
@@ -118,7 +132,7 @@ class _BridgeFalso:
 
     @classmethod
     async def conectar(cls, broker: VfsExecutionBroker) -> _BridgeFalso:
-        descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+        descriptor = _leer_descriptor(broker)
         secret = base64.urlsafe_b64decode(descriptor["token"])
         reader, writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
         await write_authenticated_message(
@@ -190,7 +204,7 @@ class _WorkerFalso:
 
     @classmethod
     async def conectar(cls, broker: VfsExecutionBroker, job_id: str) -> _WorkerFalso:
-        descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+        descriptor = _leer_descriptor(broker)
         secret = base64.urlsafe_b64decode(descriptor["token"])
         reader, writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
         await write_authenticated_message(
@@ -461,7 +475,12 @@ async def test_teardown_con_worker_exit_real_confirma_terminalidad_exitosamente(
 
 
 @pytest.mark.asyncio
-async def test_bridge_desconectado_preserva_contrato_existente_kill_on_close(tmp_path: pathlib.Path) -> None:
+async def test_bridge_desconectado_sin_reconexion_no_confirma_terminalidad(tmp_path: pathlib.Path) -> None:
+    """Antes: «contrato kill-on-close», el cancel con el bridge caído daba la sesión por terminada.
+
+    F1: que el bridge no vuelva no prueba que el Job quedó vacío. El cancel sigue acotado (no cuelga) pero falla tipado y
+    deja la terminalidad desconocida.
+    """
     mo2, data, challenge, job = _entorno(tmp_path)
     broker = _kw_broker(tmp_path, fence_grace_seconds=0.2, deadline=0.2)
     await broker.start()
@@ -473,10 +492,12 @@ async def test_bridge_desconectado_preserva_contrato_existente_kill_on_close(tmp
         await bridge.cerrar()
         await asyncio.sleep(0.05)
 
-        await asyncio.wait_for(sesion.cancel(), timeout=1.5)
+        with pytest.raises(vfs_broker.VfsBridgeLostTeardownError):
+            await asyncio.wait_for(sesion.cancel(), timeout=30.0)
 
-        assert sesion.confirmed_terminal
-        assert not sesion.terminality_unknown
+        assert not sesion.confirmed_terminal
+        assert sesion.terminality_unknown
+        assert broker.quarantine_reason is not None
     finally:
         if worker is not None:
             await worker.cerrar()
@@ -1222,16 +1243,17 @@ async def test_race_bridge_ready_desconexion_aplica_contrato_bridge_loss_no_dead
 
     task_desc = asyncio.create_task(_desconectar_en_checkpoint())
     try:
-        # Ejecutar _await_worker_exit
-        await broker._await_worker_exit(
-            exit_future,
-            job_id="job-race",
-            deadline=deadline,
-        )
-        # Si sigue el contrato de pérdida de bridge: al expirar la gracia sin reconexión,
-        # exit_future debe completarse con None (asume muerto por kill-on-close)
+        # Ejecutar _await_worker_exit. Si sigue el contrato de pérdida de bridge, al expirar la gracia sin
+        # reconexión falla con el error de PÉRDIDA (no con el de deadline conectado). F1: ya no se asume el
+        # worker muerto; la terminalidad queda desconocida y la instancia en cuarentena.
+        with pytest.raises(vfs_broker.VfsBridgeLostTeardownError):
+            await broker._await_worker_exit(
+                exit_future,
+                job_id="job-race",
+                deadline=deadline,
+            )
         assert exit_future.done()
-        assert exit_future.result() is None
+        assert broker.quarantine_reason is not None
     finally:
         task_desc.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -1939,13 +1961,16 @@ async def test_race_bridge_lost_between_snapshot_and_recheck_enters_bridge_loss_
 
     # Si se invoca con remaining <= 0 pero con el bridge caído:
     # No debe girar en busy loop ni levantar error de bridge conectado:
-    # debe esperar la gracia de pérdida de bridge (0.2s) y resolver exit_future como None (kill-on-close).
+    # debe esperar la gracia de pérdida de bridge (0.2s) y recién ahí resolver el fence. F1: lo resuelve con el
+    # error de pérdida (terminalidad desconocida), nunca asumiendo el worker muerto.
     start_time = asyncio.get_running_loop().time()
     await broker._await_exit_or_bridge_loss(exit_future, deadline=start_time - 1.0, job_id="race-job")
     elapsed = asyncio.get_running_loop().time() - start_time
 
     assert exit_future.done()
-    assert exit_future.result() is None, "Debe asumir worker muerto por kill-on-close sin entrar en busy loop"
+    assert isinstance(exit_future.exception(), vfs_broker.VfsBridgeLostTeardownError), (
+        "Debe resolver con el error de pérdida de bridge sin entrar en busy loop"
+    )
     assert elapsed >= 0.15, "Debió esperar la gracia de pérdida de bridge en vez de un retorno inmediato"
 
     await broker.close()
@@ -2371,7 +2396,8 @@ async def test_si_el_job_ya_se_cerro_cuando_llega_el_pedido_es_una_carrera_benig
 async def test_si_el_bridge_cae_tras_el_resultado_el_pedido_de_cierre_no_rompe_el_contrato_de_perdida(
     tmp_path: pathlib.Path, superficie: str
 ) -> None:
-    # Arrange: el pedido de cierre no puede enviarse (bridge caído); rige el contrato de siempre (kill-on-close).
+    # Arrange: el pedido de cierre no puede enviarse (bridge caído); rige el contrato de pérdida de bridge. F1: ese
+    # contrato ya no es «kill-on-close, se asume muerto» sino terminalidad desconocida con cuarentena.
     mo2, data, challenge, job = _entorno(tmp_path)
     broker = _kw_broker(tmp_path, deadline=2.0, fence_grace_seconds=0.4, post_result_cancel_grace_seconds=0.2)
     await broker.start()
@@ -2381,10 +2407,12 @@ async def test_si_el_bridge_cae_tras_el_resultado_el_pedido_de_cierre_no_rompe_e
         # Act
         desenlace, worker, _sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
         await bridge.cerrar()
-        resultado = await asyncio.wait_for(desenlace, timeout=5.0)
 
-        # Assert: sin una excepción de desconexión escapando del camino nuevo.
-        assert resultado.success is True
+        # Assert: el desenlace es el de pérdida de bridge, no una excepción de desconexión escapando del camino nuevo
+        # (el envío fallido del pedido de cierre se loguea y no reemplaza al contrato).
+        with pytest.raises(vfs_broker.VfsBridgeLostTeardownError):
+            await asyncio.wait_for(desenlace, timeout=30.0)
+        assert broker.quarantine_reason is not None
     finally:
         await _cerrar_escenario(desenlace, worker, bridge, broker)
 
@@ -2450,3 +2478,358 @@ def test_quien_espera_el_worker_exit_esta_congelado_para_que_ninguna_espera_se_s
         "_conducir_sesion",
         "_request_termination_and_wait",
     }
+
+
+# ==============================================================================
+# F1: perder el bridge sin reconexión NO es una confirmación terminal
+# ==============================================================================
+#
+# Auditoría de código sobre 3f8547c8 (F1 🔴). Antes, si el bridge MO2 se desconectaba y no volvía dentro de la gracia,
+# el broker resolvía el fence con ``set_result(None)`` y «asumía el worker muerto por kill-on-close». La premisa no se
+# sostiene: el bridge puede no volver con MO2 y el Job VIVOS (el descriptor vencía a las 24 h y el plugin lo rechaza sin
+# tocar el Job). La propiedad: el fence solo libera rollback y lock con un ``worker_exit`` (que el bridge emite con el
+# Job VACÍO); sin bridge que lo emita, la terminalidad es DESCONOCIDA: cuarentena persistida y veto de rollback.
+#
+# Enumera, no muestrea: cada superficie por cada entrada al fence (timeout, cancelación, resultado ya recibido). El
+# desenlace esperado se nombra por clase para que el test colecte aunque la clase nueva todavía no exista.
+
+_CASOS_F1: tuple[tuple[str, str, str], ...] = (
+    ("submit", "timeout", "VfsJobTimeoutError"),
+    ("submit", "cancelacion_externa", "CancelledError"),
+    ("submit", "resultado", "VfsBridgeLostTeardownError"),
+    ("sesion", "timeout", "VfsJobTimeoutError"),
+    ("sesion", "cancel_de_la_sesion", "VfsBridgeLostTeardownError"),
+    ("sesion", "cancelacion_externa", "CancelledError"),
+    ("sesion", "resultado", "VfsBridgeLostTeardownError"),
+)
+
+
+async def _hasta_que(condicion, *, timeout: float = 3.0) -> None:
+    limite = asyncio.get_running_loop().time() + timeout
+    while not condicion():
+        if asyncio.get_running_loop().time() > limite:
+            raise AssertionError("la condición no se cumplió a tiempo")
+        await asyncio.sleep(0.01)
+
+
+async def _perder_el_bridge_en(
+    superficie: str,
+    entrada: str,
+    broker: VfsExecutionBroker,
+    bridge: _BridgeFalso,
+    job: VfsJob,
+    challenge,
+    mo2: pathlib.Path,
+    data: pathlib.Path,
+):
+    """Lleva el job a ``entrada`` del fence con el bridge MO2 perdido para siempre.
+
+    Devuelve ``(desenlace, worker, sesion)``: ``desenlace`` es la tarea cuyo final se audita.
+    """
+    if entrada == "resultado":
+        desenlace, worker, sesion = await _hasta_el_resultado(superficie, broker, bridge, job, challenge, mo2, data)
+        await bridge.cerrar()
+        return desenlace, worker, sesion
+    if superficie == "submit":
+        desenlace = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+        launch = await bridge.recv()
+        assert launch["type"] == "launch_worker"
+        worker = await _WorkerFalso.conectar(broker, job.job_id)
+        sesion = None
+    else:
+        sesion, worker = await _abrir_sesion(broker, bridge, job, challenge, mo2, data)
+        desenlace = asyncio.create_task(sesion.cancel() if entrada == "cancel_de_la_sesion" else sesion.result())
+    await bridge.cerrar()
+    await _hasta_que(broker._bridge_lost.is_set)
+    if entrada == "cancelacion_externa":
+        await asyncio.sleep(0.05)  # el desenlace ya está esperando: la cancelación entra al fence, no lo esquiva
+        desenlace.cancel()
+    return desenlace, worker, sesion
+
+
+# Presupuesto para detectar un fence colgado. Holgado a propósito: el marcador de cuarentena se escribe de forma
+# síncrona en el event loop (``_quarantine_instance``) y en Windows se midió una escritura de 14,4 s (antivirus o disco
+# cargado). Sacar esa escritura del loop es un pendiente propio, fuera de F1.
+_PRESUPUESTO_DEL_FENCE_S = 30.0
+
+
+async def _desenlace_de(tarea: asyncio.Task[Any]) -> BaseException | None:
+    # Sin ``shield``: sobre una tarea cancelada crea un ``CancelledError`` NUEVO y perdería las marcas de terminalidad.
+    _hechas, pendientes = await asyncio.wait({tarea}, timeout=_PRESUPUESTO_DEL_FENCE_S)
+    assert not pendientes, "el fence colgó: el desenlace no llegó a tiempo"
+    try:
+        tarea.result()
+    except BaseException as exc:  # noqa: BLE001 - el test audita el desenlace, sea cual sea
+        return exc
+    return None
+
+
+def test_los_casos_f1_cubren_cada_superficie_por_cada_entrada_al_fence() -> None:
+    """Un caso nuevo no puede faltar en silencio: cada superficie entra al fence por timeout, cancelación y resultado."""
+    assert {superficie for superficie, _entrada, _clase in _CASOS_F1} == set(_SUPERFICIES)
+    for superficie in _SUPERFICIES:
+        entradas = {entrada for s, entrada, _clase in _CASOS_F1 if s == superficie}
+        assert {"timeout", "resultado"} <= entradas
+        assert any(entrada.startswith("cancel") for entrada in entradas)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("superficie", "entrada", "clase_esperada"), _CASOS_F1)
+async def test_f1_sin_reconexion_del_bridge_hay_cuarentena_y_veto_de_rollback(
+    tmp_path: pathlib.Path, superficie: str, entrada: str, clase_esperada: str
+) -> None:
+    from sky_claw.app.db.rollback_veto import exception_forbids_rollback
+
+    # Arrange: gracia corta de pérdida de bridge; el plazo conectado no interviene (el bridge está caído).
+    mo2, data, challenge, job = _entorno(tmp_path, timeout=0.8 if entrada == "timeout" else 10.0)
+    broker = _kw_broker(tmp_path, deadline=2.0, fence_grace_seconds=0.2)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        # Act: el bridge se va y no vuelve.
+        desenlace, worker, sesion = await _perder_el_bridge_en(
+            superficie, entrada, broker, bridge, job, challenge, mo2, data
+        )
+        exc = await _desenlace_de(desenlace)
+
+        # Assert: nada de «se asume el worker muerto»: fallo tipado, veto de rollback y cuarentena PERSISTIDA.
+        assert exc is not None, "perder el bridge no puede terminar en éxito sin worker_exit"
+        assert type(exc).__name__ == clase_esperada
+        assert exception_forbids_rollback(exc), "la terminalidad es desconocida: el rollback debe quedar vetado"
+        assert broker.quarantine_reason is not None
+        assert broker._quarantined_job_id == job.job_id
+        marcador = json.loads(broker._quarantine_path.read_text(encoding="utf-8"))
+        assert marcador["job_id"] == job.job_id
+        if sesion is not None:
+            assert not sesion.confirmed_terminal
+        if entrada == "cancel_de_la_sesion":
+            assert sesion is not None and sesion.terminality_unknown
+        # El lock de la instancia se libera (no cuelga), pero la cuarentena veta el job siguiente.
+        assert not broker._instance_lock.locked()
+        with pytest.raises(vfs_broker.VfsInstanceQuarantinedError):
+            await broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data)
+    finally:
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+async def test_f1_si_el_bridge_vuelve_y_reenvia_el_worker_exit_la_cuarentena_se_libera(tmp_path: pathlib.Path) -> None:
+    # Arrange: el job quedó en cuarentena porque el bridge se fue tras el resultado.
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=2.0, fence_grace_seconds=0.2)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    vuelto: _BridgeFalso | None = None
+    try:
+        desenlace, worker, _sesion = await _perder_el_bridge_en(
+            "submit", "resultado", broker, bridge, job, challenge, mo2, data
+        )
+        await _desenlace_de(desenlace)
+        assert broker.quarantine_reason is not None
+
+        # Act: el bridge reconecta (el descriptor sigue vigente) y reenvía el worker_exit, emitido con el Job VACÍO.
+        vuelto = await _BridgeFalso.conectar(broker)
+        await vuelto.worker_exit(job.job_id, exit_code=0)
+        await _hasta_que(lambda: broker.quarantine_reason is None)
+
+        # Assert: la confirmación terminal llegó y la salida automática funciona.
+        assert not broker._quarantine_path.exists()
+    finally:
+        if vuelto is not None:
+            await vuelto.cerrar()
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+async def test_f1_close_con_un_job_activo_y_el_bridge_perdido_persiste_la_cuarentena(tmp_path: pathlib.Path) -> None:
+    # Arrange: un job en vuelo y el bridge caído; la app se cierra.
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=2.0, fence_grace_seconds=0.2)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    pendiente = asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+    worker = None
+    siguiente: VfsExecutionBroker | None = None
+    try:
+        await bridge.recv()
+        worker = await _WorkerFalso.conectar(broker, job.job_id)
+        await bridge.cerrar()
+        await _hasta_que(broker._bridge_lost.is_set)
+
+        # Act: close() cancela el job activo; sin bridge que confirme, el teardown falla tipado.
+        with pytest.raises(VfsTeardownError):
+            await asyncio.wait_for(broker.close(), timeout=_PRESUPUESTO_DEL_FENCE_S)
+
+        # Assert: el próximo arranque sobre el mismo estado nace en cuarentena (no se olvida al reiniciar).
+        siguiente = _kw_broker(tmp_path, deadline=2.0)
+        await siguiente.start()
+        assert siguiente.quarantine_reason is not None
+    finally:
+        if worker is not None:
+            await worker.cerrar()
+        if not pendiente.done():
+            pendiente.cancel()
+        with contextlib.suppress(BaseException):
+            await pendiente
+        if siguiente is not None:
+            await siguiente.close()
+        with contextlib.suppress(BaseException):
+            await broker.close()
+
+
+def _funciones_con_set_result_none(arbol: ast.AST) -> list[str]:
+    return sorted(
+        funcion.name
+        for funcion in ast.walk(arbol)
+        if isinstance(funcion, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for llamada in ast.walk(funcion)
+        if isinstance(llamada, ast.Call)
+        and getattr(llamada.func, "attr", None) == "set_result"
+        and len(llamada.args) == 1
+        and isinstance(llamada.args[0], ast.Constant)
+        and llamada.args[0].value is None
+    )
+
+
+def test_f1_ningun_camino_del_broker_resuelve_el_fence_asumiendo_el_worker_muerto() -> None:
+    """Censo de ``set_result(None)``: resolver un futuro de salida sin código es «asumir el worker muerto».
+
+    Queda uno solo, y no es un fence: el ``bridge_error`` de ``launch_worker`` (el bridge no lanzó). Una resolución
+    nueva sin ``worker_exit`` rompe el ancla hasta que se decida su política.
+    """
+    arbol = ast.parse(pathlib.Path(vfs_broker.__file__).read_text(encoding="utf-8"))
+
+    assert _funciones_con_set_result_none(arbol) == ["_handle_bridge_message"]
+
+
+# ------------------------------------------------------------------------------
+# F1: la renovación del descriptor no compite con un worker que arranca
+# ------------------------------------------------------------------------------
+#
+# El worker lee el descriptor UNA vez, al arrancar y antes de su hello, y no reintenta (``vfs_worker.run_worker``). En
+# Windows, leerlo justo mientras ``os.replace`` lo reemplaza da ``PermissionError`` y el job fallaría en el arranque. Dos
+# mitades de la misma exclusión: no se renueva con un worker arrancando, y ningún job se registra (y por lo tanto ningún
+# worker se lanza) con una renovación en vuelo. El bridge no la necesita: reintenta en su bucle de reconexión.
+
+
+def _vencimiento(broker: VfsExecutionBroker) -> float:
+    return float(_leer_descriptor(broker)["expires_at"])
+
+
+def _abrir(superficie: str, broker: VfsExecutionBroker, job: VfsJob, challenge, mo2, data) -> asyncio.Task[Any]:
+    if superficie == "submit":
+        return asyncio.create_task(broker.submit(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+    return asyncio.create_task(broker.open_session(job, challenge=challenge, mo2_root=mo2, virtual_data_dir=data))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_f1_no_se_renueva_el_descriptor_con_un_worker_arrancando(tmp_path: pathlib.Path, superficie: str) -> None:
+    # Arrange: renovación muy frecuente; el job ya se lanzó pero su worker todavía no dijo hello.
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=0.3, descriptor_renewal_seconds=0.05)
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        desenlace = _abrir(superficie, broker, job, challenge, mo2, data)
+        launch = await bridge.recv()
+        assert launch["type"] == "launch_worker"
+
+        # Act: el worker «arranca» durante varios intervalos de renovación y recién después dice hello.
+        antes = _vencimiento(broker)
+        await asyncio.sleep(0.4)
+        durante = _vencimiento(broker)
+        worker = await _WorkerFalso.conectar(broker, job.job_id)
+        await _hasta_que(lambda: _vencimiento(broker) > durante)
+
+        # Assert: mientras arrancaba no se tocó el descriptor; con el hello, la renovación sigue.
+        assert durante == antes
+    finally:
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superficie", _SUPERFICIES)
+async def test_f1_ningun_job_se_registra_con_una_renovacion_del_descriptor_en_vuelo(
+    tmp_path: pathlib.Path, superficie: str
+) -> None:
+    # Arrange: una renovación queda trabada en su hilo, a mitad de la escritura.
+    mo2, data, challenge, job = _entorno(tmp_path)
+    broker = _kw_broker(tmp_path, deadline=0.3, descriptor_renewal_seconds=0.05)
+    en_vuelo = threading.Event()
+    soltar = threading.Event()
+    renovar_de_verdad = broker._renovar_descriptor
+
+    def renovar_trabado() -> None:
+        en_vuelo.set()
+        soltar.wait(timeout=10)
+        renovar_de_verdad()
+
+    broker._renovar_descriptor = renovar_trabado  # type: ignore[method-assign]
+    await broker.start()
+    bridge = await _BridgeFalso.conectar(broker)
+    desenlace = worker = None
+    try:
+        assert await asyncio.to_thread(en_vuelo.wait, 5)
+
+        # Act: un job pide lanzarse con la escritura del descriptor todavía en curso. Su manifiesto ya está escrito: lo
+        # único que queda entre él y el launch es el registro.
+        desenlace = _abrir(superficie, broker, job, challenge, mo2, data)
+        await _hasta_que((broker._jobs_dir / f"{job.job_id}.json").exists, timeout=_PRESUPUESTO_DEL_FENCE_S)
+        await asyncio.sleep(0.2)
+
+        # Assert: no se registró ni se lanzó nada; al terminar la escritura, el launch sale.
+        assert job.job_id not in broker._worker_exit
+        with pytest.raises(TimeoutError):
+            await bridge.recv(timeout=0.1)
+        soltar.set()
+        launch = await bridge.recv(timeout=3.0)
+        assert launch["type"] == "launch_worker"
+    finally:
+        soltar.set()
+        await _cerrar_escenario(desenlace, worker, bridge, broker)
+
+
+def _bloques_de_sentencias(nodo: ast.AST):
+    for hijo in ast.walk(nodo):
+        for campo in ("body", "orelse", "finalbody"):
+            bloque = getattr(hijo, campo, None)
+            if isinstance(bloque, list) and bloque and isinstance(bloque[0], ast.stmt):
+                yield bloque
+        for manejador in getattr(hijo, "handlers", []) or []:
+            yield manejador.body
+
+
+def _es_llamada_a(nodo: ast.AST, metodo: str) -> bool:
+    return isinstance(nodo, ast.Call) and getattr(nodo.func, "attr", None) == metodo
+
+
+def test_f1_todo_registro_de_job_espera_que_no_haya_renovacion_en_vuelo_sin_otro_await_en_medio() -> None:
+    """Enumera, no muestrea: cada registro de job va precedido, en la sentencia anterior, por la espera de la renovación.
+
+    Sin otra sentencia en medio no hay otro ``await``: la renovación no puede empezar entre la espera y el registro.
+    """
+    arbol = ast.parse(pathlib.Path(vfs_broker.__file__).read_text(encoding="utf-8"))
+    registradores = _funciones_que_llaman_a(arbol, "_registrar_job")
+    assert registradores == {"submit", "open_session"}
+    assert _funciones_que_llaman_a(arbol, "_esperar_sin_renovacion_del_descriptor") == registradores
+
+    registros = 0
+    for funcion in ast.walk(arbol):
+        if not isinstance(funcion, ast.AsyncFunctionDef) or funcion.name not in registradores:
+            continue
+        for bloque in _bloques_de_sentencias(funcion):
+            for indice, sentencia in enumerate(bloque):
+                if not (isinstance(sentencia, ast.Assign) and _es_llamada_a(sentencia.value, "_registrar_job")):
+                    continue
+                registros += 1
+                previa = bloque[indice - 1] if indice > 0 else None
+                assert (
+                    isinstance(previa, ast.Expr)
+                    and isinstance(previa.value, ast.Await)
+                    and _es_llamada_a(previa.value.value, "_esperar_sin_renovacion_del_descriptor")
+                ), f"{funcion.name}: el registro del job no va inmediatamente después de esperar la renovación"
+    assert registros == 2

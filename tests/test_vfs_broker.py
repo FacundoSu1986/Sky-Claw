@@ -11,6 +11,7 @@ import logging
 import pathlib
 import subprocess
 import sys
+import time
 from typing import Any
 
 import psutil
@@ -169,8 +170,21 @@ async def test_broker_no_roba_lock_de_owner_vivo(tmp_path: pathlib.Path) -> None
         proc.wait()
 
 
+def _leer_descriptor(broker: VfsExecutionBroker) -> dict[str, Any]:
+    """Lee como el bridge: en Windows, leer justo mientras ``os.replace`` reemplaza el archivo da ``PermissionError``.
+
+    El bridge lo tolera (reintenta en su bucle de reconexión); un lector de test hace lo mismo.
+    """
+    for _intento in range(200):
+        try:
+            return json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+        except PermissionError:
+            time.sleep(0.005)
+    raise AssertionError("el descriptor siguió ilegible: no es una colisión transitoria con la renovación")
+
+
 async def _conectar_bridge(broker: VfsExecutionBroker):
-    descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+    descriptor = _leer_descriptor(broker)
     secret = base64.urlsafe_b64decode(descriptor["token"])
     reader, writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
     await write_authenticated_message(
@@ -198,7 +212,7 @@ async def _reportar_como_worker(
     result: dict[str, object],
     expect_ack: bool = True,
 ) -> None:
-    descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+    descriptor = _leer_descriptor(broker)
     secret = base64.urlsafe_b64decode(descriptor["token"])
     reader, writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
     try:
@@ -893,7 +907,13 @@ async def test_close_concurrente_es_idempotente(tmp_path: pathlib.Path) -> None:
 
 async def test_fence_se_rompe_si_el_bridge_no_reconecta(tmp_path: pathlib.Path) -> None:
     """F-1: si el bridge MO2 muere y no reconecta, el fence terminal no puede
-    colgar para siempre reteniendo el lock — degrada tras la ventana de gracia."""
+    colgar para siempre reteniendo el lock — degrada tras la ventana de gracia.
+
+    F1 (auditoría sobre 3f8547c8): degradar NO es asumir el worker muerto. Nadie
+    confirmó el Job vacío, así que el timeout sale con el rollback vetado y la
+    instancia en cuarentena."""
+    from sky_claw.app.db.rollback_veto import exception_forbids_rollback
+
     mo2, data, challenge, _job = _entorno(tmp_path)
     job = VfsJob.create(
         instance_id="portable-main",
@@ -920,8 +940,10 @@ async def test_fence_se_rompe_si_el_bridge_no_reconecta(tmp_path: pathlib.Path) 
         # worker_exit, el diseño previo esperaba exit_future sin cota (hang).
         writer.close()
         await writer.wait_closed()
-        with pytest.raises(VfsJobTimeoutError):
-            await asyncio.wait_for(pending, timeout=3)
+        with pytest.raises(VfsJobTimeoutError) as exc_info:
+            await asyncio.wait_for(pending, timeout=30)
+        assert exception_forbids_rollback(exc_info.value)
+        assert broker.quarantine_reason is not None
     finally:
         await broker.close()
 
@@ -1032,7 +1054,7 @@ async def _provocar_timeout(
             )
 
         async def _hello_del_worker() -> asyncio.StreamWriter:
-            descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+            descriptor = _leer_descriptor(broker)
             w_reader, w_writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
             await write_authenticated_message(
                 w_writer,
@@ -1207,3 +1229,161 @@ def test_toda_limpieza_de_job_borra_tambien_sus_hitos() -> None:
     limpiezas = _llama_pop("_job_objects")
     assert len(limpiezas) == 2
     assert limpiezas == _llama_pop("_hitos")
+
+
+# ==============================================================================
+# F1: el descriptor no vence mientras el broker vive
+# ==============================================================================
+#
+# El broker vive toda la sesión de la app (``AppContext``) y el descriptor se escribía UNA vez con 24 h de vida. Pasado
+# ese plazo el bridge no podía reconectar (y traer el ``worker_exit`` que libera una cuarentena) y tampoco arrancaba un
+# worker nuevo: los dos rechazan un descriptor vencido. La renovación vive en ``start()``/``close()`` del broker, así que
+# todo constructor del broker participa por construcción.
+
+
+def _broker_que_renueva(tmp_path: pathlib.Path, intervalo: float, **kwargs: Any) -> VfsExecutionBroker:
+    return VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=tmp_path / "state",
+        secret=b"x" * 32,
+        descriptor_hardener=kwargs.pop("descriptor_hardener", lambda _path: None),
+        descriptor_renewal_seconds=intervalo,
+        **kwargs,
+    )
+
+
+async def _hasta_que_se_renueve(broker: VfsExecutionBroker, vencimiento_previo: float) -> dict[str, Any]:
+    limite = asyncio.get_running_loop().time() + 3.0
+    while asyncio.get_running_loop().time() < limite:
+        actual = _leer_descriptor(broker)
+        if actual["expires_at"] > vencimiento_previo:
+            return actual
+        await asyncio.sleep(0.02)
+    raise AssertionError("el descriptor no se renovó a tiempo")
+
+
+def _renovaciones_vivas() -> list[str]:
+    return [
+        tarea.get_name()
+        for tarea in asyncio.all_tasks()
+        if tarea.get_name().startswith("vfs-descriptor-renewal-") and not tarea.done()
+    ]
+
+
+def test_f1_los_plazos_del_descriptor_estan_congelados() -> None:
+    """Renovar cada hora un descriptor de 24 h deja siempre ~23 h de margen y 23 reintentos ante un fallo."""
+    from sky_claw.local.mo2 import vfs_broker as modulo
+
+    assert modulo._DESCRIPTOR_TTL_SECONDS == 24 * 60 * 60
+    assert modulo._DESCRIPTOR_RENEWAL_SECONDS == 60 * 60
+
+
+async def test_f1_el_descriptor_se_renueva_sin_cambiar_su_identidad(tmp_path: pathlib.Path) -> None:
+    # Arrange
+    broker = _broker_que_renueva(tmp_path, 0.05)
+    await broker.start()
+    writer: asyncio.StreamWriter | None = None
+    try:
+        inicial = _leer_descriptor(broker)
+
+        # Act
+        renovado = await _hasta_que_se_renueve(broker, inicial["expires_at"])
+
+        # Assert: solo cambia el vencimiento; un bridge conecta con el descriptor renovado.
+        assert {k: v for k, v in renovado.items() if k != "expires_at"} == {
+            k: v for k, v in inicial.items() if k != "expires_at"
+        }
+        _reader, writer, _secret = await _conectar_bridge(broker)
+    finally:
+        if writer is not None:
+            writer.close()
+            with contextlib.suppress(ConnectionError, OSError):
+                await writer.wait_closed()
+        await broker.close()
+
+
+async def test_f1_tras_close_el_descriptor_no_reaparece(tmp_path: pathlib.Path) -> None:
+    # Arrange: una renovación muy frecuente, para que una escritura en vuelo pueda cruzarse con el cierre.
+    broker = _broker_que_renueva(tmp_path, 0.01)
+    await broker.start()
+    await asyncio.sleep(0.1)
+
+    # Act
+    await broker.close()
+    await asyncio.sleep(0.2)
+
+    # Assert: la renovación se detuvo ANTES de borrar el descriptor y no lo resucita.
+    assert not broker.descriptor_path.exists()
+    assert _renovaciones_vivas() == []
+
+
+async def test_f1_un_fallo_al_renovar_no_tumba_al_broker_y_se_reintenta(tmp_path: pathlib.Path) -> None:
+    # Arrange: el endurecimiento del temporal falla durante un rato (una ACL rota, un antivirus).
+    fallo = {"activo": False, "veces": 0}
+
+    def endurecer(path: pathlib.Path) -> None:
+        if fallo["activo"] and path.name.endswith(".tmp"):
+            fallo["veces"] += 1
+            raise OSError("ACL simulada que no se pudo aplicar")
+
+    broker = _broker_que_renueva(tmp_path, 0.05, descriptor_hardener=endurecer)
+    await broker.start()
+    try:
+        inicial = _leer_descriptor(broker)
+
+        # Act
+        fallo["activo"] = True
+        limite = asyncio.get_running_loop().time() + 3.0
+        while fallo["veces"] < 2 and asyncio.get_running_loop().time() < limite:
+            await asyncio.sleep(0.02)
+        fallo["activo"] = False
+        renovado = await _hasta_que_se_renueve(broker, inicial["expires_at"])
+
+        # Assert: falló al menos dos veces, siguió intentando y no dejó temporales.
+        assert fallo["veces"] >= 2
+        assert renovado["session_id"] == inicial["session_id"]
+        assert _renovaciones_vivas() != []
+        assert not list((tmp_path / "state").glob(".*.tmp"))
+    finally:
+        await broker.close()
+
+
+@pytest.mark.parametrize("intervalo", [0, -1.0, float("inf"), float("nan"), 24 * 60 * 60, 24 * 60 * 60 + 1])
+def test_f1_la_renovacion_debe_ser_positiva_finita_y_menor_que_la_vida_del_descriptor(
+    tmp_path: pathlib.Path, intervalo: float
+) -> None:
+    # Act / Assert: un intervalo absurdo dejaría vencer el descriptor (o lo reescribiría sin pausa) sin que nadie se entere.
+    with pytest.raises(VfsBrokerError):
+        _broker_que_renueva(tmp_path, intervalo)
+
+
+def _funciones_que_leen_el_descriptor(arbol: ast.AST) -> list[str]:
+    """Funciones que hacen ``<algo>.descriptor_path.read_text(...)``, en orden de aparición (con repetidos)."""
+    nombres: list[str] = []
+    for funcion in ast.walk(arbol):
+        if not isinstance(funcion, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for nodo in ast.walk(funcion):
+            if (
+                isinstance(nodo, ast.Attribute)
+                and nodo.attr == "read_text"
+                and isinstance(nodo.value, ast.Attribute)
+                and nodo.value.attr == "descriptor_path"
+            ):
+                nombres.append(funcion.name)
+    return nombres
+
+
+def test_f1_con_renovacion_rapida_el_descriptor_solo_se_lee_reintentando() -> None:
+    """Un lector de test que choca con el ``os.replace`` de la renovación da ``PermissionError`` en Windows (flaky).
+
+    La familia se detecta por propiedad, no por lista: todo archivo de ``tests/`` que active la renovación rápida
+    (``descriptor_renewal_seconds``) lee el descriptor solo desde ``_leer_descriptor``, que reintenta como el bridge.
+    Un lector directo nuevo, o un archivo nuevo que active la renovación sin el helper, rompe el ancla.
+    """
+    raiz = pathlib.Path(__file__).parent
+    familia = sorted(p.name for p in raiz.glob("test_*.py") if "descriptor_renewal_seconds" in p.read_text("utf-8"))
+    assert familia == ["test_vfs_broker.py", "test_vfs_teardown_deadline.py"]
+    for nombre in familia:
+        lectores = set(_funciones_que_leen_el_descriptor(ast.parse((raiz / nombre).read_text(encoding="utf-8"))))
+        assert lectores == {"_leer_descriptor"}, nombre
