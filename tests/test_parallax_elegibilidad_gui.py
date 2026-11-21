@@ -144,3 +144,32 @@ async def test_un_diagnostico_anterior_no_pisa_la_evaluacion_del_mismo_tab() -> 
     assert entrada is not None and entrada["mod"] == "B"
     assert entrada["resultado"]["success"] is False
     assert entrada["resultado"]["message"] == "Error de evaluación"
+
+
+async def test_un_diagnostico_durante_evaluacion_pendiente_no_la_pisa() -> None:
+    store = ReactiveStore()
+    inicio_elegibilidad = asyncio.Event()
+    terminar_elegibilidad = asyncio.Event()
+
+    async def responder(nombre: str, _argumentos: dict[str, str]) -> dict:
+        if nombre == "evaluar_parallax_elegibilidad":
+            inicio_elegibilidad.set()
+            await terminar_elegibilidad.wait()
+            return {"success": True, "message": "", "alcance": "solo archivos sueltos", "texturas": []}
+        return {"success": True, "message": "", "n_texturas": 1, "n_hallazgos": 0, "hallazgos": [], "perfil": "P"}
+
+    supervisor = MagicMock(dispatch_tool=AsyncMock(side_effect=responder))
+    elegibilidad = asyncio.create_task(
+        run_diagnostico_parallax("E", supervisor=supervisor, store=store, tab_id="a", elegibilidad=True)
+    )
+    try:
+        await asyncio.wait_for(inicio_elegibilidad.wait(), timeout=2)
+        await run_diagnostico_parallax("D", supervisor=supervisor, store=store, tab_id="a")
+    finally:
+        terminar_elegibilidad.set()
+        await elegibilidad
+
+    entrada = diagnostico_parallax_de(store, "a")
+    assert entrada is not None and entrada["mod"] == "E"
+    assert entrada.get("elegibilidad") is True
+    assert supervisor.dispatch_tool.await_count == 1

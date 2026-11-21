@@ -1554,6 +1554,8 @@ async def run_diagnostico_parallax(
         return
     pendiente = None
     entrada_anterior = diagnostico_parallax_de(store, tab_id)
+    if not elegibilidad and entrada_anterior and entrada_anterior.get("evaluando"):
+        return  # Hay una elegibilidad en curso en esta pestaña: no competir con ella.
     if elegibilidad:
         if tab_id is None:
             store.set(
