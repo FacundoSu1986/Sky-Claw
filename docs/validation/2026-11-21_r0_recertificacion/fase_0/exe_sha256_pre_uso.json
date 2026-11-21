@@ -1,0 +1,10 @@
+﻿{
+    "archivo":  "E:\\SkyClaw_R0_Rig\\exe_676f4c29\\SkyClawApp.exe",
+    "bytes":  88296345,
+    "sha256":  "ef7777c163e8c03524ae6f08f4171beee2957cfbd677c013db6f3d94bfdc9e55",
+    "esperado":  "ef7777c163e8c03524ae6f08f4171beee2957cfbd677c013db6f3d94bfdc9e55",
+    "coincide":  true,
+    "verificado_local":  "2026-11-21T10:12:21.124-03:00",
+    "verificado_utc":  "2026-11-21T13:12:21.124Z",
+    "antes_de_cualquier_uso_en_r0_ronda6":  true
+}
