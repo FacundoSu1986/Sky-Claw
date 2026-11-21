@@ -1,0 +1,53 @@
+﻿{
+    "accion":  "health",
+    "exe":  "E:\\SkyClaw_R0_Rig\\exe_676f4c29\\SkyClawApp.exe",
+    "exe_sha256_pre_corrida":  "ef7777c163e8c03524ae6f08f4171beee2957cfbd677c013db6f3d94bfdc9e55",
+    "exe_hash_coincide":  true,
+    "argv":  "--mode vfs-health --vfs-timeout 60 --mo2-root E:\\SkyClaw_R0_Rig\\mo2 --skyrim-path E:\\SkyClaw_R0_Rig\\skyrim --vfs-profile R0_Descartable",
+    "env":  {
+                "SKYCLAW_ISOLATED":  "1",
+                "USERPROFILE":  "E:\\SkyClaw_R0_Rig\\home",
+                "HOME":  "E:\\SkyClaw_R0_Rig\\home",
+                "cwd":  "E:\\SkyClaw_R0_Rig\\work\\r6_cwd"
+            },
+    "procesos_pre":  [
+                         {
+                             "pid":  4168,
+                             "nombre":  "ModOrganizer.exe",
+                             "cmd":  "\"E:\\SkyClaw_R0_Rig\\mo2\\ModOrganizer.exe\" "
+                         }
+                     ],
+    "estado_vfs_pre":  [
+
+                       ],
+    "inicio_local":  "2026-11-21T10:34:45.561-03:00",
+    "inicio_utc":  "2026-11-21T13:34:45.561Z",
+    "timeout_externo_180s":  true,
+    "arbol_al_timeout":  [
+                             {
+                                 "pid":  17976,
+                                 "padre":  19788,
+                                 "nombre":  "SkyClawApp.exe"
+                             },
+                             {
+                                 "pid":  16220,
+                                 "padre":  17976,
+                                 "nombre":  "SkyClawApp.exe"
+                             }
+                         ],
+    "fin_local":  "2026-11-21T10:37:45.701-03:00",
+    "fin_utc":  "2026-11-21T13:37:45.701Z",
+    "elapsed_s":  180.141,
+    "rc":  1,
+    "pid":  17976,
+    "procesos_post":  [
+                          {
+                              "pid":  4168,
+                              "nombre":  "ModOrganizer.exe",
+                              "cmd":  "\"E:\\SkyClaw_R0_Rig\\mo2\\ModOrganizer.exe\" "
+                          }
+                      ],
+    "estado_vfs_post":  [
+
+                        ]
+}
