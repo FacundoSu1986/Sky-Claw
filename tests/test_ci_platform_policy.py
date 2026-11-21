@@ -488,3 +488,94 @@ def test_semantica_concurrencia_para_los_tres_escenarios() -> None:
     assert evaluar_cancel("push") is False, (
         "El re-run del mismo SHA en main no cancela la corrida en curso (cancel-in-progress=false)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Capa posterior al merge: corrida nocturna y alerta de main roto
+# ---------------------------------------------------------------------------
+
+#: 07:00 UTC = 04:00 en Argentina: la corrida completa de la noche no compite con las de día por los 20 slots.
+CRON_NOCTURNO = "0 7 * * *"
+ALERTA = "alerta-main"
+CONDICION_DE_ALERTA = "${{ failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}"
+#: Jobs que por política no bloquean (``continue-on-error``): su rojo no es «main roto».
+JOBS_INFORMATIVOS = {"test-posix-core"}
+
+
+def _disparadores() -> dict[str, Any]:
+    """La sección ``on`` de ``ci.yml``. PyYAML lee la clave ``on`` como el booleano ``True`` (YAML 1.1)."""
+    workflow = yaml.safe_load(WORKFLOW_CI.read_text(encoding="utf-8"))
+    return cast(dict[str, Any], workflow.get("on", workflow.get(True)))
+
+
+def _ancestros(jobs: dict[str, Any], nombre: str) -> set[str]:
+    """Todos los jobs de los que ``nombre`` depende, directa o transitivamente (``failure()`` mira a TODOS)."""
+    pendientes = [nombre]
+    vistos: set[str] = set()
+    while pendientes:
+        needs = jobs[pendientes.pop()].get("needs", [])
+        for padre in [needs] if isinstance(needs, str) else needs:
+            if padre not in vistos:
+                vistos.add(padre)
+                pendientes.append(padre)
+    return vistos
+
+
+def test_el_workflow_corre_cada_noche_y_a_pedido_ademas_de_push_y_pr() -> None:
+    """La corrida nocturna completa (las dos versiones de Python) detecta lo que ningún commit cambió: una dependencia
+    nueva que ``pip`` resuelve distinto (como el ruff 0.17.4 de CI-FIX-003) o un test inestable. ``workflow_dispatch``
+    permite correr la suite completa, py3.12 incluido, sobre una rama antes de mergearla."""
+    disparadores = _disparadores()
+
+    assert set(disparadores) == {"push", "pull_request", "schedule", "workflow_dispatch"}
+    assert disparadores["schedule"] == [{"cron": CRON_NOCTURNO}]
+    assert disparadores["push"] == {"branches": ["main", "master"]}
+
+
+def test_la_alerta_depende_de_todo_job_que_no_sea_informativo() -> None:
+    """Enumera los jobs REALES: uno nuevo que no cuelgue (directa o transitivamente) de la alerta rompe esto, porque su
+    rojo no avisaría a nadie."""
+    jobs = _jobs()
+
+    assert _ancestros(jobs, ALERTA) == set(jobs) - {ALERTA} - JOBS_INFORMATIVOS
+    assert all(jobs[j].get("continue-on-error") is True for j in JOBS_INFORMATIVOS)
+    assert not [
+        n
+        for n, j in jobs.items()
+        if ALERTA in ([j["needs"]] if isinstance(j.get("needs"), str) else j.get("needs", []))
+    ]
+
+
+def test_la_alerta_solo_corre_si_algo_fallo_fuera_de_un_pr_y_sobre_main() -> None:
+    """En un PR el rojo ya lo ve quien lo abrió; un ``workflow_dispatch`` sobre otra rama no es «main roto»."""
+    alerta = _jobs()[ALERTA]
+
+    assert alerta["if"] == CONDICION_DE_ALERTA
+    assert alerta["runs-on"] == "ubuntu-latest"
+    # Buscar y crear el issue no es atómico: un grupo FIJO (no por SHA ni por ref) serializa las alertas de todas las
+    # corridas, y sin cancelar la segunda espera y comenta el issue de la primera en vez de abrir un duplicado.
+    # ``queue: max``: con el default (``single``) solo cabe UNA alerta pendiente y una tercera corrida cancela a la
+    # que esperaba — ``cancel-in-progress: false`` protege a la que corre, no a la pendiente —, así que esa corrida
+    # rota nunca dejaría su commit ni su URL en el issue.
+    assert alerta["concurrency"] == {"group": "alerta-main-roto", "cancel-in-progress": False, "queue": "max"}
+    assert "${{" not in alerta["concurrency"]["group"]
+    assert "continue-on-error" not in alerta
+
+
+def test_la_alerta_es_el_unico_job_que_puede_escribir_y_solo_sobre_issues() -> None:
+    """Mínimo privilegio, enumerado: el workflow sigue en ``contents: read`` y ningún otro job gana permisos."""
+    workflow = yaml.safe_load(WORKFLOW_CI.read_text(encoding="utf-8"))
+    con_permisos_propios = {nombre: job["permissions"] for nombre, job in _jobs().items() if "permissions" in job}
+
+    assert workflow["permissions"] == {"contents": "read"}
+    assert con_permisos_propios == {ALERTA: {"contents": "read", "issues": "write"}}
+
+
+def test_la_alerta_no_interpola_expresiones_en_el_script_ni_deja_credenciales_en_el_checkout() -> None:
+    """Los datos de la corrida entran por ``env``, nunca por ``${{ }}`` dentro de ``run`` (inyección de comandos)."""
+    pasos = _jobs()[ALERTA]["steps"]
+
+    assert all("${{" not in str(paso.get("run", "")) for paso in pasos)
+    checkouts = [p for p in pasos if str(p.get("uses", "")).startswith("actions/checkout@")]
+    assert len(checkouts) == 1
+    assert checkouts[0]["with"] == {"persist-credentials": False}
