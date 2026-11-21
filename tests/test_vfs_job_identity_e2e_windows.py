@@ -443,6 +443,9 @@ async def test_cancelar_despues_de_verificarse_y_antes_de_ser_autorizado_termina
 # bridge. Los tests de ``tests/test_main.py`` enumeran los modos sobre el código; este mide el BINARIO.
 
 _PLAZO_DE_SALIDA_S = 60.0
+#: Tras matar el árbol, cuánto se espera el EOF de los pipes. Sin plazo, un ``kill`` denegado colgaría el test hasta el
+#: ``--timeout`` de pytest, que con ``method=thread`` corta TODO el proceso sin reporte (CodeRabbit en #984).
+_PLAZO_DE_LIMPIEZA_S = 15.0
 
 
 def _matar_el_arbol(pid: int) -> None:
@@ -482,7 +485,10 @@ def test_congelado_un_fallo_no_interactivo_sale_con_codigo_1_y_no_abre_un_dialog
         _salida, errores = proceso.communicate(timeout=_PLAZO_DE_SALIDA_S)
     except subprocess.TimeoutExpired:
         _matar_el_arbol(proceso.pid)  # el bootloader Y su hijo onefile, que es el que tiene el diálogo abierto
-        proceso.communicate()
+        try:
+            proceso.communicate(timeout=_PLAZO_DE_LIMPIEZA_S)
+        except subprocess.TimeoutExpired:
+            pytest.fail("el .exe congelado no terminó y tampoco se pudo terminar su árbol: quedó un proceso vivo")
         pytest.fail(f"el .exe congelado no terminó en {_PLAZO_DE_SALIDA_S:.0f}s: quedó esperando el diálogo modal")
     duracion = time.monotonic() - inicio
 
