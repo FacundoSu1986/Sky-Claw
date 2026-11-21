@@ -229,10 +229,13 @@ def construir_manifiesto(
     pesos: Mapping[str, int],
     propios: Collection[str],
     duraciones: Mapping[str, float],
+    codigo_de_salida: int = 0,
 ) -> dict[str, Any]:
     """Lo que un shard declara haber seleccionado, para que el verificador lo contraste con los demás.
 
     ``duraciones`` es el tiempo de las fases de los tests de cada archivo (no incluye colección ni arranque del job).
+    ``codigo_de_salida`` es el de la sesión de pytest: con ``-x`` un shard rojo declara su selección COMPLETA aunque no
+    haya corrido todos sus archivos, así que ``calibrar`` solo acepta shards que terminaron en 0.
     """
     archivos = {nombre: pesos[nombre] for nombre in sorted(propios)}
     por_archivo = {nombre: round(duraciones.get(nombre, 0.0), 3) for nombre in archivos}
@@ -246,6 +249,7 @@ def construir_manifiesto(
         "archivos": archivos,
         "tiempo_de_tests_por_archivo_s": por_archivo,
         "tiempo_de_tests_s": round(sum(por_archivo.values()), 3),
+        "codigo_de_salida": codigo_de_salida,
     }
 
 
@@ -314,7 +318,9 @@ class _Particion:
         # Sin reparto aplicado (p. ej. la colección abortó) no hay nada fiable que declarar: el job ya falló.
         if self._ruta_manifiesto is None or not self._reparto_aplicado:
             return
-        manifiesto = construir_manifiesto(self._shard, self._pesos, self._propios, self._duraciones)
+        manifiesto = construir_manifiesto(
+            self._shard, self._pesos, self._propios, self._duraciones, codigo_de_salida=int(exitstatus)
+        )
         self._ruta_manifiesto.parent.mkdir(parents=True, exist_ok=True)
         self._ruta_manifiesto.write_text(json.dumps(manifiesto, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -558,6 +564,13 @@ def calibracion_desde_manifiestos(directorio: Path, total: int) -> tuple[dict[st
     segundos: dict[str, object] = {}
     tests: dict[str, object] = {}
     for m in manifiestos:
+        codigo = m.get("codigo_de_salida")
+        if not _es_entero(codigo) or codigo != 0:
+            errores.append(
+                f"el shard {m['shard']} no terminó en verde (codigo_de_salida={codigo!r}): un shard cortado con -x o "
+                "--maxfail declara su selección completa con 0 s en lo que no corrió; solo se calibra desde una corrida verde"
+            )
+            continue
         tiempos = m.get("tiempo_de_tests_por_archivo_s")
         if not isinstance(tiempos, dict):
             errores.append(f"el manifiesto del shard {m['shard']} no trae 'tiempo_de_tests_por_archivo_s'")

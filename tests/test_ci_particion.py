@@ -737,6 +737,8 @@ def test_el_manifiesto_describe_lo_que_el_shard_selecciono_y_alimenta_al_verific
         assert contenido["tiempo_de_tests_s"] == pytest.approx(sum(por_archivo.values()), abs=0.01)
         # Es tiempo de las fases de los tests, NO la duración del job: el nombre no puede sugerir lo contrario.
         assert "duracion_total_s" not in contenido
+        # El código de salida del shard: `calibrar` solo acepta corridas que terminaron en verde.
+        assert contenido["codigo_de_salida"] == 0
 
     assert verificar(raiz_manifiestos, total) == []
 
@@ -1090,6 +1092,38 @@ def test_calibrar_rechaza_un_manifiesto_sin_el_tiempo_de_algun_archivo(
     assert codigo == 1
     assert sin_tiempo in capsys.readouterr().err
     assert not salida.exists()
+
+
+@pytest.mark.parametrize("codigo", [1, 2, None])
+def test_calibrar_solo_acepta_shards_que_terminaron_en_verde(
+    codigo: int | None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Con ``-x`` (o ``--maxfail``) un shard rojo deja su manifiesto COMPLETO pero los archivos que no llegó a correr
+    quedan en 0 s: calibrar con eso los grabaría como instantáneos. Un manifiesto sin código de salida (anterior a este
+    campo) tampoco prueba que la corrida terminó."""
+    manifiestos = _manifiestos_validos()
+    if codigo is None:
+        del manifiestos[1]["codigo_de_salida"]
+    else:
+        manifiestos[1]["codigo_de_salida"] = codigo
+    salida = tmp_path / "duraciones.json"
+
+    resultado = _calibrar(_escribir(tmp_path / "m", manifiestos), salida)
+
+    assert resultado == 1
+    assert "verde" in capsys.readouterr().err
+    assert not salida.exists()
+
+
+def test_un_shard_que_corta_con_x_deja_un_codigo_de_salida_distinto_de_cero(tmp_path: Path) -> None:
+    carpeta = _arbol_minimo(tmp_path / "suite")
+    (carpeta / "test_a.py").write_text("def test_1():\n    assert False\n\ndef test_2():\n    pass\n", encoding="utf-8")
+    manifiesto = tmp_path / "m" / ci_particion.NOMBRE_DEL_MANIFIESTO
+
+    resultado = _correr_pytest(carpeta, "-q", "-x", shard="1/1", manifiesto=manifiesto)
+
+    assert resultado.returncode == 1, resultado.stdout + resultado.stderr
+    assert json.loads(manifiesto.read_text(encoding="utf-8"))["codigo_de_salida"] == 1
 
 
 def test_calibrar_rechaza_una_corrida_sin_tiempos_medidos(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
