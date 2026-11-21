@@ -110,6 +110,20 @@ def _entorno(tmp_path: pathlib.Path, *, timeout: float = 10.0):
     return mo2, data, challenge, job
 
 
+def _leer_descriptor(broker: VfsExecutionBroker) -> dict[str, Any]:
+    """Lee como el bridge: en Windows, leer justo mientras ``os.replace`` reemplaza el archivo da ``PermissionError``.
+
+    El bridge lo tolera (reintenta en su bucle de reconexión); un lector de test hace lo mismo. Con la renovación rápida
+    de los tests F1, un lector directo sería flaky.
+    """
+    for _intento in range(200):
+        try:
+            return json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+        except PermissionError:
+            threading.Event().wait(0.005)
+    raise AssertionError("el descriptor siguió ilegible: no es una colisión transitoria con la renovación")
+
+
 class _BridgeFalso:
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, secret: bytes) -> None:
         self.reader = reader
@@ -118,7 +132,7 @@ class _BridgeFalso:
 
     @classmethod
     async def conectar(cls, broker: VfsExecutionBroker) -> _BridgeFalso:
-        descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+        descriptor = _leer_descriptor(broker)
         secret = base64.urlsafe_b64decode(descriptor["token"])
         reader, writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
         await write_authenticated_message(
@@ -190,7 +204,7 @@ class _WorkerFalso:
 
     @classmethod
     async def conectar(cls, broker: VfsExecutionBroker, job_id: str) -> _WorkerFalso:
-        descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+        descriptor = _leer_descriptor(broker)
         secret = base64.urlsafe_b64decode(descriptor["token"])
         reader, writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
         await write_authenticated_message(
@@ -2701,12 +2715,7 @@ def test_f1_ningun_camino_del_broker_resuelve_el_fence_asumiendo_el_worker_muert
 
 
 def _vencimiento(broker: VfsExecutionBroker) -> float:
-    for _intento in range(200):
-        try:
-            return float(json.loads(broker.descriptor_path.read_text(encoding="utf-8"))["expires_at"])
-        except PermissionError:  # un lector de test choca con os.replace como el bridge, y reintenta como él
-            threading.Event().wait(0.005)
-    raise AssertionError("el descriptor siguió ilegible: no es una colisión transitoria con la renovación")
+    return float(_leer_descriptor(broker)["expires_at"])
 
 
 def _abrir(superficie: str, broker: VfsExecutionBroker, job: VfsJob, challenge, mo2, data) -> asyncio.Task[Any]:

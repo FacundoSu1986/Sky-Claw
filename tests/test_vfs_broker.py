@@ -170,8 +170,21 @@ async def test_broker_no_roba_lock_de_owner_vivo(tmp_path: pathlib.Path) -> None
         proc.wait()
 
 
+def _leer_descriptor(broker: VfsExecutionBroker) -> dict[str, Any]:
+    """Lee como el bridge: en Windows, leer justo mientras ``os.replace`` reemplaza el archivo da ``PermissionError``.
+
+    El bridge lo tolera (reintenta en su bucle de reconexión); un lector de test hace lo mismo.
+    """
+    for _intento in range(200):
+        try:
+            return json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+        except PermissionError:
+            time.sleep(0.005)
+    raise AssertionError("el descriptor siguió ilegible: no es una colisión transitoria con la renovación")
+
+
 async def _conectar_bridge(broker: VfsExecutionBroker):
-    descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+    descriptor = _leer_descriptor(broker)
     secret = base64.urlsafe_b64decode(descriptor["token"])
     reader, writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
     await write_authenticated_message(
@@ -199,7 +212,7 @@ async def _reportar_como_worker(
     result: dict[str, object],
     expect_ack: bool = True,
 ) -> None:
-    descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+    descriptor = _leer_descriptor(broker)
     secret = base64.urlsafe_b64decode(descriptor["token"])
     reader, writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
     try:
@@ -1041,7 +1054,7 @@ async def _provocar_timeout(
             )
 
         async def _hello_del_worker() -> asyncio.StreamWriter:
-            descriptor = json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
+            descriptor = _leer_descriptor(broker)
             w_reader, w_writer = await asyncio.open_connection(descriptor["host"], descriptor["port"])
             await write_authenticated_message(
                 w_writer,
@@ -1239,19 +1252,6 @@ def _broker_que_renueva(tmp_path: pathlib.Path, intervalo: float, **kwargs: Any)
     )
 
 
-def _leer_descriptor(broker: VfsExecutionBroker) -> dict[str, Any]:
-    """Lee como el bridge: en Windows, leer justo mientras ``os.replace`` reemplaza el archivo da ``PermissionError``.
-
-    El bridge lo tolera (reintenta en su bucle de reconexión); un lector de test hace lo mismo.
-    """
-    for _intento in range(200):
-        try:
-            return json.loads(broker.descriptor_path.read_text(encoding="utf-8"))
-        except PermissionError:
-            time.sleep(0.005)
-    raise AssertionError("el descriptor siguió ilegible: no es una colisión transitoria con la renovación")
-
-
 async def _hasta_que_se_renueve(broker: VfsExecutionBroker, vencimiento_previo: float) -> dict[str, Any]:
     limite = asyncio.get_running_loop().time() + 3.0
     while asyncio.get_running_loop().time() < limite:
@@ -1355,3 +1355,35 @@ def test_f1_la_renovacion_debe_ser_positiva_finita_y_menor_que_la_vida_del_descr
     # Act / Assert: un intervalo absurdo dejaría vencer el descriptor (o lo reescribiría sin pausa) sin que nadie se entere.
     with pytest.raises(VfsBrokerError):
         _broker_que_renueva(tmp_path, intervalo)
+
+
+def _funciones_que_leen_el_descriptor(arbol: ast.AST) -> list[str]:
+    """Funciones que hacen ``<algo>.descriptor_path.read_text(...)``, en orden de aparición (con repetidos)."""
+    nombres: list[str] = []
+    for funcion in ast.walk(arbol):
+        if not isinstance(funcion, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for nodo in ast.walk(funcion):
+            if (
+                isinstance(nodo, ast.Attribute)
+                and nodo.attr == "read_text"
+                and isinstance(nodo.value, ast.Attribute)
+                and nodo.value.attr == "descriptor_path"
+            ):
+                nombres.append(funcion.name)
+    return nombres
+
+
+def test_f1_con_renovacion_rapida_el_descriptor_solo_se_lee_reintentando() -> None:
+    """Un lector de test que choca con el ``os.replace`` de la renovación da ``PermissionError`` en Windows (flaky).
+
+    La familia se detecta por propiedad, no por lista: todo archivo de ``tests/`` que active la renovación rápida
+    (``descriptor_renewal_seconds``) lee el descriptor solo desde ``_leer_descriptor``, que reintenta como el bridge.
+    Un lector directo nuevo, o un archivo nuevo que active la renovación sin el helper, rompe el ancla.
+    """
+    raiz = pathlib.Path(__file__).parent
+    familia = sorted(p.name for p in raiz.glob("test_*.py") if "descriptor_renewal_seconds" in p.read_text("utf-8"))
+    assert familia == ["test_vfs_broker.py", "test_vfs_teardown_deadline.py"]
+    for nombre in familia:
+        lectores = set(_funciones_que_leen_el_descriptor(ast.parse((raiz / nombre).read_text(encoding="utf-8"))))
+        assert lectores == {"_leer_descriptor"}, nombre
