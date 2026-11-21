@@ -424,9 +424,12 @@ jobs:
     # Exclusión entre corridas: buscar el issue y crearlo no es atómico, y dos corridas de main que fallan a la vez
     # (push + nocturna, dos SHAs distintos) verían «no hay issue» las dos y abrirían dos. Un grupo fijo serializa las
     # alertas de TODAS las corridas; sin cancelar, la segunda espera y comenta el issue que abrió la primera.
+    # `queue: max`: con el default (`single`) cabe una sola pendiente y una tercera corrida la cancelaría
+    # (`cancel-in-progress: false` solo protege a la que ya corre); así cada corrida rota deja su comentario.
     concurrency:
       group: alerta-main-roto
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

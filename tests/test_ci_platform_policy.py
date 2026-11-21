@@ -554,7 +554,10 @@ def test_la_alerta_solo_corre_si_algo_fallo_fuera_de_un_pr_y_sobre_main() -> Non
     assert alerta["runs-on"] == "ubuntu-latest"
     # Buscar y crear el issue no es atómico: un grupo FIJO (no por SHA ni por ref) serializa las alertas de todas las
     # corridas, y sin cancelar la segunda espera y comenta el issue de la primera en vez de abrir un duplicado.
-    assert alerta["concurrency"] == {"group": "alerta-main-roto", "cancel-in-progress": False}
+    # ``queue: max``: con el default (``single``) solo cabe UNA alerta pendiente y una tercera corrida cancela a la
+    # que esperaba — ``cancel-in-progress: false`` protege a la que corre, no a la pendiente —, así que esa corrida
+    # rota nunca dejaría su commit ni su URL en el issue.
+    assert alerta["concurrency"] == {"group": "alerta-main-roto", "cancel-in-progress": False, "queue": "max"}
     assert "${{" not in alerta["concurrency"]["group"]
     assert "continue-on-error" not in alerta
 
