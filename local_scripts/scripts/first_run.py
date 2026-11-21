@@ -1,6 +1,8 @@
 import asyncio
+import getpass
 import pathlib
 import sys
+import warnings
 
 # Add parent directory to path to import sky_claw
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
@@ -19,6 +21,15 @@ def _mask_secret(secret: str) -> str:
     if not secret:
         return ""
     return f"****{secret[-4:]}" if len(secret) > 4 else "****"
+
+
+def _prompt_for_secret(label: str, saved: str) -> str:
+    """Lee sin eco y conserva el valor guardado cuando se pulsa Enter."""
+    with warnings.catch_warnings():
+        # getpass advierte antes de caer a una lectura con eco. Abortar ahí
+        # evita que una terminal sin control de eco exponga el valor nuevo.
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        return getpass.getpass(f"{label} [{_mask_secret(saved)}]: ").strip() or saved
 
 
 def _validate_path(value: str, *, label: str, require_file: str | None = None) -> tuple[bool, str]:
@@ -84,7 +95,7 @@ def _prompt_for_validated_path(
             return raw
 
 
-async def first_run_wizard():
+async def first_run_wizard() -> None:
     print("\n" + "=" * 40)
     print("      Sky-Claw: Asistente de Configuracion")
     print("=" * 40 + "\n")
@@ -98,15 +109,10 @@ async def first_run_wizard():
     )
 
     if provider == "openai":
-        api_key = (
-            input(f"API Key para OpenAI [{_mask_secret(config.openai_api_key)}]: ").strip() or config.openai_api_key
-        )
+        api_key = _prompt_for_secret("API Key para OpenAI", config.openai_api_key)
         model = input(f"Modelo (ej: gpt-4o) [{config.openai_model}]: ").strip() or config.openai_model or "gpt-4o"
     elif provider == "deepseek":
-        api_key = (
-            input(f"API Key para DeepSeek [{_mask_secret(config.deepseek_api_key)}]: ").strip()
-            or config.deepseek_api_key
-        )
+        api_key = _prompt_for_secret("API Key para DeepSeek", config.deepseek_api_key)
         model = (
             input(f"Modelo (ej: deepseek-chat) [{config.deepseek_model}]: ").strip()
             or config.deepseek_model
@@ -116,20 +122,14 @@ async def first_run_wizard():
         api_key = ""
         model = input(f"Modelo (ej: llama3.1) [{config.ollama_model}]: ").strip() or config.ollama_model or "llama3.1"
     else:  # anthropic default
-        api_key = (
-            input(f"API Key para Anthropic [{_mask_secret(config.anthropic_api_key)}]: ").strip()
-            or config.anthropic_api_key
-        )
+        api_key = _prompt_for_secret("API Key para Anthropic", config.anthropic_api_key)
         model = (
             input(f"Modelo (ej: claude-3-5-sonnet-20240620) [{config.anthropic_model}]: ").strip()
             or config.anthropic_model
             or "claude-3-5-sonnet-20240620"
         )
 
-    nexus_key = (
-        input(f"API Key de Nexus Mods (opcional) [{_mask_secret(config.nexus_api_key)}]: ").strip()
-        or config.nexus_api_key
-    )
+    nexus_key = _prompt_for_secret("API Key de Nexus Mods (opcional)", config.nexus_api_key)
 
     print("\n[2/3] Rutas del Sistema")
     print("Escaneando rutas comunes...")
@@ -143,7 +143,7 @@ async def first_run_wizard():
     skyrim_path = _prompt_for_validated_path("Skyrim", skyrim_default)
 
     print("\n[3/3] Telegram (Opcional)")
-    bot_token = input(f"Telegram Bot Token [{config.telegram_bot_token}]: ").strip() or config.telegram_bot_token
+    bot_token = _prompt_for_secret("Telegram Bot Token", config.telegram_bot_token)
     chat_id = input(f"Telegram Chat ID [{config.telegram_chat_id}]: ").strip() or config.telegram_chat_id
 
     # Update config data
@@ -178,4 +178,7 @@ async def first_run_wizard():
 
 
 if __name__ == "__main__":
-    asyncio.run(first_run_wizard())
+    try:
+        asyncio.run(first_run_wizard())
+    except getpass.GetPassWarning:
+        sys.exit("No se puede ocultar la entrada de credenciales en esta terminal. Abrí una terminal interactiva.")
