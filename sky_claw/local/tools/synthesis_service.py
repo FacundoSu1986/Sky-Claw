@@ -278,6 +278,7 @@ class SynthesisPipelineService:
             data_folder_path=game_path / "Data",
             load_order_file_path=load_order_file,
             mo2_profile=mo2_profile,
+            require_patcher_receipts=True,
         )
 
         self._synthesis_runner = SynthesisRunner(config)

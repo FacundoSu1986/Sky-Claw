@@ -19,6 +19,7 @@ import pathlib
 import tempfile
 import uuid
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -51,6 +52,8 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 #: Lista blanca cerrada de tipos polimórficos ``$type`` admitidos por Synthesis V2.
 #: ``Synthesis.Bethesda.Execution/Constants.cs`` deserializa con ``TypeNameHandling.Auto``;
 #: rechazar cualquier tipo fuera de esta familia evita gadgets arbitrarios en el JSON.
+_CANONICAL_SYNTHESIS_ASSEMBLY = "Synthesis.Bethesda.Execution"
+
 _ALLOWED_SYNTHESIS_PROFILE_TYPES = frozenset(
     {
         "Synthesis.Bethesda.Execution.Settings.V2.SynthesisProfile",
@@ -72,17 +75,59 @@ def _validate_allowed_type_tag(
     *,
     kind: str,
     context: str,
-) -> None:
-    """Valida ``$type`` contra lista blanca cerrada (``TypeNameHandling.Auto``)."""
+) -> str | None:
+    """Valida ``($type, assembly)`` contra lista blanca cerrada y devuelve etiqueta canónica."""
     type_keys = [key for key in obj if key.casefold() == "$type"]
     if not type_keys:
-        return
+        return None
     if len(type_keys) > 1:
         raise PatcherPipelineError(f"Duplicate Synthesis {kind} $type keys in {context}")
     raw_type = obj[type_keys[0]]
-    type_name = raw_type.split(",", 1)[0].strip() if isinstance(raw_type, str) else ""
-    if type_name not in allowed:
+    if not isinstance(raw_type, str):
         raise PatcherPipelineError(f"Unsupported Synthesis {kind} $type: {raw_type!r}")
+    parts = [part.strip() for part in raw_type.split(",")]
+    if len(parts) != 2 or parts[0] not in allowed or parts[1] != _CANONICAL_SYNTHESIS_ASSEMBLY:
+        raise PatcherPipelineError(f"Unsupported Synthesis {kind} $type: {raw_type!r}")
+    return f"{parts[0]}, {_CANONICAL_SYNTHESIS_ASSEMBLY}"
+
+
+def _normalize_type_tag(obj: dict[str, Any], canonical_type: str | None) -> None:
+    """Reescribe ``$type`` con clave y valor canónicos al materializar la copia CLI."""
+    if canonical_type is None:
+        return
+    for key in [k for k in obj if k.casefold() == "$type"]:
+        del obj[key]
+    obj["$type"] = canonical_type
+
+
+def _resolve_patcher_execution_name(patcher: dict[str, Any], canonical_id: str) -> str:
+    """Deriva el nombre efectivo que Synthesis 0.36.6 imprime en ``ConsoleReporter``."""
+    nickname = patcher.get("Nickname")
+    if isinstance(nickname, str) and nickname.strip():
+        return nickname.strip()
+
+    project_subpath = patcher.get("ProjectSubpath")
+    if isinstance(project_subpath, str) and project_subpath.strip():
+        parent_name = PurePosixPath(project_subpath.strip().replace("\\", "/")).parent.name
+        if parent_name and parent_name != ".":
+            return parent_name
+
+    remote_repo = patcher.get("RemoteRepoPath")
+    if isinstance(remote_repo, str):
+        repo_parts = [segment for segment in remote_repo.strip().replace("\\", "/").split("/") if segment.strip()]
+        if repo_parts:
+            return repo_parts[-1].strip()
+        raw_type = next((v for k, v in patcher.items() if k.casefold() == "$type"), None)
+        if isinstance(raw_type, str) and "GithubPatcherSettings" in raw_type:
+            return "Mutagen Git Patcher"
+
+    exe_path = patcher.get("PathToExecutable")
+    if isinstance(exe_path, str) and exe_path.strip():
+        exe_stem = PurePosixPath(exe_path.strip().replace("\\", "/")).stem
+        if exe_stem:
+            return exe_stem
+
+    return canonical_id
 
 
 def _assert_no_type_tags(value: Any, *, context: str) -> None:
@@ -326,8 +371,8 @@ class PatcherPipeline:
         for candidate in raw_profiles:
             if not isinstance(candidate, dict):
                 raise PatcherPipelineError("Every Synthesis profile must be a JSON object")
-            aliases = (candidate.get("Nickname"), candidate.get("ID"))
-            if any(isinstance(alias, str) and alias.casefold() == identifier for alias in aliases):
+            profile_aliases = (candidate.get("Nickname"), candidate.get("ID"))
+            if any(isinstance(alias, str) and alias.casefold() == identifier for alias in profile_aliases):
                 matches.append(candidate)
         if len(matches) != 1:
             reason = "not found" if not matches else "ambiguous"
@@ -412,11 +457,13 @@ class PatcherPipeline:
                         if alias.casefold() not in seen_aliases:
                             aliases_list.append(alias)
                             seen_aliases.add(alias.casefold())
-                aliases = tuple(aliases_list)
-                if not aliases:
+                patcher_aliases: tuple[str, ...] = tuple(aliases_list)
+                if not patcher_aliases:
                     raise PatcherPipelineError(f"An enabled patcher in group {name!r} has neither ID nor Nickname")
-                canonical_id = id_value.strip() if isinstance(id_value, str) and id_value.strip() else aliases[0]
-                enabled_patchers.append((patcher_index, patcher, canonical_id, aliases))
+                canonical_id = (
+                    id_value.strip() if isinstance(id_value, str) and id_value.strip() else patcher_aliases[0]
+                )
+                enabled_patchers.append((patcher_index, patcher, canonical_id, patcher_aliases))
 
             if enabled_patchers:
                 active_groups.append((group_index, group, name, enabled_patchers))
@@ -496,11 +543,7 @@ class PatcherPipeline:
         group_names = tuple(name for index, _, name, _ in active_groups if index in selected_group_indices)
         selected_patcher_ids = tuple(entry[2] for entry in selected_entries)
         selected_nicknames = tuple(
-            (
-                patcher["Nickname"].strip()
-                if isinstance(patcher.get("Nickname"), str) and patcher["Nickname"].strip()
-                else canonical_id
-            )
+            _resolve_patcher_execution_name(patcher, canonical_id)
             for group_index, _, _, patchers in active_groups
             for patcher_index, patcher, canonical_id, _ in patchers
             if (group_index, patcher_index) in selected_entry_keys
@@ -547,11 +590,7 @@ class PatcherPipeline:
         else:
             effective_split = raw_split if type(raw_split) is bool else None
         selected_nicknames = tuple(
-            (
-                patcher["Nickname"].strip()
-                if isinstance(patcher.get("Nickname"), str) and patcher["Nickname"].strip()
-                else canonical_id
-            )
+            _resolve_patcher_execution_name(patcher, canonical_id)
             for group_index, _, _, patchers in active_groups
             for patcher_index, patcher, canonical_id, _ in patchers
             if (group_index, patcher_index) in selected_entry_keys
@@ -566,11 +605,22 @@ class PatcherPipeline:
 
         selected_groups: list[dict[str, Any]] = []
         for group_index, group, group_name, patchers in active_groups:
-            chosen_patchers = [
-                copy.deepcopy(patcher)
-                for patcher_index, patcher, _, _ in patchers
-                if (group_index, patcher_index) in selected_entry_keys
-            ]
+            chosen_patchers: list[dict[str, Any]] = []
+            for patcher_index, patcher, canonical_id, _ in patchers:
+                if (group_index, patcher_index) not in selected_entry_keys:
+                    continue
+                patcher_copy = copy.deepcopy(patcher)
+                canonical_patcher_type = _validate_allowed_type_tag(
+                    patcher_copy,
+                    _ALLOWED_SYNTHESIS_PATCHER_TYPES,
+                    kind="patcher",
+                    context=f"group {group_name!r}",
+                )
+                _normalize_type_tag(patcher_copy, canonical_patcher_type)
+                raw_nickname = patcher_copy.get("Nickname")
+                if not isinstance(raw_nickname, str) or not raw_nickname.strip():
+                    patcher_copy["Nickname"] = _resolve_patcher_execution_name(patcher_copy, canonical_id)
+                chosen_patchers.append(patcher_copy)
             if not chosen_patchers:
                 continue
             group_copy = copy.deepcopy(group)
@@ -583,6 +633,13 @@ class PatcherPipeline:
             raise PatcherPipelineError("Selected Synthesis patchers do not map to an enabled output group")
 
         run_profile = copy.deepcopy(profile)
+        canonical_profile_type = _validate_allowed_type_tag(
+            run_profile,
+            _ALLOWED_SYNTHESIS_PROFILE_TYPES,
+            kind="profile",
+            context="profile",
+        )
+        _normalize_type_tag(run_profile, canonical_profile_type)
         run_profile["Groups"] = selected_groups
         # This side effect is not part of the output plugin transaction and
         # would bypass the caller's MO2-profile rollback/USVFS boundary.

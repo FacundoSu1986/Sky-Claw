@@ -1,0 +1,18 @@
+﻿
+INFORMACIÓN DE GRUPO
+--------------------
+
+Nombre de grupo                                                  Tipo           SID          Atributos                                                               
+================================================================ ============== ============ ========================================================================
+Everyone                                                         Grupo conocido S-1-1-0      Grupo obligatorio, Habilitado de manera predeterminada, Grupo habilitado
+NT AUTHORITY\Cuenta local y miembro del grupo de administradores Grupo conocido S-1-5-114    Grupo usado solo para denegar                                           
+BUILTIN\Administradores                                          Alias          S-1-5-32-544 Grupo usado solo para denegar                                           
+BUILTIN\Usuarios                                                 Alias          S-1-5-32-545 Grupo obligatorio, Habilitado de manera predeterminada, Grupo habilitado
+NT AUTHORITY\INTERACTIVE                                         Grupo conocido S-1-5-4      Grupo obligatorio, Habilitado de manera predeterminada, Grupo habilitado
+CONSOLE LOGON                                                    Grupo conocido S-1-2-1      Grupo obligatorio, Habilitado de manera predeterminada, Grupo habilitado
+NT AUTHORITY\Authenticated Users                                 Grupo conocido S-1-5-11     Grupo obligatorio, Habilitado de manera predeterminada, Grupo habilitado
+NT AUTHORITY\This Organization                                   Grupo conocido S-1-5-15     Grupo obligatorio, Habilitado de manera predeterminada, Grupo habilitado
+NT AUTHORITY\Cuenta local                                        Grupo conocido S-1-5-113    Grupo obligatorio, Habilitado de manera predeterminada, Grupo habilitado
+LOCAL                                                            Grupo conocido S-1-2-0      Grupo obligatorio, Habilitado de manera predeterminada, Grupo habilitado
+NT AUTHORITY\NTLM Authentication                                 Grupo conocido S-1-5-64-10  Grupo obligatorio, Habilitado de manera predeterminada, Grupo habilitado
+Mandatory Label\Medium Mandatory Level                           Etiqueta       S-1-16-8192                                                                          

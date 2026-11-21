@@ -465,11 +465,10 @@ def _modulos_que_importan(prefijo: str) -> set[str]:
 #: módulo nuevo rompe esto: hay que confirmar que usa el módulo ``keyring`` (y no un backend propio) y sumarlo acá.
 MODULOS_QUE_TOCAN_KEYRING = {
     "sky_claw/aislamiento.py",
-    "sky_claw/app/agent/tools/__init__.py",
     "sky_claw/app/comms/frontend_bridge.py",
     "sky_claw/app/gui/setup_wizard.py",
     "sky_claw/app/gui/sky_claw_gui.py",
-    "sky_claw/app_context.py",
+    "sky_claw/app/security/keyring_reader.py",
     "sky_claw/config.py",
     "sky_claw/local/local_config.py",
 }

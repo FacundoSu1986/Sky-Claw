@@ -1564,7 +1564,13 @@ async def test_fallo_tras_modificacion_real_restaura_el_snapshot(
         # El run reescribe el esp (modificación real del snapshot target) con
         # contenido inválido.
         esp.write_bytes(b"CORRUPTED")
-        return b"Successfully generated patch output", b"", 0
+        return (
+            b"[patcher_a] Starting run.\n"
+            b"[patcher_a] Run successful.\n"
+            b"Exported patch to final destination: out\\Synthesis.esp\n",
+            b"",
+            0,
+        )
 
     restore_spy = AsyncMock(wraps=snapshot_manager.restore_snapshot)
     with (
@@ -1619,7 +1625,13 @@ async def test_rerun_idempotente_con_mismos_bytes_es_exito(
     async def _reescribe_igual(_args: list[str], **_kwargs: object) -> tuple[bytes, bytes, int]:
         # Mismo load order + mismos patchers → salida determinista idéntica.
         esp.write_bytes(original)
-        return b"Successfully generated patch output", b"", 0
+        return (
+            b"[patcher_a] Starting run.\n"
+            b"[patcher_a] Run successful.\n"
+            b"Exported patch to final destination: out\\Synthesis.esp\n",
+            b"",
+            0,
+        )
 
     with (
         patch("sky_claw.local.tools.synthesis_runner.run_capture", _reescribe_igual),
@@ -1687,3 +1699,44 @@ async def test_stale_sin_escritura_tras_retirada_falla_y_restaura(
     mock_journal.commit_transaction.assert_not_awaited()
     mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
     assert esp.read_bytes() == original  # re-materializado por el restore
+
+
+@pytest.mark.asyncio
+async def test_service_standalone_rechaza_patcher_omitido_con_exit_0_y_esp_valido(
+    lock_manager: DistributedLockManager,
+    snapshot_manager: FileSnapshotManager,
+    mock_journal: AsyncMock,
+    mock_path_resolver: MagicMock,
+    event_bus: CoreEventBus,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Service standalone activa require_patcher_receipts=True y bloquea exit 0 + ESP válido sin recibos."""
+    esp = tmp_path / "MO2" / "overwrite" / "Synthesis.esp"
+    original = b"TES4" + b"\x00" * 200
+    esp.write_bytes(original)
+
+    mock_path_resolver.get_active_profile = MagicMock(return_value="Default")
+    svc = _svc_real_journal(lock_manager, snapshot_manager, mock_journal, mock_path_resolver, event_bus, tmp_path)
+
+    async def _sin_recibo(_args: list[str], **_kwargs: object) -> tuple[bytes, bytes, int]:
+        esp.write_bytes(b"TES4" + b"\x00" * 210)
+        return b"[patcher_a] Starting run.\nExported patch to final destination: out\\Synthesis.esp\n", b"", 0
+
+    with (
+        patch("sky_claw.local.tools.synthesis_runner.run_capture", _sin_recibo),
+        patch.dict(
+            "os.environ",
+            {
+                "SKYRIM_PATH": str(tmp_path / "Skyrim"),
+                "MO2_PATH": str(tmp_path / "MO2"),
+                "SYNTHESIS_EXE": str(tmp_path / "Synthesis.exe"),
+            },
+        ),
+    ):
+        out = await svc.execute_pipeline(patcher_ids=["patcher_a"])
+
+    assert out["success"] is False
+    assert "patcher_a" in out["message"]
+    mock_journal.commit_transaction.assert_not_awaited()
+    mock_journal.mark_transaction_rolled_back.assert_awaited_once_with(1)
+    assert esp.read_bytes() == original

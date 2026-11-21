@@ -1,0 +1,4 @@
+﻿2026-11-21 10:34:32,259 [INFO] [] sky_claw.aislamiento: Perfil aislado (SKYCLAW_ISOLATED): el keyring del usuario queda fuera de este proceso.
+2026-11-21 10:34:32,261 [INFO] [] sky_claw: Sky-Claw starting in install-vfs-bridge mode
+2026-11-21 10:34:33,292 [INFO] [] sky_claw: Bridge MO2/USVFS instalado en E:\SkyClaw_R0_Rig\mo2\plugins\skyclaw_bridge
+
