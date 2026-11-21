@@ -459,6 +459,10 @@ def test_la_alerta_solo_corre_si_algo_fallo_fuera_de_un_pr_y_sobre_main() -> Non
 
     assert alerta["if"] == CONDICION_DE_ALERTA
     assert alerta["runs-on"] == "ubuntu-latest"
+    # Buscar y crear el issue no es atómico: un grupo FIJO (no por SHA ni por ref) serializa las alertas de todas las
+    # corridas, y sin cancelar la segunda espera y comenta el issue de la primera en vez de abrir un duplicado.
+    assert alerta["concurrency"] == {"group": "alerta-main-roto", "cancel-in-progress": False}
+    assert "${{" not in alerta["concurrency"]["group"]
     assert "continue-on-error" not in alerta
 
 

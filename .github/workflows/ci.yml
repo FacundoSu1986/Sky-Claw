@@ -411,6 +411,12 @@ jobs:
     name: "🚨 Alerta: main roto"
     needs: [lint-summary, typecheck-summary, test-summary, security, build]
     if: ${{ failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    # Exclusión entre corridas: buscar el issue y crearlo no es atómico, y dos corridas de main que fallan a la vez
+    # (push + nocturna, dos SHAs distintos) verían «no hay issue» las dos y abrirían dos. Un grupo fijo serializa las
+    # alertas de TODAS las corridas; sin cancelar, la segunda espera y comenta el issue que abrió la primera.
+    concurrency:
+      group: alerta-main-roto
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
