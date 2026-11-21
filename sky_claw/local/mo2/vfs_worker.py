@@ -21,7 +21,6 @@ from typing import Any, Literal, Protocol, TypeAlias
 
 from sky_claw.app.security.links import link_kind
 from sky_claw.app.security.path_validator import PathValidator, PathViolationError, assert_safe_component
-from sky_claw.config import SystemPaths
 from sky_claw.local.loot.cli import (
     DEFAULT_LOOT_INTERNAL_GAME_ID,
     LOOT_CLI_GAME_IDENTIFIERS,
@@ -56,7 +55,7 @@ from sky_claw.local.mo2.vfs_job_identity import (
 )
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest, read_worker_manifest
 from sky_claw.local.tools._process import kill_and_reap
-from sky_claw.local.tools.patcher_pipeline import PatcherPipeline
+from sky_claw.local.tools.patcher_pipeline import PatcherPipeline, PatcherPipelineError
 from sky_claw.local.tools.synthesis_runner import (
     SynthesisConfig,
     SynthesisExecutionError,
@@ -654,7 +653,7 @@ async def _synthesis_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
         manifest.install_root,
         output_path.parent,
         output_path,
-        SystemPaths.runtime_state_dir(),
+        manifest.descriptor_path.parent.resolve(),
         pathlib.Path(tempfile.gettempdir()).resolve(),
     ]
     validator = PathValidator(roots=sandbox_roots)
@@ -736,6 +735,12 @@ async def _synthesis_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
             patcher_ids,
             expected_settings_fingerprint=expected_settings_fp,
             expected_load_order_fingerprint=expected_lo_fp,
+        )
+    except PatcherPipelineError as exc:
+        return _synthesis_failure_execution(
+            kind="execution_error",
+            message=f"Invalid Synthesis pipeline settings: {exc}",
+            outputs=(),
         )
     except SynthesisTimeoutError as exc:
         return _synthesis_failure_execution(

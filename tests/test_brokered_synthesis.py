@@ -17,6 +17,7 @@ Cubre:
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import pathlib
@@ -594,7 +595,7 @@ async def test_rerun_brokered_excluye_outputs_propios_de_expected_plugins_sin_de
     prev_esp = overwrite_dir / "Synthesis.esp"
     prev_esp.write_bytes(_construir_tes4(["Skyrim.esm", "MiModVirtual.esp"]))
 
-    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_DEL_WORKER_VERIFICADA", True)
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
 
     lock_mgr = DistributedLockManager(tmp_path / "locks.db", default_ttl=5.0, max_retries=1)
     await lock_mgr.initialize()
@@ -662,7 +663,7 @@ async def test_synthesis_service_respeta_rollback_veto_ante_timeout_y_teardown_e
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """P0 #2: terminalidad desconocida (timeout o VfsTeardownError) veta unlink y mark_transaction_rolled_back."""
-    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_DEL_WORKER_VERIFICADA", True)
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
 
     async def _correr_con_excepcion(subdir: str, exc_factory: Any, *, pass_output_override: bool) -> None:
         base = tmp_path / subdir
@@ -743,7 +744,7 @@ async def test_synthesis_service_respeta_rollback_veto_ante_timeout_y_teardown_e
 
 async def test_e3r3_backend_explicito_y_wiring_security_hold(tmp_path: pathlib.Path) -> None:
     """P0 #3: E3-R3 exige selector explícito synthesis_backend + WIRING_SECURITY_HOLD activo por defecto."""
-    assert brokered_synthesis._CONTENCION_DEL_WORKER_VERIFICADA is False
+    assert brokered_synthesis._CONTENCION_SYNTHESIS_VERIFICADA is False
 
     rutas = _escenario_mo2(tmp_path)
     resolver = _resolver_para_servicio(rutas)
@@ -917,3 +918,42 @@ async def test_worker_exige_expected_plugins_politica_fase2_y_confina_rutas_sin_
     res_nested_link = await execute_worker_manifest(manifest_nested_link, grandchild_probe=_probe_ok)
     assert res_nested_link.success is False
     assert expected_kind in res_nested_link.message
+
+
+async def test_worker_synthesis_atrapa_patcher_pipeline_error_como_fallo_tipado(tmp_path: pathlib.Path) -> None:
+    """Un PatcherPipelineError en settings inválidos devuelve fallo tipado y no crashea el worker."""
+    rutas = _escenario_mo2(tmp_path)
+    rutas["settings"].write_text("{not-valid-json", encoding="utf-8")
+    manifest = _manifiesto_synthesis(rutas)
+
+    result = await execute_worker_manifest(manifest, grandchild_probe=_probe_ok)
+
+    assert result.success is False
+    assert result.tool_result.get("synthesis_failure_kind") == "execution_error"
+    assert "Invalid Synthesis pipeline settings" in result.message
+
+
+def test_barrera_hold_synthesis_esta_aislada_y_enumerada_por_ast() -> None:
+    """La barrera _CONTENCION_SYNTHESIS_VERIFICADA no colisiona con DynDOLOD y tiene usos enumerados."""
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    barrera = "_CONTENCION_SYNTHESIS_VERIFICADA"
+
+    def _scan(root: pathlib.Path) -> list[tuple[str, str]]:
+        usos: list[tuple[str, str]] = []
+        for ruta in sorted(root.rglob("*.py")):
+            tree = ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
+            for nodo in ast.walk(tree):
+                if isinstance(nodo, ast.Name) and nodo.id == barrera:
+                    usos.append((ruta.relative_to(repo).as_posix(), type(nodo.ctx).__name__))
+                elif isinstance(nodo, ast.Attribute) and nodo.attr == barrera:
+                    usos.append((ruta.relative_to(repo).as_posix(), "Attribute"))
+        return usos
+
+    usos_prod = sorted(_scan(repo / "sky_claw"))
+    assert usos_prod == [
+        ("sky_claw/local/mo2/brokered_synthesis.py", "Load"),
+        ("sky_claw/local/mo2/brokered_synthesis.py", "Store"),
+        ("sky_claw/local/tools/synthesis_service.py", "Attribute"),
+    ]
+    archivos_tests = sorted({archivo for archivo, _tipo in _scan(repo / "tests")})
+    assert archivos_tests == ["tests/test_brokered_synthesis.py"]

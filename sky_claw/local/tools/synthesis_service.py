@@ -204,7 +204,7 @@ class SynthesisPipelineService:
         solicitado = _brokered_synthesis._normalizar_backend(self._synthesis_backend)
         if solicitado != _brokered_synthesis.SYNTHESIS_BACKEND_STANDALONE and (
             solicitado != _brokered_synthesis.SYNTHESIS_BACKEND_BROKERED
-            or not _brokered_synthesis._CONTENCION_DEL_WORKER_VERIFICADA
+            or not _brokered_synthesis._CONTENCION_SYNTHESIS_VERIFICADA
         ):
             guard_runner = _brokered_synthesis.resolve_synthesis_backend_runner(
                 backend=self._synthesis_backend,

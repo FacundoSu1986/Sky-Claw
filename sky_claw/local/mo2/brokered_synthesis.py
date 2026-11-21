@@ -45,7 +45,7 @@ _BACKENDS_VALIDOS: frozenset[str] = frozenset({SYNTHESIS_BACKEND_STANDALONE, SYN
 
 # Hold E3-R3 equivalente a brokered_dyndolod / brokered_loot: no habilitar
 # hasta verificar contención real del worker en Windows + gates S1-S5 (ADR 0019 §3.2).
-_CONTENCION_DEL_WORKER_VERIFICADA = False
+_CONTENCION_SYNTHESIS_VERIFICADA = False
 
 _MOTIVO_DEL_HOLD = (
     "el backend 'brokered' está en WIRING_SECURITY_HOLD: la contención del worker en el Job Object "
@@ -537,7 +537,7 @@ def resolve_synthesis_backend_runner(
             "No se hace fallback a standalone.",
             config=config,
         )
-    if not _CONTENCION_DEL_WORKER_VERIFICADA:
+    if not _CONTENCION_SYNTHESIS_VERIFICADA:
         return _guard(_MOTIVO_DEL_HOLD, config=config)
     if broker is None:
         return _guard(
