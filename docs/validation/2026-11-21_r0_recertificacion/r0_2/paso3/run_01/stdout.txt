@@ -1,0 +1,7 @@
+﻿2026-11-21 10:39:05,595 [INFO] [] sky_claw.aislamiento: Perfil aislado (SKYCLAW_ISOLATED): el keyring del usuario queda fuera de este proceso.
+2026-11-21 10:39:05,597 [INFO] [] sky_claw: Sky-Claw starting in vfs-health mode
+2026-11-21 10:39:05,599 [INFO] [] sky_claw: AppContext: ra�z de instancia MO2 (origen=portable) registrada en el sandbox: E:\SkyClaw_R0_Rig\mo2
+2026-11-21 10:39:11,926 [INFO] [] sky_claw.local.mo2.vfs_broker: VFS job_result recibido ts=2026-11-21T13:39:11.926008+00:00 job_id=e2db1f5b-b8ae-412b-adcd-016eb6a95f20 success=True
+2026-11-21 10:39:12,463 [INFO] [] sky_claw.local.mo2.vfs_broker: VFS worker_exit confirmado ts=2026-11-21T13:39:12.463137+00:00 job_id=e2db1f5b-b8ae-412b-adcd-016eb6a95f20 exit_code=0
+2026-11-21 10:39:12,464 [INFO] [] sky_claw: Probe VFS correcto para perfil R0_Descartable; worker y nieto validaron el canary
+

@@ -1,0 +1,20 @@
+﻿[
+    {
+        "archivo":  "HANDOFF_R0-2.md",
+        "esperado":  "9405f9c00db95c0fd24d5db5ae158fb8324b00f3c9eda103dec9557395bf7a4e",
+        "actual":  "9405f9c00db95c0fd24d5db5ae158fb8324b00f3c9eda103dec9557395bf7a4e",
+        "coincide":  true
+    },
+    {
+        "archivo":  "procedencia.txt",
+        "esperado":  "5c4e48b70085a381baded4f75cc969c30af357349f07786b1844b9d7c1a15c00",
+        "actual":  "5c4e48b70085a381baded4f75cc969c30af357349f07786b1844b9d7c1a15c00",
+        "coincide":  true
+    },
+    {
+        "archivo":  "SkyClawApp.exe.sha256.json",
+        "esperado":  "bab803f3dfa631c5f4e2d423008cc04d850958c0931fa4a78a52c3574f02526c",
+        "actual":  "bab803f3dfa631c5f4e2d423008cc04d850958c0931fa4a78a52c3574f02526c",
+        "coincide":  true
+    }
+]

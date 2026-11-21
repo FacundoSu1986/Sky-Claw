@@ -1,0 +1,54 @@
+﻿{
+    "archivos":  [
+                     {
+                         "archivo":  "archives.txt",
+                         "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                     },
+                     {
+                         "archivo":  "DynDOLODesm.fid",
+                         "sha256":  "27b82714c7846336ddc7bc4afc53b61128edb68334459010f848461de7618f33"
+                     },
+                     {
+                         "archivo":  "DynDOLODesp.fid",
+                         "sha256":  "addf55526dc1b41d607978e1cbd91d6c3e7a29b1799454a5c2369c6e52161935"
+                     },
+                     {
+                         "archivo":  "initweaks.ini",
+                         "sha256":  "c35e72b526cf46723f3559435de33c388f431966e48f66dfb6556283609cd27c"
+                     },
+                     {
+                         "archivo":  "loadorder.txt",
+                         "sha256":  "88482a32bdbe1df78de682c9409ffdc95860ae10974cce62ca9308ae92eca658"
+                     },
+                     {
+                         "archivo":  "lockedorder.txt",
+                         "sha256":  "9962fbb07e4c40c4c39b6fe7cedf3f1527cdda5ad0a60d7d53a872b5ae52812d"
+                     },
+                     {
+                         "archivo":  "modlist.txt",
+                         "sha256":  "57e8846bfbba2f0c9b5435ea98c51937156759879a587f7e053f77b07b3fa73a"
+                     },
+                     {
+                         "archivo":  "plugins.txt",
+                         "sha256":  "c3e7e7c28a5c6adbfd2dbebf800bb15b4b5d8a772f6c54186de51eb73fd47c24"
+                     },
+                     {
+                         "archivo":  "settings.ini",
+                         "sha256":  "a46c95cbb3da8cbaef34066dd99a7a8eaa8304fc7f4bd3be22bd1305692deea6"
+                     },
+                     {
+                         "archivo":  "Skyrim.ini",
+                         "sha256":  "c093c6de43cf678657903432ea3033e8ccaf80a14f53a5f92a59cf2117b11e84"
+                     },
+                     {
+                         "archivo":  "skyrimcustom.ini",
+                         "sha256":  "2e32cb7aa2b3a17d03d3ef8c06b2ff6c69b0d7d19fd1f437280057fa7c73925f"
+                     },
+                     {
+                         "archivo":  "SkyrimPrefs.ini",
+                         "sha256":  "3f963458a8d940c052b8f659033dfb0057044a55569bf253d150b6b9d74bfe50"
+                     }
+                 ],
+    "modlist_habilitados_igual_semantica":  false,
+    "plugins_activos_igual_semantica":  true
+}
