@@ -63,9 +63,12 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
    - Vive bajo `SystemPaths.runtime_state_dir() / "synthesis_cache"`.
    - Valida `git` y `.NET 10 SDK` x64 explícitamente desde la ruta x64 (`C:\Program Files\dotnet`),
      detectando y aislando colisiones con `Program Files (x86)\dotnet`.
-   - Para cada patcher habilitado (`GithubPatcherSettings` o `SolutionPatcherSettings`): resuelve
-     repositorio/commit en caché, ejecuta `dotnet restore` y
-     `dotnet build -c Release -p:UseSharedCompilation=false` bajo `run_capture(..., require_job=True)`.
+   - Para cada patcher habilitado (`GithubPatcherSettings` o `SolutionPatcherSettings`): si existe hit
+     íntegro en caché (`cache_hit=True`, fuentes y binario ya compilados y verificados), **omite**
+     `git fetch`, `dotnet restore` y `dotnet build` (cero egress de red). En `cache_hit=False`,
+     tras la compuerta HITL de egress ejecuta `dotnet restore` y luego
+     `dotnet build --no-restore -c Release -p:UseSharedCompilation=false` bajo
+     `run_capture(..., require_job=True)` (nunca `dotnet build` con restore implícito sin compuerta).
    - Genera un `PipelineSettings.phase2.json` inmutable y recién serializado (validando una lista
      blanca cerrada de `$type` al importar, dada la deserialización `TypeNameHandling.Auto` de
      Newtonsoft.Json en `Constants.cs`), conteniendo **exclusivamente** los patchers habilitados y
@@ -100,7 +103,7 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
      el backend por la presencia en memoria de un `VfsBroker` (`if vfs_broker is not None:`) o
      aplicar fallback silencioso a `"standalone"` si se solicitó `"brokered"` y falta broker,
      `instance_id` o raíces MO2 válidas. La ejecución `"brokered"` queda bloqueada en código por el
-     literal de módulo `_CONTENCION_DEL_WORKER_VERIFICADA = False` (`WIRING_SECURITY_HOLD`, no
+     literal de módulo `_CONTENCION_SYNTHESIS_VERIFICADA = False` (`WIRING_SECURITY_HOLD`, no
      configurable por `config.toml`, env var ni parámetro), que solo podrá levantarse en un PR
      dedicado con revisión adversarial tras acreditar en rig Windows (Spikes S4/S5) la contención
      del subárbol completo (`Synthesis.Bethesda.CLI.exe` → `dotnet` → patchers) bajo el Job Object
@@ -145,18 +148,25 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
 
 - **Destino exclusivo:** en instancias MO2, la salida administrada pasa de `mo2/overwrite` a
   `<MO2>/mods/Sky-Claw Synthesis Output` (en standalone: `<game>/Sky-Claw/Synthesis`).
-- **Rollback unificado:** la promoción sobre la raíz administrada usa `DirectoryRollback` +
-  `rollback_reconciler.py` (`PRODUCTORES_CABLEADOS`, `PRODUCTORES_DEL_NOMBRE`) y borrado exclusivo
-  con `rmtree_link_aware` (prohibido `shutil.rmtree`).
+- **Rollback unificado y preservación en corridas parciales:** la promoción sobre la raíz
+  administrada usa `DirectoryRollback` + `rollback_reconciler.py` (`PRODUCTORES_CABLEADOS`,
+  `PRODUCTORES_DEL_NOMBRE`) y borrado exclusivo con `rmtree_link_aware` (prohibido
+  `shutil.rmtree`). Una corrida parcial que seleccione solo un subconjunto de grupos **debe
+  preservar** los outputs existentes en la raíz administrada pertenecientes a los grupos no
+  seleccionados en esa corrida (la limpieza de splits obsoletos y el reemplazo exclusivo operan
+  por grupo seleccionado, nunca borrando outputs de grupos excluidos).
 - **Reconciliación con ADR 0005:** se retira el clonado de `mo2/overwrite` en `execute_synthesis.py`
   para corridas MO2 brokered. Cuando aplica compuerta HITL de promoción, esta opera sobre el diff
   exacto del directorio staging generado (`<Grupo>.esp`, splits `_2.._N`, `.strings` y cambios a
   `plugins.txt`/`modlist.txt`) antes del commit atómico.
 - **Persistencia de FormIDs:** `--PersistencePath` es un **directorio** de estado administrado por
   `TextFileSharedFormKeyAllocator.Initialize` (`RunPersistencePreparer.cs:28`), no un archivo único.
-  La corrida opera sobre una copia de trabajo `<persistence_work_dir>`; el directorio durable de
-  persistencia del perfil solo se promueve vía move-aside / `DirectoryRollback` después de pasar las
-  7 compuertas del post-check. Una corrida fallida nunca corrompe la persistencia previa. Como
+  La corrida opera sobre una copia de trabajo `<persistence_work_dir>`; las compuertas previas de
+  validación (recibos, atribución, integridad TES4 y verificación de outputs) deben pasar antes de
+  promover los outputs y el directorio durable de persistencia del perfil vía move-aside /
+  `DirectoryRollback`, quedando la promoción atómica exitosa como compuerta final antes de emitir
+  `success = True`. Una corrida fallida en cualquier compuerta previa o en la promoción misma nunca
+  corrompe la persistencia previa. Como
   `RunPersistencePreparer` lanza `ArgumentNullException` si `PersistenceMode=Text` se envía sin
   `PersistencePath`, `SynthesisConfig` valida cerrado antes del spawn que `PersistenceMode=Text`
   tenga ruta no vacía.
