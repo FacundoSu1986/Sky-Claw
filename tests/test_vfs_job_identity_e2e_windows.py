@@ -431,3 +431,68 @@ async def test_cancelar_despues_de_verificarse_y_antes_de_ser_autorizado_termina
     assert corrida.nietos_de_attestation == []
     assert corrida.residuales == [], f"procesos residuales: {corrida.residuales}"
     assert corrida.huerfanos == [], f"huérfanos de la imagen del worker: {corrida.huerfanos}"
+
+
+# ---------------------------------------------------------------------------
+# El ejecutable congelado que falla SALE: nunca queda esperando el diálogo modal de PyInstaller
+# ---------------------------------------------------------------------------
+#
+# Vive acá porque este es el archivo que el laboratorio corre con ``SKYCLAW_FROZEN_EXE``. El .exe es
+# ``console=False``: una excepción que escapa del script abre «Unhandled exception in script», un diálogo MODAL, y el
+# proceso espera a que alguien lo cierre. En R0 ronda 6, ``vfs-health`` quedó colgado así en 2 de 2 rechazos del
+# bridge. Los tests de ``tests/test_main.py`` enumeran los modos sobre el código; este mide el BINARIO.
+
+_PLAZO_DE_SALIDA_S = 60.0
+#: Tras matar el árbol, cuánto se espera el EOF de los pipes. Sin plazo, un ``kill`` denegado colgaría el test hasta el
+#: ``--timeout`` de pytest, que con ``method=thread`` corta TODO el proceso sin reporte (CodeRabbit en #984).
+_PLAZO_DE_LIMPIEZA_S = 15.0
+
+
+def _matar_el_arbol(pid: int) -> None:
+    with contextlib.suppress(psutil.Error):
+        padre = psutil.Process(pid)
+        for proceso in [*padre.children(recursive=True), padre]:
+            with contextlib.suppress(psutil.Error):
+                proceso.kill()
+
+
+def test_congelado_un_fallo_no_interactivo_sale_con_codigo_1_y_no_abre_un_dialogo(tmp_path: pathlib.Path) -> None:
+    import subprocess
+
+    # Arrange: `vfs-health` contra un MO2 que no existe falla ANTES de arrancar el broker. El error es determinista y
+    # no necesita MO2: lo que se mide es cómo termina el proceso, no el probe.
+    exe = _congelado()
+    hogar = tmp_path / "hogar"
+    hogar.mkdir()
+    (tmp_path / "juego" / "Data").mkdir(parents=True)
+    entorno = {**os.environ, "SKYCLAW_ISOLATED": "1", "HOME": str(hogar), "USERPROFILE": str(hogar)}
+    argv = [
+        str(exe),
+        "--mode",
+        "vfs-health",
+        "--mo2-root",
+        str(tmp_path / "sin_mo2"),
+        "--skyrim-path",
+        str(tmp_path / "juego"),
+    ]
+
+    # Act
+    inicio = time.monotonic()
+    proceso = subprocess.Popen(  # noqa: S603 - el ejecutable bajo prueba, con argv fijo
+        argv, env=entorno, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace"
+    )
+    try:
+        _salida, errores = proceso.communicate(timeout=_PLAZO_DE_SALIDA_S)
+    except subprocess.TimeoutExpired:
+        _matar_el_arbol(proceso.pid)  # el bootloader Y su hijo onefile, que es el que tiene el diálogo abierto
+        try:
+            proceso.communicate(timeout=_PLAZO_DE_LIMPIEZA_S)
+        except subprocess.TimeoutExpired:
+            pytest.fail("el .exe congelado no terminó y tampoco se pudo terminar su árbol: quedó un proceso vivo")
+        pytest.fail(f"el .exe congelado no terminó en {_PLAZO_DE_SALIDA_S:.0f}s: quedó esperando el diálogo modal")
+    duracion = time.monotonic() - inicio
+
+    # Assert: sale solo, con el código de Python sin congelar, y el motivo llega a stderr.
+    assert proceso.returncode == 1, (proceso.returncode, errores[-2000:])
+    assert "ModOrganizer.exe no existe" in errores
+    assert duracion < _PLAZO_DE_SALIDA_S

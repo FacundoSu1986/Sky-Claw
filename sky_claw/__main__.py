@@ -18,13 +18,54 @@ import os
 import pathlib
 import signal
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 # Apply Python 3.14+ polyfills before importing sky_claw submodules that could
 # transitively pull NiceGUI / vbuild. Must run before the package imports below.
 from sky_claw.compat import setup_python_compat
 
 setup_python_compat()
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+#: Código con el que termina el proceso por una excepción no manejada: el mismo que da Python sin congelar.
+EXIT_EXCEPCION_NO_MANEJADA = 1
+
+#: Modos con un operador mirando la pantalla: ahí el diálogo de PyInstaller con el traceback ES la señal del crash.
+_MODOS_INTERACTIVOS = frozenset({"gui"})
+
+
+def _volcar_traceback_a_stderr() -> None:
+    """Deja en stderr el traceback de la excepción en curso, como Python al morir por ella, si hay adónde escribir."""
+    flujo = sys.stderr
+    if flujo is None:  # console=False sin handles heredados
+        return
+    with contextlib.suppress(Exception):
+        import traceback  # noqa: PLC0415 - solo al fallar: no suma imports antes de verificar el Job (H-02)
+
+        traceback.print_exc(file=flujo)
+        flujo.flush()
+
+
+def _despachar_sin_dialogo(punto_de_entrada: Callable[[], int | None]) -> NoReturn:
+    """Corre un punto de entrada del ejecutable y sale con su código; nunca deja escapar una excepción.
+
+    El .exe es ``console=False``: una excepción que escapa del script hace que el bootloader de PyInstaller abra un
+    diálogo MODAL («Unhandled exception in script») y el proceso espere a que alguien lo cierre. Sin nadie mirando
+    (MO2 lanzando el worker dentro del Job, el gate UIA, un arnés) queda colgado para siempre: R0 ronda 6 lo midió en
+    ``vfs-health``. ``SystemExit`` no abre el diálogo, así que toda excepción sale como ``SystemExit(1)``, con el
+    traceback en stderr. Un ``SystemExit`` propio del punto de entrada (argparse, por ejemplo) pasa tal cual.
+    """
+    try:
+        codigo = punto_de_entrada()
+    except SystemExit:
+        raise
+    except BaseException:  # noqa: BLE001 - frontera del proceso: lo que escape acá lo atrapa el diálogo modal
+        _volcar_traceback_a_stderr()
+        raise SystemExit(EXIT_EXCEPCION_NO_MANEJADA) from None
+    raise SystemExit(codigo)
+
 
 # #856: el worker VFS y su nieto de sonda se despachan ANTES de importar
 # ``AppContext``/``Config``/``keyring``. En Windows, importar ``keyring``
@@ -35,7 +76,7 @@ if len(sys.argv) >= 2 and sys.argv[1] in ("--vfs-worker", "--vfs-probe-child"):
     # de imports llega a ``platform`` → ``cmd.exe``). Este despacho y el de ``main()`` pasan por la misma función.
     from sky_claw.local.mo2.vfs_arranque import arrancar_worker  # noqa: PLC0415
 
-    raise SystemExit(arrancar_worker(sys.argv[1], sys.argv[2:]))
+    _despachar_sin_dialogo(lambda: arrancar_worker(sys.argv[1], sys.argv[2:]))
 
 # T5-v2.1: modo worker del ejecutable congelado. El gate UIA productivo corre en
 # un proceso descartable (una llamada COM que nunca retorna no se puede matar
@@ -49,7 +90,7 @@ from sky_claw.local.tools.dyndolod_uia_ejecutor import FLAG_HELPER_UIA  # noqa: 
 if len(sys.argv) >= 3 and sys.argv[1] == FLAG_HELPER_UIA:
     from sky_claw.local.tools.dyndolod_uia_helper import main as _main_helper_uia  # noqa: PLC0415
 
-    raise SystemExit(_main_helper_uia(sys.argv[2:]))
+    _despachar_sin_dialogo(lambda: _main_helper_uia(sys.argv[2:]))
 
 # #661 P3: el driver MUTANTE de la etapa 9 desatendida corre en SU propio worker
 # descartable, con flag, módulo y puerta distintos del gate read-only. Mismo
@@ -59,7 +100,7 @@ from sky_claw.local.tools.dyndolod_uia_driver_ejecutor import FLAG_HELPER_DRIVER
 if len(sys.argv) >= 3 and sys.argv[1] == FLAG_HELPER_DRIVER_UIA:
     from sky_claw.local.tools.dyndolod_uia_driver_helper import main as _main_helper_driver  # noqa: PLC0415
 
-    raise SystemExit(_main_helper_driver(sys.argv[2:]))
+    _despachar_sin_dialogo(lambda: _main_helper_driver(sys.argv[2:]))
 
 from sky_claw.app.comms.telegram_polling import normalizar_operador_telegram_estricto  # noqa: E402
 from sky_claw.app.modes.cli_mode import _run_cli, _run_oneshot  # noqa: E402
@@ -81,6 +122,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger("sky_claw")
 
 
+def _modo_por_defecto() -> str:
+    """El ``--mode`` sin argumentos: la GUI en el .exe congelado (doble clic), la CLI en desarrollo."""
+    return "gui" if getattr(sys, "frozen", False) else "cli"
+
+
+def _modo_declarado(argv: list[str]) -> str | None:
+    """El ``--mode`` que pide el argv, leído SIN el parser completo y sin poder fallar.
+
+    ``main()`` necesita saber si hay un operador mirando aunque falle antes de tener ``args``: en ``setup_logging``,
+    en ``_ensure_std_streams`` o en el propio ``_parse_args``, cuyo ``_build_parser`` arma un ``Config`` (PR-Agent en
+    #984). Un argv que no declara el modo, o que está roto, devuelve ``None`` y decide el default.
+    """
+    try:
+        lector = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+        lector.add_argument("--mode")
+        conocidos, _resto = lector.parse_known_args(argv)
+    except (Exception, SystemExit):  # noqa: BLE001 - argv roto: no declara nada, decide el default
+        return None
+    modo = conocidos.mode
+    return modo if isinstance(modo, str) else None
+
+
+def _es_interactivo(modo: str | None) -> bool:
+    """¿Hay un operador mirando? Sin modo declarado, decide el default (el doble clic del .exe abre la GUI)."""
+    return (modo if modo is not None else _modo_por_defecto()) in _MODOS_INTERACTIVOS
+
+
 def _build_parser() -> argparse.ArgumentParser:
     config = Config()
     _chat_id_str = config.telegram_chat_id or ""
@@ -89,7 +157,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # #665: el default de --mode se decide UNA vez y el help lo deriva con
     # ``%(default)s``. Antes el help fijaba "default: cli" y un
     # ``set_defaults(mode="gui")`` posterior lo desmentía en el .exe congelado.
-    modo_por_defecto = "gui" if getattr(sys, "frozen", False) else "cli"
+    modo_por_defecto = _modo_por_defecto()
 
     parser = argparse.ArgumentParser(
         prog="sky_claw",
@@ -526,13 +594,16 @@ def main(argv: list[str] | None = None) -> None:
     if effective_argv and effective_argv[0] in ("--vfs-worker", "--vfs-probe-child"):
         from sky_claw.local.mo2.vfs_arranque import arrancar_worker
 
-        raise SystemExit(arrancar_worker(effective_argv[0], effective_argv[1:]))
-    log_level = logging.DEBUG if "--verbose" in effective_argv or "-v" in effective_argv else logging.INFO
-    setup_logging(level=log_level)
-
+        _despachar_sin_dialogo(lambda: arrancar_worker(effective_argv[0], effective_argv[1:]))
+    # Todo lo que puede fallar va DENTRO del try: una excepción que escapa de acá abre el diálogo modal de PyInstaller
+    # (ver ``_despachar_sin_dialogo``). Hasta tener ``args``, lo que pide el argv decide si hay un operador mirando.
+    modo: str | None = _modo_declarado(effective_argv)
     try:
+        log_level = logging.DEBUG if "--verbose" in effective_argv or "-v" in effective_argv else logging.INFO
+        setup_logging(level=log_level)
         _ensure_std_streams()
         args = _parse_args(effective_argv)
+        modo = args.mode
 
         # P0: SIGTERM (Unix/WSL2) must trigger graceful shutdown in EVERY mode
         # so in-flight external processes are killed, not orphaned. In GUI mode
@@ -549,10 +620,18 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         logger.info("Apagado solicitado por interrupción de teclado")
     except asyncio.CancelledError:
-        raise
+        logger.critical("Cancelación no manejada en el proceso principal", exc_info=True)
+        if _es_interactivo(modo):
+            raise
+        # Fuera de la GUI no hay nadie que cierre el diálogo modal de PyInstaller: ver ``_despachar_sin_dialogo``.
+        _volcar_traceback_a_stderr()
+        raise SystemExit(EXIT_EXCEPCION_NO_MANEJADA) from None
     except Exception:
         logger.critical("Fallo no manejado en el proceso principal", exc_info=True)
-        raise
+        if _es_interactivo(modo):
+            raise
+        _volcar_traceback_a_stderr()
+        raise SystemExit(EXIT_EXCEPCION_NO_MANEJADA) from None
     finally:
         shutdown_logging()
 
