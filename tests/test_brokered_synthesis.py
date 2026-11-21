@@ -18,6 +18,7 @@ Cubre:
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import struct
 from typing import Any
@@ -25,10 +26,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sky_claw.app.core.event_bus import CoreEventBus
+from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.db.rollback_veto import exception_forbids_rollback
+from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+from sky_claw.local.mo2 import brokered_synthesis
 from sky_claw.local.mo2.brokered_synthesis import BrokeredSynthesisRunner
 from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
-from sky_claw.local.mo2.vfs_broker import VfsJobTimeoutError
+from sky_claw.local.mo2.vfs_broker import VfsBridgeLostTeardownError, VfsJobTimeoutError, VfsTeardownError
 from sky_claw.local.mo2.vfs_contracts import (
     ALLOWED_VFS_TOOL_IDS,
     SYNTHESIS_CLI_EXECUTABLE_NAMES,
@@ -42,10 +47,12 @@ from sky_claw.local.tools.synthesis_runner import (
     SynthesisConfig,
     SynthesisExecutionError,
     SynthesisNotFoundError,
+    SynthesisRunner,
     SynthesisTimeoutError,
 )
 from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
 from sky_claw.local.validators.preflight import PreflightStatus
+from tests._symlink_guard import crear_junction
 
 
 def _construir_tes4(masters: list[str]) -> bytes:
@@ -537,6 +544,7 @@ async def test_synthesis_service_en_dominio_virtual_no_bloquea_por_data_fisico(t
         event_bus=MagicMock(),
         vfs_broker=MagicMock(),
         instance_id="portable-main",
+        synthesis_backend="brokered",
     )
     reporte = await svc_virtual._ensure_preflight().run()
     visibilidad = next((c for c in reporte.checks if c.name == "vfs_visibility"), None)
@@ -555,3 +563,357 @@ async def test_synthesis_service_en_dominio_virtual_no_bloquea_por_data_fisico(t
     visibilidad_fisica = next((c for c in reporte_fisico.checks if c.name == "vfs_visibility"), None)
     assert visibilidad_fisica is not None
     assert visibilidad_fisica.status is PreflightStatus.RED
+
+
+def _resolver_para_servicio(rutas: dict[str, pathlib.Path]) -> MagicMock:
+    resolver = MagicMock()
+    resolver.get_skyrim_path.return_value = rutas["game"]
+    resolver.get_skyrim_path_raw.return_value = rutas["game"]
+    resolver.get_mo2_path.return_value = rutas["mo2"]
+    resolver.get_mo2_instance_data_root.return_value = rutas["mo2"]
+    resolver.get_mo2_mods_path.return_value = rutas["mods"]
+    resolver.get_mo2_mods_path_best_effort.return_value = rutas["mods"]
+    resolver.get_mo2_mods_path_para_destino.return_value = rutas["mods"]
+    resolver.get_active_profile.return_value = "Default"
+    resolver.get_synthesis_exe.return_value = rutas["exe"]
+    return resolver
+
+
+async def test_rerun_brokered_excluye_outputs_propios_de_expected_plugins_sin_deadlock(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0 #1: *Synthesis.esp y *Synthesis_2.esp en plugins.txt no bloquean reruns brokered tras unlink()."""
+    rutas = _escenario_mo2(tmp_path)
+    (rutas["plugins"]).write_text(
+        "*Skyrim.esm\n*MiModVirtual.esp\n*Synthesis.esp\n*Synthesis_2.esp\n",
+        encoding="utf-8",
+    )
+    overwrite_dir = rutas["mo2"] / "overwrite"
+    overwrite_dir.mkdir(exist_ok=True)
+    prev_esp = overwrite_dir / "Synthesis.esp"
+    prev_esp.write_bytes(_construir_tes4(["Skyrim.esm", "MiModVirtual.esp"]))
+
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_DEL_WORKER_VERIFICADA", True)
+
+    lock_mgr = DistributedLockManager(tmp_path / "locks.db", default_ttl=5.0, max_retries=1)
+    await lock_mgr.initialize()
+    snap_dir = tmp_path / "snapshots"
+    snap_dir.mkdir()
+    snap_mgr = FileSnapshotManager(snapshot_dir=snap_dir)
+    await snap_mgr.initialize()
+    journal = AsyncMock()
+    journal.begin_transaction = AsyncMock(return_value=11)
+    journal.commit_transaction = AsyncMock()
+    journal.mark_transaction_rolled_back = AsyncMock()
+    event_bus = CoreEventBus()
+    await event_bus.start()
+    captured_jobs: list[VfsJob] = []
+
+    class _WorkerBackedBroker:
+        async def submit(self, job: VfsJob, **kwargs: Any) -> VfsJobResult:
+            captured_jobs.append(job)
+            manifest = VfsWorkerManifest(
+                protocol_version=VFS_PROTOCOL_VERSION,
+                job=job,
+                challenge=kwargs["challenge"],
+                mo2_root=rutas["mo2"],
+                mods_dir=rutas["mods"],
+                virtual_data_dir=rutas["data_virtual"],
+                descriptor_path=rutas["mo2"] / "descriptor.json",
+            )
+
+            async def _fake_cli(_args: list[str], **_kw: Any) -> tuple[bytes, bytes, int]:
+                assert not prev_esp.exists()
+                prev_esp.write_bytes(_construir_tes4(["Skyrim.esm", "MiModVirtual.esp"]))
+                return (
+                    b"[PatcherA] Starting run.\n[PatcherA] Run successful.\nExported patch to final destination: out\n",
+                    b"",
+                    0,
+                )
+
+            with patch("sky_claw.local.tools.synthesis_runner.run_capture", _fake_cli):
+                return await execute_worker_manifest(manifest, grandchild_probe=_probe_ok)
+
+    try:
+        svc = SynthesisPipelineService(
+            lock_manager=lock_mgr,
+            snapshot_manager=snap_mgr,
+            journal=journal,
+            path_resolver=_resolver_para_servicio(rutas),
+            event_bus=event_bus,
+            synthesis_settings_path=rutas["settings"],
+            vfs_broker=_WorkerBackedBroker(),
+            instance_id="portable-main",
+            synthesis_backend="brokered",
+        )
+        out = await svc.execute_pipeline(patcher_ids=["PatcherA"])
+        assert out["success"] is True, out
+        assert captured_jobs[0].payload["expected_plugins"] == ["Skyrim.esm", "MiModVirtual.esp"]
+        journal.commit_transaction.assert_awaited_once_with(11)
+        journal.mark_transaction_rolled_back.assert_not_awaited()
+    finally:
+        await event_bus.stop()
+        await lock_mgr.close()
+
+
+async def test_synthesis_service_respeta_rollback_veto_ante_timeout_y_teardown_error(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0 #2: terminalidad desconocida (timeout o VfsTeardownError) veta unlink y mark_transaction_rolled_back."""
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_DEL_WORKER_VERIFICADA", True)
+
+    async def _correr_con_excepcion(subdir: str, exc_factory: Any, *, pass_output_override: bool) -> None:
+        base = tmp_path / subdir
+        base.mkdir()
+        rutas = _escenario_mo2(base)
+        overwrite_dir = rutas["mo2"] / "overwrite"
+        overwrite_dir.mkdir(exist_ok=True)
+        target_dir = rutas["output"] if pass_output_override else overwrite_dir
+        split_parcial = target_dir / "Synthesis_2.esp"
+
+        lock_mgr = DistributedLockManager(base / "locks.db", default_ttl=5.0, max_retries=1)
+        await lock_mgr.initialize()
+        snap_dir = base / "snapshots"
+        snap_dir.mkdir()
+        snap_mgr = FileSnapshotManager(snapshot_dir=snap_dir)
+        await snap_mgr.initialize()
+        journal = AsyncMock()
+        journal.begin_transaction = AsyncMock(return_value=42)
+        journal.commit_transaction = AsyncMock()
+        journal.mark_transaction_rolled_back = AsyncMock()
+        event_bus = CoreEventBus()
+        await event_bus.start()
+        completed_events: list[dict[str, Any]] = []
+
+        async def _on_completed(evt: Any) -> None:
+            completed_events.append(dict(evt.payload))
+
+        event_bus.subscribe("synthesis.pipeline.completed", _on_completed)
+
+        class _OrphanedWorkerBroker:
+            async def submit(self, _job: VfsJob, **_kwargs: Any) -> VfsJobResult:
+                split_parcial.write_bytes(_construir_tes4(["Skyrim.esm"]))
+                raise exc_factory()
+
+        try:
+            svc = SynthesisPipelineService(
+                lock_manager=lock_mgr,
+                snapshot_manager=snap_mgr,
+                journal=journal,
+                path_resolver=_resolver_para_servicio(rutas),
+                event_bus=event_bus,
+                synthesis_settings_path=rutas["settings"],
+                output_path=rutas["output"] if pass_output_override else None,
+                vfs_broker=_OrphanedWorkerBroker(),
+                instance_id="portable-main",
+                synthesis_backend="brokered",
+            )
+            out = await svc.execute_pipeline(patcher_ids=["PatcherA"])
+            await event_bus.stop()
+
+            assert out["success"] is False
+            assert split_parcial.exists() is True
+            journal.commit_transaction.assert_not_awaited()
+            journal.mark_transaction_rolled_back.assert_not_awaited()
+            assert completed_events and completed_events[0]["rolled_back"] is False
+        finally:
+            await event_bus.stop()
+            await lock_mgr.close()
+
+    def _timeout_unknown() -> VfsJobTimeoutError:
+        exc = VfsJobTimeoutError("timeout con worker vivo")
+        exc.terminality_unknown = True  # type: ignore[attr-defined]
+        exc.teardown_error = RuntimeError("worker sigue vivo")  # type: ignore[attr-defined]
+        return exc
+
+    await _correr_con_excepcion("timeout_live", _timeout_unknown, pass_output_override=False)
+    await _correr_con_excepcion(
+        "bridge_lost",
+        lambda: VfsBridgeLostTeardownError("bridge desconectado con worker vivo"),
+        pass_output_override=True,
+    )
+    await _correr_con_excepcion(
+        "teardown_err",
+        lambda: VfsTeardownError("teardown fallido"),
+        pass_output_override=False,
+    )
+
+
+async def test_e3r3_backend_explicito_y_wiring_security_hold(tmp_path: pathlib.Path) -> None:
+    """P0 #3: E3-R3 exige selector explícito synthesis_backend + WIRING_SECURITY_HOLD activo por defecto."""
+    assert brokered_synthesis._CONTENCION_DEL_WORKER_VERIFICADA is False
+
+    rutas = _escenario_mo2(tmp_path)
+    resolver = _resolver_para_servicio(rutas)
+    broker_mock = MagicMock()
+    broker_mock.submit = AsyncMock()
+
+    # 1) broker presente en memoria sin pedir backend="brokered" -> sigue standalone físico (U-01 intacto).
+    svc_default = SynthesisPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=MagicMock(),
+        path_resolver=resolver,
+        event_bus=MagicMock(),
+        synthesis_settings_path=rutas["settings"],
+        vfs_broker=broker_mock,
+        instance_id="portable-main",
+    )
+    assert svc_default._data_visibility_domain == "physical"
+    runner_default = svc_default._ensure_synthesis_runner()
+    assert isinstance(runner_default, SynthesisRunner)
+    assert getattr(runner_default, "data_visibility_domain", "physical") == "physical"
+
+    # 2) backend="brokered" con HOLD activo -> guard fail-closed sin tocar broker ni lanzar CLI.
+    lock_mgr = DistributedLockManager(tmp_path / "locks_hold.db", default_ttl=5.0, max_retries=1)
+    await lock_mgr.initialize()
+    snap_dir = tmp_path / "snaps_hold"
+    snap_dir.mkdir()
+    snap_mgr = FileSnapshotManager(snapshot_dir=snap_dir)
+    await snap_mgr.initialize()
+    journal = AsyncMock()
+    journal.begin_transaction = AsyncMock(return_value=7)
+    journal.mark_transaction_rolled_back = AsyncMock()
+    try:
+        svc_hold = SynthesisPipelineService(
+            lock_manager=lock_mgr,
+            snapshot_manager=snap_mgr,
+            journal=journal,
+            path_resolver=resolver,
+            event_bus=CoreEventBus(),
+            synthesis_settings_path=rutas["settings"],
+            vfs_broker=broker_mock,
+            instance_id="portable-main",
+            synthesis_backend="brokered",
+        )
+        guard_runner = svc_hold._ensure_synthesis_runner()
+        assert guard_runner.data_visibility_domain == "virtual_usvfs"
+        assert "WIRING_SECURITY_HOLD" in getattr(guard_runner, "reason", "")
+        with patch("sky_claw.local.tools.synthesis_runner.run_capture", AsyncMock()) as run_cap:
+            res_hold = await svc_hold.execute_pipeline(patcher_ids=["PatcherA"])
+        assert res_hold["success"] is False
+        assert "WIRING_SECURITY_HOLD" in res_hold["message"]
+        broker_mock.submit.assert_not_awaited()
+        run_cap.assert_not_awaited()
+
+        # 3) backend desconocido -> guard fail-closed sin caer a standalone.
+        svc_typo = SynthesisPipelineService(
+            lock_manager=lock_mgr,
+            snapshot_manager=snap_mgr,
+            journal=journal,
+            path_resolver=resolver,
+            event_bus=CoreEventBus(),
+            synthesis_settings_path=rutas["settings"],
+            synthesis_backend="brokerd",
+        )
+        guard_typo = svc_typo._ensure_synthesis_runner()
+        assert guard_typo.data_visibility_domain == "virtual_usvfs"
+        with pytest.raises(SynthesisExecutionError, match="no es válido"):
+            await guard_typo.run_pipeline(["PatcherA"])
+    finally:
+        await lock_mgr.close()
+
+
+async def test_worker_exige_expected_plugins_politica_fase2_y_confina_rutas_sin_enlaces(
+    tmp_path: pathlib.Path,
+) -> None:
+    """P1s: payload exige expected_plugins, policy Fase 2 estricta, PathValidator y links sin pre-resolver."""
+    rutas = _escenario_mo2(tmp_path)
+
+    # 1) expected_plugins omitido -> rechazo en worker.
+    manifest_sin_expected = _manifiesto_synthesis(rutas)
+    payload_sin_expected = dict(manifest_sin_expected.job.payload)
+    payload_sin_expected.pop("expected_plugins")
+    job_sin_expected = VfsJob.create(
+        instance_id="portable-main",
+        profile="Default",
+        tool_id="synthesis",
+        payload=payload_sin_expected,
+        timeout_seconds=60.0,
+        expected_fingerprint=manifest_sin_expected.challenge.profile_fingerprint,
+        mutation_targets=(rutas["output"],),
+    )
+    res1 = await execute_worker_manifest(
+        VfsWorkerManifest(
+            protocol_version=VFS_PROTOCOL_VERSION,
+            job=job_sin_expected,
+            challenge=manifest_sin_expected.challenge,
+            mo2_root=rutas["mo2"],
+            mods_dir=rutas["mods"],
+            virtual_data_dir=rutas["data_virtual"],
+            descriptor_path=rutas["mo2"] / "descriptor.json",
+        ),
+        grandchild_probe=_probe_ok,
+    )
+    assert res1.success is False
+    assert "expected_plugins" in res1.message
+
+    # 2) expected_plugins=[] falsificado cuando plugins.txt tiene *MiModVirtual.esp ausente -> worker coteja plugins.txt.
+    (rutas["data_virtual"] / "MiModVirtual.esp").unlink()
+    manifest_vacio = _manifiesto_synthesis(rutas, payload_overrides={"expected_plugins": []})
+    res2 = await execute_worker_manifest(manifest_vacio, grandchild_probe=_probe_ok)
+    assert res2.success is False
+    assert "MiModVirtual.esp" in res2.message
+
+    # Restaurar MiModVirtual.esp para pruebas restantes.
+    (rutas["data_virtual"] / "MiModVirtual.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+
+    # 3) Política Fase 2: block_building_within_mo2=False o require_patcher_receipts=False rechazados.
+    for flag_name in ("block_building_within_mo2", "require_patcher_receipts"):
+        manifest_bad_flag = _manifiesto_synthesis(rutas, payload_overrides={flag_name: False})
+        res_flag = await execute_worker_manifest(manifest_bad_flag, grandchild_probe=_probe_ok)
+        assert res_flag.success is False
+        assert flag_name in res_flag.message
+
+    # 4) PathValidator en _synthesis_handler: ruta fuera de raíces autorizadas rechazada.
+    outside_dir = (
+        pathlib.Path("Z:/skyclaw_untrusted_outside") if os.name == "nt" else pathlib.Path("/var/skyclaw_outside")
+    )
+    manifest_outside = _manifiesto_synthesis(rutas, payload_overrides={"working_dir": str(outside_dir)})
+    res_outside = await execute_worker_manifest(manifest_outside, grandchild_probe=_probe_ok)
+    assert res_outside.success is False
+    assert "working_dir" in res_outside.message or "outside" in res_outside.message.casefold()
+
+    # 5) Proxy y worker no pre-resuelven symlinks ni junctions intermedios antes de validar enlaces.
+    real_dir = tmp_path / "real_work"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link_work"
+    expected_kind = "symlink"
+    try:
+        link_dir.symlink_to(real_dir, target_is_directory=True)
+    except OSError:
+        motivo = crear_junction(link_dir, real_dir) if os.name == "nt" else "symlink no soportado"
+        if motivo is not None:
+            pytest.skip(f"El entorno no permite crear symlinks ni junctions de directorio: {motivo}")
+        expected_kind = "junction"
+    cfg = SynthesisConfig(
+        game_path=rutas["game"],
+        mo2_path=rutas["mo2"],
+        output_path=rutas["output"],
+        synthesis_exe=rutas["exe"],
+        profile="Default",
+        pipeline_settings_path=rutas["settings"],
+        data_folder_path=rutas["data_fisico"],
+        load_order_file_path=rutas["plugins"],
+        working_dir=link_dir / "nested",
+    )
+    proxy = BrokeredSynthesisRunner(
+        config=cfg,
+        broker=MagicMock(),
+        instance_id="portable-main",
+        data_root=rutas["mo2"],
+        mods_dir=rutas["mods"],
+    )
+    with pytest.raises(SynthesisExecutionError, match=expected_kind):
+        proxy._build_job_payload(
+            patcher_ids=["PatcherA"],
+            expected_plugins=["Skyrim.esm"],
+            settings_fingerprint="fp1",
+            load_order_fingerprint="fp2",
+        )
+    manifest_nested_link = _manifiesto_synthesis(rutas, payload_overrides={"working_dir": str(link_dir / "nested")})
+    res_nested_link = await execute_worker_manifest(manifest_nested_link, grandchild_probe=_probe_ok)
+    assert res_nested_link.success is False
+    assert expected_kind in res_nested_link.message

@@ -42,6 +42,7 @@ from sky_claw.app.db.locks import (
     LockAcquisitionError,
     SnapshotTransactionLock,
 )
+from sky_claw.app.db.rollback_veto import exception_forbids_rollback
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.tools.output_targets import synthesis_output_target
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline
@@ -85,6 +86,30 @@ class _ActionManifestError(Exception):
     ``loot_service``/``xedit_service._ActionManifestError``)."""
 
 
+def _evaluar_recuperacion_rollback(
+    exc: BaseException,
+    *,
+    tx_lock: SnapshotTransactionLock | None,
+    outputs_cleanup_completed: bool,
+    mutation_started: bool,
+    target_files: list[pathlib.Path],
+    output_override: pathlib.Path | None,
+) -> tuple[bool, bool, bool]:
+    """Evalúa ``(rollback_vetoed, rolled_back, journal_recovery_proven)`` fail-closed."""
+    rollback_vetoed = exception_forbids_rollback(exc)
+    snapshot_restored = not rollback_vetoed and bool(tx_lock and tx_lock.rollback_completed)
+    rolled_back = (not rollback_vetoed) and (
+        (snapshot_restored and outputs_cleanup_completed)
+        or (mutation_started and not target_files and outputs_cleanup_completed and output_override is None)
+    )
+    journal_recovery_proven = (not rollback_vetoed) and (
+        not mutation_started
+        or output_override is not None  # el clon aislado aún no se promueve
+        or rolled_back
+    )
+    return rollback_vetoed, rolled_back, journal_recovery_proven
+
+
 class SynthesisPipelineService:
     """Servicio dedicado para la ejecución del pipeline de Synthesis.
 
@@ -111,6 +136,7 @@ class SynthesisPipelineService:
         synthesis_profile_identifier: str | None = None,
         vfs_broker: VfsBrokerProtocol | None = None,
         instance_id: str | None = None,
+        synthesis_backend: str = "standalone",
         synthesis_runner: Any = None,
     ) -> None:
         self._lock_manager = lock_manager
@@ -140,13 +166,18 @@ class SynthesisPipelineService:
         self._synthesis_profile_identifier = synthesis_profile_identifier
         self._vfs_broker = vfs_broker
         self._instance_id = instance_id.strip() if isinstance(instance_id, str) and instance_id.strip() else None
+        self._synthesis_backend = synthesis_backend
         if synthesis_runner is not None:
             domain = getattr(synthesis_runner, "data_visibility_domain", None)
             self._data_visibility_domain = "virtual_usvfs" if domain == "virtual_usvfs" else "physical"
-        elif vfs_broker is not None:
-            self._data_visibility_domain = "virtual_usvfs"
         else:
-            self._data_visibility_domain = "physical"
+            from sky_claw.local.mo2.brokered_synthesis import SYNTHESIS_BACKEND_STANDALONE, _normalizar_backend
+
+            self._data_visibility_domain = (
+                "physical"
+                if _normalizar_backend(synthesis_backend) == SYNTHESIS_BACKEND_STANDALONE
+                else "virtual_usvfs"
+            )
 
         # Lazy init — paths may not be available at construction time
         self._synthesis_runner: Any = synthesis_runner
@@ -166,6 +197,23 @@ class SynthesisPipelineService:
             SynthesisExecutionError: Si las variables de entorno son inválidas.
         """
         if self._synthesis_runner is not None:
+            return self._synthesis_runner
+
+        from sky_claw.local.mo2 import brokered_synthesis as _brokered_synthesis
+
+        solicitado = _brokered_synthesis._normalizar_backend(self._synthesis_backend)
+        if solicitado != _brokered_synthesis.SYNTHESIS_BACKEND_STANDALONE and (
+            solicitado != _brokered_synthesis.SYNTHESIS_BACKEND_BROKERED
+            or not _brokered_synthesis._CONTENCION_DEL_WORKER_VERIFICADA
+        ):
+            guard_runner = _brokered_synthesis.resolve_synthesis_backend_runner(
+                backend=self._synthesis_backend,
+                config=None,
+                broker=self._vfs_broker,
+                instance_id=self._instance_id,
+            )
+            assert guard_runner is not None
+            self._synthesis_runner = guard_runner
             return self._synthesis_runner
 
         game_path = self._path_resolver.get_skyrim_path()
@@ -228,13 +276,7 @@ class SynthesisPipelineService:
         settings_path = (
             pathlib.Path(configured_settings) if configured_settings else pathlib.Path.cwd() / "PipelineSettings.json"
         )
-        if self._vfs_broker is not None:
-            if self._instance_id is None:
-                raise SynthesisExecutionError(
-                    "Brokered Synthesis requiere instance_id válido; prohibido fallback silencioso a standalone"
-                )
-            from sky_claw.local.mo2.brokered_synthesis import BrokeredSynthesisRunner
-
+        if solicitado != _brokered_synthesis.SYNTHESIS_BACKEND_STANDALONE:
             candidate_mods = resolve_mods_dir()
             resolved_mods_dir = candidate_mods if isinstance(candidate_mods, pathlib.Path) else None
             config = SynthesisConfig(
@@ -252,15 +294,20 @@ class SynthesisPipelineService:
                 shortcircuit=True,
                 require_patcher_receipts=True,
             )
-            self._synthesis_runner = BrokeredSynthesisRunner(
+            resolved_runner = _brokered_synthesis.resolve_synthesis_backend_runner(
+                backend=self._synthesis_backend,
                 config=config,
                 broker=self._vfs_broker,
                 instance_id=self._instance_id,
                 data_root=mo2_path,
                 mods_dir=resolved_mods_dir,
             )
+            assert resolved_runner is not None
+            self._synthesis_runner = resolved_runner
             logger.info(
-                "BrokeredSynthesisRunner inicializado: game=%s, output=%s, instance=%s",
+                "Synthesis backend %r resuelto (%s): game=%s, output=%s, instance=%s",
+                self._synthesis_backend,
+                type(resolved_runner).__name__,
                 game_path,
                 output_path,
                 self._instance_id,
@@ -894,12 +941,12 @@ class SynthesisPipelineService:
                             return_code=result.return_code,
                             stderr=result.stderr,
                         )
-                except BaseException:
+                except BaseException as exc:
                     # SnapshotTransactionLock cubre archivos que existían antes;
                     # retirar también los nuevos _2/_3 es la mitad restante del
-                    # rollback transaccional. En sandbox se conserva evidencia:
-                    # el clon aún no se promueve y el operador puede inspeccionarla.
-                    if self._output_path is None:
+                    # rollback transaccional. Si la terminalidad del worker quedó
+                    # desconocida (rollback veto), prohibido borrar salidas en curso.
+                    if not exception_forbids_rollback(exc) and self._output_path is None:
                         outputs_cleanup_completed = self._cleanup_synthesis_outputs(
                             runner, settings_profile.group_names
                         )
@@ -943,22 +990,20 @@ class SynthesisPipelineService:
             )
 
         except (SynthesisExecutionError, SynthesisValidationError) as exc:
-            # El lock solo restaura los archivos que existían al entrar; la
-            # limpieza de outputs nuevos/split también debe haber sido probada.
-            snapshot_restored = bool(tx_lock and tx_lock.rollback_completed)
-            rolled_back = (snapshot_restored and outputs_cleanup_completed) or (
-                mutation_started and not target_files and outputs_cleanup_completed and self._output_path is None
-            )
-            journal_recovery_proven = (
-                not mutation_started
-                or self._output_path is not None  # el clon aislado aún no se promueve
-                or rolled_back
+            rollback_vetoed, rolled_back, journal_recovery_proven = _evaluar_recuperacion_rollback(
+                exc,
+                tx_lock=tx_lock,
+                outputs_cleanup_completed=outputs_cleanup_completed,
+                mutation_started=mutation_started,
+                target_files=target_files,
+                output_override=self._output_path,
             )
             if tx_id is not None and journal_recovery_proven:
                 await self._journal.mark_transaction_rolled_back(tx_id)
             elif tx_id is not None:
                 logger.critical(
-                    "Rollback Synthesis incompleto para TX %d; se mantiene pendiente para recuperación manual.",
+                    "Rollback Synthesis %s para TX %d; se mantiene pendiente para recuperación manual.",
+                    "vetado por terminalidad desconocida" if rollback_vetoed else "incompleto",
                     tx_id,
                 )
             logger.error("Pipeline Synthesis falló: %s", exc)
@@ -995,21 +1040,15 @@ class SynthesisPipelineService:
 
         except Exception as exc:
             # Unexpected exception (OSError, asyncio.TimeoutError, etc.)
-            # M-7: rolled_back sale de tx_lock.rollback_completed — True SOLO si
-            # __aexit__ corrió y restauró todos los snapshots (≥1). Cubre ambos
-            # casos que el flag anterior confundía: excepción fuera del lock
-            # (commit_transaction falló → no hubo rollback) y restore fallido
-            # dentro de __aexit__ (rollback_failures no vacío).
             # Note: asyncio.CancelledError is BaseException, not Exception —
             # it intentionally propagates through here uncaught.
-            snapshot_restored = bool(tx_lock and tx_lock.rollback_completed)
-            rolled_back = (snapshot_restored and outputs_cleanup_completed) or (
-                mutation_started and not target_files and outputs_cleanup_completed and self._output_path is None
-            )
-            journal_recovery_proven = (
-                not mutation_started
-                or self._output_path is not None  # el clon aislado aún no se promueve
-                or rolled_back
+            rollback_vetoed, rolled_back, journal_recovery_proven = _evaluar_recuperacion_rollback(
+                exc,
+                tx_lock=tx_lock,
+                outputs_cleanup_completed=outputs_cleanup_completed,
+                mutation_started=mutation_started,
+                target_files=target_files,
+                output_override=self._output_path,
             )
             if tx_id is not None and journal_recovery_proven:
                 try:
@@ -1023,7 +1062,8 @@ class SynthesisPipelineService:
                     )
             elif tx_id is not None:
                 logger.critical(
-                    "Rollback Synthesis incompleto para TX %d; se mantiene pendiente para recuperación manual.",
+                    "Rollback Synthesis %s para TX %d; se mantiene pendiente para recuperación manual.",
+                    "vetado por terminalidad desconocida" if rollback_vetoed else "incompleto",
                     tx_id,
                 )
             logger.error("Unexpected exception in synthesis pipeline: %s", exc, exc_info=True)

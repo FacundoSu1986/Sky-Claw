@@ -263,6 +263,7 @@ def _construir(nombre: str, *, resolver: MagicMock, mo2: pathlib.Path, dominio: 
             event_bus=MagicMock(),
             vfs_broker=broker,
             instance_id=instance_id,
+            synthesis_backend="brokered" if dominio == "virtual_usvfs" else "standalone",
         )
     if nombre == "pandora_service":
         from sky_claw.local.tools.pandora_service import PandoraPipelineService
