@@ -115,7 +115,13 @@ Los P2 de la versión inicial se refutaron o rebajaron; ver §10.
 - **P3-3 · Hermano `telegram_gateway.js:105-114` (antes P2-4).** Tiene el mismo orden cerrar→asignar (`daemonSocket.close(4000, …)` en 109, `daemonSocket = ws` en 114), pero su `close` ya está guardado con `if (daemonSocket === ws)` (línea 158) y comenta el porqué. No hay defecto demostrable. Conviene que el cuerpo del PR lo diga.
 - **P3-4 · Harness con `process` mínimo (test:54-58, antes P2-5).** Inyecta solo `env`, `on` y `uptime`. `server.js` usa `process.exit` únicamente si falta `WS_AUTH_TOKEN` (línea 130), que el test define; un uso nuevo de `process` en producción fallaría en el harness, no en el producto. Documentar como contrato («los globals inyectados deben seguir a `server.js`»). El riesgo de un segundo `http.createServer()` es hipotético: hoy hay una sola llamada (línea 414).
 - **P3-5 · `if (agentSocket && agentSocket.readyState === 1)` en el handler de UI (server.js:381)** usa check-then-send dentro del mutex. Preexistente, el `catch` re-encola. No se toca.
-- **P3-6 · `node --test tests/*.js` con glob sin comillas** ejecutaría los 3 archivos y fallaría porque los otros dos no son `node:test`. El step de CI usa path explícito: sin falso verde.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:e03f71850a303fd9700ad20fec70bc6b849fc44176b6f4bd14c8896d3934065c -->
+
+- **P3-6 · `node --test tests/*.js` con glob sin comillas.** En el head del PR, Node 22.23.5 ejecuta los tres archivos y acepta cada uno si termina con código 0, incluso si no usa `node:test`; un código distinto de 0 falla. El step de CI ejecuta únicamente `tests/test_agent_reconnect.js`.
+
+<!-- /coderabbit-ai-generated:v1 -->
 - **P3-7 · Sin eslint/prettier** en el gateway: las líneas largas del test nuevo no tienen gate de estilo.
 - **P3-8 · `CHANGELOG.md`:** el changelog **sí** menciona el gateway Node (p. ej. reproducibilidad con `npm ci` + `npm audit`, líneas ~1036-1038), pero no hay convención de entrada por fix de comportamiento del gateway; no se exige una.
 - **P3-9 · `_notifyDaemonStatus` itera `uiSockets` sin snapshot** con `delete` concurrente en el `close` de una UI. Teórico y preexistente.
