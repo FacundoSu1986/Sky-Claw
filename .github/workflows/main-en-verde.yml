@@ -1,0 +1,80 @@
+name: Main en verde
+
+# Gate de merge: el check «🚦 Main en verde» falla mientras la última corrida TERMINADA de CI sobre main (push, nocturna
+# o a pedido) tenga en rojo alguno de los checks obligatorios. La alerta (job `alerta-main` de ci.yml) abre un issue,
+# pero un issue no frena a nadie; este check sí, una vez agregado a los obligatorios de la protección de main.
+#
+# Va en un workflow propio y liviano (no en ci.yml): poner o sacar una etiqueta re-evalúa el gate en segundos, sin
+# relanzar la matriz Windows de 40 min. Lógica y anclas: scripts/ci_main_en_verde.py, tests/test_ci_main_en_verde.py.
+on:
+  # En cada cambio del PR contra main. `labeled`/`unlabeled`: la etiqueta de salida `ci:repara-main` (el PR que arregla
+  # main) se evalúa en el acto. `ready_for_review`: el PR que `reevaluar` pasó a borrador vuelve con una corrida nueva.
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  # Cada vez que termina una corrida de CI sobre main se re-evalúa el gate de TODOS los PRs abiertos: sin esto, un PR
+  # que pasó a las 10 seguiría en verde a las 12 aunque main se rompiera a las 11. Corre la versión de main de este
+  # archivo y no hace checkout de código de ningún PR.
+  workflow_run:
+    workflows: ["Sky-Claw CI/CD"]
+    types: [completed]
+    branches: [main]
+  # A pedido (Actions → Run workflow): re-evaluar todos los PRs abiertos sin esperar a una corrida de main.
+  workflow_dispatch:
+
+concurrency:
+  # Por PR y commit: un evento nuevo sobre el mismo commit (una etiqueta) cancela la evaluación vieja, pero re-correr el
+  # gate de un commit viejo (la reevaluación vio el head anterior justo antes de un push) no cancela el del commit nuevo,
+  # que quedaría «cancelado» y bloquearía el PR sin motivo. La reevaluación más nueva cancela a la anterior: re-corre
+  # todos los PRs con el estado más reciente. Un workflow_run de un PR desde un fork cuya rama se llama main no hace nada
+  # y va a su propio grupo para no cancelar una reevaluación real.
+  group: ${{ github.workflow }}-${{ github.event.pull_request && format('{0}-{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || (github.event.workflow_run.event == 'pull_request' && github.run_id) || 'reevaluar' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Sin `needs` y sin dependientes: re-correrlo (lo hace `reevaluar`) no arrastra a ningún otro job. El nombre es el
+  # check que exige la protección de main: cambiarlo deja al check obligatorio esperando para siempre.
+  gate:
+    name: "🚦 Main en verde"
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Exigir main en verde
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: python3 scripts/ci_main_en_verde.py evaluar
+
+  # Solo fuera de un PR: al terminar una corrida de CI de main (no la de un PR desde un fork cuya rama se llama main) o a
+  # pedido. Único job con escritura: Actions (re-correr el gate) y pull requests (si GitHub rechaza el rerun, a los 30
+  # días de la corrida inicial o tras 50 reruns, pasa el PR a borrador para que no se mergee con un veredicto viejo).
+  reevaluar:
+    name: "🔁 Re-evaluar el gate de los PRs abiertos"
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.event != 'pull_request') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Re-correr el gate de cada PR abierto contra main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/ci_main_en_verde.py reevaluar
