@@ -677,6 +677,8 @@ def test_entorno_filtra_subdirectorios_dotnet_x86_sin_afectar_x64(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Qodo #2: filtrar también subdirectorios bajo Program Files (x86)\\dotnet\\... en PATH."""
+    from sky_claw.local.tools.synthesis_runner import _is_x86_dotnet_path
+
     dotnet_x64 = tmp_path / "Program Files" / "dotnet"
     dotnet_x64.mkdir(parents=True)
     x86_root = r"C:\Program Files (x86)\dotnet"
@@ -686,6 +688,15 @@ def test_entorno_filtra_subdirectorios_dotnet_x86_sin_afectar_x64(
     unrelated_dotnet_like = r"C:\Program Files (x86)\dotnet-custom"
     x64_sdk = r"C:\Program Files\dotnet\sdk\10.0.100"
 
+    assert _is_x86_dotnet_path(x86_root) is True
+    assert _is_x86_dotnet_path(x86_sdk) is True
+    assert _is_x86_dotnet_path(x86_tools) is True
+    assert _is_x86_dotnet_path(unrelated_x86) is False
+    assert _is_x86_dotnet_path(unrelated_dotnet_like) is False
+    assert _is_x86_dotnet_path(x64_sdk) is False
+
+    # Grafías Windows con ";": aislar de ":" en POSIX/WSL2 donde "C:\\..." partiría la letra de unidad.
+    monkeypatch.setattr(os, "pathsep", ";")
     monkeypatch.setenv(
         "PATH",
         os.pathsep.join([x86_root, x86_sdk, x86_tools, unrelated_x86, unrelated_dotnet_like, x64_sdk]),
@@ -749,3 +760,205 @@ def test_settings_v2_acepta_type_valido_de_perfil_y_rechaza_type_anidado_o_en_gr
     settings_path.write_text(json.dumps(bad_nested), encoding="utf-8")
     with pytest.raises(PatcherPipelineError, match=r"\$type"):
         PatcherPipeline.inspect_synthesis_settings(settings_path, "Default")
+
+
+def test_settings_v2_rechaza_assembly_no_canonico_en_type_y_normaliza_en_copia_cli(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Cierra el bypass Newtonsoft DefaultSerializationBinder: $type exige assembly canónico exacto."""
+    settings_path = tmp_path / "PipelineSettings.json"
+    _escribir_settings_v2(settings_path)
+    base = json.loads(settings_path.read_text(encoding="utf-8"))
+
+    for bad_patcher_type in (
+        "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, ArbitraryEvilAssembly",
+        "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, Synthesis.Bethesda.Execution, Version=1.0.0.0",
+        "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings",
+    ):
+        payload = json.loads(json.dumps(base))
+        payload["Profiles"][0]["Groups"][0]["Patchers"][0]["$type"] = bad_patcher_type
+        settings_path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(PatcherPipelineError, match=r"Unsupported Synthesis patcher \$type"):
+            PatcherPipeline.inspect_synthesis_settings(settings_path, "Default")
+
+    bad_profile = json.loads(json.dumps(base))
+    bad_profile["Profiles"][0]["$type"] = (
+        "Synthesis.Bethesda.Execution.Settings.V2.SynthesisProfile, ArbitraryEvilAssembly"
+    )
+    settings_path.write_text(json.dumps(bad_profile), encoding="utf-8")
+    with pytest.raises(PatcherPipelineError, match=r"Unsupported Synthesis profile \$type"):
+        PatcherPipeline.inspect_synthesis_settings(settings_path, "Default")
+
+    # Con espacios/casing variantes pero identidad canónica exacta, la copia CLI normaliza $type.
+    unnormalized = json.loads(json.dumps(base))
+    unnormalized["Profiles"][0]["$TYPE"] = (
+        " Synthesis.Bethesda.Execution.Settings.V2.SynthesisProfile , Synthesis.Bethesda.Execution "
+    )
+    del unnormalized["Profiles"][0]["Groups"][0]["Patchers"][0]["$type"]
+    unnormalized["Profiles"][0]["Groups"][0]["Patchers"][0]["$TYPE"] = (
+        " Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings , Synthesis.Bethesda.Execution "
+    )
+    settings_path.write_text(json.dumps(unnormalized), encoding="utf-8")
+
+    temp_path, _ = PatcherPipeline.prepare_synthesis_cli_settings(settings_path, "Default", ["PatcherLight"])
+    try:
+        written = json.loads(temp_path.read_text(encoding="utf-8"))
+        prof = written["Profiles"][0]
+        assert "$TYPE" not in prof
+        assert (
+            prof["$type"] == "Synthesis.Bethesda.Execution.Settings.V2.SynthesisProfile, Synthesis.Bethesda.Execution"
+        )
+        patcher_out = prof["Groups"][0]["Patchers"][0]
+        assert "$TYPE" not in patcher_out
+        assert (
+            patcher_out["$type"]
+            == "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, Synthesis.Bethesda.Execution"
+        )
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_entorno_filtra_dotnet_x86_incluso_cuando_dotnet_root_es_none(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PATH se sanea de Program Files (x86)\\dotnet incluso sin dotnet_root configurado."""
+    monkeypatch.setattr(os, "pathsep", ";")
+    x86_root = r"C:\Program Files (x86)\dotnet"
+    x86_sdk = r"C:\Program Files (x86)\dotnet\sdk\8.0.406"
+    x64_root = r"C:\Program Files\dotnet"
+    unrelated = r"C:\Program Files (x86)\Steam"
+    monkeypatch.setenv("PATH", os.pathsep.join([x86_root, x86_sdk, x64_root, unrelated]))
+
+    runner, _ = _crear_entorno_base(tmp_path, dotnet_root=None)
+    entries = runner._build_subprocess_env()["PATH"].split(os.pathsep)
+
+    assert x86_root not in entries
+    assert x86_sdk not in entries
+    assert x64_root in entries
+    assert unrelated in entries
+
+
+async def test_nickname_vacio_usa_identidad_upstream_y_coincide_en_recibos_y_copia_cli(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Alinea fallback de Nickname vacío con SolutionNameConstructor/ConstructNameFromRepositoryPath y corchetes."""
+    runner, output = _crear_entorno_base(tmp_path, require_patcher_receipts=True)
+    settings_path = runner._config.pipeline_settings_path
+    assert settings_path is not None
+
+    sol_type = "Synthesis.Bethesda.Execution.Settings.SolutionPatcherSettings, Synthesis.Bethesda.Execution"
+    git_type = "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, Synthesis.Bethesda.Execution"
+    payload = {
+        "Version": 2,
+        "Profiles": [
+            {
+                "Nickname": "Default",
+                "ID": "profile-default",
+                "TargetRelease": "SkyrimSE",
+                "Groups": [
+                    {
+                        "On": True,
+                        "Name": "Synthesis",
+                        "Patchers": [
+                            {
+                                "$type": sol_type,
+                                "ID": "id-one",
+                                "Nickname": "",
+                                "On": True,
+                                "ProjectSubpath": "Example/Patcher.csproj",
+                            },
+                            {
+                                "$type": git_type,
+                                "ID": "id-git",
+                                "Nickname": "",
+                                "On": True,
+                                "RemoteRepoPath": "https://github.com/org/MyGitPatcher/",
+                            },
+                            {
+                                "$type": git_type,
+                                "ID": "id-brackets",
+                                "Nickname": "Patch [SE]",
+                                "On": True,
+                                "RemoteRepoPath": "https://example.invalid/se",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    settings_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    inspected = PatcherPipeline.inspect_synthesis_settings(settings_path, "Default")
+    assert inspected.patcher_nicknames == ("Example", "MyGitPatcher", "Patch [SE]")
+
+    copied_nicknames: list[str] = []
+
+    async def _run_with_receipts(args: list[str], **_kwargs: Any) -> tuple[bytes, bytes, int]:
+        temp_settings = pathlib.Path(args[args.index("--PipelineSettingsPath") + 1])
+        copied = json.loads(temp_settings.read_text(encoding="utf-8"))
+        copied_nicknames.extend(p["Nickname"] for p in copied["Profiles"][0]["Groups"][0]["Patchers"])
+        (output / "Synthesis.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+        return (
+            b"[Example] Starting run.\n"
+            b"[Example] Run successful.\n"
+            b"[MyGitPatcher] Starting run.\n"
+            b"[MyGitPatcher] Run successful.\n"
+            b"[Patch [SE]] Starting run.\n"
+            b"[Patch [SE]] Run successful.\n"
+            b"Exported patch to final destination: out\\Synthesis.esp\n",
+            b"",
+            0,
+        )
+
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", _run_with_receipts):
+        result = await runner.run_pipeline(["id-one", "id-git", "id-brackets"])
+
+    assert copied_nicknames == ["Example", "MyGitPatcher", "Patch [SE]"]
+    assert result.success is True
+    assert result.patchers_executed == ["Example", "MyGitPatcher", "Patch [SE]"]
+
+
+def test_shortcircuit_false_falla_cerrado_antes_del_spawn(tmp_path: pathlib.Path) -> None:
+    """CLI 0.36.6 define --Shortcircuit como bool con Default=true: False no es un no-op silencioso."""
+    with pytest.raises(SynthesisExecutionError, match="Shortcircuit"):
+        _crear_entorno_base(tmp_path, shortcircuit=False)
+
+
+async def test_run_pipeline_crea_y_limpia_temp_dir_aislado_cuando_no_se_configura(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Con temp_dir=None, run_pipeline crea TEMP/TMP/TMPDIR efímero por corrida y lo borra con rmtree_link_aware."""
+    runner, output = _crear_entorno_base(tmp_path, temp_dir=None)
+    seen_temp_dirs: list[pathlib.Path] = []
+
+    async def _capture_env(_args: list[str], **kwargs: Any) -> tuple[bytes, bytes, int]:
+        env = kwargs["env"]
+        assert env["TEMP"] == env["TMP"] == env["TMPDIR"]
+        temp_path = pathlib.Path(env["TEMP"])
+        assert temp_path.is_dir()
+        seen_temp_dirs.append(temp_path)
+        (output / "Synthesis.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+        return b"Successfully generated patch output", b"", 0
+
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", _capture_env):
+        res_ok = await runner.run_pipeline(["PatcherLight"])
+
+    assert res_ok.success is True
+    assert len(seen_temp_dirs) == 1
+    assert not seen_temp_dirs[0].exists()
+
+    async def _capture_fail(_args: list[str], **kwargs: Any) -> tuple[bytes, bytes, int]:
+        temp_path = pathlib.Path(kwargs["env"]["TEMP"])
+        assert temp_path.is_dir()
+        seen_temp_dirs.append(temp_path)
+        return b"", b"Overall error:\nboom", 1
+
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", _capture_fail):
+        res_fail = await runner.run_pipeline(["PatcherLight"])
+
+    assert res_fail.success is False
+    assert len(seen_temp_dirs) == 2
+    assert seen_temp_dirs[1] != seen_temp_dirs[0]
+    assert not seen_temp_dirs[1].exists()

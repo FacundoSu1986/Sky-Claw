@@ -24,6 +24,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Literal
 
+from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.tools._process import run_capture
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline, PatcherPipelineError, SynthesisSettingsProfile
@@ -245,6 +246,11 @@ class SynthesisConfig:
             raise SynthesisExecutionError(
                 "Synthesis persistence_path is required when persistence_mode is 'Text' (RunPersistencePreparer.cs:28)"
             )
+        if self.shortcircuit is False:
+            raise SynthesisExecutionError(
+                "Synthesis CLI 0.36.6 declares --Shortcircuit as a bool switch with Default=true and cannot be "
+                "disabled via CLI flags; use shortcircuit=True or None"
+            )
         if self.dotnet_root is not None:
             dotnet_root = self.dotnet_root
             dotnet_name = dotnet_root.name.casefold()
@@ -327,9 +333,9 @@ class SynthesisRunner:
     """
 
     # Patrones regex para parsear salida real de Synthesis 0.36.6 (ConsoleReporter / ErrorClassifier)
-    # y conservar compatibilidad con marcadores genéricos.
-    _CONSOLE_START_PATTERN = re.compile(r"^\s*\[([^\]]+)\]\s+Starting run\.\s*$", re.MULTILINE)
-    _CONSOLE_SUCCESS_PATTERN = re.compile(r"^\s*\[([^\]]+)\]\s+Run successful\.\s*$", re.MULTILINE)
+    # y conservar compatibilidad con marcadores genéricos. Permitir corchetes "]" internos en Nickname.
+    _CONSOLE_START_PATTERN = re.compile(r"^[ \t]*\[([^\r\n]+)\][ \t]+Starting run\.[ \t\r]*$", re.MULTILINE)
+    _CONSOLE_SUCCESS_PATTERN = re.compile(r"^[ \t]*\[([^\r\n]+)\][ \t]+Run successful\.[ \t\r]*$", re.MULTILINE)
     _CONSOLE_EXPORT_PATTERN = re.compile(r"Exported patch to final destination:\s*(.+?)(?:\n|$)", re.IGNORECASE)
     _PATCHER_PATTERN = re.compile(
         r"(?:Running|Executing|Patchers?:)\s*[:\[]?\s*['\"]?([A-Za-z0-9_.]+)",
@@ -337,7 +343,7 @@ class SynthesisRunner:
     )
     _ERROR_PATTERN = re.compile(
         r"(?:"
-        r"(?:Overall error|Error detected|Process exited in failure|\[[^\]]+\]\s+Preparation error):\s*(.*?)"
+        r"(?:Overall error|Error detected|Process exited in failure|\[[^\r\n]+\]\s+Preparation error):\s*(.*?)"
         r"|\b(?:Mo2BuildBlockedException|Mo2BuildException|NonAdjacentSplitModsException"
         r"|TooManyMastersException|MissingModException)\b[^\n]*"
         r"|\berror\s+(?:MSB|CS)\d+\s*:\s*[^\n]+"
@@ -347,7 +353,7 @@ class SynthesisRunner:
     )
     _SUCCESS_PATTERN = re.compile(
         r"(?:Exported patch to final destination:"
-        r"|\[[^\]]+\]\s+Run successful\."
+        r"|\[[^\r\n]+\]\s+Run successful\."
         r"|(?:Successfully|Complete|Finished|Generated)\s+(?:patch|output|plugin))",
         re.IGNORECASE,
     )
@@ -604,6 +610,7 @@ class SynthesisRunner:
         assert settings_path is not None
         temporary_settings: pathlib.Path | None = None
         temporary_load_order: pathlib.Path | None = None
+        ephemeral_temp_dir: pathlib.Path | None = None
         process_error: BaseException | None = None
         try:
             dotnet_override: pathlib.Path | None = None
@@ -629,6 +636,11 @@ class SynthesisRunner:
             if await asyncio.to_thread(self.load_order_fingerprint) != load_order_fingerprint:
                 raise SynthesisExecutionError("The active MO2 plugins.txt changed while creating its CLI snapshot")
 
+            if self._config.temp_dir is None:
+                ephemeral_temp_dir = pathlib.Path(
+                    await asyncio.to_thread(tempfile.mkdtemp, prefix="skyclaw-synthesis-tmp-")
+                )
+
             args = self._build_cli_args(
                 patcher_ids,
                 extra_args,
@@ -637,7 +649,7 @@ class SynthesisRunner:
             )
             probe_before = await self._probe_output_files(profile.group_names)
             try:
-                stdout, stderr, return_code = await self._execute_process(args)
+                stdout, stderr, return_code = await self._execute_process(args, temp_dir_override=ephemeral_temp_dir)
             except SynthesisExecutionError:
                 raise
             except (TimeoutError, OSError, RuntimeError) as exc:
@@ -791,6 +803,11 @@ class SynthesisRunner:
                     temporary_path.unlink(missing_ok=True)
                 except OSError as cleanup_error:
                     cleanup_errors.append(f"{temporary_path}: {cleanup_error}")
+            if ephemeral_temp_dir is not None:
+                try:
+                    await asyncio.to_thread(rmtree_link_aware, ephemeral_temp_dir, limpiar_readonly=True)
+                except OSError as cleanup_error:
+                    cleanup_errors.append(f"{ephemeral_temp_dir}: {cleanup_error}")
             if cleanup_errors:
                 message = "Could not remove temporary Synthesis input(s): " + "; ".join(cleanup_errors)
                 # Best-effort: los temporales viven en %TEMP%; no degradan el
@@ -882,12 +899,17 @@ class SynthesisRunner:
         logger.debug("CLI args: %s", " ".join(args))
         return args
 
-    def _build_subprocess_env(self) -> dict[str, str]:
+    def _build_subprocess_env(
+        self,
+        *,
+        temp_dir_override: pathlib.Path | None = None,
+    ) -> dict[str, str]:
         """Construye un entorno mínimo seguro + controles anti-servidor .NET 10.
 
         No hereda ``os.environ`` completo para evitar filtrar secretos (API keys,
         tokens) hacia patchers comunitarios (ADR 0018/0019). Desactiva servidores
-        persistentes de MSBuild/Roslyn y antepone ``dotnet_root`` x64 en ``PATH``.
+        persistentes de MSBuild/Roslyn, sanea ``Program Files (x86)\\dotnet`` en
+        ``PATH`` siempre y antepone ``dotnet_root`` x64 cuando está configurado.
         """
         env: dict[str, str] = {}
         for key, value in os.environ.items():
@@ -901,31 +923,45 @@ class SynthesisRunner:
         env["DOTNET_NOLOGO"] = "1"
         env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
 
-        if self._config.temp_dir is not None:
-            temp_str = str(self._config.temp_dir)
+        effective_temp = temp_dir_override if temp_dir_override is not None else self._config.temp_dir
+        if effective_temp is not None:
+            temp_str = str(effective_temp)
             env["TEMP"] = temp_str
             env["TMP"] = temp_str
             env["TMPDIR"] = temp_str
 
+        # Sanear PATH x86 SIEMPRE (incluso si dotnet_root es None, ADR 0019 §2.4).
+        path_keys = [key for key in env if key.upper() == "PATH"]
+        path_key = path_keys[0] if path_keys else "PATH"
+        entries = [entry for key in path_keys for entry in env[key].split(os.pathsep) if entry]
+        for extra_key in path_keys[1:]:
+            del env[extra_key]
+        filtered = [entry for entry in entries if not _is_x86_dotnet_path(entry)]
+
         if self._config.dotnet_root is not None:
             dotnet_dir = str(self._config.dotnet_root)
             env["DOTNET_ROOT"] = dotnet_dir
-            path_key = next((k for k in env if k.upper() == "PATH"), "PATH")
-            raw_path = env.get(path_key, "")
-            entries = [entry for entry in raw_path.split(os.pathsep) if entry]
             filtered = [
-                entry
-                for entry in entries
-                if not _is_x86_dotnet_path(entry)
-                and os.path.normcase(os.path.normpath(entry)) != os.path.normcase(os.path.normpath(dotnet_dir))
+                dotnet_dir,
+                *[
+                    entry
+                    for entry in filtered
+                    if os.path.normcase(os.path.normpath(entry)) != os.path.normcase(os.path.normpath(dotnet_dir))
+                ],
             ]
-            env[path_key] = os.pathsep.join([dotnet_dir, *filtered])
+
+        if filtered:
+            env[path_key] = os.pathsep.join(filtered)
+        elif path_key in env:
+            env[path_key] = ""
 
         return env
 
     async def _execute_process(
         self,
         args: list[str],
+        *,
+        temp_dir_override: pathlib.Path | None = None,
     ) -> tuple[str, str, int]:
         """
         Ejecuta el proceso de Synthesis y captura su salida.
@@ -949,7 +985,7 @@ class SynthesisRunner:
                 args,
                 timeout=self._config.timeout_seconds,
                 cwd=cwd,
-                env=self._build_subprocess_env(),
+                env=self._build_subprocess_env(temp_dir_override=temp_dir_override),
                 require_job=True,
                 max_output_bytes=self._config.max_output_bytes,
             )
