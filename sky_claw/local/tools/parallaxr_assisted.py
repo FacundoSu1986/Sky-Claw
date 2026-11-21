@@ -11,6 +11,10 @@ Contrato arquitectónico:
 - Read-only y side-effect-free respecto del filesystem: 0 mutaciones en archivos o MO2.
 - Determinista para un snapshot de filesystem estable.
 - Cero subprocesos, cero ejecución de código externo y cero acceso a red.
+- Identidad (#667-A4): los candidatos de instalación y el handoff identifican al hijo
+  directo de `mods_dir` que presenta MO2. Dos hijos que comparten destino físico conservan
+  sus identidades lógicas. La procedencia de la instalación viaja en `resolved_mod_root` y
+  `resolved_entrypoint`. Los marcadores de salida conservan su ruta física y pueden repetirse.
 """
 
 from __future__ import annotations
@@ -34,6 +38,9 @@ _HASH_CHUNK_SIZE: Final[int] = 65536
 _FINGERPRINT_MAX_ATTEMPTS: Final[int] = 2
 _WINERROR_INSPECTION_FAILURES: Final[frozenset[int]] = frozenset({21, 123, 1921})
 _ABSENCE_ERRNOS: Final[frozenset[int]] = frozenset({errno.ENOENT, errno.ENOTDIR})
+# Caracteres reservados de Win32 y separador alternativo: un segmento lógico de selección que
+# contenga cualquiera de ellos no puede identificar una carpeta hija de MO2 (incluye ADS por ':').
+_INVALID_SEGMENT_CHARS: Final[frozenset[str]] = frozenset({"*", "?", "<", ">", '"', ":", "|", "\0"})
 _ItemT = TypeVar("_ItemT")
 
 
@@ -74,17 +81,67 @@ class _FileFingerprintSnapshot:
     size_bytes: int
     mtime_ns: int
     sha256: str
+    device: int
+    inode: int
+
+    def matches(self, file_stat: os.stat_result) -> bool:
+        """Comprueba que los metadatos del archivo sigan identificando la captura."""
+        return (self.device, self.inode, self.size_bytes, self.mtime_ns) == _file_identity(file_stat)
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectModEntry:
+    """Registro dual interno de una entrada de mod válida: identidad lógica MO2 y procedencia física.
+
+    `logical_*` son coordenadas de Mod Organizer 2 bajo el `mods_dir` resuelto (lo que el
+    gestor presenta y el usuario selecciona). `resolved_*` son los destinos verificados tras
+    resolver reparse points dentro de la frontera autorizada.
+
+    Invariante: nunca se deriva una coordenada de la otra. El padre físico del entrypoint
+    resuelto no tiene por qué coincidir con la carpeta física del mod (un `ParallaxR.BAT`
+    puede ser un symlink de archivo hacia un subdirectorio del mismo mod).
+    """
+
+    logical_mod_root: Path
+    logical_target: Path
+    resolved_mod_root: Path
+    resolved_target: Path
 
 
 @dataclass(frozen=True, slots=True)
 class ParallaxRInstallationEvidence:
-    """Evidencia inmutable capturada de la instalación oficial de ParallaxR."""
+    """Evidencia inmutable capturada de la instalación oficial de ParallaxR.
+
+    En emisiones productivas (`READY`) `mod_root` y `entrypoint` identifican la instalación
+    LÓGICA de MO2 (la carpeta hija directa del `mods_dir` resuelto y su `ParallaxR.BAT`),
+    mientras que `resolved_mod_root` y `resolved_entrypoint` registran los destinos
+    físicamente inspeccionados y hasheados dentro de la frontera autorizada.
+
+    Contrato:
+    - El par `(None, None)` queda reservado a constructores heredados de cinco argumentos y
+      no constituye evidencia física comprobada.
+    - `__post_init__` rechaza el estado mitad-poblado, incluso vía `dataclasses.replace()`.
+    - No debe asumirse `resolved_entrypoint.parent == resolved_mod_root`: el entrypoint puede
+      ser un symlink de archivo hacia un subdirectorio del mod.
+    - En volúmenes case-insensitive `resolved_entrypoint.name` puede preservar el casing real
+      del disco, distinto de `"ParallaxR.BAT"`; el round-trip se garantiza sobre `entrypoint`.
+    """
 
     mod_root: Path
     entrypoint: Path
     size_bytes: int
     mtime_ns: int
     sha256: str
+    resolved_mod_root: Path | None = None
+    resolved_entrypoint: Path | None = None
+
+    def __post_init__(self) -> None:
+        """Rechaza evidencia física parcialmente poblada (fail-closed)."""
+        if (self.resolved_mod_root is None) != (self.resolved_entrypoint is None):
+            raise ValueError(
+                "ParallaxRInstallationEvidence requiere ambos campos resolved_mod_root y "
+                "resolved_entrypoint poblados o ambos en None."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +264,19 @@ def _is_accessible_regular_file(path: Path) -> bool:
     return mode is not None and stat.S_ISREG(mode)
 
 
+def _es_prefijo_de_componentes(child_path: Path, parent_dir: Path) -> bool:
+    """Indica si `child_path` contiene exactamente los componentes de `parent_dir` (inclusivo).
+
+    Compara la tupla de componentes en vez de la igualdad de rutas del lenguaje: en Windows esa
+    igualdad pliega mayúsculas/minúsculas globalmente y colapsaría directorios NTFS configurados
+    como case-sensitive. Ambas rutas deben ser absolutas.
+    """
+    if not parent_dir.is_absolute() or not child_path.is_absolute():
+        return False
+    parent_parts = parent_dir.parts
+    return len(child_path.parts) >= len(parent_parts) and child_path.parts[: len(parent_parts)] == parent_parts
+
+
 def _resolve_if_contained(
     child_path: Path,
     parent_dir: Path,
@@ -217,11 +287,8 @@ def _resolve_if_contained(
     """Resuelve child_path si permanece contenido en parent_dir; propaga OSError de resolución."""
     base_parent = resolved_parent if resolved_parent is not None else _resolve_path(parent_dir, strict=strict)
     resolved_child = _resolve_path(child_path, strict=strict)
-    try:
-        if resolved_child.is_relative_to(base_parent):
-            return resolved_child
-    except ValueError:
-        return None
+    if _es_prefijo_de_componentes(resolved_child, base_parent):
+        return resolved_child
     return None
 
 
@@ -231,6 +298,11 @@ def validate_path_containment(child_path: Path, parent_dir: Path) -> bool:
         return _resolve_if_contained(child_path, parent_dir, strict=False) is not None
     except (ValueError, OSError):
         return False
+
+
+def _file_identity(file_stat: os.stat_result) -> tuple[int, int, int, int]:
+    """Devuelve la identidad y los metadatos que deben coincidir con el archivo leído."""
+    return file_stat.st_dev, file_stat.st_ino, file_stat.st_size, file_stat.st_mtime_ns
 
 
 def _fingerprint_file_consistently(
@@ -253,13 +325,7 @@ def _fingerprint_file_consistently(
             after = os.fstat(handle.fileno())
 
             # Validar que el descriptor no haya cambiado mientras se leía
-            descriptor_stable = (
-                before.st_size == after.st_size
-                and before.st_mtime_ns == after.st_mtime_ns
-                and before.st_ino == after.st_ino
-                and before.st_dev == after.st_dev
-            )
-            if not descriptor_stable:
+            if _file_identity(before) != _file_identity(after):
                 continue
 
             # Validar que la ruta siga resolviendo al mismo archivo físico
@@ -270,19 +336,15 @@ def _fingerprint_file_consistently(
                     continue
                 raise
 
-            path_matches = (
-                path_stat.st_dev == after.st_dev
-                and path_stat.st_ino == after.st_ino
-                and path_stat.st_size == after.st_size
-                and path_stat.st_mtime_ns == after.st_mtime_ns
-            )
-            if not path_matches:
+            if _file_identity(path_stat) != _file_identity(after):
                 continue
 
             return _FileFingerprintSnapshot(
                 size_bytes=after.st_size,
                 mtime_ns=after.st_mtime_ns,
                 sha256=hasher.hexdigest(),
+                device=after.st_dev,
+                inode=after.st_ino,
             )
 
     raise ParallaxREvidenceUnstableError(
@@ -293,15 +355,26 @@ def _fingerprint_file_consistently(
 def _discover_direct_mod_entries(
     mods_dir: Path,
     target_name: str,
-    build_item: Callable[[Path], _ItemT],
+    build_item: Callable[[_DirectModEntry], _ItemT],
+    *,
+    resolved_mods_dir: Path | None = None,
 ) -> tuple[tuple[_ItemT, ...], bool]:
-    """Enumera entradas directas de mods_dir sin convertir errores de E/S en ausencia."""
+    """Enumera entradas directas de mods_dir sin convertir errores de E/S en ausencia.
+
+    Motor único de descubrimiento: por cada hijo directo válido emite un `_DirectModEntry` con
+    las cuatro coordenadas (lógica de carpeta y archivo, física de carpeta y archivo). Preserva
+    el orden de sondeo de `#944` sobre la entrada hija tal como se iteró y sobre su objetivo
+    directo; la coordenada lógica se proyecta recién al construir el registro. El preflight
+    aporta el mismo contenedor resuelto a ambos escaneos.
+    """
     items: list[_ItemT] = []
     try:
-        if not _is_accessible_dir(mods_dir):
-            return (), True
-        resolved_mods_dir = _resolve_path(mods_dir, strict=True)
-        for child in sorted(mods_dir.iterdir(), key=lambda p: p.name):
+        scan_dir = resolved_mods_dir if resolved_mods_dir is not None else mods_dir
+        if not _is_accessible_dir(scan_dir):
+            return (), resolved_mods_dir is None
+        if resolved_mods_dir is None:
+            resolved_mods_dir = _resolve_path(mods_dir, strict=True)
+        for child in sorted(scan_dir.iterdir(), key=lambda p: p.name):
             if not _is_accessible_dir(child):
                 continue
             resolved_child = _resolve_if_contained(
@@ -311,6 +384,9 @@ def _discover_direct_mod_entries(
                 resolved_parent=resolved_mods_dir,
             )
             if resolved_child is None:
+                continue
+            # Descendencia estricta +1: descarta la self-junction (`SelfLink -> mods_dir`, +0).
+            if len(resolved_child.parts) < len(resolved_mods_dir.parts) + 1:
                 continue
             target_candidate = child / target_name
             if not _is_accessible_regular_file(target_candidate):
@@ -323,31 +399,55 @@ def _discover_direct_mod_entries(
             )
             if resolved_target is None:
                 continue
-            items.append(build_item(resolved_target))
+            # Descendencia estricta +2: descarta file symlinks hacia la raíz de mods_dir (+1).
+            if len(resolved_target.parts) < len(resolved_mods_dir.parts) + 2:
+                continue
+            logical_mod_root = resolved_mods_dir / child.name
+            logical_target = logical_mod_root / target_name
+            items.append(
+                build_item(
+                    _DirectModEntry(
+                        logical_mod_root=logical_mod_root,
+                        logical_target=logical_target,
+                        resolved_mod_root=resolved_child,
+                        resolved_target=resolved_target,
+                    )
+                )
+            )
     except OSError:
         return tuple(items), False
 
     return tuple(items), True
 
 
-def discover_parallaxr_candidates(mods_dir: Path) -> tuple[Path, ...]:
-    """Descubre candidatos de entrypoint oficial exclusivamente en hijos directos de mods_dir.
-
-    Operación read-only, side-effect-free respecto del filesystem y acotada.
-    Si ocurre un error de E/S durante la inspección, eleva ParallaxREvidenceIncompleteError
-    preservando los candidatos válidos ya observados.
-    """
-    candidates, complete = _discover_direct_mod_entries(
+def _discover_candidate_identities(
+    mods_dir: Path, *, resolved_mods_dir: Path | None = None
+) -> tuple[_DirectModEntry, ...]:
+    """Descubre candidatos de ParallaxR con identidad dual o eleva evidencia incompleta (#944)."""
+    identities, complete = _discover_direct_mod_entries(
         mods_dir,
         OFFICIAL_ENTRYPOINT_NAME,
-        lambda resolved_entrypoint: resolved_entrypoint,
+        lambda entry: entry,
+        resolved_mods_dir=resolved_mods_dir,
     )
     if not complete:
         raise ParallaxREvidenceIncompleteError(
             "Inspección incompleta del directorio de mods al descubrir candidatos de ParallaxR.",
-            partial_candidates=candidates,
+            partial_candidates=tuple(identity.logical_target for identity in identities),
         )
-    return candidates
+    return identities
+
+
+def discover_parallaxr_candidates(mods_dir: Path) -> tuple[Path, ...]:
+    """Descubre entrypoints oficiales en hijos directos de mods_dir con identidad lógica MO2.
+
+    Operación read-only, side-effect-free respecto del filesystem y acotada. Retorna los
+    entrypoints LÓGICOS (`<mods_dir resuelto>/<hijo>/ParallaxR.BAT`) sin deduplicar por destino
+    físico: dos carpetas hijas que comparten destino (junctions o symlinks) son dos candidatos
+    independientes. Si ocurre un error de E/S durante la inspección, eleva
+    ParallaxREvidenceIncompleteError preservando los entrypoints lógicos ya observados.
+    """
+    return tuple(identity.logical_target for identity in _discover_candidate_identities(mods_dir))
 
 
 def _build_output_marker_evidence(resolved_marker: Path) -> ParallaxROutputMarkerEvidence:
@@ -367,12 +467,22 @@ def discover_output_markers(mods_dir: Path) -> tuple[ParallaxROutputMarkerEviden
     Operación read-only y side-effect-free respecto del filesystem. No prejuzga frescura.
     Si un marcador está en mutación continua, eleva ParallaxREvidenceUnstableError.
     Si ocurre un error de E/S durante la inspección, eleva ParallaxREvidenceIncompleteError
-    preservando los marcadores válidos ya observados.
+    preservando los marcadores válidos ya observados. Las coordenadas son físicas y pueden
+    repetirse si dos hijos lógicos comparten destino.
     """
+    return _discover_output_markers(mods_dir)
+
+
+def _discover_output_markers(
+    mods_dir: Path, *, resolved_mods_dir: Path | None = None
+) -> tuple[ParallaxROutputMarkerEvidence, ...]:
     markers, complete = _discover_direct_mod_entries(
         mods_dir,
         OUTPUT_MARKER_NAME,
-        _build_output_marker_evidence,
+        # B9 fuera de alcance: el marcador conserva su ruta FÍSICA verificada, pero hereda del
+        # motor compartido el cierre de self-junctions y la profundidad mínima +2.
+        lambda entry: _build_output_marker_evidence(entry.resolved_target),
+        resolved_mods_dir=resolved_mods_dir,
     )
     if not complete:
         raise ParallaxREvidenceIncompleteError(
@@ -382,15 +492,117 @@ def discover_output_markers(mods_dir: Path) -> tuple[ParallaxROutputMarkerEviden
     return markers
 
 
+def _validate_selection_segment(segment: str) -> bool:
+    """Valida un segmento lógico de `explicit_selection` (nombre de mod o de entrypoint oficial)."""
+    if not segment or segment in (".", ".."):
+        return False
+    if "/" in segment or "\\" in segment:
+        return False
+    return not any(caracter in _INVALID_SEGMENT_CHARS for caracter in segment)
+
+
+def _is_same_resolved_container(candidate_container: Path, authorized_mods_dir: Path) -> bool:
+    """Compara dos contenedores YA resueltos por el kernel, componente a componente.
+
+    Se comparan los componentes y la cadena OS, nunca la igualdad de rutas del lenguaje:
+    en Windows dos rutas pueden resultar iguales aunque el filesystem distinga `Mods` de
+    `mods`. Ambas rutas deben estar absolutas.
+    """
+    if not candidate_container.is_absolute() or not authorized_mods_dir.is_absolute():
+        return False
+    return candidate_container.parts == authorized_mods_dir.parts and os.fspath(candidate_container) == os.fspath(
+        authorized_mods_dir
+    )
+
+
+def _resolves_to_authorized_container(container: Path, authorized_mods_dir: Path) -> bool:
+    """Resuelve estrictamente SÓLO el contenedor y lo compara con el `mods_dir` autorizado.
+
+    Captura exclusivamente `OSError` (incluye el bucle de symlinks traducido por
+    `_resolve_path`): un `RuntimeError` ajeno al bucle debe propagarse sin enmascararse.
+    """
+    try:
+        resolved = _resolve_path(container, strict=True)
+    except OSError:
+        return False
+    return _is_same_resolved_container(resolved, authorized_mods_dir)
+
+
+def _decompose_explicit_selection(explicit_selection: Path, resolved_mods_dir: Path) -> tuple[str, str | None] | None:
+    """Descompone `explicit_selection` en (segmento de mod, segmento de entrypoint | None).
+
+    Boundary-Split: nunca se dereferencia la entrada seleccionada (el alias lógico), sólo se
+    resuelve estrictamente su contenedor padre (Forma 1) o abuelo (Forma 2) y se exige igualdad
+    canónica contra `resolved_mods_dir`. Se rechazan rutas vacías, `"."`, drive-relative,
+    root-relative sin unidad, componentes `".."` y caracteres NUL.
+    """
+    if not explicit_selection.parts or "\0" in os.fspath(explicit_selection):
+        return None
+    if not explicit_selection.is_absolute() and (explicit_selection.drive or explicit_selection.root):
+        return None
+    if ".." in explicit_selection.parts:
+        return None
+
+    anchored = explicit_selection
+    if not anchored.is_absolute():
+        try:
+            anchored = Path.cwd() / anchored
+        except OSError:
+            return None
+
+    entry_segment = anchored.name
+    if not _validate_selection_segment(entry_segment):
+        return None
+
+    # Una ruta bajo un hijo del contenedor se interpreta como entrypoint, incluso si el hijo
+    # es una self-junction. Así nunca se selecciona otro mod usando sólo el último componente.
+    parent = anchored.parent
+    mod_segment = parent.name
+    if mod_segment and _resolves_to_authorized_container(parent.parent, resolved_mods_dir):
+        if _validate_selection_segment(mod_segment):
+            return (mod_segment, entry_segment)
+        return None
+    if _resolves_to_authorized_container(parent, resolved_mods_dir):
+        return (entry_segment, None)
+
+    return None
+
+
+def _match_explicit_selection(
+    identities: tuple[_DirectModEntry, ...],
+    selection_mod_segment: str,
+    selection_entry_segment: str | None,
+) -> _DirectModEntry | None:
+    """Devuelve el candidato sólo si el match lógico es exacto y único (fail-closed)."""
+    matches = tuple(
+        identity
+        for identity in identities
+        if identity.logical_mod_root.name == selection_mod_segment
+        and (selection_entry_segment is None or selection_entry_segment == OFFICIAL_ENTRYPOINT_NAME)
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def _identidad_seleccionada_sigue_vigente(selected: _DirectModEntry) -> bool:
+    """Comprueba que la carpeta y el entrypoint siguen en los destinos admitidos por el descubrimiento."""
+    resolved_root_ahora = _resolve_path(selected.logical_mod_root, strict=True)
+    if not _is_same_resolved_container(resolved_root_ahora, selected.resolved_mod_root):
+        return False
+    resolved_target_ahora = _resolve_path(selected.logical_target, strict=True)
+    return _is_same_resolved_container(resolved_target_ahora, selected.resolved_target)
+
+
 def run_parallaxr_assisted_preflight(
     mods_dir: Path, explicit_selection: Path | None = None
 ) -> ParallaxRAssistedPreflight:
     """Ejecuta el preflight asistido de ParallaxR de forma determinista y side-effect-free.
 
-    Retorna evidencia de instalación, candidatos descubiertos y marcadores de salida existentes.
+    Las rutas de instalación y `candidate_mod_roots` identifican al hijo lógico de MO2.
+    `existing_output_candidates` conserva las rutas físicas de los marcadores y puede contener
+    rutas repetidas. Ambos escaneos usan el mismo contenedor resuelto.
     """
     try:
-        mods_dir_accessible = _is_accessible_dir(mods_dir)
+        resolved_mods_dir = _resolve_path(mods_dir, strict=True) if _is_accessible_dir(mods_dir) else None
     except OSError:
         return ParallaxRAssistedPreflight(
             status=ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
@@ -400,29 +612,31 @@ def run_parallaxr_assisted_preflight(
             ),
         )
 
-    if not mods_dir_accessible:
+    if resolved_mods_dir is None:
         return ParallaxRAssistedPreflight(
             status=ParallaxRAssistedStatus.MISSING,
             success=False,
             message=f"El directorio de mods '{mods_dir}' no existe o no es accesible.",
         )
 
+    identities: tuple[_DirectModEntry, ...] = ()
+    candidate_mod_roots: tuple[Path, ...] = ()
     candidates_incomplete = False
     try:
-        candidates = discover_parallaxr_candidates(mods_dir)
+        identities = _discover_candidate_identities(mods_dir, resolved_mods_dir=resolved_mods_dir)
     except ParallaxREvidenceIncompleteError as err:
-        candidates = err.partial_candidates
+        # #944: los parciales ya son entrypoints lógicos; su padre es la raíz lógica del mod.
+        candidate_mod_roots = tuple(entrypoint.parent for entrypoint in err.partial_candidates)
         candidates_incomplete = True
     except OSError:
-        candidates = ()
         candidates_incomplete = True
-
-    candidate_mod_roots = tuple(c.parent for c in candidates)
+    else:
+        candidate_mod_roots = tuple(identity.logical_mod_root for identity in identities)
 
     markers_incomplete = False
     markers_unstable = False
     try:
-        existing_output = discover_output_markers(mods_dir)
+        existing_output = _discover_output_markers(mods_dir, resolved_mods_dir=resolved_mods_dir)
     except ParallaxREvidenceIncompleteError as err:
         existing_output = err.partial_markers
         markers_incomplete = True
@@ -453,7 +667,7 @@ def run_parallaxr_assisted_preflight(
             message="Los marcadores de salida de ParallaxR cambiaron durante la captura de evidencia; reintente cuando la herramienta no esté activa.",
         )
 
-    if not candidates:
+    if not identities:
         return ParallaxRAssistedPreflight(
             status=ParallaxRAssistedStatus.MISSING,
             success=False,
@@ -462,27 +676,12 @@ def run_parallaxr_assisted_preflight(
             message="No se encontró ninguna instalación de ParallaxR bajo los mods de MO2.",
         )
 
-    selected_entrypoint: Path | None = None
+    selected: _DirectModEntry | None = None
 
     if explicit_selection is not None:
-        try:
-            resolved_selection = _resolve_path(explicit_selection, strict=False)
-        except OSError:
-            return ParallaxRAssistedPreflight(
-                status=ParallaxRAssistedStatus.INVALID_SELECTION,
-                success=False,
-                existing_output_candidates=existing_output,
-                candidate_mod_roots=candidate_mod_roots,
-                message="La ruta de selección explícita no es válida.",
-            )
-
-        # La selección debe coincidir exactamente con un entrypoint descubierto o su mod_root
-        for cand in candidates:
-            if resolved_selection in (cand, cand.parent):
-                selected_entrypoint = cand
-                break
-
-        if selected_entrypoint is None:
+        decomposed = _decompose_explicit_selection(explicit_selection, resolved_mods_dir)
+        selected = _match_explicit_selection(identities, *decomposed) if decomposed is not None else None
+        if selected is None:
             return ParallaxRAssistedPreflight(
                 status=ParallaxRAssistedStatus.INVALID_SELECTION,
                 success=False,
@@ -490,23 +689,21 @@ def run_parallaxr_assisted_preflight(
                 candidate_mod_roots=candidate_mod_roots,
                 message="La selección explícita no coincide con ningún candidato descubierto válido.",
             )
+    elif len(identities) == 1:
+        selected = identities[0]
     else:
-        if len(candidates) == 1:
-            selected_entrypoint = candidates[0]
-        else:
-            return ParallaxRAssistedPreflight(
-                status=ParallaxRAssistedStatus.AMBIGUOUS,
-                success=False,
-                existing_output_candidates=existing_output,
-                candidate_mod_roots=candidate_mod_roots,
-                message=(
-                    f"Se detectaron múltiples ({len(candidates)}) candidatos de ParallaxR. "
-                    "Se requiere selección explícita."
-                ),
-            )
+        return ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.AMBIGUOUS,
+            success=False,
+            existing_output_candidates=existing_output,
+            candidate_mod_roots=candidate_mod_roots,
+            message=(
+                f"Se detectaron múltiples ({len(identities)}) candidatos de ParallaxR. Se requiere selección explícita."
+            ),
+        )
 
     try:
-        snapshot = _fingerprint_file_consistently(selected_entrypoint)
+        snapshot = _fingerprint_file_consistently(selected.resolved_target)
     except ParallaxREvidenceUnstableError:
         return ParallaxRAssistedPreflight(
             status=ParallaxRAssistedStatus.EVIDENCE_UNSTABLE,
@@ -526,12 +723,45 @@ def run_parallaxr_assisted_preflight(
             ),
         )
 
+    # La evidencia y el handoff deben seguir describiendo el mismo archivo al emitir READY.
+    try:
+        identidad_vigente = (
+            _is_same_resolved_container(_resolve_path(mods_dir, strict=True), resolved_mods_dir)
+            and _identidad_seleccionada_sigue_vigente(selected)
+            and snapshot.matches(selected.logical_target.stat())
+        )
+    except OSError:
+        return ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.EVIDENCE_INCOMPLETE,
+            success=False,
+            existing_output_candidates=existing_output,
+            candidate_mod_roots=candidate_mod_roots,
+            message=(
+                "No se pudo revalidar la identidad del entrypoint seleccionado de ParallaxR por "
+                "un error de acceso al sistema de archivos."
+            ),
+        )
+
+    if not identidad_vigente:
+        return ParallaxRAssistedPreflight(
+            status=ParallaxRAssistedStatus.EVIDENCE_UNSTABLE,
+            success=False,
+            existing_output_candidates=existing_output,
+            candidate_mod_roots=candidate_mod_roots,
+            message=(
+                "El contenedor de mods o el entrypoint seleccionado cambió durante el preflight; "
+                "reintente cuando el árbol de mods esté estable."
+            ),
+        )
+
     evidence = ParallaxRInstallationEvidence(
-        mod_root=selected_entrypoint.parent,
-        entrypoint=selected_entrypoint,
+        mod_root=selected.logical_mod_root,
+        entrypoint=selected.logical_target,
         size_bytes=snapshot.size_bytes,
         mtime_ns=snapshot.mtime_ns,
         sha256=snapshot.sha256,
+        resolved_mod_root=selected.resolved_mod_root,
+        resolved_entrypoint=selected.resolved_target,
     )
 
     return ParallaxRAssistedPreflight(
