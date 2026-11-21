@@ -1,8 +1,8 @@
 # ADR 0019 — Operación de Synthesis en dos fases bajo MO2 USVFS (Etapa 7)
 
-**Fecha:** 2026-11-20
+**Fecha:** 2026-11-20 (actualizado 2026-11-21)
 **Estado:** Propuesta (PR-0).
-**Base:** `origin/main` `c6e1b022`.
+**Base:** `origin/main` `4c2da7ae` (corte inicial de investigación: `c6e1b022`; sincronizado con el cierre de `F1` en `#980` `676f4c29`).
 **Rama:** `docs/adr-0019-synthesis-two-phase-usvfs`
 
 ## 1. Contexto
@@ -84,18 +84,40 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
      `dotnet restore` (subprocesos fuera de `NetworkGateway`), se exige compuerta HITL explícita
      enumerando repositorios, commits y hosts (`github.com`, `api.nuget.org`) antes de lanzar red.
 
-2. **Fase 2 — Parcheo puro (MO2 USVFS vía Broker/Worker, 100% offline):**
+2. **Fase 2 — Parcheo puro (MO2 USVFS vía Broker/Worker, sin red ni compilación iniciadas por Synthesis):**
    - `BrokeredSynthesisRunner` (`sky_claw/local/mo2/brokered_synthesis.py`) despacha
      `tool_id = "synthesis"` al `VfsWorker` bajo fence `supervised`, Job Object y exclusión mutua
-     ADR 0017. **Prerrequisito de contención (F1):** antes de habilitar rollback automático tras
-     pérdida de conexión del bridge, debe cerrarse o auditarse la rama de gracia vencida en
-     `vfs_broker.py:1295-1319` para que una terminalidad desconocida nunca habilite rollback y pase
-     a cuarentena durable.
+     ADR 0017. **Estado de `F1` (cerrado en `main` por `#980` `676f4c29`):** la rama de gracia
+     vencida tras perder el bridge ya pasa a cuarentena persistida y levanta
+     `VfsBridgeLostTeardownError` (subclase de `VfsTeardownError`, que veta el rollback). Por
+     contrato derivado, `BrokeredSynthesisRunner` y `SynthesisPipelineService` deben consultar y
+     respetar `exception_forbids_rollback(exc)` ante `VfsJobTimeoutError(terminality_unknown=True)`,
+     `VfsTeardownError` y `VfsBridgeLostTeardownError`, impidiendo `_cleanup_synthesis_outputs()` y
+     manteniendo la transacción del journal en estado pendiente (nunca `rolled_back`).
+   - **Selección explícita de backend y `WIRING_SECURITY_HOLD` (paridad E3-R3 con `sky_claw/local/AGENTS.md` §2.9):**
+     el backend se elige exclusivamente mediante una clave de configuración dedicada
+     (`synthesis_backend`: `"standalone"` por defecto o `"brokered"`). Queda **prohibido** inferir
+     el backend por la presencia en memoria de un `VfsBroker` (`if vfs_broker is not None:`) o
+     aplicar fallback silencioso a `"standalone"` si se solicitó `"brokered"` y falta broker,
+     `instance_id` o raíces MO2 válidas. La ejecución `"brokered"` queda bloqueada en código por el
+     literal de módulo `_CONTENCION_DEL_WORKER_VERIFICADA = False` (`WIRING_SECURITY_HOLD`, no
+     configurable por `config.toml`, env var ni parámetro), que solo podrá levantarse en un PR
+     dedicado con revisión adversarial tras acreditar en rig Windows (Spikes S4/S5) la contención
+     del subárbol completo (`Synthesis.Bethesda.CLI.exe` → `dotnet` → patchers) bajo el Job Object
+     del bridge/worker sobre el binario final.
    - `VFS_TOOL_EXECUTABLE_NAMES["synthesis"] = frozenset({"synthesis.bethesda.cli.exe"})`.
-   - En Fase 2 se admite `dotnet --info` como hijo informativo esperado (`PrintDotNetInfo.cs`), pero
-     **cero** `git`, `dotnet restore`, `dotnet build` ni egress de red.
+   - **Límite de aislamiento de red en Fase 2 (`CliPatcherRun.cs:78-88`):** usar `CliPatcherSettings`
+     + `--BlockBuildingWithinMo2` elimina `git`, `dotnet restore` y `dotnet build` iniciados por
+     Synthesis (validado empíricamente en Spike S2; solo se admite `dotnet --info` informativo en
+     `PrintDotNetInfo.cs`), pero **no** constituye un firewall de sistema operativo contra un
+     ejecutable precompilado de terceros que abra sockets por cuenta propia (`CliPatcherRun.cs:78-88`).
+     Por ello, todo patcher requiere aprobación HITL explícita de repositorio/commit antes de
+     ejecutarse en Fase 1 y cualquier barrera de egress a nivel OS queda fuera del alcance de este ADR.
    - El snapshot de `plugins.txt` debe preservar la posición de corte del grupo (`LoadOrderForRunProvider.cs:25-32`
-     recorta los plugins posteriores al ModKey de salida del grupo).
+     recorta los plugins posteriores al ModKey de salida del grupo). La atestación `expected_plugins`
+     en el worker USVFS valida todos los plugins de entrada activos en `plugins.txt`, **excluyendo**
+     los artefactos de salida propios de los grupos seleccionados del run (`<Grupo>.esp` y sus
+     splits `<Grupo>_N.esp`), para no bloquear reruns tras limpiar outputs previos.
    - Invoca `Synthesis.Bethesda.CLI.exe run-pipeline` con:
      - `--OutputDirectory <staging_output_dir>`
      - `--PipelineSettingsPath <phase2_pipeline_settings.json>`
@@ -103,9 +125,9 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
      - `--DataFolderPath <game_data_dir>`
      - `--LoadOrderFilePath <plugins_txt_snapshot>`
      - `--ExtraDataFolder <cwd_run>/Data` (más `cwd = <cwd_run>`)
-     - `--PersistenceMode Text --PersistencePath <persistence_work_dir>`
-     - `--BlockBuildingWithinMo2` y `--Shortcircuit`
-   - `synthesis_vfs_visibility` adopta `"virtual_usvfs": False` en modo `mo2_broker` (paridad con
+     - `--PersistenceMode Text --PersistencePath <persistence_work_dir>` (cuando la persistencia de FormIDs está habilitada)
+     - `--BlockBuildingWithinMo2` y `--Shortcircuit` (o su representación explícita según Spike CLI 0.36.6)
+   - `synthesis_vfs_visibility` adopta `"virtual_usvfs": False` en modo `brokered` (paridad con
      LOOT y DynDOLOD), manteniendo fail-closed en modo `standalone` si faltan plugins en físico.
 
 ### 2.2 Provisioning y verificación del binario CLI (T1)
@@ -139,12 +161,14 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
   `PersistencePath`, `SynthesisConfig` valida cerrado antes del spawn que `PersistenceMode=Text`
   tenga ruta no vacía.
 - **Activación y contigüidad de splits:** ADR 0017 (`mo2_ini_exclusion.py`) protege
-  `modorganizer.ini` por handle, no `plugins.txt` ni `modlist.txt`. En el primer alcance, para
-  perfiles no quiescentes se conserva la inmutabilidad byte a byte de `plugins.txt` y se entrega el
-  diff de activación; la activación desatendida sobre `modlist.txt`/`plugins.txt` (habilitando
+  `modorganizer.ini` por handle, no `plugins.txt` ni `modlist.txt`. En **PR-2b** (perfiles no
+  quiescentes) se conserva la inmutabilidad byte a byte de `plugins.txt` y `modlist.txt`,
+  entregando únicamente el diff de activación/contigüidad en solo-lectura; la **activación
+  desatendida transaccional** sobre `modlist.txt`/`plugins.txt` (habilitando
   `+Sky-Claw Synthesis Output`, limpiando splits obsoletos y garantizando `<Grupo>.esp`,
   `<Grupo>_2.esp`, ..., `<Grupo>_N.esp` **adyacentes y ordenados** antes de `DynDOLOD.esm/esp` y
-  `Occlusion.esp`) requiere certificación previa de quiescencia/refresco de MO2 en el rig (PR-5).
+  `Occlusion.esp`) queda asignada a **PR-5**, sujeta a certificación previa de quiescencia y
+  refresco de MO2 en el rig.
 
 ### 2.4 Entorno mínimo, contención Windows y timeouts
 
@@ -152,18 +176,24 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
   Fase 1 y Fase 2 reciben únicamente una lista blanca mínima de variables OS + variables de control
   `.NET`/temp (`DOTNET_CLI_USE_MSBUILD_SERVER=0`, `MSBUILDDISABLENODEREUSE=1`,
   `UseSharedCompilation=false`, `DOTNET_NOLOGO=1`, `DOTNET_CLI_TELEMETRY_OPTOUT=1`, `DOTNET_ROOT`,
-  `PATH` saneado x64-primero, `TEMP`/`TMP` al workspace de la corrida; más `--disable-build-servers`
-  y `-p:UseSharedCompilation=false` en los `dotnet build` de Fase 1), evitando fuga de secretos
+  `PATH` con remoción incondicional de `Program Files (x86)\dotnet` y sus subdirectorios SDK/tools
+  incluso cuando `dotnet_root` no está fijado —y anteponiendo el `dotnet` x64 cuando sí lo está—,
+  `TEMP`/`TMP` al workspace de la corrida; más `--disable-build-servers` y
+  `-p:UseSharedCompilation=false` en los `dotnet build` de Fase 1), evitando fuga de secretos
   hacia patchers comunitarios. Como doble defensa contra colisiones con `Program Files (x86)\dotnet`,
   la copia temporal de `PipelineSettings.json` V2 fija además `"DotNetPathOverride"` al `dotnet.exe`
   x64 verificado (consumido por `DotNetCommandPathProvider.cs:15` vía `PipelineSettingsProvider.cs:31`).
+  Toda deserialización de `PipelineSettings.json` V2 valida identidades polimórficas completas
+  `($type, assembly)` restringidas al assembly canónico `Synthesis.Bethesda.Execution` y rechaza
+  cualquier `$type` en ubicaciones o subobjetos no polimórficos.
 - **Contención OS:** `run_capture(..., require_job=True, max_output_bytes=...)` en Fase 1 y Job
   Object + fence `supervised` con constatación de `ActiveProcesses == 0` en Fase 2.
 - **Flags protegidos ampliados:** `protected_flags`/`protected_short` bloquean `-o`, `-s`, `-p`,
   `-d`, `-l`, `-e`, `-r`, `-m`, `-t`, `--blockbuildingwithinmo2`, `--shortcircuit` y sus formas
   largas, incluyendo flags cortos pegados al valor (p. ej. `-svalor`, `-ovalor`, `-rvalor`).
 - **Timeouts configurables:** `synthesis_build_timeout_seconds = 600` (Fase 1) y
-  `synthesis_run_timeout_seconds = 900` (Fase 2), reemplazando el límite rígido de `300 s`.
+  `synthesis_run_timeout_seconds = 900` (Fase 2, desde **PR-2b** en el servicio), reemplazando el
+  límite rígido previo de `300 s`.
 
 ### 2.5 Veredicto fail-closed y reutilización del parser TES4 canónico
 
@@ -234,18 +264,22 @@ x64 instalado):
 
 | PR | Alcance | Anclas AST que actualiza (sin relajar) |
 |---|---|---|
-| **PR-0** *(este PR)* | ADR 0019 + actualización de índices documentales (`docs/adr/README.md`, `docs/pending_ooda_status.md`). | `test_worktree_convention_invariant.py`, `test_clean_room_invariant.py`. |
-| **PR-1** | Contrato CLI (`0.36.6`), `SplitIfMaxMastersExceeded` explícito, `protected_flags`, `cwd`/`TEMP`/env mínimo anti-MSBuild/Roslyn, `require_job=True`, regex reales `ConsoleReporter`, validación TES4 vía `read_plugin_header()`, `--PersistenceMode Text`, timeouts configurables y `pipeline_stage=7`. | `test_contrato_argumentos_cli.py`, `test_contrato_veredicto_de_exito.py`, `test_tes4_parser_invariant.py`, `test_dyndolod_service.py` (`_SERVICIOS_SIN_COBERTURA`, `_RUNNER_SIN_COBERTURA`). |
-| **PR-2** | `tool_id="synthesis"` en broker/worker USVFS (`BrokeredSynthesisRunner`), salida administrada `<MO2>/mods/Sky-Claw Synthesis Output`, `DirectoryRollback` + `rollback_reconciler.py`, activación/contigüidad de splits en `plugins.txt`, retiro del clonado de `overwrite` en `execute_synthesis.py`. | `test_vfs_visibility_wiring.py`, `test_vfs_fence_de_supervision.py`, `test_vfs_worker.py`, `test_vfs_job_identity_broker.py`, `test_output_targets.py`, `test_rollback_salida.py`, `test_rollback_reconciler.py`, `test_borrado_recursivo.py`, `test_mo2_modlist_priority.py`, `test_orphan_evidence_producer_contract.py`. |
-| **PR-3** | Motor Fase 1 (`synthesis_prebuild.py`: detector `.NET 10` x64, caché, compilación, shim, traductor V2→`CliPatcherSettings`, staging `ExtraDataFolder`, HITL egress, `SynthesisPreset`) + `ToolsInstaller.install_synthesis_cli`. | `test_tools_installer_lock_scoping.py`, `test_hitl_client_scoping.py`, `test_borrado_recursivo.py`. |
+| **PR-0** *(este PR `#974`)* | ADR 0019 + actualización de índices documentales (`docs/adr/README.md`, `docs/pending_ooda_status.md`). | `test_worktree_convention_invariant.py`, `test_clean_room_invariant.py`, `test_estado_ooda.py`. |
+| **PR-1** *(`#975`)* | Contrato CLI (`0.36.6`), `SplitIfMaxMastersExceeded` explícito, `DotNetPathOverride`, whitelist completa `($type, assembly)` en `Synthesis.Bethesda.Execution` + bloqueo recursivo de `$type`, `protected_flags`, `cwd`/`TEMP`/entorno mínimo anti-MSBuild/Roslyn + remoción incondicional de `Program Files (x86)\dotnet`, `require_job=True`, recibos `ConsoleReporter` compatibles con upstream (`Nickname` vacío o con `]`, multiplicidad vía `Counter`) activos en el servicio standalone, validación TES4 vía `read_plugin_header()`, `--PersistenceMode Text`, y promoción de `synthesis_runner`/`patcher_pipeline` a `mypy` estricto. | `test_contrato_argumentos_cli.py`, `test_contrato_veredicto_de_exito.py`, `test_tes4_parser_invariant.py`. |
+| **PR-2a** *(`#976`, Draft / Hold de rig)* | Transporte IPC `tool_id="synthesis"` en broker/worker USVFS (`BrokeredSynthesisRunner`, `vfs_worker.py`), exclusión de outputs propios en `expected_plugins`, respeto estricto de `rollback_veto` (`VfsJobTimeoutError`, `VfsTeardownError`, `VfsBridgeLostTeardownError`), validación `PathValidator` y chequeo de enlaces sin pre-resolución, selector explícito `synthesis_backend` + `WIRING_SECURITY_HOLD` (`_CONTENCION_DEL_WORKER_VERIFICADA = False`), y promoción de `brokered_synthesis` a `mypy` estricto. | `test_vfs_visibility_wiring.py`, `test_vfs_fence_de_supervision.py`, `test_vfs_worker.py`, `test_vfs_job_identity_broker.py`, `test_path_resolution_service.py`. |
+| **PR-2b** *(gate previo: Spikes S1–S5)* | Salida administrada `<MO2>/mods/Sky-Claw Synthesis Output` en `output_targets.py`, `DirectoryRollback` + `rollback_reconciler.py`, retiro del clonado de `overwrite` en `execute_synthesis.py`, timeouts configurables (`600s`/`900s`), `pipeline_stage=7`, cableado productivo en `orchestration_composition.py` y `dispatcher_dependencies.py`, y diff en solo-lectura de activación/contigüidad (sin mutar `plugins.txt`). | `test_dyndolod_service.py` (`_SERVICIOS_SIN_COBERTURA`, `_RUNNER_SIN_COBERTURA`), `test_output_targets.py`, `test_rollback_salida.py`, `test_rollback_reconciler.py`, `test_borrado_recursivo.py`, `test_orphan_evidence_producer_contract.py`. |
+| **PR-3** *(gate previo: Spikes S1–S4)* | Motor Fase 1 (`synthesis_prebuild.py`: detector `.NET 10` x64, caché, compilación, shim, traductor V2→`CliPatcherSettings`, staging `ExtraDataFolder`, HITL egress, `SynthesisPreset`) + `ToolsInstaller.install_synthesis_cli`. | `test_tools_installer_lock_scoping.py`, `test_hitl_client_scoping.py`, `test_borrado_recursivo.py`. |
 | **PR-4** | Paridad de superficies: `config.py`, `app_context.py`, `scanner.py`/`registry.py`, Agente LLM (`run_synthesis` en segundo plano + `setup_tools`), GUI (`RITUAL_TOOL_MAP`/`RITUAL_INSTALLER_MAP`), nuevo test enumerativo de paridad. | `test_ritual_dispatch.py`, `test_hitl_client_scoping.py`, `test_local_config_persistencia.py`, `test_path_resolution_service.py`. |
+| **PR-5** *(gate previo: certificación de quiescencia/refresco de MO2 en rig)* | Activación desatendida transaccional de `+Sky-Claw Synthesis Output` y contigüidad de splits en `modlist.txt`/`plugins.txt`. *(El levantamiento de `_CONTENCION_DEL_WORKER_VERIFICADA` va en un PR dedicado separado con evidencia de sandbox Windows y auditoría adversarial, siguiendo E3-R3).* | `test_mo2_modlist_priority.py`. |
 
 ## 4. Estado de Implementación y Verificación
 
 - **Implementado en este PR (PR-0):** únicamente especificación ADR 0019 e índices documentales.
-  Ningún módulo productivo de `sky_claw/` fue modificado aún (`PR1..PR4 = PENDING`).
+  Ningún módulo productivo de `sky_claw/` fue modificado aún (`PR-1..PR-5 = PENDING`; sincronizado con
+  `origin/main` `4c2da7ae`, donde `#980` `676f4c29` ya cerró `F1`).
 - **Verificado en código local y upstream:** toda la sección §1 (inspección directa de `Sky-Claw`
-  en `c6e1b022` y del repositorio `Mutagen-Modding/Synthesis` en `0.36.6` `d8150fb` y `HEAD
-  14cf3fa`, más metadata de GitHub Releases y NuGet).
+  en `c6e1b022`/`4c2da7ae` y del repositorio `Mutagen-Modding/Synthesis` en `0.36.6` `d8150fb` y
+  `HEAD 14cf3fa`, más metadata de GitHub Releases y NuGet).
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
-  rig Windows + instancia portable aislada de MO2).
+  rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
+  para levantar `_CONTENCION_DEL_WORKER_VERIFICADA`.
