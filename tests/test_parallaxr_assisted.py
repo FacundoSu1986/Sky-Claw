@@ -3421,6 +3421,19 @@ def test_seleccion_bajo_self_junction_no_se_reinterpreta_como_mod_hermano(tmp_pa
     assert seleccion_directa.installation.mod_root == hermano.resolve()
 
 
+@pytest.mark.parametrize("entrypoint", [False, True], ids=["carpeta", "entrypoint"])
+def test_seleccion_con_contenedor_en_raiz_del_filesystem(tmp_path: Path, entrypoint: bool) -> None:
+    from sky_claw.local.tools.parallaxr_assisted import _decompose_explicit_selection
+
+    contenedor = Path(tmp_path.anchor).resolve(strict=True)
+    seleccion = contenedor / "Mod_A"
+    nombre_entrypoint = "ParallaxR.BAT" if entrypoint else None
+    if nombre_entrypoint is not None:
+        seleccion /= nombre_entrypoint
+
+    assert _decompose_explicit_selection(seleccion, contenedor) == ("Mod_A", nombre_entrypoint)
+
+
 @pytest.mark.parametrize("restaurar", [True, False], ids=["transitorio", "persistente"])
 def test_preflight_conserva_un_contenedor_para_ambos_descubrimientos(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restaurar: bool

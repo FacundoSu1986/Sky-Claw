@@ -556,12 +556,13 @@ def _decompose_explicit_selection(explicit_selection: Path, resolved_mods_dir: P
 
     # Una ruta bajo un hijo del contenedor se interpreta como entrypoint, incluso si el hijo
     # es una self-junction. Así nunca se selecciona otro mod usando sólo el último componente.
-    if _resolves_to_authorized_container(anchored.parent.parent, resolved_mods_dir):
-        mod_segment = anchored.parent.name
+    parent = anchored.parent
+    mod_segment = parent.name
+    if mod_segment and _resolves_to_authorized_container(parent.parent, resolved_mods_dir):
         if _validate_selection_segment(mod_segment):
             return (mod_segment, entry_segment)
         return None
-    if _resolves_to_authorized_container(anchored.parent, resolved_mods_dir):
+    if _resolves_to_authorized_container(parent, resolved_mods_dir):
         return (entry_segment, None)
 
     return None
