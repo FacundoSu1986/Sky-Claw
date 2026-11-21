@@ -238,6 +238,10 @@ class SynthesisConfig:
         """Valida el ejecutable y completa rutas derivables sin adivinar el perfil."""
         if not self.synthesis_exe.exists():
             raise SynthesisNotFoundError(self.synthesis_exe)
+        if type(self.max_output_bytes) is not int or self.max_output_bytes <= 0:
+            raise SynthesisExecutionError(
+                f"Synthesis max_output_bytes must be a positive int, got {self.max_output_bytes!r}"
+            )
         if self.persistence_mode not in {"None", "Text"}:
             raise SynthesisExecutionError(f"Unsupported Synthesis persistence_mode: {self.persistence_mode!r}")
         if self.persistence_mode == "Text" and (
@@ -251,6 +255,17 @@ class SynthesisConfig:
                 "Synthesis CLI 0.36.6 declares --Shortcircuit as a bool switch with Default=true and cannot be "
                 "disabled via CLI flags; use shortcircuit=True or None"
             )
+        if self.extra_data_folder is not None:
+            if self.working_dir is None:
+                raise SynthesisExecutionError(
+                    "Synthesis extra_data_folder requires working_dir whose Data directory matches extra_data_folder"
+                )
+            if (self.working_dir / "Data").resolve() != self.extra_data_folder.resolve():
+                raise SynthesisExecutionError(
+                    "Synthesis extra_data_folder must match working_dir / 'Data' for Synthesis 0.36.6"
+                )
+        if self.working_dir is not None and not self.output_path.is_absolute():
+            raise SynthesisExecutionError("Synthesis output_path must be absolute when working_dir is configured")
         if self.dotnet_root is not None:
             dotnet_root = self.dotnet_root
             dotnet_name = dotnet_root.name.casefold()
@@ -336,7 +351,10 @@ class SynthesisRunner:
     # y conservar compatibilidad con marcadores genéricos. Permitir corchetes "]" internos en Nickname.
     _CONSOLE_START_PATTERN = re.compile(r"^[ \t]*\[([^\r\n]+)\][ \t]+Starting run\.[ \t\r]*$", re.MULTILINE)
     _CONSOLE_SUCCESS_PATTERN = re.compile(r"^[ \t]*\[([^\r\n]+)\][ \t]+Run successful\.[ \t\r]*$", re.MULTILINE)
-    _CONSOLE_EXPORT_PATTERN = re.compile(r"Exported patch to final destination:\s*(.+?)(?:\n|$)", re.IGNORECASE)
+    _CONSOLE_EXPORT_PATTERN = re.compile(
+        r"^[ \t]*Exported patch to final destination:[ \t]*(.+?)[ \t\r]*$",
+        re.IGNORECASE | re.MULTILINE,
+    )
     _PATCHER_PATTERN = re.compile(
         r"(?:Running|Executing|Patchers?:)\s*[:\[]?\s*['\"]?([A-Za-z0-9_.]+)",
         re.IGNORECASE,

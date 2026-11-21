@@ -92,12 +92,13 @@ def _validate_allowed_type_tag(
 
 
 def _normalize_type_tag(obj: dict[str, Any], canonical_type: str | None) -> None:
-    """Reescribe ``$type`` con clave y valor canónicos al materializar la copia CLI."""
+    """Reescribe ``$type`` como primera clave con valor canónico al materializar la copia CLI."""
     if canonical_type is None:
         return
-    for key in [k for k in obj if k.casefold() == "$type"]:
-        del obj[key]
+    remaining = {k: v for k, v in obj.items() if k.casefold() != "$type"}
+    obj.clear()
     obj["$type"] = canonical_type
+    obj.update(remaining)
 
 
 def _resolve_patcher_execution_name(patcher: dict[str, Any], canonical_id: str) -> str:
