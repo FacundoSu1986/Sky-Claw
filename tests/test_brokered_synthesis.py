@@ -272,16 +272,20 @@ async def test_worker_synthesis_rechaza_symlink_en_rutas(tmp_path: pathlib.Path)
 
 
 async def test_worker_synthesis_bloquea_si_falta_plugin_en_data_virtual(tmp_path: pathlib.Path) -> None:
+    """Con attestation USVFS válida, un plugin activo ausente en Data virtual bloquea antes de lanzar CLI."""
     rutas = _escenario_mo2(tmp_path)
-    (rutas["data_virtual"] / "MiModVirtual.esp").unlink()
-    manifest = _manifiesto_synthesis(rutas)
+    rutas["plugins"].write_text("*Skyrim.esm\n*MiModVirtual.esp\n*Huerfano.esp\n", encoding="utf-8")
+    manifest = _manifiesto_synthesis(
+        rutas,
+        payload_overrides={"expected_plugins": ["Skyrim.esm", "MiModVirtual.esp", "Huerfano.esp"]},
+    )
     run_capture_mock = AsyncMock()
 
     with patch("sky_claw.local.tools.synthesis_runner.run_capture", run_capture_mock):
         result = await execute_worker_manifest(manifest, grandchild_probe=_probe_ok)
 
     assert result.success is False
-    assert "MiModVirtual.esp" in result.message
+    assert "Huerfano.esp" in result.message
     run_capture_mock.assert_not_awaited()
 
 
@@ -851,15 +855,23 @@ async def test_worker_exige_expected_plugins_politica_fase2_y_confina_rutas_sin_
     assert res1.success is False
     assert "expected_plugins" in res1.message
 
-    # 2) expected_plugins=[] falsificado cuando plugins.txt tiene *MiModVirtual.esp ausente -> worker coteja plugins.txt.
-    (rutas["data_virtual"] / "MiModVirtual.esp").unlink()
-    manifest_vacio = _manifiesto_synthesis(rutas, payload_overrides={"expected_plugins": []})
-    res2 = await execute_worker_manifest(manifest_vacio, grandchild_probe=_probe_ok)
+    # 2) expected_plugins forjado sin *Huerfano.esp cuando plugins.txt sí lo activa (attestation pasa;
+    #    la compuerta de re-cotejo de plugins.txt en _synthesis_handler debe bloquear antes de lanzar CLI).
+    rutas["plugins"].write_text("*Skyrim.esm\n*MiModVirtual.esp\n*Huerfano.esp\n", encoding="utf-8")
+    manifest_forjado = _manifiesto_synthesis(
+        rutas,
+        payload_overrides={"expected_plugins": ["Skyrim.esm", "MiModVirtual.esp"]},
+    )
+    run_capture_forjado = AsyncMock()
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", run_capture_forjado):
+        res2 = await execute_worker_manifest(manifest_forjado, grandchild_probe=_probe_ok)
     assert res2.success is False
-    assert "MiModVirtual.esp" in res2.message
+    assert "Huerfano.esp" in res2.message
+    assert "plugins.txt" in res2.message
+    run_capture_forjado.assert_not_awaited()
 
-    # Restaurar MiModVirtual.esp para pruebas restantes.
-    (rutas["data_virtual"] / "MiModVirtual.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+    # Restaurar plugins.txt para pruebas restantes.
+    rutas["plugins"].write_text("*Skyrim.esm\n*MiModVirtual.esp\n", encoding="utf-8")
 
     # 3) Política Fase 2: block_building_within_mo2=False o require_patcher_receipts=False rechazados.
     for flag_name in ("block_building_within_mo2", "require_patcher_receipts"):
@@ -957,3 +969,142 @@ def test_barrera_hold_synthesis_esta_aislada_y_enumerada_por_ast() -> None:
     ]
     archivos_tests = sorted({archivo for archivo, _tipo in _scan(repo / "tests")})
     assert archivos_tests == ["tests/test_brokered_synthesis.py"]
+
+    # Ancla E3-R3: la barrera debe ser un literal booleano ``False``, nunca derivada de env/config.
+    mod_path = repo / "sky_claw" / "local" / "mo2" / "brokered_synthesis.py"
+    mod_tree = ast.parse(mod_path.read_text(encoding="utf-8"), filename=str(mod_path))
+    asignaciones = [
+        nodo.value
+        for nodo in ast.walk(mod_tree)
+        if isinstance(nodo, ast.Assign) and any(isinstance(t, ast.Name) and t.id == barrera for t in nodo.targets)
+    ]
+    assert len(asignaciones) == 1
+    assert isinstance(asignaciones[0], ast.Constant) and asignaciones[0].value is False
+
+    # Ancla E3-R3: congelar la cadena de constructores de BrokeredSynthesisRunner y su resolver.
+    def _llamadores(nombre_fn: str) -> list[tuple[str, str]]:
+        llamadores: list[tuple[str, str]] = []
+        for ruta in sorted((repo / "sky_claw").rglob("*.py")):
+            tree = ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
+            for fn in ast.walk(tree):
+                if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                for nodo in ast.walk(fn):
+                    if isinstance(nodo, ast.Call) and ast.unparse(nodo.func).split(".")[-1] == nombre_fn:
+                        llamadores.append((ruta.relative_to(repo).as_posix(), fn.name))
+        return sorted(llamadores)
+
+    assert _llamadores("BrokeredSynthesisRunner") == [
+        ("sky_claw/local/mo2/brokered_synthesis.py", "resolve_synthesis_backend_runner"),
+    ]
+    assert _llamadores("resolve_synthesis_backend_runner") == [
+        ("sky_claw/local/tools/synthesis_service.py", "_ensure_synthesis_runner"),
+        ("sky_claw/local/tools/synthesis_service.py", "_ensure_synthesis_runner"),
+    ]
+
+
+async def test_hold_bloquea_incluso_runner_virtual_inyectado_directamente(tmp_path: pathlib.Path) -> None:
+    """P1-1(c): inyectar BrokeredSynthesisRunner por parámetro NO saltea WIRING_SECURITY_HOLD."""
+    assert brokered_synthesis._CONTENCION_SYNTHESIS_VERIFICADA is False
+    rutas = _escenario_mo2(tmp_path)
+    broker_mock = MagicMock()
+    broker_mock.submit = AsyncMock()
+    cfg = SynthesisConfig(
+        game_path=rutas["game"],
+        mo2_path=rutas["mo2"],
+        output_path=rutas["output"],
+        synthesis_exe=rutas["exe"],
+        profile="Default",
+        pipeline_settings_path=rutas["settings"],
+        data_folder_path=rutas["data_fisico"],
+        load_order_file_path=rutas["plugins"],
+    )
+    proxy = BrokeredSynthesisRunner(
+        config=cfg,
+        broker=broker_mock,
+        instance_id="portable-main",
+        data_root=rutas["mo2"],
+        mods_dir=rutas["mods"],
+    )
+    lock_mgr = DistributedLockManager(tmp_path / "locks_inj.db", default_ttl=5.0, max_retries=1)
+    await lock_mgr.initialize()
+    snap_dir = tmp_path / "snaps_inj"
+    snap_dir.mkdir()
+    snap_mgr = FileSnapshotManager(snapshot_dir=snap_dir)
+    await snap_mgr.initialize()
+    try:
+        svc = SynthesisPipelineService(
+            lock_manager=lock_mgr,
+            snapshot_manager=snap_mgr,
+            journal=AsyncMock(),
+            path_resolver=_resolver_para_servicio(rutas),
+            event_bus=MagicMock(),
+            synthesis_settings_path=rutas["settings"],
+            synthesis_runner=proxy,
+        )
+        res = await svc.execute_pipeline(patcher_ids=["PatcherA"])
+        assert res["success"] is False
+        assert "WIRING_SECURITY_HOLD" in res["message"]
+        broker_mock.submit.assert_not_awaited()
+    finally:
+        await lock_mgr.close()
+
+
+async def test_synthesis_service_hace_rollback_normal_ante_timeout_limpio_sin_veto(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P2-1: un VfsJobTimeoutError limpio (teardown confirmado, sin veto) limpia salidas y marca rolled_back."""
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
+    rutas = _escenario_mo2(tmp_path)
+    overwrite_dir = rutas["mo2"] / "overwrite"
+    overwrite_dir.mkdir(exist_ok=True)
+    split_parcial = overwrite_dir / "Synthesis_2.esp"
+
+    lock_mgr = DistributedLockManager(tmp_path / "locks_clean_to.db", default_ttl=5.0, max_retries=1)
+    await lock_mgr.initialize()
+    snap_dir = tmp_path / "snaps_clean_to"
+    snap_dir.mkdir()
+    snap_mgr = FileSnapshotManager(snapshot_dir=snap_dir)
+    await snap_mgr.initialize()
+    journal = AsyncMock()
+    journal.begin_transaction = AsyncMock(return_value=42)
+    journal.commit_transaction = AsyncMock()
+    journal.mark_transaction_rolled_back = AsyncMock()
+    event_bus = CoreEventBus()
+    await event_bus.start()
+    completed_events: list[dict[str, Any]] = []
+
+    async def _on_completed(evt: Any) -> None:
+        completed_events.append(dict(evt.payload))
+
+    event_bus.subscribe("synthesis.pipeline.completed", _on_completed)
+
+    class _CleanTimeoutBroker:
+        async def submit(self, _job: VfsJob, **_kwargs: Any) -> VfsJobResult:
+            split_parcial.write_bytes(_construir_tes4(["Skyrim.esm"]))
+            raise VfsJobTimeoutError("timeout limpio con worker terminado")
+
+    try:
+        svc = SynthesisPipelineService(
+            lock_manager=lock_mgr,
+            snapshot_manager=snap_mgr,
+            journal=journal,
+            path_resolver=_resolver_para_servicio(rutas),
+            event_bus=event_bus,
+            synthesis_settings_path=rutas["settings"],
+            vfs_broker=_CleanTimeoutBroker(),
+            instance_id="portable-main",
+            synthesis_backend="brokered",
+        )
+        out = await svc.execute_pipeline(patcher_ids=["PatcherA"])
+        await event_bus.stop()
+
+        assert out["success"] is False
+        assert split_parcial.exists() is False
+        journal.commit_transaction.assert_not_awaited()
+        journal.mark_transaction_rolled_back.assert_awaited_once_with(42)
+        assert completed_events and completed_events[0]["rolled_back"] is True
+    finally:
+        await event_bus.stop()
+        await lock_mgr.close()

@@ -196,15 +196,22 @@ class SynthesisPipelineService:
         Raises:
             SynthesisExecutionError: Si las variables de entorno son inválidas.
         """
-        if self._synthesis_runner is not None:
-            return self._synthesis_runner
-
         from sky_claw.local.mo2 import brokered_synthesis as _brokered_synthesis
+
+        hold_activo = not _brokered_synthesis._CONTENCION_SYNTHESIS_VERIFICADA
+        if self._synthesis_runner is not None:
+            injected_domain = getattr(self._synthesis_runner, "data_visibility_domain", None)
+            if (
+                injected_domain == "virtual_usvfs"
+                and hold_activo
+                and not isinstance(self._synthesis_runner, _brokered_synthesis.VfsRequiredSynthesisRunner)
+            ):
+                return _brokered_synthesis._guard(_brokered_synthesis._MOTIVO_DEL_HOLD)
+            return self._synthesis_runner
 
         solicitado = _brokered_synthesis._normalizar_backend(self._synthesis_backend)
         if solicitado != _brokered_synthesis.SYNTHESIS_BACKEND_STANDALONE and (
-            solicitado != _brokered_synthesis.SYNTHESIS_BACKEND_BROKERED
-            or not _brokered_synthesis._CONTENCION_SYNTHESIS_VERIFICADA
+            solicitado != _brokered_synthesis.SYNTHESIS_BACKEND_BROKERED or hold_activo
         ):
             guard_runner = _brokered_synthesis.resolve_synthesis_backend_runner(
                 backend=self._synthesis_backend,
