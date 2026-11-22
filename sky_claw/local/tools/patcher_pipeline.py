@@ -54,6 +54,13 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 #: rechazar cualquier tipo fuera de esta familia evita gadgets arbitrarios en el JSON.
 _CANONICAL_SYNTHESIS_ASSEMBLY = "Synthesis.Bethesda.Execution"
 
+
+def is_x86_dotnet_path(entry: str) -> bool:
+    """Detecta rutas bajo ``Program Files (x86)\\dotnet`` (incluidos subdirectorios SDK/tools)."""
+    parts = [part for part in entry.replace("/", "\\").casefold().split("\\") if part]
+    return any(part == "program files (x86)" and parts[index + 1] == "dotnet" for index, part in enumerate(parts[:-1]))
+
+
 _ALLOWED_SYNTHESIS_PROFILE_TYPES = frozenset(
     {
         "Synthesis.Bethesda.Execution.Settings.V2.SynthesisProfile",
@@ -436,6 +443,8 @@ class PatcherPipeline:
             for patcher_index, patcher in enumerate(raw_patchers):
                 if not isinstance(patcher, dict):
                     raise PatcherPipelineError(f"A patcher in Synthesis group {name!r} is not a JSON object")
+                if patcher.get("On") is not True:
+                    continue
                 _validate_allowed_type_tag(
                     patcher,
                     _ALLOWED_SYNTHESIS_PATCHER_TYPES,
@@ -446,8 +455,6 @@ class PatcherPipeline:
                     {key: value for key, value in patcher.items() if key.casefold() != "$type"},
                     context=f"patcher {patcher_index} in group {name!r}",
                 )
-                if patcher.get("On") is not True:
-                    continue
                 id_value = patcher.get("ID")
                 nickname = patcher.get("Nickname")
                 aliases_list: list[str] = []
@@ -651,7 +658,20 @@ class PatcherPipeline:
         run_settings["Version"] = 2
         run_settings["Profiles"] = [run_profile]
         if dotnet_path_override is not None:
-            run_settings["DotNetPathOverride"] = str(dotnet_path_override)
+            override_str = str(dotnet_path_override)
+            if is_x86_dotnet_path(override_str):
+                raise PatcherPipelineError(f"Synthesis DotNetPathOverride cannot target x86 .NET: {override_str!r}")
+            run_settings["DotNetPathOverride"] = override_str
+        else:
+            existing_override = run_settings.get("DotNetPathOverride")
+            if (
+                isinstance(existing_override, str)
+                and existing_override.strip()
+                and is_x86_dotnet_path(existing_override)
+            ):
+                raise PatcherPipelineError(
+                    f"Synthesis DotNetPathOverride in settings cannot target x86 .NET: {existing_override!r}"
+                )
 
         temporary_path: pathlib.Path | None = None
         try:
