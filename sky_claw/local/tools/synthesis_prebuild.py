@@ -144,8 +144,11 @@ def leer_estado_cet(exe: pathlib.Path) -> EstadoCet:
         return EstadoCet.NO_ES_PE
     try:
         directorio = pe.OPTIONAL_HEADER.DATA_DIRECTORY[_INDICE_DIRECTORIO_DEBUG]
-        if not directorio.VirtualAddress or not directorio.Size:
+        if not directorio.VirtualAddress and not directorio.Size:
             return EstadoCet.AUSENTE
+        if not directorio.VirtualAddress or not directorio.Size:
+            # Un solo campo en cero es un directorio inconsistente: no permite afirmar "sin CET".
+            return EstadoCet.ILEGIBLE
         pe.parse_data_directories(directories=[_INDICE_DIRECTORIO_DEBUG])
         entradas = getattr(pe, "DIRECTORY_ENTRY_DEBUG", None)
         if not entradas:
@@ -210,9 +213,22 @@ def es_framework_dependent(runtimeconfig: pathlib.Path) -> bool:
         return False
     framework = opciones.get("framework")
     frameworks = opciones.get("frameworks")
-    if isinstance(framework, dict) and framework:
-        return True
-    return isinstance(frameworks, list) and bool(frameworks) and all(isinstance(f, dict) for f in frameworks)
+    if framework is not None:
+        return _referencia_de_framework_valida(framework)
+    return (
+        isinstance(frameworks, list)
+        and bool(frameworks)
+        and all(_referencia_de_framework_valida(f) for f in frameworks)
+    )
+
+
+def _referencia_de_framework_valida(referencia: object) -> bool:
+    """El host de .NET exige ``name`` y ``version`` como strings no vacíos en cada referencia."""
+    if not isinstance(referencia, dict):
+        return False
+    nombre = referencia.get("name")
+    version = referencia.get("version")
+    return isinstance(nombre, str) and bool(nombre) and isinstance(version, str) and bool(version)
 
 
 # --- decisión ---------------------------------------------------------------------------

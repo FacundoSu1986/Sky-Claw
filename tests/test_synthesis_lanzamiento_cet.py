@@ -41,6 +41,7 @@ def _pe_sintetico(
     entradas_cet: int = 1,
     offsets_bundle: tuple[int, ...] = (0,),
     apps: tuple[bytes, ...] = (),
+    dir_debug: tuple[int, int] | None = None,
 ) -> bytes:
     """PE32+ mínimo que pefile parsea, con directorio de debug y marcadores de apphost."""
     seccion = bytearray()
@@ -71,6 +72,8 @@ def _pe_sintetico(
     dirs = [(0, 0)] * 16
     if n_entradas:
         dirs[6] = (va, 28 * n_entradas)
+    if dir_debug is not None:
+        dirs[6] = dir_debug  # campos inconsistentes a propósito
     opcional = struct.pack(
         "<HBBIIIIIQIIHHHHHHIIIIHHQQQQII",
         0x20B,
@@ -210,6 +213,36 @@ _CASOS: dict[str, tuple[dict[str, object], tuple[ModoLanzamiento, Motivo]]] = {
         {"runtimeconfig": {"runtimeOptions": {"framework": "Microsoft.NETCore.App"}}},
         (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
     ),
+    # El host de .NET exige `name` y `version` (strings) en cada referencia de framework.
+    "cet_runtimeconfig_frameworks_ref_vacia": (
+        {"runtimeconfig": {"runtimeOptions": {"frameworks": [{}]}}},
+        (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
+    ),
+    "cet_runtimeconfig_framework_sin_version": (
+        {"runtimeconfig": {"runtimeOptions": {"framework": {"name": "Microsoft.NETCore.App"}}}},
+        (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
+    ),
+    "cet_runtimeconfig_framework_sin_nombre": (
+        {"runtimeconfig": {"runtimeOptions": {"framework": {"version": "10.0.0"}}}},
+        (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
+    ),
+    "cet_runtimeconfig_framework_version_no_string": (
+        {"runtimeconfig": {"runtimeOptions": {"framework": {"name": "Microsoft.NETCore.App", "version": 10}}}},
+        (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
+    ),
+    "cet_runtimeconfig_frameworks_una_ref_incompleta": (
+        {
+            "runtimeconfig": {
+                "runtimeOptions": {
+                    "frameworks": [
+                        {"name": "Microsoft.NETCore.App", "version": "8.0.0"},
+                        {"name": "Microsoft.WindowsDesktop.App"},
+                    ]
+                }
+            }
+        },
+        (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
+    ),
     "cet_runtimeconfig_frameworks_vacio": (
         {"runtimeconfig": {"runtimeOptions": {"frameworks": []}}},
         (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
@@ -279,7 +312,22 @@ def test_la_decision_no_modifica_el_binario(tmp_path: pathlib.Path) -> None:
         (_pe_sintetico(cet=1), EstadoCet.ENCENDIDO),
         (_pe_sintetico(cet=0x3), EstadoCet.ENCENDIDO),
         (_pe_sintetico(cet=1, tam_cet=0), EstadoCet.ILEGIBLE),
+        # Directorio de debug con un solo campo en cero: inconsistente, no "sin CET".
+        (_pe_sintetico(cet=1, dir_debug=(0, 28)), EstadoCet.ILEGIBLE),
+        (_pe_sintetico(cet=1, dir_debug=(0x1000, 0)), EstadoCet.ILEGIBLE),
+        (_pe_sintetico(cet=1, dir_debug=(0, 0)), EstadoCet.AUSENTE),
         (b"no es un PE", EstadoCet.NO_ES_PE),
+    ],
+    ids=[
+        "ausente",
+        "apagado",
+        "encendido",
+        "encendido_con_otros_bits",
+        "tamano_cero",
+        "dir_sin_rva",
+        "dir_sin_tamano",
+        "dir_vacio",
+        "no_pe",
     ],
 )
 def test_leer_estado_cet(tmp_path: pathlib.Path, pe: bytes, estado: EstadoCet) -> None:
