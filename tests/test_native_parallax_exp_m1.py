@@ -432,6 +432,20 @@ class TestContratoLambdaFloorClamp:
         with pytest.raises(ValueError, match="FLOOR_CLAMP"):
             decode_gradients_policy(n, 1.0, 1.0, "FLOOR_CLAMP", lam, SIGMA)
 
+    @pytest.mark.filterwarnings("error::RuntimeWarning")
+    def test_floor_clamp_division_por_cero_tras_underflow_falla_explicito(self) -> None:
+        """λ y sx finitos y > 0, pero ``sx * nz_eff`` hace underflow a 0: ValueError, no warning."""
+        # Arrange
+        nz = np.array([[0.0]])
+        nx = np.full_like(nz, 0.3)
+        ny = np.sqrt(1.0 - nx * nx - nz * nz)
+        n = np.stack([nx, ny, nz], axis=-1)
+        lam, sx, sy = 1e-300, 1e-100, 1.0
+        assert sx * lam == 0.0  # precondición del caso: el denominador hace underflow
+        # Act / Assert
+        with pytest.raises(ValueError, match="FLOOR_CLAMP"):
+            decode_gradients_policy(n, sx, sy, "FLOOR_CLAMP", lam, SIGMA)
+
     @pytest.mark.parametrize("lam", [0.5 / 255, 2.0 / 255, 8.0 / 255, 0.25])
     def test_floor_clamp_lambda_normal_salida_y_estadistica_identicas(self, lam: float) -> None:
         """λ positivo normal: salida y estadística bit a bit iguales a la forma explícita previa."""

@@ -144,7 +144,7 @@ def decode_gradients_policy(
         nz_eff = np.maximum(nz, lam)
         # #667-B: un λ válido no garantiza finitud (λ subnormal/diminuto desborda nx/λ o p²+q²).
         # El desborde se detecta y se rechaza con ValueError explícito, no con un warning + Inf.
-        with np.errstate(over="ignore", invalid="ignore"):
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
             p = -nx / (sx * nz_eff)
             q = -ny / (sy * nz_eff)
             energia = p * p + q * q
