@@ -555,14 +555,16 @@ class TestContratoG1EvidenciaDerivada:
         with pytest.raises(SesionFueraDeOrdenError):
             sesion.ejecutar(solicitud=solicitud, consentimiento=None)  # type: ignore[arg-type]
 
-        with pytest.raises((ApprovalHitolNoDisponibleError, EvidenciaTransicionError)):
-            sesion.decidir_y_emitir(
-                solicitud=solicitud,
-                decision=DecisionConsentimiento.APROBAR,
-                identidad=_identidad_telegram(),
-            )
-        # Nada durable se escribió: sigue sin haber witnesses ni tombstones.
-        assert _sin_evidencia_durable(rig.storage)
+        # Con emisión productiva habilitada, decidir_y_emitir emite el witness sin
+        # ejecutar todavía el binder hasta llamar a sesion.ejecutar().
+        consentimiento = sesion.decidir_y_emitir(
+            solicitud=solicitud,
+            decision=DecisionConsentimiento.APROBAR,
+            identidad=_identidad_telegram(),
+        )
+        assert consentimiento is not None
+        assert len(derivar_autoridad_aprobacion(rig.storage).witnesses) == 1
+        assert derivar_autoridad_aprobacion(rig.storage).tombstones == ()
 
     # ===========================================================================
     # CONTRATO G2/G3 — presentación real, emisión cerrada por defecto
@@ -713,12 +715,15 @@ class TestContratoG2G3PresentacionYEmision:
         # Presentar no emite: la propuesta es un valor en memoria sin autoridad.
         assert _sin_evidencia_durable(rig.storage)
 
-    def test_11_emision_cerrada_falla_cerrado_y_no_muta_nada(self, tmp_path: pathlib.Path) -> None:
-        """``EMISION_PRODUCTIVA_HABILITADA = False``: el cableado no emite ni toca superficies."""
+    def test_11_emision_cerrada_falla_cerrado_y_no_muta_nada(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Kill-switch ``EMISION_PRODUCTIVA_HABILITADA = False``: no emite ni toca superficies."""
         rig = RigStockManual(tmp_path, steam_activo=True)
         sesion = _sesion(rig)
         _, entregar = _recolector()
         antes = _huellas(rig)
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", False)
 
         solicitud = sesion.preparar(identidad=_identidad_telegram(), entregar=entregar)
         with pytest.raises(ApprovalHitolNoDisponibleError, match="emisión productiva sigue cerrada"):

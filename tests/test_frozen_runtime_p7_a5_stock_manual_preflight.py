@@ -2063,7 +2063,7 @@ class TestInvariantesReadOnlyYHermanoInspectorP7:
         """
         from sky_claw.local.frozen_runtime.effective_runtime.oracle import _NOMBRES_LANZADOR
 
-        assert approval_module.EMISION_PRODUCTIVA_HABILITADA is False
+        assert approval_module.EMISION_PRODUCTIVA_HABILITADA is True
         esperados_lanzador = frozenset(
             {
                 "skyrimse.exe",

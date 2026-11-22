@@ -822,14 +822,15 @@ def test_toda_guia_de_operaciones_esta_en_el_indice_de_su_carpeta() -> None:
 
 
 def test_fila_golden_master_refleja_gates_reales_y_cierres() -> None:
-    """La fila acotada de Golden Master declara cierre de PR 4 y mantiene los gates abiertos."""
+    """La fila acotada de Golden Master declara habilitación HITL y mantiene los gates abiertos."""
     fila = _tabla()["Golden Master P7 — adaptador HITL Telegram (PR 4) y transición MO2"]
     assert fila["Estado"] == "Parcial"
     assert "#909" in fila["Cerrado en"]
     assert "#914" in fila["Cerrado en"]
-    assert "TRANSPORT_ADAPTER = WIRED_BUT_GATED" in fila["Cerrado en"]
-    assert "EMISION_PRODUCTIVA_HABILITADA = False" in fila["Qué falta"]
+    assert "TRANSPORT_ADAPTER = WIRED_AND_ENABLED" in fila["Cerrado en"]
+    assert "EMISION_PRODUCTIVA_HABILITADA = True" in fila["Cerrado en"]
+    assert "PRIMERA_TRANSICION_REAL = NOT_EXECUTED" in fila["Qué falta"]
     assert "#911" in fila["Qué falta"]
     assert "AMBIGUOUS" in fila["Qué falta"]
-    assert "MODORGANIZER_EXE_COMPAT = NOT_MEASURED_ON_LIVE_MO2" in fila["Qué falta"]
+    assert "P7_A5_REAL_MO2_GO" in fila["Cerrado en"]
     assert "test_telegram_golden_master_hitl.py" in fila["Verificado por"]
