@@ -1035,3 +1035,72 @@ async def test_recibo_export_anclado_no_acepta_frase_citada_en_error(tmp_path: p
 
     assert result.success is False
     assert any("Exported patch to final destination:" in err for err in result.errors)
+
+
+def test_patcher_deshabilitado_con_type_legacy_no_bloquea_ni_se_serializa(tmp_path: pathlib.Path) -> None:
+    """Un patcher On=false con $type legacy no bloquea Synthesis/LOD y queda fuera de la copia CLI."""
+    settings_path = tmp_path / "PipelineSettings.json"
+    _escribir_settings_v2(
+        settings_path,
+        include_disabled_patcher=True,
+        patcher_type="Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings, Synthesis.Bethesda.Execution",
+    )
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    data["Profiles"][0]["Groups"][0]["Patchers"][2]["$type"] = "Legacy.Custom.OldPatcher, OldAssembly"
+    settings_path.write_text(json.dumps(data), encoding="utf-8")
+
+    inspected = PatcherPipeline.inspect_synthesis_settings(settings_path, "Default", ["PatcherLight"])
+    assert inspected.patcher_ids == ("id-light",)
+    temp_path, _ = PatcherPipeline.prepare_synthesis_cli_settings(settings_path, "Default", ["PatcherLight"])
+    try:
+        written = json.loads(temp_path.read_text(encoding="utf-8"))
+        patcher_ids = [p["ID"] for p in written["Profiles"][0]["Groups"][0]["Patchers"]]
+        assert patcher_ids == ["id-light"]
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_dotnet_x86_rechazado_en_config_y_override_heredado(tmp_path: pathlib.Path) -> None:
+    """Tanto dotnet_root x86 como DotNetPathOverride x86 heredado del V2 fallan cerrados."""
+    with pytest.raises(SynthesisExecutionError, match="x86"):
+        _crear_entorno_base(tmp_path, dotnet_root=pathlib.Path(r"C:\Program Files (x86)\dotnet"))
+
+    settings_path = tmp_path / "PipelineSettingsX86.json"
+    _escribir_settings_v2(settings_path)
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    data["DotNetPathOverride"] = r"C:\Program Files (x86)\dotnet\dotnet.exe"
+    settings_path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(PatcherPipelineError, match="x86"):
+        PatcherPipeline.prepare_synthesis_cli_settings(settings_path, "Default", ["PatcherLight"])
+
+
+def test_data_folder_relativo_con_working_dir_falla_en_config(tmp_path: pathlib.Path) -> None:
+    """data_folder_path relativo con working_dir distinto se rechaza antes del spawn."""
+    exe = tmp_path / "Synthesis.Bethesda.CLI.exe"
+    exe.touch()
+    out_dir = tmp_path / "output"
+    out_dir.mkdir()
+    cwd_dir = tmp_path / "run_cwd"
+    cwd_dir.mkdir()
+    with pytest.raises(SynthesisExecutionError, match="data_folder_path"):
+        SynthesisConfig(
+            game_path=tmp_path / "Skyrim",
+            mo2_path=tmp_path / "MO2",
+            output_path=out_dir,
+            synthesis_exe=exe,
+            data_folder_path=pathlib.Path("Skyrim/Data"),
+            working_dir=cwd_dir,
+        )
+
+
+def test_nombre_excepcion_en_ruta_de_export_no_marca_error(tmp_path: pathlib.Path) -> None:
+    """MissingModException dentro de una ruta de export exitosa no se clasifica como error."""
+    runner, _ = _crear_entorno_base(tmp_path)
+    success, _patchers, errors = runner.parse_output(
+        "[PatcherLight] Starting run.\n"
+        "[PatcherLight] Run successful.\n"
+        "Exported patch to final destination: C:\\Mods\\MissingModException\\Synthesis.esp\n",
+        "",
+    )
+    assert success is True
+    assert errors == []

@@ -14,6 +14,14 @@ on:
   # (base = feature branch). Como push ya no dispara en feature, no hay
   # duplicación. Cubre el caso señalado en revisión (PR a feature sin CI).
   pull_request:
+  # Corrida completa nocturna sobre main (07:00 UTC = 04:00 en Argentina, fuera del horario de los PRs): detecta lo que
+  # ningún commit cambió (una dependencia nueva que pip resuelve distinto, como el ruff 0.17.4 de CI-FIX-003, o un test
+  # inestable). Si falla, avisa el job `alerta-main`. Concurrencia: como push, agrupa por SHA y no cancela.
+  schedule:
+    - cron: "0 7 * * *"
+  # A pedido (Actions → Run workflow): la suite completa sobre cualquier rama, p. ej. para probar py3.12 antes del merge.
+  # Sobre una rama que no es main, un rojo no dispara la alerta.
+  workflow_dispatch:
 
 concurrency:
   # En pull_request: un push nuevo cancela la corrida obsoleta del mismo PR
@@ -35,19 +43,19 @@ env:
 
 jobs:
   # ── Gate 1: Code Quality ─────────────────────────────────────
+  # Una sola vez y en Ubuntu: ruff no depende de la plataforma ni del intérprete (versión fijada en `dev`,
+  # `target-version = "py311"` y `*.py` con `eol=lf` en .gitattributes). Antes corría dos veces en Windows y ocupaba dos
+  # de los 20 slots simultáneos de GitHub Free que comparten TODAS las corridas del repo. Mypy, en cambio, sí depende
+  # de la plataforma (estrecha las ramas `sys.platform`) y se queda en Windows. Ancla: tests/test_ci_platform_policy.py.
   lint:
-    name: "🔍 Lint (Ruff) / py${{ matrix.python-version }}"
-    runs-on: windows-latest
+    name: "🔍 Lint (Ruff) / ubuntu"
+    runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
           cache: pip
       # CI-FIX-002: Install ruff via dev extras for version consistency with
       # local dev environment. Avoids silent format drift caused by unpinned
@@ -91,8 +99,15 @@ jobs:
   # suite (misma huella, mismo total, sin archivos repetidos, suma de tests igual al total colectado). La cantidad de
   # shards vive en tres lugares (la matriz, SKYCLAW_SHARD y el --total del verificador) y
   # tests/test_ci_platform_policy.py los ata al mismo número.
+  #
+  # 2026-11-21 (medido con `gh api` sobre 16 corridas): sin cola, la corrida tardaba 18-22 min; el freno real era el tope
+  # de 20 jobs simultáneos de GitHub Free, compartido por TODAS las corridas, y cada corrida lanzaba 14 a la vez. Dos
+  # cambios: (1) el reparto pasa a ser por DURACIÓN medida (scripts/ci_duraciones.json; por conteo, el shard más lento
+  # tardaba 905 s de 2616) y a 6 shards; (2) en pull_request corre solo py3.11, el intérprete con el que Build y Release
+  # congelan el ejecutable. py3.12 se sigue certificando en CADA push a main (y en todo evento que no sea un PR): una
+  # regresión que solo aparezca en 3.12 se ve después del merge, no antes. El ancla enumera los disparadores reales.
   test-shard:
-    name: "🧪 Shard ${{ matrix.shard }}/4 / py${{ matrix.python-version }}"
+    name: "🧪 Shard ${{ matrix.shard }}/6 / py${{ matrix.python-version }}"
     runs-on: ${{ matrix.os }}
     # 2026-10-09: 30 min era insuficiente. Medido en las corridas recientes, pytest
     # tarda 1057-1719 s segun el runner asignado (py3.11 es el volatil; py3.12 se
@@ -126,13 +141,15 @@ jobs:
     # duracion del JOB entero que muestra Actions (instalacion y coleccion incluidas); el job `test` imprime ademas
     # el tiempo de los TESTS de cada shard (queda en su manifiesto), que sirve para equilibrar el reparto pero NO
     # incluye ni la coleccion ni el arranque, asi que subestima lo que consume el tope.
+    # 2026-11-21: ya hay datos de 4 shards (124 jobs exitosos, 2026-11-20/21): el job entero tardo entre 7.8 y 18.0 min.
+    # El tope NO se baja en el PR que pasa a 6 shards: se cambia una sola cosa por vez y la siguiente con los datos de 6.
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest]
-        python-version: ["3.11", "3.12"]
-        shard: [1, 2, 3, 4]
+        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.11"]' || '["3.11", "3.12"]') }}
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -151,7 +168,7 @@ jobs:
       # establecen la condicion que asumen: es una dependencia del entorno a corregir aparte, no se cambia el shell.
       - name: Run test shard
         env:
-          SKYCLAW_SHARD: ${{ matrix.shard }}/4
+          SKYCLAW_SHARD: ${{ matrix.shard }}/6
           SKYCLAW_SHARD_MANIFEST: shard-out/shard-manifest.json
           COVERAGE_FILE: shard-out/coverage.sqlite
         run: |
@@ -162,7 +179,7 @@ jobs:
       # para ocupar la cuota de almacenamiento (el job Build ya sube un .exe de ~88 MB por corrida verde).
       # Consecuencia: pasado un dia, «Re-run failed jobs» NO sirve para reintentar solo el veredicto (los shards verdes
       # no se vuelven a correr y sus artefactos ya expiraron: la descarga falla). Para ese caso: «Re-run all jobs», que
-      # regenera los 4 artefactos por version de Python.
+      # regenera los 6 artefactos por version de Python.
       # overwrite: true: con `always()` el artefacto queda subido aunque el shard falle, y `upload-artifact` falla por
       # defecto si el nombre ya existe en la corrida: el reintento del mismo shard chocaria con el de su primer intento
       # y quedaria rojo aunque pytest pase. Reemplaza el anterior y el patron de descarga sigue viendo UN artefacto por
@@ -181,9 +198,10 @@ jobs:
   # lo exigia) y es donde se decide si la suite quedo completa y si la cobertura combinada alcanza el umbral.
   # `!cancelled()` y no el `needs` por defecto: un shard que falla debe dejar ESTE check en rojo, no "skipped"
   # (GitHub da por satisfecho un check requerido que se omitio).
-  # Ojo: `needs.test-shard.result` agrega TODA la matriz de shards (las dos versiones de Python): un shard rojo
-  # de py3.12 deja rojos ambos veredictos, y ninguno arranca hasta que terminan los 8 shards. No cambia que el
-  # merge quede bloqueado; el log del shard que fallo dice cual fue y de que version.
+  # Ojo: `needs.test-shard.result` agrega TODA la matriz de shards (las versiones de Python del evento): fuera de un PR,
+  # un shard rojo de py3.12 deja rojos ambos veredictos, y ninguno arranca hasta que terminan los 12 shards. No cambia
+  # que el merge quede bloqueado; el log del shard que fallo dice cual fue y de que version.
+  # La matriz de versiones es la MISMA expresion que la de `test-shard` (hermanos: el ancla exige igualdad textual).
   test:
     name: "🧪 Tests / ${{ matrix.os }} / py${{ matrix.python-version }}"
     needs: [test-shard]
@@ -194,7 +212,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest]
-        python-version: ["3.11", "3.12"]
+        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.11"]' || '["3.11", "3.12"]') }}
     steps:
       - name: Require every shard to have passed
         shell: bash
@@ -218,12 +236,12 @@ jobs:
           pattern: test-shard-py${{ matrix.python-version }}-*
           path: shards
       # `--con-cobertura`: `coverage combine` sobre un glob al que le falta una base NO falla; combina las que hay y,
-      # si esas alcanzan el umbral, el job queda verde con una cobertura parcial. El verificador exige las 4 bases.
+      # si esas alcanzan el umbral, el job queda verde con una cobertura parcial. El verificador exige las 6 bases.
       - name: Verify shard completeness
         shell: bash
-        run: python -m scripts.ci_particion verificar shards --total 4 --con-cobertura
+        run: python -m scripts.ci_particion verificar shards --total 6 --con-cobertura
       # Los datos de cada shard ya incluyen los modulos no ejecutados (coverage los registra al guardar), asi
-      # que combinarlos da el mismo total que una corrida unica: la union de lo ejecutado por los 4 shards.
+      # que combinarlos da el mismo total que una corrida unica: la union de lo ejecutado por los 6 shards.
       # `xml` ANTES de `report --fail-under`: el umbral hace salir con error al `report` y el paso se corta ahi; con
       # el XML ya escrito, el artefacto `coverage-report-*` permite ver que lineas no se cubren cuando el umbral falla.
       - name: Combine coverage and enforce threshold
@@ -391,3 +409,41 @@ jobs:
         with:
           name: SkyClawApp-exe
           path: dist/SkyClawApp.exe
+
+  # ── Alerta: main roto ────────────────────────────────────────────
+  # Fuera de un PR (push, nocturna, a pedido) y solo sobre main: si CUALQUIER job no informativo falló, abre el issue
+  # «CI de main roto» o comenta el que ya está abierto (scripts/ci_alerta_main.py). Sin esto, una regresión que solo
+  # aparece en py3.12 (que los PRs ya no corren) sería una cruz roja en un commit que nadie mira.
+  # `failure()` mira a TODOS los ancestros, no solo a los `needs` directos: con estos cinco cuelgan todos los jobs salvo
+  # `test-posix-core`, que es informativo (continue-on-error). tests/test_ci_platform_policy.py lo enumera.
+  # Es el ÚNICO job con permiso de escritura, y solo sobre issues. Los datos entran por env, nunca por ${{ }} en `run`.
+  alerta-main:
+    name: "🚨 Alerta: main roto"
+    needs: [lint-summary, typecheck-summary, test-summary, security, build]
+    if: ${{ failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    # Exclusión entre corridas: buscar el issue y crearlo no es atómico, y dos corridas de main que fallan a la vez
+    # (push + nocturna, dos SHAs distintos) verían «no hay issue» las dos y abrirían dos. Un grupo fijo serializa las
+    # alertas de TODAS las corridas; sin cancelar, la segunda espera y comenta el issue que abrió la primera.
+    # `queue: max`: con el default (`single`) cabe una sola pendiente y una tercera corrida la cancelaría
+    # (`cancel-in-progress: false` solo protege a la que ya corre); así cada corrida rota deja su comentario.
+    concurrency:
+      group: alerta-main-roto
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Abrir o comentar el issue de main roto
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENTO: ${{ github.event_name }}
+          COMMIT: ${{ github.sha }}
+          URL_DE_LA_CORRIDA: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 scripts/ci_alerta_main.py

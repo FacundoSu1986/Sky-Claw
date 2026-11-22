@@ -12,6 +12,7 @@ Reference:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 import hashlib
 import logging
@@ -27,7 +28,12 @@ from typing import Literal
 from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.tools._process import run_capture
-from sky_claw.local.tools.patcher_pipeline import PatcherPipeline, PatcherPipelineError, SynthesisSettingsProfile
+from sky_claw.local.tools.patcher_pipeline import (
+    PatcherPipeline,
+    PatcherPipelineError,
+    SynthesisSettingsProfile,
+    is_x86_dotnet_path,
+)
 from sky_claw.local.validators.plugin_header import PluginHeaderError, read_plugin_header
 
 logger = logging.getLogger(__name__)
@@ -129,10 +135,7 @@ async def _probe_esp(esp_path: pathlib.Path) -> _EspProbe:
     return await loop.run_in_executor(None, _probe_esp_sync, esp_path)
 
 
-def _is_x86_dotnet_path(entry: str) -> bool:
-    """Detecta rutas bajo ``Program Files (x86)\\dotnet`` (incluidos subdirectorios SDK/tools)."""
-    parts = [part for part in entry.replace("/", "\\").casefold().split("\\") if part]
-    return any(part == "program files (x86)" and parts[index + 1] == "dotnet" for index, part in enumerate(parts[:-1]))
+_is_x86_dotnet_path = is_x86_dotnet_path
 
 
 # =============================================================================
@@ -279,10 +282,20 @@ class SynthesisConfig:
                 object.__setattr__(self, "dotnet_root", dotnet_root)
             if dotnet_root.exists() and not dotnet_root.is_dir():
                 raise SynthesisExecutionError(f"Synthesis dotnet_root must be a directory, not a file: {dotnet_root}")
+            if is_x86_dotnet_path(str(dotnet_root)):
+                raise SynthesisExecutionError(
+                    f"Synthesis dotnet_root cannot target x86 .NET ({dotnet_root}); configure an x64 .NET root"
+                )
         if self.pipeline_settings_path is None:
             object.__setattr__(self, "pipeline_settings_path", pathlib.Path.cwd() / "PipelineSettings.json")
         if self.data_folder_path is None:
             object.__setattr__(self, "data_folder_path", self.game_path / "Data")
+        if (
+            self.working_dir is not None
+            and self.data_folder_path is not None
+            and not self.data_folder_path.is_absolute()
+        ):
+            raise SynthesisExecutionError("Synthesis data_folder_path must be absolute when working_dir is configured")
         mo2_profile = self.mo2_profile or self.profile
         if self.load_order_file_path is None:
             try:
@@ -362,8 +375,8 @@ class SynthesisRunner:
     _ERROR_PATTERN = re.compile(
         r"(?:"
         r"(?:Overall error|Error detected|Process exited in failure|\[[^\r\n]+\]\s+Preparation error):\s*(.*?)"
-        r"|\b(?:Mo2BuildBlockedException|Mo2BuildException|NonAdjacentSplitModsException"
-        r"|TooManyMastersException|MissingModException)\b[^\n]*"
+        r"|^[ \t]*(?:[A-Za-z0-9_.]+\.)?(?:Mo2BuildBlockedException|Mo2BuildException"
+        r"|NonAdjacentSplitModsException|TooManyMastersException|MissingModException)\b\s*:[^\n]*"
         r"|\berror\s+(?:MSB|CS)\d+\s*:\s*[^\n]+"
         r"|(?:ERROR|Error|FAIL|Exception|Critical):\s*(.+?)"
         r")(?:\n|$)",
@@ -655,9 +668,22 @@ class SynthesisRunner:
                 raise SynthesisExecutionError("The active MO2 plugins.txt changed while creating its CLI snapshot")
 
             if self._config.temp_dir is None:
-                ephemeral_temp_dir = pathlib.Path(
-                    await asyncio.to_thread(tempfile.mkdtemp, prefix="skyclaw-synthesis-tmp-")
-                )
+                mkdtemp_task = asyncio.create_task(asyncio.to_thread(tempfile.mkdtemp, prefix="skyclaw-synthesis-tmp-"))
+                try:
+                    ephemeral_temp_dir = pathlib.Path(await mkdtemp_task)
+                except BaseException:
+                    if mkdtemp_task.done() and not mkdtemp_task.cancelled() and mkdtemp_task.exception() is None:
+                        with contextlib.suppress(OSError):
+                            rmtree_link_aware(pathlib.Path(mkdtemp_task.result()), limpiar_readonly=True)
+                    else:
+
+                        def _cleanup_late_temp(done_task: asyncio.Task[str]) -> None:
+                            if not done_task.cancelled() and done_task.exception() is None:
+                                with contextlib.suppress(OSError):
+                                    rmtree_link_aware(pathlib.Path(done_task.result()), limpiar_readonly=True)
+
+                        mkdtemp_task.add_done_callback(_cleanup_late_temp)
+                    raise
 
             args = self._build_cli_args(
                 patcher_ids,
