@@ -19,6 +19,9 @@
 - Para el ritual de Synthesis: el **.NET 10 SDK x64**, con el instalador oficial (deja `dotnet`
   en el `PATH`). No alcanza con el runtime: la Fase 1 compila los patchers. El `dotnet` x86 se
   ignora siempre. Ver [ADR 0019](../adr/0019-synthesis-two-phase-usvfs.md) §2.4.
+- Además, los **runtimes .NET x64** para los que se compilaron los patchers que elija: .NET no
+  salta de versión principal por defecto, así que un patcher `net8.0` necesita el runtime .NET 8
+  aunque esté instalado el SDK 10 (el SDK 10 ya trae el runtime 10).
 
 ## Entorno desde fuente
 

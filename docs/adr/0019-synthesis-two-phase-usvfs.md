@@ -217,18 +217,25 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
      `<CETCompat>true</CETCompat>`, pero un build **incremental** conserva el apphost viejo con CET
      sin avisar (también le pasó al shim del rig).
   2. **Patchers ya compilados (Fase 2 / `CliPatcherSettings` con `.exe`):** antes de correr bajo
-     USVFS se lee el flag. Si es CET-compatible y *framework-dependent* (`<nombre>.dll` +
-     `<nombre>.runtimeconfig.json` junto al `.exe`), el shim lo lanza como `dotnet.exe <nombre>.dll`
-     —el muxer no tiene el flag— sin modificar el binario ni romper su pin de hash. Evidencia de
-     rig: el mismo `MinimalPatcher` con CET cae lanzado por su `.exe` y funciona lanzado por
-     `dotnet.exe`. Si es *self-contained* o *single-file* con CET, se rechaza con un mensaje claro
-     (fail-closed).
+     USVFS se lee el flag. Si es CET-compatible y *framework-dependent*, el shim lo lanza como
+     `dotnet.exe <nombre>.dll` —el muxer no tiene el flag— sin modificar el binario ni romper su pin
+     de hash. El tipo de despliegue **no** se infiere de que existan `<nombre>.dll` y
+     `<nombre>.runtimeconfig.json` (un self-contained también los trae): es framework-dependent solo
+     si ese `runtimeconfig.json` declara `runtimeOptions.framework` o `runtimeOptions.frameworks` y
+     **no** declara `includedFrameworks` (lo que escribe un self-contained); cualquier otro caso,
+     archivo ilegible incluido, cuenta como no framework-dependent. Evidencia de rig: el mismo
+     `MinimalPatcher` con CET (`runtimeconfig` con `framework` `Microsoft.NETCore.App`) cae lanzado por
+     su `.exe` y funciona lanzado por `dotnet.exe`. Si es *self-contained* o *single-file* con CET, se
+     rechaza con un mensaje claro (fail-closed).
   3. **Descartado:** parchear el byte del PE de un tercero (altera el binario y rompe el pin) y
      exigir una MO2/usvfs más nueva (no verificado que lo resuelva, y obligaría a todos los usuarios
      a actualizar su MO2).
 
-  No requiere software nuevo: el .NET 10 SDK x64 ya es requisito de la Fase 1 y trae el muxer
-  `dotnet.exe` (queda documentado en `docs/user/installation.md`). Costo aceptado: los procesos de
+  No requiere software nuevo para CET: el .NET 10 SDK x64 ya es requisito de la Fase 1 y trae el
+  muxer `dotnet.exe`. Sí queda explícito un requisito que ya existía: un patcher framework-dependent
+  corre sobre el runtime principal para el que se compiló (.NET no hace roll-forward entre versiones
+  principales por defecto), así que hacen falta también los runtimes .NET x64 de los patchers
+  elegidos —p. ej. .NET 8 para un patcher `net8.0`—; ambos quedan en `docs/user/installation.md`. Costo aceptado: los procesos de
   patcher pierden el endurecimiento CET (en Windows 10 la shadow stack de usuario medida está
   apagada igual). Implementación: PR-3 (Fase 1 y shim), con test que enumere los caminos de lanzamiento.
 - **Contención OS:** `run_capture(..., require_job=True, max_output_bytes=...)` en Fase 1 y Job
