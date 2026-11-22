@@ -16,6 +16,9 @@
 - Python 3.11 o 3.12, las versiones ejecutadas por CI.
 - Mod Organizer 2 y Skyrim Special Edition/Anniversary Edition.
 - Las herramientas que vaya a usar el ritual: LOOT, SSEEdit u otras.
+- Para el ritual de Synthesis: el **.NET 10 SDK x64**, con el instalador oficial (deja `dotnet`
+  en el `PATH`). No alcanza con el runtime: la Fase 1 compila los patchers. El `dotnet` x86 se
+  ignora siempre. Ver [ADR 0019](../adr/0019-synthesis-two-phase-usvfs.md) §2.4.
 
 ## Entorno desde fuente
 

@@ -204,11 +204,33 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
   contención CLI → shim → patcher dormido. No es un secreto nuevo (`USERPROFILE` ya lo contiene).
   La propiedad cubre a **todas** las listas blancas de entorno del paquete, no solo a la de
   Synthesis: `tests/test_entorno_curado_usvfs_username.py` las enumera por AST y congela el censo.
-- **Limitación abierta — patchers con apphost `CETCompat`:** el SDK .NET 9+ marca por defecto el
-  apphost como CET-compatible; en el rig, un patcher con ese flag cae bajo usvfs 0.5.6.1 aun con
-  entorno completo, y el mismo binario con solo ese bit apagado (o recompilado con
-  `CETCompat=false`) funciona. El CLI no se ve afectado (su `Directory.Build.props` fija
-  `CETCompat=false`). Cómo tratar patchers de terceros con ese flag queda pendiente de decisión.
+- **Patchers con apphost `CETCompat` — decisión del propietario (2026-11-22):** el SDK .NET 9+
+  marca por defecto el apphost como CET-compatible (`IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT`); en
+  el rig, un patcher con ese flag cae bajo usvfs 0.5.6.1 (`0xC0000005` en memoria sin módulo) aun con
+  entorno completo, y el mismo binario con solo ese bit apagado funciona. El CLI no se ve afectado
+  (el `Directory.Build.props` de Synthesis fija `CETCompat=false`, y Mutagen recomienda lo mismo para
+  MO2). Se adopta, en este orden:
+  1. **Fase 1 compila sin CET y lo verifica.** Todo `dotnet build`/`publish` de patchers que haga
+     Sky-Claw pasa `-p:CETCompat=false` y compila **no incremental** (`--no-incremental` o `obj`
+     limpio), y después lee el flag del apphost producido: si sigue CET-compatible, la Fase 1 falla
+     cerrado. Evidencia de rig: el override de línea de comandos gana aunque el `.csproj` declare
+     `<CETCompat>true</CETCompat>`, pero un build **incremental** conserva el apphost viejo con CET
+     sin avisar (también le pasó al shim del rig).
+  2. **Patchers ya compilados (Fase 2 / `CliPatcherSettings` con `.exe`):** antes de correr bajo
+     USVFS se lee el flag. Si es CET-compatible y *framework-dependent* (`<nombre>.dll` +
+     `<nombre>.runtimeconfig.json` junto al `.exe`), el shim lo lanza como `dotnet.exe <nombre>.dll`
+     —el muxer no tiene el flag— sin modificar el binario ni romper su pin de hash. Evidencia de
+     rig: el mismo `MinimalPatcher` con CET cae lanzado por su `.exe` y funciona lanzado por
+     `dotnet.exe`. Si es *self-contained* o *single-file* con CET, se rechaza con un mensaje claro
+     (fail-closed).
+  3. **Descartado:** parchear el byte del PE de un tercero (altera el binario y rompe el pin) y
+     exigir una MO2/usvfs más nueva (no verificado que lo resuelva, y obligaría a todos los usuarios
+     a actualizar su MO2).
+
+  No requiere software nuevo: el .NET 10 SDK x64 ya es requisito de la Fase 1 y trae el muxer
+  `dotnet.exe` (queda documentado en `docs/user/installation.md`). Costo aceptado: los procesos de
+  patcher pierden el endurecimiento CET (en Windows 10 la shadow stack de usuario medida está
+  apagada igual). Implementación: PR-3 (Fase 1 y shim), con test que enumere los caminos de lanzamiento.
 - **Contención OS:** `run_capture(..., require_job=True, max_output_bytes=...)` en Fase 1 y Job
   Object + fence `supervised` con constatación de `ActiveProcesses == 0` en Fase 2.
 - **Flags protegidos ampliados:** `protected_flags`/`protected_short` bloquean `-o`, `-s`, `-p`,
