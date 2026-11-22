@@ -1545,10 +1545,11 @@ class TestAnclaConstructoresManualesDeMods:
         ("sky_claw/local/discovery/scanner.py", "EnvironmentScanner._scan_inner"): 1,
         # MO2PluginStateProvider: usa `mods_dir` inyectado; esto es el fallback legacy.
         ("sky_claw/local/fomod/plugin_state.py", "MO2PluginStateProvider.__init__"): 1,
-        # BrokeredLootRunner: acepta `mods_dir`; los sitios son fallbacks portables
-        # (el de `build_vfs_loot_runner` cubre las dos ramas: declarado y default).
+        # BrokeredLootRunner / BrokeredSynthesisRunner: aceptan `mods_dir` explícito;
+        # el sitio de `__init__` es el fallback portable cuando `mods_dir is None`.
         ("sky_claw/local/mo2/brokered_loot.py", "BrokeredLootRunner.__init__"): 1,
         ("sky_claw/local/mo2/brokered_loot.py", "build_vfs_loot_runner"): 2,
+        ("sky_claw/local/mo2/brokered_synthesis.py", "BrokeredSynthesisRunner.__init__"): 1,
         # MO2Controller: fallback legacy del overlay.
         ("sky_claw/local/mo2/vfs.py", "MO2Controller.__init__"): 1,
         # Atestación del overlay: el helper único `_raices_del_overlay` es la única
