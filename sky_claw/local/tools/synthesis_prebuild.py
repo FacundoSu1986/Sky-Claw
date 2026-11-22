@@ -29,6 +29,7 @@ import enum
 import json
 import mmap
 import pathlib
+import re
 from dataclasses import dataclass
 
 import pefile
@@ -58,7 +59,8 @@ _FIRMA_BUNDLE = bytes.fromhex("8b1202b96a612038727b930214d7a03213f5b9e6efae3318e
 # El apphost reserva EMBED_MAX = 1025 bytes para el nombre de la app; HostWriter escribe el nombre
 # y el resto queda en ceros. Medido en apphosts reales del rig: exactamente una región así.
 _TAM_REGION_APP = 1025
-_SUFIJO_APP = b".dll\x00"
+# `.dll` + NUL plegando SOLO mayúsculas ASCII, igual que la comparación final del nombre.
+_SUFIJO_APP = re.compile(rb"\.[dD][lL][lL]\x00")
 
 
 class EstadoCet(enum.Enum):
@@ -185,14 +187,13 @@ def _offsets_de_bundle(datos: mmap.mmap) -> list[int]:
 def _apps_embebidas(datos: mmap.mmap) -> list[bytes]:
     """Regiones ``<nombre>.dll`` seguidas de ceros hasta completar los 1025 bytes del apphost."""
     apps: list[bytes] = []
-    pos = datos.find(_SUFIJO_APP)
-    while pos != -1:
-        fin = pos + len(_SUFIJO_APP) - 1  # índice del NUL terminador
+    for coincidencia in _SUFIJO_APP.finditer(datos):
+        pos = coincidencia.start()
+        fin = coincidencia.end() - 1  # índice del NUL terminador
         inicio = datos.rfind(b"\x00", max(0, fin - _TAM_REGION_APP), pos) + 1
         limite = inicio + _TAM_REGION_APP
         if inicio < pos and limite <= len(datos) and datos[fin:limite].count(0) == limite - fin:
             apps.append(datos[inicio:fin])
-        pos = datos.find(_SUFIJO_APP, pos + 1)
     return apps
 
 

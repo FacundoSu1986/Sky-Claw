@@ -173,6 +173,12 @@ _CASOS: dict[str, tuple[dict[str, object], tuple[ModoLanzamiento, Motivo]]] = {
         {"pe": _pe_sintetico(cet=1, apps=(b"mipatcher.dll",))},
         (ModoLanzamiento.VIA_DOTNET, Motivo.CET_VIA_DOTNET),
     ),
+    # Hermano del caso anterior: la BÚSQUEDA de la región también pliega ASCII, no solo la
+    # comparación final (sin esto `MIPATCHER.DLL` ni siquiera era candidata).
+    "cet_app_extension_en_mayusculas": (
+        {"pe": _pe_sintetico(cet=1, apps=(b"MIPATCHER.DLL",))},
+        (ModoLanzamiento.VIA_DOTNET, Motivo.CET_VIA_DOTNET),
+    ),
     # Pero el plegado no-ASCII no se adivina: "ß" no es "ss" para NTFS.
     "cet_app_plegado_no_ascii": (
         {"nombre": "Straße", "pe": _pe_sintetico(cet=1, apps=(b"Strasse.dll",))},
