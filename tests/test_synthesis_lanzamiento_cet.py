@@ -272,6 +272,29 @@ _CASOS: dict[str, tuple[dict[str, object], tuple[ModoLanzamiento, Motivo]]] = {
         },
         (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
     ),
+    # Una clave PRESENTE con null no equivale a ausente: el host la procesa y la rechaza.
+    "cet_runtimeconfig_framework_valido_y_frameworks_null": (
+        {
+            "runtimeconfig": {
+                "runtimeOptions": {
+                    "framework": {"name": "Microsoft.NETCore.App", "version": "10.0.0"},
+                    "frameworks": None,
+                }
+            }
+        },
+        (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
+    ),
+    "cet_runtimeconfig_framework_null_y_frameworks_valido": (
+        {
+            "runtimeconfig": {
+                "runtimeOptions": {
+                    "framework": None,
+                    "frameworks": [{"name": "Microsoft.NETCore.App", "version": "10.0.0"}],
+                }
+            }
+        },
+        (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
+    ),
     "cet_runtimeconfig_ambas_secciones_validas": (
         {
             "runtimeconfig": {

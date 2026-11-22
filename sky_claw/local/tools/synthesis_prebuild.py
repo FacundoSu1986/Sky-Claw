@@ -212,14 +212,17 @@ def es_framework_dependent(runtimeconfig: pathlib.Path) -> bool:
     opciones = contenido.get("runtimeOptions")
     if not isinstance(opciones, dict) or "includedFrameworks" in opciones:
         return False
+    # Presencia por CLAVE, no por valor: `"frameworks": null` está presente (y es inválido).
+    tiene_framework = "framework" in opciones
+    tiene_frameworks = "frameworks" in opciones
+    if not tiene_framework and not tiene_frameworks:
+        return False
     framework = opciones.get("framework")
     frameworks = opciones.get("frameworks")
-    if framework is None and frameworks is None:
-        return False
     # El host procesa ambas secciones cuando coexisten: TODA sección presente debe ser válida.
-    if framework is not None and not _referencia_de_framework_valida(framework):
+    if tiene_framework and not _referencia_de_framework_valida(framework):
         return False
-    return frameworks is None or (
+    return not tiene_frameworks or (
         isinstance(frameworks, list)
         and bool(frameworks)
         and all(_referencia_de_framework_valida(f) for f in frameworks)
