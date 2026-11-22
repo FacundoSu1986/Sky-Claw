@@ -32,6 +32,10 @@ def _proc_stuck_in_communicate() -> AsyncMock:
         return (b"", b"")
 
     proc.communicate = AsyncMock(side_effect=_hang)
+    proc.stdout = MagicMock()
+    proc.stdout.read = AsyncMock(side_effect=_hang)
+    proc.stderr = MagicMock()
+    proc.stderr.read = AsyncMock(side_effect=_hang)
     proc.wait = AsyncMock(return_value=-9)
     proc.kill = MagicMock()
     proc.returncode = -9
@@ -63,6 +67,12 @@ async def test_synthesis_does_not_hang_on_timeout(tmp_path):
         timeout_seconds=1,
     )
     runner = SynthesisRunner(config)
-    with patch("asyncio.create_subprocess_exec", return_value=proc), pytest.raises(SynthesisTimeoutError):
+    with (
+        patch("asyncio.create_subprocess_exec", return_value=proc),
+        patch("sky_claw.local.tools._process.assign_kill_on_close_job", return_value=1234),
+        patch("sky_claw.local.tools._process.close_job") as close_job_mock,
+        pytest.raises(SynthesisTimeoutError),
+    ):
         await asyncio.wait_for(runner._execute_process(["dummy"]), timeout=3.0)
     proc.kill.assert_called_once()
+    close_job_mock.assert_called_once_with(1234)

@@ -128,6 +128,9 @@ MECANISMO_DE_BORRADO: dict[str, str] = {
     # NP-E0b: el ejecutor de texconv borra su PROPIO espacio de trabajo (lo creó
     # `mkdtemp`: copia del binario, entrada y salida). Mismo criterio que los
     # ejecutores UIA: que el árbol sea propio no habilita `shutil.rmtree`.
+    # PR-1 (#975): limpia únicamente su TEMP efímero por corrida (`mkdtemp`),
+    # idéntico a `texconv_runner.py` y `dyndolod_uia_ejecutor.py`.
+    "sky_claw/local/tools/synthesis_runner.py": "link-aware",
     "sky_claw/local/tools/texconv_runner.py": "link-aware",
     # NP-A0a: el lote borra su PROPIO directorio de trabajo (lo creó `mkdtemp`: las salidas intermedias).
     # Mismo criterio que el ejecutor de texconv: que el árbol sea propio no habilita `shutil.rmtree`.
@@ -475,6 +478,9 @@ POLITICA_DE_LIMPIAR_READONLY: dict[str, str] = {
     # keyword se cae, el descarte del backup vuelve a fallar en silencio sobre un
     # árbol read-only en el camino de ÉXITO.
     "sky_claw/local/tools/rollback_reconciler.py": "requiere",
+    # PR-1 (#975): Synthesis/LibGit2Sharp/NuGet pueden dejar archivos read-only en el TEMP
+    # efímero por corrida (`synthesis_runner.py` ya pasa `limpiar_readonly=True`).
+    "sky_claw/local/tools/synthesis_runner.py": "requiere",
     # NP-E0b: el espacio de texconv contiene una COPIA del binario hecha con `copy2`,
     # que propaga el modo de la fuente: si el original está en solo lectura, la copia
     # también y sin el flag el borrado de Windows fallaría dejando restos.
