@@ -120,6 +120,7 @@ class SynthesisPipelineService:
 
     RESOURCE_ID: str = "Synthesis.esp"
     AGENT_ID: str = "synthesis-service"
+    PIPELINE_STAGE: int = 7
 
     def __init__(
         self,
@@ -207,6 +208,14 @@ class SynthesisPipelineService:
                 and not isinstance(self._synthesis_runner, _brokered_synthesis.VfsRequiredSynthesisRunner)
             ):
                 return _brokered_synthesis._guard(_brokered_synthesis._MOTIVO_DEL_HOLD)
+            if self._output_path is not None:
+                injected_cfg = getattr(self._synthesis_runner, "_config", None)
+                injected_out = getattr(injected_cfg, "output_path", None)
+                if isinstance(injected_out, pathlib.Path) and injected_out.resolve() != self._output_path.resolve():
+                    raise SynthesisExecutionError(
+                        f"synthesis_runner inyectado apunta a output_path={injected_out.resolve()} "
+                        f"distinto del override del servicio ({self._output_path.resolve()})"
+                    )
             return self._synthesis_runner
 
         solicitado = _brokered_synthesis._normalizar_backend(self._synthesis_backend)
@@ -1012,6 +1021,7 @@ class SynthesisPipelineService:
                     "Rollback Synthesis %s para TX %d; se mantiene pendiente para recuperación manual.",
                     "vetado por terminalidad desconocida" if rollback_vetoed else "incompleto",
                     tx_id,
+                    extra={"pipeline_stage": self.PIPELINE_STAGE, "tx_id": tx_id},
                 )
             logger.error("Pipeline Synthesis falló: %s", exc)
             _rc = getattr(exc, "return_code", None)
@@ -1072,6 +1082,7 @@ class SynthesisPipelineService:
                     "Rollback Synthesis %s para TX %d; se mantiene pendiente para recuperación manual.",
                     "vetado por terminalidad desconocida" if rollback_vetoed else "incompleto",
                     tx_id,
+                    extra={"pipeline_stage": self.PIPELINE_STAGE, "tx_id": tx_id},
                 )
             logger.error("Unexpected exception in synthesis pipeline: %s", exc, exc_info=True)
             partial_outputs = ()

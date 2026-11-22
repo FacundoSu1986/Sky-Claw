@@ -123,13 +123,13 @@ def _read_expected_plugins(
             safe_name = assert_safe_component(candidate, field="expected_plugins[]")
         except PathViolationError as exc:
             raise SynthesisExecutionError(f"Nombre de plugin inválido en plugins.txt: {candidate!r}") from exc
-        if not safe_name.casefold().endswith(_PLUGIN_SUFFIXES):
+        if not safe_name.lower().endswith(_PLUGIN_SUFFIXES):
             continue
         # Excluir outputs propios del grupo para evitar deadlock en reruns cuando
         # ya figuran activos en plugins.txt y se hace unlink() previo al spawn.
         if any(SynthesisRunner._output_belongs_to_group(safe_name, group_name) for group_name in excluded_groups):
             continue
-        key = safe_name.casefold()
+        key = safe_name.lower()
         if key not in seen:
             seen.add(key)
             plugins.append(safe_name)
@@ -192,6 +192,12 @@ class BrokeredSynthesisRunner:
                 f"Brokered Synthesis requires Synthesis.Bethesda.CLI.exe "
                 f"(recibido {config.synthesis_exe.name!r}; no se admite Synthesis.exe GUI WPF)"
             )
+        if not config.block_building_within_mo2:
+            raise SynthesisExecutionError(
+                "Brokered Synthesis requiere block_building_within_mo2=True (contrato Fase 2)"
+            )
+        if not config.require_patcher_receipts:
+            raise SynthesisExecutionError("Brokered Synthesis requiere require_patcher_receipts=True (contrato Fase 2)")
         resolved_data = data_root or mo2_root or config.mo2_path
         if resolved_data is None:
             raise SynthesisExecutionError("Brokered Synthesis requiere data_root o mo2_root")
@@ -342,6 +348,7 @@ class BrokeredSynthesisRunner:
         expected_load_order_fingerprint: str | None = None,
     ) -> SynthesisResult:
         """Despacha ``run-pipeline`` dentro del worker USVFS con payload cerrado."""
+        self._last_result.set(None)
         if extra_args:
             raise SynthesisExecutionError(
                 "Brokered Synthesis no admite extra_args arbitrarios; el contrato USVFS es cerrado"

@@ -342,6 +342,8 @@ def test_brokered_runner_rechaza_synthesis_exe_gui_al_construirse(tmp_path: path
         pipeline_settings_path=rutas["settings"],
         data_folder_path=rutas["data_fisico"],
         load_order_file_path=rutas["plugins"],
+        block_building_within_mo2=True,
+        require_patcher_receipts=True,
     )
     with pytest.raises(SynthesisExecutionError, match=r"Synthesis\.Bethesda\.CLI\.exe"):
         BrokeredSynthesisRunner(
@@ -364,6 +366,8 @@ async def test_brokered_runner_rechaza_extra_args(tmp_path: pathlib.Path) -> Non
         pipeline_settings_path=rutas["settings"],
         data_folder_path=rutas["data_fisico"],
         load_order_file_path=rutas["plugins"],
+        block_building_within_mo2=True,
+        require_patcher_receipts=True,
     )
     runner = BrokeredSynthesisRunner(
         config=config,
@@ -451,6 +455,8 @@ async def test_brokered_runner_propaga_terminality_unknown_en_timeout(tmp_path: 
         pipeline_settings_path=rutas["settings"],
         data_folder_path=rutas["data_fisico"],
         load_order_file_path=rutas["plugins"],
+        block_building_within_mo2=True,
+        require_patcher_receipts=True,
     )
 
     class _TimeoutBroker:
@@ -497,6 +503,8 @@ async def test_brokered_runner_traduce_fallos_tipados_del_worker(
         pipeline_settings_path=rutas["settings"],
         data_folder_path=rutas["data_fisico"],
         load_order_file_path=rutas["plugins"],
+        block_building_within_mo2=True,
+        require_patcher_receipts=True,
     )
 
     class _FailingBroker:
@@ -523,8 +531,9 @@ async def test_brokered_runner_traduce_fallos_tipados_del_worker(
         mods_dir=rutas["mods"],
     )
 
-    with pytest.raises(exc_cls):
+    with pytest.raises(exc_cls) as exc_info:
         await runner.run_pipeline(["PatcherA"])
+    assert type(exc_info.value) is exc_cls
 
 
 async def test_synthesis_service_en_dominio_virtual_no_bloquea_por_data_fisico(tmp_path: pathlib.Path) -> None:
@@ -897,10 +906,12 @@ async def test_worker_exige_expected_plugins_politica_fase2_y_confina_rutas_sin_
     try:
         link_dir.symlink_to(real_dir, target_is_directory=True)
     except OSError:
-        motivo = crear_junction(link_dir, real_dir) if os.name == "nt" else "symlink no soportado"
-        if motivo is not None:
-            pytest.skip(f"El entorno no permite crear symlinks ni junctions de directorio: {motivo}")
-        expected_kind = "junction"
+        if os.name == "nt":
+            motivo = crear_junction(link_dir, real_dir)
+            assert motivo is None, f"no se pudo crear junction en Windows: {motivo}"
+            expected_kind = "junction"
+        else:
+            pytest.skip("El entorno no permite crear symlinks de directorio")
     cfg = SynthesisConfig(
         game_path=rutas["game"],
         mo2_path=rutas["mo2"],
@@ -911,6 +922,8 @@ async def test_worker_exige_expected_plugins_politica_fase2_y_confina_rutas_sin_
         data_folder_path=rutas["data_fisico"],
         load_order_file_path=rutas["plugins"],
         working_dir=link_dir / "nested",
+        block_building_within_mo2=True,
+        require_patcher_receipts=True,
     )
     proxy = BrokeredSynthesisRunner(
         config=cfg,
@@ -981,17 +994,40 @@ def test_barrera_hold_synthesis_esta_aislada_y_enumerada_por_ast() -> None:
     assert len(asignaciones) == 1
     assert isinstance(asignaciones[0], ast.Constant) and asignaciones[0].value is False
 
-    # Ancla E3-R3: congelar la cadena de constructores de BrokeredSynthesisRunner y su resolver.
+    # Ancla E3-R3: congelar la cadena de constructores de BrokeredSynthesisRunner y su resolver
+    # incluyendo llamadas a nivel de módulo o cuerpo de clase (no solo dentro de funciones).
     def _llamadores(nombre_fn: str) -> list[tuple[str, str]]:
         llamadores: list[tuple[str, str]] = []
+
+        class _Visitor(ast.NodeVisitor):
+            def __init__(self, rel_path: str) -> None:
+                self._rel = rel_path
+                self._scopes: list[str] = ["<module>"]
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                self._scopes.append(node.name)
+                self.generic_visit(node)
+                self._scopes.pop()
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                self._scopes.append(node.name)
+                self.generic_visit(node)
+                self._scopes.pop()
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                self._scopes.append(f"class:{node.name}")
+                self.generic_visit(node)
+                self._scopes.pop()
+
+            def visit_Call(self, node: ast.Call) -> None:
+                if ast.unparse(node.func).split(".")[-1] == nombre_fn:
+                    llamadores.append((self._rel, self._scopes[-1]))
+                self.generic_visit(node)
+
         for ruta in sorted((repo / "sky_claw").rglob("*.py")):
+            rel = ruta.relative_to(repo).as_posix()
             tree = ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
-            for fn in ast.walk(tree):
-                if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
-                    continue
-                for nodo in ast.walk(fn):
-                    if isinstance(nodo, ast.Call) and ast.unparse(nodo.func).split(".")[-1] == nombre_fn:
-                        llamadores.append((ruta.relative_to(repo).as_posix(), fn.name))
+            _Visitor(rel).visit(tree)
         return sorted(llamadores)
 
     assert _llamadores("BrokeredSynthesisRunner") == [
@@ -1018,6 +1054,8 @@ async def test_hold_bloquea_incluso_runner_virtual_inyectado_directamente(tmp_pa
         pipeline_settings_path=rutas["settings"],
         data_folder_path=rutas["data_fisico"],
         load_order_file_path=rutas["plugins"],
+        block_building_within_mo2=True,
+        require_patcher_receipts=True,
     )
     proxy = BrokeredSynthesisRunner(
         config=cfg,
@@ -1107,4 +1145,190 @@ async def test_synthesis_service_hace_rollback_normal_ante_timeout_limpio_sin_ve
         assert completed_events and completed_events[0]["rolled_back"] is True
     finally:
         await event_bus.stop()
+        await lock_mgr.close()
+
+
+async def test_brokered_runner_limpia_last_vfs_result_antes_de_nueva_corrida(tmp_path: pathlib.Path) -> None:
+    """Una segunda corrida que falla por timeout no conserva el last_vfs_result de la corrida previa."""
+    rutas = _escenario_mo2(tmp_path)
+    expected_esp = (rutas["output"] / "Synthesis.esp").resolve()
+    config = SynthesisConfig(
+        game_path=rutas["game"],
+        mo2_path=rutas["mo2"],
+        output_path=rutas["output"],
+        synthesis_exe=rutas["exe"],
+        profile="Default",
+        pipeline_settings_path=rutas["settings"],
+        data_folder_path=rutas["data_fisico"],
+        load_order_file_path=rutas["plugins"],
+        block_building_within_mo2=True,
+        require_patcher_receipts=True,
+    )
+    calls = 0
+
+    class _OkLuegoTimeoutBroker:
+        async def submit(self, job: VfsJob, **_kwargs: Any) -> VfsJobResult:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return VfsJobResult(
+                    protocol_version=VFS_PROTOCOL_VERSION,
+                    job_id=job.job_id,
+                    success=True,
+                    message="",
+                    exit_code=0,
+                    stdout="ok",
+                    stderr="",
+                    outputs=(rutas["output"].resolve(),),
+                    rollback_state="not_required",
+                    attestation={"canary": "ok"},
+                    tool_result={
+                        "output_esp": str(expected_esp),
+                        "output_esps": [str(expected_esp)],
+                        "patchers_executed": ["PatcherA"],
+                        "errors": [],
+                    },
+                )
+            raise VfsJobTimeoutError("timeout en segunda corrida")
+
+    runner = BrokeredSynthesisRunner(
+        config=config,
+        broker=_OkLuegoTimeoutBroker(),
+        instance_id="portable-main",
+        data_root=rutas["mo2"],
+        mods_dir=rutas["mods"],
+    )
+    await runner.run_pipeline(["PatcherA"])
+    assert runner.last_vfs_result is not None
+
+    with pytest.raises(SynthesisTimeoutError):
+        await runner.run_pipeline(["PatcherA"])
+    assert runner.last_vfs_result is None
+
+
+@pytest.mark.parametrize(
+    ("block_building", "require_receipts", "expected_fragment"),
+    [
+        (False, True, "block_building_within_mo2"),
+        (True, False, "require_patcher_receipts"),
+    ],
+)
+def test_brokered_runner_rechaza_flags_fase2_desactivados(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    block_building: bool,
+    require_receipts: bool,
+    expected_fragment: str,
+) -> None:
+    """BrokeredSynthesisRunner y su resolver rechazan temprano flags de Fase 2 en False."""
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
+    rutas = _escenario_mo2(tmp_path)
+    cfg = SynthesisConfig(
+        game_path=rutas["game"],
+        mo2_path=rutas["mo2"],
+        output_path=rutas["output"],
+        synthesis_exe=rutas["exe"],
+        profile="Default",
+        pipeline_settings_path=rutas["settings"],
+        data_folder_path=rutas["data_fisico"],
+        load_order_file_path=rutas["plugins"],
+        block_building_within_mo2=block_building,
+        require_patcher_receipts=require_receipts,
+    )
+    with pytest.raises(SynthesisExecutionError, match=expected_fragment):
+        BrokeredSynthesisRunner(
+            config=cfg,
+            broker=MagicMock(),
+            instance_id="portable-main",
+            data_root=rutas["mo2"],
+            mods_dir=rutas["mods"],
+        )
+    guard = brokered_synthesis.resolve_synthesis_backend_runner(
+        backend="brokered",
+        config=cfg,
+        broker=MagicMock(),
+        instance_id="portable-main",
+        data_root=rutas["mo2"],
+        mods_dir=rutas["mods"],
+    )
+    assert isinstance(guard, brokered_synthesis.VfsRequiredSynthesisRunner)
+    assert expected_fragment in guard._reason
+
+
+async def test_worker_synthesis_rechaza_expected_plugins_none_y_persistence_mode_no_hashable(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El handler Synthesis falla cerrado ante expected_plugins=None o persistence_mode=[]."""
+    rutas = _escenario_mo2(tmp_path)
+
+    res_none = await execute_worker_manifest(
+        _manifiesto_synthesis(rutas, payload_overrides={"expected_plugins": None}),
+        grandchild_probe=_probe_ok,
+    )
+    assert res_none.success is False
+    assert "expected_plugins" in res_none.message
+
+    res_list = await execute_worker_manifest(
+        _manifiesto_synthesis(rutas, payload_overrides={"persistence_mode": []}),
+        grandchild_probe=_probe_ok,
+    )
+    assert res_list.success is False
+    assert "persistence_mode" in res_list.message
+
+
+async def test_worker_synthesis_usa_lower_ntfs_sin_colision_casefold(tmp_path: pathlib.Path) -> None:
+    """La visibilidad usa .lower() (NTFS) y no confunde Straße.esp con Strasse.esp."""
+    rutas = _escenario_mo2(tmp_path)
+    rutas["plugins"].write_text("*Skyrim.esm\n*Straße.esp\n", encoding="utf-8")
+    (rutas["data_virtual"] / "Strasse.esp").write_bytes(b"TES4")
+
+    manifest = _manifiesto_synthesis(
+        rutas,
+        payload_overrides={"expected_plugins": ["Skyrim.esm", "Straße.esp"]},
+    )
+    res = await execute_worker_manifest(manifest, grandchild_probe=_probe_ok)
+    assert res.success is False
+    assert "Straße.esp" in res.message
+
+
+async def test_synthesis_service_rechaza_runner_inyectado_con_output_path_distinto(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Inyectar un runner cuyo output_path difiere del override sandbox del servicio falla cerrado."""
+    rutas = _escenario_mo2(tmp_path)
+    sandbox_out = tmp_path / "sandbox_overwrite"
+    sandbox_out.mkdir()
+    real_cfg = SynthesisConfig(
+        game_path=rutas["game"],
+        mo2_path=rutas["mo2"],
+        output_path=rutas["output"],
+        synthesis_exe=rutas["exe"],
+        profile="Default",
+        pipeline_settings_path=rutas["settings"],
+        data_folder_path=rutas["data_fisico"],
+        load_order_file_path=rutas["plugins"],
+    )
+    injected_runner = SynthesisRunner(real_cfg)
+
+    lock_mgr = DistributedLockManager(tmp_path / "locks_mismatch.db", default_ttl=5.0, max_retries=1)
+    await lock_mgr.initialize()
+    snap_dir = tmp_path / "snaps_mismatch"
+    snap_dir.mkdir()
+    snap_mgr = FileSnapshotManager(snapshot_dir=snap_dir)
+    await snap_mgr.initialize()
+    try:
+        svc = SynthesisPipelineService(
+            lock_manager=lock_mgr,
+            snapshot_manager=snap_mgr,
+            journal=AsyncMock(),
+            path_resolver=_resolver_para_servicio(rutas),
+            event_bus=MagicMock(),
+            output_path=sandbox_out,
+            synthesis_settings_path=rutas["settings"],
+            synthesis_runner=injected_runner,
+        )
+        res = await svc.execute_pipeline(patcher_ids=["PatcherA"])
+        assert res["success"] is False
+        assert "output_path" in res["message"]
+    finally:
         await lock_mgr.close()

@@ -568,11 +568,11 @@ def _active_input_plugins_from_load_order(
             safe_name = assert_safe_component(candidate, field="plugins.txt[]")
         except PathViolationError as exc:
             raise ValueError(f"nombre de plugin inválido en plugins.txt: {candidate!r}") from exc
-        if not safe_name.casefold().endswith(_SYNTHESIS_PLUGIN_SUFFIXES):
+        if not safe_name.lower().endswith(_SYNTHESIS_PLUGIN_SUFFIXES):
             continue
         if any(SynthesisRunner._output_belongs_to_group(safe_name, grp) for grp in excluded_groups):
             continue
-        key = safe_name.casefold()
+        key = safe_name.lower()
         if key not in seen:
             seen.add(key)
             plugins.append(safe_name)
@@ -591,6 +591,11 @@ async def _synthesis_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     unexpected = set(payload) - (_SYNTHESIS_REQUIRED_KEYS | _SYNTHESIS_OPTIONAL_KEYS)
     if unexpected:
         raise ValueError(f"payload de synthesis contiene campos no permitidos: {sorted(unexpected)}")
+    raw_expected_plugins = payload.get("expected_plugins")
+    if not isinstance(raw_expected_plugins, list) or any(
+        not isinstance(item, str) or not item for item in raw_expected_plugins
+    ):
+        raise ValueError("payload.expected_plugins debe ser una lista de strings no vacíos")
 
     synthesis_exe = _synthesis_payload_path(payload, "synthesis_exe")
     if synthesis_exe.name.casefold() not in SYNTHESIS_CLI_EXECUTABLE_NAMES:
@@ -625,7 +630,7 @@ async def _synthesis_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     persistence_path = _optional_synthesis_payload_path(payload, "persistence_path")
 
     raw_persistence_mode = payload.get("persistence_mode", "None")
-    if raw_persistence_mode not in {"None", "Text"}:
+    if not isinstance(raw_persistence_mode, str) or raw_persistence_mode not in {"None", "Text"}:
         raise ValueError(f"payload.persistence_mode no permitido: {raw_persistence_mode!r}")
     persistence_mode: Literal["None", "Text"] = "Text" if raw_persistence_mode == "Text" else "None"
     if persistence_mode == "Text" and persistence_path is None:
@@ -698,11 +703,9 @@ async def _synthesis_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
             excluded_groups=settings_profile.group_names,
         )
         visible_keys = {
-            entry.name.casefold()
-            for entry in virtual_data_dir.iterdir()
-            if link_kind(entry) is None and entry.is_file()
+            entry.name.lower() for entry in virtual_data_dir.iterdir() if link_kind(entry) is None and entry.is_file()
         }
-        missing_inputs = [name for name in required_inputs if name.casefold() not in visible_keys]
+        missing_inputs = [name for name in required_inputs if name.lower() not in visible_keys]
         if missing_inputs:
             raise ValueError(
                 "load order incompleto bajo USVFS: faltan plugin(s) activos de plugins.txt en el Data virtual: "
