@@ -196,6 +196,19 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
   Toda deserialización de `PipelineSettings.json` V2 valida identidades polimórficas completas
   `($type, assembly)` restringidas al assembly canónico `Synthesis.Bethesda.Execution` y rechaza
   cualquier `$type` en ubicaciones o subobjetos no polimórficos.
+- **`USERNAME` es parte obligatoria de la lista blanca (evidencia de rig, S5 real 2026-11-22):**
+  bajo MO2 2.5.2, `usvfs_x64.dll` 0.5.6.1 hace `std::string(getenv("USERNAME"))` sin chequear NULL
+  al inicializarse en cada proceso enganchado (`shm_sink::sink_it_`, igual en upstream `master`).
+  Sin `USERNAME`, el CLI moría con `0xC0000005` en `usvfs_x64.dll+0xa6783` antes de cargar .NET
+  (`cmd.exe` con el mismo entorno cae igual); con ella, R1–R3 pasaron bajo MO2 real, incluida la
+  contención CLI → shim → patcher dormido. No es un secreto nuevo (`USERPROFILE` ya lo contiene).
+  La propiedad cubre a **todas** las listas blancas de entorno del paquete, no solo a la de
+  Synthesis: `tests/test_entorno_curado_usvfs_username.py` las enumera por AST y congela el censo.
+- **Limitación abierta — patchers con apphost `CETCompat`:** el SDK .NET 9+ marca por defecto el
+  apphost como CET-compatible; en el rig, un patcher con ese flag cae bajo usvfs 0.5.6.1 aun con
+  entorno completo, y el mismo binario con solo ese bit apagado (o recompilado con
+  `CETCompat=false`) funciona. El CLI no se ve afectado (su `Directory.Build.props` fija
+  `CETCompat=false`). Cómo tratar patchers de terceros con ese flag queda pendiente de decisión.
 - **Contención OS:** `run_capture(..., require_job=True, max_output_bytes=...)` en Fase 1 y Job
   Object + fence `supervised` con constatación de `ActiveProcesses == 0` en Fase 2.
 - **Flags protegidos ampliados:** `protected_flags`/`protected_short` bloquean `-o`, `-s`, `-p`,

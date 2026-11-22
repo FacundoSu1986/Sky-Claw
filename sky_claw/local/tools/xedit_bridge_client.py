@@ -35,6 +35,9 @@ TIMEOUT_MINIMO, TIMEOUT_MAXIMO = 5, 120
 #: Tope combinado de stdout/stderr capturados desde el bridge (evita acumulación sin límite de memoria).
 LIMITE_BYTES_SALIDA = 8 * 1024 * 1024
 #: Lista blanca mínima del entorno OS/runtime necesaria para Python ``-I -S -B`` y SSEEdit sin filtrar secretos.
+#: Incluye ``USERNAME`` por la misma razón que la de Synthesis (usvfs 0.5.6.1 la lee sin chequear NULL en
+#: cada proceso enganchado): hoy este bridge no corre bajo USVFS, pero ninguna lista blanca puede quedar
+#: incompatible con él (ancla: ``tests/test_entorno_curado_usvfs_username.py``).
 VARIABLES_ENTORNO_PERMITIDAS: frozenset[str] = frozenset(
     {
         "ALLUSERSPROFILE",
@@ -67,6 +70,7 @@ VARIABLES_ENTORNO_PERMITIDAS: frozenset[str] = frozenset(
         "TEMP",
         "TMP",
         "TMPDIR",
+        "USERNAME",
         "USERPROFILE",
         "WINDIR",
     }
