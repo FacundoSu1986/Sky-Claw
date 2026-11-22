@@ -54,7 +54,7 @@ _TOOLS_DIR = pathlib.Path(__file__).resolve().parent.parent / "sky_claw" / "loca
 SENSOR_FISICO_POR_DOMINIO: dict[str, dict[str, bool]] = {
     "loot_service": {"physical": True, "virtual_usvfs": False},
     "dyndolod_service": {"physical": True, "virtual_usvfs": False},
-    "synthesis_service": {"physical": True},
+    "synthesis_service": {"physical": True, "virtual_usvfs": False},
     "pandora_service": {"physical": True},
     "wrye_bash_service": {"physical": True, "virtual_usvfs": False},
 }
@@ -255,7 +255,16 @@ def _construir(nombre: str, *, resolver: MagicMock, mo2: pathlib.Path, dominio: 
     if nombre == "synthesis_service":
         from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
 
-        return SynthesisPipelineService(**comunes, journal=MagicMock(), event_bus=MagicMock())
+        broker = MagicMock() if dominio == "virtual_usvfs" else None
+        instance_id = "portable-main" if dominio == "virtual_usvfs" else None
+        return SynthesisPipelineService(
+            **comunes,
+            journal=MagicMock(),
+            event_bus=MagicMock(),
+            vfs_broker=broker,
+            instance_id=instance_id,
+            synthesis_backend="brokered" if dominio == "virtual_usvfs" else "standalone",
+        )
     if nombre == "pandora_service":
         from sky_claw.local.tools.pandora_service import PandoraPipelineService
 
