@@ -389,6 +389,10 @@ _FILAS_CON_EVIDENCIA_DE_RIG_EXTERNA = frozenset(
         # Etapa 6: la guía de smoke resume la corrida (E1–E7), pero el informe completo y los
         # JSON crudos viven en la máquina del operador.
         "Etapa 6 (Wrye Bash) sin build headless",
+        # R0 brokered 1 (rig G:): el FAIL de la primera corrida brokered real se afirma
+        # en la fila, y su evidencia queda en la máquina del operador (decisión del
+        # propietario, igual que la evidencia del levantamiento del HOLD).
+        "F8 USVFS",
         "Etapa 6 (Wrye Bash) — vigencia del testigo durable y simetría M-04 (#866)",
     }
 )

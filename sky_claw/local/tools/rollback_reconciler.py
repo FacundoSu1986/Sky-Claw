@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Final
 
 from sky_claw.app.db.locks import LockAcquisitionError, adquirir_lease_definitiva, liberar_lease_definitiva
 from sky_claw.app.security.links import is_link, path_present, rmtree_link_aware
+from sky_claw.local.tools._dir_rollback import descartar_si_es_carpeta_vacia, mutar_hasta_terminal
 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
 from sky_claw.local.tools.output_targets import (
@@ -147,6 +148,13 @@ class ProductorDeMoveAside:
     lock_resource_id: str
     #: Directorios exactos que el ritual regenera y puede restaurar.
     destinos: tuple[pathlib.Path, ...]
+    #: Subconjunto de ``destinos`` cuyo estado COMPROMETIDO nunca es una carpeta
+    #: vacía (un mod empaquetado lleva al menos ``meta.ini``). Para ellos, una
+    #: carpeta vacía con su backup al lado sólo puede ser una corrida interrumpida
+    #: antes de regenerar (R0 brokered 1: el servicio recrea vacío el mod apartado),
+    #: así que se descarta y se restaura el backup. Un destino que no figure acá
+    #: conserva "destino presente ⇒ preservar ambos" aunque esté vacío.
+    destinos_nunca_vacios: tuple[pathlib.Path, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +231,12 @@ async def reconcile_orphan_rollback_backups(
             resource_id=productor.lock_resource_id,
             lock_manager=await _manager_del_ritual(productor.lock_resource_id, lock_manager, coordinacion_etapa9),
             acc=acc,
-            accion=functools.partial(_reconciliar_move_aside, productor.destinos, acc),
+            accion=functools.partial(
+                _reconciliar_move_aside,
+                productor.destinos,
+                acc,
+                nunca_vacios=frozenset(productor.destinos_nunca_vacios),
+            ),
         )
     if sandbox_root is not None:
         await _bajo_el_lock_del_ritual(
@@ -303,11 +316,13 @@ def construir_productores_de_move_aside(
     # ajenos con la misma forma `*.rollback-<nonce>`.
     activos_dyndolod: list[pathlib.Path] = []
     mods = mods_dir if mods_dir is not None else (mo2_root / "mods" if mo2_root is not None else None)
+    mods_de_salida_dyndolod: list[pathlib.Path] = []
     if mods is not None:
-        activos_dyndolod += [
+        mods_de_salida_dyndolod = [
             mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME,
             mods / DynDOLODRunner.TEXGEN_MOD_NAME,
         ]
+        activos_dyndolod += mods_de_salida_dyndolod
     for external in external_work_roots:
         layout = derivar_layout_de_dyndolod(external_work_root=external)
         activos_dyndolod += [layout.texgen_root, layout.dyndolod_root]
@@ -317,6 +332,9 @@ def construir_productores_de_move_aside(
                 nombre=PRODUCTOR_DYNDOLOD,
                 lock_resource_id=Stage9Coordination.RECURSO_DEL_RITUAL,
                 destinos=tuple(activos_dyndolod),
+                # Sólo los dos mods empaquetados: un root crudo externo puede
+                # quedar vacío en un estado legítimo, un mod empaquetado no.
+                destinos_nunca_vacios=tuple(mods_de_salida_dyndolod),
             )
         )
 
@@ -450,7 +468,12 @@ async def _bajo_el_lock_del_ritual(
         )
 
 
-async def _reconciliar_move_aside(destinos: Sequence[pathlib.Path], acc: _Acumulador) -> None:
+async def _reconciliar_move_aside(
+    destinos: Sequence[pathlib.Path],
+    acc: _Acumulador,
+    *,
+    nunca_vacios: frozenset[pathlib.Path] = frozenset(),
+) -> None:
     """Familia ``<dir>.rollback-<nonce>``: el marcador durable es el target.
 
     - **Target ausente** → el run murió entre el move-aside y la regeneración; el
@@ -462,6 +485,10 @@ async def _reconciliar_move_aside(destinos: Sequence[pathlib.Path], acc: _Acumul
       esa salida está completa, y las dos acciones posibles destruyen trabajo:
       borrar el backup tira la generación anterior, pisar el target tira la nueva.
       Se preservan ambos y se avisa.
+    - **Target vacío de un destino ``nunca_vacios``** → es la carpeta que el
+      servicio recreó tras el move-aside (R0 brokered 1), no salida nueva: se
+      descarta (``rmdir``, que falla si tiene algo) y se restaura como el caso
+      ausente. Un enlace nunca cuenta como vacío propio.
     """
     for backup in await asyncio.to_thread(_listar_backups_move_aside, destinos):
         destino = backup.with_name(SUFIJO_MOVE_ASIDE.sub("", backup.name))
@@ -470,6 +497,12 @@ async def _reconciliar_move_aside(destinos: Sequence[pathlib.Path], acc: _Acumul
         # el enlace en silencio — destruyendo algo del usuario que este
         # reconciliador no tiene por qué tocar. "Hay algo acá" es la pregunta
         # correcta, y la respuesta segura es preservar los dos y avisar.
+        if destino in nunca_vacios and await mutar_hasta_terminal(descartar_si_es_carpeta_vacia, destino):
+            logger.info(
+                "Destino '%s' vacío descartado: es el mod recreado tras el move-aside de una "
+                "corrida interrumpida antes de empaquetar, no salida nueva.",
+                destino,
+            )
         if await asyncio.to_thread(path_present, destino):
             logger.warning(
                 "Backup de rollback huérfano en '%s' CON el destino '%s' ya presente: "

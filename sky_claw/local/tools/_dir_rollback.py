@@ -29,6 +29,36 @@ from sky_claw.app.security.links import (
 
 logger = logging.getLogger("SkyClaw.DirectoryRollback")
 
+
+def descartar_si_es_carpeta_vacia(ruta: pathlib.Path) -> bool:
+    """Borra *ruta* sólo si es una carpeta PROPIA y VACÍA; devuelve si la borró.
+
+    Es la única forma de descartar un mod de salida que el servicio de la etapa 9
+    recreó vacío tras su move-aside (R0 brokered 1): la carpeta no protege nada,
+    así que apartarla otra vez —o preservarla como "salida nueva" en la
+    recuperación— sólo duplicaría backups. ``os.rmdir`` es la garantía: falla si
+    la carpeta tiene cualquier entrada, sin ventana entre "está vacía" y "la
+    borro". Un enlace nunca se toca (``rmdir`` sobre un junction lo borraría y el
+    vacío sería el del destino, no el propio). Un path ausente o con contenido
+    devuelve ``False`` sin mutar nada.
+    """
+    try:
+        if link_kind_or_raise(ruta) is not None:
+            return False
+    except OSError:
+        # Sin poder afirmar que no es un enlace, no se toca (fail-closed): el
+        # caller sigue por su camino normal, que vuelve a inspeccionar.
+        return False
+    try:
+        ruta.rmdir()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # ENOTEMPTY / WinError 145 (no vacía) o un no-directorio: no es el caso.
+        return False
+    return True
+
+
 #: Reintentos ante fallos transitorios de FS en Windows (WinError 5/32): renombrar
 #: o borrar un directorio recién tocado puede fallar por handles del AV/indexer que
 #: se liberan en milisegundos. Se reintenta con backoff corto antes de rendirse.
@@ -142,6 +172,32 @@ async def _esperar_hasta_terminal(task: asyncio.Task[Any]) -> bool:
         except Exception:  # noqa: BLE001 — el caller obtiene la excepción exacta con task.result()
             pass
     return cancelado
+
+
+async def mutar_hasta_terminal(funcion: Callable[..., Any], /, *args: Any) -> Any:
+    """Corre ``funcion(*args)`` en un hilo y retiene al caller hasta que el hilo es terminal.
+
+    Cancelar un ``await asyncio.to_thread(...)`` suelta al caller pero NO detiene
+    el hilo. Si ese hilo muta disco cubierto por una lease, el caller podría
+    terminar su rollback y soltar la lease mientras la mutación todavía corre, y
+    el dueño siguiente vería el disco cambiar bajo sus pies (review Codex P1,
+    PR #993: un ``rmdir`` tardío borraba la carpeta vacía que la corrida siguiente
+    acababa de recrear). Mismo mecanismo que el move-aside de este módulo: la
+    task se ancla contra GC, se espera hasta terminal pese a cancelaciones
+    repetidas y recién entonces se propaga la cancelación. Sin cancelación, el
+    resultado y la excepción del hilo pasan tal cual.
+    """
+    tarea = _track(asyncio.ensure_future(asyncio.to_thread(funcion, *args)))
+    cancelado = await _esperar_hasta_terminal(tarea)
+    if cancelado:
+        if not tarea.cancelled() and (falla := tarea.exception()) is not None:
+            logger.error(
+                "La mutación en hilo terminó con error mientras el caller estaba cancelado: %s",
+                falla,
+                exc_info=falla,
+            )
+        raise asyncio.CancelledError
+    return tarea.result()
 
 
 async def _deshacer_rename_cancelado(
