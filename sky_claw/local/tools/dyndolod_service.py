@@ -363,6 +363,37 @@ def _preparar_root_vacio(root: pathlib.Path, *, workspace_root: pathlib.Path | N
         )
 
 
+def _recrear_mod_de_salida_vacio(mod_dir: pathlib.Path) -> None:
+    """Recrea como carpeta propia VACÍA un mod de salida que el move-aside acaba de apartar.
+
+    Propiedad del mecanismo: *durante la corrida, todo mod de salida apartado
+    existe vacío*. El perfil de MO2 lo sigue habilitando, y todo lector que
+    recorre los mods habilitados (la atestación VFS del spawn brokered, el gate de
+    efectividad del handoff TexGen → DynDOLOD, el propio MO2 al armar el overlay)
+    exige que la carpeta de cada mod habilitado exista. Una capa vacía aporta lo
+    mismo que una ausente —ningún archivo—, así que esto no cambia lo que la
+    herramienta ve. Lo que cambia es que el perfil queda coherente para TODOS sus
+    lectores, sin una exención por lector que alguno se olvidaría de aplicar.
+
+    Fail-closed: el ``mkdir`` no acepta que el path ya exista (tras el rename no
+    debería haber nada; si hay algo, apareció en la ventana y no es de esta
+    corrida) y un enlace se rechaza antes de crear. El rollback de
+    ``DirectoryRollback`` no se entera: en la excepción borra "el parcial nuevo"
+    —esta carpeta— y restaura el backup; en el éxito el empaquetado la reemplaza.
+    """
+    tipo_de_enlace = link_kind_or_raise(mod_dir)
+    if tipo_de_enlace is not None:
+        raise DynDOLODExecutionError(
+            f"El mod de salida '{mod_dir}' es un enlace ({tipo_de_enlace}) tras el move-aside: no se recrea."
+        )
+    try:
+        mod_dir.mkdir()
+    except FileExistsError as exc:
+        raise DynDOLODExecutionError(
+            f"El mod de salida '{mod_dir}' reapareció tras el move-aside: no es de esta corrida. No se lanza."
+        ) from exc
+
+
 class DynDOLODPipelineService:
     """Servicio transaccional para el pipeline DynDOLOD (TexGen + DynDOLOD).
 
@@ -1920,6 +1951,10 @@ class DynDOLODPipelineService:
             rollback_dirs.append(mods_path / runner.DYNDOLLOD_MOD_NAME)
             if run_texgen:
                 rollback_dirs.append(mods_path / runner.TEXGEN_MOD_NAME)
+        #: Los mods de salida que esta corrida aparta. Tras el move-aside se recrean
+        #: VACÍOS (ver ``_recrear_mod_de_salida_vacio``): el perfil los sigue
+        #: habilitando y un mod habilitado sin carpeta rompe a todo lector del perfil.
+        mods_de_salida: frozenset[pathlib.Path] = frozenset(rollback_dirs)
 
         # B (review de #493): el staging CRUDO de cada herramienta también entra
         # al move-aside, y esta línea es lo que hace que el árbol pertenezca a ESTA
@@ -2240,6 +2275,16 @@ class DynDOLODPipelineService:
                     dr = DirectoryRollback(output_dir, should_rollback=_conserva_las_leases)
                     dir_rollbacks.append(dr)
                     await tx_stack.enter_async_context(dr)
+                    # R0 brokered 1 (rig real, 2026-11-22): el move-aside dejaba el mod
+                    # AUSENTE mientras el perfil lo seguía habilitando, y la atestación
+                    # del spawn brokered falló cerrada antes de lanzar TexGen («el mod
+                    # habilitado 'TexGen Output' no existe»). Se recrea vacío acá, en
+                    # el mismo paso que lo apartó, para que ningún lector del perfil
+                    # —atestación, efectividad del handoff, el propio MO2— vea un
+                    # perfil incoherente. Sólo si hubo move-aside: en la primera
+                    # corrida no hay mod previo y el comportamiento no cambia.
+                    if output_dir in mods_de_salida and dr.backup is not None:
+                        await asyncio.to_thread(_recrear_mod_de_salida_vacio, output_dir)
 
                 # P2.2 — BORN-EMPTY por herramienta: tras el move-aside, cada
                 # root de herramienta se recrea y se verifica VACÍO antes del

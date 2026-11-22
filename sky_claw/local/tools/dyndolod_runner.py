@@ -37,7 +37,7 @@ from sky_claw.app.security.links import (
     iter_archivos_propios,
     link_kind_or_raise_with_retry,
 )
-from sky_claw.local.tools._dir_rollback import DirectoryRollback
+from sky_claw.local.tools._dir_rollback import DirectoryRollback, descartar_si_es_carpeta_vacia
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
 from sky_claw.local.tools.dyndolod_presets import (
@@ -4105,8 +4105,9 @@ class DynDOLODRunner:
             # está probado en el paquete. En particular:
             #
             #   * con `create_snapshot=True` el servicio ya apartó `mod_path`
-            #     antes del run, así que acá no hay nada que mover (no hay doble
-            #     move-aside ni doble rollback);
+            #     antes del run (y lo recreó vacío, que se descarta abajo), así que
+            #     acá no hay nada que mover (no hay doble move-aside ni doble
+            #     rollback);
             #   * el residuo se llama `<name>.rollback-<nonce>`, que es
             #     exactamente la forma que `rollback_reconciler` enumera para el
             #     productor `dyndolod`: una muerte dura entre el move-aside y la
@@ -4120,6 +4121,14 @@ class DynDOLODRunner:
             #     el servicio usa para sus propios `DirectoryRollback`: sin
             #     exclusividad no se restaura, porque hacerlo pisaría la salida de
             #     un dueño concurrente (el backup queda para recuperación manual).
+            # R0 brokered 1: con `create_snapshot=True` el servicio apartó el mod y
+            # lo recreó VACÍO (el perfil lo sigue habilitando). Esa carpeta no
+            # protege nada: se descarta acá para que el move-aside de abajo no deje
+            # un SEGUNDO backup del mismo mod —vacío— que la recuperación de
+            # arranque tendría que desambiguar. Sigue valiendo "no hay doble
+            # move-aside". `rmdir` falla si tiene contenido: un mod previo real
+            # (create_snapshot=False) se aparta como siempre.
+            await asyncio.to_thread(descartar_si_es_carpeta_vacia, mod_path)
             async with DirectoryRollback(
                 mod_path,
                 should_rollback=veto_de_rollback,

@@ -811,7 +811,8 @@ async def test_staging_parcial_deja_tx_pendiente_aunque_output_se_restaure(
     runner._config.dyndolod_exe = tools / "DynDOLODx64.exe"
 
     async def _pipeline_parcial(**_kwargs: object) -> DynDOLODPipelineResult:
-        output_dir.mkdir(parents=True)
+        # El servicio recrea vacío el mod apartado (R0 brokered 1): ya existe.
+        output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "partial.esp").write_text("PARTIAL", encoding="utf-8")
         staging.mkdir()
         (staging / "partial.txt").write_text("STAGING", encoding="utf-8")
@@ -960,7 +961,7 @@ async def test_cancelacion_post_commit_no_remarca_journal_ni_revierte_output(
     runner = _mock_runner_with_output(mods)
 
     async def _pipeline_ok(**_kwargs: object) -> DynDOLODPipelineResult:
-        output_dir.mkdir(parents=True)
+        output_dir.mkdir(parents=True, exist_ok=True)  # el servicio recrea vacío el mod apartado (R0 brokered 1)
         (output_dir / "new.esp").write_text("NEW", encoding="utf-8")
         return _make_success_result(run_texgen=False)
 
@@ -1118,7 +1119,7 @@ async def test_cancelacion_durante_commit_sella_todos_los_outputs_antes_de_liber
 
     async def _pipeline_ok(**_kwargs: object) -> DynDOLODPipelineResult:
         for output_dir in (dyndolod_dir, texgen_dir):
-            output_dir.mkdir(parents=True)
+            output_dir.mkdir(parents=True, exist_ok=True)  # el servicio recrea vacío el mod apartado (R0 brokered 1)
             (output_dir / "new.txt").write_text("NEW", encoding="utf-8")
         return _make_success_result(run_texgen=True)
 
@@ -2522,6 +2523,8 @@ class _RollbackQueNoAparta:
         del should_rollback
         self.target = target
         self.rollback_completed = True
+        #: Sin move-aside no hay backup (mismo contrato que ``DirectoryRollback.backup``).
+        self.backup: pathlib.Path | None = None
 
     async def __aenter__(self) -> _RollbackQueNoAparta:
         return self
@@ -6417,6 +6420,148 @@ async def test_tp02_04_cada_root_nace_vacio_antes_de_su_spawn(
     mod_dyndolod = config.mo2_mods_path / DynDOLODRunner.DYNDOLLOD_MOD_NAME
     assert (mod_texgen / "textures" / "a.dds").read_bytes() == b"SOLO-TEXGEN"
     assert (mod_dyndolod / "DynDOLOD.esp").read_bytes() == b"esp"
+
+
+@pytest.mark.asyncio
+async def test_r0_brokered_1_los_mods_de_salida_apartados_siguen_presentes_vacios_en_cada_spawn(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """R0 brokered 1 (2026-11-22, rig real): el move-aside no puede dejar un mod HABILITADO sin carpeta.
+
+    El servicio aparta ``TexGen Output`` y ``DynDOLOD Output`` antes del pipeline
+    (rollback O(1)). Si el move-aside los deja AUSENTES, todo lector que recorra
+    los mods habilitados del perfil —la atestación del spawn brokered, el gate de
+    efectividad del handoff— falla cerrado con «el mod habilitado … no existe»
+    antes de lanzar TexGen: es exactamente lo que pasó en el rig. La propiedad
+    del mecanismo: *durante la corrida, todo mod de salida apartado existe como
+    carpeta propia VACÍA*. Una capa vacía no aporta archivos al overlay, igual
+    que una ausente, pero el perfil sigue coherente para TODOS sus lectores, sin
+    exenciones por lector.
+
+    Se mide DENTRO de cada spawn, con la atestación REAL que usa el backend
+    brokered sobre un perfil que habilita los dos mods de salida (los dos
+    hermanos: TexGen en su spawn y DynDOLOD en el suyo).
+    """
+    from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
+
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None and config.data_dir is not None
+    config.data_dir.mkdir()
+    layout = config.output_layout
+    mods = config.mo2_mods_path
+    mod_texgen = mods / DynDOLODRunner.TEXGEN_MOD_NAME
+    mod_dyndolod = mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME
+    # Salida previa en los dos mods (re-corrida de la etapa 9, el caso del rig).
+    _escribir_salida(mod_texgen / "textures", "previa.dds", b"TEXGEN-PREVIO")
+    _escribir_salida(mod_dyndolod, "DynDOLOD.esp", b"ESP-PREVIO")
+    # Un mod con un canario ausente del Data físico, para que la atestación
+    # tenga evidencia elegible cuando los mods de salida están vacíos.
+    _escribir_salida(mods / "Canario" / "canario", "ok.txt", b"CANARIO")
+    perfil = config.mo2_path / "profiles" / "R0"
+    perfil.mkdir(parents=True)
+    # MO2 escribe el modlist en prioridad DESCENDENTE: DynDOLOD Output arriba.
+    (perfil / "modlist.txt").write_text(
+        f"+{DynDOLODRunner.DYNDOLLOD_MOD_NAME}\n+{DynDOLODRunner.TEXGEN_MOD_NAME}\n+Canario\n",
+        encoding="utf-8",
+    )
+    _servicio_con_workspace(service, runner)
+
+    def _atestar() -> str:
+        challenge = build_attestation_challenge(
+            data_root=config.mo2_path,
+            mods_dir=mods,
+            profile="R0",
+            physical_data_dir=config.data_dir,
+        )
+        return challenge.source_mod
+
+    observado: dict[str, object] = {}
+
+    def _spawn_texgen() -> None:
+        observado["texgen@texgen"] = _estado_del_root(mod_texgen)
+        observado["dyndolod@texgen"] = _estado_del_root(mod_dyndolod)
+        observado["atestacion@texgen"] = _atestar()
+        _escribir_salida(layout.texgen_root / "textures", "a.dds", b"SOLO-TEXGEN")
+        _mirror_a_data(layout.texgen_root / "textures", config.data_dir)
+        _apendear_log(tmp_path, "TexGen", _log_completo("TexGen"))
+
+    def _spawn_dyndolod() -> None:
+        observado["dyndolod@dyndolod"] = _estado_del_root(mod_dyndolod)
+        observado["atestacion@dyndolod"] = _atestar()
+        _escribir_salida(layout.dyndolod_root, "DynDOLOD.esp", b"esp")
+        _apendear_log(tmp_path, "DynDOLOD", _log_completo("DynDOLOD"))
+
+    fake = _EjecucionFalsaPorTool({"TexGen": _spawn_texgen, "DynDOLOD": _spawn_dyndolod})
+    # El empaquetado tiene su propio move-aside del mod: con la carpeta vacía
+    # recreada, apartarla de nuevo dejaría un SEGUNDO backup del mismo mod (vacío)
+    # que la recuperación de arranque tendría que desambiguar. Se registra qué
+    # backup produjo cada move-aside del empaquetado.
+    _real_dr_runner = sky_claw.local.tools.dyndolod_runner.DirectoryRollback
+    backups_del_empaquetado: dict[pathlib.Path, pathlib.Path | None] = {}
+
+    class _DirectoryRollbackRegistrado(_real_dr_runner):  # type: ignore[misc, valid-type]
+        async def __aenter__(self):  # type: ignore[no-untyped-def]
+            resultado = await super().__aenter__()
+            backups_del_empaquetado[self.target] = self.backup
+            return resultado
+
+    with (
+        patch.object(runner, "_execute_process", fake),
+        patch.object(sky_claw.local.tools.dyndolod_runner, "DirectoryRollback", _DirectoryRollbackRegistrado),
+    ):
+        result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert result["success"] is True, result.get("errors")
+    assert fake.tools == ["TexGen", "DynDOLOD"]
+    # Un solo backup por mod: el del servicio. El empaquetado no apartó nada.
+    assert backups_del_empaquetado == {mod_texgen: None, mod_dyndolod: None}, backups_del_empaquetado
+    # Los dos mods apartados existen VACÍOS en el spawn de TexGen...
+    assert observado["texgen@texgen"] == (True, True, ()), observado
+    assert observado["dyndolod@texgen"] == (True, True, ()), observado
+    # ...y DynDOLOD Output sigue presente vacío en el spawn de DynDOLOD.
+    assert observado["dyndolod@dyndolod"] == (True, True, ()), observado
+    # La atestación real no falla en ninguno de los dos spawns: una capa vacía no
+    # aporta canario, así que gana el único mod con evidencia.
+    assert observado["atestacion@texgen"] == "Canario"
+    assert observado["atestacion@dyndolod"] == "Canario"
+    # Commit: la salida nueva reemplazó a la previa y no quedan backups.
+    assert (mod_texgen / "textures" / "a.dds").read_bytes() == b"SOLO-TEXGEN"
+    assert not (mod_texgen / "textures" / "previa.dds").exists()
+    assert (mod_dyndolod / "DynDOLOD.esp").read_bytes() == b"esp"
+    assert not list(mods.glob("*.rollback-*"))
+
+
+@pytest.mark.asyncio
+async def test_r0_brokered_1_un_fallo_restaura_los_mods_de_salida_sobre_la_carpeta_vacia(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Contracara del anterior: la carpeta vacía recreada no estorba al rollback.
+
+    Si el pipeline falla después del move-aside, cada mod de salida vuelve byte a
+    byte a su estado previo, aunque en su lugar haya quedado la carpeta vacía.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None and config.data_dir is not None
+    config.data_dir.mkdir()
+    mods = config.mo2_mods_path
+    mod_texgen = mods / DynDOLODRunner.TEXGEN_MOD_NAME
+    mod_dyndolod = mods / DynDOLODRunner.DYNDOLLOD_MOD_NAME
+    _escribir_salida(mod_texgen / "textures", "previa.dds", b"TEXGEN-PREVIO")
+    _escribir_salida(mod_dyndolod, "DynDOLOD.esp", b"ESP-PREVIO")
+    _servicio_con_workspace(service, runner)
+
+    fake = _EjecucionFalsaPorTool({}, return_codes={"TexGen": 1})
+    with patch.object(runner, "_execute_process", fake):
+        result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    assert result["success"] is False
+    assert (mod_texgen / "textures" / "previa.dds").read_bytes() == b"TEXGEN-PREVIO"
+    assert sorted(p.name for p in mod_texgen.iterdir()) == ["textures"]
+    assert (mod_dyndolod / "DynDOLOD.esp").read_bytes() == b"ESP-PREVIO"
+    assert sorted(p.name for p in mod_dyndolod.iterdir()) == ["DynDOLOD.esp"]
+    assert not list(mods.glob("*.rollback-*"))
 
 
 @pytest.mark.parametrize("tool_que_falla", ["TexGen", "DynDOLOD"])

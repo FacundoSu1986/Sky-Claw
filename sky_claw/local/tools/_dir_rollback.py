@@ -29,6 +29,36 @@ from sky_claw.app.security.links import (
 
 logger = logging.getLogger("SkyClaw.DirectoryRollback")
 
+
+def descartar_si_es_carpeta_vacia(ruta: pathlib.Path) -> bool:
+    """Borra *ruta* sólo si es una carpeta PROPIA y VACÍA; devuelve si la borró.
+
+    Es la única forma de descartar un mod de salida que el servicio de la etapa 9
+    recreó vacío tras su move-aside (R0 brokered 1): la carpeta no protege nada,
+    así que apartarla otra vez —o preservarla como "salida nueva" en la
+    recuperación— sólo duplicaría backups. ``os.rmdir`` es la garantía: falla si
+    la carpeta tiene cualquier entrada, sin ventana entre "está vacía" y "la
+    borro". Un enlace nunca se toca (``rmdir`` sobre un junction lo borraría y el
+    vacío sería el del destino, no el propio). Un path ausente o con contenido
+    devuelve ``False`` sin mutar nada.
+    """
+    try:
+        if link_kind_or_raise(ruta) is not None:
+            return False
+    except OSError:
+        # Sin poder afirmar que no es un enlace, no se toca (fail-closed): el
+        # caller sigue por su camino normal, que vuelve a inspeccionar.
+        return False
+    try:
+        ruta.rmdir()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # ENOTEMPTY / WinError 145 (no vacía) o un no-directorio: no es el caso.
+        return False
+    return True
+
+
 #: Reintentos ante fallos transitorios de FS en Windows (WinError 5/32): renombrar
 #: o borrar un directorio recién tocado puede fallar por handles del AV/indexer que
 #: se liberan en milisegundos. Se reintenta con backoff corto antes de rendirse.

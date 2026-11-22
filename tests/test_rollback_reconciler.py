@@ -1000,6 +1000,91 @@ def _productor_dyndolod_externo_desde_mods(mods: pathlib.Path) -> ProductorDeMov
     return next(p for p in productores if p.nombre == PRODUCTOR_DYNDOLOD)
 
 
+# R0 brokered 1 (rig real, 2026-11-22): el servicio recrea VACÍO cada mod de salida
+# tras apartarlo, porque el perfil lo sigue habilitando. Un mod empaquetado nunca
+# está vacío al commitear (lleva al menos ``meta.ini``), así que una carpeta de mod
+# vacía con su backup al lado sólo puede ser una corrida interrumpida antes del
+# empaquetado: el backup es el último estado bueno y se restaura solo. Los roots
+# crudos externos NO tienen esa garantía y siguen en "preservar ambos"
+# (``test_crash_tras_mkdir_del_root_externo_preserva_ambos``).
+
+
+@pytest.mark.parametrize("mod_name", [DynDOLODRunner.DYNDOLLOD_MOD_NAME, DynDOLODRunner.TEXGEN_MOD_NAME])
+async def test_crash_con_el_mod_de_salida_recreado_vacio_restaura(
+    lock_manager: DistributedLockManager,
+    mods: pathlib.Path,
+    sandbox: pathlib.Path,
+    mod_name: str,
+) -> None:
+    backup = _backup_move_aside(mods, mod_name, contenido="LODs previos")
+    destino = mods / mod_name
+    destino.mkdir()
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_productor_dyndolod_externo_desde_mods(mods)],
+        sandbox_root=sandbox,
+        lock_manager=lock_manager,
+    )
+
+    assert (destino / "DynDOLOD.esp").read_text(encoding="utf-8") == "LODs previos"
+    assert not backup.exists()
+    assert resultado.restaurados == (destino,)
+    assert resultado.preservados == ()
+
+
+def test_los_mods_de_salida_son_los_unicos_destinos_que_nunca_commitean_vacios(tmp_path: pathlib.Path) -> None:
+    """Igualdad literal: qué destinos admiten "vacío ⇒ corrida interrumpida".
+
+    Sólo los dos mods empaquetados. Agregar un destino acá es afirmar que su
+    estado comprometido nunca es una carpeta vacía: se decide caso por caso, no
+    se hereda.
+    """
+    mo2 = tmp_path / "mo2"
+    external = tmp_path / "Work Root"
+    game = tmp_path / "game"
+    productores = construir_productores_de_move_aside(mo2_root=mo2, game=game, external_work_roots=(external,))
+    por_nombre = {p.nombre: set(p.destinos_nunca_vacios) for p in productores}
+
+    assert por_nombre == {
+        PRODUCTOR_DYNDOLOD: {
+            mo2 / "mods" / DynDOLODRunner.DYNDOLLOD_MOD_NAME,
+            mo2 / "mods" / DynDOLODRunner.TEXGEN_MOD_NAME,
+        },
+        PRODUCTOR_LEGACY: set(),
+        "pandora": set(),
+        "bodyslide": set(),
+    }
+    for productor in productores:
+        assert set(productor.destinos_nunca_vacios) <= set(productor.destinos)
+
+
+@symlink_guard
+async def test_un_mod_de_salida_vacio_que_es_un_enlace_no_se_borra(
+    lock_manager: DistributedLockManager,
+    mods: pathlib.Path,
+    sandbox: pathlib.Path,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Vacío no alcanza: si el destino es un enlace a una carpeta vacía ajena, se preservan los dos."""
+    mod_name = DynDOLODRunner.TEXGEN_MOD_NAME
+    backup = _backup_move_aside(mods, mod_name, contenido="LODs previos")
+    ajena = tmp_path / "ajena"
+    ajena.mkdir()
+    destino = mods / mod_name
+    destino.symlink_to(ajena, target_is_directory=True)
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_productor_dyndolod_externo_desde_mods(mods)],
+        sandbox_root=sandbox,
+        lock_manager=lock_manager,
+    )
+
+    assert destino.is_symlink()
+    assert ajena.is_dir()
+    assert backup.exists()
+    assert resultado.preservados == (backup,)
+
+
 # =============================================================================
 # T-PR2-23 — familia completa A–H del recovery LEGACY (ADR 0011 §2.9)
 #
@@ -1300,3 +1385,30 @@ async def test_el_barrido_restaura_el_root_viejo_de_una_transicion_pendiente(
     assert (layout_viejo.texgen_root / "lod.dds").read_bytes() == b"PREVIO-EN-A"
     assert not backup.exists()
     assert resultado.restaurados == (layout_viejo.texgen_root,)
+
+
+@junction_guard
+async def test_un_mod_de_salida_vacio_que_es_un_junction_no_se_borra(
+    lock_manager: DistributedLockManager,
+    mods: pathlib.Path,
+    sandbox: pathlib.Path,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Hermano Windows del enlace: un junction a una carpeta vacía ajena tampoco es "vacío propio"."""
+    mod_name = DynDOLODRunner.DYNDOLLOD_MOD_NAME
+    backup = _backup_move_aside(mods, mod_name, contenido="LODs previos")
+    ajena = tmp_path / "ajena"
+    ajena.mkdir()
+    destino = mods / mod_name
+    if (motivo := crear_junction(destino, ajena)) is not None:
+        pytest.fail(f"no se pudo crear el junction: {motivo}")
+
+    resultado = await reconcile_orphan_rollback_backups(
+        productores=[_productor_dyndolod_externo_desde_mods(mods)],
+        sandbox_root=sandbox,
+        lock_manager=lock_manager,
+    )
+
+    assert ajena.is_dir()
+    assert backup.exists()
+    assert resultado.preservados == (backup,)
