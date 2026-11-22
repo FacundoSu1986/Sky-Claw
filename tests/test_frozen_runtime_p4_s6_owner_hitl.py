@@ -1322,16 +1322,12 @@ def test_emitir_no_escribe_fuera_del_root(tmp_path: pathlib.Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_la_emision_productiva_sigue_cerrada(tmp_path: pathlib.Path) -> None:
-    """FASE F: sin consumidor seguro, emitir dejaría ``ISSUED`` sin salida operativa.
+def test_la_emision_productiva_sigue_cerrada(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kill-switch (``EMISION_PRODUCTIVA_HABILITADA = False``) y emisión habilitada.
 
-    Se verifica por CONDUCTA, no por el literal de la constante. Un
-    ``assert CONSTANTE is False`` mata al mutante que la flipa sin probar que la
-    constante gobierna algo: es el patrón «campo que sólo se escribe es
-    decoración», mudado a un flag de capacidad. Por eso acá NO se afirma el
-    valor: un consentimiento VÁLIDO y completo llega hasta la puerta de emisión y
-    no emite nada. Abrir el interruptor sin integrar el consumidor rompe este
-    test por comportamiento.
+    Con el interruptor cerrado por ``monkeypatch``, un consentimiento VÁLIDO y
+    completo llega hasta la puerta de emisión y no emite nada; con el interruptor
+    habilitado (estado productivo actual), emite witness v3 con binding durable.
     """
     root = _root(tmp_path)
     registro = RegistroConsentimientos()
@@ -1344,9 +1340,14 @@ def test_la_emision_productiva_sigue_cerrada(tmp_path: pathlib.Path) -> None:
     )
     assert consentimiento is not None
 
+    monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", False)
     with pytest.raises(ApprovalHitolNoDisponibleError, match="emisión productiva sigue cerrada"):
         owner_consent.emitir_aprobacion_autorizada(root, propuesta, consentimiento)
     assert not list(issuances_state_dir(root).iterdir())
+
+    monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+    owner_consent.emitir_aprobacion_autorizada(root, propuesta, consentimiento)
+    assert len(list(issuances_state_dir(root).iterdir())) == 1
 
 
 def test_el_interruptor_de_emision_tiene_una_sola_definicion() -> None:
@@ -1391,11 +1392,8 @@ def test_ningun_modulo_de_produccion_consume_aprobaciones() -> None:
         "sky_claw/local/frozen_runtime/approval.py",
         "sky_claw/local/frozen_runtime/runtime_clone_binder.py",
     }
-    # El consumidor nuevo sólo es inocuo mientras no haya emisión productiva.
-    assert modulo_approval.EMISION_PRODUCTIVA_HABILITADA is False, (
-        "hay un consumidor productivo cableado: habilitar la emisión sin la integración HITL completa "
-        "convertiría el binder en una vía de aprobación sin propietario"
-    )
+    # El consumidor productivo y el adaptador HITL están integrados y probados.
+    assert modulo_approval.EMISION_PRODUCTIVA_HABILITADA is True
 
 
 def test_emitir_aprobacion_sin_binding_de_propietario_falla_cerrado(tmp_path: pathlib.Path) -> None:

@@ -351,9 +351,12 @@ class TestContratoCallbacksYNamespaces:
 
 class TestEmisionCerradaYFlujoAutorizado:
     @pytest.mark.asyncio
-    async def test_flujo_telegram_con_bandera_cerrada_rechaza_emision_sin_mutar(self, tmp_path: pathlib.Path) -> None:
-        """AAA: con EMISION_PRODUCTIVA_HABILITADA=False de fábrica, el botón Aprobar no emite nada."""
+    async def test_flujo_telegram_con_bandera_cerrada_rechaza_emision_sin_mutar(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AAA: con el kill-switch EMISION_PRODUCTIVA_HABILITADA=False, el botón Aprobar no emite nada."""
         # Arrange
+        monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", False)
         rig = RigStockManual(tmp_path, steam_activo=True)
         antes = _huellas(rig)
         coord, _webhook, polling, sender, router = _construir_entorno(rig)
@@ -1176,8 +1179,8 @@ class TestFronterasArquitectonicasYSimetria:
         assert set(encontrados) == sitios_esperados
         for rel, flags in encontrados.items():
             assert all(flags), f"{rel} instancia TelegramWebhook sin golden_master_coordinator"
-        assert approval_module.EMISION_PRODUCTIVA_HABILITADA is False
-        assert hitl_wiring.TRANSPORT_ADAPTER == "WIRED_BUT_GATED"
+        assert approval_module.EMISION_PRODUCTIVA_HABILITADA is True
+        assert hitl_wiring.TRANSPORT_ADAPTER == "WIRED_AND_ENABLED"
 
     def test_llamadores_productivos_usan_asegurar_y_cierran_coordinador(self) -> None:
         for rel in (

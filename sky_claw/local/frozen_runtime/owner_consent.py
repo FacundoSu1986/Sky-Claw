@@ -122,15 +122,10 @@ from sky_claw.local.frozen_runtime.root_lock import canonical_root_key, particip
 
 logger = logging.getLogger(__name__)
 
-#: FASE F del brief P4-S6. ``PROMOTION`` y ``ROLLBACK`` productivos siguen
-#: apagados: no hay consumidor seguro de una aprobación (ningún módulo de
-#: producción llama a ``consumir_aprobacion``), así que emitir dejaría
-#: autorizaciones ``ISSUED`` sin salida operativa y —con
-#: ``MAX_ISSUED_APPROVALS_PER_ROOT = 1``— bloquearían la emisión siguiente hasta
-#: que el dueño revoque.
-#:
-#: El interruptor NO se declara acá: es ``approval.EMISION_PRODUCTIVA_HABILITADA``
-#: y este módulo lo LEE. Una segunda constante homónima gobernaría nada y podría
+#: El interruptor de emisión productiva NO se declara acá: es
+#: ``approval.EMISION_PRODUCTIVA_HABILITADA`` y este módulo lo LEE en
+#: ``emitir_aprobacion_autorizada`` (cuando vale ``False`` actúa como
+#: kill-switch). Una segunda constante homónima gobernaría nada y podría
 #: divergir de la que sí gobierna; un test enumera el árbol y exige una sola.
 
 #: Nombre del mecanismo de identidad del propietario en Telegram. Es el valor que
@@ -799,14 +794,13 @@ def emitir_aprobacion_autorizada(
     esto falla y no emite —fail-closed— en vez de atar el hilo del transporte a
     una espera que el dueño del lock no controla. El consumidor que prefiera
     esperar pasa su propio valor; la emisión efectiva sigue gobernada por
-    ``EMISION_PRODUCTIVA_HABILITADA`` (``HITL_PRODUCTIVE = WIRED_BUT_GATED``).
+    ``EMISION_PRODUCTIVA_HABILITADA`` (si es ``False``, actúa como kill-switch).
     """
     _exigir_binding_completo(consentimiento)
     if not approval_module.EMISION_PRODUCTIVA_HABILITADA:
         raise ApprovalHitolNoDisponibleError(
-            "P4-S6 deja el consentimiento verificado implementado, pero la emisión productiva sigue cerrada "
-            "(FASE F): ningún consumidor seguro de la aprobación está integrado, así que emitir dejaría "
-            "autorizaciones ISSUED sin salida operativa. Falta el consumidor, no la superficie."
+            "la emisión productiva sigue cerrada (EMISION_PRODUCTIVA_HABILITADA = False): "
+            "no se emiten autorizaciones nuevas mientras el interruptor esté deshabilitado."
         )
     ruta = pathlib.Path(root)
     # ``participant_lock`` se importa DIRECTO y se invoca con su nombre: el censo

@@ -144,18 +144,16 @@ APPROVAL_TOMBSTONE_GC_PERMITIDO = False
 #: §37.2: dos archivos no forman una transacción.
 CROSS_FILE_ATOMICITY = False
 
-#: P4-S6 (FASE F del brief): el consentimiento verificado existe y está probado,
-#: pero la EMISIÓN productiva sigue cerrada. Ningún módulo de producción llama a
-#: ``consumir_aprobacion`` —hay un ancla enumerativa que lo congela—, así que
-#: emitir dejaría autorizaciones ``ISSUED`` sin salida operativa y, con
-#: ``MAX_ISSUED_APPROVALS_PER_ROOT = 1``, bloquearía la emisión siguiente hasta
-#: que el dueño revoque.
+#: P7-A5 — habilitación productiva de la emisión HITL autorizada: el consumidor
+#: (``runtime_clone_binder``), el cableado (``autorizacion_hitl_transicion``) y
+#: el transporte Telegram (``golden_master_hitl``) están integrados y probados.
 #:
 #: Es la ÚNICA definición del interruptor: ``owner_consent`` lo LEE y su puerta
-#: de emisión depende de este valor. Un test enumera el árbol y exige una sola
-#: definición, y otro prueba la clausura por conducta —no por el literal—, para
-#: que abrirlo obligue a adjudicar el consumidor en el mismo cambio.
-EMISION_PRODUCTIVA_HABILITADA = False
+#: de emisión (``emitir_aprobacion_autorizada``) depende de este valor. Ponerlo
+#: en ``False`` actúa como kill-switch inmediato sobre emisiones nuevas sin
+#: bloquear diagnóstico, reanudación pre-PENDING, abandono ni recuperación.
+#: ``approval.emitir_aprobacion`` permanece cerrada permanentemente (sin binding).
+EMISION_PRODUCTIVA_HABILITADA = True
 
 _HEX_DIGEST = 64
 
