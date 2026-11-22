@@ -70,14 +70,15 @@ REPO = PAQUETE.parent
 
 @pytest.fixture(autouse=True)
 def _barrera_del_hold_levantada(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Este archivo prueba el CABLEADO del backend brokered, así que levanta el WIRING_SECURITY_HOLD.
+    """Este archivo prueba el CABLEADO del backend brokered, así que fija la barrera levantada.
 
-    Con la barrera activa (el estado real de producción) ``resolve_dyndolod_spawn_strategy``
-    devuelve el guard del HOLD ANTES de construir nada, y eso taparía los motivos específicos
-    de cada guard y la strategy real que acá se miden. La barrera misma —activa, interna, no
-    configurable y sin forma de saltearla— se prueba en ``test_dyndolod_brokered_hold.py``.
-    Sólo se levanta con ``monkeypatch`` (se restituye al terminar cada test); ningún otro
-    archivo ni módulo de producción puede nombrarla (ancla en ese archivo).
+    Producción la tiene levantada desde el 2026-11-22, pero el cableado no puede depender de eso:
+    si alguien reimpone el HOLD, ``resolve_dyndolod_spawn_strategy`` devuelve su guard ANTES de
+    construir nada, y eso taparía los motivos específicos de cada guard y la strategy real que acá
+    se miden. La barrera misma —interna, no configurable y sin forma de saltearla, levantada o
+    reimpuesta— se prueba en ``test_dyndolod_brokered_hold.py``. Se fija con ``monkeypatch`` (se
+    restituye al terminar cada test); ningún otro archivo ni módulo de producción puede nombrarla
+    (ancla en ese archivo).
     """
     monkeypatch.setattr(brokered_mod, "_CONTENCION_DEL_WORKER_VERIFICADA", True)
 

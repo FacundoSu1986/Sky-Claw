@@ -4,6 +4,36 @@
 > lo que `main` superó está marcado **`[SUPERADO]`**. El estado vigente vive en
 > [`pending_ooda_status.md`](../pending_ooda_status.md).
 
+## Actualización 2026-11-22: el HOLD se levantó `[EJECUTADO EN RIG WINDOWS REAL]`
+
+`_CONTENCION_DEL_WORKER_VERIFICADA` pasa a `True`, en un PR aparte que cambia solo la constante y sus anclas, con las
+cuatro condiciones de «Cuándo se levanta (y cuándo NO)» cumplidas:
+
+| # | Condición | Evidencia |
+|---|---|---|
+| 1 | Binario final | `.exe` de `91d234f7` (SHA-256 `62eb6d4c6ab22f1275d9b5827a4776fb5906626599196916f8241c9adf0204ed`, registrado antes de usarlo). R0-1 en rig real, serie preregistrada: **24/24** verdes, 0 cuarentenas, 0 salidas 72, `job_empty=True` en todas. Laboratorio `tests/test_vfs_job_identity_e2e_windows.py` contra ese `.exe`: **7 passed** (incluye el *assign* tardío: lo creado antes de la verificación falla cerrado). Un primer intento se frenó en la corrida 10 por un defecto del detector del arnés (falso positivo demostrado en crudo) y queda declarado como FAIL según su preregistro |
+| 2 | Auditor independiente | Sesión independiente que no generó la evidencia: **APTO**, sin 🔴, con evidencia propia (bytecode del `.exe` idéntico a la fuente en los 388 módulos `sky_claw.*`, laboratorio 7/7, suite de contención en Windows, mini-serie propia con MO2 real 5/5 y re-verificación en crudo de las 34 corridas) |
+| 3 | Bundle del bridge | R0-2 4/4 en la ronda 7; el `plugin_bundle` no cambió hasta `91d234f7` (digest `24a1869e…d256b0`) |
+| 4 | Teardown | Decidida por el propietario e implementada en #987: `worker_exit` 90 s con el bridge conectado, `vfs-health` 120 s. En rig, la cola máxima fue de 37,1 s (41 % del plazo) |
+
+**La evidencia de rig y el informe del auditor quedan fuera del repositorio** por decisión del propietario: se
+identifican por los SHA-256 de arriba y de sus preregistros sellados. Quedan abiertos, como decisiones del propietario
+y no bloqueantes, los 🟡 del auditor: LOOT brokered usa la misma contención sin barrera; `worker_executable` fuera del
+digest del bundle; las vías COM, WMI y de padre falso (un proceso creado así nace fuera del Job) no están declaradas
+como límite; y los pendientes de #980.
+
+**Alcance:** la constante tiene un único lector, el resolver de TexGen/DynDOLOD (ancla
+`test_en_produccion_solo_el_resolver_lee_la_barrera_y_nadie_mas_la_toca`). **No habilita Synthesis brokered:** el
+transporte de Synthesis por el broker (#976, `sky_claw/local/mo2/brokered_synthesis.py`) tiene su propia barrera,
+`_CONTENCION_SYNTHESIS_VERIFICADA`, que sigue en `False` y este levantamiento no toca. Su ancla
+(`tests/test_brokered_synthesis.py::test_barrera_hold_synthesis_esta_aislada_y_enumerada_por_ast`) enumera sus usos
+aparte de los de esta. Levantarla exige su propia evidencia (los spikes .NET del
+[ADR 0019](../adr/0019-synthesis-two-phase-usvfs.md): la contención del árbol `Synthesis.Bethesda.CLI.exe` → `dotnet`
+→ patchers), en otro PR.
+
+**Para reimponer el HOLD** se vuelve el literal a `False` en un PR: el guard y sus anclas
+(`tests/test_dyndolod_brokered_hold.py`) siguen vivos y se prueban con la barrera reimpuesta.
+
 ## Actualización 2026-11-08 (reconciliación de #854 con `main`) `[EJECUTADO EN LINUX]`
 
 El hueco que este informe midió **está cerrado en `main`** y sus tests ya no lo caracterizan:
@@ -24,7 +54,7 @@ y la propiedad deseada pasaba; con el `xfail` estricto puesto habría sido XPASS
 implementada y probada con dobles y laboratorios no es lo mismo que estar verificada con el binario final y
 aceptada por el auditor independiente (ver «Cuándo se levanta (y cuándo NO)»).
 
-## Veredicto original del gate (2026-11-01) `[SUPERADO en lo que afirma del protocolo; el HOLD sigue vigente]`
+## Veredicto original del gate (2026-11-01) `[SUPERADO; el HOLD se levantó el 2026-11-22]`
 
 **Veredicto del gate: `WIRING_SECURITY_HOLD`.** El protocolo de entonces **no** impedía que el
 worker creara descendientes antes de que el bridge lo asignara al Job Object, y esa propiedad
@@ -33,7 +63,8 @@ fence mínimo propuesto. **No implementaba el fence**: es un cambio de protocolo
 decisión explícita (lo aterrizaron después #856, #860/#872 y #877).
 
 **Estado de la barrera de runtime:** el HOLD ya no es sólo prosa. Está aplicado en código —ver
-«Barrera de runtime» más abajo— y `dyndolod_backend = "brokered"` devuelve un guard fail-closed.
+«Barrera de runtime» más abajo—. Desde el 2026-11-22 la barrera está **levantada**: `dyndolod_backend = "brokered"`
+construye la strategy real si todo es válido; reimponerla vuelve a dar el guard fail-closed.
 
 Alcance de la evidencia original (2026-11-01): lectura del código + pruebas deterministas sobre el
 `VfsExecutionBroker` real con un bridge simulado en Linux. **No se ejecutó** MO2, USVFS,
@@ -183,8 +214,8 @@ en `windows-latest`) y la verificación temprana de `vfs_arranque.py`; lo que si
 ## Barrera de runtime (`WIRING_RUNTIME_HOLD_ENFORCED`)
 
 `resolve_dyndolod_spawn_strategy` (`sky_claw/local/mo2/brokered_dyndolod.py`) evalúa la constante
-interna `_CONTENCION_DEL_WORKER_VERIFICADA` (literal `False`) **antes** de construir la strategy.
-Mientras valga `False`, pedir `dyndolod_backend = "brokered"` devuelve
+interna `_CONTENCION_DEL_WORKER_VERIFICADA` **antes** de construir la strategy. Es un literal: vale `True`
+desde el 2026-11-22 (levantada) y `False` reimpone el HOLD. Con `False`, pedir `dyndolod_backend = "brokered"` devuelve
 `VfsRequiredDynDOLODSpawnStrategy` con un motivo explícito que nombra el `WIRING_SECURITY_HOLD`, el
 Job Object y este documento:
 
@@ -206,6 +237,9 @@ llamadores que alcanzan la strategy real (`BrokeredDynDOLODSpawnStrategy` ← `b
 de TODAS las entradas del resolver.
 
 ### Cuándo se levanta (y cuándo NO)
+
+> **`[CUMPLIDO 2026-11-22]`** Las cuatro condiciones se cumplieron y el HOLD se levantó: ver «Actualización
+> 2026-11-22» al principio. El texto de abajo se conserva como el criterio que se aplicó.
 
 **No pasa a `True` por fusionar ninguno de los PR de contención.** La pila ya está en `main`: el fence de
 supervisión (#856), la identidad del Job (#860/#872) y la adopción de descendientes (#877). Eso cierra el hueco
