@@ -926,22 +926,26 @@ def test_el_camino_autorizado_siempre_persiste_binding(tmp_path: pathlib.Path) -
     assert not list(issuances_state_dir(root).iterdir())
 
 
-def test_el_binding_no_habilita_la_emision_productiva(tmp_path: pathlib.Path) -> None:
-    """FASE E: el binding es evidencia, no una llave de promoción.
+def test_el_binding_no_habilita_la_emision_productiva(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """El binding es evidencia, no una llave que saltee el kill-switch.
 
-    Un consentimiento COMPLETO, con binding acuñado por el camino real, sigue sin
-    emitir por la entrada productiva mientras no exista consumidor. El test no
-    afirma el valor de ``EMISION_PRODUCTIVA_HABILITADA``: prueba que la puerta
-    sigue cerrada por conducta.
+    Con ``EMISION_PRODUCTIVA_HABILITADA = False``, incluso un consentimiento
+    completo con binding acuñado falla cerrado; con ``True``, emite el witness
+    v3 ligado a la solicitud.
     """
     root = _root(tmp_path)
     registro = RegistroConsentimientos()
     propuesta = _propuesta(root)
     _, consentimiento = _aprobar(root, propuesta, registro)
 
+    monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", False)
     with pytest.raises(ApprovalHitolNoDisponibleError):
         owner_consent.emitir_aprobacion_autorizada(root, propuesta, consentimiento)
     assert not list(issuances_state_dir(root).iterdir())
+
+    monkeypatch.setattr(approval_module, "EMISION_PRODUCTIVA_HABILITADA", True)
+    owner_consent.emitir_aprobacion_autorizada(root, propuesta, consentimiento)
+    assert len(list(issuances_state_dir(root).iterdir())) == 1
 
 
 def test_el_censo_de_superficies_no_crecio(tmp_path: pathlib.Path) -> None:

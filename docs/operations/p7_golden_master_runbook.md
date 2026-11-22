@@ -406,15 +406,15 @@ El subsistema transaccional distingue cuatro cuadrantes operativos rigurosos par
        coordinador single-flight fuera del event loop en `AppContext`,
        `telegram_mode` y `frontend_bridge` (`TRANSPORT_ADAPTER = WIRED_BUT_GATED`).
      - **Estado real de cada gate (vigente):**
-       `EMISION_PRODUCTIVA_HABILITADA = False`,
-       `HITL_PRODUCTIVE = WIRED_BUT_GATED`,
-       `TRANSPORT_ADAPTER = WIRED_BUT_GATED`,
+       `EMISION_PRODUCTIVA_HABILITADA = True` (kill-switch reversible a `False`),
+       `HITL_PRODUCTIVE = WIRED_AND_ENABLED`,
+       `TRANSPORT_ADAPTER = WIRED_AND_ENABLED`,
        `PRIMERA_TRANSICION_REAL = NOT_EXECUTED`,
        `CANDIDATE_OBJECT = NOT_CREATED`,
        `REANUDACION_POST_PENDING = REQUIERE_DUENO`,
-       `MODORGANIZER_EXE_COMPAT = NOT_MEASURED_ON_LIVE_MO2` (exclusión Win32
-       `FILE_SHARE_NONE` medida contra agregadores sintéticos; comportamiento
-       de `ModOrganizer.exe` en vivo ante `ERROR_SHARING_VIOLATION` sin medir),
+       `MODORGANIZER_EXE_COMPAT = P7_A5_REAL_MO2_GO` (certificado en VM aislada
+       con `ModOrganizer.exe` 2.5.2 en PR `#985`; requiere ventana acotada con
+       MO2 cerrado),
        `POWER_LOSS_GUARANTEE = NOT_CLAIMED` (#911).
      - **Restricción `ACTIVE_GLOBAL` vs MO2 portable:** el preflight y la
        autorización (`evaluar_binder_preflight`, `MO2_INSTANCE_IDENTITY`) exigen
