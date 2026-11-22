@@ -175,7 +175,12 @@ def _case_extremo() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.
 class TestMutaciones:
     def test_m1_lambda_cero_degenera_a_raw(self) -> None:
         """SOFT con λ→0 es RAW (sin guard): si el test no lo viera, la familia soft
-        estaría cambiando el comportamiento base sin que la suite lo note."""
+        estaría cambiando el comportamiento base sin que la suite lo note.
+
+        #667-B: FLOOR_CLAMP ya NO degenera a RAW con λ=0 — ``max(nz, 0)`` deja ``nz<=0``
+        en 0 y el denominador produce Inf/NaN en silencio. λ=0 es ahora entrada inválida
+        para FLOOR_CLAMP (``ValueError``); RAW y SOFT_TIKHONOV conservan su contrato.
+        """
         _h, _p, _q, n = _noisy_n()
         nz = n[..., 2]
         p_raw, q_raw, _ = decode_gradients_policy(n, 1.0, 1.0, "RAW", 0.0, SIGMA)
@@ -183,10 +188,9 @@ class TestMutaciones:
         mask = np.abs(nz) > 1e-9
         np.testing.assert_allclose(p_s0[mask], p_raw[mask], rtol=1e-12)
         np.testing.assert_allclose(q_s0[mask], q_raw[mask], rtol=1e-12)
-        # FLOOR_CLAMP con λ=0 también es RAW (max(nz,0)=nz para nz>0; nz<=0 explota igual):
-        p_c0, q_c0, _ = decode_gradients_policy(n, 1.0, 1.0, "FLOOR_CLAMP", 0.0, SIGMA)
-        np.testing.assert_allclose(p_c0[mask & (nz > 0)], p_raw[mask & (nz > 0)], rtol=1e-12)
-        assert p_c0.shape == p_raw.shape
+        # FLOOR_CLAMP con λ=0: rechazo explícito, nunca una salida RAW con Inf/NaN escondidos.
+        with pytest.raises(ValueError, match="FLOOR_CLAMP"):
+            decode_gradients_policy(n, 1.0, 1.0, "FLOOR_CLAMP", 0.0, SIGMA)
 
     def test_m2_lambda_enorme_aplana_y_el_guard_lo_ve(self) -> None:
         """λ gigante 'resuelve' la inestabilidad aplastando el relieve: variance_ratio
@@ -346,3 +350,74 @@ class TestSelectorDosRegimenes:
                 r["max_gradient"] = 50000.0  # 50% del RAW: no contiene
         k, _med, _mv = select_candidate_k(rows, "SOFT_TIKHONOV")
         assert k in (1.0, 4.0)  # k=2 quedó excluido por contención
+
+
+# ---------------------------------------------------------------------------
+# #667-B. CONTRATO DE λ EN FLOOR_CLAMP
+# ---------------------------------------------------------------------------
+
+
+def _n_con_nz_no_positivo() -> np.ndarray:
+    """Fixture mínimo: normales unitarias con nz > 0, nz == 0 y nz < 0."""
+    nz = np.array([[0.9, 0.5], [0.0, -0.2]])
+    nx = np.full_like(nz, 0.3)
+    ny = np.sqrt(np.clip(1.0 - nx * nx - nz * nz, 0.0, None))
+    return np.stack([nx, ny, nz], axis=-1)
+
+
+class TestContratoLambdaFloorClamp:
+    @pytest.mark.parametrize("lam", [0.0, -0.0, -1e-12, -2.0 / 255, -1.0])
+    def test_floor_clamp_rechaza_lambda_no_positivo(self, lam: float) -> None:
+        # Arrange
+        n = _n_con_nz_no_positivo()
+        # Act / Assert
+        with pytest.raises(ValueError, match="FLOOR_CLAMP"):
+            decode_gradients_policy(n, 1.0, 1.0, "FLOOR_CLAMP", lam, SIGMA)
+
+    def test_floor_clamp_rechaza_lambda_cero_aun_sin_nz_no_positivo(self) -> None:
+        """El rechazo es contractual (antes de calcular), no depende de que haya nz<=0."""
+        # Arrange
+        _h, _p, _q, n = _noisy_n(sigma=0.0)
+        assert (n[..., 2] > 0).all()
+        # Act / Assert
+        with pytest.raises(ValueError, match="FLOOR_CLAMP"):
+            decode_gradients_policy(n, 1.0, 1.0, "FLOOR_CLAMP", 0.0, SIGMA)
+
+    @pytest.mark.parametrize(("sx", "sy"), [(1.0, 1.0), (1.7, 0.6)])
+    def test_floor_clamp_lambda_positivo_conserva_forma_y_geometria(self, sx: float, sy: float) -> None:
+        """λ>0: misma forma explícita ``p = -nx/(sx·max(nz,λ))`` (§13, sx/sy DIVIDEN) y salida finita."""
+        # Arrange
+        n = _n_con_nz_no_positivo()
+        lam = 2.0 / 255
+        nx, ny, nz = n[..., 0], n[..., 1], n[..., 2]
+        # Act
+        p_out, q_out, stats = decode_gradients_policy(n, sx, sy, "FLOOR_CLAMP", lam, SIGMA)
+        # Assert
+        nz_eff = np.maximum(nz, lam)
+        np.testing.assert_array_equal(p_out, -nx / (sx * nz_eff))
+        np.testing.assert_array_equal(q_out, -ny / (sy * nz_eff))
+        assert np.isfinite(p_out).all() and np.isfinite(q_out).all()
+        assert np.isfinite(stats.max_gradient)
+        assert stats.activation_fraction == 0.5  # nz=0 y nz=-0.2 quedan bajo λ
+
+    def test_raw_con_lambda_cero_sigue_permitido(self) -> None:
+        # Arrange
+        n = _n_con_nz_no_positivo()
+        # Act
+        p_out, q_out, stats = decode_gradients_policy(n, 1.0, 1.0, "RAW", 0.0, SIGMA)
+        # Assert
+        assert p_out.shape == q_out.shape == n.shape[:-1]
+        assert stats.activation_fraction == 0.0
+
+    @pytest.mark.parametrize("lam", [0.0, -2.0 / 255])
+    def test_soft_tikhonov_conserva_su_contrato_de_lambda(self, lam: float) -> None:
+        """SOFT_TIKHONOV no adquiere el guard de FLOOR_CLAMP: su forma ``nz/(nz²+λ²)`` sigue igual."""
+        # Arrange
+        _h, _p, _q, n = _noisy_n()
+        nx, ny, nz = n[..., 0], n[..., 1], n[..., 2]
+        # Act
+        p_out, q_out, _stats = decode_gradients_policy(n, 1.0, 1.0, "SOFT_TIKHONOV", lam, SIGMA)
+        # Assert
+        inv_reg = nz / (nz * nz + lam * lam)
+        np.testing.assert_array_equal(p_out, -nx * inv_reg / 1.0)
+        np.testing.assert_array_equal(q_out, -ny * inv_reg / 1.0)

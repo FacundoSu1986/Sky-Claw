@@ -106,6 +106,8 @@ def decode_gradients_policy(
     El factor geométrico ``sx``/``sy`` DIVIDE siempre (§13): ``p = -(nx/sx)·reg(1/nz)``.
     ``sx == 0`` o ``sy == 0`` es ``ValueError`` (§9): es la única singularidad que el
     floor de ``nz`` no cubre, y no se disimula con un epsilon.
+    FLOOR_CLAMP exige ``lam > 0`` (#667-B): con ``lam <= 0`` el floor no acota ``1/nz`` para
+    ``nz <= 0`` y es ``ValueError``. RAW, FLOOR_ZERO y SOFT_TIKHONOV no cambian su contrato.
     """
     if policy not in POLICIES:
         raise ValueError(f"policy desconocida: {policy} (válidas: {POLICIES})")
@@ -113,6 +115,10 @@ def decode_gradients_policy(
         raise ValueError(f"sx no puede ser 0: la inversa p = -nx/(sx*nz) es indefinida (sx={sx})")
     if sy == 0.0:
         raise ValueError(f"sy no puede ser 0: la inversa q = -ny/(sy*nz) es indefinida (sy={sy})")
+    if policy == "FLOOR_CLAMP" and lam <= 0.0:
+        # #667-B: con λ<=0, max(nz, λ) deja nz<=0 en λ<=0 y el denominador produce Inf/NaN en
+        # silencio. Se rechaza el contrato; no se disimula con un epsilon (cambiaría la matemática).
+        raise ValueError(f"FLOOR_CLAMP exige lam > 0: max(nz, lam) no acota 1/nz con lam={lam}")
     nx, ny, nz = n[..., 0], n[..., 1], n[..., 2]
     negative_nz_fraction = float(np.count_nonzero(nz <= 0.0)) / nz.size
     low_trust_fraction = float(np.count_nonzero(nz < sigma)) / nz.size if sigma > 0.0 else 0.0
