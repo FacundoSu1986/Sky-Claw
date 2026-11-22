@@ -249,6 +249,40 @@ _CASOS: dict[str, tuple[dict[str, object], tuple[ModoLanzamiento, Motivo]]] = {
         },
         (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
     ),
+    # El host procesa AMBAS secciones si coexisten: una válida no tapa a la otra rota.
+    "cet_runtimeconfig_framework_valido_y_frameworks_roto": (
+        {
+            "runtimeconfig": {
+                "runtimeOptions": {
+                    "framework": {"name": "Microsoft.NETCore.App", "version": "10.0.0"},
+                    "frameworks": [{}],
+                }
+            }
+        },
+        (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
+    ),
+    "cet_runtimeconfig_framework_roto_y_frameworks_valido": (
+        {
+            "runtimeconfig": {
+                "runtimeOptions": {
+                    "framework": {"name": "Microsoft.NETCore.App"},
+                    "frameworks": [{"name": "Microsoft.NETCore.App", "version": "10.0.0"}],
+                }
+            }
+        },
+        (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),
+    ),
+    "cet_runtimeconfig_ambas_secciones_validas": (
+        {
+            "runtimeconfig": {
+                "runtimeOptions": {
+                    "framework": {"name": "Microsoft.NETCore.App", "version": "10.0.0"},
+                    "frameworks": [{"name": "Microsoft.WindowsDesktop.App", "version": "10.0.0"}],
+                }
+            }
+        },
+        (ModoLanzamiento.VIA_DOTNET, Motivo.CET_VIA_DOTNET),
+    ),
     "cet_runtimeconfig_frameworks_vacio": (
         {"runtimeconfig": {"runtimeOptions": {"frameworks": []}}},
         (ModoLanzamiento.RECHAZADO, Motivo.NO_FRAMEWORK_DEPENDENT),

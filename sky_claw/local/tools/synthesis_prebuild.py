@@ -214,9 +214,12 @@ def es_framework_dependent(runtimeconfig: pathlib.Path) -> bool:
         return False
     framework = opciones.get("framework")
     frameworks = opciones.get("frameworks")
-    if framework is not None:
-        return _referencia_de_framework_valida(framework)
-    return (
+    if framework is None and frameworks is None:
+        return False
+    # El host procesa ambas secciones cuando coexisten: TODA sección presente debe ser válida.
+    if framework is not None and not _referencia_de_framework_valida(framework):
+        return False
+    return frameworks is None or (
         isinstance(frameworks, list)
         and bool(frameworks)
         and all(_referencia_de_framework_valida(f) for f in frameworks)
