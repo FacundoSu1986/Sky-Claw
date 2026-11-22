@@ -46,6 +46,10 @@ _DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 
 #: Lista blanca mínima de variables OS heredables por Synthesis CLI sin filtrar secretos
 #: (API keys, tokens de Telegram, credenciales) hacia patchers comunitarios.
+#: ``USERNAME`` es obligatoria: bajo MO2, usvfs 0.5.6.1 hace ``std::string(getenv("USERNAME"))``
+#: sin chequear NULL al inicializarse en cada proceso enganchado, y sin ella el CLI muere con
+#: 0xC0000005 en ``usvfs_x64.dll+0xa6783`` antes de arrancar (ancla:
+#: ``tests/test_entorno_curado_usvfs_username.py``). No es un secreto: ``USERPROFILE`` ya lo contiene.
 _SYNTHESIS_ALLOWED_OS_ENV: frozenset[str] = frozenset(
     {
         "ALLUSERSPROFILE",
@@ -76,6 +80,7 @@ _SYNTHESIS_ALLOWED_OS_ENV: frozenset[str] = frozenset(
         "TEMP",
         "TMP",
         "TMPDIR",
+        "USERNAME",
         "USERPROFILE",
         "WINDIR",
     }
