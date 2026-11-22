@@ -149,7 +149,9 @@ nunca `<MO2>/overwrite` como path.
 - **Deadline acotado con bridge conectado:** Cuando el bridge MO2 permanece
   conectado pero el worker no sale ni responde a la terminación, el broker no
   cuelga indefinidamente. Un deadline absoluto interno (`connected_worker_exit_deadline_seconds`,
-  por defecto 30.0s) expira con `VfsTeardownDeadlineError`.
+  por defecto 90.0s) expira con `VfsTeardownDeadlineError`. Era 30.0s hasta que el propietario fijó la condición 4
+  del HOLD (2026-11-21). El rig real midió colas de 35 s y 43 s entre `job_result` y el Job vacío, con el worker ya
+  terminado, y con 30 s esas colas terminaban en cuarentena.
 - **Pedido de cierre tras el resultado (cola lenta del proceso lanzado):** con el
   `job_result` ya recibido, si el `worker_exit` no llega dentro de
   `post_result_cancel_grace_seconds` (por defecto 5.0 s, positivo y finito), el broker

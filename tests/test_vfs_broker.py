@@ -1387,3 +1387,29 @@ def test_f1_con_renovacion_rapida_el_descriptor_solo_se_lee_reintentando() -> No
     for nombre in familia:
         lectores = set(_funciones_que_leen_el_descriptor(ast.parse((raiz / nombre).read_text(encoding="utf-8"))))
         assert lectores == {"_leer_descriptor"}, nombre
+
+
+def test_c4_los_plazos_del_teardown_estan_congelados_y_el_broker_de_produccion_usa_el_de_90s(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Condición 4 del HOLD (política de teardown), decidida por el propietario el 2026-11-21.
+
+    En el rig real la cola entre ``job_result`` y ``worker_exit`` (Job vacío) fue de 0,45-0,70 s en lo normal, con colas
+    ocasionales de 35 s (R0 ronda 7, serie de control: corrida 23) y 43 s (identidad del Job, corrida 8). Con 30 s esas
+    colas caían en cuarentena con el worker ya terminado. 90 s cubre las colas medidas con más de 2x de margen y conserva
+    el fail-closed: pasado el plazo, sigue habiendo cuarentena y ``VfsTeardownDeadlineError``. Los plazos vecinos son
+    otros mecanismos y no cambian: la gracia por pérdida del bridge espera una RECONEXIÓN (F1) y el pedido de cierre
+    tras el resultado es lo que dispara el cierre del Job.
+    """
+    from sky_claw.local.mo2 import vfs_broker as modulo
+
+    assert modulo._CONNECTED_WORKER_EXIT_DEADLINE_SECONDS == 90.0
+    assert modulo._BRIDGE_LOSS_FENCE_GRACE_SECONDS == 30.0
+    assert modulo._POST_RESULT_CANCEL_GRACE_SECONDS == 5.0
+    broker = VfsExecutionBroker(
+        instance_id="portable-main",
+        state_dir=tmp_path / "state",
+        secret=b"x" * 32,
+        descriptor_hardener=lambda _path: None,
+    )
+    assert broker._connected_worker_exit_deadline == 90.0
