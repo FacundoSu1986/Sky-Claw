@@ -18,7 +18,8 @@ Todo lo que no se puede establecer cuenta como el caso inseguro: un ``runtimecon
 ilegible no es framework-dependent, una entrada CET ilegible no es "sin CET", y una app embebida
 que no se encuentra exactamente una vez no se adivina.
 
-Este módulo es puro (solo lee archivos). Lo consumen la generación del shim y el traductor a
+Este módulo es puro y **síncrono** (lee archivos y parsea el PE): un consumidor async lo llama
+con ``asyncio.to_thread``, nunca directo desde el event loop. Lo consumen la generación del shim y el traductor a
 ``CliPatcherSettings`` de los cortes siguientes de PR-3.
 """
 
@@ -125,10 +126,11 @@ class CetCompatPersistenteError(Exception):
     def __init__(self, exe: pathlib.Path, estado: EstadoCet) -> None:
         self.exe = exe
         self.estado = estado
-        super().__init__(
-            f"El apphost compilado {exe} no quedó sin CETCompat (estado: {estado.value}). "
-            "Bajo USVFS caería con 0xC0000005; se aborta la Fase 1 (ADR 0019 §2.4)."
-        )
+        if estado is EstadoCet.NO_ES_PE and not exe.is_file():
+            detalle = f"El apphost esperado {exe} no existe: el build no lo generó."
+        else:
+            detalle = f"El apphost compilado {exe} no quedó sin CETCompat (estado: {estado.value})."
+        super().__init__(f"{detalle} Se aborta la Fase 1 (ADR 0019 §2.4): bajo USVFS caería con 0xC0000005.")
 
 
 # --- lectura del PE ---------------------------------------------------------------------
@@ -260,7 +262,10 @@ def decidir_lanzamiento(exe: pathlib.Path) -> DecisionLanzamiento:
             Motivo.APP_EMBEBIDA_AMBIGUA,
             f"No se pudo establecer qué app lanza el apphost {exe} ({len(apps)} candidatas): se rechaza.",
         )
-    if apps[0] != nombre_dll.encode("utf-8"):
+    # NTFS no distingue mayúsculas ASCII, así que `mipatcher.dll` es el mismo archivo que
+    # `MiPatcher.dll`. `bytes.lower()` pliega SOLO ASCII: un plegado Unicode (`casefold`, que
+    # iguala "ß" con "ss") podría aceptar un nombre que para NTFS es otro archivo.
+    if apps[0].lower() != nombre_dll.encode("utf-8").lower():
         return _decision(
             exe,
             Motivo.APP_EMBEBIDA_DISTINTA,

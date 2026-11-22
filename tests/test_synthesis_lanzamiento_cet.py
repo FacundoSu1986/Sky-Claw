@@ -165,6 +165,16 @@ _CASOS: dict[str, tuple[dict[str, object], tuple[ModoLanzamiento, Motivo]]] = {
         {"pe": _pe_sintetico(cet=1, offsets_bundle=(168762,), apps=_APP)},
         (ModoLanzamiento.RECHAZADO, Motivo.BUNDLE_SINGLE_FILE),
     ),
+    # NTFS no distingue mayúsculas ASCII: `mipatcher.dll` y `MiPatcher.dll` son el mismo archivo.
+    "cet_app_solo_difiere_en_mayusculas": (
+        {"pe": _pe_sintetico(cet=1, apps=(b"mipatcher.dll",))},
+        (ModoLanzamiento.VIA_DOTNET, Motivo.CET_VIA_DOTNET),
+    ),
+    # Pero el plegado no-ASCII no se adivina: "ß" no es "ss" para NTFS.
+    "cet_app_plegado_no_ascii": (
+        {"nombre": "Straße", "pe": _pe_sintetico(cet=1, apps=(b"Strasse.dll",))},
+        (ModoLanzamiento.RECHAZADO, Motivo.APP_EMBEBIDA_DISTINTA),
+    ),
     "cet_app_de_otro_nombre": (
         {"pe": _pe_sintetico(cet=1, apps=(b"Otro.dll",))},
         (ModoLanzamiento.RECHAZADO, Motivo.APP_EMBEBIDA_DISTINTA),
@@ -324,5 +334,8 @@ def test_verificacion_post_build_falla_cerrado(tmp_path: pathlib.Path, pe: bytes
 
 
 def test_verificacion_post_build_falla_si_no_hay_apphost(tmp_path: pathlib.Path) -> None:
-    with pytest.raises(sp.CetCompatPersistenteError):
+    # El mensaje distingue "no se generó" de "se generó con CET": son diagnósticos distintos.
+    with pytest.raises(sp.CetCompatPersistenteError) as exc:
         sp.verificar_apphost_sin_cet(tmp_path / "NoSeGenero.exe")
+    assert "no existe" in str(exc.value)
+    assert "no quedó sin CETCompat" not in str(exc.value)
