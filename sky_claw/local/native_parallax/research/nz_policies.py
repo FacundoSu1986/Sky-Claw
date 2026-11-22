@@ -47,6 +47,7 @@ least squares (no se afirma equivalencia).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -106,8 +107,16 @@ def decode_gradients_policy(
     El factor geométrico ``sx``/``sy`` DIVIDE siempre (§13): ``p = -(nx/sx)·reg(1/nz)``.
     ``sx == 0`` o ``sy == 0`` es ``ValueError`` (§9): es la única singularidad que el
     floor de ``nz`` no cubre, y no se disimula con un epsilon.
-    FLOOR_CLAMP exige ``lam > 0`` (#667-B): con ``lam <= 0`` el floor no acota ``1/nz`` para
-    ``nz <= 0`` y es ``ValueError``. RAW, FLOOR_ZERO y SOFT_TIKHONOV no cambian su contrato.
+    FLOOR_CLAMP (#667-B) distingue dos cosas:
+
+    - **λ válido**: sólo se admite ``lam`` finito y ``> 0``. ``lam <= 0``, NaN o ±Inf son
+      ``ValueError`` antes de calcular (con ``lam <= 0`` el floor no acota ``1/nz``).
+    - **Finitud de la salida**: un ``lam`` válido NO garantiza por sí solo un resultado
+      finito (un ``lam`` subnormal o diminuto desborda ``nx/lam`` o ``p² + q²``). Si ``p``,
+      ``q`` o la estadística devuelta resultan no finitos, también es ``ValueError``; no se
+      corrige con un epsilon.
+
+    RAW, FLOOR_ZERO y SOFT_TIKHONOV no cambian su contrato.
     """
     if policy not in POLICIES:
         raise ValueError(f"policy desconocida: {policy} (válidas: {POLICIES})")
@@ -115,10 +124,11 @@ def decode_gradients_policy(
         raise ValueError(f"sx no puede ser 0: la inversa p = -nx/(sx*nz) es indefinida (sx={sx})")
     if sy == 0.0:
         raise ValueError(f"sy no puede ser 0: la inversa q = -ny/(sy*nz) es indefinida (sy={sy})")
-    if policy == "FLOOR_CLAMP" and lam <= 0.0:
+    if policy == "FLOOR_CLAMP" and not (math.isfinite(lam) and lam > 0.0):
         # #667-B: con λ<=0, max(nz, λ) deja nz<=0 en λ<=0 y el denominador produce Inf/NaN en
-        # silencio. Se rechaza el contrato; no se disimula con un epsilon (cambiaría la matemática).
-        raise ValueError(f"FLOOR_CLAMP exige lam > 0: max(nz, lam) no acota 1/nz con lam={lam}")
+        # silencio; NaN atraviesa `lam <= 0` y ±Inf no es un floor. Sólo λ finito y positivo es
+        # válido. Se rechaza el contrato; no se disimula con un epsilon (cambiaría la matemática).
+        raise ValueError(f"FLOOR_CLAMP exige lam finito y > 0: max(nz, lam) no acota 1/nz con lam={lam}")
     nx, ny, nz = n[..., 0], n[..., 1], n[..., 2]
     negative_nz_fraction = float(np.count_nonzero(nz <= 0.0)) / nz.size
     low_trust_fraction = float(np.count_nonzero(nz < sigma)) / nz.size if sigma > 0.0 else 0.0
@@ -132,8 +142,16 @@ def decode_gradients_policy(
         # Variante A: nz_eff = max(nz, λ). Los nz<=0 quedan en λ (su signo se pierde:
         # el clamp NO usa abs(), pero sí oculta el signo negativo — se cuenta en stats).
         nz_eff = np.maximum(nz, lam)
-        p = -nx / (sx * nz_eff)
-        q = -ny / (sy * nz_eff)
+        # #667-B: un λ válido no garantiza finitud (λ subnormal/diminuto desborda nx/λ o p²+q²).
+        # El desborde se detecta y se rechaza con ValueError explícito, no con un warning + Inf.
+        with np.errstate(over="ignore", invalid="ignore"):
+            p = -nx / (sx * nz_eff)
+            q = -ny / (sy * nz_eff)
+            energia = p * p + q * q
+        if not (np.isfinite(p).all() and np.isfinite(q).all() and np.isfinite(energia).all()):
+            raise ValueError(
+                f"FLOOR_CLAMP produjo gradientes no finitos con lam={lam}; el floor no acota la salida en float64"
+            )
         activation = float(np.count_nonzero(nz < lam)) / nz.size
     elif policy == "FLOOR_ZERO":
         # Variante B: nz<=0 → contribución cero (rechazo por píxel); nz>0 crudo.
@@ -156,6 +174,22 @@ def decode_gradients_policy(
         max_gradient=float(grad_mag.max()),
         p99_gradient=float(np.percentile(grad_mag, 99)),
     )
+    if policy == "FLOOR_CLAMP" and not (
+        np.isfinite(p).all()
+        and np.isfinite(q).all()
+        and all(
+            math.isfinite(v)
+            for v in (
+                stats.negative_nz_fraction,
+                stats.activation_fraction,
+                stats.low_trust_fraction,
+                stats.max_gradient,
+                stats.p99_gradient,
+            )
+        )
+    ):
+        # #667-B: defensa final sobre lo que se devuelve; nunca Inf/NaN silencioso en la estadística.
+        raise ValueError(f"FLOOR_CLAMP produjo estadística no finita con lam={lam}: {stats}")
     return p, q, stats
 
 

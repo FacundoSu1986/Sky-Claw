@@ -400,6 +400,57 @@ class TestContratoLambdaFloorClamp:
         assert np.isfinite(stats.max_gradient)
         assert stats.activation_fraction == 0.5  # nz=0 y nz=-0.2 quedan bajo λ
 
+    @pytest.mark.parametrize(
+        "lam",
+        [float("nan"), np.float64("nan"), float("inf"), np.float64("inf"), float("-inf")],
+        ids=["nan", "np_nan", "inf", "np_inf", "-inf"],
+    )
+    def test_floor_clamp_rechaza_lambda_no_finito(self, lam: float) -> None:
+        """Ronda adversarial #991: sólo λ finito y positivo es válido (NaN pasaba ``lam <= 0``)."""
+        # Arrange
+        n = _n_con_nz_no_positivo()
+        # Act / Assert
+        with pytest.raises(ValueError, match="FLOOR_CLAMP"):
+            decode_gradients_policy(n, 1.0, 1.0, "FLOOR_CLAMP", lam, SIGMA)
+
+    def test_floor_clamp_lambda_subnormal_que_desborda_falla_explicito(self) -> None:
+        """λ positivo y finito, pero subnormal: ``nx/λ`` desborda a Inf. Rechazo explícito, no Inf silencioso."""
+        # Arrange
+        n = _n_con_nz_no_positivo()
+        lam = 5e-324  # menor subnormal positivo de float64
+        assert 0.0 < lam < np.finfo(np.float64).tiny
+        # Act / Assert
+        with pytest.raises(ValueError, match="FLOOR_CLAMP"):
+            decode_gradients_policy(n, 1.0, 1.0, "FLOOR_CLAMP", lam, SIGMA)
+
+    def test_floor_clamp_estadistica_no_finita_falla_explicito(self) -> None:
+        """λ normal pero diminuto: p, q finitos, pero ``p² + q²`` desborda y ``max_gradient`` sería Inf."""
+        # Arrange
+        n = _n_con_nz_no_positivo()
+        lam = 1e-300
+        # Act / Assert
+        with pytest.raises(ValueError, match="FLOOR_CLAMP"):
+            decode_gradients_policy(n, 1.0, 1.0, "FLOOR_CLAMP", lam, SIGMA)
+
+    @pytest.mark.parametrize("lam", [0.5 / 255, 2.0 / 255, 8.0 / 255, 0.25])
+    def test_floor_clamp_lambda_normal_salida_y_estadistica_identicas(self, lam: float) -> None:
+        """λ positivo normal: salida y estadística bit a bit iguales a la forma explícita previa."""
+        # Arrange
+        _h, _p, _q, n = _noisy_n(sigma=8.0 / 255)
+        nx, ny, nz = n[..., 0], n[..., 1], n[..., 2]
+        nz_eff = np.maximum(nz, lam)
+        p_ref = -nx / (1.0 * nz_eff)
+        q_ref = -ny / (1.0 * nz_eff)
+        mag_ref = np.sqrt(p_ref * p_ref + q_ref * q_ref)
+        # Act
+        p_out, q_out, stats = decode_gradients_policy(n, 1.0, 1.0, "FLOOR_CLAMP", lam, SIGMA)
+        # Assert
+        np.testing.assert_array_equal(p_out, p_ref)
+        np.testing.assert_array_equal(q_out, q_ref)
+        assert stats.activation_fraction == float(np.count_nonzero(nz < lam)) / nz.size
+        assert stats.max_gradient == float(mag_ref.max())
+        assert stats.p99_gradient == float(np.percentile(mag_ref, 99))
+
     def test_raw_con_lambda_cero_sigue_permitido(self) -> None:
         # Arrange
         n = _n_con_nz_no_positivo()
