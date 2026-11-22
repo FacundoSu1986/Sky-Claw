@@ -73,7 +73,8 @@ raíz.
   quién toca `job_object`, quién suelta un job y quién fabrica una prueba),
   `tests/test_vfs_job_identity_windows.py` y `tests/test_vfs_job_identity_e2e_windows.py` (procesos y Job reales;
   el e2e corre también contra el `.exe` congelado con `SKYCLAW_FROZEN_EXE`). `_CONTENCION_DEL_WORKER_VERIFICADA`
-  (PR #854) sigue en `False`: levantarlo es una decisión aparte con la evidencia de la auditoría.
+  (PR #854) se levantó a `True` el 2026-11-22, con la evidencia del binario final y el APTO del auditor
+  independiente; volver a `False` reimpone el HOLD (ver `docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md`).
 - **La cuarentena del broker se libera con UNA sola pieza y con evidencia** (H-4). La cuarentena persiste de tres
   formas (marcador `.<instancia>.quarantine`, lock envenenado `quarantined: true` y lock de un broker que murió sin
   cerrar) y borrar solo una no alcanza: el próximo arranque reclama el lock huérfano y la reimpone.

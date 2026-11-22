@@ -903,28 +903,29 @@ DYNDOLOD_BACKEND_BROKERED = "brokered"
 
 _BACKENDS_VALIDOS = (DYNDOLOD_BACKEND_STANDALONE, DYNDOLOD_BACKEND_BROKERED)
 
-#: WIRING_SECURITY_HOLD — barrera de runtime, INTERNA y activa por defecto.
+#: WIRING_SECURITY_HOLD — barrera de runtime, INTERNA. **Levantada el 2026-11-22.**
 #:
-#: Mientras valga ``False``, pedir ``dyndolod_backend = "brokered"`` devuelve el guard fail-closed
-#: del HOLD (``resolve_dyndolod_spawn_strategy``): la strategy real no se construye, el broker no
-#: recibe ninguna sesión y no hay fallback a standalone. NO es una clave de config, ni una variable
-#: de entorno, ni un parámetro: un operador no puede levantarla editando una línea. Sólo los tests
-#: del cableado la levantan, con ``monkeypatch``.
+#: Con ``False``, pedir ``dyndolod_backend = "brokered"`` devuelve el guard fail-closed del HOLD
+#: (``resolve_dyndolod_spawn_strategy``): la strategy real no se construye, el broker no recibe
+#: ninguna sesión y no hay fallback a standalone. Con ``True``, ``brokered`` construye la strategy
+#: real si todo es válido y coherente; si no, sigue siendo un guard (jamás standalone). NO es una
+#: clave de config, ni una variable de entorno, ni un parámetro: nadie la cambia editando una línea
+#: de config, sólo un PR revisado.
 #:
-#: NO pasa a ``True`` por fusionar un PR de contención. El fence de supervisión del broker (#856),
-#: el Job con nombre que el worker comprueba (#860/#872) y la adopción de descendientes en el
-#: bridge (#877) ya están en ``main``: cierran el hueco que originó el HOLD en el código y con los
-#: laboratorios de Linux y ``windows-latest``. Falta la contención VERIFICADA de punta a punta:
-#: evidencia sobre el binario final en un sandbox Windows, el visto bueno del auditor independiente,
-#: actualizar el bundle del bridge instalado en MO2 y decidir la política de teardown. Se levanta
-#: en un PR aparte, con revisión adversarial. Ver
-#: ``docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md``.
-_CONTENCION_DEL_WORKER_VERIFICADA = False
+#: Se levantó con las cuatro condiciones de «Cuándo se levanta» de
+#: ``docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md`` cumplidas: evidencia sobre el
+#: binario final de 91d234f7 (R0-1 en rig, 24/24, más el laboratorio con el ``.exe`` congelado),
+#: el visto bueno del auditor independiente (APTO, con evidencia propia), el bundle del bridge
+#: ejercido en rig (R0-2, 4/4) y la política de teardown decidida por el propietario (#987). La
+#: contención la implementan el fence de supervisión (#856), el Job con nombre que el worker
+#: comprueba (#860/#872), la adopción de descendientes (#877) y la cuarentena por pérdida del
+#: bridge (#980). **Para reimponer el HOLD, volvé el literal a ``False`` en un PR** (rompe a
+#: propósito ``tests/test_dyndolod_brokered_hold.py``): el guard y sus anclas siguen vivos.
+_CONTENCION_DEL_WORKER_VERIFICADA = True
 
 _MOTIVO_DEL_HOLD = (
     "el backend 'brokered' está en WIRING_SECURITY_HOLD: la contención del worker en el Job Object "
-    "no está verificada de punta a punta (faltan la evidencia sobre el binario final y el visto bueno "
-    "del auditor independiente). No se construye la "
+    "se declaró no verificada y la barrera de contención está puesta. No se construye la "
     "strategy ni se lanza ninguna herramienta, y no hay fallback a standalone. Para correr la etapa 9 "
     "poné dyndolod_backend = 'standalone' en config.toml. "
     "Ver docs/audits/2026-11-01_e3r3_job_object_supervision_fence.md."
@@ -1022,9 +1023,10 @@ def resolve_dyndolod_spawn_strategy(
       **Jamás ``None``**: ni por una entrada ausente, ni por una instancia que no
       corresponde, ni por una excepción al construir.
     * cualquier otro valor → el guard (un typo no desactiva la protección).
-    * **mientras ``_CONTENCION_DEL_WORKER_VERIFICADA`` sea ``False`` (WIRING_SECURITY_HOLD),
+    * **si ``_CONTENCION_DEL_WORKER_VERIFICADA`` vale ``False`` (WIRING_SECURITY_HOLD reimpuesto),
       pedir ``brokered`` devuelve el guard del HOLD ANTES de construir nada**, aun con broker y
       raíces completos y coherentes. El valor inválido se evalúa antes: conserva su propio motivo.
+      Levantada desde el 2026-11-22: hoy vale ``True``.
 
     Las raíces siguen la semántica del broker, y no se confunden entre sí:
 

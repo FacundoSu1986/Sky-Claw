@@ -24,9 +24,10 @@ el guard de etapas previas del modo asistido (#906) y la herramienta para medir 
 
 **Lo que R0 no hace:**
 
-- **No levanta el HOLD.** `_CONTENCION_DEL_WORKER_VERIFICADA` sigue en `False` (`sky_claw/local/mo2/brokered_dyndolod.py`). Levantarlo
-  es un PR aparte, que cambia solo la constante y sus anclas, con revisión adversarial y **el visto bueno del auditor
-  independiente, que lo da con evidencia propia**. R0 produce evidencia para ese PR, no lo sustituye.
+- **No levanta ni reimpone el HOLD.** `_CONTENCION_DEL_WORKER_VERIFICADA` (`sky_claw/local/mo2/brokered_dyndolod.py`) se levantó
+  a `True` el 2026-11-22, en un PR aparte que cambió solo la constante y sus anclas, con revisión adversarial y **el visto bueno
+  del auditor independiente, que lo dio con evidencia propia**. Cambiarla, en cualquier sentido, sigue siendo un PR así. R0
+  produce evidencia para ese PR, no lo sustituye.
 - **No certifica el MO2 de producción del operador.** Todo corre sobre una copia aislada.
 - **No cambia código.** Se certifica el `origin/main` fijado, sin tocar; si algo falla se registra `FAIL` y se corrige en un PR
   aparte, como hizo el rig anterior con F1 y F2.
@@ -116,7 +117,8 @@ Se hace una sola vez y su salida alimenta todos los paquetes.
 - **Aislamiento.** Copia portable de MO2, perfil descartable, rutas con el usuario redactado y `SKYCLAW_ISOLATED=1` en todo
   proceso de Sky-Claw (regla 7). Declararlo en `isolation.json`.
 - **Bridge.** Instalarlo con el `.exe` congelado (`--mode install-vfs-bridge`) y registrar el digest del bundle instalado.
-- **Estado del HOLD.** Confirmar y registrar que `_CONTENCION_DEL_WORKER_VERIFICADA` es `False` en el SHA certificado.
+- **Estado del HOLD.** Registrar el valor de `_CONTENCION_DEL_WORKER_VERIFICADA` en el SHA certificado (`True` desde el
+  2026-11-22) y comprobar que el bytecode del `.exe` asigna ese mismo literal.
 
 ## R0-1 Contención con el `.exe` congelado
 

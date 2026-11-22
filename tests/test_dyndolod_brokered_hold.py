@@ -1,29 +1,28 @@
 """E3-R3: el ``WIRING_SECURITY_HOLD`` se aplica en CÓDIGO, no sólo en la documentación.
 
-El backend ``brokered`` quedó seleccionable con una línea de ``config.toml``. Mientras la
-contención del worker en el Job Object no esté VERIFICADA de punta a punta (la implementan el
-fence de supervisión #856, la identidad del Job #860/#872 y la adopción de descendientes #877;
-faltan la evidencia sobre el binario final y el visto bueno del auditor independiente), esa
-línea no puede bastar para lanzar TexGen/DynDOLOD. Una prosa en el CHANGELOG no detiene a un
-operador; una barrera sí.
+El backend ``brokered`` es seleccionable con una línea de ``config.toml``. La barrera
+``_CONTENCION_DEL_WORKER_VERIFICADA`` decide si esa línea alcanza para lanzar TexGen/DynDOLOD.
+**Se levantó el 2026-11-22** (la constante vale ``True``), con las cuatro condiciones de
+«Cuándo se levanta» cumplidas: evidencia sobre el binario final de 91d234f7, auditor
+independiente APTO, bundle del bridge ejercido en rig y la política de teardown del #987.
 
+El mecanismo se conserva para poder reimponer el HOLD cambiando el literal a ``False`` en un PR.
 Propiedades que fijan estos tests (cada una con su ancla, no con un recordatorio):
 
-* **Con la barrera activa, pedir ``brokered`` devuelve el guard fail-closed del HOLD**, incluso
-  con broker y rutas completos y coherentes: la strategy real no se construye, el broker no
-  recibe ninguna sesión y no hay subprocess local (jamás fallback a standalone).
+* **Con la barrera levantada (producción), pedir ``brokered`` con todo válido construye la
+  strategy real**, también por el composition root (``AppContext``) que comparten la GUI y el
+  agente LLM. Pedirlo sin poder cumplirlo sigue siendo un guard que falla cerrado (lo prueba
+  ``test_dyndolod_brokered_wiring.py``): jamás ``None`` (= standalone).
+* **Si se reimpone la barrera, pedir ``brokered`` devuelve el guard fail-closed del HOLD**,
+  incluso con broker y rutas completos y coherentes: la strategy real no se construye, el broker
+  no recibe ninguna sesión y no hay subprocess local (jamás fallback a standalone). Se prueba con
+  ``monkeypatch`` a ``False``, para que el mecanismo no se pudra mientras está levantado.
 * **La barrera es INTERNA**: una constante literal del módulo, no una clave de config, ni una
-  variable de entorno, ni un parámetro del resolver. Sólo la levanta un ``monkeypatch`` en los
-  tests que prueban el cableado (``test_dyndolod_brokered_wiring.py``).
+  variable de entorno, ni un parámetro del resolver.
 * **Standalone y la configuración inválida no cambian**: ``None`` para standalone; el guard
   de "backend no válido" (con su propio motivo) para un valor desconocido.
 * **Hermanos cerrados por enumeración**: quién construye la strategy real, quién llama a quién y
   quién lee o toca la constante en producción y en los tests están congelados por igualdad literal.
-
-La constante NO pasa a ``True`` por fusionar un PR de contención: el fence (#856), la identidad
-del Job (#860/#872) y la adopción (#877) ya están en ``main``. Habilitarla exige la contención
-verificada de punta a punta (evidencia sobre el binario final y visto bueno del auditor
-independiente) y se hace en un PR aparte, con revisión adversarial.
 """
 
 from __future__ import annotations
@@ -121,6 +120,12 @@ def sin_sesion_en_el_broker(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncM
     return espias
 
 
+@pytest.fixture
+def barrera_reimpuesta(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reimpone el HOLD (``False``) sólo en este test: el mecanismo tiene que seguir funcionando levantado."""
+    monkeypatch.setattr(brokered_mod, BARRERA, False)
+
+
 @contextlib.asynccontextmanager
 async def _broker_real(esc: _Escenario, tmp_path: pathlib.Path) -> AsyncIterator[VfsExecutionBroker]:
     """Broker REAL, arrancado y de la MISMA instancia que el install_root: no hay excusa para el rechazo."""
@@ -139,7 +144,7 @@ async def _broker_real(esc: _Escenario, tmp_path: pathlib.Path) -> AsyncIterator
 
 def _es_el_guard_del_hold(resultado: object) -> VfsRequiredDynDOLODSpawnStrategy:
     assert isinstance(resultado, VfsRequiredDynDOLODSpawnStrategy), (
-        f"con la barrera activa pedir 'brokered' debía devolver el guard del HOLD; devolvió {resultado!r}"
+        f"con la barrera reimpuesta pedir 'brokered' debía devolver el guard del HOLD; devolvió {resultado!r}"
     )
     assert "WIRING_SECURITY_HOLD" in resultado.reason
     assert "Job Object" in resultado.reason
@@ -163,16 +168,34 @@ def _runner(esc: _Escenario, estrategia: Any) -> DynDOLODRunner:
 
 
 # ---------------------------------------------------------------------------
-# 1. Con la barrera activa: ni la strategy real, ni sesión en el broker, ni fallback
+# 1. Producción: la barrera está levantada y 'brokered' construye la strategy real
 # ---------------------------------------------------------------------------
 
 
-def test_la_barrera_nace_activa() -> None:
-    # Arrange / Act / Assert: igualdad literal. Cambiarla a True rompe ESTE test a propósito:
-    # quien lo haga debe leer el docstring del módulo y cumplir las condiciones de habilitación.
-    assert getattr(brokered_mod, BARRERA) is False
+def test_la_barrera_esta_levantada_desde_la_auditoria_del_2026_11_22() -> None:
+    # Arrange / Act / Assert: igualdad literal. Volver a False (reimponer el HOLD) rompe ESTE test a
+    # propósito: quien lo haga debe dejar escrito por qué en el docstring del módulo y en la auditoría.
+    assert getattr(brokered_mod, BARRERA) is True
 
 
+def test_en_produccion_brokered_completo_y_coherente_construye_la_strategy_real(tmp_path: pathlib.Path) -> None:
+    """Sin ``monkeypatch``: el valor de producción de la barrera es el que deja pasar a la strategy real."""
+    # Arrange
+    esc = _escenario(tmp_path)
+
+    # Act
+    resultado = resolve_dyndolod_spawn_strategy(**_kwargs(esc, _BrokerFalso()))
+
+    # Assert
+    assert isinstance(resultado, BrokeredDynDOLODSpawnStrategy)
+
+
+# ---------------------------------------------------------------------------
+# 2. Con la barrera reimpuesta: ni la strategy real, ni sesión en el broker, ni fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("barrera_reimpuesta")
 def test_brokered_completo_y_coherente_devuelve_el_guard_del_hold_sin_construir_la_strategy(
     tmp_path: pathlib.Path, sin_construccion_real: list[str]
 ) -> None:
@@ -190,23 +213,9 @@ def test_brokered_completo_y_coherente_devuelve_el_guard_del_hold_sin_construir_
     assert broker.aperturas == [] and broker.sumisiones == []
 
 
-def test_levantar_la_barrera_con_monkeypatch_restituye_la_strategy_real(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Contraste: las MISMAS entradas producen la strategy real sin la barrera (el test anterior no es vacuo)."""
-    # Arrange
-    esc = _escenario(tmp_path)
-    monkeypatch.setattr(brokered_mod, BARRERA, True)
-
-    # Act
-    resultado = resolve_dyndolod_spawn_strategy(**_kwargs(esc, _BrokerFalso()))
-
-    # Assert
-    assert isinstance(resultado, BrokeredDynDOLODSpawnStrategy)
-
-
+@pytest.mark.usefixtures("barrera_reimpuesta")
 @pytest.mark.parametrize("herramienta", ["TexGen", "DynDOLOD"])
-async def test_con_un_broker_real_y_la_barrera_activa_ninguna_herramienta_se_lanza(
+async def test_con_un_broker_real_y_la_barrera_reimpuesta_ninguna_herramienta_se_lanza(
     tmp_path: pathlib.Path,
     herramienta: str,
     sin_subprocess_local: list[tuple[Any, ...]],
@@ -227,6 +236,7 @@ async def test_con_un_broker_real_y_la_barrera_activa_ninguna_herramienta_se_lan
     assert sin_subprocess_local == []
 
 
+@pytest.mark.usefixtures("barrera_reimpuesta")
 async def test_el_runner_con_el_guard_del_hold_no_lanza_texgen_ni_cae_a_standalone(
     tmp_path: pathlib.Path, sin_subprocess_local: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -245,6 +255,7 @@ async def test_el_runner_con_el_guard_del_hold_no_lanza_texgen_ni_cae_a_standalo
     assert sin_subprocess_local == []
 
 
+@pytest.mark.usefixtures("barrera_reimpuesta")
 async def test_el_gate_de_handoff_bloquea_con_el_motivo_del_hold(tmp_path: pathlib.Path) -> None:
     # Arrange
     esc = _escenario(tmp_path)
@@ -266,7 +277,8 @@ async def test_el_gate_de_handoff_bloquea_con_el_motivo_del_hold(tmp_path: pathl
     assert "WIRING_SECURITY_HOLD" in veredicto.reason
 
 
-def test_con_la_barrera_activa_toda_entrada_faltante_devuelve_el_guard_del_hold(
+@pytest.mark.usefixtures("barrera_reimpuesta")
+def test_con_la_barrera_reimpuesta_toda_entrada_faltante_devuelve_el_guard_del_hold(
     tmp_path: pathlib.Path, sin_construccion_real: list[str]
 ) -> None:
     """Enumera TODAS las entradas del resolver (por introspección): ninguna combinación llega a construir."""
@@ -286,7 +298,7 @@ def test_con_la_barrera_activa_toda_entrada_faltante_devuelve_el_guard_del_hold(
 
 
 # ---------------------------------------------------------------------------
-# 2. Standalone y configuración inválida: sin cambios
+# 3. Standalone y configuración inválida: sin cambios
 # ---------------------------------------------------------------------------
 
 
@@ -324,7 +336,7 @@ def test_un_backend_invalido_conserva_su_propio_guard_y_no_lo_pisa_el_hold(
 
 
 # ---------------------------------------------------------------------------
-# 3. La barrera es INTERNA: ni config, ni entorno, ni parámetro
+# 4. La barrera es INTERNA: ni config, ni entorno, ni parámetro
 # ---------------------------------------------------------------------------
 
 
@@ -332,7 +344,7 @@ def _arbol(ruta: pathlib.Path) -> ast.Module:
     return ast.parse(ruta.read_text(encoding="utf-8"))
 
 
-def test_la_barrera_es_un_literal_false_del_modulo_y_no_se_deriva_de_nada() -> None:
+def test_la_barrera_es_un_literal_true_del_modulo_y_no_se_deriva_de_nada() -> None:
     # Arrange / Act
     asignaciones = [
         n
@@ -340,10 +352,11 @@ def test_la_barrera_es_un_literal_false_del_modulo_y_no_se_deriva_de_nada() -> N
         if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == BARRERA for t in n.targets)
     ]
 
-    # Assert: una sola asignación, a nivel de módulo, con el literal False (no config/env/llamada).
+    # Assert: una sola asignación, a nivel de módulo, con el literal True (no config/env/llamada): levantada
+    # por decisión revisada en un PR, nunca por una condición que se pueda torcer en runtime.
     assert len(asignaciones) == 1
     valor = asignaciones[0].value
-    assert isinstance(valor, ast.Constant) and valor.value is False, ast.unparse(valor)
+    assert isinstance(valor, ast.Constant) and valor.value is True, ast.unparse(valor)
 
 
 def test_la_barrera_no_es_configurable_por_el_usuario(tmp_path: pathlib.Path) -> None:
@@ -456,7 +469,7 @@ def test_la_strategy_brokered_real_solo_se_alcanza_por_el_resolver() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. La ruta productiva COMPARTIDA por la GUI y el agente LLM
+# 5. La ruta productiva COMPARTIDA por la GUI y el agente LLM
 # ---------------------------------------------------------------------------
 
 
@@ -478,6 +491,23 @@ def _resolver_de_appcontext(esc: _Escenario, broker: Any) -> Any:
     )
 
 
+def test_en_produccion_appcontext_con_brokered_y_todo_valido_resuelve_la_strategy_real(
+    tmp_path: pathlib.Path,
+) -> None:
+    """El composition root real, sin ``monkeypatch``: es la strategy que reciben la GUI y el agente LLM."""
+    # Arrange
+    esc = _escenario(tmp_path)
+    broker = _BrokerFalso()
+
+    # Act
+    resultado = _resolver_de_appcontext(esc, broker)
+
+    # Assert: la strategy real, y resolver no abre sesiones ni manda jobs (eso pasa recién en el spawn).
+    assert isinstance(resultado, BrokeredDynDOLODSpawnStrategy)
+    assert broker.aperturas == [] and broker.sumisiones == []
+
+
+@pytest.mark.usefixtures("barrera_reimpuesta")
 def test_appcontext_con_brokered_y_todo_valido_resuelve_el_guard_del_hold(
     tmp_path: pathlib.Path, sin_construccion_real: list[str]
 ) -> None:
@@ -504,6 +534,41 @@ def mo2_para_supervisor(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch)
     return mo2
 
 
+async def test_en_produccion_gui_y_agente_comparten_el_servicio_con_la_strategy_brokered_real(
+    tmp_path: pathlib.Path,
+    mo2_para_supervisor: pathlib.Path,
+    sin_subprocess_local: list[tuple[Any, ...]],
+) -> None:
+    """Las DOS superficies reciben la MISMA strategy real: levantar la barrera no abre un camino sin el otro."""
+    # Arrange: broker REAL; AppContext resuelve la strategy con el valor de producción de la barrera.
+    from sky_claw.app.orchestrator.supervisor import SupervisorAgent
+    from sky_claw.app.security.path_validator import PathValidator
+    from sky_claw.app_context import AppContext
+
+    esc = _escenario(tmp_path / "esc")
+    async with _broker_real(esc, tmp_path) as broker:
+        estrategia = _resolver_de_appcontext(esc, broker)
+        assert isinstance(estrategia, BrokeredDynDOLODSpawnStrategy)
+        supervisor = SupervisorAgent(
+            profile_name="Default",
+            path_validator=PathValidator(roots=[mo2_para_supervisor, tmp_path]),
+            dyndolod_spawn_strategy=estrategia,
+        )
+        ctx = object.__new__(AppContext)
+        ctx.servicio_de_etapa9 = None
+        ctx.publicar_servicio_de_etapa9(supervisor.dyndolod_service)  # lo que hace el bootloader
+
+        # Act
+        servicio = supervisor.dyndolod_service
+
+        # Assert: GUI y agente LLM llegan al MISMO servicio, que lleva la strategy brokered real.
+        assert supervisor._dispatcher_dependencies.dyndolod_service is servicio  # GUI
+        assert ctx.servicio_de_etapa9 is servicio  # agente LLM (generate_lods)
+        assert servicio._spawn_strategy is estrategia
+    assert sin_subprocess_local == []
+
+
+@pytest.mark.usefixtures("barrera_reimpuesta")
 async def test_gui_y_agente_comparten_el_servicio_cuyo_spawn_esta_bloqueado_por_el_hold(
     tmp_path: pathlib.Path,
     mo2_para_supervisor: pathlib.Path,
