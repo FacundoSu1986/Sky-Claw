@@ -24,9 +24,12 @@ como límite; y los pendientes de #980.
 
 **Alcance:** la constante tiene un único lector, el resolver de TexGen/DynDOLOD (ancla
 `test_en_produccion_solo_el_resolver_lee_la_barrera_y_nadie_mas_la_toca`). **No habilita Synthesis brokered:** el
-[ADR 0019](../adr/0019-synthesis-two-phase-usvfs.md) le asigna su propia barrera (`_CONTENCION_SYNTHESIS_VERIFICADA`,
-§2), que todavía no existe en el código, igual que el runner brokered de Synthesis. Su §4 nombra a esta constante
-junto a los spikes .NET; esa verificación corresponde a la barrera de Synthesis, no a esta.
+transporte de Synthesis por el broker (#976, `sky_claw/local/mo2/brokered_synthesis.py`) tiene su propia barrera,
+`_CONTENCION_SYNTHESIS_VERIFICADA`, que sigue en `False` y este levantamiento no toca. Su ancla
+(`tests/test_brokered_synthesis.py::test_barrera_hold_synthesis_esta_aislada_y_enumerada_por_ast`) enumera sus usos
+aparte de los de esta. Levantarla exige su propia evidencia (los spikes .NET del
+[ADR 0019](../adr/0019-synthesis-two-phase-usvfs.md): la contención del árbol `Synthesis.Bethesda.CLI.exe` → `dotnet`
+→ patchers), en otro PR.
 
 **Para reimponer el HOLD** se vuelve el literal a `False` en un PR: el guard y sus anclas
 (`tests/test_dyndolod_brokered_hold.py`) siguen vivos y se prueban con la barrera reimpuesta.
