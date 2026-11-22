@@ -1064,3 +1064,14 @@ def test_despacho_vfs_worker_a_nivel_de_modulo_se_comporta_igual_que_main(
     assert exit_modulo.value.code == codigo_retorno
     assert exit_main_explicito.value.code == exit_modulo.value.code
     assert exit_main_sys_argv.value.code == exit_modulo.value.code
+
+
+def test_c4_el_plazo_por_defecto_de_vfs_health_cubre_los_arranques_lentos_medidos() -> None:
+    """Condición 4 del HOLD (plazos), decidida por el propietario el 2026-11-22.
+
+    El plazo del job de ``vfs-health`` cubre TODO el job: lanzar el worker por MO2, el arranque del onefile y el probe.
+    En el rig real, el arranque típico es de unos 2,7 s, pero en las tres series de R0-1 hubo arranques de 32 s a 44 s,
+    en HDD y en SSD por igual (el onefile se extrae en %TEMP%). Con el default de 30 s, esos casos fallaban por timeout.
+    120 s los cubre con más de 2x de margen.
+    """
+    assert _parse_args(["--mode", "vfs-health"]).vfs_timeout == 120.0

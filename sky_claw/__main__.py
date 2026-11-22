@@ -215,7 +215,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--vfs-timeout",
         type=float,
-        default=30.0,
+        # Condición 4 del HOLD (2026-11-22): el job cubre lanzar por MO2 + arranque del onefile + probe; en el rig hubo
+        # arranques de 32-44 s (HDD y SSD por igual). 120 s los cubre con más de 2x de margen.
+        default=120.0,
         help="Timeout in seconds for the vfs-health worker (default: %(default)s)",
     )
     parser.add_argument(

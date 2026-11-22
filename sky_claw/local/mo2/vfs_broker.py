@@ -60,9 +60,11 @@ _COOPERATIVE_CANCEL_GRACE_SECONDS = 0.5
 # prueba que MO2 cayó ni que el Job quedó vacío. La instancia queda en CUARENTENA con terminalidad desconocida y el
 # rollback vetado; el fence tampoco cuelga reteniendo el lock. Un worker_exit tardío libera la cuarentena.
 _BRIDGE_LOSS_FENCE_GRACE_SECONDS = 30.0
-# Deadline hard para la confirmación de worker_exit cuando el bridge MO2 permanece
-# conectado tras solicitar terminación.
-_CONNECTED_WORKER_EXIT_DEADLINE_SECONDS = 30.0
+# Deadline hard para la confirmación de worker_exit cuando el bridge MO2 permanece conectado tras solicitar terminación.
+# Condición 4 del HOLD (política de teardown), decidida por el propietario el 2026-11-21: el rig real midió colas de
+# 35 s (R0 ronda 7, control) y 43 s (identidad del Job) con el worker ya terminado; con 30 s caían en cuarentena. 90 s
+# las cubre con más de 2x de margen. Pasado el plazo sigue siendo fail-closed: cuarentena y VfsTeardownDeadlineError.
+_CONNECTED_WORKER_EXIT_DEADLINE_SECONDS = 90.0
 # Política de teardown TRAS el resultado: si el job_result ya llegó y el worker_exit se demora más que esta gracia, el
 # broker le pide al bridge cerrar el Job (el ``cancel`` de siempre) en vez de esperar, con el bridge conectado, hasta el
 # deadline duro y poner la instancia en cuarentena. Un MO2 real midió 0,23-0,75 s entre job_result y worker_exit en lo
