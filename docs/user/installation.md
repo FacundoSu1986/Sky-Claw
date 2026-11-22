@@ -17,8 +17,9 @@
 - Mod Organizer 2 y Skyrim Special Edition/Anniversary Edition.
 - Las herramientas que vaya a usar el ritual: LOOT, SSEEdit u otras.
 - Para el ritual de Synthesis: el **.NET 10 SDK x64**, con el instalador oficial (deja `dotnet`
-  en el `PATH`). No alcanza con el runtime: la Fase 1 compila los patchers. El `dotnet` x86 se
-  ignora siempre. Ver [ADR 0019](../adr/0019-synthesis-two-phase-usvfs.md) §2.4.
+  en el `PATH`). No alcanza con el runtime: la Fase 1 compila los patchers. Sky-Claw descarta
+  el `dotnet` de `Program Files (x86)\dotnet`, pero no detecta un `dotnet` x86 instalado en otra
+  ruta: no lo deje en el `PATH`. Ver [ADR 0019](../adr/0019-synthesis-two-phase-usvfs.md) §2.4.
 - Además, los **runtimes .NET x64** para los que se compilaron los patchers que elija: .NET no
   salta de versión principal por defecto, así que un patcher `net8.0` necesita el runtime .NET 8
   aunque esté instalado el SDK 10 (el SDK 10 ya trae el runtime 10).

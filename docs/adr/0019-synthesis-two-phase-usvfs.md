@@ -223,7 +223,10 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
      `<nombre>.runtimeconfig.json` (un self-contained también los trae): es framework-dependent solo
      si ese `runtimeconfig.json` declara `runtimeOptions.framework` o `runtimeOptions.frameworks` y
      **no** declara `includedFrameworks` (lo que escribe un self-contained); cualquier otro caso,
-     archivo ilegible incluido, cuenta como no framework-dependent. Evidencia de rig: el mismo
+     archivo ilegible incluido, cuenta como no framework-dependent. Además, el `.exe` tiene que ser
+     un apphost simple (no un bundle single-file) cuyo nombre de app embebido sea exactamente
+     `<nombre>.dll`: así un `.dll`/`runtimeconfig` viejos que quedaron junto a un `.exe` single-file
+     nuevo no se lanzan en su lugar. Si esa correspondencia no se puede establecer, se rechaza. Evidencia de rig: el mismo
      `MinimalPatcher` con CET (`runtimeconfig` con `framework` `Microsoft.NETCore.App`) cae lanzado por
      su `.exe` y funciona lanzado por `dotnet.exe`. Si es *self-contained* o *single-file* con CET, se
      rechaza con un mensaje claro (fail-closed).
