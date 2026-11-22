@@ -196,6 +196,51 @@ Synthesis opera dividido en dos fases con responsabilidades y permisos disjuntos
   Toda deserialización de `PipelineSettings.json` V2 valida identidades polimórficas completas
   `($type, assembly)` restringidas al assembly canónico `Synthesis.Bethesda.Execution` y rechaza
   cualquier `$type` en ubicaciones o subobjetos no polimórficos.
+- **`USERNAME` es parte obligatoria de la lista blanca (evidencia de rig, S5 real 2026-11-22):**
+  bajo MO2 2.5.2, `usvfs_x64.dll` 0.5.6.1 hace `std::string(getenv("USERNAME"))` sin chequear NULL
+  al inicializarse en cada proceso enganchado (`shm_sink::sink_it_`, igual en upstream `master`).
+  Sin `USERNAME`, el CLI moría con `0xC0000005` en `usvfs_x64.dll+0xa6783` antes de cargar .NET
+  (`cmd.exe` con el mismo entorno cae igual); con ella, R1–R3 pasaron bajo MO2 real, incluida la
+  contención CLI → shim → patcher dormido. No es un secreto nuevo (`USERPROFILE` ya lo contiene).
+  La propiedad cubre a **todas** las listas blancas de entorno del paquete, no solo a la de
+  Synthesis: `tests/test_entorno_curado_usvfs_username.py` las enumera por AST y congela el censo.
+- **Patchers con apphost `CETCompat` — decisión del propietario (2026-11-22):** el SDK .NET 9+
+  marca por defecto el apphost como CET-compatible (`IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT`); en
+  el rig, un patcher con ese flag cae bajo usvfs 0.5.6.1 (`0xC0000005` en memoria sin módulo) aun con
+  entorno completo, y el mismo binario con solo ese bit apagado funciona. El CLI no se ve afectado
+  (el `Directory.Build.props` de Synthesis fija `CETCompat=false`, y Mutagen recomienda lo mismo para
+  MO2). Se adopta, en este orden:
+  1. **Fase 1 compila sin CET y lo verifica.** Todo `dotnet build`/`publish` de patchers que haga
+     Sky-Claw pasa `-p:CETCompat=false` y compila **no incremental** (`--no-incremental` o `obj`
+     limpio), y después lee el flag del apphost producido: si sigue CET-compatible, la Fase 1 falla
+     cerrado. Evidencia de rig: el override de línea de comandos gana aunque el `.csproj` declare
+     `<CETCompat>true</CETCompat>`, pero un build **incremental** conserva el apphost viejo con CET
+     sin avisar (también le pasó al shim del rig).
+  2. **Patchers ya compilados (Fase 2 / `CliPatcherSettings` con `.exe`):** antes de correr bajo
+     USVFS se lee el flag. Si es CET-compatible y *framework-dependent*, el shim lo lanza como
+     `dotnet.exe <nombre>.dll` —el muxer no tiene el flag— sin modificar el binario ni romper su pin
+     de hash. El tipo de despliegue **no** se infiere de que existan `<nombre>.dll` y
+     `<nombre>.runtimeconfig.json` (un self-contained también los trae): es framework-dependent solo
+     si ese `runtimeconfig.json` declara `runtimeOptions.framework` o `runtimeOptions.frameworks` y
+     **no** declara `includedFrameworks` (lo que escribe un self-contained); cualquier otro caso,
+     archivo ilegible incluido, cuenta como no framework-dependent. Además, el `.exe` tiene que ser
+     un apphost simple (no un bundle single-file) cuyo nombre de app embebido sea exactamente
+     `<nombre>.dll`: así un `.dll`/`runtimeconfig` viejos que quedaron junto a un `.exe` single-file
+     nuevo no se lanzan en su lugar. Si esa correspondencia no se puede establecer, se rechaza. Evidencia de rig: el mismo
+     `MinimalPatcher` con CET (`runtimeconfig` con `framework` `Microsoft.NETCore.App`) cae lanzado por
+     su `.exe` y funciona lanzado por `dotnet.exe`. Si es *self-contained* o *single-file* con CET, se
+     rechaza con un mensaje claro (fail-closed).
+  3. **Descartado:** parchear el byte del PE de un tercero (altera el binario y rompe el pin) y
+     exigir una MO2/usvfs más nueva (no verificado que lo resuelva, y obligaría a todos los usuarios
+     a actualizar su MO2).
+
+  No requiere software nuevo para CET: el .NET 10 SDK x64 ya es requisito de la Fase 1 y trae el
+  muxer `dotnet.exe`. Sí queda explícito un requisito que ya existía: un patcher framework-dependent
+  corre sobre el runtime principal para el que se compiló (.NET no hace roll-forward entre versiones
+  principales por defecto), así que hacen falta también los runtimes .NET x64 de los patchers
+  elegidos —p. ej. .NET 8 para un patcher `net8.0`—; ambos quedan en `docs/user/installation.md`. Costo aceptado: los procesos de
+  patcher pierden el endurecimiento CET (en Windows 10 la shadow stack de usuario medida está
+  apagada igual). Implementación: PR-3 (Fase 1 y shim), con test que enumere los caminos de lanzamiento.
 - **Contención OS:** `run_capture(..., require_job=True, max_output_bytes=...)` en Fase 1 y Job
   Object + fence `supervised` con constatación de `ActiveProcesses == 0` en Fase 2.
 - **Flags protegidos ampliados:** `protected_flags`/`protected_short` bloquean `-o`, `-s`, `-p`,
