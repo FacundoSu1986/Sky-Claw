@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.security.links import is_link
 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.output_targets import (
     BODYSLIDE_MESHES_RESOURCE_ID,
@@ -1409,6 +1410,9 @@ async def test_un_mod_de_salida_vacio_que_es_un_junction_no_se_borra(
         lock_manager=lock_manager,
     )
 
+    # El junction sigue ahí: sin esto, una recuperación que borrara sólo el
+    # destino dejaría `ajena` y el backup, y el test pasaría igual.
+    assert is_link(destino)
     assert ajena.is_dir()
     assert backup.exists()
     assert resultado.preservados == (backup,)

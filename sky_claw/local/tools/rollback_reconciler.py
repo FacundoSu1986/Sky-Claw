@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Final
 
 from sky_claw.app.db.locks import LockAcquisitionError, adquirir_lease_definitiva, liberar_lease_definitiva
 from sky_claw.app.security.links import is_link, path_present, rmtree_link_aware
-from sky_claw.local.tools._dir_rollback import descartar_si_es_carpeta_vacia
+from sky_claw.local.tools._dir_rollback import descartar_si_es_carpeta_vacia, mutar_hasta_terminal
 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
 from sky_claw.local.tools.output_targets import (
@@ -497,7 +497,7 @@ async def _reconciliar_move_aside(
         # el enlace en silencio — destruyendo algo del usuario que este
         # reconciliador no tiene por qué tocar. "Hay algo acá" es la pregunta
         # correcta, y la respuesta segura es preservar los dos y avisar.
-        if destino in nunca_vacios and await asyncio.to_thread(descartar_si_es_carpeta_vacia, destino):
+        if destino in nunca_vacios and await mutar_hasta_terminal(descartar_si_es_carpeta_vacia, destino):
             logger.info(
                 "Destino '%s' vacío descartado: es el mod recreado tras el move-aside de una "
                 "corrida interrumpida antes de empaquetar, no salida nueva.",

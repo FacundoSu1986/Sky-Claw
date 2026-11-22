@@ -174,6 +174,32 @@ async def _esperar_hasta_terminal(task: asyncio.Task[Any]) -> bool:
     return cancelado
 
 
+async def mutar_hasta_terminal(funcion: Callable[..., Any], /, *args: Any) -> Any:
+    """Corre ``funcion(*args)`` en un hilo y retiene al caller hasta que el hilo es terminal.
+
+    Cancelar un ``await asyncio.to_thread(...)`` suelta al caller pero NO detiene
+    el hilo. Si ese hilo muta disco cubierto por una lease, el caller podría
+    terminar su rollback y soltar la lease mientras la mutación todavía corre, y
+    el dueño siguiente vería el disco cambiar bajo sus pies (review Codex P1,
+    PR #993: un ``rmdir`` tardío borraba la carpeta vacía que la corrida siguiente
+    acababa de recrear). Mismo mecanismo que el move-aside de este módulo: la
+    task se ancla contra GC, se espera hasta terminal pese a cancelaciones
+    repetidas y recién entonces se propaga la cancelación. Sin cancelación, el
+    resultado y la excepción del hilo pasan tal cual.
+    """
+    tarea = _track(asyncio.ensure_future(asyncio.to_thread(funcion, *args)))
+    cancelado = await _esperar_hasta_terminal(tarea)
+    if cancelado:
+        if not tarea.cancelled() and (falla := tarea.exception()) is not None:
+            logger.error(
+                "La mutación en hilo terminó con error mientras el caller estaba cancelado: %s",
+                falla,
+                exc_info=falla,
+            )
+        raise asyncio.CancelledError
+    return tarea.result()
+
+
 async def _deshacer_rename_cancelado(
     rename_task: asyncio.Task[Any],
     backup: pathlib.Path,

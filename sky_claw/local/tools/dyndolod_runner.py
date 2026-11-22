@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import configparser
 import contextlib
+import contextvars
 import enum
 import hashlib
 import logging
@@ -26,7 +27,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, NamedTuple, Protocol, TypeVar
@@ -37,7 +38,11 @@ from sky_claw.app.security.links import (
     iter_archivos_propios,
     link_kind_or_raise_with_retry,
 )
-from sky_claw.local.tools._dir_rollback import DirectoryRollback, descartar_si_es_carpeta_vacia
+from sky_claw.local.tools._dir_rollback import (
+    DirectoryRollback,
+    descartar_si_es_carpeta_vacia,
+    mutar_hasta_terminal,
+)
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
 from sky_claw.local.tools.dyndolod_presets import (
@@ -470,6 +475,28 @@ async def _handoff_terminal(
         return intencion, None
 
     return intencion, task.exception()
+
+
+#: Mods de salida que el servicio de ESTA corrida recreó vacíos tras su move-aside
+#: (R0 brokered 1). El empaquetado descarta su carpeta antes de su propio
+#: move-aside SÓLO si figura acá: una carpeta vacía que ya existía antes de la
+#: corrida (``create_snapshot=False``) no es de esta corrida y la protege
+#: ``DirectoryRollback`` como siempre (review CodeRabbit, PR #993). Se fija con
+#: :func:`mods_recreados_vacios_en_la_corrida`; el default vacío hace que un
+#: runner usado sin el servicio no descarte nada.
+_MODS_RECREADOS_VACIOS: contextvars.ContextVar[frozenset[pathlib.Path]] = contextvars.ContextVar(
+    "mods_recreados_vacios", default=frozenset()
+)
+
+
+@contextlib.contextmanager
+def mods_recreados_vacios_en_la_corrida(mods: Iterable[pathlib.Path]) -> Iterator[None]:
+    """Declara, mientras dura el bloque, qué mods de salida recreó vacíos el servicio."""
+    token = _MODS_RECREADOS_VACIOS.set(frozenset(mods))
+    try:
+        yield
+    finally:
+        _MODS_RECREADOS_VACIOS.reset(token)
 
 
 async def _esperar_terminalidad_del_worker(worker: asyncio.Task[Any]) -> None:
@@ -4122,13 +4149,16 @@ class DynDOLODRunner:
             #     exclusividad no se restaura, porque hacerlo pisaría la salida de
             #     un dueño concurrente (el backup queda para recuperación manual).
             # R0 brokered 1: con `create_snapshot=True` el servicio apartó el mod y
-            # lo recreó VACÍO (el perfil lo sigue habilitando). Esa carpeta no
-            # protege nada: se descarta acá para que el move-aside de abajo no deje
+            # lo recreó VACÍO (el perfil lo sigue habilitando). Esa carpeta —y sólo
+            # ésa, la que el servicio declara— no protege nada: se descarta acá para que el move-aside de abajo no deje
             # un SEGUNDO backup del mismo mod —vacío— que la recuperación de
             # arranque tendría que desambiguar. Sigue valiendo "no hay doble
             # move-aside". `rmdir` falla si tiene contenido: un mod previo real
             # (create_snapshot=False) se aparta como siempre.
-            await asyncio.to_thread(descartar_si_es_carpeta_vacia, mod_path)
+            # Hasta terminal: una cancelación no suelta el rollback ni la lease con
+            # el `rmdir` todavía en vuelo (review Codex P1, PR #993).
+            if mod_path in _MODS_RECREADOS_VACIOS.get():
+                await mutar_hasta_terminal(descartar_si_es_carpeta_vacia, mod_path)
             async with DirectoryRollback(
                 mod_path,
                 should_rollback=veto_de_rollback,

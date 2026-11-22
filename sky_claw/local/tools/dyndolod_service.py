@@ -46,7 +46,7 @@ from sky_claw.app.db.locks import (
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.app.security.links import exigir_contencion_fisica, link_kind_or_raise
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
-from sky_claw.local.tools._dir_rollback import DirectoryRollback, _commit_directory_rollbacks
+from sky_claw.local.tools._dir_rollback import DirectoryRollback, _commit_directory_rollbacks, mutar_hasta_terminal
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
 from sky_claw.local.tools.dyndolod_runner import (
     INSTRUCCIONES_POR_MODO,
@@ -61,6 +61,7 @@ from sky_claw.local.tools.dyndolod_runner import (
     PreflightDeBackend,
     ProgresoDeHerramienta,
     ReadinessMode,
+    mods_recreados_vacios_en_la_corrida,
     normalize_dyndolod_spawn_strategy,
     preflight_del_backend,
     resolve_data_visibility_domain,
@@ -2271,6 +2272,7 @@ class DynDOLODPipelineService:
                 # transicionar a otro root) ni con un ancestro reemplazado por un
                 # junction después del boot (el rename aterrizaría afuera).
                 await self._fence_de_roots_de_la_corrida(roots_de_herramienta)
+                mods_recreados_vacios: list[pathlib.Path] = []
                 for output_dir in rollback_dirs:
                     dr = DirectoryRollback(output_dir, should_rollback=_conserva_las_leases)
                     dir_rollbacks.append(dr)
@@ -2284,7 +2286,10 @@ class DynDOLODPipelineService:
                     # perfil incoherente. Sólo si hubo move-aside: en la primera
                     # corrida no hay mod previo y el comportamiento no cambia.
                     if output_dir in mods_de_salida and dr.backup is not None:
-                        await asyncio.to_thread(_recrear_mod_de_salida_vacio, output_dir)
+                        # Hasta terminal: una cancelación no puede soltar las leases
+                        # con el `mkdir` en vuelo (review Codex P1, PR #993).
+                        await mutar_hasta_terminal(_recrear_mod_de_salida_vacio, output_dir)
+                        mods_recreados_vacios.append(output_dir)
 
                 # P2.2 — BORN-EMPTY por herramienta: tras el move-aside, cada
                 # root de herramienta se recrea y se verifica VACÍO antes del
@@ -2345,24 +2350,25 @@ class DynDOLODPipelineService:
                     # de cada spawn, pero para SU post-check; ésta es la firma del
                     # servicio, la que después decide qué rutas son de esta corrida.
                     firmas_de_log_previas = await self._firmar_logs_previos(runner, run_texgen=run_texgen)
-                    result = await runner.run_full_pipeline(
-                        run_texgen=run_texgen,
-                        preset=preset,
-                        texgen_args=texgen_args,
-                        dyndolod_args=dyndolod_args,
-                        expected_profile=self._mo2_profile,
-                        authorized_identity=authorized_identity,
-                        # #592 finding 2: la sustitución del mod previo dentro del
-                        # packaging es un `DirectoryRollback` MÁS, así que aplica
-                        # el mismo veto que los de acá arriba. Cablearlo es la
-                        # mitad que evita el defecto hermano: sin esto, el rollback
-                        # interno restauraría su backup sobre la salida de un dueño
-                        # concurrente cuando la lease ya se perdió — el hallazgo de
-                        # Codex #399, reintroducido en una superficie nueva.
-                        veto_de_rollback=_conserva_las_leases,
-                        modo_de_interaccion=modo_de_interaccion,
-                        interaccion=interaccion_desatendida,
-                    )
+                    with mods_recreados_vacios_en_la_corrida(mods_recreados_vacios):
+                        result = await runner.run_full_pipeline(
+                            run_texgen=run_texgen,
+                            preset=preset,
+                            texgen_args=texgen_args,
+                            dyndolod_args=dyndolod_args,
+                            expected_profile=self._mo2_profile,
+                            authorized_identity=authorized_identity,
+                            # #592 finding 2: la sustitución del mod previo dentro del
+                            # packaging es un `DirectoryRollback` MÁS, así que aplica
+                            # el mismo veto que los de acá arriba. Cablearlo es la
+                            # mitad que evita el defecto hermano: sin esto, el rollback
+                            # interno restauraría su backup sobre la salida de un dueño
+                            # concurrente cuando la lease ya se perdió — el hallazgo de
+                            # Codex #399, reintroducido en una superficie nueva.
+                            veto_de_rollback=_conserva_las_leases,
+                            modo_de_interaccion=modo_de_interaccion,
+                            interaccion=interaccion_desatendida,
+                        )
 
                     # Validar salida de DynDOLOD si fue exitoso
                     if result.success:

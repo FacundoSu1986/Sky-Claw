@@ -6506,11 +6506,27 @@ async def test_r0_brokered_1_los_mods_de_salida_apartados_siguen_presentes_vacio
             backups_del_empaquetado[self.target] = self.backup
             return resultado
 
+    # Y qué mods recreó vacíos el SERVICIO: tienen que ser exactamente los que la
+    # recuperación de arranque trata como "nunca vacíos al commitear". Si un mod
+    # entra a una lista y no a la otra, un crash deja ese mod sin auto-restore.
+    recreados: list[pathlib.Path] = []
+    _real_recrear = sky_claw.local.tools.dyndolod_service._recrear_mod_de_salida_vacio
+
+    def _recrear_registrado(mod_dir: pathlib.Path) -> None:
+        recreados.append(mod_dir)
+        _real_recrear(mod_dir)
+
     with (
         patch.object(runner, "_execute_process", fake),
         patch.object(sky_claw.local.tools.dyndolod_runner, "DirectoryRollback", _DirectoryRollbackRegistrado),
+        patch.object(sky_claw.local.tools.dyndolod_service, "_recrear_mod_de_salida_vacio", _recrear_registrado),
     ):
         result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=True)
+
+    from sky_claw.local.tools.rollback_reconciler import PRODUCTOR_DYNDOLOD, construir_productores_de_move_aside
+
+    productor = next(p for p in construir_productores_de_move_aside(mods_dir=mods) if p.nombre == PRODUCTOR_DYNDOLOD)
+    assert sorted(recreados) == sorted(productor.destinos_nunca_vacios), (recreados, productor.destinos_nunca_vacios)
 
     assert result["success"] is True, result.get("errors")
     assert fake.tools == ["TexGen", "DynDOLOD"]
@@ -6562,6 +6578,45 @@ async def test_r0_brokered_1_un_fallo_restaura_los_mods_de_salida_sobre_la_carpe
     assert (mod_dyndolod / "DynDOLOD.esp").read_bytes() == b"ESP-PREVIO"
     assert sorted(p.name for p in mod_dyndolod.iterdir()) == ["DynDOLOD.esp"]
     assert not list(mods.glob("*.rollback-*"))
+
+
+@pytest.mark.asyncio
+async def test_r0_brokered_1_un_mod_vacio_previo_sin_snapshot_sobrevive_a_un_empaquetado_fallido(
+    service: DynDOLODPipelineService,
+    tmp_path: pathlib.Path,
+) -> None:
+    """El empaquetado sólo descarta la carpeta vacía que ESTA corrida recreó (review CodeRabbit, PR #993).
+
+    Con ``create_snapshot=False`` el servicio no aparta nada, así que una carpeta
+    vacía de ``TexGen Output`` que ya existía es del operador: si el empaquetado
+    falla, ``DirectoryRollback`` tiene que devolverla. Descartarla antes la perdía
+    y dejaba el mod habilitado sin carpeta, el mismo estado que este PR corrige.
+    """
+    config, runner = _runner_texgen(tmp_path)
+    assert config.output_layout is not None and config.data_dir is not None
+    config.data_dir.mkdir()
+    layout = config.output_layout
+    mod_texgen = config.mo2_mods_path / DynDOLODRunner.TEXGEN_MOD_NAME
+    mod_texgen.mkdir(parents=True)
+    _servicio_con_workspace(service, runner)
+
+    def _spawn_texgen() -> None:
+        _escribir_salida(layout.texgen_root / "textures", "a.dds", b"SOLO-TEXGEN")
+        _apendear_log(tmp_path, "TexGen", _log_completo("TexGen"))
+
+    def _meta_ini_que_falla(*_args: object) -> None:
+        raise OSError("disco lleno escribiendo meta.ini")
+
+    fake = _EjecucionFalsaPorTool({"TexGen": _spawn_texgen})
+    with (
+        patch.object(runner, "_execute_process", fake),
+        patch.object(runner, "_generate_meta_ini", _meta_ini_que_falla),
+    ):
+        result = await service.execute(preset="Medium", run_texgen=True, create_snapshot=False)
+
+    assert result["success"] is False
+    assert mod_texgen.is_dir(), "la carpeta vacía previa del operador se perdió"
+    assert not any(mod_texgen.iterdir())
 
 
 @pytest.mark.parametrize("tool_que_falla", ["TexGen", "DynDOLOD"])
