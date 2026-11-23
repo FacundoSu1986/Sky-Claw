@@ -29,15 +29,18 @@ Limites honestos (ADR 0019 / PR 2):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import pathlib
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from sky_claw.app.security.links import exigir_contencion_fisica, iter_archivos_propios
+from sky_claw.local.tools._dir_rollback import mutar_hasta_terminal
 from sky_claw.local.tools._process import run_capture
 from sky_claw.local.tools.bodyslide_config import (
     BodySlideConfigPreconditionError,
@@ -395,6 +398,25 @@ def _atribuir_log_a_corrida(
     return cola
 
 
+def _escribir_atomico(destino: pathlib.Path, blob: bytes) -> None:
+    """Reemplaza *destino* con *blob* sin pasar nunca por un archivo truncado (review Codex #1003).
+
+    ``Path.write_bytes`` trunca el destino ANTES de escribir: un fallo a mitad
+    (disco lleno tras un build de mallas, un AV que toma el handle) dejaba la
+    config del usuario como XML cortado y sin copia. Temporal en el MISMO
+    directorio (misma unidad ⇒ rename real) y ``os.replace`` recién con el
+    contenido completo — el mismo patrón que la siembra
+    (``bodyslide_config.sembrar_config_de_bodyslide``).
+    """
+    tmp = destino.with_name(f"{destino.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_bytes(blob)
+        os.replace(tmp, destino)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+
+
 @dataclass(frozen=True, slots=True)
 class _SnapshotConfig:
     """Snapshot de un archivo de configuración: ruta original + byte + enlace."""
@@ -481,15 +503,16 @@ def _snapshot_y_restaurar_archivos(exe: pathlib.Path):
                             "No se escribe a través de un enlace re-targeted (P0-B)"
                         )
                     # Escribimos a TRAVÉS del enlace: el destino externo es el
-                    # que se restaura (P0-2). El enlace mismo queda intacto.
+                    # que se restaura (P0-2). El enlace mismo queda intacto: el
+                    # reemplazo atómico ocurre en el archivo real al que apunta.
                     if ruta.read_bytes() != snap.blob:
-                        ruta.write_bytes(snap.blob)
+                        _escribir_atomico(pathlib.Path(os.path.realpath(ruta)), snap.blob)
                         restaurados.append(nombre)
                     continue
                 # Regular.
                 if not ruta.exists():
                     # El proceso lo borró — recrearlo desde el snapshot.
-                    ruta.write_bytes(snap.blob)
+                    _escribir_atomico(ruta, snap.blob)
                     restaurados.append(nombre)
                     continue
                 if ruta.is_symlink():
@@ -500,7 +523,7 @@ def _snapshot_y_restaurar_archivos(exe: pathlib.Path):
                         f"'{ruta}' es un symlink al final del run (no era al snapshot) — no se restaura automáticamente"
                     )
                 if ruta.read_bytes() != snap.blob:
-                    ruta.write_bytes(snap.blob)
+                    _escribir_atomico(ruta, snap.blob)
                     restaurados.append(nombre)
             except OSError as exc:
                 logger.error("No se pudo restaurar '%s': %s", ruta, exc)
@@ -838,7 +861,13 @@ class BodySlideRunner:
             # Restauración byte a byte (Post-Snapshot). Un fallo de restauración es un
             # desenlace de fallo veraz — no se declara éxito con config sin restaurar.
             # P1-C: la restauración espera a la siembra en vuelo (ver _BarreraDeSiembra).
-            restaurados = await asyncio.to_thread(barrera.restaurar, restaurar)
+            # Review Codex #1003: y el CALLER espera a la restauración. Cancelar un
+            # ``to_thread`` suelta la coroutine pero no el hilo: la tool liberaría
+            # su lock con la restauración en vuelo y esa escritura tardía pisaría
+            # la config del dueño siguiente. ``mutar_hasta_terminal`` retiene al
+            # caller hasta que el hilo es terminal y recién ahí propaga la
+            # cancelación (mismo mecanismo que el P1 de #993).
+            restaurados = await mutar_hasta_terminal(barrera.restaurar, restaurar)
             if resultado is not None:
                 resultado.config_restored = tuple(restaurados)
 

@@ -383,3 +383,109 @@ async def test_log_manipulado_in_place_sin_firma_nueva_no_es_success(tmp_path: p
     result = await _correr(runner, "CBBE", destino, AsyncMock(side_effect=_efecto), **_OPCIONES_COMPLETAS)
     assert result.success is False
     assert result.estado == "EVIDENCE_INCOMPLETE"
+
+
+# --------------------------------------------------------------------------- #
+# Review Codex #1003 — la restauración es terminal y atómica
+# --------------------------------------------------------------------------- #
+
+
+def _proceso_sin_write_bytes(destino: pathlib.Path, log: pathlib.Path) -> AsyncMock:
+    """Corrida legítima que no usa ``Path.write_bytes`` (los tests de abajo lo intervienen)."""
+
+    def _efecto(*_a, **_k):
+        destino.mkdir(parents=True, exist_ok=True)
+        with (destino / "cuerpo.nif").open("wb") as handle:
+            handle.write(b"\x00")
+        with log.open("ab") as handle:
+            handle.write(_LOG_DE_EXITO.encode("utf-8"))
+        return (b"", b"", 0)
+
+    return AsyncMock(side_effect=_efecto)
+
+
+async def test_cancelar_durante_la_restauracion_espera_a_que_termine(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelar la corrida mientras restaura NO suelta al caller antes de que el hilo termine.
+
+    Si soltara, ``run_bodyslide_batch`` liberaría el lock con la restauración todavía
+    en vuelo y esa escritura tardía pisaría la config del dueño siguiente (mismo
+    defecto que el P1 de #993, resuelto con ``mutar_hasta_terminal``).
+    """
+    import asyncio
+    import threading
+
+    runner = _runner(tmp_path)
+    en_curso = threading.Event()
+    liberar = threading.Event()
+    terminada = threading.Event()
+    original = mod._snapshot_y_restaurar_archivos
+
+    def _snapshot_con_restauracion_lenta(exe):
+        snapshot, restaurar = original(exe)
+
+        def _lenta():
+            en_curso.set()
+            liberar.wait(10.0)  # guarda contra cuelgues, no sincronización
+            resultado = restaurar()
+            terminada.set()
+            return resultado
+
+        return snapshot, _lenta
+
+    monkeypatch.setattr(mod, "_snapshot_y_restaurar_archivos", _snapshot_con_restauracion_lenta)
+    destino = _raiz(tmp_path) / "CBBE"
+    with patch.object(mod, "run_capture", _proceso_sin_write_bytes(destino, _log(runner))):
+        tarea = asyncio.create_task(
+            runner.run_batch("CBBE", str(destino), preset="Zeroed", preset_verified=True, manifest=_MANIFIESTO)
+        )
+        assert await asyncio.to_thread(en_curso.wait, 10.0)
+        tarea.cancel()
+        hechas, _ = await asyncio.wait({tarea}, timeout=0.3)
+        assert not hechas, "la corrida salió con la restauración todavía en vuelo"
+        liberar.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+    assert terminada.is_set()
+    assert (runner.config.bodyslide_exe.parent / "Config.xml").read_text(encoding="utf-8") == _CONFIG_VÁLIDA
+
+
+async def test_restauracion_con_escritura_parcial_no_trunca_la_config(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un fallo a mitad de la escritura (disco lleno) no puede dejar ``Config.xml`` truncado."""
+    runner = _runner(tmp_path)
+    config = runner.config.bodyslide_exe.parent / "Config.xml"
+    original = mod._snapshot_y_restaurar_archivos
+
+    def _escritura_parcial(self: pathlib.Path, data: bytes) -> int:
+        with self.open("wb") as handle:
+            handle.write(data[:7])
+        raise OSError(28, "No space left on device")
+
+    def _snapshot_con_disco_lleno(exe):
+        snapshot, restaurar = original(exe)
+
+        def _restaurar_con_disco_lleno():
+            with patch.object(pathlib.Path, "write_bytes", _escritura_parcial):
+                return restaurar()
+
+        return snapshot, _restaurar_con_disco_lleno
+
+    monkeypatch.setattr(mod, "_snapshot_y_restaurar_archivos", _snapshot_con_disco_lleno)
+    destino = _raiz(tmp_path) / "CBBE"
+    with pytest.raises(BodySlideExecutionError):
+        await _correr(
+            runner,
+            "CBBE",
+            destino,
+            _proceso_sin_write_bytes(destino, _log(runner)),
+            preset="Zeroed",
+            preset_verified=True,
+            manifest=_MANIFIESTO,
+        )
+    import xml.etree.ElementTree as ET
+
+    ET.fromstring(config.read_bytes())  # XML completo: original o sembrado, nunca truncado
+    assert not list(config.parent.glob("*.tmp")), "no quedan temporales de la restauración"

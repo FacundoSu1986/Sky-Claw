@@ -610,3 +610,23 @@ con preset y manifiesto verificados.
   procedencia verificable del manifiesto y estados tipados hacia el agente
   (hoy `estado` no viaja en el dict de la tool).
 - **Deuda de mypy:** los 9 errores sin exención siguen igual; ninguno nuevo.
+
+### Review Codex sobre `1aab4c2f` — restauración terminal y atómica — CERRADO
+
+Dos hallazgos de integridad de datos (Codex los marcó P2; por la prioridad del
+repo, pérdida o corrupción de config cuenta como P1), ambos reproducidos en
+RED en `tests/test_bodyslide_cierre_contractual.py`:
+
+- **Restauración terminal:** el `finally` esperaba la restauración con
+  `asyncio.to_thread`; cancelar soltaba al caller y la tool liberaba el lock con
+  el hilo todavía escribiendo, de modo que la restauración tardía podía pisar la
+  config del dueño siguiente. Ahora usa `_dir_rollback.mutar_hasta_terminal` (el
+  mismo mecanismo del P1 de #993): el caller queda retenido hasta que el hilo
+  termina y recién ahí se propaga la cancelación.
+- **Restauración atómica:** `Path.write_bytes` truncaba `Config.xml` antes de
+  escribir; un fallo a mitad (disco lleno) dejaba XML cortado sin copia. Ahora
+  la restauración escribe un temporal en el mismo directorio y hace
+  `os.replace` (en un symlink, sobre el archivo real al que apunta), con el
+  mismo patrón que la siembra.
+
+Mutación: volver a `to_thread` o a `write_bytes` directo rompe su test.
