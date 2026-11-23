@@ -14,11 +14,16 @@ caché, y cualquier línea no blanca lo preserva.
 **El contrato, enunciado una sola vez.** El arranque tiene exactamente tres
 modos y cada uno tiene precondiciones verificables:
 
-- ``new``: no hay caché ni progreso previo. Escribe el flag vacío. Si hay
-  caché o un flag con progreso, **se niega**: no es una operación de ``new``.
+- ``new``: no hay caché ni progreso previo. Escribe el flag vacío —el mismo
+  disparador de borrado que ``rebuild``—, así que exige el reconocimiento de
+  cobertura USVFS igual que ``rebuild``. Si hay caché o un flag con progreso,
+  **se niega**: no es una operación de ``new``.
 - ``resume``: hay progreso demostrable —el flag con contenido, o la evidencia
-  archivada por un run anterior cuya huella coincide con el caché actual—.
-  **Nunca trunca** el flag: ése es el disparador del borrado en NGIO.
+  archivada por un run anterior—. **Nunca trunca** el flag: ése es el
+  disparador del borrado en NGIO. La evidencia archivada sólo se restaura si
+  coinciden **la huella ``(nombre, tamaño)`` y la huella de CONTENIDO** del
+  caché actual: un ``.cgid`` que cambió de bytes conservando el tamaño
+  pertenece a otro caché y su progreso no se restaura.
 - ``rebuild``: destruye por diseño. Exige aprobación explícita (``REBUILD``),
   un respaldo **verificado por contenido contra el caché actual** y el
   reconocimiento de que la cobertura USVFS no está demostrada (§ cobertura).
@@ -44,18 +49,29 @@ habilitado. Consecuencias que no se pueden cerrar sin un rig Windows:
    físicamente el archivo del mod o deja un tombstone en ``overwrite``
    (``NO VERIFICADO``).
 
-Por eso ``rebuild`` está en **HOLD por defecto**: sin
-``ack_usvfs_no_verificado=True`` no arranca, y el respaldo se declara "lo que
-se pudo ver", nunca "protección completa". El reconocimiento es explícito,
+Por eso **todo arranque que escriba el flag vacío** (``new`` y ``rebuild``)
+está en **HOLD por defecto**: sin ``ack_usvfs_no_verificado=True`` no arranca,
+y el respaldo se declara "lo que se pudo ver", nunca "protección completa".
+Que el inventario local esté vacío prueba que no se pierde nada *de
+``overwrite/Grass``*; no dice nada del overlay. ``resume`` con progreso real no
+escribe vacío y no necesita el reconocimiento. El reconocimiento es explícito,
 trazado y visible en el prompt HITL — el mismo patrón que
 ``force_stage_guard``. Cerrar el HOLD exige evidencia de rig sobre qué hace
 USVFS al borrar, y es trabajo de P2 (USVFS), no de este módulo.
 
-**Evidencia de progreso.** Neutralizar el flag al salir es obligatorio (un flag
-residual haría que el juego del usuario arranque en modo precache), pero no
-puede costar la reanudación: antes de borrarlo se archiva su contenido **byte a
-byte** (base64 + sha256, sin decodificar como texto), atado a la huella del
-caché en ese momento. ``resume`` lo restaura sólo si la huella coincide.
+**Evidencia de progreso y limpieza verificable.** Neutralizar el flag al salir
+es obligatorio (un flag residual haría que el juego del usuario arranque en
+modo precache), pero no puede costar la reanudación: antes de borrarlo se
+archiva su contenido **byte a byte** (base64 + sha256, sin decodificar como
+texto), atado a la huella ``(nombre, tamaño)`` **y** a la huella de contenido
+del caché en ese momento. ``resume`` lo restaura sólo si las dos coinciden.
+
+La limpieza es explícita en tres sentidos: un ``unlink`` que falla deja
+``flag_residual``; un archivado que falla al borrar deja ``progreso_perdido``
+(la evidencia se perdió aunque el flag ya no esté); y una inspección o
+clasificación incierta del flag **no autoriza borrarlo** (fail-closed: "no sé
+qué es" no es "es un archivo normal"). Ninguno de los dos estados se reporta
+como éxito.
 """
 
 from __future__ import annotations
@@ -67,6 +83,7 @@ import json
 import logging
 import os
 import pathlib
+import secrets
 import stat
 import time
 from dataclasses import dataclass
@@ -678,14 +695,37 @@ def _ruta_progreso(raiz_estado: pathlib.Path, huella: str) -> pathlib.Path:
     return _dir_progreso(raiz_estado) / f"{huella}.json"
 
 
-def archivar_progreso(raiz_estado: pathlib.Path, inventario: InventarioCache, contenido: bytes) -> pathlib.Path:
-    """Guarda los BYTES del flag atados a la huella del caché de ESE momento.
+def archivar_progreso(
+    raiz_estado: pathlib.Path,
+    inventario: InventarioCache,
+    contenido: bytes,
+    *,
+    grass_dir: pathlib.Path,
+) -> pathlib.Path:
+    """Guarda los BYTES del flag atados al CONTENIDO del caché de ESE momento.
 
     ``base64`` + ``sha256``: el contenido no se interpreta como texto, así que
     restaurarlo devuelve los mismos bytes aunque el flag tenga una codificación
-    inesperada. Un fallo acá no puede impedir la limpieza del flag (el llamador
-    lo trata como best-effort).
+    inesperada.
+
+    Además se guarda ``huella_contenido`` (sha256 de nombre+tamaño+sha256 de
+    cada artefacto). La huella barata ``(nombre, tamaño)`` NO distingue un
+    ``.cgid`` que cambió de bytes conservando el tamaño, y reanudar con el
+    progreso de otro contenido haría que NGIO saltara celdas que nunca se
+    escribieron. Por eso ``grass_dir`` es obligatorio: sin saber a qué caché
+    pertenece, la evidencia no es verificable y no se archiva.
     """
+    digests = _digests_del_cache(grass_dir)
+    if (
+        len(digests) != inventario.archivos_cache
+        or sum(tamano for tamano, _ in digests.values()) != inventario.bytes_cache
+    ):
+        raise GrassCacheSafetyError(
+            "progreso_no_coincide_con_el_cache",
+            f"El progreso es de un inventario ({inventario.archivos_cache} archivos/"
+            f"{inventario.bytes_cache} bytes) que ya no coincide con {grass_dir} "
+            f"({len(digests)} archivos): no se archiva evidencia que no corresponde.",
+        )
     destino = _ruta_progreso(raiz_estado, inventario.huella)
     destino.parent.mkdir(parents=True, exist_ok=True)
     tmp = destino.with_suffix(".json.tmp")
@@ -693,6 +733,7 @@ def archivar_progreso(raiz_estado: pathlib.Path, inventario: InventarioCache, co
         "version": _VERSION_MANIFIESTO,
         "huella": inventario.huella,
         "inventario": inventario.a_dict(),
+        "huella_contenido": _huella_de_contenido(digests),
         "contenido_b64": base64.b64encode(contenido).decode("ascii"),
         "contenido_sha256": hashlib.sha256(contenido).hexdigest(),
         "contenido_bytes": len(contenido),
@@ -704,13 +745,25 @@ def archivar_progreso(raiz_estado: pathlib.Path, inventario: InventarioCache, co
     return destino
 
 
-def recuperar_progreso(raiz_estado: pathlib.Path | None, inventario: InventarioCache) -> bytes | None:
+def recuperar_progreso(
+    raiz_estado: pathlib.Path | None,
+    inventario: InventarioCache,
+    *,
+    grass_dir: pathlib.Path,
+) -> bytes | None:
     """Progreso archivado para ESTE caché, o ``None``.
 
-    La huella tiene que coincidir (reanudar con el progreso de otro conjunto de
-    archivos haría que NGIO saltee celdas que nunca se escribieron) y el
-    contenido tiene que sobrevivir el round-trip: se valida contra el sha256
-    archivado, así un archivo de archivo corrupto no se restaura a medias.
+    Se exigen dos identidades, no una:
+
+    1. la huella ``(nombre, tamaño)`` del inventario (barata);
+    2. la huella de CONTENIDO del caché actual — un ``.cgid`` que cambió de
+       bytes conservando el tamaño invalida la evidencia aunque (1) coincida.
+       En ese caso se levanta ``progreso_de_otro_cache`` en vez de restaurar:
+       reanudar con el progreso de otro contenido haría que NGIO saltee celdas
+       que nunca se escribieron.
+
+    El round-trip del contenido también se valida (sha256 archivado), así un
+    archivo de evidencia corrupto no se restaura a medias.
     """
     if raiz_estado is None:
         return None
@@ -729,6 +782,20 @@ def recuperar_progreso(raiz_estado: pathlib.Path | None, inventario: InventarioC
     if hashlib.sha256(contenido).hexdigest() != sha_esperado:
         logger.warning("La evidencia de progreso %s no sobrevivió el round-trip; no se restaura.", ruta)
         return None
+    archivada = carga.get("huella_contenido")
+    if not isinstance(archivada, str):
+        # Evidencia sin huella de contenido (formato viejo): no se puede probar
+        # a qué caché pertenece, así que no habilita una reanudación.
+        logger.warning("La evidencia de progreso %s no declara el contenido del caché; no se restaura.", ruta)
+        return None
+    actual = _huella_de_contenido(_digests_del_cache(grass_dir))
+    if actual != archivada:
+        raise GrassCacheSafetyError(
+            "progreso_de_otro_cache",
+            f"La evidencia de progreso {ruta} pertenece a otro contenido del caché "
+            "(mismos nombres y tamaños, otros bytes): reanudar con ella haría que NGIO "
+            "saltee celdas que nunca se escribieron. Se niega la reanudación.",
+        )
     return contenido if any(linea.strip() for linea in contenido.splitlines()) else None
 
 
@@ -739,15 +806,29 @@ def recuperar_progreso(raiz_estado: pathlib.Path | None, inventario: InventarioC
 
 @dataclass(frozen=True, slots=True)
 class NeutralizacionFlag:
-    """Resultado de archivar + borrar el flag. Nunca se pierde un fallo."""
+    """Resultado de archivar + borrar el flag. Nunca se pierde un fallo.
+
+    ``borrado`` y ``progreso_perdido`` son ortogonales y los dos importan:
+
+    - ``borrado=False`` ⇒ el flag SIGUE en disco y el juego del usuario puede
+      arrancar en modo precache (``flag_residual`` en el resultado del run).
+    - ``progreso_perdido=True`` ⇒ el flag se borró, pero su contenido no se pudo
+      archivar: la única evidencia que permitía reanudar SIN destruir el caché
+      se perdió. Borrar era obligatorio; declararlo "limpio" no lo es.
+
+    ``limpio`` exige las dos cosas: que no quede flag y que no se haya perdido
+    evidencia. Un ``unlink`` que funciona con un archivado que falla **no** es
+    limpieza exitosa.
+    """
 
     borrado: bool
     archivado: bool
     errores: tuple[str, ...] = ()
+    progreso_perdido: bool = False
 
     @property
     def limpio(self) -> bool:
-        return self.borrado
+        return self.borrado and not self.progreso_perdido
 
 
 def neutralizar_flag(
@@ -761,8 +842,17 @@ def neutralizar_flag(
     El borrado es obligatorio: un flag residual haría que el juego del usuario
     arranque en modo precache. Por eso el resultado es explícito —un
     ``unlink`` que falla NO es limpieza exitosa— y el llamador lo publica en el
-    resultado del run. El archivado preserva lo único que permitiría reanudar
-    sin destruir el caché, así que se intenta siempre antes.
+    resultado del run.
+
+    **Fail-closed en la inspección.** Si no se puede leer o clasificar el flag
+    (permiso, bloqueo de AV/indexer, enlace), no se borra nada: "no sé qué es"
+    no autoriza un ``unlink``. El caso queda en ``errores`` y el flag residual
+    se reporta.
+
+    **La pérdida de progreso se declara.** Si hay progreso y no se pudo
+    archivar, el flag igual se borra (la seguridad del juego manda), pero
+    ``progreso_perdido=True`` saca el resultado de "limpieza exitosa": lo único
+    que permitía reanudar sin destruir el caché ya no existe.
     """
     errores: list[str] = []
     archivado = False
@@ -770,25 +860,48 @@ def neutralizar_flag(
     try:
         presente = path_present(flag_path)
     except OSError as exc:
-        presente = False
-        errores.append(f"No se pudo inspeccionar {flag_path}: {exc}")
+        # Sin poder verlo no se sabe qué hay ahí: no se borra.
+        return NeutralizacionFlag(
+            borrado=False,
+            archivado=False,
+            errores=(f"No se pudo inspeccionar {flag_path}: {exc}",),
+        )
 
-    if presente and raiz_estado is not None:
+    progreso: bytes | None = None
+    if presente:
         try:
-            inventario = inventariar_cache(grass_dir=grass_dir, flag_path=flag_path)
-            if inventario.flag_progreso is not None:
-                archivar_progreso(raiz_estado, inventario, inventario.flag_progreso)
+            _, progreso = _leer_flag(flag_path)
+        except GrassCacheSafetyError as exc:
+            # Enlace, directorio o ilegible: no es el flag de NGIO (o no se
+            # puede afirmar que lo sea) ⇒ no se borra.
+            return NeutralizacionFlag(
+                borrado=False,
+                archivado=False,
+                errores=(f"No se pudo clasificar {flag_path}: {exc}",),
+            )
+
+    if presente and progreso is not None:
+        if raiz_estado is None:
+            errores.append(
+                f"No hay raíz de estado donde archivar el progreso de {flag_path}: "
+                "reanudar este caché ya no será posible"
+            )
+        else:
+            try:
+                inventario = inventariar_cache(grass_dir=grass_dir, flag_path=flag_path)
+                archivar_progreso(raiz_estado, inventario, progreso, grass_dir=grass_dir)
                 archivado = True
-        except (GrassCacheSafetyError, OSError) as exc:
-            errores.append(f"No se pudo archivar el progreso: {exc}")
+            except (GrassCacheSafetyError, OSError) as exc:
+                errores.append(f"No se pudo archivar el progreso: {exc}")
 
     try:
         # Un enlace no es el flag de NGIO: se informa y no se borra (podría ser
-        # un archivo del usuario apuntado desde otro lado).
+        # un archivo del usuario apuntado desde otro lado). Y si la
+        # clasificación falla, tampoco: sin saber qué es, no se toca.
         tipo = link_kind_or_raise(flag_path) if presente else None
     except OSError as exc:
-        tipo = None
-        errores.append(f"No se pudo clasificar el flag antes de borrarlo: {exc}")
+        errores.append(f"No se pudo clasificar {flag_path} antes de borrarlo: {exc}")
+        return NeutralizacionFlag(borrado=False, archivado=archivado, errores=tuple(errores))
 
     if tipo is not None:
         errores.append(f"{flag_path} es un enlace ({tipo}); no se borra")
@@ -805,7 +918,16 @@ def neutralizar_flag(
         borrado = False
     if not borrado and not any("No se pudo eliminar" in e for e in errores):
         errores.append(f"{flag_path} sigue presente después del borrado")
-    return NeutralizacionFlag(borrado=borrado, archivado=archivado, errores=tuple(errores))
+
+    progreso_perdido = bool(borrado and progreso is not None and not archivado)
+    if progreso_perdido:
+        errores.append("Se borró el flag sin archivar su progreso: la evidencia de reanudación de este caché se perdió")
+    return NeutralizacionFlag(
+        borrado=borrado,
+        archivado=archivado,
+        errores=tuple(errores),
+        progreso_perdido=progreso_perdido,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -833,6 +955,29 @@ class PlanArranque:
         }
 
 
+def _exigir_cobertura_usvfs(ack_usvfs_no_verificado: bool) -> None:
+    """HOLD de cobertura: escribir el flag VACÍO es lo que dispara el ``remove()``.
+
+    Aplica a TODO modo que escriba vacío —``new`` y ``rebuild``—, no sólo al
+    destructivo: desde ``new`` NGIO borra igual ``*.cgid``/``*.dgid``/``*.fail``
+    de ``Data/Grass``, y a través de la USVFS ese ``Data/Grass`` incluye el
+    ``Grass/`` de los mods habilitados, que este inventario NO ve. El inventario
+    local vacío prueba que no se pierde nada *de ``overwrite/Grass``*; no prueba
+    nada sobre el overlay. Mientras eso no esté demostrado en un rig, el
+    contrato no puede presentar ``new`` como inofensivo.
+    """
+    if ack_usvfs_no_verificado:
+        return
+    raise GrassCacheSafetyError(
+        "usvfs_no_demostrado",
+        "HOLD: la cobertura USVFS no está demostrada. Escribir "
+        f"{PRECACHE_FLAG} vacío hace que NGIO borre .cgid/.dgid/.fail de Data/Grass, que a través "
+        "de la USVFS superpone el Grass/ de TODOS los mods habilitados: un .cgid que viva en un "
+        "mod NO está inventariado ni respaldado, ni en NEW ni en REBUILD. Para correr igual, "
+        "pasá ack_usvfs_no_verificado=True (queda visible en el prompt HITL y en el journal).",
+    )
+
+
 def _exigir_aprobacion_y_cobertura(*, aprobacion: str | None, ack_usvfs_no_verificado: bool) -> None:
     """Precondiciones del modo destructivo: aprobación literal + reconocimiento VFS.
 
@@ -847,15 +992,7 @@ def _exigir_aprobacion_y_cobertura(*, aprobacion: str | None, ack_usvfs_no_verif
             f"El modo REBUILD regenera el caché desde cero y NGIO borra el anterior: exige "
             f"aprobación explícita ('{APROBACION_REBUILD}').",
         )
-    if not ack_usvfs_no_verificado:
-        # HOLD explícito: el respaldo cubre overwrite/Grass, no el overlay USVFS.
-        raise GrassCacheSafetyError(
-            "rebuild_usvfs_no_demostrado",
-            "HOLD: la cobertura USVFS no está demostrada. El respaldo inventaría sólo "
-            "<mo2>/overwrite/Grass, pero NGIO borra Data/Grass a través de la USVFS, que superpone el "
-            "Grass/ de los mods habilitados: un .cgid que viva en un mod NO está respaldado. "
-            "Para regenerar de todos modos, pasá ack_usvfs_no_verificado=True (queda visible en HITL).",
-        )
+    _exigir_cobertura_usvfs(ack_usvfs_no_verificado)
 
 
 def planificar_arranque(
@@ -888,6 +1025,9 @@ def planificar_arranque(
                 f"{PRECACHE_FLAG} tiene progreso y el modo es NEW: escribir el flag vacío lo destruiría. "
                 "Usá mode='resume' para continuar desde ese progreso.",
             )
+        # NEW escribe el flag vacío: el mismo disparador de borrado de NGIO que
+        # REBUILD. Sin cobertura USVFS demostrada, HOLD (ver _exigir_cobertura_usvfs).
+        _exigir_cobertura_usvfs(ack_usvfs_no_verificado)
         return PlanArranque(modo="new", accion="escribir_vacio", contenido=b"", inventario=inventario)
 
     if modo == "resume":
@@ -958,11 +1098,20 @@ def preparar_arranque(
             inventario=inventario,
         )
     if modo == "rebuild" and inventario.flag_progreso is not None and raiz_estado is not None:
-        # El flag con progreso se pisa en un REBUILD: su contenido queda como
-        # evidencia antes de perderlo (best-effort, no bloquea).
-        with contextlib.suppress(OSError):
-            archivar_progreso(raiz_estado, inventario, inventario.flag_progreso)
-    progreso = recuperar_progreso(raiz_estado, inventario) if modo == "resume" else None
+        # El flag con progreso se pisa en un REBUILD. Antes era best-effort
+        # (``suppress(OSError)``): si el archivado fallaba, la evidencia se
+        # perdía en silencio justo cuando nada la podía recuperar. Ahora se
+        # niega el arranque: sin evidencia archivada no se pisa el progreso.
+        try:
+            archivar_progreso(raiz_estado, inventario, inventario.flag_progreso, grass_dir=grass_dir)
+        except (GrassCacheSafetyError, OSError) as exc:
+            raise GrassCacheSafetyError(
+                "progreso_no_archivado",
+                f"REBUILD pisaría {PRECACHE_FLAG} y su progreso no se pudo archivar en "
+                f"{raiz_estado}: {exc}. Se niega el arranque para no perder la única evidencia "
+                "de reanudación (revisá permisos/espacio del directorio de estado).",
+            ) from exc
+    progreso = recuperar_progreso(raiz_estado, inventario, grass_dir=grass_dir) if modo == "resume" else None
     plan = planificar_arranque(
         modo=modo,
         inventario=inventario,
@@ -986,6 +1135,44 @@ def preparar_arranque(
     return plan
 
 
+def _ruta_temporal(flag_path: pathlib.Path) -> pathlib.Path:
+    """Temporal impredecible en el MISMO directorio (``os.replace`` es atómico).
+
+    Un nombre fijo (``PrecacheGrass.txt.tmp``) es una invitación: quien pueda
+    crear ese nombre —un enlace a otro archivo, por ejemplo— redirige la
+    escritura. Se extrae a función para poder fijarlo en los tests.
+    """
+    return flag_path.with_name(f".{flag_path.name}.{secrets.token_hex(8)}.tmp")
+
+
+def _escribir_temporal_exclusivo(ruta: pathlib.Path, contenido: bytes) -> None:
+    """Crea *ruta* con ``O_CREAT|O_EXCL`` y escribe BYTES. Nunca reutiliza.
+
+    ``O_EXCL`` es la garantía que importa: si algo ocupa ese nombre (archivo,
+    symlink o junction), el ``open`` falla en vez de seguir el enlace y escribir
+    fuera del directorio. ``O_NOFOLLOW`` es defensa extra donde exista (POSIX).
+    """
+    banderas = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(ruta, banderas, 0o600)
+    except FileExistsError as exc:
+        raise GrassCacheSafetyError(
+            "flag_temporal_inseguro",
+            f"El temporal {ruta} ya existe: no se escribe sobre algo que no creamos nosotros.",
+        ) from exc
+    except OSError as exc:
+        raise GrassCacheSafetyError("flag_temporal_inseguro", f"No se pudo crear el temporal {ruta}: {exc}") from exc
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(contenido)
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError:
+        with contextlib.suppress(OSError):
+            ruta.unlink(missing_ok=True)
+        raise
+
+
 def aplicar_plan(plan: PlanArranque, flag_path: pathlib.Path) -> None:
     """Escribe el flag según el plan. Única función que lo muta.
 
@@ -993,23 +1180,40 @@ def aplicar_plan(plan: PlanArranque, flag_path: pathlib.Path) -> None:
     hoy, pero cualquier normalización futura (saltos de línea, BOM, recorte)
     convertiría una reanudación correcta en un borrado de caché. Se escriben
     BYTES, sin recodificar.
+
+    El temporal es **exclusivo** y de nombre impredecible, y después del
+    reemplazo se **relee el flag**: dar por escrito lo que no se pudo sustituir
+    sería declarar éxito sin flag (o con un flag manipulado).
     """
     if plan.accion == "conservar":
         return
     _rechazar_enlace(flag_path, "flag_es_enlace")
-    tmp = flag_path.with_name(f"{flag_path.name}.tmp")
+    tmp = _ruta_temporal(flag_path)
+    _escribir_temporal_exclusivo(tmp, plan.contenido)
     try:
-        tmp.write_bytes(plan.contenido)
-        with tmp.open("rb") as fh:
-            os.fsync(fh.fileno())
         os.replace(tmp, flag_path)
-    except OSError:
-        # Un temporal a medias no puede quedar junto al exe: el juego no lo lee,
-        # pero confundiría al operador que audita el directorio del juego.
+    except OSError as exc:
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
-        raise
+        raise GrassCacheSafetyError(
+            "flag_no_escrito", f"No se pudo sustituir {flag_path} con el temporal: {exc}"
+        ) from exc
+    with contextlib.suppress(OSError):
+        tmp.unlink(missing_ok=True)  # no-op si el rename se lo llevó; limpia si fue un no-op
     _fsync_directorio(flag_path.parent)
+    _rechazar_enlace(flag_path, "flag_es_enlace")
+    try:
+        escrito = flag_path.read_bytes()
+    except OSError as exc:
+        raise GrassCacheSafetyError(
+            "flag_no_verificado", f"No se pudo releer {flag_path} después de escribirlo: {exc}"
+        ) from exc
+    if escrito != plan.contenido:
+        raise GrassCacheSafetyError(
+            "flag_no_verificado",
+            f"{flag_path} no quedó con el contenido planificado ({len(escrito)} de "
+            f"{len(plan.contenido)} bytes): no se declara escrito el flag.",
+        )
 
 
 def ruta_de_respaldo(plan: PlanArranque) -> str:

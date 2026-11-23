@@ -144,7 +144,9 @@ Propiedades que quedan ancladas por tests:
    de NGIO 1.0.13 tiene un fallback a `.txt.txt`. El módulo inspecciona el nombre sin
    fallback y falla cerrado respecto de lo que no ve (ver §1).
 
-## 5. Gates ejecutados (2026-11-23, Linux, Python 3.11.2)
+## 5. Gates ejecutados de la PRIMERA versión (2026-11-23, Linux, Python 3.11.2)
+
+> Registro histórico del primer parche (`92472f9`). Los gates vigentes están en §7 y §9.
 
 | Gate | Comando | Resultado |
 |---|---|---|
@@ -180,7 +182,7 @@ precondición de certificación, con el cambio y el test que lo fija:
 | **B2** | `inventariar_cache()` rechazaba enlaces en archivos individuales pero permitía que `grass_dir` (o un ancestro) fuera un symlink/junction a un árbol externo | `_validar_raiz_fisica()` reutiliza `exigir_contencion_fisica` del repo (lstat por componente, sin seguir enlaces, clasifica junctions de Windows) anclando en la raíz del volumen. Se aplica al inventariar y al respaldar; el respaldo además exige `exigir_arbol_copiable_sin_reparse` | `test_cache_raiz_enlazada_se_rechaza`, `test_componente_intermedio_enlazado_se_rechaza` |
 | **C3** | `_leer_flag()` decodificaba con `errors="replace"`: archivar/restaurar podía cambiar los bytes originales | El contenido del flag viaja como **bytes** de punta a punta (`InventarioCache.flag_progreso`, `PlanArranque.contenido`), se archiva en base64 con sha256 y se restaura con `write_bytes`. "Tiene progreso" se decide con `splitlines()` + `strip()` sobre bytes, igual que NGIO (`trim` + descarte de blancas), sin decodificar | `test_flag_con_bytes_no_utf8_se_preserva_byte_a_byte`, `test_resume_restaura_bytes_no_utf8_sin_recodificar`, `test_progreso_archivado_corrupto_no_se_restaura` |
 | **C4** | No se declaraba fallo si `PrecacheGrass.txt` no se podía eliminar | `neutralizar_flag()` devuelve `NeutralizacionFlag(borrado, archivado, errores)` y nunca propaga; se re-verifica la ausencia después del `unlink`; un enlace no se borra. El runner expone `flag_residual` + `limpieza_errores` y el servicio los journaliza como teardown incompleto. El `finally` sólo toca un flag que el run **adoptó** | `test_neutralizacion_reporta_fallo_de_borrado`, `test_neutralizacion_no_borra_un_flag_que_es_un_enlace`, `test_flag_residual_se_reporta_y_no_se_da_por_limpio`, `test_guard_que_se_niega_no_borra_el_flag_existente`, `test_flag_residual_llega_al_resultado_y_al_teardown` |
-| **USVFS** | El inventario se limita a `overwrite/Grass`: no se demostró si NGIO puede borrar `.cgid` de otros mods activos | **HOLD explícito por defecto** para `rebuild`: sin `ack_usvfs_no_verificado=True` no arranca (`rebuild_usvfs_no_demostrado`) y **no se toca el disco** (la precondición corre antes de respaldar). El reconocimiento es visible en el prompt HITL y queda en el log. `plan.a_dict()` declara `cobertura_usvfs: no_verificada` | `test_rebuild_sin_ack_de_usvfs_queda_en_hold`, `test_rebuild_con_ack_explicito_deja_de_estar_en_hold`, `test_rebuild_sin_ack_de_usvfs_no_arranca`, `test_generate_rebuild_sin_ack_de_usvfs_queda_en_hold`, `test_describe_for_approval_avisa_que_el_respaldo_no_cubre_los_mods` |
+| **USVFS** | El inventario se limita a `overwrite/Grass`: no se demostró si NGIO puede borrar `.cgid` de otros mods activos | **HOLD explícito por defecto** para todo arranque que escriba el flag vacío —`new` y `rebuild`—: sin `ack_usvfs_no_verificado=True` no arranca (`usvfs_no_demostrado`) y **no se toca el disco** (la precondición corre antes de respaldar). El reconocimiento es visible en el prompt HITL y queda en el log. `plan.a_dict()` declara `cobertura_usvfs: no_verificada` | `test_rebuild_sin_ack_de_usvfs_queda_en_hold`, `test_rebuild_con_ack_explicito_deja_de_estar_en_hold`, `test_rebuild_sin_ack_de_usvfs_no_arranca`, `test_generate_rebuild_sin_ack_de_usvfs_queda_en_hold`, `test_describe_for_approval_avisa_que_el_respaldo_no_cubre_los_mods` |
 
 ### Determinación sobre USVFS (lo que sí y lo que no se puede afirmar)
 
@@ -199,7 +201,47 @@ precondición de certificación, con el cambio y el test que lo fija:
 
 | Gate | Resultado |
 |---|---|
-| Tests focalizados (runner + service + safety + strategy + profile + HITL + BDD) | **215 passed, 2 skipped**, exit 0 |
+| Tests focalizados (runner + service + safety + strategy + profile + HITL + BDD) | **228 passed, 2 skipped**, exit 0 |
 | `ruff check` / `ruff format --check` sobre `sky_claw/ scripts/ tests/` | limpio |
 | `mypy sky_claw/ scripts/` | mismos 694 errores preexistentes (17 archivos, ninguno del write-set); **0** en los módulos de grass |
-| Suite completa vs. baseline | ver §8 |
+| Suite completa vs. baseline | ver §9 |
+
+## 8. Segunda revisión independiente (`b11860f`) — qué se corrigió
+
+La revisión aceptó la integridad SHA-256, la validación de raíz física y el progreso
+byte-fiel, y rechazó el parche por seis defectos reproducidos. Todos se reprodujeron con
+test antes de corregirlos (rojo), y el rojo de cada uno está descrito abajo:
+
+| # | Defecto | Reproducción (rojo) | Corrección | Test |
+|---|---|---|---|---|
+| **B1** | El servicio devolvía `success=True` con `flag_residual=True` | el test exigía éxito con el flag en disco | `exito` exige limpieza completa; el resultado lleva `success=False`, `message` explicativo y `teardown_failures`; el journal cierra la TX como fallida | `test_flag_residual_llega_al_resultado_y_al_teardown`, `test_progreso_perdido_no_declara_exito` |
+| **B2** | `aplicar_plan` escribía sobre `PrecacheGrass.txt.tmp`, nombre previsible: un symlink ahí redirigía la escritura fuera del directorio | el archivo víctima quedaba truncado a 0 bytes | temporal **impredecible** (`.<flag>.<hex>.tmp`), **exclusivo** (`O_CREAT\|O_EXCL\|O_NOFOLLOW`) en el mismo directorio, limpieza del temporal y **relectura del flag** para confirmar la sustitución | `test_aplicar_plan_no_escribe_a_traves_de_un_temporal_enlazado`, `test_aplicar_plan_rechaza_un_temporal_ya_existente`, `test_aplicar_plan_verifica_que_la_sustitucion_ocurrio` |
+| **B3** | Si `link_kind_or_raise()` fallaba, se registraba el error **y se borraba igual** | el flag se borraba con la clasificación en error | fail-closed: sin clasificación no hay `unlink`; lo mismo si la lectura falla (enlace, directorio, permisos) | `test_neutralizacion_con_clasificacion_fallida_no_borra` |
+| **B4** | Si fallaba `archivar_progreso`, el flag se borraba y se declaraba `limpio=True`; y el archivado previo a `rebuild` era `suppress(OSError)` | la evidencia de reanudación se perdía en silencio | `NeutralizacionFlag.progreso_perdido` (borrar sigue siendo obligatorio; declararlo limpio no), `limpio = borrado and not progreso_perdido`, propagado a `GrassCacheRunResult.progreso_perdido` y al journal; el archivado previo a `rebuild` **niega el arranque** (`progreso_no_archivado`) | `test_si_falla_el_archivado_no_se_declara_limpio`, `test_rebuild_no_pisa_el_progreso_si_no_puede_archivarlo`, `test_progreso_perdido_llega_al_resultado` |
+| **B5** | El ack de USVFS sólo protegía `rebuild`; `new` también escribe el flag vacío, y el `remove()` de NGIO alcanza el overlay de mods que el inventario no ve | `new` corría sin reconocimiento | HOLD para **todo** arranque que escriba vacío (código único `usvfs_no_demostrado`), fail-fast antes de tocar disco en `rebuild`; el prompt HITL de `new` lo advierte | `test_new_sin_ack_de_usvfs_queda_en_hold`, `test_new_sin_ack_de_usvfs_no_arranca`, `test_generate_new_sin_ack_de_usvfs_queda_en_hold`, `test_describe_for_approval_advierte_cobertura_usvfs_en_new` |
+| **B6** | La identidad del progreso era `(nombre, tamaño)`: un `.cgid` con otro contenido y el mismo tamaño permitía reanudar con el progreso de un caché distinto | el progreso se restauraba | `archivar_progreso` guarda `huella_contenido` (sha256 de nombre+tamaño+sha256) y exige `grass_dir`; `recuperar_progreso` compara el contenido actual y levanta `progreso_de_otro_cache` | `test_no_se_restaura_progreso_de_un_cache_con_mismo_tamano_y_otro_contenido` |
+
+**Costo declarado de B6:** archivar el progreso ahora hashea el caché (una lectura completa,
+sólo cuando al salir queda un flag con progreso — es decir, en runs cortados). La reanudación
+por evidencia archivada también hashea el caché antes de restaurar. Es el precio de que la
+evidencia signifique algo; no se paga en el camino feliz (NGIO borra el flag en `End()`).
+
+**Efecto de B5 en el uso:** sin `ack_usvfs_no_verificado=True` **no se puede** correr un
+precache nuevo. Es deliberado: el contrato ya no afirma que `new` sea inofensivo mientras el
+borrado de NGIO pueda alcanzar `.cgid` de mods que Sky-Claw no inventaría.
+
+## 9. Gates de la segunda revisión (2026-11-23, Linux, Python 3.11.2)
+
+| Gate | Comando | Resultado |
+|---|---|---|
+| ROJO por defecto | los 6 defectos, test escrito antes del arreglo | **13 fallos con la causa correcta** (archivo víctima truncado, borrado tras clasificación fallida, `progreso_perdido` inexistente, `grass_dir` faltante, HOLD ausente en `new`) y **verde** después |
+| VERDE focalizado | `pytest tests/test_grass_cache_{safety,runner,service,strategy}.py` | **160 passed** |
+| VERDE focalizado ampliado | `+ tests/test_grass_profile.py tests/test_hitl_destructive_gate.py tests/bdd` | **228 passed, 2 skipped** |
+| Ruff | `ruff check` + `ruff format --check` sobre `sky_claw/ scripts/ tests/` | *All checks passed!* / *1156 files already formatted* |
+| mypy | `mypy sky_claw/ scripts/` | 694 errores preexistentes en 17 archivos (ninguno del write-set); **0** en los tres módulos de grass |
+| Suite completa | `pytest -q --tb=no --ignore=tests/test_runtime_vault_operator_verifier.py` | **20466 passed, 626 skipped, 136 failed** (13 tests nuevos verdes) |
+| Baseline | `git stash -u` + `pytest --lf` (mismo árbol, sin el parche) | **136 fallos, node IDs idénticos** (`diff` vacío ⇒ 0 regresiones) |
+
+Los 136 fallos preexistentes son de `runtime_vault*`, `frozen_runtime*`, `journal`,
+`telegram_sender` y `process_helper` (módulos Windows-only o dependientes de timing); ninguno
+pertenece a grass, HITL, BDD ni al dispatcher.

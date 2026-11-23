@@ -17,6 +17,7 @@ import pathlib
 
 import pytest
 
+import sky_claw.local.tools.grass_cache_safety as gcs_mod
 from sky_claw.local.tools.grass_cache_safety import (
     APROBACION_REBUILD,
     GrassCacheSafetyError,
@@ -147,7 +148,7 @@ def test_inventario_rechaza_enlaces_en_el_cache(
 def test_new_con_cache_vacio_escribe_flag_vacio(tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
     vacio = tmp_path / "overwrite" / "Grass"
 
-    plan = preparar_arranque(modo="new", game_path=juego, grass_dir=vacio)
+    plan = preparar_arranque(modo="new", game_path=juego, grass_dir=vacio, ack_usvfs_no_verificado=True)
 
     assert plan.accion == "escribir_vacio"
     assert plan.respaldo is None
@@ -254,7 +255,7 @@ def test_rebuild_archiva_el_progreso_antes_de_pisarlo(
     aplicar_plan(plan, ruta_del_flag(juego))
 
     assert ruta_del_flag(juego).read_text(encoding="utf-8") == ""
-    assert recuperar_progreso(estado, plan.inventario) == progreso.encode("utf-8")
+    assert recuperar_progreso(estado, plan.inventario, grass_dir=grass) == progreso.encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +380,7 @@ def test_progreso_archivado_se_restaura_si_la_huella_coincide(
     grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
 ) -> None:
     inv = _inventario(grass, juego)
-    archivar_progreso(estado, inv, b"Tamriel\n-2,4\n")
+    archivar_progreso(estado, inv, b"Tamriel\n-2,4\n", grass_dir=grass)
 
     plan = preparar_arranque(modo="resume", game_path=juego, grass_dir=grass, raiz_estado=estado)
 
@@ -394,14 +395,14 @@ def test_progreso_archivado_de_otro_cache_no_se_restaura(
     # Reanudar con el progreso de otro conjunto haría que NGIO saltee celdas
     # que nunca se escribieron: mejor negarse que producir un caché incompleto.
     inv_ajeno = _inventario(grass, juego)
-    archivar_progreso(estado, inv_ajeno, b"Tamriel\n0,0\n")
+    archivar_progreso(estado, inv_ajeno, b"Tamriel\n0,0\n", grass_dir=grass)
     (grass / "aparece_despues.cgid").write_bytes(b"nueva")
 
     with pytest.raises(GrassCacheSafetyError) as excinfo:
         preparar_arranque(modo="resume", game_path=juego, grass_dir=grass, raiz_estado=estado)
 
     assert excinfo.value.codigo == "resume_sin_progreso"
-    assert recuperar_progreso(estado, _inventario(grass, juego)) is None
+    assert recuperar_progreso(estado, _inventario(grass, juego), grass_dir=grass) is None
 
 
 def test_neutralizar_flag_archiva_y_borra(grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path) -> None:
@@ -415,16 +416,21 @@ def test_neutralizar_flag_archiva_y_borra(grass: pathlib.Path, juego: pathlib.Pa
     assert resultado.archivado is True
     assert resultado.errores == ()
     assert not ruta_del_flag(juego).exists(), "un flag residual pondría el juego en modo precache"
-    assert recuperar_progreso(estado, inv) == progreso.encode("utf-8")
+    assert recuperar_progreso(estado, inv, grass_dir=grass) == progreso.encode("utf-8")
 
 
 def test_neutralizar_sin_estado_igual_borra_el_flag(juego: pathlib.Path, grass: pathlib.Path) -> None:
+    # El borrado manda (el juego no puede quedar en modo precache), pero sin
+    # raíz de estado no hay dónde archivar: la pérdida se DECLARA.
     ruta_del_flag(juego).write_text("Tamriel\n", encoding="utf-8")
 
     resultado = neutralizar_flag(flag_path=ruta_del_flag(juego), grass_dir=grass, raiz_estado=None)
 
     assert resultado.borrado is True
     assert not ruta_del_flag(juego).exists()
+    assert resultado.progreso_perdido is True
+    assert resultado.limpio is False
+    assert any("reanudar" in error for error in resultado.errores)
 
 
 def test_planificar_es_puro_y_no_toca_disco(grass: pathlib.Path, juego: pathlib.Path) -> None:
@@ -576,8 +582,8 @@ def test_flag_con_bytes_no_utf8_se_preserva_byte_a_byte(
     assert inventario.flag_progreso == crudo
 
     # Act
-    archivar_progreso(estado, inventario, inventario.flag_progreso or b"")
-    recuperado = recuperar_progreso(estado, inventario)
+    archivar_progreso(estado, inventario, inventario.flag_progreso or b"", grass_dir=grass)
+    recuperado = recuperar_progreso(estado, inventario, grass_dir=grass)
 
     # Assert
     assert recuperado == crudo
@@ -589,7 +595,7 @@ def test_resume_restaura_bytes_no_utf8_sin_recodificar(
     grass = tmp_path / "overwrite" / "Grass"
     crudo = b"\xff\xfe\n"
     inventario = _inventario(grass, juego)
-    archivar_progreso(estado, inventario, crudo)
+    archivar_progreso(estado, inventario, crudo, grass_dir=grass)
 
     plan = preparar_arranque(modo="resume", game_path=juego, grass_dir=grass, raiz_estado=estado)
     aplicar_plan(plan, ruta_del_flag(juego))
@@ -606,12 +612,12 @@ def test_progreso_archivado_corrupto_no_se_restaura(
 
     grass = tmp_path / "overwrite" / "Grass"
     inventario = _inventario(grass, juego)
-    ruta = archivar_progreso(estado, inventario, b"Tamriel\n")
+    ruta = archivar_progreso(estado, inventario, b"Tamriel\n", grass_dir=grass)
     carga = json.loads(ruta.read_text(encoding="utf-8"))
     carga["contenido_b64"] = base64.b64encode(b"otra-cosa\n").decode("ascii")
     ruta.write_text(json.dumps(carga), encoding="utf-8")
 
-    assert recuperar_progreso(estado, inventario) is None
+    assert recuperar_progreso(estado, inventario, grass_dir=grass) is None
     with pytest.raises(GrassCacheSafetyError) as excinfo:
         preparar_arranque(modo="resume", game_path=juego, grass_dir=grass, raiz_estado=estado)
     assert excinfo.value.codigo == "resume_sin_progreso"
@@ -687,7 +693,7 @@ def test_rebuild_sin_ack_de_usvfs_queda_en_hold(
             raiz_estado=estado,
         )
 
-    assert excinfo.value.codigo == "rebuild_usvfs_no_demostrado"
+    assert excinfo.value.codigo == "usvfs_no_demostrado"
     assert "USVFS" in str(excinfo.value)
     assert not estado.exists(), "un HOLD no debe escribir nada"
     assert grass.is_dir()
@@ -707,3 +713,187 @@ def test_rebuild_con_ack_explicito_deja_de_estar_en_hold(
 
     assert plan.modo == "rebuild"
     assert plan.a_dict()["cobertura_usvfs"] == "no_verificada"
+
+
+# ---------------------------------------------------------------------------
+# SEGUNDA REVISIÓN (b11860f) — B1…B6
+# ---------------------------------------------------------------------------
+
+
+def test_new_sin_ack_de_usvfs_queda_en_hold(tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
+    # B5: NEW también escribe el flag vacío, y el borrado de NGIO alcanza el
+    # overlay de los mods —que este inventario NO ve—. Sin reconocimiento, HOLD.
+    vacio = tmp_path / "overwrite" / "Grass"
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        preparar_arranque(modo="new", game_path=juego, grass_dir=vacio)
+
+    assert excinfo.value.codigo == "usvfs_no_demostrado"
+    assert "USVFS" in str(excinfo.value)
+    assert not ruta_del_flag(juego).exists(), "un HOLD no escribe el flag"
+
+
+def test_aplicar_plan_no_escribe_a_traves_de_un_temporal_enlazado(tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
+    # B2: el temporal tenía nombre previsible; un enlace ahí redirigía la
+    # escritura fuera del directorio del juego.
+    victima = tmp_path / "victima.txt"
+    victima.write_bytes(b"contenido ajeno que no se toca")
+    trampa = ruta_del_flag(juego).with_name("PrecacheGrass.txt.tmp")
+    try:
+        trampa.symlink_to(victima)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+    plan = preparar_arranque(
+        modo="new",
+        game_path=juego,
+        grass_dir=tmp_path / "overwrite" / "Grass",
+        ack_usvfs_no_verificado=True,
+    )
+
+    aplicar_plan(plan, ruta_del_flag(juego))
+
+    assert victima.read_bytes() == b"contenido ajeno que no se toca"
+    assert ruta_del_flag(juego).read_bytes() == b""
+
+
+def test_aplicar_plan_rechaza_un_temporal_ya_existente(
+    tmp_path: pathlib.Path, juego: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # B2: crear el temporal tiene que ser EXCLUSIVO. Con el nombre fijado a
+    # mano, un archivo/enlace preexistente no puede ser abierto ni escrito.
+    victima = tmp_path / "victima.txt"
+    victima.write_bytes(b"intacto")
+    fijo = ruta_del_flag(juego).with_name(".PrecacheGrass.txt.fijo.tmp")
+    try:
+        fijo.symlink_to(victima)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+    monkeypatch.setattr(gcs_mod, "_ruta_temporal", lambda flag: fijo)
+    plan = preparar_arranque(
+        modo="new",
+        game_path=juego,
+        grass_dir=tmp_path / "overwrite" / "Grass",
+        ack_usvfs_no_verificado=True,
+    )
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        aplicar_plan(plan, ruta_del_flag(juego))
+
+    assert excinfo.value.codigo == "flag_temporal_inseguro"
+    assert victima.read_bytes() == b"intacto"
+    assert not ruta_del_flag(juego).exists()
+
+
+def test_aplicar_plan_verifica_que_la_sustitucion_ocurrio(
+    tmp_path: pathlib.Path, juego: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # B2: si el rename se pierde (o alguien repone otra cosa), el flag NO quedó
+    # escrito: hay que decirlo, no asumir éxito.
+    plan = preparar_arranque(
+        modo="new",
+        game_path=juego,
+        grass_dir=tmp_path / "overwrite" / "Grass",
+        ack_usvfs_no_verificado=True,
+    )
+    monkeypatch.setattr(gcs_mod.os, "replace", lambda src, dst: None)
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        aplicar_plan(plan, ruta_del_flag(juego))
+
+    assert excinfo.value.codigo == "flag_no_verificado"
+    assert not ruta_del_flag(juego).exists()
+
+
+def test_neutralizacion_con_clasificacion_fallida_no_borra(
+    tmp_path: pathlib.Path, juego: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # B3: "no pude clasificar" no es "es un archivo normal". Sin saber qué es,
+    # no se borra.
+    ruta_del_flag(juego).write_bytes(b"Tamriel\n-2,4\n")
+
+    def _clasificar_falla(ruta: pathlib.Path) -> str | None:
+        raise PermissionError("bloqueado por el indexador")
+
+    monkeypatch.setattr(gcs_mod, "link_kind_or_raise", _clasificar_falla)
+
+    resultado = neutralizar_flag(
+        flag_path=ruta_del_flag(juego), grass_dir=tmp_path / "overwrite" / "Grass", raiz_estado=None
+    )
+
+    assert resultado.borrado is False
+    assert resultado.limpio is False
+    assert any("clasificar" in error for error in resultado.errores)
+    assert ruta_del_flag(juego).exists()
+
+
+def test_si_falla_el_archivado_no_se_declara_limpio(
+    tmp_path: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # B4: el flag se borra igual (el juego del usuario no puede quedar en modo
+    # precache) pero la única evidencia de reanudación se perdió: eso es una
+    # limpieza INCOMPLETA, no un éxito.
+    grass = tmp_path / "overwrite" / "Grass"
+    _escribir(grass / "Tamriel.cgid", b"celda")
+    ruta_del_flag(juego).write_bytes(b"Tamriel\n-2,4\n")
+
+    def _archivar_falla(*args: object, **kwargs: object) -> pathlib.Path:
+        raise OSError("no queda espacio en el disco")
+
+    monkeypatch.setattr(gcs_mod, "archivar_progreso", _archivar_falla)
+
+    resultado = neutralizar_flag(flag_path=ruta_del_flag(juego), grass_dir=grass, raiz_estado=estado)
+
+    assert resultado.borrado is True
+    assert resultado.progreso_perdido is True
+    assert resultado.limpio is False
+    assert any("archivar" in error.lower() for error in resultado.errores)
+    assert not ruta_del_flag(juego).exists()
+
+
+def test_rebuild_no_pisa_el_progreso_si_no_puede_archivarlo(
+    grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # B4 (auditoría del suppress(OSError)): REBUILD pisa el flag con progreso.
+    # Si ese progreso no se puede archivar, se niega en vez de perderlo.
+    progreso = b"Tamriel\n-2,4\n"
+    ruta_del_flag(juego).write_bytes(progreso)
+
+    def _archivar_falla(*args: object, **kwargs: object) -> pathlib.Path:
+        raise OSError("no queda espacio en el disco")
+
+    monkeypatch.setattr(gcs_mod, "archivar_progreso", _archivar_falla)
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        preparar_arranque(
+            modo="rebuild",
+            game_path=juego,
+            grass_dir=grass,
+            aprobacion=APROBACION_REBUILD,
+            raiz_estado=estado,
+            ack_usvfs_no_verificado=True,
+        )
+
+    assert excinfo.value.codigo == "progreso_no_archivado"
+    assert ruta_del_flag(juego).read_bytes() == progreso, "el flag no se pisó"
+
+
+def test_no_se_restaura_progreso_de_un_cache_con_mismo_tamano_y_otro_contenido(
+    tmp_path: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # B6: la huella de (nombre, tamaño) no distingue contenido. Si el .cgid
+    # cambió conservando el tamaño, ese progreso es de OTRO caché: reanudar con
+    # él haría que NGIO saltara celdas que nunca se escribieron.
+    grass = tmp_path / "overwrite" / "Grass"
+    _escribir(grass / "Tamriel.cgid", b"celda-tamriel")
+    ruta_del_flag(juego).write_bytes(b"Tamriel\n-2,4\n")
+    inventario = _inventario(grass, juego)
+    archivar_progreso(estado, inventario, b"Tamriel\n-2,4\n", grass_dir=grass)
+    ruta_del_flag(juego).unlink()
+    _escribir(grass / "Tamriel.cgid", b"celda-TAMRIEL")
+    assert _inventario(grass, juego).huella == inventario.huella, "mismo nombre y tamaño"
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        preparar_arranque(modo="resume", game_path=juego, grass_dir=grass, raiz_estado=estado)
+
+    assert excinfo.value.codigo == "progreso_de_otro_cache"
+    assert not ruta_del_flag(juego).exists(), "no se restauró nada"

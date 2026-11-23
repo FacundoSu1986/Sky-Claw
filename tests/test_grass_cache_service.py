@@ -153,7 +153,13 @@ def _servicio(
     return service, colaboradores
 
 
-_PAYLOAD = {"worldspaces": ["Tamriel", "DLC2SolstheimWorld"], "conflicting_mods": ["ENB Helper"]}
+_PAYLOAD = {
+    "worldspaces": ["Tamriel", "DLC2SolstheimWorld"],
+    "conflicting_mods": ["ENB Helper"],
+    # La cobertura USVFS no está demostrada (P0): el operador lo reconoce. Los
+    # tests del HOLD lo apagan explícitamente.
+    "ack_usvfs_no_verificado": True,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -1120,7 +1126,9 @@ async def test_generate_rebuild_sin_ack_de_usvfs_queda_en_hold(tmp_path: pathlib
     grass.mkdir(parents=True)
     (grass / "previo.cgid").write_bytes(b"prec")
 
-    resultado = await service.generate({**_PAYLOAD, "mode": "rebuild", "rebuild_approval": "REBUILD"})
+    resultado = await service.generate(
+        {**_PAYLOAD, "mode": "rebuild", "rebuild_approval": "REBUILD", "ack_usvfs_no_verificado": False}
+    )
 
     _assert_error_de_contrato(resultado, "USVFS")
     colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
@@ -1135,7 +1143,35 @@ async def test_flag_residual_llega_al_resultado_y_al_teardown(tmp_path: pathlib.
 
     resultado = await service.generate(dict(_PAYLOAD))
 
-    assert resultado["success"] is True
+    # B1: un flag que quedó en disco deja al juego del usuario arrancando en
+    # modo precache; eso NO es un éxito, aunque el ritual haya terminado.
+    assert resultado["success"] is False
     assert resultado["flag_residual"] is True
     assert any("PrecacheGrass.txt residual" in fallo for fallo in resultado["teardown_failures"])
     assert any("archivo en uso" in fallo for fallo in resultado["teardown_failures"])
+
+
+async def test_generate_new_sin_ack_de_usvfs_queda_en_hold(tmp_path: pathlib.Path) -> None:
+    # B5: NEW escribe el flag vacío; con la cobertura USVFS sin demostrar el
+    # servicio tampoco clona el perfil ni lanza el runner.
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+
+    resultado = await service.generate({**_PAYLOAD, "ack_usvfs_no_verificado": False})
+
+    _assert_error_de_contrato(resultado, "USVFS")
+    colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
+    colaboradores["runner"].run.assert_not_awaited()
+
+
+async def test_progreso_perdido_no_declara_exito(tmp_path: pathlib.Path) -> None:
+    # B4/B1: perder la evidencia de reanudación es una limpieza incompleta.
+    runner_result = _resultado_runner(
+        progreso_perdido=True, limpieza_errores=("No se pudo archivar el progreso: disco lleno",)
+    )
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+
+    resultado = await service.generate(dict(_PAYLOAD))
+
+    assert resultado["success"] is False
+    assert resultado["progreso_perdido"] is True
+    assert any("progreso" in fallo.lower() for fallo in resultado["teardown_failures"])

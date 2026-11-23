@@ -226,6 +226,9 @@ class GrassCacheRunResult:
     backup_dir: str = ""
     #: True si el flag ``PrecacheGrass.txt`` NO se pudo eliminar al salir.
     flag_residual: bool = False
+    #: True si el flag se borró pero su progreso NO se pudo archivar: la
+    #: evidencia de reanudación de este caché se perdió.
+    progreso_perdido: bool = False
     #: Errores concretos de la limpieza (archivado/borrado del flag).
     limpieza_errores: tuple[str, ...] = ()
 
@@ -290,12 +293,25 @@ class GrassCacheRunner:
         resultado = await self._run_interno(cancel_event)
         limpieza = self._neutralizacion
         if limpieza is not None and not limpieza.limpio:
-            logger.warning(
-                "El flag %s NO se pudo eliminar: el juego puede arrancar en modo precache. Errores: %s",
-                self._flag_path,
-                "; ".join(limpieza.errores) or "desconocido",
+            if limpieza.borrado:
+                logger.warning(
+                    "El flag %s se borró, pero su progreso NO se archivó: la reanudación de este "
+                    "caché se perdió. Errores: %s",
+                    self._flag_path,
+                    "; ".join(limpieza.errores) or "desconocido",
+                )
+            else:
+                logger.warning(
+                    "El flag %s NO se pudo eliminar: el juego puede arrancar en modo precache. Errores: %s",
+                    self._flag_path,
+                    "; ".join(limpieza.errores) or "desconocido",
+                )
+            return dataclasses.replace(
+                resultado,
+                flag_residual=not limpieza.borrado,
+                progreso_perdido=limpieza.progreso_perdido,
+                limpieza_errores=limpieza.errores,
             )
-            return dataclasses.replace(resultado, flag_residual=True, limpieza_errores=limpieza.errores)
         return resultado
 
     async def _run_interno(self, cancel_event: asyncio.Event | None = None) -> GrassCacheRunResult:

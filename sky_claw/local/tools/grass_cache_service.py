@@ -496,14 +496,21 @@ class GrassCacheService:
         # Un fallo posterior al runner (p.ej. lease perdido al liberar el lock)
         # invalida el éxito: la exclusividad no estuvo garantizada, así que el
         # journal NO se commitea aunque run_result diga success (Codex #291).
-        exito = error_msg is None and run_result is not None and run_result.success
+        # Una limpieza incompleta invalida el éxito: dejar el flag en disco pone
+        # al juego del usuario en modo precache, y borrarlo sin archivar su
+        # progreso se lleva la única evidencia de reanudación. Las dos cosas
+        # viajan por la misma vía (resultado + marca en el journal).
+        limpieza_incompleta = run_result is not None and (run_result.flag_residual or run_result.progreso_perdido)
+        exito = error_msg is None and run_result is not None and run_result.success and not limpieza_incompleta
         if run_result is not None and run_result.flag_residual:
-            # Un flag residual deja al juego del usuario arrancando en modo
-            # precache: es una limpieza incompleta y viaja por la misma vía
-            # (resultado + marca en el journal), nunca en silencio.
             teardown_failures = [
                 *teardown_failures,
                 f"{_PRECACHE_FLAG} residual: " + ("; ".join(run_result.limpieza_errores) or "causa desconocida"),
+            ]
+        if run_result is not None and run_result.progreso_perdido:
+            teardown_failures = [
+                *teardown_failures,
+                "progreso no archivado: " + ("; ".join(run_result.limpieza_errores) or "causa desconocida"),
             ]
         # U-09: la constancia del cleanup a medias va ANTES del cierre, para que
         # la entrada quede dentro de la TX que se está por commitear.
@@ -518,6 +525,13 @@ class GrassCacheService:
             await self._journal_rollback_si_sigue_pendiente(journal_tx)
             raise
         resultado = self._componer_resultado(run_result, error_msg, inicio)
+        # Una sola fuente de verdad para el éxito: el de la limpieza también
+        # cuenta. Sus razones quedan en ``teardown_failures``.
+        resultado["success"] = exito
+        if limpieza_incompleta and error_msg is None:
+            resultado["message"] = "El ritual terminó, pero la limpieza del flag quedó incompleta: " + "; ".join(
+                teardown_failures
+            )
         if teardown_failures:
             # El cache en overwrite/Grass está OK, pero el clon/mod no se
             # limpiaron: el operador debe borrarlos a mano o el próximo run
@@ -747,6 +761,7 @@ class GrassCacheService:
             "mode": run_result.mode,
             "backup_dir": run_result.backup_dir,
             "flag_residual": run_result.flag_residual,
+            "progreso_perdido": run_result.progreso_perdido,
             "duration_seconds": duracion,
         }
 

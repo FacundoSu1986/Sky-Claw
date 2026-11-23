@@ -31,6 +31,7 @@ import psutil as psutil_real
 import pytest
 
 import sky_claw.local.tools.grass_cache_runner as gcr_mod
+import sky_claw.local.tools.grass_cache_safety as grass_cache_safety
 from sky_claw.app.security.path_validator import PathViolationError
 from sky_claw.local.mo2.vfs import GameLaunchTimeoutError, MO2Controller
 from sky_claw.local.tools.grass_cache_runner import (
@@ -212,6 +213,10 @@ def config(entorno: tuple[pathlib.Path, pathlib.Path]) -> GrassCacheConfig:
         poll_interval_s=0.01,
         spawn_poll_interval_s=0.01,
         heartbeat_interval_s=60.0,
+        # La cobertura USVFS no está demostrada: hasta P2, TODO run que escriba
+        # el flag vacío necesita el reconocimiento explícito. Los tests que
+        # verifican el HOLD lo apagan a propósito.
+        ack_usvfs_no_verificado=True,
     )
 
 
@@ -1176,7 +1181,7 @@ async def test_resume_restaura_el_progreso_archivado(
     inventario = inventariar_cache(
         grass_dir=config.overwrite_grass_dir, flag_path=config.game_path / "PrecacheGrass.txt"
     )
-    archivar_progreso(estado, inventario, progreso.encode("utf-8"))
+    archivar_progreso(estado, inventario, progreso.encode("utf-8"), grass_dir=config.overwrite_grass_dir)
     flag = config.game_path / "PrecacheGrass.txt"
     visto: list[str] = []
 
@@ -1243,11 +1248,48 @@ async def test_rebuild_sin_ack_de_usvfs_no_arranca(
         mode="rebuild",
         rebuild_approval="REBUILD",
         backup_root=tmp_path / "estado",
+        ack_usvfs_no_verificado=False,  # el HOLD es justamente por su ausencia
     )
 
     with pytest.raises(GrassCacheSafetyError) as excinfo:
         await _correr(_runner(cfg, mo2))
 
-    assert excinfo.value.codigo == "rebuild_usvfs_no_demostrado"
+    assert excinfo.value.codigo == "usvfs_no_demostrado"
     mo2.launch_game.assert_not_awaited()
     assert (config.overwrite_grass_dir / "previo.cgid").exists()
+
+
+async def test_new_sin_ack_de_usvfs_no_arranca(config: GrassCacheConfig, mo2: AsyncMock) -> None:
+    # B5: NEW también escribe el flag vacío. Sin reconocimiento de la cobertura
+    # USVFS no se lanza nada ni se toca el flag.
+    cfg = dataclasses.replace(config, ack_usvfs_no_verificado=False)
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        await _correr(_runner(cfg, mo2))
+
+    assert excinfo.value.codigo == "usvfs_no_demostrado"
+    mo2.launch_game.assert_not_awaited()
+    assert not (cfg.game_path / "PrecacheGrass.txt").exists()
+
+
+async def test_progreso_perdido_llega_al_resultado(
+    config: GrassCacheConfig, mo2: AsyncMock, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # B4: si el archivado del progreso falla al salir, el flag igual se borra
+    # (seguridad del juego) pero la pérdida tiene que viajar en el resultado.
+    progreso = b"Tamriel\n-2,4\n"
+    flag = config.game_path / "PrecacheGrass.txt"
+    flag.write_bytes(progreso)
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
+    cfg = dataclasses.replace(config, mode="resume", backup_root=tmp_path / "estado", max_runtime_s=0.2)
+
+    def _archivar_falla(*args: Any, **kwargs: Any) -> pathlib.Path:
+        raise OSError("no queda espacio en el disco")
+
+    monkeypatch.setattr(grass_cache_safety, "archivar_progreso", _archivar_falla)
+
+    resultado = await _correr(_runner(cfg, mo2))
+
+    assert resultado.flag_residual is False, "el flag sí se borró"
+    assert resultado.progreso_perdido is True
+    assert any("archivar" in error.lower() for error in resultado.limpieza_errores)

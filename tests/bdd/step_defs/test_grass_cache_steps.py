@@ -74,7 +74,17 @@ def dispatcher_despacha_tool(
     worldspace: str,
 ) -> None:
     assert tool_name == "generate_grass_cache"
-    _despachar(ctx, bdd_loop, {"worldspaces": [worldspace], "conflicting_mods": ["ENB Helper"]})
+    # ``ack_usvfs_no_verificado``: la cobertura USVFS sigue sin demostrar (P0).
+    # Este escenario valida el camino feliz, no el HOLD.
+    _despachar(
+        ctx,
+        bdd_loop,
+        {
+            "worldspaces": [worldspace],
+            "conflicting_mods": ["ENB Helper"],
+            "ack_usvfs_no_verificado": True,
+        },
+    )
 
 
 @when(parsers.parse('el dispatcher despacha "{tool_name}" para "{worldspace}" con force_stage_guard'))
@@ -88,7 +98,12 @@ def dispatcher_despacha_con_force(
     _despachar(
         ctx,
         bdd_loop,
-        {"worldspaces": [worldspace], "conflicting_mods": ["ENB Helper"], "force_stage_guard": True},
+        {
+            "worldspaces": [worldspace],
+            "conflicting_mods": ["ENB Helper"],
+            "force_stage_guard": True,
+            "ack_usvfs_no_verificado": True,
+        },
     )
 
 

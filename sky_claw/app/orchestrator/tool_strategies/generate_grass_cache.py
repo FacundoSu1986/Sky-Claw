@@ -44,6 +44,11 @@ class GenerateGrassCacheStrategy:
         if params.mode == "rebuild":
             # Lo que el humano tiene que saber ANTES de aprobar: esto borra.
             partes.append("REBUILD: regenera el caché desde cero (NGIO borra el anterior)")
+        if params.mode == "new":
+            # NEW también escribe el flag vacío: el mismo disparador de borrado.
+            partes.append(
+                "NEW: escribe el flag vacío — cobertura USVFS sin demostrar: puede borrar .cgid de mods habilitados"
+            )
         if params.ack_usvfs_no_verificado:
             # El respaldo cubre overwrite/Grass, no el overlay de los mods.
             partes.append(

@@ -181,3 +181,14 @@ def test_describe_for_approval_avisa_que_el_respaldo_no_cubre_los_mods() -> None
 
     assert "ack_usvfs_no_verificado=True" in texto
     assert "NO cubre" in texto and "mods habilitados" in texto
+
+
+def test_describe_for_approval_advierte_cobertura_usvfs_en_new() -> None:
+    # B5: NEW también escribe el flag vacío; el prompt no puede presentarlo
+    # como inofensivo mientras la cobertura USVFS siga sin demostrar.
+    strategy = GenerateGrassCacheStrategy(service=AsyncMock())
+
+    texto = strategy.describe_for_approval(dict(_PAYLOAD))
+
+    assert "NEW" in texto
+    assert "cobertura USVFS" in texto
