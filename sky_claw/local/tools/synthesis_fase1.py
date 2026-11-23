@@ -123,7 +123,9 @@ async def _compilar(raiz: pathlib.Path, proyecto_rel: str, ctx: _Contexto) -> _P
         timeout_s=ctx.timeout_s,
         max_output_bytes=ctx.max_output_bytes,
     )
-    internal, default = _carpetas_de_datos(raiz / PurePosixPath(proyecto_rel.replace("\\", "/")))
+    internal, default = await asyncio.to_thread(
+        _carpetas_de_datos, raiz / PurePosixPath(proyecto_rel.replace("\\", "/"))
+    )
     return _PatcherListo(exe=compilado.exe, internal_data=internal, default_data=default)
 
 
@@ -194,7 +196,9 @@ async def preparar_fase1(
     if not directorio_shims.is_absolute() or os.path.lexists(directorio_shims):
         raise Fase1Error(f"El directorio de shims debe ser absoluto y nuevo (no existe): {directorio_shims}")
     try:
-        seleccion = PatcherPipeline.seleccionar_patchers_v2(settings_path, profile_identifier, patcher_ids)
+        seleccion = await asyncio.to_thread(
+            PatcherPipeline.seleccionar_patchers_v2, settings_path, profile_identifier, patcher_ids
+        )
     except PatcherPipelineError as exc:
         raise Fase1Error(f"Perfil de Synthesis inválido: {exc}") from exc
     ctx = _Contexto(
@@ -248,7 +252,9 @@ async def preparar_fase1(
     for indice, (patcher, config) in enumerate(configs):
         destino = directorio_shims / f"{indice:02d}-{_nombre_seguro(patcher.canonical_id)}"
         try:
-            ejecutables[patcher.canonical_id] = materializar_shim(shim.exe.parent, destino, config)
+            ejecutables[patcher.canonical_id] = await asyncio.to_thread(
+                materializar_shim, shim.exe.parent, destino, config
+            )
         except ShimConfigError as exc:
             raise Fase1Error(f"Patcher {patcher.canonical_id!r}: {exc}") from exc
     logger.info("Fase 1 de Synthesis lista: %d patcher(s) con shim en %s", len(ejecutables), directorio_shims)

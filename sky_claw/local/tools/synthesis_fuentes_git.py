@@ -19,6 +19,7 @@ Contrato:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -255,6 +256,11 @@ async def _bajar_y_publicar(
     if head != sha:
         raise FuentesGitError(f"HEAD quedó en {head!r} y no en el commit pedido {sha}: se aborta.")
 
+    # Disco pesado (copia + hash del árbol + publicación) fuera del event loop del servicio (PR-3h).
+    return await asyncio.to_thread(_guardar_y_publicar, repo, publicar, final, url_git, sha)
+
+
+def _guardar_y_publicar(repo: pathlib.Path, publicar: pathlib.Path, final: pathlib.Path, url_git: str, sha: str) -> str:
     try:
         exigir_arbol_copiable_sin_reparse(repo)
         # Se publica SOLO el árbol (sin .git) y la marca; el checkout se descarta con el trabajo.
@@ -296,7 +302,7 @@ async def obtener_fuentes_git(
     clave = hashlib.sha256(f"{_ESQUEMA_CACHE}\0{identidad}\0{sha}".encode()).hexdigest()[:32]
     final = cache_raiz / clave
     if os.path.lexists(final):
-        return _verificar_entrada(final)
+        return await asyncio.to_thread(_verificar_entrada, final)
 
     if hitl is None:
         raise FuentesGitError("Bajar el patcher necesita egress (github.com) y no hay compuerta HITL: se aborta.")
@@ -322,8 +328,8 @@ async def obtener_fuentes_git(
         )
     except _YaPublicadoError:
         logger.info("Otro proceso publicó %s primero; se revalida y se usa esa entrada", final)
-        return _verificar_entrada(final)
+        return await asyncio.to_thread(_verificar_entrada, final)
     finally:
-        _limpiar_trabajo(trabajo)
+        await asyncio.to_thread(_limpiar_trabajo, trabajo)
     logger.info("Patcher %s@%s guardado en la caché %s", identidad, sha[:12], final)
     return FuentesGit(raiz=final / "arbol", arbol_sha256=arbol_sha256, cache_hit=False)

@@ -436,7 +436,11 @@ x64 instalado):
   runner (ancla enumerante `test_todas_las_run_pipeline_aceptan_el_mapa_de_la_corrida`); standalone no
   lo recibe. Cada corrida estrena `skyclaw-synthesis-shims-*` bajo el temporal del sistema (raíz
   autorizada del worker); la caché persiste. Los dos composition roots no cambian: no eligen backend
-  brokered hasta **PR-2b**, que es donde se construye el `PreparadorFase1` con rutas reales.
+  brokered hasta **PR-2b**, que es donde se construye el `PreparadorFase1` con rutas reales. Como la
+  Fase 1 corre ahora en el loop del servicio, el disco pesado de `synthesis_compilacion`,
+  `synthesis_fuentes_git` y `synthesis_fase1` (hash y copia de árboles, verificación de caché,
+  publicación, limpieza, lectura del perfil) pasa por `asyncio.to_thread`; ancla AST
+  `test_la_fase1_no_hace_disco_pesado_en_el_event_loop`.
   Limitaciones: las carpetas de shims por corrida no se borran todavía (peso: un apphost chico por
   patcher); sin rig de MO2.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el

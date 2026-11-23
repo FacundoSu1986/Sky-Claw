@@ -373,3 +373,70 @@ def test_el_runner_brokered_transporta_el_mapa_en_vez_de_perderlo(tmp_path: path
         patcher_ids=["c"], expected_plugins=["Skyrim.esm"], settings_fingerprint="a", load_order_fingerprint="b"
     )
     assert payload["cli_executables"] == {"c": str(shim)}
+
+
+# --- PR-3h: el disco pesado de la Fase 1 no corre en el event loop del servicio ---------------------
+
+import ast  # noqa: E402
+
+#: Funciones síncronas de disco pesado (hash/copia de árboles, verificación de caché, publicación,
+#: limpieza, lectura del perfil). Dentro de un ``async def`` de la Fase 1 solo se admiten como
+#: argumento de ``asyncio.to_thread``; una llamada directa traba el loop del servicio (y la GUI).
+_BLOQUEANTES_DE_FASE1 = frozenset(
+    {
+        "hash_arbol",
+        "copytree",
+        "materializar_shim",
+        "seleccionar_patchers_v2",
+        "_verificar_salida",
+        "_verificar_entrada",
+        "_limpiar_trabajo",
+        "_identidad_toolchain",
+        "_carpetas_de_datos",
+        "_sellar_y_publicar",
+        "_guardar_y_publicar",
+        "exigir_arbol_copiable_sin_reparse",
+    }
+)
+_MODULOS_DE_FASE1 = (
+    "sky_claw/local/tools/synthesis_compilacion.py",
+    "sky_claw/local/tools/synthesis_fuentes_git.py",
+    "sky_claw/local/tools/synthesis_fase1.py",
+)
+
+
+def _llamadas_bloqueantes_en_async(ruta: pathlib.Path) -> list[str]:
+    arbol = ast.parse(ruta.read_text(encoding="utf-8"))
+    hallazgos: list[str] = []
+    for funcion in ast.walk(arbol):
+        if not isinstance(funcion, ast.AsyncFunctionDef):
+            continue
+        pendientes: list[ast.AST] = list(funcion.body)
+        while pendientes:
+            nodo = pendientes.pop()
+            if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue  # un helper anidado se lanza con to_thread; su cuerpo no corre en el loop
+            if isinstance(nodo, ast.Call):
+                destino = nodo.func
+                nombre = destino.attr if isinstance(destino, ast.Attribute) else getattr(destino, "id", "")
+                if nombre in _BLOQUEANTES_DE_FASE1:
+                    hallazgos.append(f"{ruta.name}:{nodo.lineno} {funcion.name} -> {nombre}")
+            pendientes.extend(ast.iter_child_nodes(nodo))
+    return hallazgos
+
+
+def test_la_fase1_no_hace_disco_pesado_en_el_event_loop() -> None:
+    raiz = pathlib.Path(__file__).resolve().parents[1]
+    hallazgos = [h for modulo in _MODULOS_DE_FASE1 for h in _llamadas_bloqueantes_en_async(raiz / modulo)]
+    assert hallazgos == []
+
+
+def test_el_ancla_de_disco_pesado_detecta_una_llamada_directa(tmp_path: pathlib.Path) -> None:
+    falso = tmp_path / "falso.py"
+    falso.write_text(
+        "import asyncio\n"
+        "async def mala(p):\n    return hash_arbol(p)\n"
+        "async def buena(p):\n    return await asyncio.to_thread(hash_arbol, p)\n",
+        encoding="utf-8",
+    )
+    assert _llamadas_bloqueantes_en_async(falso) == ["falso.py:3 mala -> hash_arbol"]
