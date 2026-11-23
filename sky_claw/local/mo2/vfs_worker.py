@@ -69,6 +69,7 @@ from sky_claw.logging_config import (
     shutdown_logging,
     subprocess_error_extra,
 )
+from sky_claw.sin_consola import creationflags_sin_consola
 
 logger = logging.getLogger(__name__)
 
@@ -1281,6 +1282,7 @@ async def run_grandchild_probe(
         *_grandchild_command(path, expected_sha256),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        creationflags=creationflags_sin_consola(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)

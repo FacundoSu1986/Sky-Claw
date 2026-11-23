@@ -48,6 +48,7 @@ from sky_claw.local.loot.headless_settings import (
 )
 from sky_claw.local.loot.parser import LOOTOutputParser, LOOTResult
 from sky_claw.logging_config import subprocess_error_extra
+from sky_claw.sin_consola import creationflags_sin_consola
 
 if TYPE_CHECKING:
     import pathlib
@@ -366,6 +367,7 @@ class LOOTRunner:
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=creationflags_sin_consola(),
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(),

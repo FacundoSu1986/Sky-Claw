@@ -36,6 +36,7 @@ from sky_claw.local.tools_installer import (
     find_exe_in_dir,
     scan_common_paths,
 )
+from sky_claw.sin_consola import creationflags_sin_consola
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -691,12 +692,14 @@ class TestExtraccion7zConFallback:
                 check=True,
                 capture_output=True,
                 timeout=_SEVENZIP_TIMEOUT_SECONDS,
+                creationflags=creationflags_sin_consola(),
             ),
             call(
                 ["7z", "x", f"-o{dest}", "-y", str(archive)],
                 check=True,
                 capture_output=True,
                 timeout=_SEVENZIP_TIMEOUT_SECONDS,
+                creationflags=creationflags_sin_consola(),
             ),
         ]
 

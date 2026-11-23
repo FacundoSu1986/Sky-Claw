@@ -18,6 +18,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from sky_claw.app.core.models import LootExecutionParams, WSLInteropError
+from sky_claw.sin_consola import creationflags_sin_consola
 
 #: Windows ``CREATE_NO_WINDOW`` — evita popups de consola al invocar taskkill.
 _CREATE_NO_WINDOW = 0x08000000
@@ -127,6 +128,7 @@ async def _translate_wsl_to_win(wsl_path: str, timeout: float = 10.0) -> str:
         wsl_path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        creationflags=creationflags_sin_consola(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(
@@ -252,6 +254,7 @@ class ModdingToolsAgent:
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=creationflags_sin_consola(),
             )
         except FileNotFoundError:
             logger.error("LOOT executable not found: %s", loot_exe_wsl)

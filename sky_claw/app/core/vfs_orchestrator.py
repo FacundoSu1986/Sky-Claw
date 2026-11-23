@@ -14,6 +14,8 @@ import asyncio
 import logging
 from typing import Final
 
+from sky_claw.sin_consola import creationflags_sin_consola
+
 # Configuración del logger del módulo
 logger: Final[logging.Logger] = logging.getLogger(__name__)
 
@@ -190,7 +192,10 @@ class VFSOrchestrator:
         try:
             # Creación del subproceso asíncrono
             process = await asyncio.create_subprocess_exec(
-                *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=creationflags_sin_consola(),
             )
 
             logger.debug("Proceso iniciado con PID: %d", process.pid)
