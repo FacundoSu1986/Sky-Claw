@@ -469,6 +469,9 @@ def _snapshot_y_restaurar_archivos(exe: pathlib.Path):
 
     def restaurar() -> list[str]:
         restaurados: list[str] = []
+        # Review CodeRabbit #1003: un fallo en un archivo no corta la restauración
+        # de los demás; se acumula y se informa al final (la corrida sigue fallida).
+        fallos: list[str] = []
         for nombre, snap in snapshot.items():
             ruta = exe.parent / nombre
             try:
@@ -525,9 +528,11 @@ def _snapshot_y_restaurar_archivos(exe: pathlib.Path):
                 if ruta.read_bytes() != snap.blob:
                     _escribir_atomico(ruta, snap.blob)
                     restaurados.append(nombre)
-            except OSError as exc:
+            except (OSError, BodySlideExecutionError) as exc:
                 logger.error("No se pudo restaurar '%s': %s", ruta, exc)
-                raise BodySlideExecutionError(f"No se pudo restaurar '{ruta}': {exc}") from exc
+                fallos.append(f"'{ruta}': {exc}")
+        if fallos:
+            raise BodySlideExecutionError("No se pudo restaurar: " + "; ".join(fallos))
         return restaurados
 
     return snapshot, restaurar

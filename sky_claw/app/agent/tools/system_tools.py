@@ -870,7 +870,11 @@ async def run_bodyslide_batch(
 
     from sky_claw.app.db.locks import LockAcquisitionError, SnapshotTransactionLock
     from sky_claw.local.tools._dir_rollback import DirectoryRollback
-    from sky_claw.local.tools.bodyslide_headless import HeadlessContractError, exigir_identidad_de_grupo_unica
+    from sky_claw.local.tools.bodyslide_headless import (
+        HeadlessContractError,
+        exigir_identidad_de_grupo_unica,
+        validar_nombre_de_grupo,
+    )
     from sky_claw.local.tools.output_targets import bodyslide_output_target
 
     game_path = getattr(getattr(bodyslide_runner, "config", None), "game_path", None)
@@ -904,7 +908,11 @@ async def run_bodyslide_batch(
             # aplica el runner (``exigir_identidad_de_grupo_unica``) corre acá,
             # dentro del lock, antes de DirectoryRollback. El runner no se importa
             # (censo de importadores congelado en test_animation_tool_consolidation).
+            # Review CodeRabbit #1003: también las reglas Win32 del nombre (punto o
+            # espacio final, dispositivos reservados) ANTES del move-aside — sin
+            # esto ``CBBE.`` apartaría la carpeta ``CBBE``.
             try:
+                validar_nombre_de_grupo(group)
                 nombres = await asyncio.to_thread(_entradas_del_staging, target.parent)
                 exigir_identidad_de_grupo_unica(group, nombres)
             except (HeadlessContractError, OSError) as exc:

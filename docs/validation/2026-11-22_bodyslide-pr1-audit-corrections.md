@@ -630,3 +630,28 @@ RED en `tests/test_bodyslide_cierre_contractual.py`:
   mismo patrón que la siembra.
 
 Mutación: volver a `to_thread` o a `write_bytes` directo rompe su test.
+
+### Review CodeRabbit sobre `1aab4c2f` — triage
+
+Verificado contra el código y contra upstream v6.2.0 (`ConfigurationManager.cpp`:
+`LoadConfig` sólo carga la raíz `Config`, `FindCI` compara sin distinguir
+mayúsculas y gana la ÚLTIMA coincidencia, los enteros se leen con `atoi`).
+
+- **Corregido (tests RED→GREEN en `test_bodyslide_cierre_contractual.py`):**
+  - Reglas Win32 del grupo en la tool ANTES de `DirectoryRollback`
+    (`validar_nombre_de_grupo`): `CBBE.` ya no aparta la carpeta `CBBE`.
+  - Siembra: raíz distinta de `Config`, `TargetGame`/claves sembradas duplicadas
+    o con otra grafía, y `TargetGame` con dígitos no ASCII se rechazan antes de
+    mutar (BodySlide leería otro juego u otro `LogLevel`, y sin `wxLogMessage`
+    se pierde el marcador de conflicto).
+  - La restauración ya no se corta en el primer archivo que falla: intenta los
+    demás y reporta todos los fallos.
+- **Ya resueltos en `09dbcdba`:** restauración atómica, restauración que no se
+  pierde ante una segunda cancelación (la task queda bajo `shield` en
+  `mutar_hasta_terminal`) y symlink colgante al recrear (el `os.replace`
+  reemplaza el enlace, no escribe a través de él).
+- **Diferido (P2):** rechazar ANTES del spawn un staging con archivos previos
+  para callers directos del runner. El único caller de producción
+  (`run_bodyslide_batch`) lo vacía con `DirectoryRollback`, y el veredicto ya
+  marca FAILURE con preexistentes; el guard previo al spawn queda para el
+  servicio común de PR 2.

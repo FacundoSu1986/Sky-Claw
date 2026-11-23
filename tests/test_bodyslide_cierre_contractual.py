@@ -489,3 +489,107 @@ async def test_restauracion_con_escritura_parcial_no_trunca_la_config(
 
     ET.fromstring(config.read_bytes())  # XML completo: original o sembrado, nunca truncado
     assert not list(config.parent.glob("*.tmp")), "no quedan temporales de la restauración"
+
+
+# --------------------------------------------------------------------------- #
+# Review CodeRabbit #1003 — reglas de grupo antes del move-aside, Config.xml
+# leído como lo lee BodySlide y restauración que no se corta en el primer fallo
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("grupo", ["CBBE.", "CBBE ", "CON", "nul.body"])
+async def test_tool_rechaza_grupo_win32_invalido_antes_del_move_aside(
+    tmp_path: pathlib.Path, lock_manager, snapshot_manager, grupo: str
+) -> None:
+    """``CBBE.`` es ``CBBE`` en Win32: el move-aside de ``.../CBBE.`` apartaría la carpeta ``CBBE``.
+
+    Las reglas Win32 del grupo (P1-D) deben correr en la tool ANTES de
+    ``DirectoryRollback``, no sólo en el runner (que llega después del rename).
+    """
+    from sky_claw.app.agent.tools.system_tools import run_bodyslide_batch
+
+    existente = _raiz(tmp_path) / "CBBE"
+    existente.mkdir(parents=True)
+    (existente / "previo.nif").write_bytes(b"\x00")
+    runner = MagicMock()
+    runner.config = SimpleNamespace(game_path=tmp_path / "game")
+    runner.run_batch = AsyncMock()
+
+    out = json.loads(
+        await run_bodyslide_batch(runner, group=grupo, lock_manager=lock_manager, snapshot_manager=snapshot_manager)
+    )
+
+    assert out["success"] is False
+    runner.run_batch.assert_not_awaited()
+    assert sorted(p.name for p in _raiz(tmp_path).iterdir()) == ["CBBE"], "no hubo move-aside"
+    assert (existente / "previo.nif").read_bytes() == b"\x00"
+
+
+def _sembrar(tmp_path: pathlib.Path, contenido: str, **opciones):
+    from sky_claw.local.tools.bodyslide_config import sembrar_config_de_bodyslide
+
+    exe_dir = tmp_path / "BodySlide"
+    exe_dir.mkdir(parents=True, exist_ok=True)
+    (exe_dir / "Config.xml").write_text(contenido, encoding="utf-8")
+    return sembrar_config_de_bodyslide(
+        exe_dir=exe_dir, game_path=tmp_path / "game", output_root=_raiz(tmp_path), **opciones
+    )
+
+
+@pytest.mark.parametrize(
+    ("contenido", "esperado"),
+    [
+        # Raíz distinta de Config: LoadConfig("Config") no la carga ⇒ modal de setup.
+        ("<Other><TargetGame>4</TargetGame></Other>", "raíz"),
+        # FindCI no distingue mayúsculas y gana la ÚLTIMA coincidencia: BodySlide usaría 3.
+        ("<Config><TargetGame>4</TargetGame><targetgame>3</targetgame></Config>", "TargetGame"),
+        # Una sola clave con otra grafía: BodySlide la lee; la validación no la vería.
+        ("<Config><targetgame>4</targetgame></Config>", "TargetGame"),
+        # LogLevel efectivo sería 2 (sin wxLogMessage ⇒ sin el marcador de conflicto).
+        ("<Config><TargetGame>4</TargetGame><LogLevel>3</LogLevel><LogLevel>2</LogLevel></Config>", "LogLevel"),
+        ("<Config><TargetGame>4</TargetGame><loglevel>2</loglevel></Config>", "LogLevel"),
+        # atoi("４") == 0: Python lo leería como 4.
+        ("<Config><TargetGame>４</TargetGame></Config>", "TargetGame"),
+    ],
+)
+def test_siembra_rechaza_config_que_bodyslide_leeria_distinto(
+    tmp_path: pathlib.Path, contenido: str, esperado: str
+) -> None:
+    from sky_claw.local.tools.bodyslide_config import BodySlideConfigPreconditionError
+
+    with pytest.raises(BodySlideConfigPreconditionError, match=esperado):
+        _sembrar(tmp_path, contenido, expected_target_game=4)
+    assert (tmp_path / "BodySlide" / "Config.xml").read_text(encoding="utf-8") == contenido, "no se mutó nada"
+
+
+def test_siembra_acepta_config_ordinaria(tmp_path: pathlib.Path) -> None:
+    assert _sembrar(
+        tmp_path, "<Config><TargetGame>4</TargetGame><LogLevel>1</LogLevel></Config>", expected_target_game=4
+    )
+
+
+def test_restauracion_sigue_con_los_demas_archivos_tras_un_fallo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Si restaurar ``Config.xml`` falla, ``BodySlide.xml`` y ``BuildSelection.xml`` se restauran igual."""
+    exe = tmp_path / "BodySlide" / "BodySlide.exe"
+    exe.parent.mkdir(parents=True)
+    originales = {n: f"<{n}>original</{n}>".encode() for n in ("Config.xml", "BodySlide.xml", "BuildSelection.xml")}
+    for nombre, blob in originales.items():
+        (exe.parent / nombre).write_bytes(blob)
+    _snapshot, restaurar = mod._snapshot_y_restaurar_archivos(exe)
+    for nombre in originales:
+        (exe.parent / nombre).write_bytes(b"<mutado/>")
+
+    real = mod._escribir_atomico
+
+    def _falla_en_config(destino: pathlib.Path, blob: bytes) -> None:
+        if destino.name == "Config.xml":
+            raise PermissionError(13, "Access is denied")
+        real(destino, blob)
+
+    monkeypatch.setattr(mod, "_escribir_atomico", _falla_en_config)
+    with pytest.raises(BodySlideExecutionError, match="Config.xml"):
+        restaurar()
+    assert (exe.parent / "BodySlide.xml").read_bytes() == originales["BodySlide.xml"]
+    assert (exe.parent / "BuildSelection.xml").read_bytes() == originales["BuildSelection.xml"]

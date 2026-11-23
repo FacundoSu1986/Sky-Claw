@@ -236,6 +236,17 @@ def _validar_nombre_de_grupo(value: object) -> str:
     return v
 
 
+def validar_nombre_de_grupo(value: object) -> str:
+    """Versión pública de las reglas Win32 del grupo (P1-D) para los caminos que tocan disco ANTES del runner.
+
+    ``run_bodyslide_batch`` aparta ``BodySlide_Output/<group>`` con
+    ``DirectoryRollback`` antes de llamar al runner: si el grupo fuera ``CBBE.``,
+    Win32 descartaría el punto y el move-aside movería la carpeta ``CBBE``
+    (review CodeRabbit #1003). Misma regla, una sola implementación.
+    """
+    return _validar_nombre_de_grupo(value)
+
+
 def exigir_identidad_de_grupo_unica(group: str, existentes: Iterable[str]) -> None:
     """Rechaza un grupo que sólo difiere en mayúsculas de una carpeta existente del staging (cierre #1003).
 

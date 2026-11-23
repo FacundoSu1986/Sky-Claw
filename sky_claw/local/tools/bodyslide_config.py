@@ -147,6 +147,7 @@ def sembrar_config_de_bodyslide(
     except (DefusedElementTree.ParseError, DefusedXmlException, OSError) as exc:
         raise BodySlideConfigPreconditionError(f"Config.xml ilegible en '{config}': {exc}") from exc
 
+    _exigir_config_inequivoca(raiz, config, claves=("TargetGame", *valores))
     _validar_target_game(raiz, config, expected_target_game=expected_target_game)
 
     for clave, valor in valores.items():
@@ -178,6 +179,29 @@ def sembrar_config_de_bodyslide(
     return True
 
 
+def _exigir_config_inequivoca(raiz: ET.Element, config: pathlib.Path, *, claves: tuple[str, ...]) -> None:
+    """Exige que BodySlide lea el MISMO valor que valida y siembra Sky-Claw (review CodeRabbit #1003).
+
+    Upstream v6.2.0 (``ConfigurationManager.cpp``): ``LoadConfig`` sólo carga la
+    raíz ``Config``; ``FindCI`` compara nombres SIN distinguir mayúsculas y se
+    queda con la ÚLTIMA coincidencia. Una raíz distinta, una clave duplicada o
+    una clave con otra grafía harían que BodySlide use un ``TargetGame`` o un
+    ``LogLevel`` distinto del validado/sembrado (otro juego, o un log sin el
+    marcador de conflicto). Fail-closed: se rechaza antes de mutar.
+    """
+    if raiz.tag != "Config":
+        raise BodySlideConfigPreconditionError(
+            f"Config.xml en '{config}' tiene raíz <{raiz.tag}>: BodySlide sólo carga la raíz <Config>"
+        )
+    for clave in claves:
+        nodos = [hijo.tag for hijo in raiz if isinstance(hijo.tag, str) and hijo.tag.casefold() == clave.casefold()]
+        if len(nodos) > 1 or (nodos and nodos[0] != clave):
+            raise BodySlideConfigPreconditionError(
+                f"{clave} ambiguo en '{config}' ({', '.join(nodos)}): BodySlide no distingue mayúsculas y usa "
+                "la última coincidencia — se exige una sola clave con su grafía canónica"
+            )
+
+
 def _validar_target_game(
     raiz: ET.Element,
     config: pathlib.Path,
@@ -203,6 +227,10 @@ def _validar_target_game(
             f"TargetGame no está configurado en '{config}' — BodySlide mostraría el modal de setup; "
             "configura el juego en el Config.xml antes de un build headless"
         )
+    # BodySlide lo lee con ``atoi``: sólo dígitos ASCII significan lo mismo para
+    # los dos (``int("４") == 4``, ``atoi("４") == 0``).
+    if not texto.isascii() or not texto.isdigit():
+        raise BodySlideConfigPreconditionError(f"TargetGame no es un entero ASCII ('{texto}') en '{config}'")
     try:
         valor = int(texto)
     except ValueError:
