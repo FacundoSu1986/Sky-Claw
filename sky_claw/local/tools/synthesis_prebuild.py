@@ -41,7 +41,11 @@ __all__ = [
     "EstadoCet",
     "ModoLanzamiento",
     "Motivo",
+    "FUENTE_NUGET_APROBABLE",
+    "argumentos_dotnet_assembly_name",
     "argumentos_dotnet_build_patcher",
+    "contenido_nuget_config_aprobado",
+    "argumentos_dotnet_restore_patcher",
     "decidir_lanzamiento",
     "es_ejecutable_x64",
     "es_framework_dependent",
@@ -332,7 +336,7 @@ def decidir_lanzamiento(exe: pathlib.Path) -> DecisionLanzamiento:
 # --- Fase 1: build sin CET --------------------------------------------------------------
 
 
-def argumentos_dotnet_build_patcher(proyecto: pathlib.Path) -> list[str]:
+def argumentos_dotnet_build_patcher(proyecto: pathlib.Path, *, salida: pathlib.Path | None = None) -> list[str]:
     """Argumentos de ``dotnet`` para compilar un patcher en Fase 1 (tras el restore con HITL).
 
     ``--no-incremental`` es obligatorio: un build incremental conserva el apphost previo con CET
@@ -348,7 +352,56 @@ def argumentos_dotnet_build_patcher(proyecto: pathlib.Path) -> list[str]:
         "Release",
         "-p:UseSharedCompilation=false",
         "-p:CETCompat=false",
+        *(["-o", str(salida)] if salida is not None else []),
     ]
+
+
+#: Única fuente de paquetes que la Fase 1 deja usar al ``restore``, y la que se muestra en el pedido
+#: HITL de egress: lo aprobado y lo efectivo salen de la misma constante.
+FUENTE_NUGET_APROBABLE = "https://api.nuget.org/v3/index.json"
+
+
+def contenido_nuget_config_aprobado() -> str:
+    """``nuget.config`` de la Fase 1: borra toda fuente heredada y deja solo la aprobable."""
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        "<configuration>\n"
+        "  <packageSources>\n"
+        "    <clear />\n"
+        f'    <add key="nuget.org" value="{FUENTE_NUGET_APROBABLE}" protocolVersion="3" />\n'
+        "  </packageSources>\n"
+        "  <fallbackPackageFolders>\n"
+        "    <clear />\n"
+        "  </fallbackPackageFolders>\n"
+        "</configuration>\n"
+    )
+
+
+def argumentos_dotnet_restore_patcher(proyecto: pathlib.Path, *, configfile: pathlib.Path) -> list[str]:
+    """Argumentos de ``dotnet restore`` de la Fase 1: abre red (NuGet), solo tras la compuerta HITL.
+
+    - ``--configfile``: con él, NuGet usa SOLO ese archivo y no la jerarquía de ``NuGet.Config``
+      de la solución del usuario, que podría agregar hosts que el operador no aprobó.
+    - ``RestoreSources``/``RestoreAdditionalProjectSources`` como propiedades globales: le ganan a
+      un ``Directory.Build.props`` del proyecto que intente agregar fuentes.
+    - ``Configuration=Release``: el build corre con ``--no-restore`` en Release; restaurar en el
+      default (Debug) dejaría sin assets a un patcher con dependencias por configuración.
+    """
+    return [
+        "restore",
+        str(proyecto),
+        "--disable-build-servers",
+        "--configfile",
+        str(configfile),
+        "-p:Configuration=Release",
+        f"-p:RestoreSources={FUENTE_NUGET_APROBABLE}",
+        "-p:RestoreAdditionalProjectSources=",
+    ]
+
+
+def argumentos_dotnet_assembly_name(proyecto: pathlib.Path) -> list[str]:
+    """Evalúa ``AssemblyName`` con MSBuild (sin red): el apphost se llama ``$(AssemblyName).exe``."""
+    return ["msbuild", str(proyecto), "-getProperty:AssemblyName", "-p:Configuration=Release", "-nologo"]
 
 
 def verificar_apphost_sin_cet(exe: pathlib.Path) -> None:

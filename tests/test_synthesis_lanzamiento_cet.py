@@ -342,3 +342,46 @@ def test_verificacion_post_build_falla_si_no_hay_apphost(tmp_path: pathlib.Path)
         sp.verificar_apphost_sin_cet(tmp_path / "NoSeGenero.exe")
     assert "no existe" in str(exc.value)
     assert "no quedó sin CETCompat" not in str(exc.value)
+
+
+def test_argumentos_de_build_con_carpeta_de_salida() -> None:
+    # PR-3d: la Fase 1 compila hacia una carpeta propia de la caché; el resto no cambia.
+    proyecto = pathlib.Path("C:/cache/fuentes/MiPatcher/MiPatcher.csproj")
+    salida = pathlib.Path("C:/cache/salida")
+    assert sp.argumentos_dotnet_build_patcher(proyecto, salida=salida) == [
+        *sp.argumentos_dotnet_build_patcher(proyecto),
+        "-o",
+        str(salida),
+    ]
+
+
+def test_argumentos_de_restore_del_patcher() -> None:
+    # Igualdad literal: --configfile aísla del NuGet.Config de la solución del usuario (solo
+    # cuentan las fuentes de ESE archivo), y RestoreSources/RestoreAdditionalProjectSources como
+    # propiedades globales le ganan a un Directory.Build.props que agregue hosts. Configuration
+    # igual que el build, que corre con --no-restore.
+    proyecto = pathlib.Path("C:/cache/fuentes/MiPatcher/MiPatcher.csproj")
+    config = pathlib.Path("C:/cache/trabajo/nuget.config")
+    assert sp.argumentos_dotnet_restore_patcher(proyecto, configfile=config) == [
+        "restore",
+        str(proyecto),
+        "--disable-build-servers",
+        "--configfile",
+        str(config),
+        "-p:Configuration=Release",
+        f"-p:RestoreSources={sp.FUENTE_NUGET_APROBABLE}",
+        "-p:RestoreAdditionalProjectSources=",
+    ]
+    assert sp.FUENTE_NUGET_APROBABLE == "https://api.nuget.org/v3/index.json"
+
+
+def test_argumentos_para_leer_el_assembly_name() -> None:
+    # El apphost se llama $(AssemblyName).exe, no como el .csproj: se evalúa con MSBuild (sin red).
+    proyecto = pathlib.Path("C:/cache/fuentes/MiPatcher/MiPatcher.csproj")
+    assert sp.argumentos_dotnet_assembly_name(proyecto) == [
+        "msbuild",
+        str(proyecto),
+        "-getProperty:AssemblyName",
+        "-p:Configuration=Release",
+        "-nologo",
+    ]

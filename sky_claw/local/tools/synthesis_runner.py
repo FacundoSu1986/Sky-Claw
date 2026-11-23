@@ -148,6 +148,67 @@ _is_x86_dotnet_path = is_x86_dotnet_path
 # =============================================================================
 
 
+def construir_entorno_dotnet(
+    *,
+    dotnet_root: pathlib.Path | None,
+    temp_dir: pathlib.Path | None,
+) -> dict[str, str]:
+    """Entorno mínimo seguro + controles anti-servidor .NET 10, para TODO proceso .NET de Synthesis.
+
+    Lo usan el CLI (Fase 2) y el build de patchers (Fase 1): una sola lista blanca
+    (``_SYNTHESIS_ALLOWED_OS_ENV``, censada en ``tests/test_entorno_curado_usvfs_username.py``).
+    No hereda ``os.environ`` completo para evitar filtrar secretos (API keys,
+    tokens) hacia patchers comunitarios (ADR 0018/0019). Desactiva servidores
+    persistentes de MSBuild/Roslyn, sanea ``Program Files (x86)\\dotnet`` en
+    ``PATH`` siempre y antepone ``dotnet_root`` x64 cuando está configurado.
+    ``PROGRAMFILES`` es obligatoria para ``dotnet restore`` (NuGet; evidencia de rig PR-3b).
+    """
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key.upper() in _SYNTHESIS_ALLOWED_OS_ENV:
+            env[key] = value
+
+    # Controles .NET 10 / MSBuild / Roslyn (ADR 0019 §2.4).
+    env["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0"
+    env["MSBUILDDISABLENODEREUSE"] = "1"
+    env["UseSharedCompilation"] = "false"
+    env["DOTNET_NOLOGO"] = "1"
+    env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
+
+    if temp_dir is not None:
+        temp_str = str(temp_dir)
+        env["TEMP"] = temp_str
+        env["TMP"] = temp_str
+        env["TMPDIR"] = temp_str
+
+    # Sanear PATH x86 SIEMPRE (incluso si dotnet_root es None, ADR 0019 §2.4).
+    path_keys = [key for key in env if key.upper() == "PATH"]
+    path_key = path_keys[0] if path_keys else "PATH"
+    entries = [entry for key in path_keys for entry in env[key].split(os.pathsep) if entry]
+    for extra_key in path_keys[1:]:
+        del env[extra_key]
+    filtered = [entry for entry in entries if not _is_x86_dotnet_path(entry)]
+
+    if dotnet_root is not None:
+        dotnet_dir = str(dotnet_root)
+        env["DOTNET_ROOT"] = dotnet_dir
+        filtered = [
+            dotnet_dir,
+            *[
+                entry
+                for entry in filtered
+                if os.path.normcase(os.path.normpath(entry)) != os.path.normcase(os.path.normpath(dotnet_dir))
+            ],
+        ]
+
+    if filtered:
+        env[path_key] = os.pathsep.join(filtered)
+    elif path_key in env:
+        env[path_key] = ""
+
+    return env
+
+
 class SynthesisExecutionError(Exception):
     """Error durante la ejecución de Synthesis."""
 
@@ -953,58 +1014,9 @@ class SynthesisRunner:
         *,
         temp_dir_override: pathlib.Path | None = None,
     ) -> dict[str, str]:
-        """Construye un entorno mínimo seguro + controles anti-servidor .NET 10.
-
-        No hereda ``os.environ`` completo para evitar filtrar secretos (API keys,
-        tokens) hacia patchers comunitarios (ADR 0018/0019). Desactiva servidores
-        persistentes de MSBuild/Roslyn, sanea ``Program Files (x86)\\dotnet`` en
-        ``PATH`` siempre y antepone ``dotnet_root`` x64 cuando está configurado.
-        """
-        env: dict[str, str] = {}
-        for key, value in os.environ.items():
-            if key.upper() in _SYNTHESIS_ALLOWED_OS_ENV:
-                env[key] = value
-
-        # Controles .NET 10 / MSBuild / Roslyn (ADR 0019 §2.4).
-        env["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0"
-        env["MSBUILDDISABLENODEREUSE"] = "1"
-        env["UseSharedCompilation"] = "false"
-        env["DOTNET_NOLOGO"] = "1"
-        env["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1"
-
+        """Entorno del CLI: delega en :func:`construir_entorno_dotnet` (única lista blanca)."""
         effective_temp = temp_dir_override if temp_dir_override is not None else self._config.temp_dir
-        if effective_temp is not None:
-            temp_str = str(effective_temp)
-            env["TEMP"] = temp_str
-            env["TMP"] = temp_str
-            env["TMPDIR"] = temp_str
-
-        # Sanear PATH x86 SIEMPRE (incluso si dotnet_root es None, ADR 0019 §2.4).
-        path_keys = [key for key in env if key.upper() == "PATH"]
-        path_key = path_keys[0] if path_keys else "PATH"
-        entries = [entry for key in path_keys for entry in env[key].split(os.pathsep) if entry]
-        for extra_key in path_keys[1:]:
-            del env[extra_key]
-        filtered = [entry for entry in entries if not _is_x86_dotnet_path(entry)]
-
-        if self._config.dotnet_root is not None:
-            dotnet_dir = str(self._config.dotnet_root)
-            env["DOTNET_ROOT"] = dotnet_dir
-            filtered = [
-                dotnet_dir,
-                *[
-                    entry
-                    for entry in filtered
-                    if os.path.normcase(os.path.normpath(entry)) != os.path.normcase(os.path.normpath(dotnet_dir))
-                ],
-            ]
-
-        if filtered:
-            env[path_key] = os.pathsep.join(filtered)
-        elif path_key in env:
-            env[path_key] = ""
-
-        return env
+        return construir_entorno_dotnet(dotnet_root=self._config.dotnet_root, temp_dir=effective_temp)
 
     async def _execute_process(
         self,
