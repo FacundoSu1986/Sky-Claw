@@ -159,6 +159,10 @@ async def test_el_entorno_aisla_la_configuracion_del_usuario(
         assert "SKYCLAW_TOKEN_SECRETO" not in {k.upper() for k in env}
         assert env["GIT_CONFIG_NOSYSTEM"] == "1"
         assert llamada["config_global_leido"] == ""  # un ~/.gitconfig vacío: sin insteadOf del usuario
+        # Sin el HOME del usuario: un .netrc/_netrc con github.com autenticaría el fetch.
+        assert pathlib.Path(env["HOME"]).parent.name.startswith(".trabajo-")
+        assert env["USERPROFILE"] == env["HOME"]
+        assert not {"HOMEDRIVE", "HOMEPATH"} & {k.upper() for k in env}
         assert env["GIT_TERMINAL_PROMPT"] == "0"
         assert env["GCM_INTERACTIVE"] == "never"
 
@@ -279,3 +283,32 @@ async def test_git_inexistente_falla(tmp_path: pathlib.Path, monkeypatch: pytest
             timeout_s=60,
             max_output_bytes=1_000_000,
         )
+
+
+async def test_cache_raiz_relativa_falla_sin_red(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # git corre con cwd=trabajo: una ruta relativa apuntaría a otra carpeta.
+    hitl, git = _Hitl(Decision.APPROVED), _Git()
+    monkeypatch.setattr(sg, "run_capture", git)
+    with pytest.raises(sg.FuentesGitError, match="absoluta"):
+        await sg.obtener_fuentes_git(
+            _URL,
+            _SHA,
+            cache_raiz=pathlib.Path("cache_relativa"),
+            git=_git_exe(tmp_path),
+            hitl=hitl,  # type: ignore[arg-type]
+            timeout_s=60,
+            max_output_bytes=1_000_000,
+        )
+    assert hitl.pedidos == [] and git.llamadas == []
+
+
+async def test_publica_solo_el_arbol_y_la_marca(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fuentes = await _obtener(tmp_path, _Hitl(Decision.APPROVED), _Git(), monkeypatch)
+    assert sorted(p.name for p in fuentes.raiz.parent.iterdir()) == ["arbol", "marca.json"]
+    assert not list((tmp_path / "cache").glob(".trabajo-*"))  # el checkout con .git no queda
+
+
+async def test_un_fallo_no_deja_carpetas_de_trabajo(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(sg.FuentesGitError):
+        await _obtener(tmp_path, _Hitl(Decision.APPROVED), _Git(rc_fetch=128), monkeypatch)
+    assert not list((tmp_path / "cache").glob(".trabajo-*"))

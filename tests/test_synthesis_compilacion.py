@@ -114,7 +114,7 @@ async def test_cache_miss_pide_hitl_y_compila_en_orden(tmp_path: pathlib.Path, m
     assert proyecto.relative_to(trabajo).as_posix() == "fuentes/MiPatcher/MiPatcher.csproj"
     assert [ll["args"][1:] for ll in dotnet.llamadas] == [
         argumentos_dotnet_restore_patcher(proyecto, configfile=trabajo / "nuget.config"),
-        argumentos_dotnet_build_patcher(proyecto, salida=trabajo / "salida"),
+        argumentos_dotnet_build_patcher(proyecto, salida=trabajo / "publicar" / "salida"),
         argumentos_dotnet_assembly_name(proyecto),
     ]
     assert not trabajo.exists()  # publicado
@@ -131,8 +131,9 @@ async def test_compila_sobre_una_copia_y_no_toca_las_fuentes_del_usuario(
     antes = sorted(p.relative_to(raiz).as_posix() for p in raiz.rglob("*"))
     resultado = await _compilar(tmp_path, _Hitl(Decision.APPROVED), _Dotnet(), monkeypatch)
     assert sorted(p.relative_to(raiz).as_posix() for p in raiz.rglob("*")) == antes
-    # La copia incluye los proyectos hermanos (ProjectReference ../Comun).
-    assert (resultado.exe.parents[1] / "fuentes" / "Comun" / "Comun.cs").is_file()
+    # La copia (que se compila y después se descarta) incluía los proyectos hermanos: la clave de
+    # caché exige que su hash coincida con el de la solución entera, ../Comun incluido.
+    assert resultado.exe.is_file()
 
 
 async def test_el_entorno_es_la_lista_blanca_unica(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -407,3 +408,37 @@ async def test_publicacion_concurrente_devuelve_la_entrada_ganadora(
     )
     assert resultado_a.exe == resultado_b[0].exe
     assert resultado_a.cache_hit is True
+
+
+async def test_cache_raiz_relativa_falla_sin_red(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Hermano del hallazgo de PR-3e: dotnet corre con otro cwd y una ruta relativa apuntaría a otro lado.
+    dotnet, hitl = _Dotnet(), _Hitl(Decision.APPROVED)
+    monkeypatch.setattr(sc, "run_capture", dotnet)
+    with pytest.raises(sc.CompilacionPatcherError, match="absoluta"):
+        await sc.compilar_patcher_local(
+            _fuentes(tmp_path),
+            "MiPatcher/MiPatcher.csproj",
+            cache_raiz=pathlib.Path("cache_relativa"),
+            dotnet=_dotnet_exe(tmp_path),
+            hitl=hitl,  # type: ignore[arg-type]
+            timeout_s=60,
+            max_output_bytes=1_000_000,
+        )
+    assert hitl.pedidos == [] and dotnet.llamadas == []
+
+
+async def test_publica_solo_la_salida_y_la_marca(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    resultado = await _compilar(tmp_path, _Hitl(Decision.APPROVED), _Dotnet(), monkeypatch)
+    assert sorted(p.name for p in resultado.exe.parents[1].iterdir()) == ["marca.json", "salida"]
+    assert not list((tmp_path / "cache").glob(".trabajo-*"))
+
+
+@pytest.mark.parametrize(("rc_restore", "rc_build"), [(1, 0), (0, 1)])
+async def test_un_fallo_no_deja_carpetas_de_trabajo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, rc_restore: int, rc_build: int
+) -> None:
+    with pytest.raises(sc.CompilacionPatcherError):
+        await _compilar(
+            tmp_path, _Hitl(Decision.APPROVED), _Dotnet(rc_restore=rc_restore, rc_build=rc_build), monkeypatch
+        )
+    assert not list((tmp_path / "cache").glob(".trabajo-*"))

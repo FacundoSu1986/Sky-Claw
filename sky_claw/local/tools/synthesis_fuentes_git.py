@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from sky_claw.app.security.hitl import Decision, new_hitl_request_id
-from sky_claw.app.security.links import exigir_arbol_copiable_sin_reparse
+from sky_claw.app.security.links import exigir_arbol_copiable_sin_reparse, rmtree_link_aware
 from sky_claw.local.tools._process import run_capture
 from sky_claw.local.tools.synthesis_runner import construir_entorno_dotnet
 from sky_claw.local.tools.synthesis_shim import ShimConfigError, hash_arbol
@@ -186,6 +186,93 @@ async def _correr_git(
     return stdout
 
 
+class _YaPublicadoError(Exception):
+    """Otro proceso publicó la misma entrada mientras esta corrida trabajaba."""
+
+
+def _limpiar_trabajo(trabajo: pathlib.Path) -> None:
+    """Borra SOLO la carpeta de trabajo de este intento (nunca la entrada publicada)."""
+    if not os.path.lexists(trabajo):
+        return
+    try:
+        # limpiar_readonly: los packs de .git son de solo lectura en Windows.
+        rmtree_link_aware(trabajo, limpiar_readonly=True)
+    except OSError as exc:
+        logger.warning("No se pudo limpiar la carpeta de trabajo %s: %s", trabajo, exc)
+
+
+async def _bajar_y_publicar(
+    trabajo: pathlib.Path,
+    final: pathlib.Path,
+    *,
+    git: pathlib.Path,
+    url_git: str,
+    sha: str,
+    timeout_s: float,
+    max_output_bytes: int,
+) -> str:
+    repo = trabajo / "repo"
+    publicar = trabajo / "publicar"
+    hogar = trabajo / "home"
+    try:
+        trabajo.mkdir(parents=True)
+        (trabajo / "tmp").mkdir()
+        hogar.mkdir()
+        config_global = trabajo / "gitconfig-vacio"
+        config_global.write_text("", encoding="utf-8")
+    except OSError as exc:
+        raise FuentesGitError(f"No se pudo preparar la caché de fuentes: {exc}") from exc
+
+    env = construir_entorno_dotnet(dotnet_root=None, temp_dir=trabajo / "tmp")
+    for clave in [k for k in env if k.upper() in {"HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"}]:
+        del env[clave]
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(config_global),
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "never",
+            # Un HOME privado y vacío: sin .netrc/_netrc del usuario que autentique el fetch.
+            "HOME": str(hogar),
+            "USERPROFILE": str(hogar),
+        }
+    )
+    for argumentos in (
+        argumentos_git_init(repo),
+        argumentos_git_fetch(repo, url_git, sha),
+        argumentos_git_checkout(repo),
+    ):
+        await _correr_git(git, argumentos, env=env, cwd=trabajo, timeout_s=timeout_s, max_output_bytes=max_output_bytes)
+    salida_head = await _correr_git(
+        git,
+        argumentos_git_rev_parse(repo),
+        env=env,
+        cwd=trabajo,
+        timeout_s=timeout_s,
+        max_output_bytes=max_output_bytes,
+    )
+    head = salida_head.decode("utf-8", "replace").strip()
+    if head != sha:
+        raise FuentesGitError(f"HEAD quedó en {head!r} y no en el commit pedido {sha}: se aborta.")
+
+    try:
+        exigir_arbol_copiable_sin_reparse(repo)
+        # Se publica SOLO el árbol (sin .git) y la marca; el checkout se descarta con el trabajo.
+        shutil.copytree(repo, publicar / "arbol", symlinks=True, ignore=shutil.ignore_patterns(".git"))
+        arbol_sha256 = hash_arbol(publicar / "arbol")
+        marca = {"esquema": _ESQUEMA_CACHE, "repositorio": url_git, "commit": sha, "arbol_sha256": arbol_sha256}
+        (publicar / _NOMBRE_MARCA).write_text(json.dumps(marca, indent=2), encoding="utf-8")
+    except (OSError, ShimConfigError) as exc:
+        raise FuentesGitError(f"No se pudo guardar el árbol del commit en la caché: {exc}") from exc
+    try:
+        os.replace(publicar, final)
+    except OSError as exc:
+        if os.path.lexists(final):
+            raise _YaPublicadoError from exc
+        raise FuentesGitError(f"No se pudo publicar las fuentes en la caché ({final}): {exc}") from exc
+    return arbol_sha256
+
+
 async def obtener_fuentes_git(
     url: str,
     sha: str,
@@ -202,6 +289,9 @@ async def obtener_fuentes_git(
         raise FuentesGitError(f"Se requiere el commit completo (40 hex en minúsculas), no {sha!r}.")
     if not git.is_absolute() or not git.is_file():
         raise FuentesGitError(f"El ejecutable de git debe ser absoluto y existir: {git}")
+    if not cache_raiz.is_absolute():
+        # git corre con cwd=<trabajo>: una ruta relativa apuntaría a otra carpeta.
+        raise FuentesGitError(f"La caché debe ser una ruta absoluta: {cache_raiz}")
 
     clave = hashlib.sha256(f"{_ESQUEMA_CACHE}\0{identidad}\0{sha}".encode()).hexdigest()[:32]
     final = cache_raiz / clave
@@ -220,62 +310,20 @@ async def obtener_fuentes_git(
         raise FuentesGitError(f"El operador no aprobó el egress a GitHub (decisión={decision.value}).")
 
     trabajo = cache_raiz / f".trabajo-{uuid.uuid4().hex}"
-    repo = trabajo / "repo"
     try:
-        trabajo.mkdir(parents=True)
-        (trabajo / "tmp").mkdir()
-        config_global = trabajo / "gitconfig-vacio"
-        config_global.write_text("", encoding="utf-8")
-    except OSError as exc:
-        raise FuentesGitError(f"No se pudo preparar la caché de fuentes: {exc}") from exc
-
-    env = construir_entorno_dotnet(dotnet_root=None, temp_dir=trabajo / "tmp")
-    env.update(
-        {
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": str(config_global),
-            "GIT_TERMINAL_PROMPT": "0",
-            "GCM_INTERACTIVE": "never",
-        }
-    )
-    for argumentos in (
-        argumentos_git_init(repo),
-        argumentos_git_fetch(repo, url_git, sha),
-        argumentos_git_checkout(repo),
-    ):
-        await _correr_git(git, argumentos, env=env, cwd=trabajo, timeout_s=timeout_s, max_output_bytes=max_output_bytes)
-    head = (
-        (
-            await _correr_git(
-                git,
-                argumentos_git_rev_parse(repo),
-                env=env,
-                cwd=trabajo,
-                timeout_s=timeout_s,
-                max_output_bytes=max_output_bytes,
-            )
+        arbol_sha256 = await _bajar_y_publicar(
+            trabajo,
+            final,
+            git=git,
+            url_git=url_git,
+            sha=sha,
+            timeout_s=timeout_s,
+            max_output_bytes=max_output_bytes,
         )
-        .decode("utf-8", "replace")
-        .strip()
-    )
-    if head != sha:
-        raise FuentesGitError(f"HEAD quedó en {head!r} y no en el commit pedido {sha}: se aborta.")
-
-    arbol = trabajo / "arbol"
-    try:
-        exigir_arbol_copiable_sin_reparse(repo)
-        shutil.copytree(repo, arbol, symlinks=True, ignore=shutil.ignore_patterns(".git"))
-        arbol_sha256 = hash_arbol(arbol)
-        marca = {"esquema": _ESQUEMA_CACHE, "repositorio": url_git, "commit": sha, "arbol_sha256": arbol_sha256}
-        (trabajo / _NOMBRE_MARCA).write_text(json.dumps(marca, indent=2), encoding="utf-8")
-    except (OSError, ShimConfigError) as exc:
-        raise FuentesGitError(f"No se pudo guardar el árbol del commit en la caché: {exc}") from exc
-    try:
-        os.replace(trabajo, final)
-    except OSError as exc:
-        if os.path.lexists(final):
-            logger.info("Otro proceso publicó %s primero; se revalida y se usa esa entrada", final)
-            return _verificar_entrada(final)
-        raise FuentesGitError(f"No se pudo publicar las fuentes en la caché ({final}): {exc}") from exc
+    except _YaPublicadoError:
+        logger.info("Otro proceso publicó %s primero; se revalida y se usa esa entrada", final)
+        return _verificar_entrada(final)
+    finally:
+        _limpiar_trabajo(trabajo)
     logger.info("Patcher %s@%s guardado en la caché %s", identidad, sha[:12], final)
     return FuentesGit(raiz=final / "arbol", arbol_sha256=arbol_sha256, cache_hit=False)
