@@ -18,8 +18,8 @@ Contrato:
   ``PROGRAMFILES``, que NuGet necesita) más ``NUGET_PACKAGES`` y ``TEMP`` dentro de la caché.
 - **Sin CET.** Argumentos de PR-3a (``--no-incremental``, ``-p:CETCompat=false``) y verificación
   fail-closed del apphost producido.
-- **Publicación atómica y sin borrar.** Se compila en una carpeta de trabajo y se publica con
-  ``os.replace``. Una corrida fallida deja su carpeta de trabajo para diagnóstico.
+- **Publicación atómica.** Se compila en una carpeta de trabajo propia; se publica SOLO la salida y
+  la marca con ``os.replace``, y la carpeta de trabajo se borra al salir (``rmtree_link_aware``).
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from sky_claw.app.security.hitl import Decision, new_hitl_request_id
-from sky_claw.app.security.links import exigir_arbol_copiable_sin_reparse
+from sky_claw.app.security.links import exigir_arbol_copiable_sin_reparse, rmtree_link_aware
 from sky_claw.local.tools._process import run_capture
 from sky_claw.local.tools.synthesis_prebuild import (
     FUENTE_NUGET_APROBABLE,
@@ -166,63 +166,35 @@ def _validar_assembly_name(salida_msbuild: bytes) -> str:
     return nombre
 
 
-async def compilar_patcher_local(
-    raiz_fuentes: pathlib.Path,
-    proyecto_rel: str,
+class _YaPublicadoError(Exception):
+    """Otro build publicó la misma entrada mientras esta corrida trabajaba."""
+
+
+def _limpiar_trabajo(trabajo: pathlib.Path) -> None:
+    """Borra SOLO la carpeta de trabajo de este intento (nunca la entrada publicada)."""
+    if not os.path.lexists(trabajo):
+        return
+    try:
+        rmtree_link_aware(trabajo, limpiar_readonly=True)
+    except OSError as exc:
+        logger.warning("No se pudo limpiar la carpeta de trabajo %s: %s", trabajo, exc)
+
+
+async def _compilar_y_publicar(
+    trabajo: pathlib.Path,
+    final: pathlib.Path,
     *,
+    raiz_fuentes: pathlib.Path,
+    arbol_fuentes: str,
+    proyecto: PurePosixPath,
     cache_raiz: pathlib.Path,
     dotnet: pathlib.Path,
-    hitl: HITLGuard | None,
     timeout_s: float,
     max_output_bytes: int,
-) -> PatcherCompilado:
-    """Deja el patcher de *proyecto_rel* (dentro de *raiz_fuentes*) compilado y verificado.
-
-    Los procesos corren con ``run_capture`` (async). El hash y la copia del árbol son síncronos y
-    corren en el hilo del llamador: un consumidor que no pueda bloquear el loop lo llama desde un
-    worker.
-    """
-    try:
-        dotnet = validar_dotnet_x64(dotnet)
-    except ShimConfigError as exc:
-        raise CompilacionPatcherError(str(exc)) from exc
-    if not raiz_fuentes.is_absolute() or not raiz_fuentes.is_dir():
-        raise CompilacionPatcherError(f"La carpeta de la solución debe ser absoluta y existir: {raiz_fuentes}")
-    proyecto = _validar_proyecto(raiz_fuentes, proyecto_rel)
-    try:
-        arbol_fuentes = hash_arbol(raiz_fuentes)
-    except ShimConfigError as exc:
-        raise CompilacionPatcherError(str(exc)) from exc
-
-    try:
-        toolchain = _identidad_toolchain(dotnet)
-    except OSError as exc:
-        raise CompilacionPatcherError(f"No se pudo leer el toolchain de {dotnet}: {exc}") from exc
-    final = cache_raiz / _clave_de_cache(arbol_fuentes, proyecto, toolchain)
-    if os.path.lexists(final):
-        return _verificar_salida(final)
-
-    # Sin acierto de caché hay que abrir red: primero la compuerta, después cualquier proceso.
-    detalle = (
-        f"Solución: {raiz_fuentes}\nProyecto: {proyecto.as_posix()}\n"
-        f"Hosts: {_HOST_DE_RESTORE}\nComando: dotnet restore (paquetes NuGet del patcher)"
-    )
-    if hitl is None:
-        raise CompilacionPatcherError(
-            "El build del patcher necesita egress (NuGet) y no hay compuerta HITL: se aborta."
-        )
-    decision = await hitl.request_approval(
-        request_id=new_hitl_request_id("synthesis-restore"),
-        reason=f"Descargar los paquetes NuGet del patcher {proyecto.stem}?",
-        detail=detalle,
-        category="download",
-    )
-    if decision is not Decision.APPROVED:
-        raise CompilacionPatcherError(f"El operador no aprobó el egress del build (decisión={decision.value}).")
-
-    trabajo = cache_raiz / f".trabajo-{uuid.uuid4().hex}"
+) -> tuple[str, str]:
     fuentes = trabajo / "fuentes"
-    salida = trabajo / "salida"
+    publicar = trabajo / "publicar"
+    salida = publicar / "salida"
     temporal = trabajo / "tmp"
     try:
         exigir_arbol_copiable_sin_reparse(raiz_fuentes)
@@ -276,15 +248,92 @@ async def compilar_patcher_local(
         "salida_sha256": salida_sha256,
         "proyecto": proyecto.as_posix(),
     }
-    (trabajo / _NOMBRE_MARCA).write_text(json.dumps(marca, indent=2), encoding="utf-8")
+    (publicar / _NOMBRE_MARCA).write_text(json.dumps(marca, indent=2), encoding="utf-8")
     try:
-        os.replace(trabajo, final)
+        # Se publica SOLO la salida y la marca; la copia de fuentes (con obj/) se descarta.
+        os.replace(publicar, final)
     except OSError as exc:
         if os.path.lexists(final):
-            # Otro build del mismo patcher publicó primero: su entrada se revalida y se usa. La
-            # carpeta de trabajo propia queda para diagnóstico, como en cualquier corrida fallida.
-            logger.info("Otro build publicó %s primero; se revalida y se usa esa entrada", final)
-            return _verificar_salida(final)
+            raise _YaPublicadoError from exc
         raise CompilacionPatcherError(f"No se pudo publicar el build en la caché ({final}): {exc}") from exc
+    return exe.name, salida_sha256
+
+
+async def compilar_patcher_local(
+    raiz_fuentes: pathlib.Path,
+    proyecto_rel: str,
+    *,
+    cache_raiz: pathlib.Path,
+    dotnet: pathlib.Path,
+    hitl: HITLGuard | None,
+    timeout_s: float,
+    max_output_bytes: int,
+) -> PatcherCompilado:
+    """Deja el patcher de *proyecto_rel* (dentro de *raiz_fuentes*) compilado y verificado.
+
+    Los procesos corren con ``run_capture`` (async). El hash y la copia del árbol son síncronos y
+    corren en el hilo del llamador: un consumidor que no pueda bloquear el loop lo llama desde un
+    worker.
+    """
+    try:
+        dotnet = validar_dotnet_x64(dotnet)
+    except ShimConfigError as exc:
+        raise CompilacionPatcherError(str(exc)) from exc
+    if not raiz_fuentes.is_absolute() or not raiz_fuentes.is_dir():
+        raise CompilacionPatcherError(f"La carpeta de la solución debe ser absoluta y existir: {raiz_fuentes}")
+    if not cache_raiz.is_absolute():
+        # dotnet corre con cwd=<proyecto copiado>: una ruta relativa apuntaría a otra carpeta.
+        raise CompilacionPatcherError(f"La caché debe ser una ruta absoluta: {cache_raiz}")
+    proyecto = _validar_proyecto(raiz_fuentes, proyecto_rel)
+    try:
+        arbol_fuentes = hash_arbol(raiz_fuentes)
+    except ShimConfigError as exc:
+        raise CompilacionPatcherError(str(exc)) from exc
+
+    try:
+        toolchain = _identidad_toolchain(dotnet)
+    except OSError as exc:
+        raise CompilacionPatcherError(f"No se pudo leer el toolchain de {dotnet}: {exc}") from exc
+    final = cache_raiz / _clave_de_cache(arbol_fuentes, proyecto, toolchain)
+    if os.path.lexists(final):
+        return _verificar_salida(final)
+
+    # Sin acierto de caché hay que abrir red: primero la compuerta, después cualquier proceso.
+    detalle = (
+        f"Solución: {raiz_fuentes}\nProyecto: {proyecto.as_posix()}\n"
+        f"Hosts: {_HOST_DE_RESTORE}\nComando: dotnet restore (paquetes NuGet del patcher)"
+    )
+    if hitl is None:
+        raise CompilacionPatcherError(
+            "El build del patcher necesita egress (NuGet) y no hay compuerta HITL: se aborta."
+        )
+    decision = await hitl.request_approval(
+        request_id=new_hitl_request_id("synthesis-restore"),
+        reason=f"Descargar los paquetes NuGet del patcher {proyecto.stem}?",
+        detail=detalle,
+        category="download",
+    )
+    if decision is not Decision.APPROVED:
+        raise CompilacionPatcherError(f"El operador no aprobó el egress del build (decisión={decision.value}).")
+
+    trabajo = cache_raiz / f".trabajo-{uuid.uuid4().hex}"
+    try:
+        exe_nombre, salida_sha256 = await _compilar_y_publicar(
+            trabajo,
+            final,
+            raiz_fuentes=raiz_fuentes,
+            arbol_fuentes=arbol_fuentes,
+            proyecto=proyecto,
+            cache_raiz=cache_raiz,
+            dotnet=dotnet,
+            timeout_s=timeout_s,
+            max_output_bytes=max_output_bytes,
+        )
+    except _YaPublicadoError:
+        # Otro build del mismo patcher publicó primero: su entrada se revalida y se usa.
+        logger.info("Otro build publicó %s primero; se revalida y se usa esa entrada", final)
+        return _verificar_salida(final)
+    finally:
+        _limpiar_trabajo(trabajo)
     logger.info("Patcher %s compilado en la caché %s", proyecto.as_posix(), final)
-    return PatcherCompilado(exe=final / "salida" / exe.name, salida_sha256=salida_sha256, cache_hit=False)
+    return PatcherCompilado(exe=final / "salida" / exe_nombre, salida_sha256=salida_sha256, cache_hit=False)

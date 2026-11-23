@@ -387,6 +387,20 @@ x64 instalado):
   una DLL alterada en la caché se detecta. Una solución con `ProjectReference` fuera de su carpeta
   falla cerrado en el build. Falta: patchers Git, el orquestador que arma el mapa de shims y lo pasa a
   `SynthesisRunner`, y la corrida bajo USVFS/MO2 real.
+- **PR-3e (fuentes de patchers Git):** `sky_claw/local/tools/synthesis_fuentes_git.py` (estricto en
+  `mypy`) baja **un commit fijado** (SHA completo de 40 hex; nunca rama ni tag) de
+  `https://github.com/<dueño>/<repo>` (sin credenciales, puerto, query ni fragmento) a la caché, tras la
+  compuerta HITL de egress (repositorio, commit y host `github.com`). Git corre aislado de la
+  configuración del usuario (`GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL` vacío —un `url.insteadOf`
+  podría redirigir el host—, sin prompts ni credenciales) y con `-c` que dejan solo https, sin
+  symlinks ni submódulos. `HEAD` tiene que ser el commit pedido. La caché por (repo, commit) guarda
+  el árbol SIN `.git` con su hash: un acierto no abre red y una copia alterada falla cerrado. El árbol
+  lo compila PR-3d con su propia compuerta de NuGet. Censos actualizados en el mismo PR (HITL,
+  lanzadores con procedencia de flags, pregunta fuera de la etapa 9). **Rig contra GitHub real (solo
+  descarga, autorizada por el propietario):** `Synthesis-Collective/FaceFixer` bajado por SHA en 15 s con
+  un pedido HITL, árbol sin `.git`; acierto de caché en 0,01 s con la URL en otra forma; un SHA
+  inexistente falla cerrado (`not our ref`). Compilar un patcher de terceros (ejecuta su build) no se
+  probó por decisión del propietario. Traducir `Tag`/`Branch` del perfil a un SHA queda para el orquestador (PR-3f).
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.
