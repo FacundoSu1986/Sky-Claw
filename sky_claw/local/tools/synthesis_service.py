@@ -30,6 +30,7 @@ import logging
 import os
 import pathlib
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from sky_claw.app.core.event_bus import CoreEventBus, Event
@@ -59,6 +60,7 @@ if TYPE_CHECKING:
     from sky_claw.app.db.journal import OperationJournal
     from sky_claw.app.db.snapshot_manager import FileSnapshotManager
     from sky_claw.local.mo2.brokered_synthesis import VfsBrokerProtocol
+    from sky_claw.local.tools.synthesis_fase1 import PreparadorFase1Protocol
     from sky_claw.local.validators.preflight import PreflightCheck, PreflightReport, PreflightService
 
 logger = logging.getLogger(__name__)
@@ -139,6 +141,7 @@ class SynthesisPipelineService:
         instance_id: str | None = None,
         synthesis_backend: str = "standalone",
         synthesis_runner: Any = None,
+        preparador_fase1: PreparadorFase1Protocol | None = None,
     ) -> None:
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
@@ -168,6 +171,9 @@ class SynthesisPipelineService:
         self._vfs_broker = vfs_broker
         self._instance_id = instance_id.strip() if isinstance(instance_id, str) and instance_id.strip() else None
         self._synthesis_backend = synthesis_backend
+        # PR-3h (ADR 0019 §2.1): la Fase 1 (fuera de USVFS) deja un shim por patcher antes de cada
+        # corrida brokered. Sin preparador, el backend brokered falla cerrado (ver execute_pipeline).
+        self._preparador_fase1 = preparador_fase1
         if synthesis_runner is not None:
             domain = getattr(synthesis_runner, "data_visibility_domain", None)
             self._data_visibility_domain = "virtual_usvfs" if domain == "virtual_usvfs" else "physical"
@@ -812,6 +818,34 @@ class SynthesisPipelineService:
             blocked["preflight"] = preflight_report.to_dict()
             return blocked
 
+        # PR-3h (ADR 0019 §2.1): bajo USVFS cada patcher corre a través de su shim de la Fase 1, que se
+        # prepara FUERA del VFS y ANTES del lock (puede bajar fuentes y compilar tras su propia compuerta
+        # HITL). Sin shims, un patcher Git/Solution no tiene qué ejecutar con --BlockBuildingWithinMo2 y
+        # un apphost con CET se cae bajo USVFS: brokered sin preparador falla cerrado, no degrada.
+        cli_executables: Mapping[str, pathlib.Path] | None = None
+        if self._data_visibility_domain == "virtual_usvfs":
+            if self._preparador_fase1 is None:
+                return _attach_preflight(
+                    self._error_dict(
+                        "Synthesis brokered requiere la Fase 1 (shims por patcher) y no hay preparador configurado"
+                    ),
+                    preflight_report,
+                )
+            from sky_claw.local.tools.synthesis_fase1 import Fase1Error
+
+            settings_path = runner._config.pipeline_settings_path
+            if settings_path is None:
+                return _attach_preflight(
+                    self._error_dict("Synthesis PipelineSettingsPath is required"), preflight_report
+                )
+            try:
+                cli_executables = await self._preparador_fase1.preparar(
+                    settings_path, runner._config.profile, list(patcher_ids)
+                )
+            except (Fase1Error, OSError) as exc:
+                logger.error("Fase 1 de Synthesis falló (stage 7): %s", exc)
+                return _attach_preflight(self._error_dict(f"Fase 1 de Synthesis falló: {exc}"), preflight_report)
+
         output_base_paths = tuple(runner._config.output_path / f"{name}.esp" for name in settings_profile.group_names)
         if not output_base_paths:
             return _attach_preflight(
@@ -925,10 +959,15 @@ class SynthesisPipelineService:
                         for output_file in output_files_before:
                             output_file.unlink()
 
+                    # El mapa solo existe en brokered; standalone no recibe el kwarg (contrato de siempre).
+                    extra_run: dict[str, Any] = (
+                        {"cli_executables": cli_executables} if cli_executables is not None else {}
+                    )
                     result = await runner.run_pipeline(
                         patcher_ids,
                         expected_settings_fingerprint=settings_fingerprint,
                         expected_load_order_fingerprint=load_order_fingerprint,
+                        **extra_run,
                     )
                     if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
                         raise SynthesisExecutionError(

@@ -427,6 +427,18 @@ x64 instalado):
   Falta: cablear `preparar_fase1` en el servicio (PR-3h: HITL, `dotnet`/`git` x64, las dos
   superficies que construyen el servicio), `SynthesisPreset` e `install_synthesis_cli`. Sin rig: el
   backend brokered sigue bloqueado por `_CONTENCION_SYNTHESIS_VERIFICADA = False`.
+- **PR-3h (Fase 1 en el servicio):** `SynthesisPipelineService` recibe `preparador_fase1`
+  (`PreparadorFase1Protocol`; implementación productiva `synthesis_fase1.PreparadorFase1`: `dotnet`,
+  `git`, `cache_raiz`, `HITLGuard`, timeout 600 s). En el dominio `virtual_usvfs`, después del preflight
+  y **antes** de abrir lock/journal, prepara la Fase 1 para los patchers de la corrida; sin preparador,
+  o si la Fase 1 falla, corta con error sin despachar al worker (no degrada a correr sin shims). El
+  mapa viaja por corrida como kwarg `cli_executables` de `run_pipeline`, que aceptan las tres clases
+  runner (ancla enumerante `test_todas_las_run_pipeline_aceptan_el_mapa_de_la_corrida`); standalone no
+  lo recibe. Cada corrida estrena `skyclaw-synthesis-shims-*` bajo el temporal del sistema (raíz
+  autorizada del worker); la caché persiste. Los dos composition roots no cambian: no eligen backend
+  brokered hasta **PR-2b**, que es donde se construye el `PreparadorFase1` con rutas reales.
+  Limitaciones: las carpetas de shims por corrida no se borran todavía (peso: un apphost chico por
+  patcher); sin rig de MO2.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.

@@ -7,7 +7,7 @@ import contextvars
 import logging
 import os
 import pathlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import NoReturn, Protocol
 
 from sky_claw.app.db.rollback_veto import exception_forbids_rollback, mark_unknown_terminality
@@ -302,16 +302,19 @@ class BrokeredSynthesisRunner:
         expected_plugins: list[str],
         settings_fingerprint: str,
         load_order_fingerprint: str,
+        cli_executables: Mapping[str, pathlib.Path] | None = None,
     ) -> dict[str, JsonValue]:
+        # PR-3h: el mapa de la corrida (preparado por el servicio) manda; sin él, el de la config.
+        mapa_cli = cli_executables if cli_executables is not None else self._config.cli_executables
         cli_executables_json: dict[str, JsonValue] | None = None
-        if self._config.cli_executables is not None:
+        if mapa_cli is not None:
             # PR-3g: el mapa de shims de la Fase 1 viaja al worker. Perderlo en el camino dejaría correr
             # bajo USVFS los patchers Git/Solution sin shim (compilando dentro del VFS). Vacío = error
             # del llamador, no "sin shims": se rechaza en vez de mandar un mapa que no cubre a nadie.
-            if not self._config.cli_executables:
+            if not mapa_cli:
                 raise SynthesisExecutionError("cli_executables (shims de la Fase 1) no puede ser un mapa vacío")
             cli_executables_json = {}
-            for clave, ruta in self._config.cli_executables.items():
+            for clave, ruta in mapa_cli.items():
                 if not isinstance(clave, str) or not clave.strip():
                     raise SynthesisExecutionError("cli_executables solo admite IDs de patcher no vacíos")
                 cli_executables_json[clave] = str(
@@ -362,6 +365,7 @@ class BrokeredSynthesisRunner:
         *,
         expected_settings_fingerprint: str | None = None,
         expected_load_order_fingerprint: str | None = None,
+        cli_executables: Mapping[str, pathlib.Path] | None = None,
     ) -> SynthesisResult:
         """Despacha ``run-pipeline`` dentro del worker USVFS con payload cerrado."""
         self._last_result.set(None)
@@ -394,6 +398,7 @@ class BrokeredSynthesisRunner:
             expected_plugins=expected_plugins,
             settings_fingerprint=settings_fp,
             load_order_fingerprint=load_order_fp,
+            cli_executables=cli_executables,
         )
         challenge = await self._take_or_build_challenge()
         mutation_target = _validar_ruta_sin_enlaces(self._config.output_path, field="output_path")
@@ -520,8 +525,9 @@ class VfsRequiredSynthesisRunner:
         *,
         expected_settings_fingerprint: str | None = None,
         expected_load_order_fingerprint: str | None = None,
+        cli_executables: Mapping[str, pathlib.Path] | None = None,
     ) -> SynthesisResult:
-        del patcher_ids, extra_args, expected_settings_fingerprint, expected_load_order_fingerprint
+        del patcher_ids, extra_args, expected_settings_fingerprint, expected_load_order_fingerprint, cli_executables
         raise SynthesisExecutionError(self._reason)
 
 
