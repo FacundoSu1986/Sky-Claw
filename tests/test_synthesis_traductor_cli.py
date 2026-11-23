@@ -115,6 +115,29 @@ def test_respeta_la_seleccion_de_patchers(tmp_path: pathlib.Path) -> None:
 def test_las_claves_se_comparan_sin_mayusculas(tmp_path: pathlib.Path) -> None:
     shims = {"GIT-1": tmp_path / "a.exe", "Sln-1": tmp_path / "b.exe", "cli-1": tmp_path / "c.exe"}
     temporal, _ = PatcherPipeline.prepare_synthesis_cli_settings(_settings(tmp_path), "Default", cli_executables=shims)
+    patchers = [p for g in _leer(temporal)["Profiles"][0]["Groups"] for p in g["Patchers"]]
+    # Cada patcher recibe SU shim, no solo "no explota".
+    assert [(p["Nickname"], p["PathToExecutable"]) for p in patchers] == [
+        ("RepoDelPatcher", str(tmp_path / "a.exe")),
+        ("Solucion", str(tmp_path / "b.exe")),
+        ("Cli", str(tmp_path / "c.exe")),
+    ]
+
+
+def test_ids_que_solo_difieren_en_mayusculas_fallan_con_mapa(tmp_path: pathlib.Path) -> None:
+    # Dos patchers distintos con IDs "shared" y "SHARED": el mapa por ID plegado le daría el MISMO
+    # shim a los dos (uno corre dos veces y el otro nunca). Con mapa se rechaza; sin mapa no cambia.
+    settings = _settings(tmp_path)
+    datos = json.loads(settings.read_text(encoding="utf-8"))
+    patchers = datos["Profiles"][0]["Groups"][0]["Patchers"]
+    patchers[0]["ID"] = "shared"
+    patchers[1]["ID"] = "SHARED"
+    settings.write_text(json.dumps(datos), encoding="utf-8")
+    with pytest.raises(PatcherPipelineError, match="duplicad"):
+        PatcherPipeline.prepare_synthesis_cli_settings(
+            settings, "Default", cli_executables=_shims(tmp_path, "shared", "cli-1")
+        )
+    temporal, _ = PatcherPipeline.prepare_synthesis_cli_settings(settings, "Default")
     _leer(temporal)
 
 

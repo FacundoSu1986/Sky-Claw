@@ -90,6 +90,16 @@ def _resolver_ejecutables_cli(
     seleccionados: list[str],
 ) -> dict[str, pathlib.Path]:
     """Exige que el mapa cubra EXACTAMENTE los patchers seleccionados (por ID canónico)."""
+    # Dos patchers distintos cuyos IDs solo difieren en mayúsculas colapsarían en UNA clave del
+    # mapa: los dos recibirían el mismo shim (uno corre dos veces y el otro nunca, sin error).
+    vistos: dict[str, int] = {}
+    for posicion, canonical in enumerate(seleccionados):
+        previo = vistos.setdefault(canonical.casefold(), posicion)
+        if previo != posicion:
+            raise PatcherPipelineError(
+                f"IDs de patcher duplicados al ignorar mayúsculas: {seleccionados[previo]!r} y {canonical!r}; "
+                "no se puede asignar un shim a cada uno"
+            )
     por_clave: dict[str, pathlib.Path] = {}
     for clave, ruta in cli_executables.items():
         plegada = clave.strip().casefold()
