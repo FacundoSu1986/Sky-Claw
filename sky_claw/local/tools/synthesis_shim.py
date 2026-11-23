@@ -107,18 +107,24 @@ def hash_arbol(raiz: pathlib.Path) -> str:
 
     for carpeta, subcarpetas, nombres in os.walk(raiz, onerror=_fallar, followlinks=False):
         subcarpetas.sort()
-        for nombre in nombres:
-            ruta = pathlib.Path(carpeta) / nombre
-            rel = ruta.relative_to(raiz).as_posix()
+        # Se validan TODAS las entradas, carpetas incluidas, igual que el shim C#: una carpeta
+        # vacía no aporta líneas al hash, pero el shim igual la rechazaría en la Fase 2.
+        for nombre in (*subcarpetas, *nombres):
+            rel = (pathlib.Path(carpeta) / nombre).relative_to(raiz).as_posix()
             if any(ord(c) > _MAX_BMP for c in rel):
                 raise ShimConfigError(f"Nombre fuera del BMP en el árbol del patcher: {rel!r}")
-            archivos.append((rel, ruta))
+        for nombre in nombres:
+            ruta = pathlib.Path(carpeta) / nombre
+            archivos.append((ruta.relative_to(raiz).as_posix(), ruta))
     acumulado = hashlib.sha256()
     for rel, ruta in sorted(archivos):
         digesto = hashlib.sha256()
-        with ruta.open("rb") as flujo:
-            for bloque in iter(lambda: flujo.read(1 << 20), b""):
-                digesto.update(bloque)
+        try:
+            with ruta.open("rb") as flujo:
+                for bloque in iter(lambda: flujo.read(1 << 20), b""):
+                    digesto.update(bloque)
+        except OSError as exc:
+            raise ShimConfigError(f"No se pudo leer {rel} del árbol del patcher: {exc}") from exc
         acumulado.update(f"{rel}\0{digesto.hexdigest()}\n".encode())
     return acumulado.hexdigest()
 

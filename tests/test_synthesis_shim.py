@@ -80,6 +80,29 @@ def test_hash_de_arbol_rechaza_nombres_fuera_del_bmp(tmp_path: pathlib.Path) -> 
         ss.hash_arbol(tmp_path)
 
 
+def test_hash_de_arbol_rechaza_carpetas_fuera_del_bmp(tmp_path: pathlib.Path) -> None:
+    # El shim C# revisa TODAS las entradas, no solo archivos: una carpeta vacía con emoji pasaría
+    # en Python (no aporta líneas al hash) y fallaría en la Fase 2 con código 6.
+    (tmp_path / "a.dll").write_bytes(b"x")
+    (tmp_path / "\U0001f600").mkdir()
+    with pytest.raises(ss.ShimConfigError):
+        ss.hash_arbol(tmp_path)
+
+
+def test_hash_de_arbol_convierte_errores_de_lectura(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "a.dll").write_bytes(b"x")
+    abrir = pathlib.Path.open
+
+    def _abrir_falla(self: pathlib.Path, *args: object, **kwargs: object) -> object:
+        if self.name == "a.dll":
+            raise PermissionError("bloqueado por el antivirus")
+        return abrir(self, *args, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(pathlib.Path, "open", _abrir_falla)
+    with pytest.raises(ss.ShimConfigError, match="a.dll"):
+        ss.hash_arbol(tmp_path)
+
+
 def test_hash_de_arbol_de_carpeta_inexistente(tmp_path: pathlib.Path) -> None:
     with pytest.raises(ss.ShimConfigError):
         ss.hash_arbol(tmp_path / "no")
