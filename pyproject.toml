@@ -388,6 +388,8 @@ module = [
     "sky_claw.local.tools.dyndolod_uia_driver_helper",
     "sky_claw.local.tools.dyndolod_uia_driver_windows",
     "sky_claw.local.tools.dyndolod_presets",
+    # #997: la guía del operador de la etapa 9 (catálogo, chequeos, fases) nace estricta: `sky_claw.local.tools.*` está exento.
+    "sky_claw.local.tools.dyndolod_guia",
     "sky_claw.local.validators.etapas_previas_lods",
     "sky_claw.app.agent.tools.lod_tools",
     # NP-A0k: las dos superficies de lectura de parallax nacen estrictas: `sky_claw.app.agent.*` y `sky_claw.app.orchestrator.*` están en

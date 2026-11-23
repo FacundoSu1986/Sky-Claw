@@ -7,6 +7,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from sky_claw.local.tools.dyndolod_guia import (
+    ChecklistDeEtapa9,
+    checklist_temprano,
+    rechazo_temprano_por_corrida_en_curso,
+    texto_de_corte_temprano,
+)
 from sky_claw.local.tools.dyndolod_runner import DynDOLODExecutionError
 from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido, ModoDeInteraccion, modo_de_interaccion_desde
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
@@ -70,8 +76,20 @@ class GenerateLodsStrategy:
         la llama como ``ApprovalPreparer`` y convierte la excepción en el error dict de la tool (el wrapping está
         FUERA del gate): el operador lee el motivo sin haber recibido ninguna pregunta. Vale para los dos modos de
         interacción: el backend le hace falta a cualquier corrida.
+
+        #997: antes del backend, el checklist del operador. Con un ❌ la corrida va a cortar igual en el servicio, así
+        que no se le pide aprobarla: el motivo llega en criollo al cartel (la tarjeta muestra la lista completa).
         """
-        del payload_dict
+        filtrado = self._filter_payload(payload_dict, warn=False)
+        # Una etapa 9 a la vez (GUI y agente): con otra corriendo, no se pide aprobar algo que se va a rechazar.
+        en_curso = rechazo_temprano_por_corrida_en_curso(
+            self.service, interaction_mode=filtrado.get("interaction_mode", ModoDeInteraccion.ASISTIDO)
+        )
+        if en_curso is not None:
+            raise DynDOLODExecutionError(f"{en_curso['guia']['titulo']} {en_curso['guia']['arreglo']}")
+        checklist = await checklist_temprano(self.service, run_texgen=_run_texgen_de(filtrado))
+        if checklist is not None and not checklist.listo:
+            raise DynDOLODExecutionError(texto_de_corte_temprano(checklist))
         backend = await self.service.verificar_backend_listo()
         if not backend.listo:
             raise DynDOLODExecutionError(
@@ -82,6 +100,21 @@ class GenerateLodsStrategy:
     async def execute(self, payload_dict: dict[str, Any]) -> dict[str, Any]:
         filtered = self._filter_payload(payload_dict)
         modo = filtered.get("interaction_mode", _SIN_MODO)
+        # Una etapa 9 a la vez, ANTES del checklist y de preguntar por las etapas previas: con otra corriendo, la
+        # respuesta es el MISMO rechazo que daría el servicio (que igual lo hace cumplir en ``execute``).
+        en_curso = rechazo_temprano_por_corrida_en_curso(
+            self.service, interaction_mode=filtered.get("interaction_mode", ModoDeInteraccion.ASISTIDO)
+        )
+        if en_curso is not None:
+            # SOP §5 regla 5: el desenlace se decide acá (el servicio no llega a correr), así que el registro va acá.
+            logger.warning("la etapa 9 no se lanza: %s", en_curso["message"], extra=_EXTRA_DE_LA_ETAPA)
+            return en_curso
+        if _pide_modo_asistido(modo) or _pide_modo_desatendido(modo):
+            # #997: el checklist ANTES de preguntarle nada al operador (etapas previas incluidas): con un ❌ la
+            # corrida va a cortar igual en el servicio. Un modo inválido no pasa por acá: lo rechaza el servicio.
+            checklist = await checklist_temprano(self.service, run_texgen=_run_texgen_de(filtered))
+            if checklist is not None and not checklist.listo:
+                return self._corte_por_checklist(checklist, asistido=_pide_modo_asistido(modo))
         if _pide_modo_asistido(modo):
             # D-3 (decisión del owner, 2026-11-11, que revirtió la exclusión anterior de SOP §5.2): la corrida
             # ASISTIDA de la GUI también verifica las etapas 6–8 y, si faltan, necesita la confirmación del
@@ -160,6 +193,23 @@ class GenerateLodsStrategy:
         }
 
     @staticmethod
+    def _corte_por_checklist(checklist: ChecklistDeEtapa9, *, asistido: bool) -> dict[str, Any]:
+        """Resultado de error cuando el checklist del operador tiene un ❌ (#997). El criollo va en ``guia``."""
+        mensaje = checklist.mensaje_tecnico()
+        logger.warning("la etapa 9 no se lanza: %s", mensaje, extra=_EXTRA_DE_LA_ETAPA)
+        modo = ModoDeInteraccion.ASISTIDO if asistido else ModoDeInteraccion.DESATENDIDO
+        return {
+            "success": False,
+            "message": mensaje,
+            "errors": [mensaje],
+            "reason": "ChecklistBloqueado",
+            "checklist": checklist.to_dict(),
+            "guia": checklist.guia(),
+            "assisted": asistido,
+            "interaction_mode": modo.value,
+        }
+
+    @staticmethod
     def _corte_por_backend_no_listo(motivo: str, faltantes: tuple[str, ...]) -> dict[str, Any]:
         """Resultado de error del guard asistido cuando el backend no puede servir la corrida (sin pregunta previa)."""
         mensaje = (
@@ -201,6 +251,11 @@ class GenerateLodsStrategy:
         if unexpected and warn:
             logger.warning("Dropping unexpected payload keys in %s: %s", self.name, unexpected)
         return filtered
+
+
+def _run_texgen_de(payload: dict[str, Any]) -> bool:
+    """El ``run_texgen`` que el servicio va a usar (default ``True``, como su firma)."""
+    return bool(payload.get("run_texgen", True))
 
 
 def _pide_modo_asistido(valor: object) -> bool:

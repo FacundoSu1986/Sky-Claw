@@ -1332,3 +1332,178 @@ async def test_synthesis_service_rechaza_runner_inyectado_con_output_path_distin
         assert "output_path" in res["message"]
     finally:
         await lock_mgr.close()
+
+
+# --- PR-3g (ADR 0019): el mapa de shims de la Fase 1 viaja al worker y el worker lo valida -----------
+
+
+def _shim_falso(raiz: pathlib.Path, nombre_dir: str = "00-patchera") -> pathlib.Path:
+    """Arma la forma de un shim materializado (exe + shim.json) sin compilar nada."""
+    destino = raiz / nombre_dir
+    destino.mkdir(parents=True)
+    exe = destino / "SkyClawSynthesisShim.exe"
+    exe.write_bytes(b"MZ")
+    (destino / "shim.json").write_text("{}", encoding="utf-8")
+    return exe
+
+
+def _proxy_con_mapa(rutas: dict[str, pathlib.Path], mapa: dict[str, pathlib.Path]) -> BrokeredSynthesisRunner:
+    cfg = SynthesisConfig(
+        game_path=rutas["game"],
+        mo2_path=rutas["mo2"],
+        output_path=rutas["output"],
+        synthesis_exe=rutas["exe"],
+        profile="Default",
+        pipeline_settings_path=rutas["settings"],
+        data_folder_path=rutas["data_fisico"],
+        load_order_file_path=rutas["plugins"],
+        block_building_within_mo2=True,
+        require_patcher_receipts=True,
+        cli_executables=mapa,
+    )
+    return BrokeredSynthesisRunner(
+        config=cfg,
+        broker=MagicMock(),
+        instance_id="portable-main",
+        data_root=rutas["mo2"],
+        mods_dir=rutas["mods"],
+    )
+
+
+def test_runner_brokered_transporta_el_mapa_de_shims(tmp_path: pathlib.Path) -> None:
+    rutas = _escenario_mo2(tmp_path)
+    shim = _shim_falso(rutas["mo2"] / "shims")
+    payload = _proxy_con_mapa(rutas, {"id-patcher-a": shim})._build_job_payload(
+        patcher_ids=["PatcherA"], expected_plugins=["Skyrim.esm"], settings_fingerprint="a", load_order_fingerprint="b"
+    )
+    assert payload["cli_executables"] == {"id-patcher-a": str(shim)}
+
+
+def test_runner_brokered_sin_mapa_no_manda_la_clave(tmp_path: pathlib.Path) -> None:
+    rutas = _escenario_mo2(tmp_path)
+    cfg = SynthesisConfig(
+        game_path=rutas["game"],
+        mo2_path=rutas["mo2"],
+        output_path=rutas["output"],
+        synthesis_exe=rutas["exe"],
+        profile="Default",
+        pipeline_settings_path=rutas["settings"],
+        data_folder_path=rutas["data_fisico"],
+        load_order_file_path=rutas["plugins"],
+        block_building_within_mo2=True,
+        require_patcher_receipts=True,
+    )
+    proxy = BrokeredSynthesisRunner(
+        config=cfg, broker=MagicMock(), instance_id="portable-main", data_root=rutas["mo2"], mods_dir=rutas["mods"]
+    )
+    payload = proxy._build_job_payload(
+        patcher_ids=["PatcherA"], expected_plugins=["Skyrim.esm"], settings_fingerprint="a", load_order_fingerprint="b"
+    )
+    assert "cli_executables" not in payload
+
+
+def test_runner_brokered_rechaza_mapa_vacio_o_shim_detras_de_un_enlace(tmp_path: pathlib.Path) -> None:
+    rutas = _escenario_mo2(tmp_path)
+    with pytest.raises(SynthesisExecutionError, match="cli_executables"):
+        _proxy_con_mapa(rutas, {})._build_job_payload(
+            patcher_ids=["PatcherA"], expected_plugins=[], settings_fingerprint="a", load_order_fingerprint="b"
+        )
+    real = rutas["mo2"] / "shims_reales"
+    shim_real = _shim_falso(real)
+    enlace = rutas["mo2"] / "shims_enlace"
+    try:
+        enlace.symlink_to(real, target_is_directory=True)
+        tipo = "symlink"
+    except OSError:
+        if os.name != "nt":
+            pytest.skip("El entorno no permite crear symlinks de directorio")
+        motivo = crear_junction(enlace, real)
+        assert motivo is None, f"no se pudo crear junction en Windows: {motivo}"
+        tipo = "junction"
+    with pytest.raises(SynthesisExecutionError, match=tipo):
+        _proxy_con_mapa(rutas, {"id-patcher-a": enlace / shim_real.parent.name / shim_real.name})._build_job_payload(
+            patcher_ids=["PatcherA"], expected_plugins=[], settings_fingerprint="a", load_order_fingerprint="b"
+        )
+
+
+async def test_worker_synthesis_pasa_el_mapa_de_shims_al_traductor(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sky_claw.local.tools import synthesis_runner as sr
+
+    rutas = _escenario_mo2(tmp_path)
+    shim = _shim_falso(rutas["mo2"] / "shims")
+    capturado: dict[str, Any] = {}
+
+    def _espia(*_args: Any, **kwargs: Any) -> Any:
+        capturado.update(kwargs)
+        raise sr.PatcherPipelineError("corte del espía")
+
+    monkeypatch.setattr(sr.PatcherPipeline, "prepare_synthesis_cli_settings", _espia)
+    manifest = _manifiesto_synthesis(rutas, payload_overrides={"cli_executables": {"id-patcher-a": str(shim)}})
+    run_capture_mock = AsyncMock()
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", run_capture_mock):
+        res = await execute_worker_manifest(manifest, grandchild_probe=_probe_ok)
+    assert res.success is False
+    assert "corte del espía" in res.message
+    assert capturado["cli_executables"] == {"id-patcher-a": shim.resolve()}
+    run_capture_mock.assert_not_awaited()
+
+
+def _caso_mapa_invalido(rutas: dict[str, pathlib.Path], caso: str) -> object:
+    shims = rutas["mo2"] / "shims"
+    if caso == "no_es_dict":
+        return [str(_shim_falso(shims))]
+    if caso == "vacio":
+        return {}
+    if caso == "valor_no_str":
+        return {"id-patcher-a": 7}
+    if caso == "clave_vacia":
+        return {"  ": str(_shim_falso(shims))}
+    if caso == "ruta_relativa":
+        return {"id-patcher-a": "shims/00-patchera/SkyClawSynthesisShim.exe"}
+    if caso == "nombre_distinto":
+        otro = shims / "00-otro"
+        otro.mkdir(parents=True)
+        (otro / "patcher.exe").write_bytes(b"MZ")
+        (otro / "shim.json").write_text("{}", encoding="utf-8")
+        return {"id-patcher-a": str(otro / "patcher.exe")}
+    if caso == "inexistente":
+        return {"id-patcher-a": str(shims / "00-nada" / "SkyClawSynthesisShim.exe")}
+    if caso == "sin_shim_json":
+        exe = _shim_falso(shims)
+        (exe.parent / "shim.json").unlink()
+        return {"id-patcher-a": str(exe)}
+    if caso == "fuera_de_raices":
+        afuera = (
+            pathlib.Path("Z:/skyclaw_untrusted_outside") if os.name == "nt" else pathlib.Path("/var/skyclaw_outside")
+        )
+        return {"id-patcher-a": str(afuera / "SkyClawSynthesisShim.exe")}
+    raise AssertionError(caso)
+
+
+@pytest.mark.parametrize(
+    "caso",
+    [
+        "no_es_dict",
+        "vacio",
+        "valor_no_str",
+        "clave_vacia",
+        "ruta_relativa",
+        "nombre_distinto",
+        "inexistente",
+        "sin_shim_json",
+        "fuera_de_raices",
+    ],
+)
+async def test_worker_synthesis_rechaza_mapa_de_shims_invalido_antes_de_lanzar(
+    tmp_path: pathlib.Path, caso: str
+) -> None:
+    rutas = _escenario_mo2(tmp_path)
+    manifest = _manifiesto_synthesis(rutas, payload_overrides={"cli_executables": _caso_mapa_invalido(rutas, caso)})
+    run_capture_mock = AsyncMock()
+    with patch("sky_claw.local.tools.synthesis_runner.run_capture", run_capture_mock):
+        res = await execute_worker_manifest(manifest, grandchild_probe=_probe_ok)
+    assert res.success is False
+    assert "cli_executables" in res.message
+    run_capture_mock.assert_not_awaited()

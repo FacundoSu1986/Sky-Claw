@@ -137,6 +137,16 @@ def _leer_acotado(ruta: pathlib.Path) -> bytes:
     return contenido
 
 
+def leer_contenido_de_preset(ruta: pathlib.Path) -> bytes:
+    """Contenido acotado de un preset que es un archivo real. Un enlace o un archivo ilegible es :class:`PresetError`.
+
+    La primitiva compartida de lectura de presets (#997): el checklist de la etapa 9 la usa en vez de un ``open``
+    propio, así que rechaza enlaces igual que :func:`leer_estado_de_preset`.
+    """
+    _exigir_archivo_real(ruta)
+    return _leer_acotado(ruta)
+
+
 def leer_estado_de_preset(
     ruta: pathlib.Path,
     *,

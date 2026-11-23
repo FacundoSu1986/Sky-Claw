@@ -4151,6 +4151,14 @@ _REGISTROS_EXENTOS_DE_ETAPA_RUNNER = {
             "de etapa 9 una corrida que puede terminar bien."
         ),
     },
+    "dyndolod_fase_no_reportada": {
+        "metodo": "_reportar_fase",
+        "motivo": (
+            "#997: el aviso de fase del asistido (qué espera Sky-Claw ahora) no llegó a su observador. "
+            "Hermano de dyndolod_progreso_no_reportado: observador best-effort que nunca decide la "
+            "corrida; los gates UIA y el post-check siguen siendo el veredicto."
+        ),
+    },
 }
 
 #: Cobertura DECLARADA de `dyndolod_runner.py`, con la misma escala que

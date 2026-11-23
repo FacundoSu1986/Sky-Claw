@@ -20,7 +20,7 @@ import pathlib
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from sky_claw.app.core.event_bus import CoreEventBus, Event
 from sky_claw.app.core.event_payloads import (
@@ -48,6 +48,30 @@ from sky_claw.app.security.links import exigir_contencion_fisica, link_kind_or_r
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.tools._dir_rollback import DirectoryRollback, _commit_directory_rollbacks, mutar_hasta_terminal
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
+from sky_claw.local.tools.dyndolod_guia import (
+    RAZON_ETAPA_EN_CURSO,
+    CambioDeFase,
+    ChecklistDeEtapa9,
+    Corte,
+    Estado,
+    FaseAsistida,
+    FaseEnCurso,
+    IdPrecondicion,
+    LecturaDeOutputDePreset,
+    ResultadoDePrecondicion,
+    carpetas_donde_buscar_el_dll_ng,
+    chequear_carpeta_permitida,
+    chequear_dll_ng,
+    chequear_ejecutable,
+    chequear_etapas_previas,
+    chequear_fuera_del_juego,
+    chequear_output_de_presets,
+    chequear_salida_vieja,
+    explicar_fallo,
+    leer_output_de_preset,
+    outputs_administrados,
+    resultado,
+)
 from sky_claw.local.tools.dyndolod_runner import (
     INSTRUCCIONES_POR_MODO,
     DataVisibilityDomain,
@@ -201,6 +225,12 @@ def _descarta_el_progreso_al_salir(metodo: Callable[..., Awaitable[_R]]) -> Call
     interrumpirla. Por eso es un decorador y no un ``try`` dentro de ``execute``: no re-indenta ~1500 líneas ni toca
     la familia de handlers congelada (``test_la_familia_de_handlers_de_execute_esta_congelada``). El resto de las
     salidas de la corrida conservan su camino: este descarte es la red de seguridad, no su reemplazo.
+
+    **#997 — el mismo mecanismo, para todo el estado vivo de la corrida.** La fase del asistido (``fase_actual``) y el
+    corte registrado tienen el MISMO ciclo de vida que el progreso, así que se descartan en el mismo ``finally``. Y
+    como acá se ve TODO retorno de una corrida, es también el único lugar que le arma la ``guia`` en criollo a un
+    resultado fallido —con la fase en la que cortó, antes de descartarla—: ningún handler de ``execute`` tiene que
+    acordarse de hacerlo (``test_dyndolod_guia_fases.py``).
     """
     firma = inspect.signature(metodo)
 
@@ -212,12 +242,39 @@ def _descarta_el_progreso_al_salir(metodo: Callable[..., Awaitable[_R]]) -> Call
             dry_run=argumentos.arguments["dry_run"], interaction_mode=argumentos.arguments["interaction_mode"]
         ):
             return await metodo(self, *args, **kwargs)
+        # Una etapa 9 a la vez, para TODAS las superficies (seguimiento de #1007): el estado vivo de la corrida solo
+        # lo escribe y lo descarta su dueña. Mirar y tomar el turno no tiene ningún ``await`` en medio, así que en el
+        # loop es atómico; quien llega con el turno tomado se rechaza SIN tocar el paso, el corte ni el progreso.
+        rechazo = self.rechazo_si_hay_corrida_en_curso(interaction_mode=argumentos.arguments["interaction_mode"])
+        if rechazo is not None:
+            logger.warning("%s", rechazo["message"], extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": None})
+            return cast(_R, rechazo)
+        self._corrida_en_curso = True
         try:
-            return await metodo(self, *args, **kwargs)
+            resultado_de_la_corrida = await metodo(self, *args, **kwargs)
+            if (
+                isinstance(resultado_de_la_corrida, dict)
+                and not resultado_de_la_corrida.get("success", False)
+                and "guia" not in resultado_de_la_corrida
+            ):
+                resultado_de_la_corrida["guia"] = self._guia_del_fallo(resultado_de_la_corrida)
+            return resultado_de_la_corrida
         finally:
             self._progreso_actual = None
+            self._fase_actual = None
+            self._corte_de_la_corrida = None
+            self._corrida_en_curso = False
 
     return envuelto
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _CorteDeLaCorrida:
+    """El corte que el runner avisó (#997): en qué herramienta, en qué fase estaba y con qué código tipado."""
+
+    herramienta: str
+    fase_previa: FaseAsistida | None
+    corte: Corte | None
 
 
 def _codigos_desatendidos_mencionados(texto: str) -> list[str]:
@@ -433,6 +490,12 @@ class DynDOLODPipelineService:
     _desatendido: CapacidadDesatendidaUIA | None = None
     _spawn_strategy: DynDOLODSpawnStrategy | None = None
     _data_visibility_domain: DataVisibilityDomain = "physical"
+    #: #997: fase vigente del asistido y corte avisado por el runner, de UNA corrida (mismo ciclo que el progreso).
+    _fase_actual: FaseEnCurso | None = None
+    _corte_de_la_corrida: _CorteDeLaCorrida | None = None
+    #: Una etapa 9 a la vez (seguimiento de #1007): ``True`` mientras una corrida de ``execute`` es la dueña del
+    #: estado vivo. Lo toma y lo suelta SOLO ``_descarta_el_progreso_al_salir``.
+    _corrida_en_curso: bool = False
 
     def __init__(
         self,
@@ -510,6 +573,9 @@ class DynDOLODPipelineService:
         self._runner: DynDOLODRunner | None = None
         # H-11: última muestra de progreso de la corrida en curso (ver `progreso_actual`).
         self._progreso_actual: DynDOLODPipelineProgressPayload | None = None
+        # #997: qué espera Sky-Claw ahora en el asistido (ver `fase_actual`) y el último corte avisado.
+        self._fase_actual = None
+        self._corte_de_la_corrida = None
 
     # ------------------------------------------------------------------
     # Lazy initialization
@@ -611,6 +677,7 @@ class DynDOLODPipelineService:
             spawn_strategy=self._spawn_strategy,
             desatendido=self._desatendido,
             on_progress=self._al_progresar,
+            on_fase=self._al_cambiar_de_fase,
         )
         logger.info(
             "DynDOLODRunner inicializado: game=%s, dyndolod=%s",
@@ -683,6 +750,166 @@ class DynDOLODPipelineService:
             mods_dir=mods_dir if isinstance(mods_dir, pathlib.Path) else None,
             overwrite_dir=data_root / "overwrite" if isinstance(data_root, pathlib.Path) else None,
             plugins_de_synthesis=plugins_synthesis,
+        )
+
+    async def verificar_checklist(self, *, run_texgen: bool = True) -> ChecklistDeEtapa9:
+        """#997: el checklist del operador para ESTA corrida, de solo lectura y fuera del event loop.
+
+        Es la única fuente que consultan la GUI (``GenerateLodsStrategy``) y el agente (``GestorDeTrabajosDeLods``)
+        antes de preguntar o lanzar, y la que :meth:`execute` hace cumplir antes de tocar nada. Nunca lanza: un chequeo
+        que explota queda «no verificable» (con su registro) y no bloquea, porque cada ❌ refleja un corte fail-closed
+        que sigue existiendo aguas abajo.
+        """
+        return await asyncio.to_thread(self._checklist_sincrono, run_texgen)
+
+    def _checklist_sincrono(self, run_texgen: bool) -> ChecklistDeEtapa9:
+        if getattr(self, "_path_resolver", None) is None:
+            # Doble construido con ``__new__`` (contrato de errores de tools): sin resolver de rutas no hay nada
+            # que verificar. «No verificable» no bloquea; la autoridad aguas abajo (``_ensure_runner``) corta igual.
+            return ChecklistDeEtapa9(
+                resultados=tuple(
+                    resultado(ficha_id, Estado.NO_VERIFICABLE, detalle="sin resolver de rutas")
+                    for ficha_id in IdPrecondicion
+                    if run_texgen or ficha_id is not IdPrecondicion.TEXGEN_ENCONTRADO
+                )
+            )
+        try:
+            plugins_txt: pathlib.Path | None = self._plugins_txt_del_perfil_activo()
+        except DynDOLODExecutionError:
+            plugins_txt = None
+        dyndolod_crudo = self._leer_del_resolver("get_dyndolod_exe_raw")
+        dyndolod_valido = self._leer_del_resolver("get_dyndolod_exe")
+        texgen_crudo = self._leer_del_resolver("get_texgen_exe_raw") if run_texgen else None
+        texgen_valido = self._leer_del_resolver("get_texgen_exe") if run_texgen else None
+        juego = self._leer_del_resolver("get_skyrim_path")
+        ejecutables_crudos: list[tuple[str, object, object]] = [("DYNDLOD_EXE", dyndolod_crudo, dyndolod_valido)]
+        # Solo COMPARACIÓN de texto (¿está adentro del juego?): la cruda sirve aunque el sandbox la rechace.
+        ejecutables: list[tuple[str, object]] = [("DynDOLOD", dyndolod_valido or dyndolod_crudo)]
+        # Para LEER archivos (hash del exe, preset al lado) solo valen las rutas que el sandbox admitió (review
+        # PR-Agent en #1007): una ruta rechazada nunca se abre.
+        ejecutables_admitidos: list[tuple[str, object]] = [("DynDOLOD", dyndolod_valido)]
+        if run_texgen:
+            ejecutables_crudos.append(("TEXGEN_EXE", texgen_crudo, texgen_valido))
+            ejecutables.append(("TexGen", texgen_valido or texgen_crudo))
+            ejecutables_admitidos.append(("TexGen", texgen_valido))
+
+        chequeos: list[tuple[IdPrecondicion, Callable[[], ResultadoDePrecondicion]]] = [
+            (
+                IdPrecondicion.DYNDOLOD_ENCONTRADO,
+                lambda: chequear_ejecutable(
+                    IdPrecondicion.DYNDOLOD_ENCONTRADO,
+                    nombre="DYNDLOD_EXE",
+                    crudo=dyndolod_crudo,
+                    validado=dyndolod_valido,
+                ),
+            ),
+        ]
+        if run_texgen:
+            chequeos.append(
+                (
+                    IdPrecondicion.TEXGEN_ENCONTRADO,
+                    lambda: chequear_ejecutable(
+                        IdPrecondicion.TEXGEN_ENCONTRADO,
+                        nombre="TEXGEN_EXE",
+                        crudo=texgen_crudo,
+                        validado=texgen_valido,
+                    ),
+                )
+            )
+        chequeos.extend(
+            [
+                (
+                    IdPrecondicion.HERRAMIENTAS_EN_CARPETA_PERMITIDA,
+                    lambda: chequear_carpeta_permitida(
+                        ejecutables=ejecutables_crudos,
+                        raices=tuple(
+                            raiz
+                            for raiz in (self._leer_del_resolver("raices_del_sandbox") or ())
+                            if isinstance(raiz, pathlib.PurePath)
+                        ),
+                    ),
+                ),
+                (
+                    IdPrecondicion.HERRAMIENTAS_FUERA_DEL_JUEGO,
+                    lambda: chequear_fuera_del_juego(ejecutables=ejecutables, juego=juego),
+                ),
+                (
+                    IdPrecondicion.SALIDA_VIEJA_DESACTIVADA,
+                    lambda: chequear_salida_vieja(
+                        plugins_txt=plugins_txt, brokered=self._data_visibility_domain != "physical"
+                    ),
+                ),
+                (
+                    IdPrecondicion.ETAPAS_PREVIAS,
+                    lambda: chequear_etapas_previas(self.verificar_etapas_previas().faltantes),
+                ),
+                (
+                    IdPrecondicion.OUTPUT_DEL_PRESET,
+                    lambda: chequear_output_de_presets(self._lecturas_de_presets(ejecutables_admitidos)),
+                ),
+                (
+                    IdPrecondicion.DLL_NG_Y_MASTERS,
+                    lambda: chequear_dll_ng(carpetas=self._capas_de_data(juego, plugins_txt)),
+                ),
+            ]
+        )
+        return ChecklistDeEtapa9(resultados=tuple(self._chequeo_aislado(ficha_id, fn) for ficha_id, fn in chequeos))
+
+    def _leer_del_resolver(self, metodo: str) -> object:
+        """Lectura best-effort del resolver para el checklist: un accessor que falla o no existe es ``None``."""
+        accessor = getattr(self._path_resolver, metodo, None)
+        if not callable(accessor):
+            return None
+        try:
+            return accessor()
+        except (RuntimeError, OSError, ValueError, PathViolationError):
+            return None
+
+    @staticmethod
+    def _chequeo_aislado(
+        ficha_id: IdPrecondicion, chequeo: Callable[[], ResultadoDePrecondicion]
+    ) -> ResultadoDePrecondicion:
+        """Un chequeo roto no tumba el checklist: queda «no verificable», registrado una vez."""
+        try:
+            return chequeo()
+        except DynDOLODExecutionError as exc:
+            return resultado(ficha_id, Estado.NO_VERIFICABLE, detalle=str(exc))
+        except Exception as exc:  # noqa: BLE001 -- un sensor de solo lectura nunca decide la corrida por explotar
+            logger.warning(
+                "el chequeo %s del checklist de la etapa 9 falló",
+                ficha_id.value,
+                exc_info=True,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": None},
+            )
+            return resultado(ficha_id, Estado.NO_VERIFICABLE, detalle=f"{type(exc).__name__}: {exc}")
+
+    def _lecturas_de_presets(self, ejecutables: list[tuple[str, object]]) -> list[LecturaDeOutputDePreset]:
+        """#5: el ``OutputPath`` guardado de cada herramienta contra el ``-o:`` que Sky-Claw le va a pasar.
+
+        El ``-o:`` sale del layout del ``WorkspaceResuelto`` (la misma derivación que usa el runner); sin workspace no
+        hay ``-o:`` que comparar y el chequeo queda «no verificable».
+        """
+        if self._workspace is None:
+            return []
+        esperados = outputs_administrados(self._workspace.root)
+        lecturas: list[LecturaDeOutputDePreset] = []
+        for tool, exe in ejecutables:
+            if not isinstance(exe, pathlib.Path) or not exe.is_file() or tool not in esperados:
+                continue
+            lectura = leer_output_de_preset(tool, exe, esperado=esperados[tool])
+            if lectura is not None:
+                lecturas.append(lectura)
+        return lecturas
+
+    def _capas_de_data(self, juego: object, plugins_txt: pathlib.Path | None) -> tuple[pathlib.Path, ...] | None:
+        """#10: dónde puede estar el DLL de DynDOLOD DLL NG que la corrida va a ver."""
+        data_root = self._leer_del_resolver("get_mo2_instance_data_root_estricto")
+        mods_dir = self._leer_del_resolver("get_mo2_mods_path")
+        return carpetas_donde_buscar_el_dll_ng(
+            data_del_juego=juego / "Data" if isinstance(juego, pathlib.Path) else None,
+            overwrite=data_root / "overwrite" if isinstance(data_root, pathlib.Path) else None,
+            mods_dir=mods_dir if isinstance(mods_dir, pathlib.Path) else None,
+            modlist_txt=plugins_txt.parent / "modlist.txt" if isinstance(plugins_txt, pathlib.Path) else None,
         )
 
     def _plugins_txt_del_perfil_activo(self) -> pathlib.Path | None:
@@ -1583,6 +1810,35 @@ class DynDOLODPipelineService:
         # su rastro, ahí se vería como progreso de esta. Se descarta ya, de forma síncrona. Va DESPUÉS del preview: un
         # ``dry_run`` es de solo lectura y no puede dejar sin muestra a una corrida que está en curso.
         self._progreso_actual = None
+        # #997: la fase y el corte también son de UNA corrida (mismo razonamiento que el progreso, arriba).
+        self._fase_actual = None
+        self._corte_de_la_corrida = None
+
+        # #997: el checklist del operador, ANTES de cualquier efecto (preflight, evento de inicio, runner, lock).
+        # Es la AUTORIDAD: la GUI y el agente lo consultan antes de preguntar, pero cualquier camino que llegue acá
+        # sin haberlo hecho también corta. Un ❌ es una falla segura o de seguridad y no tiene override (decisión del
+        # propietario); los ⚠️ no frenan. El ``message`` sigue siendo técnico y la ``guia`` lleva el criollo.
+        checklist = await self.verificar_checklist(run_texgen=run_texgen)
+        if not checklist.listo:
+            mensaje_del_checklist = checklist.mensaje_tecnico()
+            logger.warning(
+                "DynDOLOD (stage 9) no arranca, el checklist tiene bloqueantes: %s",
+                mensaje_del_checklist,
+                extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": tx_id},
+            )
+            return _attach_preflight(
+                {
+                    "status": "error",
+                    "success": False,
+                    "reason": "ChecklistBloqueado",
+                    "message": mensaje_del_checklist,
+                    "errors": [mensaje_del_checklist],
+                    "checklist": checklist.to_dict(),
+                    "guia": checklist.guia(),
+                },
+                None,
+                modo_de_interaccion,
+            )
 
         # Preflight brutal ANTES de tocar nada (T-16c·3): un semáforo ROJO (p. ej.
         # el dir de salida sin permisos) cancela el run de 30+ min / GBs sin adquirir
@@ -3152,6 +3408,67 @@ class DynDOLODPipelineService:
         ``pipeline.dyndolod.progress`` para quien prefiera suscribirse.
         """
         return self._progreso_actual
+
+    def rechazo_si_hay_corrida_en_curso(self, *, interaction_mode: object) -> dict[str, Any] | None:
+        """El resultado con que se rechaza una etapa 9 mientras otra corre, o ``None`` si el turno está libre.
+
+        Lo usa la autoridad (``_descarta_el_progreso_al_salir``, en el límite de ``execute``) y lo consultan las
+        superficies antes de preguntar o lanzar (``rechazo_temprano_por_corrida_en_curso``): un solo control para
+        la GUI y el agente. No toca el estado de la corrida en curso. Un modo inválido no es una corrida (lo rechaza
+        ``execute`` por su cuenta): ``None``.
+        """
+        modo = _modo_de_interaccion_o_none(interaction_mode)
+        if not self._corrida_en_curso or modo is None:
+            return None
+        mensaje = "DynDOLOD (stage 9): ya hay una corrida en curso en este proceso; no se lanza otra en paralelo"
+        return _attach_preflight(
+            {
+                "status": "error",
+                "success": False,
+                "reason": RAZON_ETAPA_EN_CURSO,
+                "message": mensaje,
+                "errors": [mensaje],
+                "guia": explicar_fallo(
+                    mensaje_tecnico=mensaje, fase=None, herramienta=None, corte=None, razon=RAZON_ETAPA_EN_CURSO
+                ),
+            },
+            None,
+            modo,
+        )
+
+    @property
+    def fase_actual(self) -> FaseEnCurso | None:
+        """Qué espera Sky-Claw AHORA en la corrida asistida en curso (#997), o ``None``.
+
+        Mismo ciclo de vida que :attr:`progreso_actual`: se descarta al iniciar y en TODA salida de ``execute``. La
+        leen la GUI (``etapa9_estado``) y ``lods_status`` del agente; los dos muestran el MISMO texto.
+        """
+        return self._fase_actual
+
+    async def _al_cambiar_de_fase(self, cambio: CambioDeFase) -> None:
+        """Callback del runner (#997): guarda la fase; si es un corte, recuerda en qué fase estaba y con qué código."""
+        if cambio.fase is FaseAsistida.CORTADA:
+            anterior = self._fase_actual
+            fase_previa = (
+                anterior.cambio.fase if anterior is not None and anterior.cambio.tool_name == cambio.tool_name else None
+            )
+            self._corte_de_la_corrida = _CorteDeLaCorrida(
+                herramienta=cambio.tool_name, fase_previa=fase_previa, corte=cambio.corte
+            )
+        self._fase_actual = FaseEnCurso(cambio=cambio)
+
+    def _guia_del_fallo(self, resultado_de_la_corrida: dict[str, Any]) -> dict[str, str]:
+        """La ``guia`` en criollo de un resultado fallido, con el corte que avisó el runner (si lo hubo)."""
+        corte = self._corte_de_la_corrida
+        razon = resultado_de_la_corrida.get("reason")
+        return explicar_fallo(
+            mensaje_tecnico=str(resultado_de_la_corrida.get("message") or ""),
+            fase=corte.fase_previa if corte is not None else None,
+            herramienta=corte.herramienta if corte is not None else None,
+            corte=corte.corte if corte is not None else None,
+            razon=razon if isinstance(razon, str) else None,
+            paso_pendiente=bool(resultado_de_la_corrida.get("needs_deployment")),
+        )
 
     async def _al_progresar(self, progreso: ProgresoDeHerramienta) -> None:
         """Callback del latido del runner: guarda el snapshot y publica ``pipeline.dyndolod.progress``.

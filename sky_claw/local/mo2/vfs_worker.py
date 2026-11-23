@@ -102,6 +102,8 @@ _SYNTHESIS_OPTIONAL_KEYS: frozenset[str] = frozenset(
         "require_patcher_receipts",
         "expected_settings_fingerprint",
         "expected_load_order_fingerprint",
+        # PR-3g (ADR 0019): ID de patcher → shim de la Fase 1; ver _synthesis_cli_executables.
+        "cli_executables",
     }
 )
 #: Plazo MÁXIMO para que el bridge confirme la supervisión. Es una cota de FALLO CERRADO,
@@ -546,6 +548,49 @@ def _optional_synthesis_payload_path(payload: Mapping[str, JsonValue], field: st
     return _synthesis_payload_path(payload, field)
 
 
+def _synthesis_cli_executables(
+    payload: Mapping[str, JsonValue],
+    validator: PathValidator,
+) -> dict[str, pathlib.Path] | None:
+    """Valida el mapa ``ID de patcher → shim`` de la Fase 1 (PR-3g, ADR 0019).
+
+    El shim es lo que Synthesis va a ejecutar bajo USVFS en lugar del patcher, así que cada ruta pasa
+    las mismas compuertas que el resto del payload (absoluta, sin traversal ni enlaces, confinada a las
+    raíces autorizadas) y además tiene que tener la FORMA de un shim materializado: el ejecutable con
+    su nombre fijo y su ``shim.json`` regular al lado. Que el mapa cubra exactamente los patchers
+    seleccionados lo exige el traductor (``prepare_synthesis_cli_settings``) dentro del runner.
+    """
+    # Import perezoso: el shim arrastra pefile y el worker no lo necesita salvo con este mapa.
+    from sky_claw.local.tools.synthesis_shim import NOMBRE_CONFIG_SHIM, NOMBRE_EJECUTABLE_SHIM
+
+    if "cli_executables" not in payload or payload["cli_executables"] is None:
+        return None
+    raw = payload["cli_executables"]
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("payload.cli_executables debe ser un objeto no vacío {ID de patcher: ruta del shim}")
+    result: dict[str, pathlib.Path] = {}
+    for clave, valor in raw.items():
+        campo = f"payload.cli_executables[{clave!r}]"
+        if not isinstance(clave, str) or not clave.strip():
+            raise ValueError("payload.cli_executables solo admite IDs de patcher no vacíos")
+        if not isinstance(valor, str) or not valor:
+            raise ValueError(f"{campo} debe ser una ruta (string no vacío)")
+        ruta = _validar_ruta_worker_sin_enlaces(pathlib.Path(valor), field=campo)
+        try:
+            validator.validate(ruta, strict_symlink=True)
+        except PathViolationError as exc:
+            raise ValueError(f"{campo} fuera de raíces autorizadas: {exc}") from exc
+        if ruta.name.casefold() != NOMBRE_EJECUTABLE_SHIM.casefold():
+            raise ValueError(f"{campo} debe apuntar a {NOMBRE_EJECUTABLE_SHIM}, no a {ruta.name!r}")
+        if link_kind(ruta) is not None or not ruta.is_file():
+            raise ValueError(f"{campo} debe ser un archivo regular real y no un enlace")
+        config_shim = ruta.parent / NOMBRE_CONFIG_SHIM
+        if link_kind(config_shim) is not None or not config_shim.is_file():
+            raise ValueError(f"{campo} no tiene su {NOMBRE_CONFIG_SHIM} regular al lado")
+        result[clave] = ruta
+    return result
+
+
 def _active_input_plugins_from_load_order(
     load_order_path: pathlib.Path,
     *,
@@ -677,6 +722,7 @@ async def _synthesis_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
                 validator.validate(path_val, strict_symlink=True)
             except PathViolationError as exc:
                 raise ValueError(f"payload.{field_name} fuera de raíces autorizadas: {exc}") from exc
+    cli_executables = _synthesis_cli_executables(payload, validator)
 
     if dotnet_root is not None:
         dotnet_roots: list[pathlib.Path] = [*sandbox_roots]
@@ -733,6 +779,7 @@ async def _synthesis_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
             block_building_within_mo2=block_building_within_mo2,
             shortcircuit=shortcircuit,
             require_patcher_receipts=require_patcher_receipts,
+            cli_executables=cli_executables,
         )
         runner = SynthesisRunner(config)
         result = await runner.run_pipeline(

@@ -23,6 +23,15 @@ for %%P in (%GUI_PORTS%) do (
     )
 )
 
+:: #997 (tropiezo 2 de R0): la GUI se cierra sola si nadie abre la pagina. El .exe no tiene
+::    consola, asi que este es el unico lugar donde el operador lo lee ANTES de que pase.
+::    El plazo es GUI_EXIT_WATCHDOG_FIRST_CONNECT_SECONDS (sky_claw/config.py); lo ancla
+::    tests/test_gui_guia_etapa9.py.
+echo [i] Se va a abrir el navegador con Sky-Claw.
+echo     Si en 90 segundos no hay ninguna pestana abierta, Sky-Claw se cierra solo.
+echo     Dejala abierta durante toda la corrida: si la cerras, se apaga a los pocos segundos.
+echo.
+
 :: 2. Try to run .exe version
 set "EXE_PATH="
 if exist "dist\SkyClawApp.exe" (
