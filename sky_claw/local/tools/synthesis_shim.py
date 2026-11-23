@@ -84,6 +84,12 @@ async def hilo_hasta_terminar(func: Callable[_P, _T], /, *args: _P.args, **kwarg
             if tarea.done():
                 raise
             cancelado = True
+        except BaseException as exc:
+            # Cancelaron al llamador y DESPUÉS el hilo falló: manda la cancelación. Propagar el error
+            # del hilo (p. ej. "ya publicado") dejaría que el llamador lo recupere y siga corriendo.
+            if cancelado:
+                raise asyncio.CancelledError from exc
+            raise
     if cancelado:
         raise asyncio.CancelledError
     return resultado

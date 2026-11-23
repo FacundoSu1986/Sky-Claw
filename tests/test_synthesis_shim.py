@@ -383,3 +383,26 @@ async def test_hilo_hasta_terminar_devuelve_y_propaga_errores() -> None:
 
     with pytest.raises(ValueError, match="boom"):
         await hilo_hasta_terminar(_falla)
+
+
+async def test_hilo_hasta_terminar_propaga_la_cancelacion_aunque_el_hilo_falle_despues() -> None:
+    """Si cancelan y después el hilo falla, sale CancelledError: el error del hilo no puede reanudar la corrida."""
+    import asyncio
+    import threading
+    import time
+
+    from sky_claw.local.tools.synthesis_shim import hilo_hasta_terminar
+
+    arranco = threading.Event()
+
+    def _falla_tarde() -> None:
+        arranco.set()
+        time.sleep(0.3)
+        raise FileExistsError("ya publicado")
+
+    tarea = asyncio.ensure_future(hilo_hasta_terminar(_falla_tarde))
+    await asyncio.to_thread(arranco.wait)
+    tarea.cancel()
+    with pytest.raises(asyncio.CancelledError) as info:
+        await tarea
+    assert isinstance(info.value.__cause__, FileExistsError)
