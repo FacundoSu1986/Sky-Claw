@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import sky_claw.local.tools._process as proceso_mod
 from sky_claw.local.tools.bodyslide_runner import (
     BodySlideConfig,
     BodySlideExecutionError,
@@ -33,6 +34,20 @@ from sky_claw.local.tools.wrye_bash_runner import (
     WryeBashExecutionError,
     WryeBashTimeoutError,
 )
+
+
+@pytest.fixture
+def job_simulado(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El proceso doble no tiene un PID real: Windows no puede meterlo en un Job.
+
+    BodySlide exige ``require_job=True`` (cierre #1003) y, sin Job, ``run_capture``
+    falla cerrado ANTES de esperar al hijo — en un runner Windows este test
+    observaría ese fallo y no el kill por timeout/cancelación que protege. Se
+    simula la asignación (y el cierre) del Job: el contrato del Job en sí lo
+    prueban ``test_process_helper.py`` y ``test_bodyslide_cierre_contractual.py``.
+    """
+    monkeypatch.setattr(proceso_mod, "assign_kill_on_close_job", lambda _pid: 1)
+    monkeypatch.setattr(proceso_mod, "close_job", lambda _job: None)
 
 
 def _hanging_proc() -> AsyncMock:
@@ -56,10 +71,22 @@ def _hanging_proc() -> AsyncMock:
 
 
 def _bodyslide(tmp_path, timeout: float) -> tuple[BodySlideRunner, tuple]:
+    # El factory necesita un Config.xml con TargetGame válido y quiet_verified=True
+    # para que el runner pase el gate de capacidad y la siembra (P0-1, P1-5) —
+    # sin eso el runner aborta con CAPABILITY_UNKNOWN antes del spawn y el
+    # timeout/cancel never happen (el kill de este test no tendría nada que
+    # matar).
+    (tmp_path / "Config.xml").write_text("<Config>\n  <TargetGame>4</TargetGame>\n</Config>\n", encoding="utf-8")
     runner = BodySlideRunner(
-        BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=tmp_path, timeout_seconds=timeout)
+        BodySlideConfig(
+            bodyslide_exe=tmp_path / "BodySlide.exe",
+            game_path=tmp_path,
+            timeout_seconds=timeout,
+            quiet_verified=True,
+        )
     )
-    return runner, ("Build", str(tmp_path / "out"))
+    # El target debe ser el destino canónico DEL GRUPO (P0-C + P1-A, revisión #1003).
+    return runner, ("Build", str(tmp_path / "BodySlide_Output" / "Build"))
 
 
 def _pandora(tmp_path, timeout: float) -> tuple[PandoraRunner, tuple]:
@@ -108,7 +135,7 @@ def test_timeout_errors_derivan_de_su_execution_error() -> None:
 
 
 @pytest.mark.parametrize("factory", _FACTORIES_QUE_SPAWNEAN)
-async def test_runner_kills_process_on_timeout(tmp_path, factory):
+async def test_runner_kills_process_on_timeout(tmp_path, factory, job_simulado):
     """En timeout, el runner debe matar+reapear el proceso hijo Y elevar su
     excepción de timeout dedicada (U-10).
 
@@ -136,7 +163,7 @@ async def test_runner_kills_process_on_timeout(tmp_path, factory):
 
 
 @pytest.mark.parametrize("factory", _FACTORIES_QUE_SPAWNEAN)
-async def test_runner_kills_process_on_cancel(tmp_path, factory):
+async def test_runner_kills_process_on_cancel(tmp_path, factory, job_simulado):
     """On task cancellation (graceful shutdown) the runner must kill the child
     and re-raise ``CancelledError`` (never swallow cancellation).
 

@@ -749,6 +749,11 @@ def summarize_ritual_result(tool_key: str, result: dict[str, Any]) -> tuple[str,
             "Ejecución no aprobada. Activá «Modo local» o aprobá la acción para continuar.",
             "negative",
         )
+    # #997: si el servicio explicó el fallo en criollo, el cartel muestra eso (qué pasó + qué hacer); el técnico
+    # queda en el desplegable de la tarjeta. El texto lo arma este controlador, no la vista del toast (#996).
+    explicada = result.get("guia")
+    if isinstance(explicada, dict) and explicada.get("titulo"):
+        return (f"{explicada['titulo']} {explicada.get('arreglo') or ''}".strip(), "negative")
     return (f"El ritual «{tool_key}» falló: {normalized['message']}", "negative")
 
 

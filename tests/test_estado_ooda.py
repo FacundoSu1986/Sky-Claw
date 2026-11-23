@@ -151,6 +151,9 @@ _ITEMS = frozenset(
         # Decisión de producto, no defecto: el botón maestro del home pre-Forge era un esqueleto
         # (#101) y el «PREPARAR JUEGO» del Forge sólo navega. Ver la fila.
         "GUI — «Preparar Juego» (secuencia completa en un clic)",
+        # #997: la capa de guía del asistido (checklist, fase en vivo, cortes en criollo). Parcial hasta verla en
+        # un navegador y en una corrida asistida real (rig humano).
+        "Guía al operador del modo asistido de la etapa 9 (#997)",
     }
 )
 
