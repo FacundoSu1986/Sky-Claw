@@ -221,7 +221,10 @@ def _validar_target_game(
     objetivo, la configuración debe coincidir exactamente con él.
     """
     nodo = raiz.find("TargetGame")
-    texto = (nodo.text or "").strip() if nodo is not None else ""
+    # Se valida el texto que se CONSERVA en Config.xml, no una copia normalizada:
+    # ``str.strip()`` quita espacios Unicode (U+00A0) que ``atoi`` no salta.
+    crudo = (nodo.text or "") if nodo is not None else ""
+    texto = crudo.strip(" \t\n\r\v\f")
     if not texto:
         raise BodySlideConfigPreconditionError(
             f"TargetGame no está configurado en '{config}' — BodySlide mostraría el modal de setup; "
@@ -229,7 +232,7 @@ def _validar_target_game(
         )
     # BodySlide lo lee con ``atoi``: sólo dígitos ASCII significan lo mismo para
     # los dos (``int("４") == 4``, ``atoi("４") == 0``).
-    if not texto.isascii() or not texto.isdigit():
+    if not crudo.isascii() or not texto.isdigit():
         raise BodySlideConfigPreconditionError(f"TargetGame no es un entero ASCII ('{texto}') en '{config}'")
     try:
         valor = int(texto)

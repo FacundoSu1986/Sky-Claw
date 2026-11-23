@@ -550,6 +550,9 @@ def _sembrar(tmp_path: pathlib.Path, contenido: str, **opciones):
         ("<Config><TargetGame>4</TargetGame><loglevel>2</loglevel></Config>", "LogLevel"),
         # atoi("４") == 0: Python lo leería como 4.
         ("<Config><TargetGame>４</TargetGame></Config>", "TargetGame"),
+        # str.strip() quita U+00A0 pero atoi no lo salta: BodySlide leería 0.
+        ("<Config><TargetGame>&#160;4</TargetGame></Config>", "TargetGame"),
+        ("<Config><TargetGame>4&#160;</TargetGame></Config>", "TargetGame"),
     ],
 )
 def test_siembra_rechaza_config_que_bodyslide_leeria_distinto(
@@ -593,3 +596,81 @@ def test_restauracion_sigue_con_los_demas_archivos_tras_un_fallo(
         restaurar()
     assert (exe.parent / "BodySlide.xml").read_bytes() == originales["BodySlide.xml"]
     assert (exe.parent / "BuildSelection.xml").read_bytes() == originales["BuildSelection.xml"]
+
+
+async def test_restauracion_encolada_sobrevive_a_dos_cancelaciones(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Executor saturado: la restauración queda EN COLA y el caller recibe dos cancelaciones.
+
+    Si la cancelación llegara a la task de ``to_thread``, el executor descartaría
+    el trabajo antes de empezarlo y la config quedaría sembrada. Con
+    ``mutar_hasta_terminal`` la task queda bajo ``shield``: la restauración corre
+    cuando se libera el único worker y recién entonces se propaga la cancelación.
+    Sincronización por eventos; los ``wait(timeout)`` son guardas contra cuelgues.
+    """
+    import asyncio
+    import concurrent.futures
+    import threading
+
+    loop = asyncio.get_running_loop()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    loop.set_default_executor(executor)
+    runner = _runner(tmp_path)
+    config = runner.config.bodyslide_exe.parent / "Config.xml"
+    bloqueo_corriendo = threading.Event()
+    liberar = threading.Event()
+    restaurada = threading.Event()
+
+    def _bloqueo():
+        bloqueo_corriendo.set()
+        liberar.wait(10.0)
+
+    original_snapshot = mod._snapshot_y_restaurar_archivos
+
+    def _snapshot_observado(exe):
+        snapshot, restaurar = original_snapshot(exe)
+
+        def _restaurar():
+            resultado = restaurar()
+            restaurada.set()
+            return resultado
+
+        return snapshot, _restaurar
+
+    original_log = mod._atribuir_log_a_corrida
+
+    def _log_y_saturar(*args, **kwargs):
+        # Corre en el único worker: encola el bloqueo ANTES de que el runner
+        # pueda encolar su restauración, así ésta queda esperando en la cola.
+        loop.call_soon_threadsafe(loop.run_in_executor, None, _bloqueo)
+        return original_log(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "_snapshot_y_restaurar_archivos", _snapshot_observado)
+    monkeypatch.setattr(mod, "_atribuir_log_a_corrida", _log_y_saturar)
+    destino = _raiz(tmp_path) / "CBBE"
+    try:
+        with patch.object(mod, "run_capture", _proceso_sin_write_bytes(destino, _log(runner))):
+            tarea = asyncio.create_task(
+                runner.run_batch("CBBE", str(destino), preset="Zeroed", preset_verified=True, manifest=_MANIFIESTO)
+            )
+            # El executor está saturado: no se puede esperar con to_thread. Se
+            # observa el evento desde el loop sin bloquearlo (guarda de 10 s).
+            for _ in range(1000):
+                if bloqueo_corriendo.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert bloqueo_corriendo.is_set()
+            for _ in range(2):
+                tarea.cancel()
+                hechas, _ = await asyncio.wait({tarea}, timeout=0.1)
+                assert not hechas, "la corrida salió con la restauración todavía en cola"
+            assert not restaurada.is_set()
+            liberar.set()
+            with pytest.raises(asyncio.CancelledError):
+                await tarea
+        assert restaurada.is_set(), "la restauración encolada se descartó"
+        assert config.read_text(encoding="utf-8") == _CONFIG_VÁLIDA
+    finally:
+        liberar.set()
+        executor.shutdown(wait=True)
