@@ -89,19 +89,33 @@ class Estado(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class FichaDePrecondicion:
-    """El texto del operador para una precondición. ``{campos}`` se completan con los datos del chequeo."""
+    """El texto del operador para una precondición. ``{campos}`` se completan con los datos del chequeo.
+
+    Un texto por estado (review Codex en #1007): ``titulo`` es el de la FALLA, ``titulo_ok`` el de un chequeo que pasó
+    y ``tema`` nombra lo que se revisa, para «No pude revisar {tema}.». Una fila ✓ nunca afirma una falla.
+    """
 
     id: IdPrecondicion
     titulo: str
     arreglo: str
     severidad_maxima: Severidad
+    titulo_ok: str
+    tema: str
     admite_override: bool = False
 
 
 def _ficha(
-    ficha_id: IdPrecondicion, titulo: str, arreglo: str, severidad: Severidad
+    ficha_id: IdPrecondicion,
+    titulo: str,
+    arreglo: str,
+    severidad: Severidad,
+    *,
+    titulo_ok: str,
+    tema: str,
 ) -> tuple[IdPrecondicion, FichaDePrecondicion]:
-    return ficha_id, FichaDePrecondicion(id=ficha_id, titulo=titulo, arreglo=arreglo, severidad_maxima=severidad)
+    return ficha_id, FichaDePrecondicion(
+        id=ficha_id, titulo=titulo, arreglo=arreglo, severidad_maxima=severidad, titulo_ok=titulo_ok, tema=tema
+    )
 
 
 CATALOGO: Mapping[IdPrecondicion, FichaDePrecondicion] = MappingProxyType(
@@ -112,48 +126,64 @@ CATALOGO: Mapping[IdPrecondicion, FichaDePrecondicion] = MappingProxyType(
                 "No encuentro DynDOLOD.",
                 "Abrí Ajustes y elegí dónde está DynDOLODx64.exe.",
                 Severidad.BLOQUEA,
+                titulo_ok="DynDOLOD está configurado y lo encuentro.",
+                tema="si encuentro DynDOLOD",
             ),
             _ficha(
                 IdPrecondicion.TEXGEN_ENCONTRADO,
                 "No encuentro TexGen.",
                 "Abrí Ajustes y elegí TexGenx64.exe (está en la misma carpeta que DynDOLOD).",
                 Severidad.BLOQUEA,
+                titulo_ok="TexGen está configurado y lo encuentro.",
+                tema="si encuentro TexGen",
             ),
             _ficha(
                 IdPrecondicion.HERRAMIENTAS_EN_CARPETA_PERMITIDA,
                 "DynDOLOD está en una carpeta que Sky-Claw no puede usar.",
                 "Movelo (o instalalo) en una de estas carpetas: {raices}. Después tocá «Revisar de nuevo».",
                 Severidad.BLOQUEA,
+                titulo_ok="DynDOLOD está en una carpeta que Sky-Claw puede usar.",
+                tema="en qué carpeta está DynDOLOD",
             ),
             _ficha(
                 IdPrecondicion.HERRAMIENTAS_FUERA_DEL_JUEGO,
                 "DynDOLOD o TexGen están adentro de la carpeta del juego, y ahí no arrancan.",
                 "Mové la carpeta de DynDOLOD afuera del juego (por ejemplo a C:\\Modding\\DynDOLOD) y actualizá la ruta.",
                 Severidad.BLOQUEA,
+                titulo_ok="DynDOLOD y TexGen están afuera de la carpeta del juego.",
+                tema="si DynDOLOD está adentro de la carpeta del juego",
             ),
             _ficha(
                 IdPrecondicion.SALIDA_VIEJA_DESACTIVADA,
                 "Está activa la salida vieja de DynDOLOD ({plugins}).",
                 "En MO2, destildá esos plugins (o el mod «DynDOLOD Output») y tocá «Revisar de nuevo».",
                 Severidad.BLOQUEA,
+                titulo_ok="La salida vieja de DynDOLOD está desactivada.",
+                tema="si quedó activa la salida vieja de DynDOLOD",
             ),
             _ficha(
                 IdPrecondicion.ETAPAS_PREVIAS,
                 "Faltan pasos anteriores: {etapas}.",
                 "Elegí «Asistido» (te va a pedir que confirmes) o completá esos pasos primero.",
                 Severidad.AVISO,
+                titulo_ok="Los pasos anteriores (Wrye Bash, Synthesis y el grass) están hechos.",
+                tema="los pasos anteriores",
             ),
             _ficha(
                 IdPrecondicion.OUTPUT_DEL_PRESET,
                 "{herramienta} va a abrir con otra carpeta de salida guardada.",
                 "Cuando se abra {herramienta}, cambiá el campo Output a {esperado} antes de aprobar.",
                 Severidad.AVISO,
+                titulo_ok="La carpeta de salida guardada en los presets es la correcta.",
+                tema="la carpeta de salida guardada en los presets",
             ),
             _ficha(
                 IdPrecondicion.DLL_NG_Y_MASTERS,
                 "Tenés DynDOLOD DLL NG: si los masters no están limpios, DynDOLOD frena a mitad de camino.",
                 "Limpialos con «Limpiar Archivos» (QuickAutoClean) o desactivá DynDOLOD DLL NG en MO2.",
                 Severidad.AVISO,
+                titulo_ok="No tenés DynDOLOD DLL NG activo.",
+                tema="si tenés DynDOLOD DLL NG activo",
             ),
         )
     )
@@ -192,6 +222,11 @@ class ResultadoDePrecondicion:
 
     @property
     def titulo(self) -> str:
+        """El texto de SU estado: la falla, el OK o «no pude revisar». Nunca la falla sobre una fila que pasó."""
+        if self.estado is Estado.OK:
+            return self.ficha.titulo_ok
+        if self.estado is Estado.NO_VERIFICABLE:
+            return f"No pude revisar {self.ficha.tema}."
         return _rellenar(self.ficha.titulo, dict(self.datos))
 
     @property

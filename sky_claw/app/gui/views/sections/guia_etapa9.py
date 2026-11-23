@@ -83,7 +83,8 @@ def vista_de_checklist(checklist: dict[str, Any] | None, *, modo: str) -> dict[s
             {
                 "marca": marca,
                 "titulo": str(item.get("titulo") or ""),
-                "arreglo": "" if item.get("estado") == "ok" else str(item.get("arreglo") or ""),
+                # El arreglo solo acompaña una falla: ni a lo que pasó ni a lo que no se pudo revisar (#1007).
+                "arreglo": str(item.get("arreglo") or "") if item.get("estado") == "falla" else "",
                 "detalle_tecnico": str(item.get("detalle_tecnico") or ""),
             }
         )

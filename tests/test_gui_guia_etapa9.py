@@ -97,6 +97,17 @@ def test_lo_no_verificable_se_muestra_sin_frenar() -> None:
     )
     assert vista["puede_arrancar"] is True
     assert vista["items"][0]["marca"] == "sin_revisar"
+    assert vista["items"][0]["titulo"].startswith("No pude revisar")
+    assert vista["items"][0]["arreglo"] == "", "no se le pide arreglar algo que no se comprobó que falle"
+
+
+def test_una_fila_que_paso_no_afirma_la_falla() -> None:
+    """Review Codex en #1007: con todo bien, la fila decía «✓ Listo · No encuentro DynDOLOD»."""
+    vista = vista_de_checklist(
+        _checklist(guia.resultado(IdPrecondicion.DYNDOLOD_ENCONTRADO, Estado.OK)), modo="asistido"
+    )
+    assert vista["items"][0]["titulo"] == "DynDOLOD está configurado y lo encuentro."
+    assert vista["items"][0]["arreglo"] == ""
 
 
 def test_cada_marca_lleva_una_palabra_ademas_del_color_y_su_glifo_es_del_tema() -> None:

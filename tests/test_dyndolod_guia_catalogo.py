@@ -76,6 +76,31 @@ def test_cada_ficha_dice_que_pasa_y_que_hacer_en_una_linea_en_criollo(ficha_id: 
     assert not _CODIGO_TECNICO.search(ficha.titulo), f"{ficha_id}: el título tiene un código técnico"
 
 
+@pytest.mark.parametrize("ficha_id", list(IdPrecondicion), ids=lambda f: f.value)
+def test_cada_ficha_tiene_su_texto_de_ok_y_su_tema_neutro(ficha_id: IdPrecondicion) -> None:
+    """Review Codex en #1007: una fila ✓ decía «No encuentro DynDOLOD». Cada estado necesita SU texto."""
+    ficha = CATALOGO[ficha_id]
+    for texto in (ficha.titulo_ok, ficha.tema):
+        assert texto.strip()
+        assert "\n" not in texto
+        assert not _CODIGO_TECNICO.search(texto)
+    assert ficha.titulo_ok != ficha.titulo
+
+
+@pytest.mark.parametrize("ficha_id", list(IdPrecondicion), ids=lambda f: f.value)
+def test_el_titulo_depende_del_estado_y_nunca_afirma_una_falla_que_no_ocurrio(ficha_id: IdPrecondicion) -> None:
+    ficha = CATALOGO[ficha_id]
+    ok = guia.resultado(ficha_id, Estado.OK)
+    sin_revisar = guia.resultado(ficha_id, Estado.NO_VERIFICABLE, detalle="x")
+    falla = guia.resultado(ficha_id, Estado.FALLA, detalle="x")
+
+    assert ok.titulo == ficha.titulo_ok
+    assert sin_revisar.titulo == f"No pude revisar {ficha.tema}."
+    assert falla.titulo == guia._rellenar(ficha.titulo, {})  # noqa: SLF001
+    assert ficha.titulo.split(":")[0] not in ok.titulo
+    assert ficha.titulo.split(":")[0] not in sin_revisar.titulo
+
+
 def test_un_resultado_no_puede_ser_mas_severo_que_su_ficha() -> None:
     with pytest.raises(ValueError, match="severidad"):
         ResultadoDePrecondicion(
