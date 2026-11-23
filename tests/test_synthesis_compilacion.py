@@ -318,3 +318,92 @@ async def test_assembly_name_invalido_falla(
 ) -> None:
     with pytest.raises(sc.CompilacionPatcherError, match="AssemblyName"):
         await _compilar(tmp_path, _Hitl(Decision.APPROVED), _Dotnet(assembly_name=nombre), monkeypatch)
+
+
+async def test_cambiar_el_sdk_invalida_la_cache(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # CodeRabbit: un SDK actualizado en el mismo dotnet root no puede devolver el build del anterior.
+    (tmp_path / "dotnet" / "sdk" / "10.0.404").mkdir(parents=True)
+    (tmp_path / "dotnet" / "dotnet.exe").write_bytes(pe_sintetico())
+    primero = await _compilar(tmp_path, _Hitl(Decision.APPROVED), _Dotnet(), monkeypatch)
+    (tmp_path / "dotnet" / "sdk" / "10.0.500").mkdir()
+    hitl = _Hitl(Decision.APPROVED)
+    segundo = await _compilar(tmp_path, hitl, _Dotnet(), monkeypatch)
+    assert segundo.cache_hit is False and len(hitl.pedidos) == 1
+    assert segundo.exe != primero.exe
+
+
+async def test_otro_dotnet_no_reusa_la_cache(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    raiz = _fuentes(tmp_path)
+    primero = await _compilar(tmp_path, _Hitl(Decision.APPROVED), _Dotnet(), monkeypatch)
+    otro = tmp_path / "otro_dotnet" / "dotnet.exe"
+    otro.parent.mkdir()
+    otro.write_bytes(pe_sintetico())
+    segundo = await sc.compilar_patcher_local(
+        raiz,
+        "MiPatcher/MiPatcher.csproj",
+        cache_raiz=tmp_path / "cache",
+        dotnet=otro,
+        hitl=_Hitl(Decision.APPROVED),  # type: ignore[arg-type]
+        timeout_s=60,
+        max_output_bytes=1_000_000,
+    )
+    assert segundo.cache_hit is False and segundo.exe != primero.exe
+
+
+async def test_error_del_sistema_al_lanzar_dotnet_es_error_de_compilacion(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _falla(args: list[str], **kwargs: Any) -> tuple[bytes, bytes, int]:
+        raise OSError("no se pudo asignar el Job Object")
+
+    monkeypatch.setattr(sc, "run_capture", _falla)
+    with pytest.raises(sc.CompilacionPatcherError, match="Job Object"):
+        await sc.compilar_patcher_local(
+            _fuentes(tmp_path),
+            "MiPatcher/MiPatcher.csproj",
+            cache_raiz=tmp_path / "cache",
+            dotnet=_dotnet_exe(tmp_path),
+            hitl=_Hitl(Decision.APPROVED),  # type: ignore[arg-type]
+            timeout_s=60,
+            max_output_bytes=1_000_000,
+        )
+
+
+async def test_publicacion_concurrente_devuelve_la_entrada_ganadora(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Dos builds del mismo patcher: mientras A espera la aprobación, B compila y publica. A no debe
+    # fallar al publicar: la entrada de B es válida y se revalida.
+    raiz = _fuentes(tmp_path)
+    dotnet_exe = _dotnet_exe(tmp_path)
+    monkeypatch.setattr(sc, "run_capture", _Dotnet())
+
+    async def _compilar_b() -> sc.PatcherCompilado:
+        return await sc.compilar_patcher_local(
+            raiz,
+            "MiPatcher/MiPatcher.csproj",
+            cache_raiz=tmp_path / "cache",
+            dotnet=dotnet_exe,
+            hitl=_Hitl(Decision.APPROVED),  # type: ignore[arg-type]
+            timeout_s=60,
+            max_output_bytes=1_000_000,
+        )
+
+    resultado_b: list[sc.PatcherCompilado] = []
+
+    class _HitlQueDejaPasarAB(_Hitl):
+        async def request_approval(self, **kwargs: Any) -> Decision:
+            resultado_b.append(await _compilar_b())
+            return await super().request_approval(**kwargs)
+
+    resultado_a = await sc.compilar_patcher_local(
+        raiz,
+        "MiPatcher/MiPatcher.csproj",
+        cache_raiz=tmp_path / "cache",
+        dotnet=dotnet_exe,
+        hitl=_HitlQueDejaPasarAB(Decision.APPROVED),  # type: ignore[arg-type]
+        timeout_s=60,
+        max_output_bytes=1_000_000,
+    )
+    assert resultado_a.exe == resultado_b[0].exe
+    assert resultado_a.cache_hit is True

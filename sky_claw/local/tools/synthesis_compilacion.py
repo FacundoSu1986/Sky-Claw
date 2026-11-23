@@ -90,8 +90,24 @@ def _validar_proyecto(raiz: pathlib.Path, proyecto_rel: str) -> PurePosixPath:
     return rel
 
 
-def _clave_de_cache(arbol_fuentes: str, proyecto: PurePosixPath) -> str:
-    material = f"{_ESQUEMA_CACHE}\0{arbol_fuentes}\0{proyecto.as_posix().casefold()}"
+def _identidad_toolchain(dotnet: pathlib.Path) -> str:
+    """Qué toolchain compila: ruta del ``dotnet`` y las versiones de SDK y runtime instaladas.
+
+    Se lee del disco y no con ``dotnet --version``: un acierto de caché no lanza procesos. Basta
+    para invalidar la caché si se usa otro ``dotnet`` o se instala/actualiza un SDK (sin
+    ``global.json``, el SDK más nuevo es el que compila).
+    """
+    raiz = dotnet.parent
+    versiones: list[str] = []
+    for sub in ("sdk", "shared/Microsoft.NETCore.App"):
+        carpeta = raiz / sub
+        nombres = sorted(p.name for p in carpeta.iterdir() if p.is_dir()) if carpeta.is_dir() else []
+        versiones.append(f"{sub}={','.join(nombres)}")
+    return f"{os.path.normcase(str(dotnet))}|{'|'.join(versiones)}"
+
+
+def _clave_de_cache(arbol_fuentes: str, proyecto: PurePosixPath, toolchain: str) -> str:
+    material = f"{_ESQUEMA_CACHE}\0{arbol_fuentes}\0{proyecto.as_posix().casefold()}\0{toolchain}"
     return hashlib.sha256(material.encode()).hexdigest()[:32]
 
 
@@ -123,14 +139,19 @@ async def _correr_dotnet(
     timeout_s: float,
     max_output_bytes: int,
 ) -> bytes:
-    stdout, stderr, rc = await run_capture(
-        [str(dotnet), *args],
-        timeout=timeout_s,
-        cwd=str(cwd),
-        env=env,
-        require_job=True,
-        max_output_bytes=max_output_bytes,
-    )
+    try:
+        stdout, stderr, rc = await run_capture(
+            [str(dotnet), *args],
+            timeout=timeout_s,
+            cwd=str(cwd),
+            env=env,
+            require_job=True,
+            max_output_bytes=max_output_bytes,
+        )
+    except OSError as exc:
+        # Job Object no asignable, salida que excede el límite, timeout (TimeoutError) o ejecutable
+        # ausente: todos son OSError. La cancelación (CancelledError) no lo es y se propaga.
+        raise CompilacionPatcherError(f"dotnet {args[0]} no pudo correr: {exc}") from exc
     if rc != 0:
         salida = (stderr or stdout).decode("utf-8", "replace")[-_COLA_DE_SALIDA:]
         raise CompilacionPatcherError(f"dotnet {args[0]} salió con {rc}: {salida}")
@@ -173,7 +194,11 @@ async def compilar_patcher_local(
     except ShimConfigError as exc:
         raise CompilacionPatcherError(str(exc)) from exc
 
-    final = cache_raiz / _clave_de_cache(arbol_fuentes, proyecto)
+    try:
+        toolchain = _identidad_toolchain(dotnet)
+    except OSError as exc:
+        raise CompilacionPatcherError(f"No se pudo leer el toolchain de {dotnet}: {exc}") from exc
+    final = cache_raiz / _clave_de_cache(arbol_fuentes, proyecto, toolchain)
     if os.path.lexists(final):
         return _verificar_salida(final)
 
@@ -255,6 +280,11 @@ async def compilar_patcher_local(
     try:
         os.replace(trabajo, final)
     except OSError as exc:
+        if os.path.lexists(final):
+            # Otro build del mismo patcher publicó primero: su entrada se revalida y se usa. La
+            # carpeta de trabajo propia queda para diagnóstico, como en cualquier corrida fallida.
+            logger.info("Otro build publicó %s primero; se revalida y se usa esa entrada", final)
+            return _verificar_salida(final)
         raise CompilacionPatcherError(f"No se pudo publicar el build en la caché ({final}): {exc}") from exc
     logger.info("Patcher %s compilado en la caché %s", proyecto.as_posix(), final)
     return PatcherCompilado(exe=final / "salida" / exe.name, salida_sha256=salida_sha256, cache_hit=False)
