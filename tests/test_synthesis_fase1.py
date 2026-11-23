@@ -275,7 +275,7 @@ def test_cada_tipo_de_patcher_tiene_su_preparacion() -> None:
     assert set(f1.PREPARADORES) == set(TIPO_POR_PATCHER_TYPE.values())
 
 
-# --- Cableado: SynthesisConfig.cli_executables → traductor (standalone) y rechazo en brokered ---------
+# --- Cableado: SynthesisConfig.cli_executables → traductor (standalone) y transporte en brokered ------
 
 import dataclasses  # noqa: E402
 
@@ -307,7 +307,7 @@ _CAMPOS_DE_SYNTHESIS_CONFIG = [
     "shortcircuit",
     "max_output_bytes",
     "require_patcher_receipts",
-    # PR-3f: NO viaja todavía al worker; el runner brokered lo rechaza (transporte: PR-3g).
+    # PR-3f/PR-3g: viaja al worker como payload.cli_executables y el worker lo valida.
     "cli_executables",
 ]
 
@@ -351,10 +351,14 @@ async def test_el_runner_le_pasa_el_mapa_al_traductor(tmp_path: pathlib.Path, mo
     assert capturado["cli_executables"] == mapa
 
 
-def test_el_runner_brokered_rechaza_el_mapa_en_vez_de_perderlo(tmp_path: pathlib.Path) -> None:
+def test_el_runner_brokered_transporta_el_mapa_en_vez_de_perderlo(tmp_path: pathlib.Path) -> None:
+    # PR-3g: el mapa viaja en el payload (la validación del worker vive en test_brokered_synthesis.py).
+    shim = tmp_path / "shims" / "00-c" / "SkyClawSynthesisShim.exe"
+    shim.parent.mkdir(parents=True)
+    shim.write_bytes(b"MZ")
     cfg = _config(
         tmp_path,
-        cli_executables={"c": tmp_path / "s.exe"},
+        cli_executables={"c": shim},
         block_building_within_mo2=True,
         require_patcher_receipts=True,
     )
@@ -365,7 +369,7 @@ def test_el_runner_brokered_rechaza_el_mapa_en_vez_de_perderlo(tmp_path: pathlib
         data_root=tmp_path / "mo2",
         mods_dir=tmp_path / "mo2" / "mods",  # type: ignore[arg-type]
     )
-    with pytest.raises(sr.SynthesisExecutionError, match="cli_executables"):
-        proxy._build_job_payload(
-            patcher_ids=["c"], expected_plugins=["Skyrim.esm"], settings_fingerprint="a", load_order_fingerprint="b"
-        )
+    payload = proxy._build_job_payload(
+        patcher_ids=["c"], expected_plugins=["Skyrim.esm"], settings_fingerprint="a", load_order_fingerprint="b"
+    )
+    assert payload["cli_executables"] == {"c": str(shim)}

@@ -416,6 +416,17 @@ x64 instalado):
   y shims; el shim recompilado inyecta `-f` o `-i` por separado; la segunda preparación sale de caché
   sin HITL. Falta: cablear `preparar_fase1` en el servicio y transportar el mapa al worker (PR-3g),
   `SynthesisPreset` e `install_synthesis_cli`.
+- **PR-3g (transporte del mapa de shims al worker):** `BrokeredSynthesisRunner._build_job_payload` deja
+  de rechazar `cli_executables` y lo manda como `payload.cli_executables` (`{ID: ruta}`; mapa vacío o
+  ruta con enlaces → error). El worker (`_synthesis_cli_executables` en `vfs_worker.py`) lo acepta como
+  clave opcional del esquema cerrado y exige por cada shim: ruta absoluta sin traversal ni enlaces,
+  confinada a las mismas raíces autorizadas que el resto del payload, nombre `SkyClawSynthesisShim.exe`
+  y su `shim.json` regular al lado; recién entonces lo pasa a `SynthesisConfig`, y el traductor exige
+  que cubra exactamente los patchers seleccionados. Consecuencia para el corte siguiente: los shims de
+  la corrida tienen que quedar bajo una de esas raíces (p. ej. el temporal del sistema), no en la caché.
+  Falta: cablear `preparar_fase1` en el servicio (PR-3h: HITL, `dotnet`/`git` x64, las dos
+  superficies que construyen el servicio), `SynthesisPreset` e `install_synthesis_cli`. Sin rig: el
+  backend brokered sigue bloqueado por `_CONTENCION_SYNTHESIS_VERIFICADA = False`.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.
