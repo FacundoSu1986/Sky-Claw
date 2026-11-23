@@ -335,6 +335,17 @@ x64 instalado):
 - **Verificado en código local y upstream:** toda la sección §1 (inspección directa de `Sky-Claw`
   en `c6e1b022`/`4c2da7ae` y del repositorio `Mutagen-Modding/Synthesis` en `0.36.6` `d8150fb` y
   `HEAD 14cf3fa`, más metadata de GitHub Releases y NuGet).
+- **PR-3a (primer corte de PR-3, decisión CET de §2.4):** `sky_claw/local/tools/synthesis_prebuild.py`
+  (estricto en `mypy`) lee el flag CETCompat del PE, clasifica cada patcher ya compilado en
+  directo / vía `dotnet.exe <nombre>.dll` / rechazo, fija los argumentos de `dotnet build` de Fase 1
+  (`--no-incremental`, `-p:CETCompat=false`, `--disable-build-servers`) y verifica fail-closed el
+  apphost producido. Ancla: `tests/test_synthesis_lanzamiento_cet.py` enumera un caso por cada
+  `Motivo` (un camino nuevo sin caso rompe el test). Verificado además contra los apphosts reales del
+  rig (con y sin CET, un single-file .NET 10, el CLI y un apphost renombrado). **Todavía sin
+  consumidor:** el shim, el traductor a `CliPatcherSettings`, la caché, el detector `.NET 10`, la
+  compuerta HITL de egress, `SynthesisPreset` e `install_synthesis_cli` quedan para los cortes
+  siguientes de PR-3. No se probó un self-contained real (su forma `includedFrameworks` se cubre con
+  `runtimeconfig.json` sintético).
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.
