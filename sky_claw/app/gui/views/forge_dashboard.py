@@ -21,7 +21,11 @@ from typing import Any
 
 from nicegui import app, ui
 
-from sky_claw.app.gui.controllers.etapa9_estado import lineas_de_progreso, texto_de_cuarentena
+from sky_claw.app.gui.controllers.etapa9_estado import (
+    STORE_KEY_CHECKLIST_ETAPA9,
+    lineas_de_progreso,
+    texto_de_cuarentena,
+)
 from sky_claw.app.gui.controllers.ritual_runner import (
     CLIENT_KEY_AUTO_APPROVE,
     CLIENT_KEY_MODO_DE_INTERACCION,
@@ -50,6 +54,7 @@ from sky_claw.app.gui.icons import (
 from sky_claw.app.gui.state import get_store
 
 from .sections import create_preflight_panel
+from .sections.guia_etapa9 import crear_guia_de_la_tarjeta, html_del_paso
 
 # Stash for the HITL respond callback so the module-level modal refreshable can
 # reach it (set per render in render_forge_dashboard, like the live panels read
@@ -402,6 +407,8 @@ def render_forge_dashboard(
     # expresa intención y nada más.
     _RITUAL_RESUME_CALLBACKS["resume"] = _cb(callbacks, "on_ritual_resume")
     _ETAPA9_CALLBACKS["estado"] = _cb(callbacks, "on_etapa9_estado")
+    # #997: «Revisar de nuevo» de la guía de la etapa 9 (el checklist lo arma el servicio, en segundo plano).
+    _ETAPA9_CALLBACKS["revisar"] = _cb(callbacks, "on_etapa9_revisar")
     with ui.element("div").classes("sc-shell").style(root):
         # Live heartbeat for the vitals bars + header HUD. Refresh ONLY those two
         # @ui.refreshable containers (never the whole page), so CPU/GPU/RAM pulse
@@ -767,9 +774,13 @@ def _etapa9_estado_panel() -> None:
         estado = leer()
     except Exception:
         return  # un panel informativo nunca rompe el dashboard
-    if estado is None or (estado.progreso is None and estado.cuarentena is None):
+    fase = getattr(estado, "fase", None)
+    if estado is None or (estado.progreso is None and estado.cuarentena is None and fase is None):
         return
     bloques: list[str] = []
+    if fase is not None:
+        # #997: lo primero que ve el operador durante el asistido es QUÉ HACER AHORA (y qué no tocar todavía).
+        bloques.append(html_del_paso(fase))
     if estado.cuarentena is not None:
         bloques.append(
             "<div style=\"font-family:'EB Garamond',serif; font-size:13px; line-height:1.4; color:#e8b4a0;\">"
@@ -789,12 +800,21 @@ def _etapa9_estado_panel() -> None:
         ui.html("".join(bloques)).style(_FRAGMENTO)
 
 
+def _usar_asistido() -> None:
+    """#9 del Anexo A: con etapas previas faltantes, ofrecer el Asistido desde el principio (no rechazar al final)."""
+    _fijar_modo_de_interaccion("asistido")
+    _ayuda_del_modo_de_interaccion.refresh()
+    _rituales.refresh()
+
+
 def _selector_de_modo_de_interaccion() -> None:
     """Selector de modo de la etapa 9 (H-12): lo lee ``on_ritual_run`` en el click, con el contexto de este cliente."""
 
     def _al_cambiar(evento: Any) -> None:
         _fijar_modo_de_interaccion(getattr(evento, "value", None))
         _ayuda_del_modo_de_interaccion.refresh()
+        # #997: la guía de la tarjeta depende del modo (en Desatendido, faltar etapas previas frena el botón).
+        _rituales.refresh()
 
     (
         ui.toggle(
@@ -1693,8 +1713,19 @@ def _ritual_card(
                     f"<div style=\"font-family:'Spline Sans Mono',monospace; font-size:10px; line-height:1.4; color:#8a8270; word-break:break-word;\">{_e(detalle_resume)}</div>"
                 )
         # H-12: el modo de la etapa 9 se elige antes de «Ejecutar»; solo se ofrece si el botón va a despachar de verdad.
+        frenada_por_la_guia = False
         if action == "run" and r["tool"] in RITUALES_CON_MODO_DE_INTERACCION:
             _selector_de_modo_de_interaccion()
+            # #997: «Antes de arrancar». Con un bloqueante el botón no despacha: la corrida iba a cortar igual.
+            vista_de_la_guia = crear_guia_de_la_tarjeta(
+                get_store().get(STORE_KEY_CHECKLIST_ETAPA9),
+                modo=modo_de_interaccion_del_cliente(),
+                on_revisar=_ETAPA9_CALLBACKS.get("revisar"),
+                on_usar_asistido=_usar_asistido,
+            )
+            if not vista_de_la_guia["puede_arrancar"]:
+                frenada_por_la_guia = True
+                btn_label = _e(vista_de_la_guia["boton"])
         b = (
             ui.element("button")
             .classes("sc-ritual-btn")
@@ -1703,9 +1734,10 @@ def _ritual_card(
                 f"letter-spacing:.1em; background:rgba(0,0,0,.3); border:1px solid; border-radius:4px; {btn_style}"
             )
         )
-        if bloqueada:
+        if bloqueada or frenada_por_la_guia:
             # Hay un single-flight tomado: un segundo click sólo devolvería el aviso
             # «ya hay un ritual en curso». El botón lo dice sin tener que apretarlo.
+            # #997: lo mismo con un bloqueante del checklist: el rótulo ya dice qué arreglar.
             b.props("disabled")
         # Fase 2: an available tool runs for real through the supervisor dispatcher
         # (HITL-gated). Follow-up C: a "missing" tool with an auto-installer downloads

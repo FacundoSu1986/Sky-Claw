@@ -38,7 +38,11 @@ from sky_claw.app.gui.controllers import (
     ModController,
     NavigationController,
 )
-from sky_claw.app.gui.controllers.etapa9_estado import leer_estado_de_la_etapa9
+from sky_claw.app.gui.controllers.etapa9_estado import (
+    STORE_KEY_CHECKLIST_ETAPA9,
+    leer_estado_de_la_etapa9,
+    revisar_checklist,
+)
 from sky_claw.app.gui.controllers.ritual_runner import (
     STORE_KEY_DIAGNOSTICO_PARALLAX,
     STORE_KEY_PENDING_HITL,
@@ -711,6 +715,25 @@ def _dispatch_hitl_response(
 
 
 @ui.refreshable
+def _revisar_checklist_de_la_etapa9() -> None:
+    """#997: revisa el checklist de la etapa 9 en una tarea de fondo (nunca en el render ni bloqueando el loop).
+
+    Lo disparan «Revisar de nuevo», la publicación del runtime (el supervisor ya existe) y el fin de cada ritual. Sin
+    loop corriendo (un ``store.set`` desde otro hilo) no hace nada: la próxima revisión lo cubre.
+    """
+    runtime = get_runtime_context()
+    if runtime is None:
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    create_tracked_task(
+        revisar_checklist(supervisor=runtime.supervisor, store=get_store(), run_texgen=True),
+        name="gui-etapa9-checklist",
+    )
+
+
 def main_page() -> None:
     """Single page that gates between Wizard and Dashboard via the store."""
     ui.dark_mode().enable()
@@ -806,6 +829,8 @@ def main_page() -> None:
         consultar_cuarentena=getattr(runtime.app_context, "estado_de_cuarentena_vfs", None),
         ahora=time.time(),
     )
+    # #997: «Revisar de nuevo» de la guía de la etapa 9 — el MISMO checklist que corre el servicio, en segundo plano.
+    callbacks["on_etapa9_revisar"] = _revisar_checklist_de_la_etapa9
 
     # F-001 (post-D2) / ADR 0016 §6: el botón de continuación del toast de
     # feedback. Es el MISMO dispatcher/supervisor que "Generar" — la vista sólo
@@ -1219,6 +1244,12 @@ def setup_app() -> None:
     # tarjeta. Las tres claves la despiertan; ninguna refresca la página.
     for clave_ritual in (STORE_KEY_RITUAL_IN_FLIGHT, STORE_KEY_RITUAL_EN_CURSO, STORE_KEY_RITUAL_LAST_RESULT):
         store.subscribe(clave_ritual, _rituales.refresh)
+    # #997: la guía de la tarjeta de DynDOLOD se repinta con cada checklist nuevo, y el checklist se vuelve a
+    # revisar cuando el runtime queda publicado y cuando termina un ritual (lo que el operador arregló o lo que la
+    # corrida cambió). La revisión escribe SOLO su clave, que no está suscripta a revisar: no hay bucle.
+    store.subscribe(STORE_KEY_CHECKLIST_ETAPA9, _rituales.refresh)
+    store.subscribe(_RUNTIME_KEY, _revisar_checklist_de_la_etapa9)
+    store.subscribe(STORE_KEY_RITUAL_LAST_RESULT, _revisar_checklist_de_la_etapa9)
     # T-16b: el semáforo de preflight que el dispatch adjunta se surface en su
     # propio @ui.refreshable, sin resetear el chat (mismo patrón que el toast).
     store.subscribe(STORE_KEY_RITUAL_PREFLIGHT, _ritual_preflight_panel.refresh)
