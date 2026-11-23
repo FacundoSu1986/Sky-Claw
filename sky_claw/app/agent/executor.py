@@ -10,6 +10,7 @@ from typing import Any
 from sky_claw.app.core.windows_interop import ModdingToolsAgent
 from sky_claw.app.security.path_validator import PathValidator, PathViolationError
 from sky_claw.config import SystemPaths
+from sky_claw.sin_consola import creationflags_sin_consola
 
 # Standard 2026 Process Orchestration
 logger = logging.getLogger("SkyClaw.ManagedExecutor")
@@ -133,6 +134,7 @@ class ManagedToolExecutor:
                 *win_args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=creationflags_sin_consola(),
             )
 
             # Start monitoring tasks
