@@ -22,6 +22,7 @@ import re
 import sys
 import tempfile
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -302,6 +303,10 @@ class SynthesisConfig:
     shortcircuit: bool | None = None
     max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES
     require_patcher_receipts: bool = False
+    #: PR-3f (ADR 0019 §2.1): ID canónico → shim de la Fase 1. Con mapa, el traductor de PR-3c convierte
+    #: cada patcher en un ``CliPatcherSettings`` que apunta a su shim. Todavía NO viaja al worker
+    #: brokered: ese runner lo rechaza (el transporte llega con el cableado del servicio, PR-3g).
+    cli_executables: Mapping[str, pathlib.Path] | None = None
 
     def __post_init__(self) -> None:
         """Valida el ejecutable y completa rutas derivables sin adivinar el perfil."""
@@ -720,6 +725,7 @@ class SynthesisRunner:
                     self._config.profile,
                     patcher_ids,
                     dotnet_path_override=dotnet_override,
+                    cli_executables=self._config.cli_executables,
                 )
             except PatcherPipelineError as exc:
                 raise SynthesisExecutionError(f"Invalid Synthesis pipeline settings: {exc}", stderr=str(exc)) from exc

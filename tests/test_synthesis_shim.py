@@ -205,11 +205,25 @@ def test_via_dotnet_con_dotnet_inexistente_falla(tmp_path: pathlib.Path) -> None
         ss.construir_config_shim(_patcher(tmp_path, cet=1), dotnet=tmp_path / "no" / "dotnet.exe")
 
 
-def test_carpetas_de_datos_van_juntas(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize("cual", ["internal", "default"])
+def test_cada_carpeta_de_datos_es_independiente(tmp_path: pathlib.Path, cual: str) -> None:
+    # Upstream (ConstructSolutionPatcherRunArgs 0.36.6) pasa -i y -f POR SEPARADO, cada uno solo si su
+    # carpeta existe junto al .csproj: un patcher con solo Data/ o solo InternalData/ es válido.
     exe = _patcher(tmp_path, cet=0)
-    (tmp_path / "InternalData").mkdir()
-    with pytest.raises(ss.ShimConfigError):
-        ss.construir_config_shim(exe, internal_data_folder=tmp_path / "InternalData")
+    carpeta = tmp_path / ("InternalData" if cual == "internal" else "Data")
+    carpeta.mkdir()
+    kwargs = {"internal_data_folder" if cual == "internal" else "default_data_folder_path": carpeta}
+    cfg = ss.construir_config_shim(exe, **kwargs)  # type: ignore[arg-type]
+    assert cfg["internalDataFolder"] == (str(carpeta) if cual == "internal" else None)
+    assert cfg["defaultDataFolderPath"] == (str(carpeta) if cual == "default" else None)
+
+
+def test_el_shim_csharp_tampoco_exige_las_dos_carpetas() -> None:
+    fuente = (_FUENTES / "Program.cs").read_text(encoding="utf-8")
+    assert "van juntos" not in fuente
+    # Inyecta cada flag solo con su carpeta: -i con InternalDataFolder, -f con DefaultDataFolderPath.
+    assert "if (cfg.InternalDataFolder is not null)" in fuente
+    assert "if (cfg.DefaultDataFolderPath is not null)" in fuente
 
 
 def test_carpeta_de_datos_inexistente_falla(tmp_path: pathlib.Path) -> None:

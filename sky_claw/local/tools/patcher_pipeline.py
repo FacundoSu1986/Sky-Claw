@@ -77,6 +77,23 @@ _ALLOWED_SYNTHESIS_PATCHER_TYPES = frozenset(
     }
 )
 
+#: PR-3f: clase de orquestación de la Fase 1 por tipo admitido (igualdad anclada en los tests).
+TIPO_POR_PATCHER_TYPE: dict[str, str] = {
+    "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings": "git",
+    "Synthesis.Bethesda.Execution.Settings.SolutionPatcherSettings": "solution",
+    "Synthesis.Bethesda.Execution.Settings.CliPatcherSettings": "cli",
+}
+
+
+@dataclass(frozen=True)
+class PatcherV2Seleccionado:
+    """Un patcher habilitado y seleccionado, tal como lo leyó la única lectura del perfil V2."""
+
+    canonical_id: str
+    nickname: str
+    tipo: str  # "git" | "solution" | "cli"
+    datos: dict[str, Any]
+
 
 #: PR-3c (ADR 0019 §2.1): forma CERRADA del patcher traducido para la Fase 2. Cualquier campo de
 #: Git/Solution que sobreviva (``RemoteRepoPath``, ``SolutionPath``...) haría que Synthesis clone o
@@ -611,6 +628,43 @@ class PatcherPipeline:
             split_if_max_masters_exceeded=split_enabled,
             patcher_nicknames=selected_nicknames,
         )
+
+    @classmethod
+    def seleccionar_patchers_v2(
+        cls,
+        settings_path: pathlib.Path,
+        profile_identifier: str,
+        patcher_ids: list[str] | None = None,
+    ) -> tuple[PatcherV2Seleccionado, ...]:
+        """Patchers que correrían, con su tipo y una COPIA de sus datos, para la Fase 1 (PR-3f).
+
+        Reusa la misma lectura y selección que :meth:`prepare_synthesis_cli_settings`: el orquestador
+        y el traductor no pueden ver perfiles distintos. Un patcher sin ``$type`` no tiene tipo
+        conocido y falla cerrado.
+        """
+        _, _, active_groups = cls._read_synthesis_profile(settings_path, profile_identifier)
+        selected_keys = {(g, p) for g, p, _, _ in cls._select_synthesis_entries(active_groups, patcher_ids)}
+        seleccion: list[PatcherV2Seleccionado] = []
+        for group_index, _, group_name, patchers in active_groups:
+            for patcher_index, patcher, canonical_id, _ in patchers:
+                if (group_index, patcher_index) not in selected_keys:
+                    continue
+                tipo_canonico = _validate_allowed_type_tag(
+                    patcher, _ALLOWED_SYNTHESIS_PATCHER_TYPES, kind="patcher", context=f"group {group_name!r}"
+                )
+                if tipo_canonico is None:
+                    raise PatcherPipelineError(
+                        f"Synthesis patcher {canonical_id!r} has no $type: cannot tell Git, Solution or CLI apart"
+                    )
+                seleccion.append(
+                    PatcherV2Seleccionado(
+                        canonical_id=canonical_id,
+                        nickname=_resolve_patcher_execution_name(patcher, canonical_id),
+                        tipo=TIPO_POR_PATCHER_TYPE[tipo_canonico.split(",", 1)[0]],
+                        datos=copy.deepcopy(patcher),
+                    )
+                )
+        return tuple(seleccion)
 
     @classmethod
     def prepare_synthesis_cli_settings(

@@ -303,6 +303,13 @@ class BrokeredSynthesisRunner:
         settings_fingerprint: str,
         load_order_fingerprint: str,
     ) -> dict[str, JsonValue]:
+        if self._config.cli_executables is not None:
+            # PR-3f: el mapa de shims todavía no viaja al worker. Ignorarlo dejaría correr bajo USVFS
+            # los patchers Git/Solution sin shim (compilando dentro del VFS): se rechaza.
+            raise SynthesisExecutionError(
+                "cli_executables (shims de la Fase 1) aún no se transporta al worker brokered; "
+                "se rechaza en vez de ignorarlo (ADR 0019, PR-3g)"
+            )
         settings_path = self._config.pipeline_settings_path
         if settings_path is None:
             raise SynthesisExecutionError("Synthesis PipelineSettingsPath is required")
