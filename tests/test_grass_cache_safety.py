@@ -30,6 +30,7 @@ from sky_claw.local.tools.grass_cache_safety import (
     recuperar_progreso,
     respaldar_cache,
     ruta_del_flag,
+    verificar_respaldo_para_borrado,
 )
 
 
@@ -100,7 +101,7 @@ def test_inventario_trata_cualquier_contenido_como_progreso(grass: pathlib.Path,
     inv = _inventario(grass, juego)
 
     assert inv.flag_presente is True
-    assert inv.flag_progreso == "formato-que-no-conozco\n"
+    assert inv.flag_progreso == b"formato-que-no-conozco\n"
 
 
 def test_inventario_flag_en_blanco_no_es_progreso(grass: pathlib.Path, juego: pathlib.Path) -> None:
@@ -202,12 +203,14 @@ def test_rebuild_sin_aprobacion_se_niega(grass: pathlib.Path, juego: pathlib.Pat
 
 
 def test_rebuild_sin_raiz_de_estado_se_niega(grass: pathlib.Path, juego: pathlib.Path) -> None:
+    # El ack de USVFS ya está dado: lo que falta acá es dónde dejar el respaldo.
     with pytest.raises(GrassCacheSafetyError) as excinfo:
         preparar_arranque(
             modo="rebuild",
             game_path=juego,
             grass_dir=grass,
             aprobacion=APROBACION_REBUILD,
+            ack_usvfs_no_verificado=True,
         )
 
     assert excinfo.value.codigo == "rebuild_sin_respaldo"
@@ -222,6 +225,7 @@ def test_rebuild_con_aprobacion_respalda_y_planifica(
         grass_dir=grass,
         aprobacion=APROBACION_REBUILD,
         raiz_estado=estado,
+        ack_usvfs_no_verificado=True,
     )
 
     assert plan.accion == "escribir_vacio"
@@ -245,11 +249,12 @@ def test_rebuild_archiva_el_progreso_antes_de_pisarlo(
         grass_dir=grass,
         aprobacion=APROBACION_REBUILD,
         raiz_estado=estado,
+        ack_usvfs_no_verificado=True,
     )
     aplicar_plan(plan, ruta_del_flag(juego))
 
     assert ruta_del_flag(juego).read_text(encoding="utf-8") == ""
-    assert recuperar_progreso(estado, plan.inventario) == progreso
+    assert recuperar_progreso(estado, plan.inventario) == progreso.encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +278,7 @@ def test_respaldo_de_otro_conjunto_no_habilita_rebuild(
             inventario=inv_nuevo,
             aprobacion=APROBACION_REBUILD,
             respaldo=respaldo,
+            ack_usvfs_no_verificado=True,
         )
 
     assert excinfo.value.codigo == "respaldo_no_cubre_el_cache"
@@ -287,12 +293,22 @@ def test_preparar_arranque_respalda_el_estado_actual_si_el_cache_cambio(
     # estado actual antes de destruirlo: nunca se apoya en un respaldo viejo.
     estado = tmp_path / "estado"
     preparar_arranque(
-        modo="rebuild", game_path=juego, grass_dir=grass, aprobacion=APROBACION_REBUILD, raiz_estado=estado
+        modo="rebuild",
+        game_path=juego,
+        grass_dir=grass,
+        aprobacion=APROBACION_REBUILD,
+        raiz_estado=estado,
+        ack_usvfs_no_verificado=True,
     )
     (grass / "aparece_despues.cgid").write_bytes(b"nueva")
 
     plan = preparar_arranque(
-        modo="rebuild", game_path=juego, grass_dir=grass, aprobacion=APROBACION_REBUILD, raiz_estado=estado
+        modo="rebuild",
+        game_path=juego,
+        grass_dir=grass,
+        aprobacion=APROBACION_REBUILD,
+        raiz_estado=estado,
+        ack_usvfs_no_verificado=True,
     )
 
     assert plan.respaldo is not None
@@ -363,13 +379,13 @@ def test_progreso_archivado_se_restaura_si_la_huella_coincide(
     grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
 ) -> None:
     inv = _inventario(grass, juego)
-    archivar_progreso(estado, inv, "Tamriel\n-2,4\n")
+    archivar_progreso(estado, inv, b"Tamriel\n-2,4\n")
 
     plan = preparar_arranque(modo="resume", game_path=juego, grass_dir=grass, raiz_estado=estado)
 
     assert plan.accion == "restaurar"
     aplicar_plan(plan, ruta_del_flag(juego))
-    assert ruta_del_flag(juego).read_text(encoding="utf-8") == "Tamriel\n-2,4\n"
+    assert ruta_del_flag(juego).read_bytes() == b"Tamriel\n-2,4\n"
 
 
 def test_progreso_archivado_de_otro_cache_no_se_restaura(
@@ -378,7 +394,7 @@ def test_progreso_archivado_de_otro_cache_no_se_restaura(
     # Reanudar con el progreso de otro conjunto haría que NGIO saltee celdas
     # que nunca se escribieron: mejor negarse que producir un caché incompleto.
     inv_ajeno = _inventario(grass, juego)
-    archivar_progreso(estado, inv_ajeno, "Tamriel\n0,0\n")
+    archivar_progreso(estado, inv_ajeno, b"Tamriel\n0,0\n")
     (grass / "aparece_despues.cgid").write_bytes(b"nueva")
 
     with pytest.raises(GrassCacheSafetyError) as excinfo:
@@ -393,17 +409,21 @@ def test_neutralizar_flag_archiva_y_borra(grass: pathlib.Path, juego: pathlib.Pa
     ruta_del_flag(juego).write_text(progreso, encoding="utf-8")
     inv = _inventario(grass, juego)
 
-    neutralizar_flag(flag_path=ruta_del_flag(juego), grass_dir=grass, raiz_estado=estado)
+    resultado = neutralizar_flag(flag_path=ruta_del_flag(juego), grass_dir=grass, raiz_estado=estado)
 
+    assert resultado.borrado is True and resultado.limpio is True
+    assert resultado.archivado is True
+    assert resultado.errores == ()
     assert not ruta_del_flag(juego).exists(), "un flag residual pondría el juego en modo precache"
-    assert recuperar_progreso(estado, inv) == progreso
+    assert recuperar_progreso(estado, inv) == progreso.encode("utf-8")
 
 
 def test_neutralizar_sin_estado_igual_borra_el_flag(juego: pathlib.Path, grass: pathlib.Path) -> None:
     ruta_del_flag(juego).write_text("Tamriel\n", encoding="utf-8")
 
-    neutralizar_flag(flag_path=ruta_del_flag(juego), grass_dir=grass, raiz_estado=None)
+    resultado = neutralizar_flag(flag_path=ruta_del_flag(juego), grass_dir=grass, raiz_estado=None)
 
+    assert resultado.borrado is True
     assert not ruta_del_flag(juego).exists()
 
 
@@ -416,3 +436,274 @@ def test_planificar_es_puro_y_no_toca_disco(grass: pathlib.Path, juego: pathlib.
 
     assert sorted(p.name for p in grass.iterdir()) == antes
     assert not ruta_del_flag(juego).exists()
+
+
+# ---------------------------------------------------------------------------
+# BLOQUEANTE 1 — el respaldo se reutilizaba comparando sólo metadatos
+# ---------------------------------------------------------------------------
+
+
+def test_respaldo_no_se_reutiliza_si_el_origen_cambio_con_el_mismo_tamano(
+    tmp_path: pathlib.Path, juego: pathlib.Path
+) -> None:
+    # Arrange: respaldo de AAAA; después el origen pasa a BBBB conservando los
+    # cuatro bytes (mismo nombre, mismo tamaño, contenido distinto).
+    grass = tmp_path / "overwrite" / "Grass"
+    archivo = _escribir(grass / "Tamriel.cgid", b"AAAA")
+    primero = respaldar_cache(grass_dir=grass, destino=tmp_path / "respaldo", inventario=_inventario(grass, juego))
+    archivo.write_bytes(b"BBBB")
+    inventario_nuevo = _inventario(grass, juego)
+    # La huella barata (nombre+tamaño) NO distingue los dos contenidos: por eso
+    # reutilizar por huella era exactamente el defecto.
+    assert inventario_nuevo.huella == primero.huella
+
+    # Act
+    segundo = respaldar_cache(grass_dir=grass, destino=tmp_path / "respaldo", inventario=inventario_nuevo)
+
+    # Assert: el respaldo vigente tiene el contenido ACTUAL, no el histórico...
+    assert (segundo.destino / "Tamriel.cgid").read_bytes() == b"BBBB"
+    assert segundo.huella_contenido != primero.huella_contenido
+    # ...y el respaldo viejo se conserva apartado, no se pisa ni se borra.
+    invalidos = list(tmp_path.glob("respaldo.invalido-*"))
+    assert invalidos, "el respaldo que ya no verifica se aparta con nombre explícito"
+    assert (invalidos[0] / "Tamriel.cgid").read_bytes() == b"AAAA"
+
+
+def test_respaldo_alterado_en_el_destino_no_se_reutiliza(tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
+    # Arrange: respaldo correcto de AAAA; alguien altera la copia a XXXX con el
+    # mismo tamaño. El manifiesto histórico sigue diciendo AAAA.
+    grass = tmp_path / "overwrite" / "Grass"
+    _escribir(grass / "Tamriel.cgid", b"AAAA")
+    inventario = _inventario(grass, juego)
+    primero = respaldar_cache(grass_dir=grass, destino=tmp_path / "respaldo", inventario=inventario)
+    (primero.destino / "Tamriel.cgid").write_bytes(b"XXXX")
+
+    # Act
+    segundo = respaldar_cache(grass_dir=grass, destino=tmp_path / "respaldo", inventario=inventario)
+
+    # Assert: la copia se rehace desde el origen; XXXX no sobrevive como respaldo.
+    assert (segundo.destino / "Tamriel.cgid").read_bytes() == b"AAAA"
+    invalidos = list(tmp_path.glob("respaldo.invalido-*"))
+    assert invalidos and (invalidos[0] / "Tamriel.cgid").read_bytes() == b"XXXX"
+
+
+def test_verificacion_previa_al_borrado_rechaza_cache_cambiado(tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
+    # Arrange: respaldo verificado y después el caché cambia (mismo tamaño).
+    grass = tmp_path / "overwrite" / "Grass"
+    archivo = _escribir(grass / "Tamriel.cgid", b"AAAA")
+    respaldo = respaldar_cache(grass_dir=grass, destino=tmp_path / "respaldo", inventario=_inventario(grass, juego))
+    archivo.write_bytes(b"ZZZZ")
+
+    # Act / Assert: el borrado NO se autoriza.
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        verificar_respaldo_para_borrado(grass_dir=grass, respaldo=respaldo)
+
+    assert excinfo.value.codigo == "respaldo_desactualizado"
+
+
+def test_verificacion_previa_al_borrado_rechaza_respaldo_alterado(tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
+    grass = tmp_path / "overwrite" / "Grass"
+    _escribir(grass / "Tamriel.cgid", b"AAAA")
+    respaldo = respaldar_cache(grass_dir=grass, destino=tmp_path / "respaldo", inventario=_inventario(grass, juego))
+    (respaldo.destino / "Tamriel.cgid").write_bytes(b"XXXX")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        verificar_respaldo_para_borrado(grass_dir=grass, respaldo=respaldo)
+
+    assert excinfo.value.codigo == "respaldo_alterado"
+
+
+# ---------------------------------------------------------------------------
+# BLOQUEANTE 2 — la raíz del caché podía ser un enlace a un árbol externo
+# ---------------------------------------------------------------------------
+
+
+def test_cache_raiz_enlazada_se_rechaza(tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
+    # Arrange: overwrite/Grass es un symlink a un directorio FUERA del rig.
+    externo = tmp_path / "externo"
+    _escribir(externo / "Tamriel.cgid", b"ajeno")
+    overwrite = tmp_path / "overwrite"
+    overwrite.mkdir()
+    enlace = overwrite / "Grass"
+    try:
+        enlace.symlink_to(externo, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+
+    # Act / Assert: ni inventariar ni respaldar atraviesan la redirección.
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        inventariar_cache(grass_dir=enlace, flag_path=ruta_del_flag(juego))
+    assert excinfo.value.codigo == "cache_raiz_enlazada"
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo_respaldo:
+        respaldar_cache(grass_dir=enlace, destino=tmp_path / "respaldo", inventario=_inventario(externo, juego))
+    assert excinfo_respaldo.value.codigo == "cache_raiz_enlazada"
+    assert not (tmp_path / "respaldo").exists()
+
+
+def test_componente_intermedio_enlazado_se_rechaza(tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
+    # El enlace no está en la raíz del caché ni en un archivo: está en un
+    # ANCESTRO. Es el caso que un chequeo del path final no ve.
+    real = tmp_path / "real"
+    (real / "Grass").mkdir(parents=True)
+    _escribir(real / "Grass" / "Tamriel.cgid", b"externo")
+    mo2 = tmp_path / "mo2"
+    try:
+        mo2.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        inventariar_cache(grass_dir=mo2 / "Grass", flag_path=ruta_del_flag(juego))
+
+    assert excinfo.value.codigo == "cache_raiz_enlazada"
+
+
+# ---------------------------------------------------------------------------
+# CORRECCIÓN 3 — el progreso se decodificaba con errors="replace"
+# ---------------------------------------------------------------------------
+
+
+def test_flag_con_bytes_no_utf8_se_preserva_byte_a_byte(
+    tmp_path: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # Arrange: bytes que NO son UTF-8 válido. Decodificar con "replace" los
+    # cambiaría (U+FFFD) y la reanudación de NGIO dejaría de coincidir.
+    grass = tmp_path / "overwrite" / "Grass"
+    crudo = b"\xff\xfeTamriel\x00\x80\r\n-2,4\r\n"
+    ruta_del_flag(juego).write_bytes(crudo)
+    inventario = _inventario(grass, juego)
+    assert inventario.flag_progreso == crudo
+
+    # Act
+    archivar_progreso(estado, inventario, inventario.flag_progreso or b"")
+    recuperado = recuperar_progreso(estado, inventario)
+
+    # Assert
+    assert recuperado == crudo
+
+
+def test_resume_restaura_bytes_no_utf8_sin_recodificar(
+    tmp_path: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    grass = tmp_path / "overwrite" / "Grass"
+    crudo = b"\xff\xfe\n"
+    inventario = _inventario(grass, juego)
+    archivar_progreso(estado, inventario, crudo)
+
+    plan = preparar_arranque(modo="resume", game_path=juego, grass_dir=grass, raiz_estado=estado)
+    aplicar_plan(plan, ruta_del_flag(juego))
+
+    assert ruta_del_flag(juego).read_bytes() == crudo
+
+
+def test_progreso_archivado_corrupto_no_se_restaura(
+    tmp_path: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # Un archivo de progreso manipulado no se restaura "a medias": el sha256
+    # archivado tiene que sobrevivir el round-trip.
+    import base64
+
+    grass = tmp_path / "overwrite" / "Grass"
+    inventario = _inventario(grass, juego)
+    ruta = archivar_progreso(estado, inventario, b"Tamriel\n")
+    carga = json.loads(ruta.read_text(encoding="utf-8"))
+    carga["contenido_b64"] = base64.b64encode(b"otra-cosa\n").decode("ascii")
+    ruta.write_text(json.dumps(carga), encoding="utf-8")
+
+    assert recuperar_progreso(estado, inventario) is None
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        preparar_arranque(modo="resume", game_path=juego, grass_dir=grass, raiz_estado=estado)
+    assert excinfo.value.codigo == "resume_sin_progreso"
+
+
+# ---------------------------------------------------------------------------
+# CORRECCIÓN 4 — la limpieza del flag no puede mentir
+# ---------------------------------------------------------------------------
+
+
+def test_neutralizacion_reporta_fallo_de_borrado(
+    tmp_path: pathlib.Path, juego: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange: el borrado falla (archivo en uso / ACL), que es el caso real de
+    # Windows con el juego o un antivirus reteniendo el archivo.
+    ruta_del_flag(juego).write_bytes(b"Tamriel\n")
+    grass = tmp_path / "overwrite" / "Grass"
+    real_unlink = pathlib.Path.unlink
+
+    def _unlink_que_falla(self: pathlib.Path, *args: object, **kwargs: object) -> None:
+        if self.name == "PrecacheGrass.txt":
+            raise PermissionError("el archivo está en uso")
+        real_unlink(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _unlink_que_falla)
+
+    # Act
+    resultado = neutralizar_flag(flag_path=ruta_del_flag(juego), grass_dir=grass, raiz_estado=None)
+
+    # Assert: NO se declara limpio, y el error queda trazado con su causa.
+    assert resultado.borrado is False
+    assert resultado.limpio is False
+    assert any("No se pudo eliminar" in error for error in resultado.errores)
+    assert ruta_del_flag(juego).exists()
+
+
+def test_neutralizacion_no_borra_un_flag_que_es_un_enlace(tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
+    # Un "flag" que en realidad es un enlace no es el de NGIO: se informa y no
+    # se borra (podría ser un archivo del usuario apuntado desde otro lado).
+    externo = tmp_path / "ajeno.txt"
+    externo.write_bytes(b"no tocar")
+    enlace = ruta_del_flag(juego)
+    try:
+        enlace.symlink_to(externo)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+
+    resultado = neutralizar_flag(flag_path=enlace, grass_dir=tmp_path / "overwrite" / "Grass", raiz_estado=None)
+
+    assert resultado.borrado is False
+    assert any("enlace" in error for error in resultado.errores)
+    assert externo.read_bytes() == b"no tocar"
+
+
+# ---------------------------------------------------------------------------
+# COBERTURA USVFS — HOLD explícito, no silencio
+# ---------------------------------------------------------------------------
+
+
+def test_rebuild_sin_ack_de_usvfs_queda_en_hold(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path
+) -> None:
+    # Arrange: el respaldo cubriría el caché físico, pero no el overlay de mods.
+    estado = tmp_path / "estado"
+
+    # Act / Assert: HOLD por defecto, y sin tocar el disco (no se respalda nada).
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        preparar_arranque(
+            modo="rebuild",
+            game_path=juego,
+            grass_dir=grass,
+            aprobacion=APROBACION_REBUILD,
+            raiz_estado=estado,
+        )
+
+    assert excinfo.value.codigo == "rebuild_usvfs_no_demostrado"
+    assert "USVFS" in str(excinfo.value)
+    assert not estado.exists(), "un HOLD no debe escribir nada"
+    assert grass.is_dir()
+
+
+def test_rebuild_con_ack_explicito_deja_de_estar_en_hold(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path
+) -> None:
+    plan = preparar_arranque(
+        modo="rebuild",
+        game_path=juego,
+        grass_dir=grass,
+        aprobacion=APROBACION_REBUILD,
+        raiz_estado=tmp_path / "estado",
+        ack_usvfs_no_verificado=True,
+    )
+
+    assert plan.modo == "rebuild"
+    assert plan.a_dict()["cobertura_usvfs"] == "no_verificada"

@@ -168,3 +168,16 @@ def test_validate_for_approval_rechaza_rebuild_sin_aprobacion() -> None:
 
     with pytest.raises(ValueError, match="rebuild"):
         strategy.validate_for_approval({**_PAYLOAD, "mode": "rebuild"})
+
+
+def test_describe_for_approval_avisa_que_el_respaldo_no_cubre_los_mods() -> None:
+    # COBERTURA USVFS: si el operador reconoce el riesgo, el prompt lo dice con
+    # todas las letras; el respaldo es de overwrite/Grass, no del overlay.
+    strategy = GenerateGrassCacheStrategy(service=AsyncMock())
+
+    texto = strategy.describe_for_approval(
+        {**_PAYLOAD, "mode": "rebuild", "rebuild_approval": "REBUILD", "ack_usvfs_no_verificado": True}
+    )
+
+    assert "ack_usvfs_no_verificado=True" in texto
+    assert "NO cubre" in texto and "mods habilitados" in texto

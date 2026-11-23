@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import pathlib
 import shutil  # import de módulo completo: los tests mockean shutil.disk_usage
@@ -52,6 +53,7 @@ from sky_claw.local.tools.grass_cache_safety import (
     MODOS_GRASS_CACHE,
     PRECACHE_FLAG,
     GrassCacheMode,
+    NeutralizacionFlag,
     PlanArranque,
     aplicar_plan,
     neutralizar_flag,
@@ -136,6 +138,10 @@ class GrassCacheConfig:
         backup_root: Raíz durable donde viven el respaldo verificado y la
             evidencia de progreso archivada (``<state>/grass_cache``). Sin ella
             no hay ``rebuild`` con caché preexistente ni ``resume`` archivado.
+        ack_usvfs_no_verificado: Reconocimiento explícito de que la cobertura
+            USVFS **no** está demostrada: el respaldo cubre ``overwrite/Grass``,
+            no el ``Grass/`` de los mods habilitados que NGIO ve vía la VFS.
+            Sin este reconocimiento, ``rebuild`` queda en HOLD.
     """
 
     game_path: pathlib.Path
@@ -154,6 +160,7 @@ class GrassCacheConfig:
     mode: GrassCacheMode = "new"
     rebuild_approval: str | None = None
     backup_root: pathlib.Path | None = None
+    ack_usvfs_no_verificado: bool = False
 
     def __post_init__(self) -> None:
         if not self.game_path.is_dir():
@@ -217,6 +224,10 @@ class GrassCacheRunResult:
     mode: GrassCacheMode = "new"
     #: Respaldo verificado del intento (cadena vacía si no hubo rebuild con caché).
     backup_dir: str = ""
+    #: True si el flag ``PrecacheGrass.txt`` NO se pudo eliminar al salir.
+    flag_residual: bool = False
+    #: Errores concretos de la limpieza (archivado/borrado del flag).
+    limpieza_errores: tuple[str, ...] = ()
 
 
 class GrassCacheRunner:
@@ -253,13 +264,22 @@ class GrassCacheRunner:
         self._plan: PlanArranque | None = None
         #: Respaldo verificado de este run ("" si no hubo rebuild con caché).
         self._backup_dir = ""
+        #: Resultado de archivar+borrar el flag (None si el run no adoptó el flag).
+        self._neutralizacion: NeutralizacionFlag | None = None
 
     # ------------------------------------------------------------------
     # API pública
     # ------------------------------------------------------------------
 
     async def run(self, cancel_event: asyncio.Event | None = None) -> GrassCacheRunResult:
-        """Ejecuta el ritual completo; siempre devuelve un resultado estructurado.
+        """Ejecuta el ritual y publica si el flag quedó NEUTRALIZADO.
+
+        El cuerpo real es :meth:`_run_interno`; este wrapper existe porque la
+        limpieza del flag ocurre en su ``finally`` (tiene que correr también
+        ante ``CancelledError``/``KeyboardInterrupt``), o sea DESPUÉS de que el
+        resultado está construido. Sin este paso, un ``unlink`` que falla se
+        reportaba como limpieza exitosa y el juego del usuario quedaba
+        arrancando en modo precache sin que nadie lo supiera.
 
         Raises:
             FileNotFoundError: ``ModOrganizer.exe`` ausente (misconfiguración —
@@ -267,6 +287,19 @@ class GrassCacheRunner:
             GrassCacheSafetyError: El arranque no cumple las precondiciones de
                 su modo (F-01). Se levanta ANTES de tocar el flag o lanzar nada.
         """
+        resultado = await self._run_interno(cancel_event)
+        limpieza = self._neutralizacion
+        if limpieza is not None and not limpieza.limpio:
+            logger.warning(
+                "El flag %s NO se pudo eliminar: el juego puede arrancar en modo precache. Errores: %s",
+                self._flag_path,
+                "; ".join(limpieza.errores) or "desconocido",
+            )
+            return dataclasses.replace(resultado, flag_residual=True, limpieza_errores=limpieza.errores)
+        return resultado
+
+    async def _run_interno(self, cancel_event: asyncio.Event | None = None) -> GrassCacheRunResult:
+        """Crash-loop supervisado (ver :meth:`run`)."""
         cancel = cancel_event if cancel_event is not None else asyncio.Event()
         self._start_mono = time.monotonic()
         crash_count = 0
@@ -302,6 +335,7 @@ class GrassCacheRunner:
                 grass_dir=self._config.overwrite_grass_dir,
                 aprobacion=self._config.rebuild_approval,
                 raiz_estado=self._config.backup_root,
+                ack_usvfs_no_verificado=self._config.ack_usvfs_no_verificado,
             )
             self._plan = plan
             self._backup_dir = ruta_de_respaldo(plan)
@@ -461,7 +495,7 @@ class GrassCacheRunner:
             # Antes de borrarlo se archiva el progreso: neutralizar el flag no
             # puede costar la reanudación (P0, evidencia de F-01).
             if flag_apropiado:
-                self._neutralizar_flag_sync()
+                self._neutralizacion = self._neutralizar_flag_sync()
 
     # ------------------------------------------------------------------
     # Fases internas
@@ -760,7 +794,7 @@ class GrassCacheRunner:
         except Exception:  # noqa: BLE001 — cualquier fallo del observador se aísla
             logger.warning("El callback on_progress falló; el ritual continúa.", exc_info=True)
 
-    def _neutralizar_flag_sync(self) -> None:
+    def _neutralizar_flag_sync(self) -> NeutralizacionFlag:
         """Archiva el progreso y borra el flag (missing_ok: en éxito NGIO ya lo borró).
 
         El borrado es obligatorio —un flag residual haría que el juego del
@@ -768,7 +802,7 @@ class GrassCacheRunner:
         atado a la huella del caché de este momento: es lo que un ``resume``
         posterior restaura. Best-effort: nunca enmascara la excepción original.
         """
-        neutralizar_flag(
+        return neutralizar_flag(
             flag_path=self._flag_path,
             grass_dir=self._config.overwrite_grass_dir,
             raiz_estado=self._config.backup_root,

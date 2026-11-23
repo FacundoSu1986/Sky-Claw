@@ -1087,7 +1087,9 @@ async def test_rebuild_aprobado_respalda_antes_de_clonar(
     grass.mkdir(parents=True)
     (grass / "previo.cgid").write_bytes(b"prec")
 
-    resultado = await service.generate({**_PAYLOAD, "mode": "rebuild", "rebuild_approval": "REBUILD"})
+    resultado = await service.generate(
+        {**_PAYLOAD, "mode": "rebuild", "rebuild_approval": "REBUILD", "ack_usvfs_no_verificado": True}
+    )
 
     assert resultado["success"] is True
     respaldos = list((estado / "respaldo").iterdir())
@@ -1108,3 +1110,32 @@ async def test_fallo_del_guard_no_deja_transaccion_pendiente(tmp_path: pathlib.P
     await service.generate(dict(_PAYLOAD))
 
     journal.begin_transaction.assert_not_awaited()
+
+
+async def test_generate_rebuild_sin_ack_de_usvfs_queda_en_hold(tmp_path: pathlib.Path) -> None:
+    # Sin cobertura USVFS demostrada, el servicio tampoco clona ni respalda.
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    grass = service._overwrite_grass_dir
+    assert grass is not None
+    grass.mkdir(parents=True)
+    (grass / "previo.cgid").write_bytes(b"prec")
+
+    resultado = await service.generate({**_PAYLOAD, "mode": "rebuild", "rebuild_approval": "REBUILD"})
+
+    _assert_error_de_contrato(resultado, "USVFS")
+    colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
+    colaboradores["runner"].run.assert_not_awaited()
+
+
+async def test_flag_residual_llega_al_resultado_y_al_teardown(tmp_path: pathlib.Path) -> None:
+    # Un flag que no se pudo borrar es limpieza incompleta: viaja en el
+    # resultado (y por la misma vía que el teardown), nunca en silencio.
+    runner_result = _resultado_runner(flag_residual=True, limpieza_errores=("archivo en uso",))
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+
+    resultado = await service.generate(dict(_PAYLOAD))
+
+    assert resultado["success"] is True
+    assert resultado["flag_residual"] is True
+    assert any("PrecacheGrass.txt residual" in fallo for fallo in resultado["teardown_failures"])
+    assert any("archivo en uso" in fallo for fallo in resultado["teardown_failures"])

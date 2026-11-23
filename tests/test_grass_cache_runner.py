@@ -231,6 +231,7 @@ def config_rebuild(config: GrassCacheConfig) -> GrassCacheConfig:
         mode="rebuild",
         rebuild_approval="REBUILD",
         backup_root=raiz_estado,
+        ack_usvfs_no_verificado=True,
     )
 
 
@@ -1096,7 +1097,8 @@ async def test_rebuild_sin_raiz_de_respaldo_no_destruye(config: GrassCacheConfig
     # Aprobación sin lugar donde respaldar = no hay respaldo verificable, y sin
     # respaldo no se habilita una operación destructiva.
     _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
-    cfg = dataclasses.replace(config, mode="rebuild", rebuild_approval="REBUILD")
+    # El ack de USVFS ya está dado: lo que falta es dónde dejar el respaldo.
+    cfg = dataclasses.replace(config, mode="rebuild", rebuild_approval="REBUILD", ack_usvfs_no_verificado=True)
 
     with pytest.raises(GrassCacheSafetyError) as excinfo:
         await _correr(_runner(cfg, mo2))
@@ -1119,6 +1121,7 @@ async def test_rebuild_con_aprobacion_y_respaldo_respalda_y_arranca(
         mode="rebuild",
         rebuild_approval="REBUILD",
         backup_root=estado,
+        ack_usvfs_no_verificado=True,
         max_runtime_s=0.3,
     )
 
@@ -1173,7 +1176,7 @@ async def test_resume_restaura_el_progreso_archivado(
     inventario = inventariar_cache(
         grass_dir=config.overwrite_grass_dir, flag_path=config.game_path / "PrecacheGrass.txt"
     )
-    archivar_progreso(estado, inventario, progreso)
+    archivar_progreso(estado, inventario, progreso.encode("utf-8"))
     flag = config.game_path / "PrecacheGrass.txt"
     visto: list[str] = []
 
@@ -1189,3 +1192,62 @@ async def test_resume_restaura_el_progreso_archivado(
 
     assert resultado.outcome == "timeout"
     assert visto and visto[0] == progreso, "NGIO debe ver el progreso restaurado, no un flag vacío"
+
+
+async def test_guard_que_se_niega_no_borra_el_flag_existente(config: GrassCacheConfig, mo2: AsyncMock) -> None:
+    # El `finally` sólo neutraliza un flag que el run ADOPTÓ. Si el guard se
+    # niega antes de tocarlo, borrarlo cambiaría un borrado de caché por otro.
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
+    progreso = b"Tamriel\n-2,4\n"
+    flag = config.game_path / "PrecacheGrass.txt"
+    flag.write_bytes(progreso)
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        await _correr(_runner(config, mo2))
+
+    assert excinfo.value.codigo == "cache_existente_sin_decision"
+    mo2.launch_game.assert_not_awaited()
+    assert flag.read_bytes() == progreso
+
+
+async def test_flag_residual_se_reporta_y_no_se_da_por_limpio(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # CORRECCIÓN 4: un unlink que falla al salir NO puede leerse como limpieza
+    # exitosa — el juego del usuario quedaría arrancando en modo precache.
+    cfg = dataclasses.replace(config, max_runtime_s=0.2)
+    real_unlink = pathlib.Path.unlink
+
+    def _unlink_que_falla(self: pathlib.Path, *args: Any, **kwargs: Any) -> None:
+        if self.name == "PrecacheGrass.txt":
+            raise PermissionError("el archivo está en uso")
+        real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _unlink_que_falla)
+
+    resultado = await _correr(_runner(cfg, mo2))
+
+    assert resultado.outcome == "timeout"
+    assert resultado.flag_residual is True
+    assert any("No se pudo eliminar" in error for error in resultado.limpieza_errores)
+    assert (cfg.game_path / "PrecacheGrass.txt").exists()
+
+
+async def test_rebuild_sin_ack_de_usvfs_no_arranca(
+    config: GrassCacheConfig, mo2: AsyncMock, tmp_path: pathlib.Path
+) -> None:
+    # La cobertura USVFS no está demostrada: REBUILD queda en HOLD por defecto.
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
+    cfg = dataclasses.replace(
+        config,
+        mode="rebuild",
+        rebuild_approval="REBUILD",
+        backup_root=tmp_path / "estado",
+    )
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        await _correr(_runner(cfg, mo2))
+
+    assert excinfo.value.codigo == "rebuild_usvfs_no_demostrado"
+    mo2.launch_game.assert_not_awaited()
+    assert (config.overwrite_grass_dir / "previo.cgid").exists()

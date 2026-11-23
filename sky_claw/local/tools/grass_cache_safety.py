@@ -9,12 +9,7 @@ archivo de progreso línea por línea, descarta las líneas en blanco
 ``.dgid``, ``.cgid`` y ``.fail``. ``GidFileGenerationTask::End()`` borra el
 archivo de progreso al terminar — de ahí que su ausencia signifique "terminó".
 Consecuencia: un archivo de progreso vacío (no sólo inexistente) destruye el
-caché, y cualquier línea no blanca lo preserva. Sky-Claw escribía el flag vacío al entrar a
-``GrassCacheRunner.run()``, así que *cualquier* invocación —incluida una que
-sólo pretendía reanudar un precache interrumpido— borraba horas de trabajo.
-El binario de Nexus 2.2.0 no se pudo inspeccionar acá: el contrato de abajo es
-fail-closed respecto de las dos versiones (nunca arranca una operación que
-sería destructiva si la semántica de borrado se cumple).
+caché, y cualquier línea no blanca lo preserva.
 
 **El contrato, enunciado una sola vez.** El arranque tiene exactamente tres
 modos y cada uno tiene precondiciones verificables:
@@ -24,10 +19,9 @@ modos y cada uno tiene precondiciones verificables:
 - ``resume``: hay progreso demostrable —el flag con contenido, o la evidencia
   archivada por un run anterior cuya huella coincide con el caché actual—.
   **Nunca trunca** el flag: ése es el disparador del borrado en NGIO.
-- ``rebuild``: destruye por diseño. Exige aprobación explícita (``REBUILD``)
-  **y** un respaldo verificado por hash de todo el caché. Sin respaldo no hay
-  arranque, y el respaldo se verifica releyendo el destino desde el disco —no
-  el hash que quedó en memoria al copiar—.
+- ``rebuild``: destruye por diseño. Exige aprobación explícita (``REBUILD``),
+  un respaldo **verificado por contenido contra el caché actual** y el
+  reconocimiento de que la cobertura USVFS no está demostrada (§ cobertura).
 
 **Por qué un módulo y no un ``if`` en el runner.** La misma pregunta ("¿puedo
 arrancar?") la contestan el servicio (antes de clonar un perfil) y el runner
@@ -37,16 +31,36 @@ hermano y no al otro—, así que ambos llaman a :func:`preparar_arranque`, que 
 idempotente y es la única implementación. :func:`aplicar_plan` es la única
 pieza que escribe el flag.
 
+**Cobertura USVFS: NO demostrada (HOLD explícito).** Este módulo inventaría y
+respalda ``<mo2>/overwrite/Grass`` — lo que Sky-Claw puede ver y lo que MO2
+escribe físicamente. NGIO, en cambio, enumera ``Data/Grass`` **a través de la
+USVFS**, que superpone el ``Grass/`` de todos los mods habilitados; el propio
+repo lo da por cierto en ``validators/etapas_previas_lods.py``, que busca
+``*.cgid`` tanto en ``overwrite/Grass`` como en el ``Grass/`` de cada mod
+habilitado. Consecuencias que no se pueden cerrar sin un rig Windows:
+
+1. Un ``.cgid`` que vive en un mod habilitado **no está en el respaldo**.
+2. No está demostrado si ``remove()`` sobre una ruta virtualizada borra
+   físicamente el archivo del mod o deja un tombstone en ``overwrite``
+   (``NO VERIFICADO``).
+
+Por eso ``rebuild`` está en **HOLD por defecto**: sin
+``ack_usvfs_no_verificado=True`` no arranca, y el respaldo se declara "lo que
+se pudo ver", nunca "protección completa". El reconocimiento es explícito,
+trazado y visible en el prompt HITL — el mismo patrón que
+``force_stage_guard``. Cerrar el HOLD exige evidencia de rig sobre qué hace
+USVFS al borrar, y es trabajo de P2 (USVFS), no de este módulo.
+
 **Evidencia de progreso.** Neutralizar el flag al salir es obligatorio (un flag
 residual haría que el juego del usuario arranque en modo precache), pero no
-puede costar la reanudación: antes de borrarlo se archiva su contenido, atado a
-la huella del caché en ese momento. ``resume`` lo restaura sólo si la huella
-coincide; si no coincide, se niega en vez de reanudar sobre un caché que no es
-el que dejó ese progreso.
+puede costar la reanudación: antes de borrarlo se archiva su contenido **byte a
+byte** (base64 + sha256, sin decodificar como texto), atado a la huella del
+caché en ese momento. ``resume`` lo restaura sólo si la huella coincide.
 """
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import json
@@ -58,7 +72,13 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal
 
-from sky_claw.app.security.links import link_kind_or_raise
+from sky_claw.app.security.links import (
+    ContencionFisicaVioladaError,
+    exigir_arbol_copiable_sin_reparse,
+    exigir_contencion_fisica,
+    link_kind_or_raise,
+    path_present,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -81,8 +101,7 @@ MODOS_GRASS_CACHE: Final[tuple[GrassCacheMode, ...]] = ("new", "resume", "rebuil
 #: deja el diagnóstico sin fuente.
 EXTENSIONES_CACHE: Final[tuple[str, ...]] = (".cgid", ".dgid", ".fail")
 
-#: Tamaño de bloque de la copia con hash (1 MiB): el archivo se lee una sola
-#: vez para copiar y hashear; la verificación relee el destino.
+#: Tamaño de bloque de la copia con hash (1 MiB).
 _BLOQUE = 1024 * 1024
 
 #: Versión del manifiesto del respaldo. Un manifiesto de otra versión no se
@@ -115,11 +134,17 @@ class InventarioCache:
     """Foto del caché y del flag en el momento del arranque.
 
     ``huella`` resume el CONJUNTO (nombre, tamaño) ordenado de los archivos del
-    caché: dos inventarios con la misma huella describen el mismo conjunto de
-    archivos con los mismos tamaños. No es un hash de contenido (un ``.cgid``
-    reescrito con el mismo tamaño daría la misma huella), y por eso se usa para
-    atestiguar *qué conjunto de archivos* respalda un progreso, no para
-    certificar que el caché es correcto — eso es del veredicto (F-02).
+    caché. Es deliberadamente **barata**: se calcula en cada arranque (dos
+    veces por run) y sobre decenas de miles de archivos un hash de contenido
+    costaría leer el caché entero en cada preflight. Por eso NO se usa para
+    autorizar un borrado —para eso está el respaldo, que sí verifica contenido
+    contra el origen (§ :func:`respaldar_cache`)— sino para atar la evidencia
+    de progreso a un conjunto concreto de archivos.
+
+    ``flag_progreso`` son los **bytes exactos** del flag (no un ``str``): el
+    contenido se archiva y se restaura byte a byte, sin decodificar. Un flag
+    con bytes que no son UTF-8 válido sigue siendo progreso para NGIO (que lee
+    líneas y las recorta) y sigue siendo evidencia que no se puede perder.
     """
 
     cgid_count: int
@@ -128,7 +153,7 @@ class InventarioCache:
     fail_count: int
     bytes_total: int
     flag_presente: bool
-    flag_progreso: str | None
+    flag_progreso: bytes | None
     huella: str
 
     @property
@@ -138,7 +163,7 @@ class InventarioCache:
 
     @property
     def bytes_cache(self) -> int:
-        """Bytes de TODO lo que NGIO puede borrar (``.cgid`` + ``.tgid`` + ``.fail``).
+        """Bytes de TODO lo que NGIO puede borrar (``.cgid`` + ``.dgid`` + ``.fail``).
 
         El respaldo copia las tres extensiones, así que la verificación de
         integridad tiene que comparar contra el mismo conjunto: contar sólo los
@@ -185,23 +210,61 @@ def _rechazar_enlace(ruta: pathlib.Path, codigo: str) -> None:
         raise GrassCacheSafetyError(codigo, f"{ruta} es un enlace ({tipo}): el caché no se toca a través de enlaces.")
 
 
-def _leer_flag(flag_path: pathlib.Path) -> tuple[bool, str | None]:
-    """``(presente, progreso)`` del flag. Progreso = contenido no vacío.
+def _validar_raiz_fisica(grass_dir: pathlib.Path) -> None:
+    """Exige que ``grass_dir`` cuelgue de una cadena de directorios REALES.
 
-    No se interpreta el formato del progreso: cualquier contenido no blanco se
-    trata como progreso. Un formato desconocido entonces *protege* (impide
-    ``new``/``rebuild`` sin decisión), que es el lado seguro del error.
+    Rechazar sólo los enlaces *dentro* del caché deja pasar el caso que importa:
+    ``overwrite/Grass`` siendo un symlink o un junction a un árbol externo. Se
+    reutiliza :func:`exigir_contencion_fisica` (la primitiva del repo: hace
+    ``lstat`` de cada componente, no sigue enlaces y clasifica junctions de
+    Windows) anclando en la raíz del volumen.
+
+    Un componente inexistente no puede ser un enlace y el recorrido se detiene
+    ahí (primer run, ``Grass/`` todavía no creado).
     """
-    if not flag_path.exists():
+    ancla = pathlib.Path(grass_dir.anchor)
+    if not grass_dir.is_absolute() or ancla == grass_dir:
+        raise GrassCacheSafetyError(
+            "cache_raiz_no_absoluta",
+            f"La raíz del caché de grass debe ser una ruta absoluta bajo un directorio real: {grass_dir}",
+        )
+    try:
+        exigir_contencion_fisica(ancla, grass_dir)
+    except ContencionFisicaVioladaError as exc:
+        raise GrassCacheSafetyError(
+            "cache_raiz_enlazada",
+            f"La raíz del caché de grass atraviesa un enlace o un componente no real: {exc}. "
+            "No se inventaría ni se respalda un caché a través de una redirección.",
+        ) from exc
+    except OSError as exc:
+        raise GrassCacheSafetyError(
+            "cache_raiz_ilegible", f"No se pudo validar la raíz del caché {grass_dir}: {exc}"
+        ) from exc
+
+
+def _leer_flag(flag_path: pathlib.Path) -> tuple[bool, bytes | None]:
+    """``(presente, progreso)`` del flag, con el progreso en BYTES EXACTOS.
+
+    No se decodifica como texto: archivar y restaurar tienen que devolver los
+    mismos bytes, y ``errors="replace"`` cambiaría el contenido de un flag con
+    codificación inesperada (o con bytes sueltos) justo cuando ese contenido es
+    la única evidencia de reanudación.
+
+    "Tiene progreso" se decide igual que NGIO: alguna línea con contenido no
+    blanco (``splitlines`` + ``strip``). Un formato desconocido entonces
+    *protege* —impide ``new``/``rebuild`` sin decisión—, que es el lado seguro.
+    """
+    if not path_present(flag_path):
         return (False, None)
     _rechazar_enlace(flag_path, "flag_es_enlace")
     if flag_path.is_dir():
         raise GrassCacheSafetyError("flag_es_directorio", f"{flag_path} es un directorio, no el flag de NGIO.")
     try:
-        contenido = flag_path.read_text(encoding="utf-8", errors="replace")
+        crudo = flag_path.read_bytes()
     except OSError as exc:
         raise GrassCacheSafetyError("flag_ilegible", f"No se pudo leer {flag_path}: {exc}") from exc
-    return (True, contenido if contenido.strip() else None)
+    hay_progreso = any(linea.strip() for linea in crudo.splitlines())
+    return (True, crudo if hay_progreso else None)
 
 
 def huella_del_cache(entradas: Iterable[tuple[str, int]]) -> str:
@@ -214,6 +277,7 @@ def huella_del_cache(entradas: Iterable[tuple[str, int]]) -> str:
 
 def inventariar_cache(*, grass_dir: pathlib.Path, flag_path: pathlib.Path) -> InventarioCache:
     """Lee —sin mutar nada— el caché de ``grass_dir`` y el estado del flag."""
+    _validar_raiz_fisica(grass_dir)
     cgid_count = 0
     cgid_bytes = 0
     dgid_count = 0
@@ -266,22 +330,29 @@ def inventariar_cache(*, grass_dir: pathlib.Path, flag_path: pathlib.Path) -> In
 
 
 # ---------------------------------------------------------------------------
-# Respaldo verificado
+# Respaldo verificado por CONTENIDO
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class RespaldoVerificado:
-    """Respaldo de un conjunto de caché, con manifiesto releído del disco."""
+    """Respaldo de un conjunto de caché, con manifiesto releído del disco.
+
+    ``huella_contenido`` es sha256 sobre ``(nombre, bytes, sha256)`` ordenado:
+    distingue dos cachés con **los mismos nombres y tamaños** y contenido
+    distinto. Es lo que impide que un respaldo viejo se reutilice como si
+    cubriera el caché actual.
+    """
 
     destino: pathlib.Path
     manifiesto: pathlib.Path
     archivos: int
     bytes: int
     huella: str
+    huella_contenido: str
 
     def cubre(self, inventario: InventarioCache) -> bool:
-        """True si ESTE respaldo corresponde exactamente a ese inventario."""
+        """True si este respaldo corresponde a ese inventario (nombres y tamaños)."""
         return (
             self.huella == inventario.huella
             and self.archivos == inventario.archivos_cache
@@ -306,15 +377,18 @@ def _copiar_con_hash(origen: pathlib.Path, destino: pathlib.Path) -> tuple[int, 
     return (total, digest.hexdigest())
 
 
-def _hash_de_archivo(ruta: pathlib.Path) -> str:
+def _hash_de_archivo(ruta: pathlib.Path) -> tuple[int, str]:
+    """``(bytes, sha256)`` leyendo el archivo del DISCO (sin caché en memoria)."""
     digest = hashlib.sha256()
+    total = 0
     with ruta.open("rb") as fh:
         while True:
             bloque = fh.read(_BLOQUE)
             if not bloque:
                 break
             digest.update(bloque)
-    return digest.hexdigest()
+            total += len(bloque)
+    return (total, digest.hexdigest())
 
 
 def _fsync_directorio(ruta: pathlib.Path) -> None:
@@ -337,45 +411,110 @@ def _leer_manifiesto(ruta: pathlib.Path) -> dict[str, Any] | None:
     return crudo if isinstance(crudo, dict) else None
 
 
-def _respaldo_existente_verifica(destino: pathlib.Path, inventario: InventarioCache) -> RespaldoVerificado | None:
-    """Reusa un respaldo previo del MISMO conjunto sin recopiarlo.
+def _digests_del_cache(grass_dir: pathlib.Path) -> dict[str, tuple[int, str]]:
+    """``nombre -> (bytes, sha256)`` de los artefactos REALES del caché.
 
-    Verifica manifiesto (versión, huella, conteos, bytes) y el tamaño de cada
-    archivo en el destino. No rehashea: el hash se verificó al crear el respaldo
-    y la re-verificación por hash está reservada a la creación, que es donde un
-    corte puede dejar un archivo a medias.
+    Es la lectura de contenido completa del origen. Sólo la paga ``rebuild``
+    (que ya es una operación que el operador acepta como costosa): es la única
+    forma de afirmar que el respaldo cubre *este* contenido y no uno con los
+    mismos tamaños.
     """
-    manifiesto = _leer_manifiesto(destino / "manifiesto.json")
-    if manifiesto is None:
-        return None
-    if manifiesto.get("version") != _VERSION_MANIFIESTO or manifiesto.get("huella") != inventario.huella:
+    digests: dict[str, tuple[int, str]] = {}
+    try:
+        candidatos = sorted(grass_dir.iterdir(), key=lambda p: p.name)
+    except (FileNotFoundError, NotADirectoryError):
+        return digests
+    except OSError as exc:
+        raise GrassCacheSafetyError("cache_ilegible", f"No se pudo leer {grass_dir}: {exc}") from exc
+    for archivo in candidatos:
+        if archivo.suffix.lower() not in EXTENSIONES_CACHE or not archivo.is_file():
+            continue
+        _rechazar_enlace(archivo, "cache_con_enlaces")
+        try:
+            digests[archivo.name] = _hash_de_archivo(archivo)
+        except OSError as exc:
+            raise GrassCacheSafetyError("cache_ilegible", f"No se pudo leer {archivo}: {exc}") from exc
+    return digests
+
+
+def _huella_de_contenido(digests: dict[str, tuple[int, str]]) -> str:
+    digest = hashlib.sha256()
+    for nombre in sorted(digests):
+        tamano, sha = digests[nombre]
+        digest.update(f"{nombre}\x00{tamano}\x00{sha}\n".encode())
+    return digest.hexdigest()
+
+
+def _entradas_del_manifiesto(manifiesto: dict[str, Any]) -> dict[str, tuple[int, str]] | None:
+    """``nombre -> (bytes, sha256)`` del manifiesto, o ``None`` si no es válido."""
+    if manifiesto.get("version") != _VERSION_MANIFIESTO:
         return None
     archivos = manifiesto.get("archivos")
     if not isinstance(archivos, list):
         return None
-    total = 0
+    entradas: dict[str, tuple[int, str]] = {}
     for entrada in archivos:
         if not isinstance(entrada, dict):
             return None
         nombre = entrada.get("nombre")
         tamano = entrada.get("bytes")
-        if not isinstance(nombre, str) or not isinstance(tamano, int):
+        sha = entrada.get("sha256")
+        if not isinstance(nombre, str) or not isinstance(tamano, int) or not isinstance(sha, str):
             return None
+        entradas[nombre] = (tamano, sha)
+    return entradas
+
+
+def _respaldo_existente_verifica(
+    destino: pathlib.Path,
+    inventario: InventarioCache,
+    origen: dict[str, tuple[int, str]],
+) -> RespaldoVerificado | None:
+    """Reusa un respaldo previo sólo si su CONTENIDO cubre el caché actual.
+
+    Tres igualdades, y las tres por hash de contenido, no por metadatos:
+
+    1. lo que el manifiesto declara == lo que hay en el origen **ahora**;
+    2. lo que hay en el destino **ahora** == lo que el manifiesto declara;
+    3. los conteos/bytes del inventario coinciden con el manifiesto.
+
+    Esto es lo que cierra los dos casos que sólo mirando tamaños pasaban:
+    origen ``AAAA`` → ``BBBB`` con los mismos cuatro bytes (mismo nombre y
+    tamaño, contenido distinto), y destino alterado a ``XXXX`` conservando el
+    tamaño. En cualquiera de los dos, el llamador recopia desde el origen.
+    """
+    manifiesto = _leer_manifiesto(destino / "manifiesto.json")
+    if manifiesto is None:
+        return None
+    declarado = _entradas_del_manifiesto(manifiesto)
+    if declarado is None:
+        return None
+    if manifiesto.get("huella") != inventario.huella:
+        return None
+    if declarado != origen:
+        return None
+    total = sum(tamano for tamano, _ in origen.values())
+    if len(origen) != inventario.archivos_cache or total != inventario.bytes_cache:
+        return None
+    for nombre, (tamano, sha_esperado) in origen.items():
         ruta = destino / nombre
         try:
             if ruta.stat().st_size != tamano:
                 return None
+            _, sha_destino = _hash_de_archivo(ruta)
         except OSError:
             return None
-        total += tamano
-    if len(archivos) != inventario.archivos_cache or total != inventario.bytes_cache:
-        return None
+        if sha_destino != sha_esperado:
+            # El respaldo fue alterado en el destino con el mismo tamaño.
+            logger.warning("Respaldo %s alterado (%s): no se reutiliza.", destino, nombre)
+            return None
     return RespaldoVerificado(
         destino=destino,
         manifiesto=destino / "manifiesto.json",
-        archivos=len(archivos),
+        archivos=len(origen),
         bytes=total,
         huella=inventario.huella,
+        huella_contenido=_huella_de_contenido(origen),
     )
 
 
@@ -385,24 +524,46 @@ def respaldar_cache(
     destino: pathlib.Path,
     inventario: InventarioCache,
 ) -> RespaldoVerificado:
-    """Copia el caché a *destino*, verifica en disco y escribe un manifiesto.
+    """Copia el caché a *destino*, verifica **contenido** en ambos lados y manifiesta.
 
-    Verificación real: cada archivo copiado se **relee del destino** y su
-    sha256 tiene que coincidir con el del origen. Un corte a mitad de copia deja
-    un archivo de tamaño distinto o de hash distinto ⇒ no hay respaldo
-    verificado ⇒ ``rebuild`` no arranca.
+    Verificación real, en tres pasos:
 
-    Idempotente: si ya existe un respaldo que verifica para este mismo
-    inventario, se reusa en vez de recopiar gigabytes.
+    1. se lee el origen completo y se calculan sus sha256;
+    2. cada archivo copiado se **relee del destino** y su sha256 tiene que
+       coincidir con el del origen (un corte a mitad de copia deja tamaño o
+       hash distinto ⇒ no hay respaldo verificado ⇒ ``rebuild`` no arranca);
+    3. el manifiesto se relee del disco y se contrasta contra el origen.
+
+    Idempotente: si ya existe un respaldo cuyo contenido verifica contra el
+    origen actual, se reusa sin recopiar. Un respaldo que no verifica (de otra
+    corrida, de otro contenido, o alterado) se **aparta** con nombre explícito;
+    nunca se pisa en silencio ni se borra.
     """
-    reusado = _respaldo_existente_verifica(destino, inventario) if destino.exists() else None
+    _validar_raiz_fisica(grass_dir)
+    if path_present(grass_dir):
+        try:
+            exigir_arbol_copiable_sin_reparse(grass_dir)
+        except OSError as exc:
+            raise GrassCacheSafetyError(
+                "cache_con_enlaces",
+                f"El árbol del caché contiene una redirección y no se puede respaldar: {exc}",
+            ) from exc
+
+    origen = _digests_del_cache(grass_dir)
+    total = sum(tamano for tamano, _ in origen.values())
+    if len(origen) != inventario.archivos_cache or total != inventario.bytes_cache:
+        raise GrassCacheSafetyError(
+            "respaldo_incompleto",
+            f"El caché tiene {len(origen)} archivos/{total} bytes, pero el inventario declara "
+            f"{inventario.archivos_cache}/{inventario.bytes_cache}: cambió entre el inventario y el respaldo.",
+        )
+
+    reusado = _respaldo_existente_verifica(destino, inventario, origen) if path_present(destino) else None
     if reusado is not None:
-        logger.info("Respaldo de grass ya verificado en %s (huella %s); se reusa.", destino, inventario.huella)
+        logger.info("Respaldo de grass verificado por contenido en %s; se reusa.", destino)
         return reusado
 
     try:
-        # Existencia exclusiva: dos respaldos concurrentes no comparten carpeta.
-        # Un destino previo inválido (p. ej. de un corte) se aparta, no se pisa.
         destino.mkdir(parents=True, exist_ok=False)
     except FileExistsError:
         invalido = destino.with_name(f"{destino.name}.invalido-{int(time.time())}")
@@ -411,33 +572,34 @@ def respaldar_cache(
         destino.mkdir(parents=True, exist_ok=False)
 
     archivos: list[dict[str, Any]] = []
-    total = 0
-    for origen in sorted(grass_dir.iterdir(), key=lambda p: p.name):
-        if origen.suffix.lower() not in EXTENSIONES_CACHE:
-            continue
-        if not origen.is_file():
-            continue
-        _rechazar_enlace(origen, "cache_con_enlaces")
-        copia = destino / origen.name
-        bytes_copiados, hash_origen = _copiar_con_hash(origen, copia)
-        if copia.stat().st_size != bytes_copiados or _hash_de_archivo(copia) != hash_origen:
+    copiados = 0
+    for nombre, (tamano_origen, sha_origen) in origen.items():
+        copia = destino / nombre
+        bytes_copiados, hash_copia = _copiar_con_hash(grass_dir / nombre, copia)
+        if bytes_copiados != tamano_origen:
             raise GrassCacheSafetyError(
                 "respaldo_no_verificado",
-                f"El respaldo de {origen.name} no coincide con el origen (copia truncada o ilegible).",
+                f"El respaldo de {nombre} copió {bytes_copiados} bytes de {tamano_origen}.",
             )
-        archivos.append({"nombre": origen.name, "bytes": bytes_copiados, "sha256": hash_origen})
-        total += bytes_copiados
+        _, hash_releido = _hash_de_archivo(copia)
+        if hash_releido != sha_origen or hash_copia != sha_origen:
+            raise GrassCacheSafetyError(
+                "respaldo_no_verificado",
+                f"El respaldo de {nombre} no coincide con el origen (copia truncada o alterada).",
+            )
+        archivos.append({"nombre": nombre, "bytes": tamano_origen, "sha256": sha_origen})
+        copiados += bytes_copiados
 
-    if len(archivos) != inventario.archivos_cache or total != inventario.bytes_cache:
+    if copiados != total:
         raise GrassCacheSafetyError(
             "respaldo_incompleto",
-            f"El respaldo copió {len(archivos)} archivos/{total} bytes, pero el inventario "
-            f"declara {inventario.archivos_cache}/{inventario.bytes_cache}: el caché cambió durante el respaldo.",
+            f"El respaldo copió {copiados} bytes de {total} declarados por el origen.",
         )
 
     manifiesto = {
         "version": _VERSION_MANIFIESTO,
         "huella": inventario.huella,
+        "huella_contenido": _huella_de_contenido(origen),
         "archivos": archivos,
         "bytes": total,
         "creado": time.time(),
@@ -452,15 +614,55 @@ def respaldar_cache(
 
     # Releer del disco: el respaldo vale por lo que quedó escrito, no por el dict.
     releido = _leer_manifiesto(ruta_manifiesto)
-    if releido is None or releido.get("huella") != inventario.huella:
-        raise GrassCacheSafetyError("respaldo_no_verificado", f"El manifiesto {ruta_manifiesto} no se pudo releer.")
+    entradas_releidas = _entradas_del_manifiesto(releido or {})
+    if entradas_releidas != origen:
+        raise GrassCacheSafetyError(
+            "respaldo_no_verificado", f"El manifiesto {ruta_manifiesto} no coincide con el origen tras releerlo."
+        )
     return RespaldoVerificado(
         destino=destino,
         manifiesto=ruta_manifiesto,
-        archivos=len(archivos),
+        archivos=len(origen),
         bytes=total,
         huella=inventario.huella,
+        huella_contenido=_huella_de_contenido(origen),
     )
+
+
+def verificar_respaldo_para_borrado(*, grass_dir: pathlib.Path, respaldo: RespaldoVerificado) -> None:
+    """Verifica el respaldo contra el caché ACTUAL justo antes de autorizar el borrado.
+
+    Es la última comprobación antes de escribir un flag vacío (que dispara el
+    ``remove()`` de NGIO). Vuelve a leer el origen y el destino: si el caché
+    cambió después del respaldo, o si el respaldo fue alterado, ``rebuild`` no
+    arranca. El manifiesto histórico **no** alcanza por sí solo.
+    """
+    _validar_raiz_fisica(grass_dir)
+    manifiesto = _leer_manifiesto(respaldo.manifiesto)
+    declarado = _entradas_del_manifiesto(manifiesto or {})
+    if declarado is None:
+        raise GrassCacheSafetyError(
+            "respaldo_no_verificado", f"El manifiesto {respaldo.manifiesto} no se pudo interpretar."
+        )
+    actual = _digests_del_cache(grass_dir)
+    if actual != declarado:
+        raise GrassCacheSafetyError(
+            "respaldo_desactualizado",
+            "El caché cambió después del respaldo: el respaldo ya no cubre el contenido actual. "
+            "Se niega el borrado (volvé a correr el ritual para respaldar el estado vigente).",
+        )
+    for nombre, (tamano, sha_esperado) in declarado.items():
+        ruta = respaldo.destino / nombre
+        try:
+            if ruta.stat().st_size != tamano or _hash_de_archivo(ruta)[1] != sha_esperado:
+                raise GrassCacheSafetyError(
+                    "respaldo_alterado",
+                    f"El archivo {ruta} del respaldo no coincide con el manifiesto: no se autoriza el borrado.",
+                )
+        except OSError as exc:
+            raise GrassCacheSafetyError(
+                "respaldo_alterado", f"No se pudo verificar {ruta} del respaldo: {exc}"
+            ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -476,12 +678,13 @@ def _ruta_progreso(raiz_estado: pathlib.Path, huella: str) -> pathlib.Path:
     return _dir_progreso(raiz_estado) / f"{huella}.json"
 
 
-def archivar_progreso(raiz_estado: pathlib.Path, inventario: InventarioCache, contenido: str) -> pathlib.Path:
-    """Guarda el contenido del flag atado a la huella del caché de ESE momento.
+def archivar_progreso(raiz_estado: pathlib.Path, inventario: InventarioCache, contenido: bytes) -> pathlib.Path:
+    """Guarda los BYTES del flag atados a la huella del caché de ESE momento.
 
-    Se llama antes de neutralizar el flag (el juego del usuario no puede quedar
-    en modo precache) y antes de pisarlo en un ``rebuild``. Es best-effort por
-    contrato del llamador: un fallo acá no puede impedir la limpieza del flag.
+    ``base64`` + ``sha256``: el contenido no se interpreta como texto, así que
+    restaurarlo devuelve los mismos bytes aunque el flag tenga una codificación
+    inesperada. Un fallo acá no puede impedir la limpieza del flag (el llamador
+    lo trata como best-effort).
     """
     destino = _ruta_progreso(raiz_estado, inventario.huella)
     destino.parent.mkdir(parents=True, exist_ok=True)
@@ -490,7 +693,9 @@ def archivar_progreso(raiz_estado: pathlib.Path, inventario: InventarioCache, co
         "version": _VERSION_MANIFIESTO,
         "huella": inventario.huella,
         "inventario": inventario.a_dict(),
-        "contenido": contenido,
+        "contenido_b64": base64.b64encode(contenido).decode("ascii"),
+        "contenido_sha256": hashlib.sha256(contenido).hexdigest(),
+        "contenido_bytes": len(contenido),
         "archivado": time.time(),
     }
     tmp.write_text(json.dumps(carga, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -499,11 +704,13 @@ def archivar_progreso(raiz_estado: pathlib.Path, inventario: InventarioCache, co
     return destino
 
 
-def recuperar_progreso(raiz_estado: pathlib.Path | None, inventario: InventarioCache) -> str | None:
+def recuperar_progreso(raiz_estado: pathlib.Path | None, inventario: InventarioCache) -> bytes | None:
     """Progreso archivado para ESTE caché, o ``None``.
 
-    La huella tiene que coincidir: reanudar con el progreso de otro conjunto de
-    archivos haría que NGIO saltee celdas que nunca se escribieron.
+    La huella tiene que coincidir (reanudar con el progreso de otro conjunto de
+    archivos haría que NGIO saltee celdas que nunca se escribieron) y el
+    contenido tiene que sobrevivir el round-trip: se valida contra el sha256
+    archivado, así un archivo de archivo corrupto no se restaura a medias.
     """
     if raiz_estado is None:
         return None
@@ -511,10 +718,94 @@ def recuperar_progreso(raiz_estado: pathlib.Path | None, inventario: InventarioC
     carga = _leer_manifiesto(ruta)
     if carga is None or carga.get("version") != _VERSION_MANIFIESTO or carga.get("huella") != inventario.huella:
         return None
-    contenido = carga.get("contenido")
-    if not isinstance(contenido, str) or not contenido.strip():
+    b64 = carga.get("contenido_b64")
+    sha_esperado = carga.get("contenido_sha256")
+    if not isinstance(b64, str) or not isinstance(sha_esperado, str):
         return None
-    return contenido
+    try:
+        contenido = base64.b64decode(b64.encode("ascii"), validate=True)
+    except (ValueError, UnicodeEncodeError):
+        return None
+    if hashlib.sha256(contenido).hexdigest() != sha_esperado:
+        logger.warning("La evidencia de progreso %s no sobrevivió el round-trip; no se restaura.", ruta)
+        return None
+    return contenido if any(linea.strip() for linea in contenido.splitlines()) else None
+
+
+# ---------------------------------------------------------------------------
+# Neutralización del flag (verificable)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class NeutralizacionFlag:
+    """Resultado de archivar + borrar el flag. Nunca se pierde un fallo."""
+
+    borrado: bool
+    archivado: bool
+    errores: tuple[str, ...] = ()
+
+    @property
+    def limpio(self) -> bool:
+        return self.borrado
+
+
+def neutralizar_flag(
+    *,
+    flag_path: pathlib.Path,
+    grass_dir: pathlib.Path,
+    raiz_estado: pathlib.Path | None,
+) -> NeutralizacionFlag:
+    """Archiva el progreso (si lo hay) y borra el flag. Nunca propaga errores.
+
+    El borrado es obligatorio: un flag residual haría que el juego del usuario
+    arranque en modo precache. Por eso el resultado es explícito —un
+    ``unlink`` que falla NO es limpieza exitosa— y el llamador lo publica en el
+    resultado del run. El archivado preserva lo único que permitiría reanudar
+    sin destruir el caché, así que se intenta siempre antes.
+    """
+    errores: list[str] = []
+    archivado = False
+
+    try:
+        presente = path_present(flag_path)
+    except OSError as exc:
+        presente = False
+        errores.append(f"No se pudo inspeccionar {flag_path}: {exc}")
+
+    if presente and raiz_estado is not None:
+        try:
+            inventario = inventariar_cache(grass_dir=grass_dir, flag_path=flag_path)
+            if inventario.flag_progreso is not None:
+                archivar_progreso(raiz_estado, inventario, inventario.flag_progreso)
+                archivado = True
+        except (GrassCacheSafetyError, OSError) as exc:
+            errores.append(f"No se pudo archivar el progreso: {exc}")
+
+    try:
+        # Un enlace no es el flag de NGIO: se informa y no se borra (podría ser
+        # un archivo del usuario apuntado desde otro lado).
+        tipo = link_kind_or_raise(flag_path) if presente else None
+    except OSError as exc:
+        tipo = None
+        errores.append(f"No se pudo clasificar el flag antes de borrarlo: {exc}")
+
+    if tipo is not None:
+        errores.append(f"{flag_path} es un enlace ({tipo}); no se borra")
+        return NeutralizacionFlag(borrado=False, archivado=archivado, errores=tuple(errores))
+
+    try:
+        flag_path.unlink(missing_ok=True)
+    except OSError as exc:
+        errores.append(f"No se pudo eliminar {flag_path}: {exc}")
+
+    try:
+        borrado = not path_present(flag_path)
+    except OSError:
+        borrado = False
+    if not borrado and not any("No se pudo eliminar" in e for e in errores):
+        errores.append(f"{flag_path} sigue presente después del borrado")
+    return NeutralizacionFlag(borrado=borrado, archivado=archivado, errores=tuple(errores))
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +819,7 @@ class PlanArranque:
 
     modo: GrassCacheMode
     accion: AccionFlag
-    contenido: str
+    contenido: bytes
     inventario: InventarioCache
     respaldo: RespaldoVerificado | None = None
 
@@ -538,7 +829,33 @@ class PlanArranque:
             "accion_flag": self.accion,
             "inventario": self.inventario.a_dict(),
             "respaldo": str(self.respaldo.destino) if self.respaldo is not None else None,
+            "cobertura_usvfs": "no_verificada",
         }
+
+
+def _exigir_aprobacion_y_cobertura(*, aprobacion: str | None, ack_usvfs_no_verificado: bool) -> None:
+    """Precondiciones del modo destructivo: aprobación literal + reconocimiento VFS.
+
+    Vive en una función porque la usan dos llamadores en momentos distintos:
+    :func:`preparar_arranque` la corre **antes de respaldar** (un HOLD no debe
+    tocar el disco) y :func:`planificar_arranque` la vuelve a exigir al decidir.
+    Tenerla duplicada era la forma de que una de las dos se quedara atrás.
+    """
+    if aprobacion != APROBACION_REBUILD:
+        raise GrassCacheSafetyError(
+            "rebuild_sin_aprobacion",
+            f"El modo REBUILD regenera el caché desde cero y NGIO borra el anterior: exige "
+            f"aprobación explícita ('{APROBACION_REBUILD}').",
+        )
+    if not ack_usvfs_no_verificado:
+        # HOLD explícito: el respaldo cubre overwrite/Grass, no el overlay USVFS.
+        raise GrassCacheSafetyError(
+            "rebuild_usvfs_no_demostrado",
+            "HOLD: la cobertura USVFS no está demostrada. El respaldo inventaría sólo "
+            "<mo2>/overwrite/Grass, pero NGIO borra Data/Grass a través de la USVFS, que superpone el "
+            "Grass/ de los mods habilitados: un .cgid que viva en un mod NO está respaldado. "
+            "Para regenerar de todos modos, pasá ack_usvfs_no_verificado=True (queda visible en HITL).",
+        )
 
 
 def planificar_arranque(
@@ -547,7 +864,8 @@ def planificar_arranque(
     inventario: InventarioCache,
     aprobacion: str | None = None,
     respaldo: RespaldoVerificado | None = None,
-    progreso_archivado: str | None = None,
+    progreso_archivado: bytes | None = None,
+    ack_usvfs_no_verificado: bool = False,
 ) -> PlanArranque:
     """Decide la acción sobre el flag o levanta ``GrassCacheSafetyError``.
 
@@ -570,11 +888,11 @@ def planificar_arranque(
                 f"{PRECACHE_FLAG} tiene progreso y el modo es NEW: escribir el flag vacío lo destruiría. "
                 "Usá mode='resume' para continuar desde ese progreso.",
             )
-        return PlanArranque(modo="new", accion="escribir_vacio", contenido="", inventario=inventario)
+        return PlanArranque(modo="new", accion="escribir_vacio", contenido=b"", inventario=inventario)
 
     if modo == "resume":
         if inventario.flag_progreso is not None:
-            # Se conserva el contenido EXACTO: es la señal de reanudación de NGIO.
+            # Se conserva el contenido EXACTO (bytes): es la señal de reanudación de NGIO.
             return PlanArranque(
                 modo="resume", accion="conservar", contenido=inventario.flag_progreso, inventario=inventario
             )
@@ -588,12 +906,7 @@ def planificar_arranque(
         )
 
     # modo == "rebuild"
-    if aprobacion != APROBACION_REBUILD:
-        raise GrassCacheSafetyError(
-            "rebuild_sin_aprobacion",
-            f"El modo REBUILD regenera el caché desde cero y NGIO borra el anterior: exige "
-            f"aprobación explícita ('{APROBACION_REBUILD}').",
-        )
+    _exigir_aprobacion_y_cobertura(aprobacion=aprobacion, ack_usvfs_no_verificado=ack_usvfs_no_verificado)
     if inventario.tiene_cache:
         if respaldo is None:
             raise GrassCacheSafetyError(
@@ -606,7 +919,9 @@ def planificar_arranque(
                 f"El respaldo {respaldo.destino} no corresponde a este caché "
                 f"({respaldo.archivos}/{respaldo.bytes} vs {inventario.archivos_cache}/{inventario.bytes_cache}).",
             )
-    return PlanArranque(modo="rebuild", accion="escribir_vacio", contenido="", inventario=inventario, respaldo=respaldo)
+    return PlanArranque(
+        modo="rebuild", accion="escribir_vacio", contenido=b"", inventario=inventario, respaldo=respaldo
+    )
 
 
 def preparar_arranque(
@@ -616,16 +931,21 @@ def preparar_arranque(
     grass_dir: pathlib.Path,
     aprobacion: str | None = None,
     raiz_estado: pathlib.Path | None = None,
+    ack_usvfs_no_verificado: bool = False,
 ) -> PlanArranque:
     """Inventaría, respalda si el modo lo exige y devuelve el plan — idempotente.
 
     Es el único punto que contesta "¿puedo arrancar?"; lo llaman el servicio
     (antes de clonar el perfil) y el runner (antes de escribir el flag). Repetir
-    la llamada no recopia el respaldo ni rearchiva el progreso.
+    la llamada no recopia el respaldo ni rearchiva el progreso: el respaldo se
+    reusa sólo si su contenido verifica contra el caché actual.
     """
+    if modo == "rebuild":
+        # Fail-fast ANTES de tocar el disco: un HOLD no respalda nada.
+        _exigir_aprobacion_y_cobertura(aprobacion=aprobacion, ack_usvfs_no_verificado=ack_usvfs_no_verificado)
     inventario = inventariar_cache(grass_dir=grass_dir, flag_path=ruta_del_flag(game_path))
     respaldo: RespaldoVerificado | None = None
-    if modo == "rebuild" and inventario.tiene_cache and aprobacion == APROBACION_REBUILD:
+    if modo == "rebuild" and inventario.tiene_cache:
         if raiz_estado is None:
             raise GrassCacheSafetyError(
                 "rebuild_sin_respaldo",
@@ -643,13 +963,27 @@ def preparar_arranque(
         with contextlib.suppress(OSError):
             archivar_progreso(raiz_estado, inventario, inventario.flag_progreso)
     progreso = recuperar_progreso(raiz_estado, inventario) if modo == "resume" else None
-    return planificar_arranque(
+    plan = planificar_arranque(
         modo=modo,
         inventario=inventario,
         aprobacion=aprobacion,
         respaldo=respaldo,
         progreso_archivado=progreso,
+        ack_usvfs_no_verificado=ack_usvfs_no_verificado,
     )
+    if plan.modo == "rebuild" and plan.respaldo is not None:
+        # Última comprobación de contenido antes de autorizar el ``remove()`` de
+        # NGIO: el respaldo tiene que cubrir el caché TAL COMO ESTÁ AHORA.
+        verificar_respaldo_para_borrado(grass_dir=grass_dir, respaldo=plan.respaldo)
+    if plan.accion == "escribir_vacio":
+        logger.warning(
+            "Grass cache: se escribirá %s vacío en %s. Cobertura USVFS NO demostrada: sólo se "
+            "inventarió %s; un .cgid en un mod habilitado no está cubierto.",
+            PRECACHE_FLAG,
+            game_path,
+            grass_dir,
+        )
+    return plan
 
 
 def aplicar_plan(plan: PlanArranque, flag_path: pathlib.Path) -> None:
@@ -657,14 +991,15 @@ def aplicar_plan(plan: PlanArranque, flag_path: pathlib.Path) -> None:
 
     ``conservar`` no escribe nada: reescribir el mismo contenido sería inocuo
     hoy, pero cualquier normalización futura (saltos de línea, BOM, recorte)
-    convertiría una reanudación correcta en un borrado de caché.
+    convertiría una reanudación correcta en un borrado de caché. Se escriben
+    BYTES, sin recodificar.
     """
     if plan.accion == "conservar":
         return
     _rechazar_enlace(flag_path, "flag_es_enlace")
     tmp = flag_path.with_name(f"{flag_path.name}.tmp")
     try:
-        tmp.write_text(plan.contenido, encoding="utf-8")
+        tmp.write_bytes(plan.contenido)
         with tmp.open("rb") as fh:
             os.fsync(fh.fileno())
         os.replace(tmp, flag_path)
@@ -675,33 +1010,6 @@ def aplicar_plan(plan: PlanArranque, flag_path: pathlib.Path) -> None:
             tmp.unlink(missing_ok=True)
         raise
     _fsync_directorio(flag_path.parent)
-
-
-def neutralizar_flag(
-    *,
-    flag_path: pathlib.Path,
-    grass_dir: pathlib.Path,
-    raiz_estado: pathlib.Path | None,
-) -> None:
-    """Archiva el progreso (si lo hay) y borra el flag. Nunca propaga errores.
-
-    El borrado es obligatorio: un flag residual haría que el juego del usuario
-    arranque en modo precache. El archivado preserva lo único que permitiría
-    reanudar sin destruir el caché, así que se intenta SIEMPRE antes.
-    """
-    try:
-        hay_flag = flag_path.exists()
-    except OSError:
-        hay_flag = False
-    if hay_flag and raiz_estado is not None:
-        try:
-            inventario = inventariar_cache(grass_dir=grass_dir, flag_path=flag_path)
-            if inventario.flag_progreso is not None:
-                archivar_progreso(raiz_estado, inventario, inventario.flag_progreso)
-        except (GrassCacheSafetyError, OSError):
-            logger.warning("No se pudo archivar el progreso del flag antes de neutralizarlo.", exc_info=True)
-    with contextlib.suppress(OSError):
-        flag_path.unlink(missing_ok=True)
 
 
 def ruta_de_respaldo(plan: PlanArranque) -> str:
@@ -717,6 +1025,7 @@ __all__ = [
     "GrassCacheMode",
     "GrassCacheSafetyError",
     "InventarioCache",
+    "NeutralizacionFlag",
     "PlanArranque",
     "RespaldoVerificado",
     "aplicar_plan",
@@ -730,4 +1039,5 @@ __all__ = [
     "respaldar_cache",
     "ruta_de_respaldo",
     "ruta_del_flag",
+    "verificar_respaldo_para_borrado",
 ]

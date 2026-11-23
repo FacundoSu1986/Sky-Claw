@@ -223,6 +223,10 @@ class GenerateGrassCacheParams(BaseModel):
             progreso, así que el default es el que no destruye nada.
         rebuild_approval: Token literal (``REBUILD``) que autoriza el modo
             destructivo. Viaja al prompt HITL en ``describe_for_approval``.
+        ack_usvfs_no_verificado: Reconoce explícitamente que la cobertura USVFS
+            del respaldo NO está demostrada (cubre ``overwrite/Grass``, no el
+            ``Grass/`` de los mods que NGIO ve por la VFS). Sin esto, REBUILD
+            queda en HOLD. También viaja al prompt HITL.
     """
 
     model_config = ConfigDict(strict=True)
@@ -235,6 +239,7 @@ class GenerateGrassCacheParams(BaseModel):
     force_stage_guard: bool = False
     mode: GrassCacheMode = "new"
     rebuild_approval: str | None = None
+    ack_usvfs_no_verificado: bool = False
 
     @model_validator(mode="after")
     def _rebuild_exige_aprobacion(self) -> GenerateGrassCacheParams:
@@ -442,6 +447,7 @@ class GrassCacheService:
                     grass_dir=config.overwrite_grass_dir,
                     aprobacion=config.rebuild_approval,
                     raiz_estado=config.backup_root,
+                    ack_usvfs_no_verificado=config.ack_usvfs_no_verificado,
                 )
                 if self._journal is not None:
                     journal_tx = await self._journal.begin_transaction(
@@ -491,6 +497,14 @@ class GrassCacheService:
         # invalida el éxito: la exclusividad no estuvo garantizada, así que el
         # journal NO se commitea aunque run_result diga success (Codex #291).
         exito = error_msg is None and run_result is not None and run_result.success
+        if run_result is not None and run_result.flag_residual:
+            # Un flag residual deja al juego del usuario arrancando en modo
+            # precache: es una limpieza incompleta y viaja por la misma vía
+            # (resultado + marca en el journal), nunca en silencio.
+            teardown_failures = [
+                *teardown_failures,
+                f"{_PRECACHE_FLAG} residual: " + ("; ".join(run_result.limpieza_errores) or "causa desconocida"),
+            ]
         # U-09: la constancia del cleanup a medias va ANTES del cierre, para que
         # la entrada quede dentro de la TX que se está por commitear.
         await self._journalizar_teardown_incompleto(journal_tx, teardown_failures)
@@ -572,6 +586,7 @@ class GrassCacheService:
                 mode=params.mode,
                 rebuild_approval=params.rebuild_approval,
                 backup_root=self._raiz_de_estado(),
+                ack_usvfs_no_verificado=params.ack_usvfs_no_verificado,
                 **overrides,
             )
         except ValueError as exc:
@@ -731,6 +746,7 @@ class GrassCacheService:
             "stalled": run_result.stalled,
             "mode": run_result.mode,
             "backup_dir": run_result.backup_dir,
+            "flag_residual": run_result.flag_residual,
             "duration_seconds": duracion,
         }
 

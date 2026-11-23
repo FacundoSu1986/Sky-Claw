@@ -2,7 +2,8 @@
 
 > **Fecha:** 2026-11-23 · **Base:** `origin/main` `9632a465f8520010dfbe89da4a29dd29f24875da`
 > **Rama:** `arena/9a1eb8ae-sky-claw` · **Autor:** agente (Arena), a pedido del propietario.
-> **Estado:** `CODE_READY_FOR_HUMAN_SMOKE` para el paquete P0. **No** es `MVP_CERTIFIED`.
+> **Estado:** `P0_CHANGES_REQUESTED` **atendido**; sigue `CODE_READY_FOR_HUMAN_SMOKE`, **no**
+> `MVP_CERTIFIED`. La §7 registra la revisión del propietario y qué se corrigió en cada punto.
 
 Este documento reconcilia contra el código de la HEAD los hallazgos F-01…F-12 de la
 auditoría consolidada del 23-11-2026 y registra la remediación del único `P0`.
@@ -89,7 +90,7 @@ Módulo nuevo `sky_claw/local/tools/grass_cache_safety.py` (mypy estricto) que c
 |---|---|---|
 | `new` (default) | sin `.cgid/.dgid/.fail` **y** sin progreso | escribe vacío |
 | `resume` | flag con progreso **o** progreso archivado con huella coincidente | **no lo toca** (o lo restaura byte a byte) |
-| `rebuild` | `REBUILD` **y** respaldo verificado por sha256 releído del destino | archiva el progreso y escribe vacío |
+| `rebuild` | `REBUILD` **+** reconocimiento de cobertura USVFS **+** respaldo verificado por **contenido** contra el caché actual | archiva el progreso y escribe vacío |
 
 Propiedades que quedan ancladas por tests:
 
@@ -97,12 +98,21 @@ Propiedades que quedan ancladas por tests:
 - Un flag con progreso **nunca se trunca** sin decisión; `resume` lo conserva byte a byte.
 - `rebuild` sin aprobación, sin raíz de estado o sin respaldo que cubra el inventario
   actual **no arranca**.
-- El respaldo se verifica **releyendo el destino** (hash + tamaño), no con el hash en
-  memoria; un manifiesto tamperizado no se reusa como verificado.
-- Los enlaces (symlink/junction) en el caché o en el flag son `HOLD` fail-closed.
+- El respaldo se verifica **por contenido en los dos lados**: lo que el manifiesto declara
+  tiene que coincidir con el origen *actual* y con los bytes *actuales* del destino. Un
+  respaldo de un caché con los mismos nombres y tamaños pero distinto contenido (o alterado
+  en el destino conservando el tamaño) **no se reusa**: se aparta con nombre explícito y se
+  recopia. Antes de escribir el flag vacío se repite la verificación contra el estado
+  vigente (`verificar_respaldo_para_borrado`).
+- Los enlaces (symlink/junction) en el caché, en el flag **o en cualquier componente de la
+  ruta del caché** son `HOLD` fail-closed: se reutiliza `exigir_contencion_fisica` del repo
+  (lstat por componente, junctions de Windows incluidos).
 - Al salir, el flag se **neutraliza** (el juego del usuario no puede quedar en modo
-  precache) pero su contenido se archiva atado a la huella del caché, y `resume` sólo lo
-  restaura si la huella coincide.
+  precache) pero su contenido se archiva **byte a byte** (base64 + sha256, sin decodificar
+  como texto) atado a la huella del caché, y `resume` sólo lo restaura si la huella y el
+  sha256 del archivo archivado coinciden. Un `unlink` que falla **no** se reporta como
+  limpieza exitosa: el resultado del run expone `flag_residual` y los errores concretos, y
+  el servicio los journaliza por la misma vía que el teardown incompleto.
 - El servicio corre el mismo `preparar_arranque` **antes de clonar el perfil**, y el
   runner lo repite sobre el inventario fresco. Un rechazo no crea transacción de journal.
 
@@ -114,13 +124,25 @@ Propiedades que quedan ancladas por tests:
 3. **Reanudación tras muerte dura (SIGKILL/corte de luz):** el `finally` no corre, así que
    no hay archivo de progreso archivado y el barrido de arranque (U-03) borra el flag
    huérfano. En ese escenario `resume` se niega y el camino es `rebuild`, que **respalda
-   antes de borrar** — no se pierde nada, pero se regenera. Cerrarlo exige que el
-   barrido archive antes de borrar (P1).
+   antes de borrar** — el caché físico de `overwrite/Grass` se conserva, pero se regenera y
+   sigue vigente el HOLD de USVFS. Cerrarlo exige que el barrido archive antes de borrar (P1).
 4. **El respaldo copia, no mueve**, y vive en `SystemPaths.runtime_state_dir()`. No se
    verifica que esté en otro volumen: "independiente" es aquí lógico (fuera del árbol
    MO2), no físico.
 5. **Los `.fail` se respaldan y se inventarían, pero no se interpretan** (F-02).
-6. Un `rebuild` sobre un caché de varios GB duplica ese espacio mientras dura el run.
+6. Un `rebuild` sobre un caché de varios GB duplica ese espacio mientras dura el run, y la
+   verificación de contenido **lee los dos lados completos** (dos pasadas sha256 sobre el
+   origen y una sobre el destino): en un caché de GB eso es tiempo de E/S real, no un
+   chequeo instantáneo. Es el costo de que el respaldo signifique algo; se paga sólo en
+   `rebuild`.
+7. **El rechazo de enlaces es conservador por diseño:** un rig cuyo `overwrite/` cuelgue de
+   un junction legítimo (bibliotecas movidas, perfiles redirigidos) se rechaza con
+   `cache_raiz_enlazada` en vez de operar sobre él. No hay escape manual en P0; el operador
+   tiene que apuntar el tool a la ruta real. Relajarlo exige decidir *qué* junction es
+   confiable, que es justamente lo que no se puede demostrar sin rig.
+8. **`PrecacheGrass.txt` puede no ser el archivo efectivo:** `Util::getProgressFilePath()`
+   de NGIO 1.0.13 tiene un fallback a `.txt.txt`. El módulo inspecciona el nombre sin
+   fallback y falla cerrado respecto de lo que no ve (ver §1).
 
 ## 5. Gates ejecutados (2026-11-23, Linux, Python 3.11.2)
 
@@ -144,3 +166,40 @@ colecciona en POSIX (`_SECURITY_ATTRIBUTES`) y se excluyó por eso, también en 
 instalador + INI → `P4` publicación en mod dedicado + rollback → `P5` superficies.
 Antes de cada uno: `git fetch`, PRs abiertos (#1003, #1006, #1007 al cierre de este
 documento) y write-sets reales — no se asume que sigan abiertos.
+
+
+## 7. Revisión del propietario (`P0_CHANGES_REQUESTED`) — qué se corrigió
+
+Dictamen del propietario sobre el primer parche: la arquitectura `NEW/RESUME/REBUILD` es
+adecuada, pero la integridad del respaldo no estaba garantizada. Los cuatro puntos y la
+precondición de certificación, con el cambio y el test que lo fija:
+
+| # | Defecto reportado | Corrección | Test que lo reproduce |
+|---|---|---|---|
+| **B1** | `_respaldo_existente_verifica()` reusaba el respaldo comparando metadatos y tamaños: origen `AAAA`→`BBBB` (mismos 4 bytes) reusaba el respaldo viejo, y un destino alterado a `XXXX` con el mismo tamaño también pasaba | El reuso exige **tres igualdades por hash de contenido**: manifiesto == origen **actual**, destino **actual** == manifiesto, y conteos/bytes == inventario. Un respaldo que no verifica se **aparta** (`*.invalido-<ts>`) y se recopia; nunca se pisa ni se borra. Además, antes de escribir el flag vacío se repite la verificación contra el estado vigente (`verificar_respaldo_para_borrado`) | `test_respaldo_no_se_reutiliza_si_el_origen_cambio_con_el_mismo_tamano`, `test_respaldo_alterado_en_el_destino_no_se_reutiliza`, `test_verificacion_previa_al_borrado_rechaza_cache_cambiado`, `test_verificacion_previa_al_borrado_rechaza_respaldo_alterado` |
+| **B2** | `inventariar_cache()` rechazaba enlaces en archivos individuales pero permitía que `grass_dir` (o un ancestro) fuera un symlink/junction a un árbol externo | `_validar_raiz_fisica()` reutiliza `exigir_contencion_fisica` del repo (lstat por componente, sin seguir enlaces, clasifica junctions de Windows) anclando en la raíz del volumen. Se aplica al inventariar y al respaldar; el respaldo además exige `exigir_arbol_copiable_sin_reparse` | `test_cache_raiz_enlazada_se_rechaza`, `test_componente_intermedio_enlazado_se_rechaza` |
+| **C3** | `_leer_flag()` decodificaba con `errors="replace"`: archivar/restaurar podía cambiar los bytes originales | El contenido del flag viaja como **bytes** de punta a punta (`InventarioCache.flag_progreso`, `PlanArranque.contenido`), se archiva en base64 con sha256 y se restaura con `write_bytes`. "Tiene progreso" se decide con `splitlines()` + `strip()` sobre bytes, igual que NGIO (`trim` + descarte de blancas), sin decodificar | `test_flag_con_bytes_no_utf8_se_preserva_byte_a_byte`, `test_resume_restaura_bytes_no_utf8_sin_recodificar`, `test_progreso_archivado_corrupto_no_se_restaura` |
+| **C4** | No se declaraba fallo si `PrecacheGrass.txt` no se podía eliminar | `neutralizar_flag()` devuelve `NeutralizacionFlag(borrado, archivado, errores)` y nunca propaga; se re-verifica la ausencia después del `unlink`; un enlace no se borra. El runner expone `flag_residual` + `limpieza_errores` y el servicio los journaliza como teardown incompleto. El `finally` sólo toca un flag que el run **adoptó** | `test_neutralizacion_reporta_fallo_de_borrado`, `test_neutralizacion_no_borra_un_flag_que_es_un_enlace`, `test_flag_residual_se_reporta_y_no_se_da_por_limpio`, `test_guard_que_se_niega_no_borra_el_flag_existente`, `test_flag_residual_llega_al_resultado_y_al_teardown` |
+| **USVFS** | El inventario se limita a `overwrite/Grass`: no se demostró si NGIO puede borrar `.cgid` de otros mods activos | **HOLD explícito por defecto** para `rebuild`: sin `ack_usvfs_no_verificado=True` no arranca (`rebuild_usvfs_no_demostrado`) y **no se toca el disco** (la precondición corre antes de respaldar). El reconocimiento es visible en el prompt HITL y queda en el log. `plan.a_dict()` declara `cobertura_usvfs: no_verificada` | `test_rebuild_sin_ack_de_usvfs_queda_en_hold`, `test_rebuild_con_ack_explicito_deja_de_estar_en_hold`, `test_rebuild_sin_ack_de_usvfs_no_arranca`, `test_generate_rebuild_sin_ack_de_usvfs_queda_en_hold`, `test_describe_for_approval_avisa_que_el_respaldo_no_cubre_los_mods` |
+
+### Determinación sobre USVFS (lo que sí y lo que no se puede afirmar)
+
+- **Se puede afirmar** que el producto espera cachés en mods: `validators/etapas_previas_lods.py`
+  busca `*.cgid` tanto en `overwrite/Grass` como en el `Grass/` de **cada mod habilitado** del
+  `modlist.txt`. Si NGIO enumera `Data/Grass` bajo la VFS, ese `Grass/` de mod está en la
+  enumeración.
+- **No se puede afirmar** qué hace `remove()` sobre una ruta virtualizada (borrado físico vs.
+  tombstone en `overwrite`) ni si la superposición incluye todos los mods del perfil. Sin rig
+  Windows es `NO VERIFICADO`, así que **no se promete protección completa**: el respaldo se
+  describe siempre como "lo que Sky-Claw puede ver", nunca como cobertura total.
+- **No se amplió P0 a una refactorización de USVFS.** Cerrar el HOLD (inventariar el overlay y
+  demostrar la semántica de borrado) es trabajo de P2, con evidencia de rig.
+
+### Gates de esta revisión
+
+| Gate | Resultado |
+|---|---|
+| Tests focalizados (runner + service + safety + strategy + profile + HITL + BDD) | **215 passed, 2 skipped**, exit 0 |
+| `ruff check` / `ruff format --check` sobre `sky_claw/ scripts/ tests/` | limpio |
+| `mypy sky_claw/ scripts/` | mismos 694 errores preexistentes (17 archivos, ninguno del write-set); **0** en los módulos de grass |
+| Suite completa vs. baseline | ver §8 |
