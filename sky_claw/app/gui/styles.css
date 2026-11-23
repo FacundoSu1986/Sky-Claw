@@ -126,9 +126,10 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
 }
 
 /* Scrollbars talladas del shell Forge (forge_dashboard.py) — la clase
-   ``sc-scroll`` cubre los 3 contenedores con scroll (contenido principal,
-   Orden de Carga, chat). Antes no existía regla y caían a la scrollbar nativa
-   gris del navegador, rompiendo la lectura "piedra tallada".
+   ``sc-scroll`` cubre los contenedores con scroll (contenido principal,
+   Orden de Carga, chat y la pila de avisos, acotada al viewport por #996).
+   Antes no existía regla y caían a la scrollbar nativa gris del navegador,
+   rompiendo la lectura "piedra tallada".
    scrollbar-width/color es el fallback estándar (Firefox): los pseudoselectores
    ::-webkit-scrollbar solo aplican en Chromium — el webview por defecto de
    NiceGUI — pero el shell también puede abrirse en un navegador externo.
@@ -321,6 +322,42 @@ h1, h2, h3, .text-xl, .text-2xl, .text-3xl, .text-4xl, .text-5xl {
     color: #e88a82;
     background: rgba(216, 88, 78, 0.12);
     border: 1.5px solid rgba(216, 88, 78, 0.5);
+}
+
+/* ── Botón de cierre (×) de los avisos — receta única .sc-dismiss (#996) ──
+   La usan las tres × de los avisos: resultado del ritual, semáforo de preflight e
+   informe de parallax. El censo está congelado en tests/test_gui_cierre_de_avisos.py.
+   La × es el último ítem de una fila flex: no se encoge, y la fila parte las palabras
+   largas de sus hermanos. Antes, una ruta sin espacios la empujaba fuera del recuadro.
+   La caja de 28×28 supera el objetivo mínimo de WCAG 2.5.8 (24×24). En reposo, el
+   texto secundario da 8.4:1 sobre el tramo claro del aviso; el gris de antes daba 4.7:1
+   en un glifo de 15 px. Hover y foco la iluminan con oro y un fondo translúcido. El
+   outline del foco lo pone la regla global :focus-visible. sticky: si el aviso es más
+   alto que la pila (que scrollea), la × queda en su borde superior mientras se lee.
+   Sin estilo inline en el call-site: un inline le gana a esta clase. */
+.sc-dismiss {
+    position: sticky;
+    top: 0;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    cursor: pointer;
+    color: var(--sky-text-secondary);
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    font-size: 20px;
+    line-height: 1;
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+.sc-dismiss:hover,
+.sc-dismiss:focus-visible {
+    color: var(--sky-gold-bright);
+    background: rgba(200, 168, 106, 0.14);
 }
 
 /* ── Barra de integridad del hero (D3 — reactiva al estado de la forja) ──
