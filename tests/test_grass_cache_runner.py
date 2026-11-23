@@ -42,6 +42,7 @@ from sky_claw.local.tools.grass_cache_runner import (
 )
 from sky_claw.local.tools.grass_cache_safety import (
     GrassCacheSafetyError,
+    NeutralizacionFlag,
     archivar_progreso,
     inventariar_cache,
 )
@@ -1293,3 +1294,62 @@ async def test_progreso_perdido_llega_al_resultado(
     assert resultado.flag_residual is False, "el flag sí se borró"
     assert resultado.progreso_perdido is True
     assert any("archivar" in error.lower() for error in resultado.limpieza_errores)
+
+
+# ---------------------------------------------------------------------------
+# TERCERA REVISIÓN — B9 y el invariante de `run()`
+# ---------------------------------------------------------------------------
+
+
+async def test_error_posterior_a_replace_no_deja_flag_vacio_sin_limpiar(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # B9: `os.replace()` escribe el flag y DESPUÉS falla el postcheck. El flag
+    # en disco ya es NUESTRO: si el runner no lo adopta, queda un flag vacío
+    # que haría que el próximo arranque del juego borre el caché.
+    real_read_bytes = pathlib.Path.read_bytes
+    lecturas = {"n": 0}
+
+    def _read_bytes_falla_una_vez(self: pathlib.Path) -> bytes:
+        if self.name == "PrecacheGrass.txt":
+            lecturas["n"] += 1
+            if lecturas["n"] == 1:
+                raise PermissionError("lectura bloqueada (una vez)")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _read_bytes_falla_una_vez)
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        await _correr(_runner(config, mo2))
+
+    assert excinfo.value.codigo == "flag_no_verificado"
+    mo2.launch_game.assert_not_awaited()
+    assert not (config.game_path / "PrecacheGrass.txt").exists(), (
+        "el flag escrito antes del postcheck tiene que quedar bajo responsabilidad del runner"
+    )
+
+
+async def test_limpieza_incompleta_no_devuelve_exito(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # El ritual completa, pero la limpieza del flag no: el resultado no puede
+    # leerse como éxito por el outcome. El runner lo declara él mismo (no
+    # depende de que el servicio lo corrija).
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "Tamriel.cgid")
+        (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+        return {"pid": 999, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    monkeypatch.setattr(
+        gcr_mod,
+        "neutralizar_flag",
+        lambda **kwargs: NeutralizacionFlag(borrado=False, archivado=False, errores=("el archivo está en uso",)),
+    )
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "completed"
+    assert resultado.flag_residual is True
+    assert resultado.success is False, "una limpieza incompleta no es éxito"
+    assert "limpieza" in resultado.message.lower()

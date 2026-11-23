@@ -52,7 +52,9 @@ from sky_claw.local.mo2.vfs import GameLaunchTimeoutError, MO2Controller
 from sky_claw.local.tools.grass_cache_safety import (
     MODOS_GRASS_CACHE,
     PRECACHE_FLAG,
+    EstadoAplicacion,
     GrassCacheMode,
+    GrassCacheSafetyError,
     NeutralizacionFlag,
     PlanArranque,
     aplicar_plan,
@@ -306,8 +308,15 @@ class GrassCacheRunner:
                     self._flag_path,
                     "; ".join(limpieza.errores) or "desconocido",
                 )
+            # Una limpieza incompleta no es éxito, ni aunque el outcome haya
+            # sido "completed": el contrato no depende de que el servicio lo
+            # corrija más arriba.
             return dataclasses.replace(
                 resultado,
+                success=False,
+                message=(f"{resultado.message} | " if resultado.message else "")
+                + "Limpieza del flag incompleta: "
+                + ("; ".join(limpieza.errores) or "causa desconocida"),
                 flag_residual=not limpieza.borrado,
                 progreso_perdido=limpieza.progreso_perdido,
                 limpieza_errores=limpieza.errores,
@@ -358,7 +367,16 @@ class GrassCacheRunner:
             # El try cubre DESDE la escritura del flag: una cancelación dura
             # durante el snapshot inicial o el primer progress (que propaga
             # CancelledError) también debe limpiar el flag en el finally.
-            await asyncio.to_thread(aplicar_plan, plan, self._flag_path)
+            # El estado de la aplicación se lee TAMBIÉN si la verificación
+            # posterior falla: si la sustitución ocurrió, el flag en disco es
+            # nuestro y limpiarlo sigue siendo responsabilidad de este run.
+            estado_aplicacion = EstadoAplicacion()
+            try:
+                await asyncio.to_thread(aplicar_plan, plan, self._flag_path, estado=estado_aplicacion)
+            except GrassCacheSafetyError:
+                if estado_aplicacion.escrito:
+                    flag_apropiado = True
+                raise
             flag_apropiado = True
             # Baseline del stall detector: el estado del cache ANTES del primer
             # lanzamiento — un primer ciclo sin .cgid nuevos ya cuenta como racha.

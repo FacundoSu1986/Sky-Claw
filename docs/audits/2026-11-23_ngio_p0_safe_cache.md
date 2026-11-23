@@ -245,3 +245,31 @@ borrado de NGIO pueda alcanzar `.cgid` de mods que Sky-Claw no inventaría.
 Los 136 fallos preexistentes son de `runtime_vault*`, `frozen_runtime*`, `journal`,
 `telegram_sender` y `process_helper` (módulos Windows-only o dependientes de timing); ninguno
 pertenece a grass, HITL, BDD ni al dispatcher.
+
+## 10. Tercera revisión independiente (`73ec59e`) — qué se corrigió
+
+| # | Defecto | Rojo reproducido | Corrección | Test |
+|---|---|---|---|---|
+| **B7** | `archivar_progreso` escribía en `<huella>.json.tmp` (nombre derivable): un symlink ahí sobrescribía un archivo ajeno. El manifiesto del respaldo usaba el mismo patrón (`.manifiesto.json.tmp`) | el archivo víctima quedaba con el JSON de evidencia | `_escribir_json_atomico()` escribe **todo** metadato con el temporal exclusivo del flag (`O_CREAT\|O_EXCL\|O_NOFOLLOW`, nombre impredecible, mismo directorio), reemplaza y **relee**. Se valida la contención física de la raíz de estado al archivar **y** al recuperar (`estado_raiz_enlazada`), y la del destino del respaldo (`respaldo_raiz_enlazada`) | `test_archivado_no_sobrescribe_victima_de_temporal_enlazado`, `test_no_quedan_temporales_de_nombre_predecible_en_el_modulo`, `test_raiz_de_estado_enlazada_se_rechaza` |
+| **B8** | `aplicar_plan` retornaba sin más en `accion == "conservar"`: si el flag se vaciaba entre el preflight y el arranque, RESUME continuaba sin evidencia | el plan de `conservar` se aplicaba sobre un flag vacío | `_exigir_flag_conservado()` revalida presencia, tipo y **bytes exactos**; cualquier cambio falla cerrado (`flag_cambio_despues_del_preflight`) sin lanzar el juego y **sin tocar** lo que cambió otro | `test_resume_rechaza_flag_vaciado_despues_del_preflight`, `test_resume_rechaza_flag_borrado_despues_del_preflight` |
+| **B9** | Si `os.replace()` escribía el flag y fallaba el postcheck, el runner no lo adoptaba y podía dejar un flag vacío sin limpiar | el flag quedaba en disco y `launch_game` no se llamaba | `EstadoAplicacion(escrito, verificado)` separa "la sustitución ocurrió" de "el contenido se verificó"; el runner adopta el flag en cuanto `escrito` es verdadero, también en la rama de error, así el `finally` lo neutraliza | `test_error_posterior_a_replace_no_deja_flag_vacio_sin_limpiar` |
+| **Contrato** | `run()` podía devolver `success=True` con `limpio=False` (dependía del servicio) | un run `completed` con limpieza fallida se leía como éxito | `run()` declara `success=False` y un `message` con la causa cuando la limpieza no fue completa | `test_limpieza_incompleta_no_devuelve_exito` |
+
+**USVFS — aceptación de riesgo, no certificación.** `ack_usvfs_no_verificado=True` no mide,
+no enumera y no demuestra nada sobre la USVFS: sólo deja constancia de que quien lo activa
+sabe que el `remove()` de NGIO puede alcanzar archivos que Sky-Claw no inventarió. El plan
+declara siempre `cobertura_usvfs: no_verificada`. Consecuencia operativa: **no se ejecutan
+operaciones destructivas sobre cachés reales** sin evidencia de rig o un respaldo completo de
+los archivos alcanzables; el ack no reemplaza ninguna de las dos cosas.
+
+### Gates de la tercera revisión
+
+| Gate | Comando | Resultado |
+|---|---|---|
+| ROJO por defecto | B7/B8/B9 + invariante de `run()`, test escrito antes del arreglo | **7 fallos con la causa correcta** (víctima sobrescrita con el JSON de evidencia, `conservar` aplicado sobre un flag vacío, flag vacío sin limpiar tras el postcheck, `success=True` con limpieza incompleta) y **verde** después |
+| VERDE focalizado | `pytest tests/test_grass_cache_{safety,runner,service,strategy}.py` | **167 passed** |
+| VERDE focalizado ampliado | `+ tests/test_grass_profile.py tests/test_hitl_destructive_gate.py tests/bdd` | **235 passed, 2 skipped** |
+| Ruff | `ruff check` + `ruff format --check` sobre `sky_claw/ scripts/ tests/` | *All checks passed!* / *1156 files already formatted* |
+| mypy | `mypy sky_claw/ scripts/` | 694 errores preexistentes en 17 archivos (ninguno del write-set); **0** en los módulos de grass |
+| Suite completa | `pytest -q --tb=no --ignore=tests/test_runtime_vault_operator_verifier.py` | **20473 passed, 626 skipped, 136 failed** (7 tests nuevos verdes) |
+| Baseline | `git stash -u` + `pytest --lf` (mismo árbol sin el parche) | **136 fallos, node IDs idénticos** (`diff` vacío ⇒ 0 regresiones) |

@@ -897,3 +897,87 @@ def test_no_se_restaura_progreso_de_un_cache_con_mismo_tamano_y_otro_contenido(
 
     assert excinfo.value.codigo == "progreso_de_otro_cache"
     assert not ruta_del_flag(juego).exists(), "no se restauró nada"
+
+
+# ---------------------------------------------------------------------------
+# TERCERA REVISIÓN (73ec59e) — B7, B8
+# ---------------------------------------------------------------------------
+
+
+def test_archivado_no_sobrescribe_victima_de_temporal_enlazado(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # B7: el temporal del archivo de progreso era `<huella>.json.tmp`, nombre
+    # derivable del estado del caché. Un enlace ahí hacía que el JSON de
+    # evidencia se escribiera SOBRE un archivo ajeno.
+    victima = tmp_path / "victima.txt"
+    victima.write_bytes(b"contenido ajeno")
+    inventario = _inventario(grass, juego)
+    trampa = estado / "progreso" / f"{inventario.huella}.json.tmp"
+    trampa.parent.mkdir(parents=True)
+    try:
+        trampa.symlink_to(victima)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+
+    archivar_progreso(estado, inventario, b"Tamriel\n-2,4\n", grass_dir=grass)
+
+    assert victima.read_bytes() == b"contenido ajeno"
+    evidencia = estado / "progreso" / f"{inventario.huella}.json"
+    assert evidencia.is_file(), "la evidencia se archiva igual, con un temporal propio"
+
+
+def test_no_quedan_temporales_de_nombre_predecible_en_el_modulo() -> None:
+    # B7 (respaldo): `.manifiesto.json.tmp` era el mismo patrón. La ancla mira
+    # el código fuente: cualquier escritura de metadatos tiene que pasar por el
+    # temporal exclusivo, no por un nombre que otro pueda ocupar.
+    fuente = pathlib.Path(gcs_mod.__file__).read_text(encoding="utf-8")
+
+    assert ".json.tmp" not in fuente
+    assert ".manifiesto.json.tmp" not in fuente
+
+
+def test_raiz_de_estado_enlazada_se_rechaza(tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path) -> None:
+    # B7: la raíz de estado también es una ruta de escritura: si es un enlace,
+    # la evidencia se archiva fuera del árbol de Sky-Claw.
+    real = tmp_path / "estado_real"
+    real.mkdir()
+    enlace = tmp_path / "estado"
+    try:
+        enlace.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+    inventario = _inventario(grass, juego)
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        archivar_progreso(enlace, inventario, b"Tamriel\n", grass_dir=grass)
+
+    assert excinfo.value.codigo == "estado_raiz_enlazada"
+    assert not list(real.iterdir()), "no se escribió nada a través del enlace"
+
+
+def test_resume_rechaza_flag_vaciado_despues_del_preflight(grass: pathlib.Path, juego: pathlib.Path) -> None:
+    # B8: entre el preflight y el arranque, el flag pudo vaciarse (otro proceso,
+    # el propio usuario). RESUME no puede asumir que sigue como lo dejó.
+    ruta_del_flag(juego).write_bytes(b"Tamriel\n-2,4\n")
+    plan = preparar_arranque(modo="resume", game_path=juego, grass_dir=grass)
+    assert plan.accion == "conservar"
+    ruta_del_flag(juego).write_bytes(b"")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        aplicar_plan(plan, ruta_del_flag(juego))
+
+    assert excinfo.value.codigo == "flag_cambio_despues_del_preflight"
+    assert ruta_del_flag(juego).read_bytes() == b"", "no se toca lo que cambió otro"
+
+
+def test_resume_rechaza_flag_borrado_despues_del_preflight(grass: pathlib.Path, juego: pathlib.Path) -> None:
+    ruta_del_flag(juego).write_bytes(b"Tamriel\n-2,4\n")
+    plan = preparar_arranque(modo="resume", game_path=juego, grass_dir=grass)
+    ruta_del_flag(juego).unlink()
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        aplicar_plan(plan, ruta_del_flag(juego))
+
+    assert excinfo.value.codigo == "flag_cambio_despues_del_preflight"
+    assert not ruta_del_flag(juego).exists()

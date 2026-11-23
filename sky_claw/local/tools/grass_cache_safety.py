@@ -59,6 +59,16 @@ trazado y visible en el prompt HITL — el mismo patrón que
 ``force_stage_guard``. Cerrar el HOLD exige evidencia de rig sobre qué hace
 USVFS al borrar, y es trabajo de P2 (USVFS), no de este módulo.
 
+**Qué significa ``ack_usvfs_no_verificado=True`` (y qué no).** Es **aceptación
+de un riesgo**, no certificación de cobertura: no mide, no enumera ni demuestra
+nada sobre la USVFS; sólo deja constancia de que quien lo activa sabe que el
+``remove()`` de NGIO puede alcanzar archivos que Sky-Claw no inventarió. Por eso
+el plan declara siempre ``cobertura_usvfs: no_verificada`` y el respaldo se
+describe como "lo que se pudo ver". Consecuencia operativa: **no se ejecutan
+operaciones destructivas sobre cachés reales** sin evidencia de rig o un
+respaldo completo de los archivos alcanzables — el ack no reemplaza ninguna de
+las dos cosas.
+
 **Evidencia de progreso y limpieza verificable.** Neutralizar el flag al salir
 es obligatorio (un flag residual haría que el juego del usuario arranque en
 modo precache), pero no puede costar la reanudación: antes de borrarlo se
@@ -227,7 +237,14 @@ def _rechazar_enlace(ruta: pathlib.Path, codigo: str) -> None:
         raise GrassCacheSafetyError(codigo, f"{ruta} es un enlace ({tipo}): el caché no se toca a través de enlaces.")
 
 
-def _validar_raiz_fisica(grass_dir: pathlib.Path) -> None:
+def _validar_raiz_fisica(
+    ruta: pathlib.Path,
+    *,
+    codigo_enlace: str = "cache_raiz_enlazada",
+    codigo_no_absoluta: str = "cache_raiz_no_absoluta",
+    codigo_ilegible: str = "cache_raiz_ilegible",
+    que: str = "del caché de grass",
+) -> None:
     """Exige que ``grass_dir`` cuelgue de una cadena de directorios REALES.
 
     Rechazar sólo los enlaces *dentro* del caché deja pasar el caso que importa:
@@ -239,24 +256,22 @@ def _validar_raiz_fisica(grass_dir: pathlib.Path) -> None:
     Un componente inexistente no puede ser un enlace y el recorrido se detiene
     ahí (primer run, ``Grass/`` todavía no creado).
     """
-    ancla = pathlib.Path(grass_dir.anchor)
-    if not grass_dir.is_absolute() or ancla == grass_dir:
+    ancla = pathlib.Path(ruta.anchor)
+    if not ruta.is_absolute() or ancla == ruta:
         raise GrassCacheSafetyError(
-            "cache_raiz_no_absoluta",
-            f"La raíz del caché de grass debe ser una ruta absoluta bajo un directorio real: {grass_dir}",
+            codigo_no_absoluta,
+            f"La raíz {que} debe ser una ruta absoluta bajo un directorio real: {ruta}",
         )
     try:
-        exigir_contencion_fisica(ancla, grass_dir)
+        exigir_contencion_fisica(ancla, ruta)
     except ContencionFisicaVioladaError as exc:
         raise GrassCacheSafetyError(
-            "cache_raiz_enlazada",
-            f"La raíz del caché de grass atraviesa un enlace o un componente no real: {exc}. "
-            "No se inventaría ni se respalda un caché a través de una redirección.",
+            codigo_enlace,
+            f"La raíz {que} atraviesa un enlace o un componente no real: {exc}. "
+            "No se escribe ni se lee a través de una redirección.",
         ) from exc
     except OSError as exc:
-        raise GrassCacheSafetyError(
-            "cache_raiz_ilegible", f"No se pudo validar la raíz del caché {grass_dir}: {exc}"
-        ) from exc
+        raise GrassCacheSafetyError(codigo_ilegible, f"No se pudo validar la raíz {que} {ruta}: {exc}") from exc
 
 
 def _leer_flag(flag_path: pathlib.Path) -> tuple[bool, bytes | None]:
@@ -408,6 +423,33 @@ def _hash_de_archivo(ruta: pathlib.Path) -> tuple[int, str]:
     return (total, digest.hexdigest())
 
 
+def _escribir_json_atomico(ruta: pathlib.Path, carga: dict[str, Any]) -> None:
+    """Escribe *carga* como JSON con temporal EXCLUSIVO + rename, y lo relee.
+
+    Se usa para todo metadato que Sky-Claw escribe (manifiesto del respaldo y
+    evidencia de progreso): el temporal tiene nombre impredecible y se crea con
+    ``O_CREAT|O_EXCL``, así que nada preexistente en ese camino —un enlace, por
+    ejemplo— redirige la escritura fuera de ``ruta.parent``.
+    """
+    tmp = _ruta_temporal(ruta)
+    _escribir_temporal_exclusivo(tmp, json.dumps(carga, ensure_ascii=False, indent=2).encode("utf-8"))
+    try:
+        os.replace(tmp, ruta)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise GrassCacheSafetyError(
+            "metadato_no_escrito", f"No se pudo sustituir {ruta} con el temporal: {exc}"
+        ) from exc
+    with contextlib.suppress(OSError):
+        tmp.unlink(missing_ok=True)  # no-op si el rename se lo llevó; limpia si fue un no-op
+    _fsync_directorio(ruta.parent)
+    if _leer_manifiesto(ruta) is None:
+        raise GrassCacheSafetyError(
+            "metadato_no_verificado", f"{ruta} no se pudo releer como JSON después de escribirlo."
+        )
+
+
 def _fsync_directorio(ruta: pathlib.Path) -> None:
     """Durabilidad del rename/creación del manifiesto donde el SO lo permite."""
     if os.name == "nt":  # abrir un directorio como fd falla en Windows
@@ -557,6 +599,13 @@ def respaldar_cache(
     nunca se pisa en silencio ni se borra.
     """
     _validar_raiz_fisica(grass_dir)
+    _validar_raiz_fisica(
+        destino,
+        codigo_enlace="respaldo_raiz_enlazada",
+        codigo_no_absoluta="respaldo_raiz_no_absoluta",
+        codigo_ilegible="respaldo_raiz_ilegible",
+        que="del respaldo",
+    )
     if path_present(grass_dir):
         try:
             exigir_arbol_copiable_sin_reparse(grass_dir)
@@ -624,10 +673,7 @@ def respaldar_cache(
         "inventario": inventario.a_dict(),
     }
     ruta_manifiesto = destino / "manifiesto.json"
-    tmp = destino / ".manifiesto.json.tmp"
-    tmp.write_text(json.dumps(manifiesto, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, ruta_manifiesto)
-    _fsync_directorio(destino)
+    _escribir_json_atomico(ruta_manifiesto, manifiesto)
 
     # Releer del disco: el respaldo vale por lo que quedó escrito, no por el dict.
     releido = _leer_manifiesto(ruta_manifiesto)
@@ -715,6 +761,13 @@ def archivar_progreso(
     escribieron. Por eso ``grass_dir`` es obligatorio: sin saber a qué caché
     pertenece, la evidencia no es verificable y no se archiva.
     """
+    _validar_raiz_fisica(
+        raiz_estado,
+        codigo_enlace="estado_raiz_enlazada",
+        codigo_no_absoluta="estado_raiz_no_absoluta",
+        codigo_ilegible="estado_raiz_ilegible",
+        que="del estado de Sky-Claw",
+    )
     digests = _digests_del_cache(grass_dir)
     if (
         len(digests) != inventario.archivos_cache
@@ -728,7 +781,6 @@ def archivar_progreso(
         )
     destino = _ruta_progreso(raiz_estado, inventario.huella)
     destino.parent.mkdir(parents=True, exist_ok=True)
-    tmp = destino.with_suffix(".json.tmp")
     carga = {
         "version": _VERSION_MANIFIESTO,
         "huella": inventario.huella,
@@ -739,9 +791,7 @@ def archivar_progreso(
         "contenido_bytes": len(contenido),
         "archivado": time.time(),
     }
-    tmp.write_text(json.dumps(carga, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, destino)
-    _fsync_directorio(destino.parent)
+    _escribir_json_atomico(destino, carga)
     return destino
 
 
@@ -767,6 +817,13 @@ def recuperar_progreso(
     """
     if raiz_estado is None:
         return None
+    _validar_raiz_fisica(
+        raiz_estado,
+        codigo_enlace="estado_raiz_enlazada",
+        codigo_no_absoluta="estado_raiz_no_absoluta",
+        codigo_ilegible="estado_raiz_ilegible",
+        que="del estado de Sky-Claw",
+    )
     ruta = _ruta_progreso(raiz_estado, inventario.huella)
     carga = _leer_manifiesto(ruta)
     if carga is None or carga.get("version") != _VERSION_MANIFIESTO or carga.get("huella") != inventario.huella:
@@ -965,6 +1022,9 @@ def _exigir_cobertura_usvfs(ack_usvfs_no_verificado: bool) -> None:
     local vacío prueba que no se pierde nada *de ``overwrite/Grass``*; no prueba
     nada sobre el overlay. Mientras eso no esté demostrado en un rig, el
     contrato no puede presentar ``new`` como inofensivo.
+
+    El ``ack`` es aceptación de riesgo, no certificación: no demuestra que los
+    archivos alcanzables estén respaldados.
     """
     if ack_usvfs_no_verificado:
         return
@@ -1135,6 +1195,60 @@ def preparar_arranque(
     return plan
 
 
+@dataclass(slots=True)
+class EstadoAplicacion:
+    """Qué hizo ``aplicar_plan`` con el flag —también cuando termina en error—.
+
+    Separa dos cosas que no son la misma:
+
+    - ``escrito``: la **sustitución ocurrió**. Desde ese instante el flag en
+      disco es de Sky-Claw y su limpieza queda bajo responsabilidad del
+      llamador, aunque la verificación posterior falle (si no, quedaría un flag
+      vacío que haría que el arranque siguiente del juego borre el caché).
+    - ``verificado``: el contenido final se releyó y coincide con el plan.
+
+    Un ``escrito=True, verificado=False`` es un fallo, pero un fallo que NO
+    libera al llamador de limpiar.
+    """
+
+    escrito: bool = False
+    verificado: bool = False
+
+
+def _exigir_flag_conservado(flag_path: pathlib.Path, esperado: bytes) -> None:
+    """Revalida el flag JUSTO antes de dejar que NGIO reanude con él.
+
+    Entre el preflight y la escritura hay una ventana: otro proceso (o el
+    usuario) puede vaciar o borrar el flag. Aceptar ``conservar`` sobre un flag
+    distinto convertiría una reanudación en un borrado del caché, así que se
+    falla cerrado.
+    """
+    try:
+        presente = path_present(flag_path)
+    except OSError as exc:
+        raise GrassCacheSafetyError(
+            "flag_ilegible", f"No se pudo inspeccionar {flag_path} antes de reanudar: {exc}"
+        ) from exc
+    if not presente:
+        raise GrassCacheSafetyError(
+            "flag_cambio_despues_del_preflight",
+            f"{flag_path} desapareció entre el preflight y el arranque: el progreso que se iba a "
+            "reanudar ya no está y NGIO empezaría de cero. No se lanza el juego.",
+        )
+    _rechazar_enlace(flag_path, "flag_es_enlace")
+    try:
+        actual = flag_path.read_bytes()
+    except OSError as exc:
+        raise GrassCacheSafetyError("flag_ilegible", f"No se pudo leer {flag_path} antes de reanudar: {exc}") from exc
+    if actual != esperado:
+        raise GrassCacheSafetyError(
+            "flag_cambio_despues_del_preflight",
+            f"{flag_path} cambió entre el preflight ({len(esperado)} bytes) y el arranque "
+            f"({len(actual)} bytes): el progreso que se iba a reanudar ya no es el mismo. "
+            "No se lanza el juego.",
+        )
+
+
 def _ruta_temporal(flag_path: pathlib.Path) -> pathlib.Path:
     """Temporal impredecible en el MISMO directorio (``os.replace`` es atómico).
 
@@ -1173,20 +1287,34 @@ def _escribir_temporal_exclusivo(ruta: pathlib.Path, contenido: bytes) -> None:
         raise
 
 
-def aplicar_plan(plan: PlanArranque, flag_path: pathlib.Path) -> None:
+def aplicar_plan(
+    plan: PlanArranque,
+    flag_path: pathlib.Path,
+    *,
+    estado: EstadoAplicacion | None = None,
+) -> EstadoAplicacion:
     """Escribe el flag según el plan. Única función que lo muta.
 
     ``conservar`` no escribe nada: reescribir el mismo contenido sería inocuo
     hoy, pero cualquier normalización futura (saltos de línea, BOM, recorte)
     convertiría una reanudación correcta en un borrado de caché. Se escriben
-    BYTES, sin recodificar.
+    BYTES, sin recodificar. Antes de aceptarla se **revalida** el flag
+    (presencia, tipo y contenido exacto): si cambió desde el preflight, se
+    falla cerrado.
 
     El temporal es **exclusivo** y de nombre impredecible, y después del
     reemplazo se **relee el flag**: dar por escrito lo que no se pudo sustituir
     sería declarar éxito sin flag (o con un flag manipulado).
+
+    Devuelve —y también deja en *estado*, si se pasa— qué se hizo con el flag.
+    ``escrito`` se marca **antes** del postcheck: si éste falla, el llamador
+    igual sabe que el flag en disco es suyo y tiene que limpiarlo.
     """
+    estado = estado if estado is not None else EstadoAplicacion()
     if plan.accion == "conservar":
-        return
+        _exigir_flag_conservado(flag_path, plan.contenido)
+        estado.verificado = True
+        return estado
     _rechazar_enlace(flag_path, "flag_es_enlace")
     tmp = _ruta_temporal(flag_path)
     _escribir_temporal_exclusivo(tmp, plan.contenido)
@@ -1198,6 +1326,9 @@ def aplicar_plan(plan: PlanArranque, flag_path: pathlib.Path) -> None:
         raise GrassCacheSafetyError(
             "flag_no_escrito", f"No se pudo sustituir {flag_path} con el temporal: {exc}"
         ) from exc
+    # La sustitución OCURRIÓ: el flag en disco es nuestro desde acá, aunque el
+    # postcheck de abajo falle.
+    estado.escrito = True
     with contextlib.suppress(OSError):
         tmp.unlink(missing_ok=True)  # no-op si el rename se lo llevó; limpia si fue un no-op
     _fsync_directorio(flag_path.parent)
@@ -1214,6 +1345,8 @@ def aplicar_plan(plan: PlanArranque, flag_path: pathlib.Path) -> None:
             f"{flag_path} no quedó con el contenido planificado ({len(escrito)} de "
             f"{len(plan.contenido)} bytes): no se declara escrito el flag.",
         )
+    estado.verificado = True
+    return estado
 
 
 def ruta_de_respaldo(plan: PlanArranque) -> str:
@@ -1226,6 +1359,7 @@ __all__ = [
     "EXTENSIONES_CACHE",
     "MODOS_GRASS_CACHE",
     "PRECACHE_FLAG",
+    "EstadoAplicacion",
     "GrassCacheMode",
     "GrassCacheSafetyError",
     "InventarioCache",
