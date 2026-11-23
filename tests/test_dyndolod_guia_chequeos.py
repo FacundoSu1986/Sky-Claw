@@ -42,18 +42,33 @@ def test_sin_ruta_configurada_falla_y_bloquea(tmp_path: pathlib.Path) -> None:
     assert "DYNDLOD_EXE" in r.detalle_tecnico
 
 
-def test_una_ruta_que_no_existe_falla(tmp_path: pathlib.Path) -> None:
+def test_una_ruta_admitida_que_no_existe_falla(tmp_path: pathlib.Path) -> None:
     ruta = tmp_path / "no" / "DynDOLODx64.exe"
-    r = guia.chequear_ejecutable(IdPrecondicion.DYNDOLOD_ENCONTRADO, nombre="DYNDLOD_EXE", crudo=ruta, validado=None)
+    r = guia.chequear_ejecutable(IdPrecondicion.DYNDOLOD_ENCONTRADO, nombre="DYNDLOD_EXE", crudo=ruta, validado=ruta)
     assert r.estado is Estado.FALLA
     assert str(ruta) in r.detalle_tecnico
 
 
-def test_un_exe_presente_esta_ok_aunque_quede_fuera_del_sandbox(tmp_path: pathlib.Path) -> None:
-    """Encontrado y permitido son dos preguntas: la del sandbox la contesta su propia ficha."""
+def test_un_exe_validado_presente_esta_ok(tmp_path: pathlib.Path) -> None:
     exe = _exe(tmp_path / "DynDOLOD")
-    r = guia.chequear_ejecutable(IdPrecondicion.TEXGEN_ENCONTRADO, nombre="TEXGEN_EXE", crudo=exe, validado=None)
+    r = guia.chequear_ejecutable(IdPrecondicion.TEXGEN_ENCONTRADO, nombre="TEXGEN_EXE", crudo=exe, validado=exe)
     assert r.estado is Estado.OK
+
+
+def test_un_exe_rechazado_por_el_sandbox_no_se_toca_ni_con_un_stat(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operaciones de archivo confinadas al sandbox (review PR-Agent en #1007): una ruta que el ``PathValidator``
+    rechazó no se mira (ni ``stat``). Que está fuera de las carpetas permitidas lo dice SU ficha, con un ❌."""
+    exe = _exe(tmp_path / "Descargas" / "DynDOLOD")
+
+    def _prohibido(self: pathlib.Path) -> bool:
+        raise AssertionError(f"se tocó una ruta fuera del sandbox: {self}")
+
+    monkeypatch.setattr(pathlib.Path, "is_file", _prohibido)
+    r = guia.chequear_ejecutable(IdPrecondicion.TEXGEN_ENCONTRADO, nombre="TEXGEN_EXE", crudo=exe, validado=None)
+    assert r.estado is Estado.NO_VERIFICABLE
+    assert not r.bloquea
 
 
 def test_un_doble_que_no_es_ruta_no_es_verificable() -> None:

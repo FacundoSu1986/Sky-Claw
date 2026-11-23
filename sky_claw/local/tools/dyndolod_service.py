@@ -770,10 +770,15 @@ class DynDOLODPipelineService:
         texgen_valido = self._leer_del_resolver("get_texgen_exe") if run_texgen else None
         juego = self._leer_del_resolver("get_skyrim_path")
         ejecutables_crudos: list[tuple[str, object, object]] = [("DYNDLOD_EXE", dyndolod_crudo, dyndolod_valido)]
+        # Solo COMPARACIÓN de texto (¿está adentro del juego?): la cruda sirve aunque el sandbox la rechace.
         ejecutables: list[tuple[str, object]] = [("DynDOLOD", dyndolod_valido or dyndolod_crudo)]
+        # Para LEER archivos (hash del exe, preset al lado) solo valen las rutas que el sandbox admitió (review
+        # PR-Agent en #1007): una ruta rechazada nunca se abre.
+        ejecutables_admitidos: list[tuple[str, object]] = [("DynDOLOD", dyndolod_valido)]
         if run_texgen:
             ejecutables_crudos.append(("TEXGEN_EXE", texgen_crudo, texgen_valido))
             ejecutables.append(("TexGen", texgen_valido or texgen_crudo))
+            ejecutables_admitidos.append(("TexGen", texgen_valido))
 
         chequeos: list[tuple[IdPrecondicion, Callable[[], ResultadoDePrecondicion]]] = [
             (
@@ -827,7 +832,7 @@ class DynDOLODPipelineService:
                 ),
                 (
                     IdPrecondicion.OUTPUT_DEL_PRESET,
-                    lambda: chequear_output_de_presets(self._lecturas_de_presets(ejecutables)),
+                    lambda: chequear_output_de_presets(self._lecturas_de_presets(ejecutables_admitidos)),
                 ),
                 (
                     IdPrecondicion.DLL_NG_Y_MASTERS,

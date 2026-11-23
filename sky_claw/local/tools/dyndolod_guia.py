@@ -340,10 +340,21 @@ def _esta_adentro(hija: pathlib.PurePath, padre: pathlib.PurePath) -> bool:
 def chequear_ejecutable(
     ficha_id: IdPrecondicion, *, nombre: str, crudo: object, validado: object
 ) -> ResultadoDePrecondicion:
-    """¿Está configurado y existe? ``crudo`` es el valor tal cual; ``validado`` el que aceptó el sandbox."""
+    """¿Está configurado y existe? ``crudo`` es el valor tal cual; ``validado`` el que aceptó el sandbox.
+
+    Solo se toca (``stat``) la ruta que el ``PathValidator`` admitió: una ruta rechazada no se mira, ni siquiera para
+    saber si existe (operaciones de archivo confinadas al sandbox). Que está fuera de las carpetas permitidas lo dice
+    la ficha ``herramientas_en_carpeta_permitida``, con su ❌.
+    """
     if crudo is None and validado is None:
         return resultado(ficha_id, Estado.FALLA, detalle=f"{nombre} no está configurado")
-    ruta = validado if validado is not None else crudo
+    if validado is None:
+        return resultado(
+            ficha_id,
+            Estado.NO_VERIFICABLE,
+            detalle=f"{nombre} está fuera de las carpetas permitidas: no se revisa una ruta que el sandbox rechazó",
+        )
+    ruta = validado
     if not isinstance(ruta, pathlib.PurePath):
         return resultado(ficha_id, Estado.NO_VERIFICABLE, detalle=f"{nombre}: el resolver no devolvió una ruta")
     try:

@@ -351,6 +351,60 @@ async def test_la_consulta_temprana_no_inventa_un_bloqueo_si_el_servicio_no_la_o
         await guia.checklist_temprano(cancelado, run_texgen=True)
 
 
+def test_el_checklist_no_lee_archivos_desde_una_ruta_que_el_sandbox_rechazo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review PR-Agent en #1007: el preset y el hash del exe se leían desde la ruta CRUDA cuando el sandbox la
+    rechazaba. La propiedad: *el checklist solo lee archivos de rutas que el ``PathValidator`` admitió*; la cruda
+    sirve únicamente para decirle al operador que está fuera de las carpetas permitidas."""
+    from types import SimpleNamespace
+
+    from sky_claw.local.tools import dyndolod_service as modulo_servicio
+
+    afuera = tmp_path / "Descargas" / "DynDOLOD" / "DynDOLODx64.exe"
+    afuera.parent.mkdir(parents=True)
+    afuera.write_bytes(b"MZ")
+    adentro = tmp_path / "MO2" / "tools" / "DynDOLODx64.exe"
+    adentro.parent.mkdir(parents=True)
+    adentro.write_bytes(b"MZ")
+    leidos: list[pathlib.Path] = []
+    monkeypatch.setattr(modulo_servicio, "leer_output_de_preset", lambda tool, exe, *, esperado: leidos.append(exe))
+
+    def _servicio_con(validado: pathlib.Path | None) -> DynDOLODPipelineService:
+        resolver = MagicMock()
+        resolver.get_dyndolod_exe_raw.return_value = afuera if validado is None else validado
+        resolver.get_dyndolod_exe.return_value = validado
+        servicio = _servicio_real()
+        servicio._path_resolver = resolver  # noqa: SLF001
+        servicio._workspace = SimpleNamespace(root=tmp_path / "work")  # type: ignore[assignment]  # noqa: SLF001
+        return servicio
+
+    _servicio_con(None)._checklist_sincrono(False)  # noqa: SLF001
+    assert leidos == [], "se leyó el preset/hash desde una ruta que el sandbox rechazó"
+
+    _servicio_con(adentro)._checklist_sincrono(False)  # noqa: SLF001
+    assert leidos == [adentro], "con la ruta admitida, el chequeo del preset sí corre"
+
+
+#: Quién puede leer las rutas CRUDAS (sin validar) de los ejecutables de la etapa 9: solo el checklist del servicio.
+#: Un consumidor nuevo podría usarlas para ejecutar o leer fuera del sandbox (review PR-Agent en #1007).
+LECTORES_DE_RUTAS_CRUDAS = {"sky_claw/local/tools/dyndolod_service.py"}
+
+
+def test_las_rutas_crudas_de_los_ejecutables_solo_las_lee_el_checklist() -> None:
+    lectores = set()
+    for relativa, arbol in _modulos_de_produccion():
+        if relativa == "sky_claw/app/core/path_resolver.py":
+            continue  # el dueño: las define, no las consume
+        if any(
+            (isinstance(nodo, ast.Attribute) and nodo.attr in {"get_dyndolod_exe_raw", "get_texgen_exe_raw"})
+            or (isinstance(nodo, ast.Constant) and nodo.value in {"get_dyndolod_exe_raw", "get_texgen_exe_raw"})
+            for nodo in ast.walk(arbol)
+        ):
+            lectores.add(relativa)
+    assert lectores == LECTORES_DE_RUTAS_CRUDAS
+
+
 def test_el_servicio_consulta_el_checklist_antes_de_cualquier_efecto() -> None:
     servicio = ast.parse((SKY_CLAW / "local/tools/dyndolod_service.py").read_text("utf-8"))
     execute = _funcion(servicio, "DynDOLODPipelineService", "execute")
