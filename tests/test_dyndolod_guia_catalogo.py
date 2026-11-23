@@ -235,3 +235,15 @@ def test_sin_corte_conocido_la_explicacion_es_generica_y_conserva_el_tecnico() -
     assert explicada["titulo"]
     assert explicada["arreglo"]
     assert explicada["detalle_tecnico"] == "algo raro: XYZ_ABC"
+
+
+def test_un_output_distinto_al_verificar_pide_corregir_el_output_no_habla_de_cerrar() -> None:
+    """Review CodeRabbit en #1007: OUTPUT_DIFIERE recibía la explicación de «se cerró antes de tiempo»."""
+    explicada = guia.explicar_fallo(
+        mensaje_tecnico="preflight UIA de Output bloqueó a TexGen: MISMATCH (OUTPUT_DIFIERE)",
+        fase=FaseAsistida.VERIFICANDO_OUTPUT,
+        herramienta="TexGen",
+        corte=RazonPreflight.OUTPUT_DIFIERE,
+    )
+    assert "antes de tiempo" not in explicada["titulo"]
+    assert "Output" in explicada["arreglo"]

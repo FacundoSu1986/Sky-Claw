@@ -246,3 +246,31 @@ def test_la_clave_del_checklist_solo_la_escribe_su_controlador() -> None:
             ):
                 escritores.add(ruta.relative_to(RAIZ).as_posix())
     assert escritores == {"sky_claw/app/gui/controllers/etapa9_estado.py"}
+
+
+async def test_una_revision_vieja_que_termina_tarde_no_pisa_a_la_nueva() -> None:
+    """Review CodeRabbit en #1007: dos revisiones solapadas; gana la última que EMPEZÓ, no la última que terminó."""
+    import asyncio
+
+    vieja = ChecklistDeEtapa9(resultados=(guia.resultado(IdPrecondicion.ETAPAS_PREVIAS, Estado.FALLA, detalle="v"),))
+    nueva = ChecklistDeEtapa9(resultados=(guia.resultado(IdPrecondicion.ETAPAS_PREVIAS, Estado.OK),))
+    soltar_la_vieja = asyncio.Event()
+
+    async def _verificar(*, run_texgen: bool) -> ChecklistDeEtapa9:
+        if not soltar_la_vieja.is_set():
+            soltar_la_vieja.set()
+            await asyncio.sleep(0.05)
+            return vieja
+        return nueva
+
+    servicio = MagicMock()
+    servicio.verificar_checklist = _verificar
+    supervisor = SimpleNamespace(dyndolod_service=servicio)
+    store = ReactiveStore()
+
+    primera = asyncio.create_task(revisar_checklist(supervisor=supervisor, store=store, run_texgen=True))
+    await asyncio.sleep(0)
+    await revisar_checklist(supervisor=supervisor, store=store, run_texgen=True)
+    await primera
+
+    assert store.get(STORE_KEY_CHECKLIST_ETAPA9) == nueva.to_dict()

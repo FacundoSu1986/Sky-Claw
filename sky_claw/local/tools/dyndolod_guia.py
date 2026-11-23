@@ -344,9 +344,12 @@ def texto_de_corte_temprano(checklist: ChecklistDeEtapa9) -> str:
 # =============================================================================
 
 #: Plugins que DynDOLOD genera. Activos en el ``plugins.txt`` antes de regenerar ⇒ el worker brokered rechaza el job
-#: (abierto de #993) y DynDOLOD recomienda desactivarlos siempre. ``DynDOLOD.esm`` es de DynDOLOD 3 (NO_VERIFICADO en
-#: rig; incluirlo solo puede sumar un aviso, nunca esconder uno).
+#: (abierto de #993) y DynDOLOD recomienda desactivarlos siempre.
 PLUGINS_DE_SALIDA_DE_DYNDOLOD: tuple[str, ...] = ("DynDOLOD.esm", "DynDOLOD.esp", "Occlusion.esp")
+
+#: Los que BLOQUEAN bajo brokered. ``DynDOLOD.esm`` (DynDOLOD 3) queda afuera a propósito: que el worker lo rechace
+#: no está medido en rig, y sin medición no hay bloqueo sin override; solo, es aviso (review CodeRabbit en #1007).
+_PLUGINS_DE_SALIDA_QUE_BLOQUEAN = frozenset({"dyndolod.esp", "occlusion.esp"})
 
 #: Dónde instala DynDOLOD DLL NG su DLL, relativo a una capa de Data.
 RUTA_DEL_DLL_NG: tuple[str, ...] = ("SKSE", "Plugins", "DynDOLOD.dll")
@@ -454,7 +457,11 @@ def chequear_salida_vieja(*, plugins_txt: object, brokered: bool) -> ResultadoDe
     return resultado(
         ficha_id,
         Estado.FALLA,
-        severidad=Severidad.BLOQUEA if brokered else Severidad.AVISO,
+        severidad=(
+            Severidad.BLOQUEA
+            if brokered and any(plugin.lower() in _PLUGINS_DE_SALIDA_QUE_BLOQUEAN for plugin in encontrados)
+            else Severidad.AVISO
+        ),
         detalle=f"activos en {plugins_txt}: {', '.join(encontrados)}",
         plugins=" / ".join(encontrados),
     )
@@ -532,6 +539,14 @@ def chequear_output_de_presets(lecturas: Sequence[LecturaDeOutputDePreset]) -> R
         if lectura.guardado is not None and _clave_windows(lectura.guardado) != _clave_windows(lectura.esperado)
     ]
     if not distintas:
+        ilegibles = [lectura.herramienta for lectura in lecturas if lectura.guardado is None]
+        if ilegibles:
+            # Sin el valor (clave ausente o duplicada) no hubo comparación: no se afirma que coincide.
+            return resultado(
+                ficha_id,
+                Estado.NO_VERIFICABLE,
+                detalle=f"OutputPath ausente o ambiguo en el preset de {', '.join(ilegibles)}",
+            )
         return resultado(ficha_id, Estado.OK)
     primera = distintas[0]
     return resultado(
@@ -565,14 +580,21 @@ def carpetas_donde_buscar_el_dll_ng(
     return tuple(capas) or None
 
 
+class _CapaIlegibleError(Exception):
+    """Una carpeta existe pero no se pudo listar: no se sabe si el archivo está."""
+
+
 def _contiene_sin_mayusculas(carpeta: pathlib.Path, partes: Sequence[str]) -> pathlib.Path | None:
+    """La ruta encontrada, ``None`` si demostrablemente no está, o :class:`_CapaIlegibleError` si no se pudo mirar."""
     actual = carpeta
     for parte in partes:
         try:
             with os.scandir(actual) as entradas:
                 siguiente = next((e.name for e in entradas if e.name.lower() == parte.lower()), None)
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             return None
+        except OSError as exc:
+            raise _CapaIlegibleError(f"{actual}: {exc}") from exc
         if siguiente is None:
             return None
         actual = actual / siguiente
@@ -588,10 +610,18 @@ def chequear_dll_ng(*, carpetas: Sequence[pathlib.Path] | None) -> ResultadoDePr
     ficha_id = IdPrecondicion.DLL_NG_Y_MASTERS
     if not carpetas:
         return resultado(ficha_id, Estado.NO_VERIFICABLE, detalle="no hay capas de Data para mirar")
+    ilegibles: list[str] = []
     for carpeta in carpetas:
-        encontrado = _contiene_sin_mayusculas(carpeta, RUTA_DEL_DLL_NG)
+        try:
+            encontrado = _contiene_sin_mayusculas(carpeta, RUTA_DEL_DLL_NG)
+        except _CapaIlegibleError as exc:
+            ilegibles.append(str(exc))
+            continue
         if encontrado is not None:
             return resultado(ficha_id, Estado.FALLA, detalle=f"DynDOLOD DLL NG presente: {encontrado}")
+    if ilegibles:
+        # Una capa que no se pudo listar no certifica la ausencia (review CodeRabbit en #1007).
+        return resultado(ficha_id, Estado.NO_VERIFICABLE, detalle="no se pudo mirar: " + "; ".join(ilegibles))
     return resultado(ficha_id, Estado.OK)
 
 
@@ -812,7 +842,6 @@ _CORTES_DE_VENTANA_PERDIDA: frozenset[Corte] = frozenset(
         RazonPreflight.PROCESO_NO_ENCONTRADO,
         RazonPreflight.VENTANA_NO_ENCONTRADA,
         RazonPreflight.VALOR_NO_LEIBLE,
-        RazonPreflight.OUTPUT_DIFIERE,
     }
 )
 

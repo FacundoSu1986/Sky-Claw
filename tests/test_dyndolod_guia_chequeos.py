@@ -151,7 +151,7 @@ def _plugins(tmp_path: pathlib.Path, *lineas: str) -> pathlib.Path:
     return ruta
 
 
-@pytest.mark.parametrize("plugin", ["DynDOLOD.esp", "Occlusion.esp", "DynDOLOD.esm", "dyndolod.ESP"])
+@pytest.mark.parametrize("plugin", ["DynDOLOD.esp", "Occlusion.esp", "dyndolod.ESP"])
 def test_la_salida_vieja_activa_bloquea_bajo_brokered(tmp_path: pathlib.Path, plugin: str) -> None:
     r = guia.chequear_salida_vieja(plugins_txt=_plugins(tmp_path, "*Skyrim.esm", f"*{plugin}"), brokered=True)
     assert r.estado is Estado.FALLA
@@ -328,3 +328,57 @@ def test_el_checklist_no_admite_dos_resultados_del_mismo_id() -> None:
                 guia.resultado(IdPrecondicion.ETAPAS_PREVIAS, Estado.OK),
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Review CodeRabbit en #1007: lo que no se pudo medir no se afirma
+# ---------------------------------------------------------------------------
+
+
+def test_dyndolod_esm_activo_solo_es_aviso_porque_no_esta_medido(tmp_path: pathlib.Path) -> None:
+    """Que el worker rechace ``DynDOLOD.esm`` no está medido en rig: sin medición no hay bloqueo sin override."""
+    r = guia.chequear_salida_vieja(plugins_txt=_plugins(tmp_path, "*DynDOLOD.esm"), brokered=True)
+    assert r.estado is Estado.FALLA
+    assert r.severidad is Severidad.AVISO
+
+
+def test_esm_junto_a_un_esp_activo_sigue_bloqueando(tmp_path: pathlib.Path) -> None:
+    r = guia.chequear_salida_vieja(plugins_txt=_plugins(tmp_path, "*DynDOLOD.esm", "*DynDOLOD.esp"), brokered=True)
+    assert r.severidad is Severidad.BLOQUEA
+
+
+def test_un_output_guardado_ilegible_no_cuenta_como_coincidencia() -> None:
+    r = guia.chequear_output_de_presets(
+        (LecturaDeOutputDePreset(herramienta="TexGen", guardado=None, esperado=r"G:\rig\TexGen"),)
+    )
+    assert r.estado is Estado.NO_VERIFICABLE
+
+
+def test_una_diferencia_conocida_gana_sobre_una_lectura_ilegible() -> None:
+    r = guia.chequear_output_de_presets(
+        (
+            LecturaDeOutputDePreset(herramienta="TexGen", guardado=None, esperado=r"G:\rig\TexGen"),
+            LecturaDeOutputDePreset(herramienta="DynDOLOD", guardado=r"D:\viejo", esperado=r"G:\rig\DynDOLOD"),
+        )
+    )
+    assert r.estado is Estado.FALLA
+    assert "DynDOLOD" in r.arreglo
+
+
+def test_una_capa_ilegible_no_certifica_que_no_hay_dll_ng(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legible = tmp_path / "Data"
+    legible.mkdir()
+    bloqueada = tmp_path / "mods" / "Bloqueado"
+    bloqueada.mkdir(parents=True)
+    scandir_real = guia.os.scandir
+
+    def _scandir(ruta: object) -> object:
+        if pathlib.Path(str(ruta)) == bloqueada:
+            raise PermissionError("acceso denegado")
+        return scandir_real(ruta)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(guia.os, "scandir", _scandir)
+    assert guia.chequear_dll_ng(carpetas=(legible, bloqueada)).estado is Estado.NO_VERIFICABLE
+    assert guia.chequear_dll_ng(carpetas=(legible,)).estado is Estado.OK, "una capa legible sin DLL sí es negativo"

@@ -68,17 +68,26 @@ def _fase(supervisor: object | None, ahora: float) -> dict[str, Any] | None:
         return None
 
 
+#: Generación de la última revisión que EMPEZÓ: con dos solapadas, la vieja que termina tarde no pisa a la nueva.
+_generacion_de_la_revision = 0
+
+
 async def revisar_checklist(*, supervisor: object | None, store: Any, run_texgen: bool = True) -> None:
     """Pide el checklist al servicio (en un hilo, dentro del servicio) y lo deja en el store para la tarjeta (#997).
 
     Best-effort: sin supervisor (el daemon todavía arranca) queda ``None`` —«todavía no revisé»—, y una falla deja
     un aviso para reintentar. Nunca decide nada: la autoridad del checklist sigue siendo el servicio al ejecutar.
     """
+    global _generacion_de_la_revision
+    _generacion_de_la_revision += 1
+    generacion = _generacion_de_la_revision
     servicio = None if supervisor is None else getattr(supervisor, "dyndolod_service", None)
     if servicio is None:
         store.set(STORE_KEY_CHECKLIST_ETAPA9, None)
         return
     checklist = await checklist_temprano(servicio, run_texgen=run_texgen)
+    if generacion != _generacion_de_la_revision:
+        return  # empezó una revisión más nueva: su resultado es el que vale (review CodeRabbit en #1007)
     store.set(
         STORE_KEY_CHECKLIST_ETAPA9,
         checklist.to_dict() if checklist is not None else {"error": _NO_SE_PUDO_REVISAR},
