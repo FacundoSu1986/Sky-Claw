@@ -30,12 +30,24 @@ _SUBPROCESS = frozenset({"run", "Popen", "check_output", "check_call", "call", "
 _ASYNCIO = frozenset({"create_subprocess_exec", "create_subprocess_shell"})
 
 
-def _nombre_de_lanzamiento(llamada: ast.Call) -> str | None:
+def _alias_de_modulos(arbol: ast.AST) -> dict[str, str]:
+    """Nombre local → módulo real, para ``import subprocess as sp`` y similares."""
+    alias = {"subprocess": "subprocess", "asyncio": "asyncio"}
+    for nodo in ast.walk(arbol):
+        if isinstance(nodo, ast.Import):
+            for nombre in nodo.names:
+                if nombre.name in ("subprocess", "asyncio"):
+                    alias[nombre.asname or nombre.name] = nombre.name
+    return alias
+
+
+def _nombre_de_lanzamiento(llamada: ast.Call, alias: dict[str, str]) -> str | None:
     f = llamada.func
     if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
-        if f.value.id == "subprocess" and f.attr in _SUBPROCESS:
+        modulo = alias.get(f.value.id)
+        if modulo == "subprocess" and f.attr in _SUBPROCESS:
             return f"subprocess.{f.attr}"
-        if f.value.id == "asyncio" and f.attr in _ASYNCIO:
+        if modulo == "asyncio" and f.attr in _ASYNCIO:
             return f"asyncio.{f.attr}"
     if isinstance(f, ast.Name) and f.id in (_SUBPROCESS | _ASYNCIO):
         # Un ``from subprocess import run`` escondería el lanzamiento del censo.
@@ -43,13 +55,23 @@ def _nombre_de_lanzamiento(llamada: ast.Call) -> str | None:
     return None
 
 
-def _asigna_creationflags(funcion: ast.AST) -> bool:
-    """¿La función arma ``kwargs["creationflags"] = …`` antes de expandir ``**kwargs``?"""
+def _diccionario_expandido(llamada: ast.Call) -> str | None:
+    """Nombre del dict que se expande con ``**nombre`` en la llamada, si es un nombre simple."""
+    for clave in llamada.keywords:
+        if clave.arg is None and isinstance(clave.value, ast.Name):
+            return clave.value.id
+    return None
+
+
+def _asigna_creationflags(funcion: ast.AST, diccionario: str) -> bool:
+    """¿La función arma ``<diccionario>["creationflags"] = …`` sobre el MISMO dict que expande?"""
     for nodo in ast.walk(funcion):
         if isinstance(nodo, ast.Assign):
             for destino in nodo.targets:
                 if (
                     isinstance(destino, ast.Subscript)
+                    and isinstance(destino.value, ast.Name)
+                    and destino.value.id == diccionario
                     and isinstance(destino.slice, ast.Constant)
                     and destino.slice.value == "creationflags"
                 ):
@@ -62,25 +84,36 @@ def _censo() -> list[tuple[str, int, str, bool]]:
     filas: list[tuple[str, int, str, bool]] = []
     for archivo in sorted(RAIZ_PAQUETE.rglob("*.py")):
         arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
-        padres: dict[ast.AST, ast.AST] = {}
-        for nodo in ast.walk(arbol):
-            for hijo in ast.iter_child_nodes(nodo):
-                padres[hijo] = nodo
-        for nodo in ast.walk(arbol):
-            if not isinstance(nodo, ast.Call):
-                continue
-            nombre = _nombre_de_lanzamiento(nodo)
-            if nombre is None:
-                continue
-            claves = {k.arg for k in nodo.keywords}
-            oculta = "creationflags" in claves
-            if not oculta and None in claves:
-                # ``**kwargs``: vale solo si la función que lo arma fija el flag.
-                ancestro: ast.AST | None = padres.get(nodo)
-                while ancestro is not None and not isinstance(ancestro, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    ancestro = padres.get(ancestro)
-                oculta = ancestro is not None and _asigna_creationflags(ancestro)
-            filas.append((archivo.relative_to(RAIZ_PAQUETE.parent).as_posix(), nodo.lineno, nombre, oculta))
+        ruta = archivo.relative_to(RAIZ_PAQUETE.parent).as_posix()
+        filas.extend((ruta, linea, nombre, oculta) for linea, nombre, oculta in _lanzamientos(arbol))
+    return filas
+
+
+def _lanzamientos(arbol: ast.AST) -> list[tuple[int, str, bool]]:
+    """(línea, lanzamiento, ¿oculta la consola?) para cada lanzamiento del árbol."""
+    filas: list[tuple[int, str, bool]] = []
+    alias = _alias_de_modulos(arbol)
+    padres: dict[ast.AST, ast.AST] = {}
+    for nodo in ast.walk(arbol):
+        for hijo in ast.iter_child_nodes(nodo):
+            padres[hijo] = nodo
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        nombre = _nombre_de_lanzamiento(nodo, alias)
+        if nombre is None:
+            continue
+        claves = {k.arg for k in nodo.keywords}
+        oculta = "creationflags" in claves
+        diccionario = _diccionario_expandido(nodo) if not oculta else None
+        if diccionario is not None:
+            # ``**kwargs``: vale solo si la función fija el flag en ESE dict.
+            # ``kwargs.update(...)`` u otras formas no cuentan: fallan cerrado.
+            ancestro: ast.AST | None = padres.get(nodo)
+            while ancestro is not None and not isinstance(ancestro, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                ancestro = padres.get(ancestro)
+            oculta = ancestro is not None and _asigna_creationflags(ancestro, diccionario)
+        filas.append((nodo.lineno, nombre, oculta))
     return filas
 
 
@@ -90,6 +123,60 @@ def test_el_censo_encuentra_los_lanzamientos_conocidos() -> None:
     assert "sky_claw/app/security/file_permissions.py" in rutas
     assert "sky_claw/local/loot/cli.py" in rutas
     assert "sky_claw/local/tools/_process.py" in rutas
+
+
+_ALIAS_SIN_FLAG = """
+import subprocess as sp
+sp.run(["x"])
+"""
+_ALIAS_CON_FLAG = """
+import asyncio as aio
+async def f():
+    await aio.create_subprocess_exec("x", creationflags=1)
+"""
+_FLAG_EN_OTRO_DICT = """
+import subprocess
+def f():
+    otro = {}
+    otro["creationflags"] = 1
+    kw = {}
+    subprocess.run(["x"], **kw)
+"""
+_UPDATE_FALLA_CERRADO = """
+import subprocess
+def f():
+    kw = {}
+    kw.update(creationflags=1)
+    subprocess.run(["x"], **kw)
+"""
+_FLAG_EN_EL_DICT_EXPANDIDO = """
+import subprocess
+def f():
+    kw = {}
+    kw["creationflags"] = 1
+    subprocess.run(["x"], **kw)
+"""
+_IMPORT_DIRECTO = """
+from subprocess import run
+run(["x"])
+"""
+
+
+@pytest.mark.parametrize(
+    ("fuente", "esperado"),
+    [
+        pytest.param(_ALIAS_SIN_FLAG, [(3, "subprocess.run", False)], id="alias_sin_flag"),
+        pytest.param(_ALIAS_CON_FLAG, [(4, "asyncio.create_subprocess_exec", True)], id="alias_con_flag"),
+        pytest.param(_FLAG_EN_OTRO_DICT, [(7, "subprocess.run", False)], id="flag_en_otro_dict"),
+        pytest.param(_UPDATE_FALLA_CERRADO, [(6, "subprocess.run", False)], id="update_falla_cerrado"),
+        pytest.param(_FLAG_EN_EL_DICT_EXPANDIDO, [(6, "subprocess.run", True)], id="flag_en_el_dict_expandido"),
+        pytest.param(_IMPORT_DIRECTO, [(3, "run", False)], id="import_directo"),
+    ],
+)
+def test_el_detector_ve_alias_y_exige_el_flag_en_el_dict_expandido(
+    fuente: str, esperado: list[tuple[int, str, bool]]
+) -> None:
+    assert _lanzamientos(ast.parse(fuente)) == esperado
 
 
 def test_todo_lanzamiento_del_paquete_oculta_la_consola() -> None:
@@ -104,10 +191,11 @@ def test_creationflags_sin_consola_por_plataforma(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(sys, "platform", "win32")
     assert creationflags_sin_consola() == CREATE_NO_WINDOW == 0x08000000
     assert creationflags_sin_consola(0x00000400) == 0x08000400
-    # En POSIX ``creationflags`` distinto de 0 hace fallar a subprocess: no se agrega.
+    # En POSIX ``creationflags`` distinto de 0 hace fallar a subprocess: siempre 0,
+    # aun con un ``extra`` (todas esas constantes son de Windows).
     monkeypatch.setattr(sys, "platform", "linux")
     assert creationflags_sin_consola() == 0
-    assert creationflags_sin_consola(0x00000400) == 0x00000400
+    assert creationflags_sin_consola(0x00000400) == 0
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="CREATE_NO_WINDOW es de Windows")

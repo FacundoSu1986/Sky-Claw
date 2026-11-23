@@ -21,9 +21,10 @@ CREATE_NO_WINDOW = 0x08000000
 def creationflags_sin_consola(extra: int = 0) -> int:
     """Devuelve ``extra`` con ``CREATE_NO_WINDOW`` agregado en Windows.
 
-    En POSIX devuelve ``extra`` tal cual, porque ``subprocess`` rechaza un
-    ``creationflags`` distinto de 0 fuera de Windows.
+    En POSIX devuelve SIEMPRE 0: todo ``creationflags`` es de Windows y
+    ``subprocess`` rechaza cualquier valor distinto de 0 fuera de Windows, así que
+    un ``extra`` (p. ej. ``CREATE_NEW_PROCESS_GROUP``) no puede romper el lanzamiento.
     """
     if sys.platform == "win32":
         return extra | CREATE_NO_WINDOW
-    return extra
+    return 0
