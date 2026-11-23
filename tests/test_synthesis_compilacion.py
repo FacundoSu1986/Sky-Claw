@@ -94,7 +94,9 @@ async def test_cache_miss_pide_hitl_y_compila_en_orden(tmp_path: pathlib.Path, m
 
     assert resultado.cache_hit is False
     assert len(hitl.pedidos) == 1
-    assert "api.nuget.org" in hitl.pedidos[0]["detail"]
+    # Igualdad de la línea completa (no una subcadena): el pedido nombra exactamente el host.
+    lineas_host = [linea for linea in hitl.pedidos[0]["detail"].splitlines() if linea.startswith("Hosts:")]
+    assert lineas_host == ["Hosts: api.nuget.org"]
     # El build corre en una carpeta de trabajo de la caché y después se publica con os.replace.
     proyecto = pathlib.Path(dotnet.llamadas[0]["args"][2])
     trabajo = proyecto.parents[2]
