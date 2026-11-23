@@ -401,6 +401,21 @@ x64 instalado):
   un pedido HITL, árbol sin `.git`; acierto de caché en 0,01 s con la URL en otra forma; un SHA
   inexistente falla cerrado (`not our ref`). Compilar un patcher de terceros (ejecuta su build) no se
   probó por decisión del propietario. Traducir `Tag`/`Branch` del perfil a un SHA queda para el orquestador (PR-3f).
+- **PR-3f (orquestador de la Fase 1):** `sky_claw/local/tools/synthesis_fase1.py` (estricto en `mypy`)
+  `preparar_fase1` lee el perfil con la MISMA selección que el traductor
+  (`PatcherPipeline.seleccionar_patchers_v2`) y, por patcher: CLI → su `PathToExecutable` absoluto;
+  Solution → PR-3d desde la carpeta de la solución; Git → solo `PatcherVersioning=Commit` con
+  `TargetCommit` completo (Tag/Branch fallan cerrado), PR-3e + PR-3d. Compila el shim propio una vez,
+  decide CET y materializa un shim por patcher; devuelve `ID → shim`. Las carpetas de datos siguen a
+  upstream (`ConstructSolutionPatcherRunArgs` 0.36.6): `<dir del .csproj>/InternalData` como `-i` y
+  `/Data` como `-f`, **cada una independiente y solo si existe** — el shim (C# y Python) dejó de exigir
+  las dos juntas. `SynthesisConfig.cli_executables` lleva el mapa al traductor en el runner; el runner
+  brokered lo **rechaza** hasta que el transporte al worker exista (ancla: campos de `SynthesisConfig`
+  congelados por igualdad). Anclas enumerantes: `PREPARADORES` = tipos de `TIPO_POR_PATCHER_TYPE` =
+  lista blanca de `$type`. **Rig (dotnet real, solo código propio):** Solution + CLI → mapa, traductor
+  y shims; el shim recompilado inyecta `-f` o `-i` por separado; la segunda preparación sale de caché
+  sin HITL. Falta: cablear `preparar_fase1` en el servicio y transportar el mapa al worker (PR-3g),
+  `SynthesisPreset` e `install_synthesis_cli`.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.

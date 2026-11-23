@@ -195,3 +195,43 @@ def test_el_resto_del_endurecimiento_se_mantiene(tmp_path: pathlib.Path) -> None
     perfil = _leer(temporal)["Profiles"][0]
     assert perfil["UpdateLoadOrderAfterRun"] is False
     assert perfil["SplitIfMaxMastersExceeded"] is True
+
+
+# --- PR-3f: lectura única de los patchers seleccionados para el orquestador de la Fase 1 ---------
+
+
+def test_seleccion_publica_devuelve_tipo_id_nickname_y_datos(tmp_path: pathlib.Path) -> None:
+    seleccion = pp.PatcherPipeline.seleccionar_patchers_v2(_settings(tmp_path), "Default")
+    assert [(s.canonical_id, s.nickname, s.tipo) for s in seleccion] == [
+        ("git-1", "RepoDelPatcher", "git"),
+        ("sln-1", "Solucion", "solution"),
+        ("cli-1", "Cli", "cli"),
+    ]
+    assert seleccion[0].datos["RemoteRepoPath"] == "https://github.com/autor/RepoDelPatcher"
+    # Los datos son una copia: el orquestador no puede mutar la lectura.
+    seleccion[0].datos["RemoteRepoPath"] = "x"
+    assert pp.PatcherPipeline.seleccionar_patchers_v2(_settings(tmp_path), "Default")[0].datos["RemoteRepoPath"] != "x"
+
+
+def test_seleccion_publica_respeta_el_filtro(tmp_path: pathlib.Path) -> None:
+    seleccion = pp.PatcherPipeline.seleccionar_patchers_v2(_settings(tmp_path), "Default", ["Solucion"])
+    assert [s.canonical_id for s in seleccion] == ["sln-1"]
+
+
+def test_seleccion_publica_exige_type(tmp_path: pathlib.Path) -> None:
+    settings = _settings(tmp_path)
+    datos = json.loads(settings.read_text(encoding="utf-8"))
+    del datos["Profiles"][0]["Groups"][0]["Patchers"][0]["$type"]
+    settings.write_text(json.dumps(datos), encoding="utf-8")
+    with pytest.raises(PatcherPipelineError, match=r"\$type"):
+        pp.PatcherPipeline.seleccionar_patchers_v2(settings, "Default")
+
+
+def test_cada_tipo_admitido_tiene_su_clase_de_patcher() -> None:
+    # Ancla enumerante: un tipo nuevo en la lista blanca sin clase de orquestación rompe acá.
+    assert pp.TIPO_POR_PATCHER_TYPE == {
+        "Synthesis.Bethesda.Execution.Settings.GithubPatcherSettings": "git",
+        "Synthesis.Bethesda.Execution.Settings.SolutionPatcherSettings": "solution",
+        "Synthesis.Bethesda.Execution.Settings.CliPatcherSettings": "cli",
+    }
+    assert set(pp.TIPO_POR_PATCHER_TYPE) == pp._ALLOWED_SYNTHESIS_PATCHER_TYPES

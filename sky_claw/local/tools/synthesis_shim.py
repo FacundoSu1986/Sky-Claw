@@ -167,8 +167,8 @@ def construir_config_shim(
     con el mensaje de la decisión.
     """
     _exigir_ruta_absoluta(patcher, "patcher")
-    if (internal_data_folder is None) != (default_data_folder_path is None):
-        raise ShimConfigError("internalDataFolder y defaultDataFolderPath van juntos o no van.")
+    # Cada carpeta es independiente, como en upstream (ConstructSolutionPatcherRunArgs 0.36.6): -i solo
+    # si existe InternalData/, -f solo si existe Data/, ambas junto al .csproj.
     for carpeta, que in (
         (internal_data_folder, "internalDataFolder"),
         (default_data_folder_path, "defaultDataFolderPath"),
