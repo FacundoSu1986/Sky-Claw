@@ -20,7 +20,7 @@ import pathlib
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from sky_claw.app.core.event_bus import CoreEventBus, Event
 from sky_claw.app.core.event_payloads import (
@@ -49,6 +49,7 @@ from sky_claw.app.security.path_validator import PathViolationError, assert_safe
 from sky_claw.local.tools._dir_rollback import DirectoryRollback, _commit_directory_rollbacks, mutar_hasta_terminal
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
 from sky_claw.local.tools.dyndolod_guia import (
+    RAZON_ETAPA_EN_CURSO,
     CambioDeFase,
     ChecklistDeEtapa9,
     Corte,
@@ -241,6 +242,14 @@ def _descarta_el_progreso_al_salir(metodo: Callable[..., Awaitable[_R]]) -> Call
             dry_run=argumentos.arguments["dry_run"], interaction_mode=argumentos.arguments["interaction_mode"]
         ):
             return await metodo(self, *args, **kwargs)
+        # Una etapa 9 a la vez, para TODAS las superficies (seguimiento de #1007): el estado vivo de la corrida solo
+        # lo escribe y lo descarta su dueña. Mirar y tomar el turno no tiene ningún ``await`` en medio, así que en el
+        # loop es atómico; quien llega con el turno tomado se rechaza SIN tocar el paso, el corte ni el progreso.
+        rechazo = self.rechazo_si_hay_corrida_en_curso(interaction_mode=argumentos.arguments["interaction_mode"])
+        if rechazo is not None:
+            logger.warning("%s", rechazo["message"], extra={"pipeline_stage": _ETAPA_DYNDOLOD, "tx_id": None})
+            return cast(_R, rechazo)
+        self._corrida_en_curso = True
         try:
             resultado_de_la_corrida = await metodo(self, *args, **kwargs)
             if (
@@ -254,6 +263,7 @@ def _descarta_el_progreso_al_salir(metodo: Callable[..., Awaitable[_R]]) -> Call
             self._progreso_actual = None
             self._fase_actual = None
             self._corte_de_la_corrida = None
+            self._corrida_en_curso = False
 
     return envuelto
 
@@ -483,6 +493,9 @@ class DynDOLODPipelineService:
     #: #997: fase vigente del asistido y corte avisado por el runner, de UNA corrida (mismo ciclo que el progreso).
     _fase_actual: FaseEnCurso | None = None
     _corte_de_la_corrida: _CorteDeLaCorrida | None = None
+    #: Una etapa 9 a la vez (seguimiento de #1007): ``True`` mientras una corrida de ``execute`` es la dueña del
+    #: estado vivo. Lo toma y lo suelta SOLO ``_descarta_el_progreso_al_salir``.
+    _corrida_en_curso: bool = False
 
     def __init__(
         self,
@@ -3395,6 +3408,33 @@ class DynDOLODPipelineService:
         ``pipeline.dyndolod.progress`` para quien prefiera suscribirse.
         """
         return self._progreso_actual
+
+    def rechazo_si_hay_corrida_en_curso(self, *, interaction_mode: object) -> dict[str, Any] | None:
+        """El resultado con que se rechaza una etapa 9 mientras otra corre, o ``None`` si el turno está libre.
+
+        Lo usa la autoridad (``_descarta_el_progreso_al_salir``, en el límite de ``execute``) y lo consultan las
+        superficies antes de preguntar o lanzar (``rechazo_temprano_por_corrida_en_curso``): un solo control para
+        la GUI y el agente. No toca el estado de la corrida en curso. Un modo inválido no es una corrida (lo rechaza
+        ``execute`` por su cuenta): ``None``.
+        """
+        modo = _modo_de_interaccion_o_none(interaction_mode)
+        if not self._corrida_en_curso or modo is None:
+            return None
+        mensaje = "DynDOLOD (stage 9): ya hay una corrida en curso en este proceso; no se lanza otra en paralelo"
+        return _attach_preflight(
+            {
+                "status": "error",
+                "success": False,
+                "reason": RAZON_ETAPA_EN_CURSO,
+                "message": mensaje,
+                "errors": [mensaje],
+                "guia": explicar_fallo(
+                    mensaje_tecnico=mensaje, fase=None, herramienta=None, corte=None, razon=RAZON_ETAPA_EN_CURSO
+                ),
+            },
+            None,
+            modo,
+        )
 
     @property
     def fase_actual(self) -> FaseEnCurso | None:
