@@ -17,6 +17,8 @@ import pytest
 from sky_claw.app.security.hitl import Decision
 from sky_claw.local.tools import synthesis_compilacion as sc
 from sky_claw.local.tools.synthesis_prebuild import (
+    FUENTE_NUGET_APROBABLE,
+    argumentos_dotnet_assembly_name,
     argumentos_dotnet_build_patcher,
     argumentos_dotnet_restore_patcher,
 )
@@ -36,18 +38,26 @@ class _Hitl:
 class _Dotnet:
     """Falso de ``run_capture``: registra argv/env/cwd y simula restore y build."""
 
-    def __init__(self, *, cet_en_salida: int = 0, rc_restore: int = 0, rc_build: int = 0) -> None:
+    def __init__(
+        self, *, cet_en_salida: int = 0, rc_restore: int = 0, rc_build: int = 0, assembly_name: str = "MiPatcher"
+    ) -> None:
         self.llamadas: list[dict[str, Any]] = []
         self.cet_en_salida = cet_en_salida
-        self.rc = {"restore": rc_restore, "build": rc_build}
+        self.assembly_name = assembly_name
+        self.rc = {"restore": rc_restore, "build": rc_build, "msbuild": 0}
 
     async def __call__(self, args: list[str], **kwargs: Any) -> tuple[bytes, bytes, int]:
         self.llamadas.append({"args": args, **kwargs})
         verbo = args[1]
+        if verbo == "msbuild":
+            # MSBuild imprime el valor con un salto de linea de Windows al final.
+            return (self.assembly_name + chr(13) + chr(10)).encode(), b"", 0
         if verbo == "build" and self.rc["build"] == 0:
             salida = pathlib.Path(args[args.index("-o") + 1])
             salida.mkdir(parents=True, exist_ok=True)
-            nombre = pathlib.Path(args[2]).stem
+            # Un AssemblyName inválido no puede ser un nombre de archivo: el build "real" deja uno
+            # normal y la que decide es la validación del motor, no el sistema de archivos.
+            nombre = self.assembly_name if self.assembly_name.isidentifier() else "MiPatcher"
             (salida / f"{nombre}.exe").write_bytes(
                 pe_sintetico(cet=self.cet_en_salida, apps=(f"{nombre}.dll".encode(),))
             )
@@ -103,8 +113,9 @@ async def test_cache_miss_pide_hitl_y_compila_en_orden(tmp_path: pathlib.Path, m
     assert trabajo.parent == tmp_path / "cache" and trabajo.name.startswith(".trabajo-")
     assert proyecto.relative_to(trabajo).as_posix() == "fuentes/MiPatcher/MiPatcher.csproj"
     assert [ll["args"][1:] for ll in dotnet.llamadas] == [
-        argumentos_dotnet_restore_patcher(proyecto),
+        argumentos_dotnet_restore_patcher(proyecto, configfile=trabajo / "nuget.config"),
         argumentos_dotnet_build_patcher(proyecto, salida=trabajo / "salida"),
+        argumentos_dotnet_assembly_name(proyecto),
     ]
     assert not trabajo.exists()  # publicado
     assert resultado.exe.parents[1].parent == tmp_path / "cache"
@@ -229,3 +240,81 @@ async def test_dotnet_x86_se_rechaza(tmp_path: pathlib.Path, monkeypatch: pytest
             timeout_s=60,
             max_output_bytes=1_000_000,
         )
+
+
+async def test_el_nuget_config_del_usuario_no_agrega_hosts(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Hallazgo Codex P1: sin --configfile, restore usaría el NuGet.Config copiado con la solución y
+    # podría contactar hosts que el operador no aprobó.
+    raiz = _fuentes(tmp_path)
+    (raiz / "NuGet.Config").write_text(
+        "<configuration><packageSources><add key='otro' value='https://evil.example/v3/index.json'/>"
+        "</packageSources></configuration>",
+        encoding="utf-8",
+    )
+    capturado: dict[str, str] = {}
+    dotnet = _Dotnet()
+
+    async def _capturar(args: list[str], **kwargs: Any) -> tuple[bytes, bytes, int]:
+        if args[1] == "restore":
+            capturado["config"] = pathlib.Path(args[args.index("--configfile") + 1]).read_text(encoding="utf-8")
+        return await dotnet(args, **kwargs)
+
+    monkeypatch.setattr(sc, "run_capture", _capturar)
+    await sc.compilar_patcher_local(
+        raiz,
+        "MiPatcher/MiPatcher.csproj",
+        cache_raiz=tmp_path / "cache",
+        dotnet=_dotnet_exe(tmp_path),
+        hitl=_Hitl(Decision.APPROVED),  # type: ignore[arg-type]
+        timeout_s=60,
+        max_output_bytes=1_000_000,
+    )
+    restore = next(ll["args"] for ll in dotnet.llamadas if ll["args"][1] == "restore")
+    assert pathlib.Path(restore[restore.index("--configfile") + 1]).name == "nuget.config"
+    assert "evil.example" not in capturado["config"]
+    assert "<clear />" in capturado["config"]
+    assert FUENTE_NUGET_APROBABLE in capturado["config"]
+
+
+async def test_fuentes_cambiadas_durante_el_hitl_fallan(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Hallazgo Codex P2: lo que se compila tiene que ser lo que se hasheó para la clave de caché.
+    raiz = _fuentes(tmp_path)
+
+    class _HitlQueEdita(_Hitl):
+        async def request_approval(self, **kwargs: Any) -> Decision:
+            (raiz / "MiPatcher" / "Program.cs").write_text("// editado mientras se aprobaba", encoding="utf-8")
+            return await super().request_approval(**kwargs)
+
+    dotnet = _Dotnet()
+    monkeypatch.setattr(sc, "run_capture", dotnet)
+    with pytest.raises(sc.CompilacionPatcherError, match="cambiaron"):
+        await sc.compilar_patcher_local(
+            raiz,
+            "MiPatcher/MiPatcher.csproj",
+            cache_raiz=tmp_path / "cache",
+            dotnet=_dotnet_exe(tmp_path),
+            hitl=_HitlQueEdita(Decision.APPROVED),  # type: ignore[arg-type]
+            timeout_s=60,
+            max_output_bytes=1_000_000,
+        )
+    assert dotnet.llamadas == []
+    assert not list((tmp_path / "cache").glob("*/marca.json"))
+
+
+async def test_assembly_name_distinto_del_csproj(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    resultado = await _compilar(tmp_path, _Hitl(Decision.APPROVED), _Dotnet(assembly_name="OtroNombre"), monkeypatch)
+    assert resultado.exe.name == "OtroNombre.exe"
+    segundo = await _compilar(tmp_path, _Hitl(Decision.DENIED), _Dotnet(assembly_name="OtroNombre"), monkeypatch)
+    assert segundo.cache_hit is True and segundo.exe == resultado.exe
+
+
+@pytest.mark.parametrize("nombre", ["", "sub/Nombre", "..\\Nombre", "Dos\nLineas"])
+async def test_assembly_name_invalido_falla(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, nombre: str
+) -> None:
+    with pytest.raises(sc.CompilacionPatcherError, match="AssemblyName"):
+        await _compilar(tmp_path, _Hitl(Decision.APPROVED), _Dotnet(assembly_name=nombre), monkeypatch)

@@ -34,14 +34,18 @@ import uuid
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from sky_claw.app.security.hitl import Decision, new_hitl_request_id
 from sky_claw.app.security.links import exigir_arbol_copiable_sin_reparse
 from sky_claw.local.tools._process import run_capture
 from sky_claw.local.tools.synthesis_prebuild import (
+    FUENTE_NUGET_APROBABLE,
     CetCompatPersistenteError,
+    argumentos_dotnet_assembly_name,
     argumentos_dotnet_build_patcher,
     argumentos_dotnet_restore_patcher,
+    contenido_nuget_config_aprobado,
     verificar_apphost_sin_cet,
 )
 from sky_claw.local.tools.synthesis_runner import construir_entorno_dotnet
@@ -56,7 +60,9 @@ logger = logging.getLogger(__name__)
 
 _ESQUEMA_CACHE = 1
 _NOMBRE_MARCA = "marca.json"
-_HOSTS_DE_RESTORE = ("api.nuget.org",)
+# El host del pedido HITL sale de la MISMA constante que fija el restore: lo aprobado = lo efectivo.
+_HOST_DE_RESTORE = urlsplit(FUENTE_NUGET_APROBABLE).hostname
+_CARACTERES_PROHIBIDOS_EN_NOMBRE = frozenset('<>:"/\\|?*')
 _COLA_DE_SALIDA = 2000  # caracteres de stderr/stdout que se citan en un error
 
 
@@ -116,7 +122,7 @@ async def _correr_dotnet(
     cwd: pathlib.Path,
     timeout_s: float,
     max_output_bytes: int,
-) -> None:
+) -> bytes:
     stdout, stderr, rc = await run_capture(
         [str(dotnet), *args],
         timeout=timeout_s,
@@ -128,6 +134,15 @@ async def _correr_dotnet(
     if rc != 0:
         salida = (stderr or stdout).decode("utf-8", "replace")[-_COLA_DE_SALIDA:]
         raise CompilacionPatcherError(f"dotnet {args[0]} salió con {rc}: {salida}")
+    return stdout
+
+
+def _validar_assembly_name(salida_msbuild: bytes) -> str:
+    """``AssemblyName`` evaluado por MSBuild: un nombre de archivo simple, nunca una ruta."""
+    nombre = salida_msbuild.decode("utf-8", "replace").strip()
+    if not nombre or nombre in {".", ".."} or any(c in _CARACTERES_PROHIBIDOS_EN_NOMBRE or ord(c) < 32 for c in nombre):
+        raise CompilacionPatcherError(f"AssemblyName inválido evaluado por MSBuild: {nombre!r}")
+    return nombre
 
 
 async def compilar_patcher_local(
@@ -165,7 +180,7 @@ async def compilar_patcher_local(
     # Sin acierto de caché hay que abrir red: primero la compuerta, después cualquier proceso.
     detalle = (
         f"Solución: {raiz_fuentes}\nProyecto: {proyecto.as_posix()}\n"
-        f"Hosts: {', '.join(_HOSTS_DE_RESTORE)}\nComando: dotnet restore (paquetes NuGet del patcher)"
+        f"Hosts: {_HOST_DE_RESTORE}\nComando: dotnet restore (paquetes NuGet del patcher)"
     )
     if hitl is None:
         raise CompilacionPatcherError(
@@ -188,14 +203,23 @@ async def compilar_patcher_local(
         exigir_arbol_copiable_sin_reparse(raiz_fuentes)
         temporal.mkdir(parents=True)
         shutil.copytree(raiz_fuentes, fuentes, symlinks=True)
-    except OSError as exc:
+        copia_fiel = hash_arbol(fuentes) == arbol_fuentes
+        configfile = trabajo / "nuget.config"
+        configfile.write_text(contenido_nuget_config_aprobado(), encoding="utf-8")
+    except (OSError, ShimConfigError) as exc:
         raise CompilacionPatcherError(f"No se pudo copiar la solución a la caché: {exc}") from exc
+    if not copia_fiel:
+        # Lo que se compila tiene que ser lo que se hasheó para la clave: si la solución cambió
+        # mientras el operador aprobaba, la caché quedaría envenenada con otra versión.
+        raise CompilacionPatcherError(
+            f"Las fuentes de {raiz_fuentes} cambiaron mientras se preparaba el build; se aborta sin publicar."
+        )
 
     env = construir_entorno_dotnet(dotnet_root=dotnet.parent, temp_dir=temporal)
     env["NUGET_PACKAGES"] = str(cache_raiz / "nuget")
     proyecto_copia = fuentes / proyecto
     for argumentos in (
-        argumentos_dotnet_restore_patcher(proyecto_copia),
+        argumentos_dotnet_restore_patcher(proyecto_copia, configfile=configfile),
         argumentos_dotnet_build_patcher(proyecto_copia, salida=salida),
     ):
         await _correr_dotnet(
@@ -207,7 +231,15 @@ async def compilar_patcher_local(
             max_output_bytes=max_output_bytes,
         )
 
-    exe = salida / f"{proyecto.stem}.exe"
+    salida_msbuild = await _correr_dotnet(
+        dotnet,
+        argumentos_dotnet_assembly_name(proyecto_copia),
+        env=env,
+        cwd=proyecto_copia.parent,
+        timeout_s=timeout_s,
+        max_output_bytes=max_output_bytes,
+    )
+    exe = salida / f"{_validar_assembly_name(salida_msbuild)}.exe"
     try:
         verificar_apphost_sin_cet(exe)
         salida_sha256 = hash_arbol(salida)
