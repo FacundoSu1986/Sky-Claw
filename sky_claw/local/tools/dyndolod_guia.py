@@ -339,6 +339,29 @@ def texto_de_corte_temprano(checklist: ChecklistDeEtapa9) -> str:
     return f"{explicada['titulo']} {explicada['arreglo']} (detalle técnico: {explicada['detalle_tecnico']})"
 
 
+#: ``reason`` del rechazo de una segunda etapa 9 mientras otra corre. Una a la vez para TODAS las superficies (GUI y
+#: agente): el turno lo toma el servicio en el límite de ``execute`` (``DynDOLODPipelineService``).
+RAZON_ETAPA_EN_CURSO = "EtapaEnCurso"
+
+
+def rechazo_temprano_por_corrida_en_curso(servicio: object, *, interaction_mode: object) -> dict[str, Any] | None:
+    """La consulta TEMPRANA del turno de un lanzador, antes de preguntar o lanzar: es UX, no la autoridad.
+
+    Mismo contrato que :func:`checklist_temprano`: la autoridad es ``execute``, que rechaza igual a quien llegue sin
+    haber consultado. Si el servicio no ofrece la consulta, o falla, o devuelve otra cosa que un dict (un doble de
+    test), esto devuelve ``None`` y el lanzador sigue: no se inventa un rechazo.
+    """
+    consultar = getattr(servicio, "rechazo_si_hay_corrida_en_curso", None)
+    if not callable(consultar):
+        return None
+    try:
+        rechazo = consultar(interaction_mode=interaction_mode)
+    except Exception:  # noqa: BLE001 -- consulta temprana best-effort: la autoridad sigue siendo execute()
+        logger.warning("no se pudo consultar si hay una etapa 9 en curso antes de lanzar", exc_info=True)
+        return None
+    return rechazo if isinstance(rechazo, dict) else None
+
+
 # =============================================================================
 # Chequeos (solo lectura)
 # =============================================================================
@@ -853,6 +876,11 @@ _PREFLIGHT_EN_ROJO = _explicacion(
     "Sky-Claw frenó antes de arrancar: encontró un problema en tu instalación.",
     "Abrí el detalle técnico para ver qué es y arreglalo antes de volver a correr.",
 )
+_ETAPA_EN_CURSO = _explicacion(
+    "Ya hay una etapa 9 corriendo.",
+    "Esperá a que termine: el paso actual se ve en la tarjeta de DynDOLOD (o pedí lods_status por Telegram). "
+    "Después volvé a lanzarla.",
+)
 _PASO_PENDIENTE = _explicacion(
     "TexGen terminó, pero falta un paso tuyo antes de seguir con DynDOLOD.",
     "Hacé lo que indica el detalle y después tocá «Continuar DynDOLOD».",
@@ -879,6 +907,8 @@ def explicar_fallo(
         explicacion = EXPLICACION_POR_RAZON_UIA[corte]
     elif razon == "PreflightBlocked":
         explicacion = _PREFLIGHT_EN_ROJO
+    elif razon == RAZON_ETAPA_EN_CURSO:
+        explicacion = _ETAPA_EN_CURSO
     else:
         explicacion = _GENERICA
     nombre = herramienta or "la herramienta"
