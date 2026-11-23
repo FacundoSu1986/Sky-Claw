@@ -106,6 +106,8 @@ class GenerateLodsStrategy:
             self.service, interaction_mode=filtered.get("interaction_mode", ModoDeInteraccion.ASISTIDO)
         )
         if en_curso is not None:
+            # SOP §5 regla 5: el desenlace se decide acá (el servicio no llega a correr), así que el registro va acá.
+            logger.warning("la etapa 9 no se lanza: %s", en_curso["message"], extra=_EXTRA_DE_LA_ETAPA)
             return en_curso
         if _pide_modo_asistido(modo) or _pide_modo_desatendido(modo):
             # #997: el checklist ANTES de preguntarle nada al operador (etapas previas incluidas): con un ❌ la

@@ -196,6 +196,29 @@ async def test_la_gui_no_pide_aprobar_una_etapa9_mientras_otra_corre(monkeypatch
     await asyncio.wait_for(dueña, timeout=5)
 
 
+async def test_el_rechazo_de_la_gui_se_registra_una_vez_con_la_etapa(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """SOP §5 regla 5: UN registro por intento bloqueado, donde se decide y con la etapa, como su hermano
+    ``_corte_por_checklist`` del mismo archivo (review CodeRabbit en #1010). La GUI decide antes del servicio, así
+    que el registro del servicio no corre: si la GUI no registra, el intento no deja rastro."""
+    servicio, preflight = _servicio_ocupable(monkeypatch)
+    dueña = asyncio.create_task(servicio.execute(interaction_mode="asistido"))
+    await asyncio.wait_for(preflight.en_espera.wait(), timeout=5)
+    caplog.clear()
+
+    with caplog.at_level("WARNING"):
+        rechazo = await GenerateLodsStrategy(servicio).execute({"interaction_mode": "asistido"})
+
+    assert rechazo["reason"] == guia.RAZON_ETAPA_EN_CURSO
+    registros = [r for r in caplog.records if rechazo["message"] in r.getMessage()]
+    assert len(registros) == 1, [r.getMessage() for r in caplog.records]
+    assert getattr(registros[0], "pipeline_stage", None) == 9
+    assert getattr(registros[0], "tx_id", "falta") is None
+    preflight.soltar.set()
+    await asyncio.wait_for(dueña, timeout=5)
+
+
 async def test_la_consulta_temprana_no_inventa_un_rechazo_si_el_servicio_no_la_ofrece() -> None:
     """UX, no autoridad: un servicio sin la consulta (o un doble) no frena al lanzador; ``execute`` decide."""
     assert guia.rechazo_temprano_por_corrida_en_curso(object(), interaction_mode="asistido") is None
