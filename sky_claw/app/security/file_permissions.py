@@ -25,6 +25,8 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
+from sky_claw.sin_consola import creationflags_sin_consola
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -146,6 +148,7 @@ def _get_current_user_sid() -> str | None:
             text=True,
             timeout=10,
             check=True,
+            creationflags=creationflags_sin_consola(),
         )
         sid = result.stdout.strip()
         return sid if sid else None
@@ -174,6 +177,7 @@ def _get_current_user_name() -> str | None:
             text=True,
             timeout=10,
             check=True,
+            creationflags=creationflags_sin_consola(),
         )
         name = result.stdout.strip()
         return name or None
@@ -197,6 +201,7 @@ def _get_current_logon_sid() -> str | None:
             text=True,
             timeout=10,
             check=True,
+            creationflags=creationflags_sin_consola(),
         )
     except Exception as exc:
         logger.warning("Could not resolve current logon-session SID: %s", exc)
@@ -484,6 +489,7 @@ def _verify_dacl(path: Path, allowed_identifiers: list[str]) -> None:
             timeout=10,
             text=True,  # system ANSI code page — handles non-ASCII account names
             env={**os.environ, "LANGUAGE": "en_US"},
+            creationflags=creationflags_sin_consola(),
         )
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
         _fail_closed(path, f"icacls verification failed: {exc}")
@@ -588,6 +594,7 @@ def _effective_dacl_grants_inherited_owner_only(
             timeout=10,
             text=True,  # system ANSI code page — handles non-ASCII account names
             env={**os.environ, "LANGUAGE": "en_US"},
+            creationflags=creationflags_sin_consola(),
         )
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         return False
@@ -631,6 +638,7 @@ def _restrict_windows(path: Path) -> None:
                 capture_output=True,
                 check=True,
                 timeout=10,
+                creationflags=creationflags_sin_consola(),
             )
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.warning("icacls (username) failed for %s: %s — retrying with SID", path, exc)
@@ -650,6 +658,7 @@ def _restrict_windows(path: Path) -> None:
                 capture_output=True,
                 check=True,
                 timeout=10,
+                creationflags=creationflags_sin_consola(),
             )
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
             # Degrade safely: a non-zero icacls exit is NOT proof the owner grant

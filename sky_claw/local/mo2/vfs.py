@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Any
 import aiofiles
 import psutil
 
+from sky_claw.sin_consola import creationflags_sin_consola
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -594,6 +596,7 @@ class MO2Controller:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 cwd=cwd_native,
+                creationflags=creationflags_sin_consola(),
             )
         except FileNotFoundError:
             raise FileNotFoundError(f"MO2 executable not found: {validated_exe}") from None

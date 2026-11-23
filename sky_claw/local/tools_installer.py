@@ -52,6 +52,7 @@ from sky_claw.local.discovery.scanner import (
 )
 from sky_claw.local.thread_bridge import esperar_hilo_ininterrumpible as _esperar_hilo_ininterrumpible
 from sky_claw.local.tools.skse_catalog import SkseRelease, SkseSource, resolve_skse_release
+from sky_claw.sin_consola import creationflags_sin_consola
 
 if TYPE_CHECKING:
     from sky_claw.app.scraper.nexus_downloader import FileInfo, NexusDownloader
@@ -852,6 +853,7 @@ def _extract_7z_via_system(archive: pathlib.Path, dest: pathlib.Path) -> None:
             check=True,
             capture_output=True,
             timeout=_SEVENZIP_TIMEOUT_SECONDS,
+            creationflags=creationflags_sin_consola(),
         )
     except subprocess.TimeoutExpired as exc:
         raise ToolInstallError(f"El listado de 7z para {archive.name} superó el timeout.") from exc
@@ -885,6 +887,7 @@ def _extract_7z_via_system(archive: pathlib.Path, dest: pathlib.Path) -> None:
             check=True,
             capture_output=True,
             timeout=_SEVENZIP_TIMEOUT_SECONDS,
+            creationflags=creationflags_sin_consola(),
         )
     except subprocess.TimeoutExpired as exc:
         raise ToolInstallError(f"La extracción con 7z de {archive.name} superó el timeout.") from exc

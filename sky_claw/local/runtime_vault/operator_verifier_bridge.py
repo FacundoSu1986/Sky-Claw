@@ -68,6 +68,7 @@ from sky_claw.local.runtime_vault.runtime_observation import (
     observe_runtime_identity_from_root,
 )
 from sky_claw.local.runtime_vault.verification import tree_digest_from_files
+from sky_claw.sin_consola import creationflags_sin_consola
 
 # ============================================================================
 # Constantes Normativas de Protocolo e IPC
@@ -1397,6 +1398,7 @@ class _TestOnlyVerifierLauncher:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
+            creationflags=creationflags_sin_consola(),
         )
         self._spawned_procs.append(proc)
 
