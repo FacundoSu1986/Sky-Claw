@@ -5,10 +5,11 @@ general, el resultado de su trabajo.** No es una hipótesis; es el patrón que e
 repo ya encontró tres veces, cada vez en un runner distinto y cada vez después de
 que el falso verde saliera a producción:
 
-- **BodySlide** (#433): ``OnRun`` no define ``SetExitCode``, así que termina en 0
+- **BodySlide** (#433 + PR 1): ``OnRun`` no define ``SetExitCode``, así que termina en 0
   aunque ``BuildListBodies`` devuelva ``ret == 3`` ("the following sets failed") y
-  aunque no haya construido nada. El veredicto pasó a exigir artefactos en disco y
-  ausencia de fallo parcial en su log.
+  aunque no haya construido nada. El veredicto pasó a exigir artefactos en disco,
+  log ATRIBUIBLE a la corrida, y ausencia de fallo parcial — y exige también un
+  stageing vacío antes del spawn, rc == 0, y un manifiesto satisfecho (PR 1).
 - **Wrye Bash** (#397): una variante que sí parseara habría hecho un backup de
   settings, salido con 0 y reportado ``success`` sobre un Bashed Patch nunca
   regenerado, que las etapas 7 y 9 del DAG consumen.

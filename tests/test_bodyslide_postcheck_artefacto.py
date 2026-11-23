@@ -35,13 +35,35 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from sky_claw.local.tools.bodyslide_headless import ManifiestoArtefactos
 from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
-from tests._symlink_guard import crear_junction, is_junction_real, junction_guard
+from tests._symlink_guard import crear_junction, is_junction_real, junction_guard, symlink_guard
+
+#: Valid pre-config seeded byte-identically for the PR-1 contract: quiet_verified=True
+#: + TargetGame valid. BodySlide aborts before spawn otherwise — that is the
+#: fail-closed gate now, not a fallback.
+_SEED_VÁLIDO = (
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    "<Config>\n"
+    "  <TargetGame>4</TargetGame>\n"
+    "  <ProjectPath>\n"
+    "    C:/game/mods/Bones_VFS/BodySlide\n"
+    "  </ProjectPath>\n"
+    "</Config>\n"
+)
 
 
 def _runner(tmp_path: pathlib.Path) -> BodySlideRunner:
+    exe = tmp_path / "BodySlide" / "BodySlide.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    # TargetGame valido + ruta de config: la siembra debe pasar antes del spawn.
+    (exe.parent / "Config.xml").write_text(_SEED_VÁLIDO, encoding="utf-8")
     return BodySlideRunner(
-        BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=tmp_path / "game"),
+        BodySlideConfig(
+            bodyslide_exe=exe,
+            game_path=tmp_path / "game",
+            quiet_verified=True,
+        ),
     )
 
 
@@ -54,6 +76,42 @@ def _captura(return_code: int = 0) -> AsyncMock:
     ejecutable que no existe.
     """
     return AsyncMock(return_value=(b"", b"", return_code))
+
+
+def _captura_con_artefactos(
+    destino: pathlib.Path,
+    artefactos: list[str],
+    return_code: int = 0,
+    log_destino: pathlib.Path | None = None,
+    log_content: str | None = None,
+) -> AsyncMock:
+    """``run_capture`` que SIMULA un build real: crea artefactos bajo el destino
+    y escribe la firma ``[#Log`` FRESCA en el log al arrancar (BodySlide lo hace
+    en ``Log::Initialize``). Devolviendo stdout/stderr vacíos con el rc dado.
+
+    El log se conserva (append): el upstream no lo trunca al arrancar — el
+    ``Log::Initialize`` rota sólo tras la cuarta corrida y luego sólo las dos
+    últimas. Para tests que necesitan contenido específico, pasa ``log_content``
+    con el texto que sigue a la firma recién escrita.
+    """
+
+    async def _efecto(*_args, **_kwargs):
+        for relativo in artefactos:
+            ruta = destino / relativo
+            ruta.parent.mkdir(parents=True, exist_ok=True)
+            ruta.write_bytes(b"\x00")
+        if log_destino is not None:
+            log_destino.parent.mkdir(parents=True, exist_ok=True)
+            contenido = "[#Log 2026-11-22]\n" + (log_content or "All sets processed successfully!\n")
+            # Append — el log acumula corridas hasta rotar (upstream: las dos últimas).
+            if log_destino.exists():
+                with log_destino.open("ab") as handle:
+                    handle.write(contenido.encode("utf-8"))
+            else:
+                log_destino.write_text(contenido, encoding="utf-8")
+        return (b"", b"", return_code)
+
+    return AsyncMock(side_effect=_efecto)
 
 
 async def test_exit_cero_sin_mallas_no_es_exito(tmp_path: pathlib.Path) -> None:
@@ -115,10 +173,21 @@ async def test_con_artefacto_es_exito_y_mensaje_vacio(tmp_path: pathlib.Path, ar
     runner = _runner(tmp_path)
     destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
     destino.mkdir(parents=True)
-    (destino / artefacto).write_bytes(b"\x00")
 
-    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(0)):
-        result = await runner.run_batch("CBBE", str(destino))
+    # El proceso crea el artefacto (del lado del mock): antes del spawn el staging
+    # está vacío, que es el contrato que PR 1 exige ("staging inicialmente vacío").
+    # Manifesto verificado — este test verifica el veredicto de artefactos, no
+    # el manifesto verificado (P1-6: conteo solo ⇒ EVIDENCE_INCOMPLETE).
+    manifest = (
+        ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture")
+        if artefacto.endswith(".nif")
+        else ManifiestoArtefactos(tri_requeridos=1, verificado=True, procedencia="fixture")
+    )
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture",
+        _captura_con_artefactos(destino, [artefacto], log_destino=runner.config.bodyslide_exe.parent / "Log_BS.txt"),
+    ):
+        result = await runner.run_batch("CBBE", str(destino), manifest=manifest)
 
     assert result.success is True
     assert result.artifacts_built == 1
@@ -134,13 +203,23 @@ async def test_cuenta_artefactos_en_subdirectorios(tmp_path: pathlib.Path) -> No
     """
     runner = _runner(tmp_path)
     destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
-    anidado = destino / "meshes" / "actors" / "character"
-    anidado.mkdir(parents=True)
-    (anidado / "femalebody_0.nif").write_bytes(b"\x00")
-    (anidado / "femalebody_1.nif").write_bytes(b"\x00")
+    destino.mkdir(parents=True)
 
-    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(0)):
-        result = await runner.run_batch("CBBE", str(destino))
+    # El proceso crea los artefactos en subárboles (meshes/actors/character/):
+    # el conteo debe ser recursivo y la siembra entra antes del spawn.
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture",
+        _captura_con_artefactos(
+            destino,
+            ["meshes/actors/character/femalebody_0.nif", "meshes/actors/character/femalebody_1.nif"],
+            log_destino=runner.config.bodyslide_exe.parent / "Log_BS.txt",
+        ),
+    ):
+        result = await runner.run_batch(
+            "CBBE",
+            str(destino),
+            manifest=ManifiestoArtefactos(nif_requeridos=2, verificado=True, procedencia="fixture"),
+        )
 
     assert result.success is True
     assert result.artifacts_built == 2
@@ -155,9 +234,11 @@ async def test_exit_no_cero_sigue_siendo_fallo_aunque_haya_artefactos(tmp_path: 
     runner = _runner(tmp_path)
     destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
     destino.mkdir(parents=True)
-    (destino / "parcial.nif").write_bytes(b"\x00")
 
-    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(3)):
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture",
+        _captura_con_artefactos(destino, ["parcial.nif"], return_code=3),
+    ):
         result = await runner.run_batch("CBBE", str(destino))
 
     assert result.success is False
@@ -175,15 +256,18 @@ async def test_build_parcial_no_es_exito_aunque_haya_artefactos(tmp_path: pathli
     """
     runner = _runner(tmp_path)
     runner.config.bodyslide_exe.parent.mkdir(parents=True, exist_ok=True)
-    (runner.config.bodyslide_exe.parent / "Log_BS.txt").write_text(
-        "[#Log 2026-08-04]\nStarted batch build\nFailed to build 'Vestido': missing shape data\n",
-        encoding="utf-8",
-    )
     destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
     destino.mkdir(parents=True)
-    (destino / "cuerpo.nif").write_bytes(b"\x00")  # algunos SÍ se construyeron
 
-    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(0)):
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture",
+        _captura_con_artefactos(
+            destino,
+            ["cuerpo.nif"],
+            log_destino=runner.config.bodyslide_exe.parent / "Log_BS.txt",
+            log_content="Failed to build 'Vestido': missing shape data\n",
+        ),
+    ):
         result = await runner.run_batch("CBBE", str(destino))
 
     assert result.artifacts_built == 1
@@ -201,17 +285,29 @@ async def test_fallo_de_una_corrida_anterior_no_contamina_la_actual(tmp_path: pa
     """
     runner = _runner(tmp_path)
     runner.config.bodyslide_exe.parent.mkdir(parents=True, exist_ok=True)
+    # Log viejo del run anterior (stale) — la firma vieja con Fallo parcial.
+    # El run actual lo extiende con una firma FRESCA y contenido limpio.
     (runner.config.bodyslide_exe.parent / "Log_BS.txt").write_text(
-        "[#Log 2026-08-01]\nFailed to build 'Vestido': missing shape data\n"
-        "[#Log 2026-08-04]\nAll group build sets processed successfully!\n",
+        "[#Log 2026-08-01]\nFailed to build 'Vestido': missing shape data\n",
         encoding="utf-8",
     )
     destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
     destino.mkdir(parents=True)
-    (destino / "cuerpo.nif").write_bytes(b"\x00")
 
-    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(0)):
-        result = await runner.run_batch("CBBE", str(destino))
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture",
+        _captura_con_artefactos(
+            destino,
+            ["cuerpo.nif"],
+            log_destino=runner.config.bodyslide_exe.parent / "Log_BS.txt",
+            log_content="All group build sets processed successfully!\n",
+        ),
+    ):
+        result = await runner.run_batch(
+            "CBBE",
+            str(destino),
+            manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
+        )
 
     assert result.success is True, "un fallo de una corrida previa no es un fallo de esta"
     assert result.message == ""
@@ -258,20 +354,26 @@ async def test_fallo_parcial_se_detecta_aunque_el_log_de_la_corrida_sea_enorme(t
     """
     runner = _runner(tmp_path)
     runner.config.bodyslide_exe.parent.mkdir(parents=True, exist_ok=True)
-    relleno = "\n".join(f"Processing outfit numero {i:05d} con un nombre largo para ocupar bytes" for i in range(400))
+    # Log viejo gigante (stale) — la firma del run actual se agrega al final.
+    relleno_viejo = "\n".join(
+        f"Processing outfit numero {i:05d} con un nombre largo para ocupar bytes" for i in range(400)
+    )
     (runner.config.bodyslide_exe.parent / "Log_BS.txt").write_text(
-        f"[#Log 2026-08-04]\nStarted batch build\n{relleno}\nFailed to build 'Vestido': missing shape data\n",
+        f"[#Log 2026-08-04]\nStarted batch build\n{relleno_viejo}\nAll sets processed successfully!\n",
         encoding="utf-8",
     )
-    assert (runner.config.bodyslide_exe.parent / "Log_BS.txt").stat().st_size > 20_000, (
-        "el log tiene que superar la cola"
-    )
-
     destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
     destino.mkdir(parents=True)
-    (destino / "cuerpo.nif").write_bytes(b"\x00")
 
-    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(0)):
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture",
+        _captura_con_artefactos(
+            destino,
+            ["cuerpo.nif"],
+            log_destino=runner.config.bodyslide_exe.parent / "Log_BS.txt",
+            log_content="Failed to build 'Vestido': missing shape data\n",
+        ),
+    ):
         result = await runner.run_batch("CBBE", str(destino))
 
     assert result.success is False, "el tamaño del log no puede decidir si se detecta el fallo parcial"
@@ -321,7 +423,10 @@ def test_leer_log_termina_si_el_archivo_se_trunca_a_mitad(tmp_path: pathlib.Path
         hilo.join(timeout=5.0)
 
     assert not hilo.is_alive(), "_leer_log quedó girando: la lectura sin progreso no corta el bucle"
-    assert resultado == [("", False)]
+    # _leer_log loggea un _ColaDeLog (texto vacío + no atribuible) — test byte-for-byte.
+    from sky_claw.local.tools.bodyslide_runner import _ColaDeLog
+
+    assert resultado == [_ColaDeLog("", False, False, False, False)]
 
 
 @junction_guard
@@ -368,15 +473,148 @@ async def test_log_de_bodyslide_se_incorpora_al_mensaje(tmp_path: pathlib.Path) 
     """
     runner = _runner(tmp_path)
     runner.config.bodyslide_exe.parent.mkdir(parents=True, exist_ok=True)
-    (runner.config.bodyslide_exe.parent / "Log_BS.txt").write_text(
-        "[#Log 2026-08-03]\nFailed to build 'Vestido': missing shape data\n",
-        encoding="utf-8",
-    )
     destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
     destino.mkdir(parents=True)
 
-    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", _captura(0)):
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture",
+        _captura_con_artefactos(
+            destino,
+            [],
+            log_destino=runner.config.bodyslide_exe.parent / "Log_BS.txt",
+            log_content="Failed to build 'Vestido': missing shape data\n",
+        ),
+    ):
         result = await runner.run_batch("CBBE", str(destino))
 
     assert result.success is False
     assert "missing shape data" in result.message
+
+
+# --------------------------------------------------------------------------- #
+# P0 (auditoría): gates de STAGING — destino determinado (1b) e identidad física
+# del staging (1d). Ambos rechazados fail-closed, ANTES de cualquier mutación
+# (snapshot/seed/spawn), sin spawn y sin tocar el Config.xml.
+# --------------------------------------------------------------------------- #
+
+
+async def test_staging_no_determinado_rechaza_el_build(tmp_path: pathlib.Path) -> None:
+    """Sin game_path no hay raíz administrada — el build es rechazado fail-closed.
+
+    ``bodyslide_output_root(None)`` devuelve ``None`` y el gate 1b lo convierte en
+    ``STAGING_UNDETERMINED`` antes de snapshot o seed: sin mutación de Config.xml
+    y sin spawn. No es un falso éxito por omisión: un build sin staging destino
+    escribe en una ubicación desconocida.
+    """
+    runner = _runner(tmp_path)
+    exe = runner.config.bodyslide_exe
+    config_bytes_antes = (exe.parent / "Config.xml").read_bytes()
+
+    runner = BodySlideRunner(
+        BodySlideConfig(bodyslide_exe=exe, game_path=None, quiet_verified=True)  # type: ignore[arg-type]
+    )
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture", AsyncMock(return_value=(b"", b"", 0))
+    ) as mock_capture:
+        result = await runner.run_batch("CBBE", str(tmp_path / "game" / "BodySlide_Output" / "CBBE"))
+
+    assert result.success is False
+    assert result.estado == "STAGING_UNDETERMINED"
+    mock_capture.assert_not_awaited()
+    # Sin mutación: Config.xml byte a byte idéntico.
+    assert (exe.parent / "Config.xml").read_bytes() == config_bytes_antes
+
+
+@symlink_guard
+async def test_staging_identidad_no_verificable_symlink_en_raiz(tmp_path: pathlib.Path) -> None:
+    """La raíz del staging ENLAZADA desvía todo el contrato de destino.
+
+    Un root que es un symlink almacena la mutación fuera del juego administrado.
+    El gate 1d lo rechaza con ``STAGING_UNVERIFIABLE`` — no se spawnea y el
+    árbol inexistente (``<root>/CBBE``) ni el Config.xml se tocan.
+    """
+    runner = _runner(tmp_path)
+    exe = runner.config.bodyslide_exe
+    config_bytes_antes = (exe.parent / "Config.xml").read_bytes()
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "de_otro_mod.nif").write_bytes(b"\x00")
+    staging = tmp_path / "game" / "BodySlide_Output"
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    staging.symlink_to(outside, target_is_directory=True)
+
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture", AsyncMock(return_value=(b"", b"", 0))
+    ) as mock_capture:
+        result = await runner.run_batch("CBBE", str(staging / "CBBE"))
+
+    assert result.success is False
+    assert result.estado == "STAGING_UNVERIFIABLE"
+    mock_capture.assert_not_awaited()
+    assert (exe.parent / "Config.xml").read_bytes() == config_bytes_antes
+    # El árbol ajeno quedó intacto (ni se leyó ni se creó subdirectorio).
+    assert (outside / "de_otro_mod.nif").exists()
+
+
+@symlink_guard
+async def test_staging_identidad_no_verificable_symlink_en_subdirectorio(tmp_path: pathlib.Path) -> None:
+    """Un subdirectorio intermedio del destino enlazado invalida la identidad.
+
+    La raiz es real; un componente INTERMEDIO (``sub``) es un symlink hacia otro
+    árbol: el destino `.` no es un descendiente físico real del staging — el
+    build se rechaza con ``STAGING_UNVERIFIABLE``.
+    """
+    runner = _runner(tmp_path)
+    exe = runner.config.bodyslide_exe
+    config_bytes_antes = (exe.parent / "Config.xml").read_bytes()
+
+    fuera = tmp_path / "fuera"
+    fuera.mkdir()
+    (fuera / "de_otro_mod.nif").write_bytes(b"\x00")
+    raiz = tmp_path / "game" / "BodySlide_Output"
+    raiz.mkdir(parents=True)
+    (raiz / "sub").symlink_to(fuera, target_is_directory=True)
+
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture", AsyncMock(return_value=(b"", b"", 0))
+    ) as mock_capture:
+        result = await runner.run_batch("CBBE", str(raiz / "sub" / "CBBE"))
+
+    assert result.success is False
+    assert result.estado == "STAGING_UNVERIFIABLE"
+    mock_capture.assert_not_awaited()
+    assert (exe.parent / "Config.xml").read_bytes() == config_bytes_antes
+    assert (fuera / "de_otro_mod.nif").exists()
+
+
+@junction_guard
+async def test_staging_identidad_no_verificable_junction_en_raiz(tmp_path: pathlib.Path) -> None:
+    """Un junction en la raíz del staging — la redirección que rglob no ve.
+
+    ``IO_REPARSE_TAG_MOUNT_POINT`` no es un symlink para ``os.path.islink``: el
+    gate física es la ÚNICA puerta que lo rechaza. Sin él, el build atravesaría
+    el junction y escribiría el árbol ajeno (review qodo-merge #404/#405).
+    """
+    runner = _runner(tmp_path)
+    exe = runner.config.bodyslide_exe
+    config_bytes_antes = (exe.parent / "Config.xml").read_bytes()
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "de_otro_mod.nif").write_bytes(b"\x00")
+    staging = tmp_path / "game" / "BodySlide_Output"
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    assert crear_junction(staging, outside) is None
+    assert is_junction_real(staging)
+
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture", AsyncMock(return_value=(b"", b"", 0))
+    ) as mock_capture:
+        result = await runner.run_batch("CBBE", str(staging / "CBBE"))
+
+    assert result.success is False
+    assert result.estado == "STAGING_UNVERIFIABLE"
+    mock_capture.assert_not_awaited()
+    assert (exe.parent / "Config.xml").read_bytes() == config_bytes_antes
+    assert (outside / "de_otro_mod.nif").exists()

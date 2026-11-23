@@ -15,10 +15,16 @@ fuente de cada herramienta:
   construía el parche, y le pasaba el nombre del .esp como valor: ``-b`` no toma
   valor y el parser no declara posicionales, así que ``parse_args()`` abortaba.
   **No existe ningún flag que construya el Bashed Patch.**
-- BodySlide (`src/program/BodySlideApp.cpp::OnCmdLineParsed`, con el descriptor
-  en `BodySlideApp.h::g_cmdLineDesc`) declara ``gbuild``, ``t``, ``p``, ``tri`` y
-  ``preview`` como nombres CORTOS de `wxCmdLineParser` — de ahí el guion simple
-  en ``-gbuild``/``-t``. El repo pasaba ``-b``/``-o``: ambos nombres inválidos.
+- BodySlide (`src/bodyslide/BodySlideApp.cpp::OnCmdLineParsed`, con el descriptor
+  en `BodySlideApp.h::g_cmdLineDesc`, upstream v6.2.0 ``99103c3``) declara ``gbuild``,
+  ``b``/build (outfits/conjunto), ``f``/filter, ``regex``, ``t``/targetdir,
+  ``p``/preset (nombre o ``ruta.xml[?nombre]``), ``tri``, ``conformaddons``,
+  ``q``/quiet y ``preview`` como nombres CORTOS de `wxCmdLineParser` — de ahí el
+  guion simple en ``-gbuild``/``-t``. Sky-Claw pasa ``-gbuild``/``-t``/``-p``/``-tri``
+  y ``-q`` (con capacidad VERIFICADA); NO emite ``-b``/``-f``/``-regex``/
+  ``-conformaddons``/``-preview`` por defecto (flags declarados upstream pero fuera
+  del contrato aprobado). El repo pasa ``-b``/``-o``: ambos se estimaban inválidos
+  con la fuente vieja; v6.2.0 los declaró — Sky-Claw los excluye del contrato.
 - Pandora (README oficial, "Startup Arguments") declara ``--output``/``-o``,
   ``--auto_run``, ``--auto_close``, ``--tesv``. El repo agregaba ``--game`` y
   ``--auto``, que no existen.
@@ -264,7 +270,8 @@ PROCEDENCIA_DE_FLAGS = {
     "sky_claw/local/loot/version.py": "loot/loot — src/gui/qt/main.cpp (addVersionOption)",
     "sky_claw/app/core/windows_interop.py": "loot/loot — src/gui/qt/main.cpp (lanzador legacy, deprecado)",
     "sky_claw/local/tools/bodyslide_runner.py": (
-        "ousnius/BodySlide-and-Outfit-Studio — src/program/BodySlideApp.cpp::OnCmdLineParsed"
+        "ousnius/BodySlide-and-Outfit-Studio — src/bodyslide/BodySlideApp.cpp::OnCmdLineParsed "
+        "(tag v6.2.0 99103c3), descriptor g_cmdLineDesc"
     ),
     "sky_claw/local/tools/pandora_runner.py": (
         "Monitor221hz/Pandora-Behaviour-Engine-Plus — README, sección 'Startup Arguments'"
@@ -644,26 +651,52 @@ async def test_loot_con_update_masterlist_no_agrega_el_flag_inexistente(tmp_path
 
 
 async def test_bodyslide_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:
-    """BodySlide declara ``gbuild``, ``t``, ``p`` y ``tri``; ``-b``/``-o`` no son válidas.
+    """BodySlide (v6.2.0) declara ``gbuild``, ``t``, ``p``, ``tri`` y ``q``.
 
     ``-tri`` va por defecto: sin él, ``GroupBuild`` pasa ``cmdTri=false`` a
     ``BuildListBodies`` y no se emiten los ``.tri``, que son los que OBody NG /
     RaceMenu cargan en memoria para los morfos dinámicos. Compilar sin morfos es
     un build silenciosamente incompleto, no una variante válida por defecto.
+
+    ``-q`` va **sólo** con capacidad verificada (``quiet_verified=True``) y
+    ``-p`` sólo con preset verificado (``preset_verified=True``). El runner del
+    contrato PR 1 aborta ANTES del spawn si ninguna de las dos condiciones se cumple.
     """
-    runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=tmp_path))
+    exe = tmp_path / "BodySlide" / "BodySlide.exe"
+    exe.parent.mkdir(parents=True)
+    # Config con TargetGame válido: la siembra es precondición fail-closed.
+    (exe.parent / "Config.xml").write_text(
+        "<Config>\n  <TargetGame>4</TargetGame>\n</Config>\n",
+        encoding="utf-8",
+    )
+    runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=tmp_path, quiet_verified=True))
     run_capture = AsyncMock(return_value=(b"ok", b"", 0))
-    salida = tmp_path / "salida"
-    salida.mkdir()
-    (salida / "cuerpo.nif").write_bytes(b"\x00")
+    # El target debe estar confinado al staging administrado (P0-C).
+    salida = tmp_path / "BodySlide_Output" / "CBBE"
+    salida.mkdir(parents=True)
 
     with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):
-        await runner.run_batch("CBBE Body", str(salida), preset="Zeroed Sliders")
+        await runner.run_batch(
+            "CBBE Body",
+            str(salida),
+            preset="Zeroed Sliders",
+            preset_verified=True,
+        )
 
     argv = run_capture.await_args.args[0]
-    assert argv[1:] == ["-gbuild", "CBBE Body", "-t", str(salida), "-p", "Zeroed Sliders", "-tri"]
-    assert "-b" not in argv, "`-b` no es una opción declarada por BodySlide"
-    assert "-o" not in argv, "`-o` no es una opción declarada por BodySlide"
+    assert argv[1:] == [
+        "-gbuild",
+        "CBBE Body",
+        "-t",
+        str(salida),
+        "-p",
+        "Zeroed Sliders",
+        "-tri",
+        "-q",
+    ]
+    # Sky-Claw no emite flags declarados upstream pero fuera del contrato aprobado.
+    for flag in ("-b", "-o", "-f", "-regex", "-conformaddons", "-preview"):
+        assert flag not in argv, f"`{flag}` no está autorizado en el contrato headless de Sky-Claw"
 
 
 async def test_bodyslide_omite_preset_y_tri_cuando_no_se_piden(tmp_path: pathlib.Path) -> None:
@@ -672,17 +705,77 @@ async def test_bodyslide_omite_preset_y_tri_cuando_no_se_piden(tmp_path: pathlib
     Emitir ``-p ""`` haría que BodySlide sobrescriba ``SelectedPreset`` con vacío;
     omitirlo conserva el comportamiento declarado ("defaults to last used preset").
     """
-    runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=tmp_path))
+    exe = tmp_path / "BodySlide" / "BodySlide.exe"
+    exe.parent.mkdir(parents=True)
+    (exe.parent / "Config.xml").write_text(
+        "<Config>\n  <TargetGame>4</TargetGame>\n</Config>\n",
+        encoding="utf-8",
+    )
+    runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=tmp_path, quiet_verified=True))
     run_capture = AsyncMock(return_value=(b"ok", b"", 0))
-    salida = tmp_path / "salida"
-    salida.mkdir()
-    (salida / "cuerpo.nif").write_bytes(b"\x00")
+    # El target debe estar confinado al staging administrado (P0-C).
+    salida = tmp_path / "BodySlide_Output" / "CBBE"
+    salida.mkdir(parents=True)
 
     with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):
         await runner.run_batch("CBBE Body", str(salida), build_morphs=False)
 
     argv = run_capture.await_args.args[0]
-    assert argv[1:] == ["-gbuild", "CBBE Body", "-t", str(salida)]
+    assert argv[1:] == ["-gbuild", "CBBE Body", "-t", str(salida), "-q"]
+
+
+async def test_bodyslide_rechaza_preset_sin_verificacion(tmp_path: pathlib.Path) -> None:
+    """``-p`` CON preset sin ``preset_verified=True`` se RECHAZA y no se spawnea.
+
+    Upstream cae silencioso a valores default cuando el preset no existe
+    (``GetBigPresetValue``, ``SliderManager.cpp``) — una corrida con el preset
+    equivocado sale como "éxito". El contrato PR 1 nunca emite ``-p`` sin
+    verificación: el caller debe declararla (plan/rig) o omitir el preset.
+    """
+    exe = tmp_path / "BodySlide" / "BodySlide.exe"
+    exe.parent.mkdir(parents=True)
+    (exe.parent / "Config.xml").write_text(
+        "<Config>\n  <TargetGame>4</TargetGame>\n</Config>\n",
+        encoding="utf-8",
+    )
+    runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=tmp_path, quiet_verified=True))
+    run_capture = AsyncMock(return_value=(b"ok", b"", 0))
+    # El target debe estar confinado al staging administrado (P0-C).
+    salida = tmp_path / "BodySlide_Output" / "CBBE"
+    salida.mkdir(parents=True)
+
+    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):
+        result = await runner.run_batch("CBBE Body", str(salida), preset="Zeroed Sliders")
+
+    assert run_capture.await_count == 0, "un preset sin verificación no debe spawnear"
+    assert result.success is False
+    assert result.estado == "ARGS_INVALID"
+
+
+async def test_bodyslide_rechaza_spawn_sin_quiet_verificado(tmp_path: pathlib.Path) -> None:
+    """Sin ``quiet_verified=True`` el build autónomo NO se lanza.
+
+    ``-q`` quita el diálogo, no la capacidad: el rig (PR 2) debe certificar ese
+    flag contra el binario verificado ANTES de que el agent path lo use.
+    """
+    exe = tmp_path / "BodySlide" / "BodySlide.exe"
+    exe.parent.mkdir(parents=True)
+    (exe.parent / "Config.xml").write_text(
+        "<Config>\n  <TargetGame>4</TargetGame>\n</Config>\n",
+        encoding="utf-8",
+    )
+    runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=tmp_path))
+    run_capture = AsyncMock(return_value=(b"ok", b"", 0))
+    # El target debe estar confinado al staging administrado (P0-C).
+    salida = tmp_path / "BodySlide_Output" / "CBBE"
+    salida.mkdir(parents=True)
+
+    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):
+        result = await runner.run_batch("CBBE Body", str(salida))
+
+    assert run_capture.await_count == 0, "sin -q verificado no se spawnea"
+    assert result.success is False
+    assert result.estado == "CAPABILITY_UNKNOWN"
 
 
 async def test_dyndolod_construye_el_vector_verificado(tmp_path: pathlib.Path) -> None:

@@ -56,10 +56,22 @@ def _hanging_proc() -> AsyncMock:
 
 
 def _bodyslide(tmp_path, timeout: float) -> tuple[BodySlideRunner, tuple]:
+    # El factory necesita un Config.xml con TargetGame válido y quiet_verified=True
+    # para que el runner pase el gate de capacidad y la siembra (P0-1, P1-5) —
+    # sin eso el runner aborta con CAPABILITY_UNKNOWN antes del spawn y el
+    # timeout/cancel never happen (el kill de este test no tendría nada que
+    # matar).
+    (tmp_path / "Config.xml").write_text("<Config>\n  <TargetGame>4</TargetGame>\n</Config>\n", encoding="utf-8")
     runner = BodySlideRunner(
-        BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=tmp_path, timeout_seconds=timeout)
+        BodySlideConfig(
+            bodyslide_exe=tmp_path / "BodySlide.exe",
+            game_path=tmp_path,
+            timeout_seconds=timeout,
+            quiet_verified=True,
+        )
     )
-    return runner, ("Build", str(tmp_path / "out"))
+    # El target debe estar confinado al staging administrado (P0-C).
+    return runner, ("Build", str(tmp_path / "BodySlide_Output" / "CBBE"))
 
 
 def _pandora(tmp_path, timeout: float) -> tuple[PandoraRunner, tuple]:
