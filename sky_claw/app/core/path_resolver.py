@@ -1315,6 +1315,23 @@ class PathResolutionService:
         """Resuelve TEXGEN_EXE desde entorno validado."""
         return self.validate_env_path(os.environ.get("TEXGEN_EXE", ""), "TEXGEN_EXE")
 
+    def get_dyndolod_exe_raw(self) -> pathlib.Path | None:
+        """DYNDLOD_EXE tal como está configurado, SIN validar (#997).
+
+        Solo para DIAGNÓSTICO de solo lectura: el checklist de la etapa 9 distingue «no está configurado» de «está
+        configurado pero el sandbox lo rechazó», que ``get_dyndolod_exe`` colapsa en ``None``. Nunca para ejecutar.
+        """
+        return self._raw_env_path("DYNDLOD_EXE")
+
+    def get_texgen_exe_raw(self) -> pathlib.Path | None:
+        """TEXGEN_EXE tal como está configurado, SIN validar (#997). Hermano de :meth:`get_dyndolod_exe_raw`."""
+        return self._raw_env_path("TEXGEN_EXE")
+
+    def raices_del_sandbox(self) -> tuple[pathlib.Path, ...]:
+        """Las carpetas que el ``PathValidator`` admite, para decirle al operador dónde poner sus herramientas (#997)."""
+        raices = getattr(self._path_validator, "roots", ())
+        return tuple(raiz for raiz in raices if isinstance(raiz, pathlib.Path))
+
     def get_dyndolod_ini_dir(self) -> pathlib.Path | None:
         """Carpeta de INIs del juego declarada EXPLÍCITAMENTE (``DYNDLOD_INI_DIR``).
 

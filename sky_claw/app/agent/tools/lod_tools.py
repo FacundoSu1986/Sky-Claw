@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sky_claw.app.agent.tools.job_ids import nuevo_id_de_trabajo
+from sky_claw.local.tools.dyndolod_guia import FaseEnCurso, checklist_temprano
 from sky_claw.local.tools.dyndolod_progreso import progreso_en_hechos
 from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
@@ -110,6 +111,11 @@ class TrabajoDeLods:
                     "rolled_back",
                     "needs_deployment",
                     "handoff_action",
+                    # #997: el criollo y la lista que ve el operador; ``preflight`` se perdía igual que se perdería
+                    # la guía si no viajara acá.
+                    "guia",
+                    "checklist",
+                    "preflight",
                 )
                 if clave in self.resultado
             }
@@ -134,7 +140,12 @@ def resumen_para_el_operador(trabajo: TrabajoDeLods) -> str:
     accion = ""
     if resultado.get("needs_deployment"):
         accion = f" Acción pendiente: {resultado.get('handoff_action') or 'despliegue del TexGen Output'}."
-    return f"❌ Etapa 9 ({modo}) falló tras {duracion} min: {prefijo}{detalle[:900]}{accion}"
+    # #997: el operador lee primero qué pasó y qué hacer, en criollo; el técnico queda después, como detalle.
+    explicada = resultado.get("guia")
+    criollo = ""
+    if isinstance(explicada, dict) and explicada.get("titulo"):
+        criollo = f"{explicada['titulo']} {explicada.get('arreglo') or ''}".strip() + " — detalle: "
+    return f"❌ Etapa 9 ({modo}) falló tras {duracion} min: {criollo}{prefijo}{detalle[:900]}{accion}"
 
 
 def _resultado_por_backend_no_listo(motivo: str, trabajo: TrabajoDeLods) -> dict[str, Any]:
@@ -208,6 +219,18 @@ class GestorDeTrabajosDeLods:
             servicio = self._proveedor()
             if servicio is None:
                 return {"success": False, "message": MOTIVO_SIN_SERVICIO}
+            # #997: el MISMO checklist que ve la GUI, antes de preguntar por las etapas previas y de ocupar el lugar
+            # del trabajo: con un ❌ la corrida va a cortar igual en el servicio. Un ⚠️ no frena y se cuenta abajo.
+            checklist = await checklist_temprano(servicio, run_texgen=run_texgen)
+            if checklist is not None and not checklist.listo:
+                mensaje = checklist.mensaje_tecnico()
+                logger.warning("la etapa 9 remota no se lanza: %s", mensaje)
+                return {
+                    "success": False,
+                    "message": mensaje,
+                    "checklist": checklist.to_dict(),
+                    "guia": checklist.guia(),
+                }
             faltantes = await self._etapas_faltantes(servicio)
             if faltantes and self._aprobar_sin_etapas_previas is None:
                 return {
@@ -249,6 +272,8 @@ class GestorDeTrabajosDeLods:
                 "Faltan etapas previas: primero te llega por este canal la pregunta de si seguir igual; "
                 "sin tu aprobación la etapa 9 no arranca. " + instruccion
             )
+        if checklist is not None and checklist.avisos():
+            respuesta["avisos"] = [f"{aviso.titulo} {aviso.arreglo}" for aviso in checklist.avisos()]
         return respuesta
 
     async def _etapas_faltantes(self, servicio: Any) -> tuple[str, ...]:
@@ -352,6 +377,10 @@ class GestorDeTrabajosDeLods:
                 progreso = self._progreso_del_servicio()
                 if progreso is not None:
                     respuesta["progreso"] = progreso
+                # #997: qué espera Sky-Claw ahora (el MISMO texto que la GUI), con el mismo criterio de atribución.
+                fase = self._fase_del_servicio()
+                if fase is not None:
+                    respuesta["fase"] = fase
         # Aditivo: sin cuarentena el contrato no cambia. Best-effort: una consulta rota nunca tumba ``lods_status``.
         # Va FUERA de la rama del trabajo: una instancia en cuarentena se informa también cuando no hay ningún trabajo.
         cuarentena = self._cuarentena_del_vfs()
@@ -375,6 +404,18 @@ class GestorDeTrabajosDeLods:
             return progreso_en_hechos(muestra, ahora=time.time())
         except Exception:  # noqa: BLE001 -- la consulta de estado nunca se rompe por el progreso
             logger.warning("no se pudo leer el progreso de la etapa 9 para lods_status", exc_info=True)
+            return None
+
+    def _fase_del_servicio(self) -> dict[str, Any] | None:
+        """La fase vigente del asistido en HECHOS (#997); ``None`` si no hay o no se puede leer. Best-effort."""
+        try:
+            servicio = self._proveedor()
+            fase = None if servicio is None else getattr(servicio, "fase_actual", None)
+            if not isinstance(fase, FaseEnCurso):
+                return None
+            return fase.hechos(ahora=time.time())
+        except Exception:  # noqa: BLE001 -- la consulta de estado nunca se rompe por la fase
+            logger.warning("no se pudo leer la fase de la etapa 9 para lods_status", exc_info=True)
             return None
 
     def _cuarentena_del_vfs(self) -> dict[str, Any] | None:

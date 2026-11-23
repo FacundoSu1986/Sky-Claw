@@ -14,9 +14,17 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from sky_claw.local.tools.dyndolod_guia import FaseEnCurso, checklist_temprano
 from sky_claw.local.tools.dyndolod_progreso import progreso_en_hechos
 
 logger = logging.getLogger(__name__)
+
+#: #997: el checklist de la etapa 9 tal como lo devolvió el servicio (``ChecklistDeEtapa9.to_dict()``), o un
+#: ``{"error": …}`` si no se pudo revisar. Lo escribe SOLO :func:`revisar_checklist` (ancla en
+#: ``tests/test_gui_guia_etapa9.py``): la vista lo lee, nunca decide.
+STORE_KEY_CHECKLIST_ETAPA9 = "checklist_etapa9"
+
+_NO_SE_PUDO_REVISAR = "No pude revisar la lista. Probá «Revisar de nuevo»."
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +33,8 @@ class EstadoDeLaEtapa9:
 
     progreso: dict[str, Any] | None
     cuarentena: dict[str, Any] | None
+    #: #997: qué espera Sky-Claw ahora en el asistido (``FaseEnCurso.hechos``), el MISMO texto que ``lods_status``.
+    fase: dict[str, Any] | None = None
 
 
 def leer_estado_de_la_etapa9(
@@ -40,7 +50,48 @@ def leer_estado_de_la_etapa9(
     el agente (Telegram, ``/api/chat``). Por eso NO se condiciona al single-flight de la GUI, que no ve lo remoto; la edad
     de la muestra queda a la vista. La cuarentena se informa SIEMPRE, también sin corrida: es de la instancia.
     """
-    return EstadoDeLaEtapa9(progreso=_progreso(supervisor, ahora), cuarentena=_cuarentena(consultar_cuarentena))
+    return EstadoDeLaEtapa9(
+        progreso=_progreso(supervisor, ahora),
+        cuarentena=_cuarentena(consultar_cuarentena),
+        fase=_fase(supervisor, ahora),
+    )
+
+
+def _fase(supervisor: object | None, ahora: float) -> dict[str, Any] | None:
+    """La fase vigente del servicio en HECHOS (#997). Mismo criterio que el progreso: es del ciclo de la corrida."""
+    try:
+        servicio = None if supervisor is None else getattr(supervisor, "dyndolod_service", None)
+        fase = None if servicio is None else getattr(servicio, "fase_actual", None)
+        return fase.hechos(ahora=ahora) if isinstance(fase, FaseEnCurso) else None
+    except Exception:
+        logger.warning("no se pudo leer la fase de la etapa 9 para la GUI", exc_info=True)
+        return None
+
+
+#: Generación de la última revisión que EMPEZÓ: con dos solapadas, la vieja que termina tarde no pisa a la nueva.
+_generacion_de_la_revision = 0
+
+
+async def revisar_checklist(*, supervisor: object | None, store: Any, run_texgen: bool = True) -> None:
+    """Pide el checklist al servicio (en un hilo, dentro del servicio) y lo deja en el store para la tarjeta (#997).
+
+    Best-effort: sin supervisor (el daemon todavía arranca) queda ``None`` —«todavía no revisé»—, y una falla deja
+    un aviso para reintentar. Nunca decide nada: la autoridad del checklist sigue siendo el servicio al ejecutar.
+    """
+    global _generacion_de_la_revision
+    _generacion_de_la_revision += 1
+    generacion = _generacion_de_la_revision
+    servicio = None if supervisor is None else getattr(supervisor, "dyndolod_service", None)
+    if servicio is None:
+        store.set(STORE_KEY_CHECKLIST_ETAPA9, None)
+        return
+    checklist = await checklist_temprano(servicio, run_texgen=run_texgen)
+    if generacion != _generacion_de_la_revision:
+        return  # empezó una revisión más nueva: su resultado es el que vale (review CodeRabbit en #1007)
+    store.set(
+        STORE_KEY_CHECKLIST_ETAPA9,
+        checklist.to_dict() if checklist is not None else {"error": _NO_SE_PUDO_REVISAR},
+    )
 
 
 def _progreso(supervisor: object | None, ahora: float) -> dict[str, Any] | None:
