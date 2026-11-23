@@ -17,7 +17,12 @@ Disciplinas del repo que este runner respeta:
 - **Agnóstico de HITL/bus** (gate único en ``HitlGateMiddleware``, PR #173;
   capa agente lock-only #217): stall/disco/timeout cortan y devuelven un
   resultado estructurado (``outcome``) para que la capa strategy (PR-5) decida.
-  El cache parcial SIEMPRE se conserva (el precache reanuda donde quedó).
+- **El caché previo no se destruye sin decisión** (P0 SAFE CACHE, F-01): NGIO
+  borra ``.cgid``/``.dgid``/``.fail`` cuando el flag no tiene progreso, así que
+  escribir el flag es el punto sin retorno. Lo decide
+  ``grass_cache_safety.preparar_arranque`` —``new`` exige caché vacío,
+  ``resume`` nunca trunca, ``rebuild`` exige aprobación + respaldo verificado—
+  y al salir el flag se archiva antes de neutralizarlo.
 - **Progreso por callback inyectado** (patrón ``router.progress_callback``):
   jamás publica al CoreEventBus; un observador roto no mata un run de 12 h.
 - **Anti-huérfanos**: todo camino de salida pasa por ``close_game()`` (árbol de
@@ -43,6 +48,16 @@ import psutil  # import de módulo completo: los tests reemplazan el objeto ente
 
 from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.local.mo2.vfs import GameLaunchTimeoutError, MO2Controller
+from sky_claw.local.tools.grass_cache_safety import (
+    MODOS_GRASS_CACHE,
+    PRECACHE_FLAG,
+    GrassCacheMode,
+    PlanArranque,
+    aplicar_plan,
+    neutralizar_flag,
+    preparar_arranque,
+    ruta_de_respaldo,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -53,7 +68,10 @@ logger = logging.getLogger(__name__)
 
 _GIB = 1024**3
 #: Flag que NGIO consume junto a SkyrimSE.exe; su borrado señala el fin.
-_PRECACHE_FLAG = "PrecacheGrass.txt"
+#: La constante vive en ``grass_cache_safety`` (inventario, plan y runner tienen
+#: que hablar del MISMO archivo); se re-exporta porque el servicio la importa
+#: de acá desde PR-5.
+_PRECACHE_FLAG = PRECACHE_FLAG
 #: Margen (s) restado al wall-clock del lanzamiento para el filtro por
 #: create_time (granularidad del reloj en Windows).
 _CREATE_TIME_EPSILON = 1.0
@@ -108,6 +126,16 @@ class GrassCacheConfig:
         heartbeat_interval_s: Cadencia del callback de progreso.
         min_free_bytes: Umbral de disco libre; por debajo se corta (disk_full).
         game_exe_names: Nombres de proceso del juego a localizar.
+        mode: Contrato de arranque (P0 SAFE CACHE) — ``new`` exige caché
+            vacío y sin progreso; ``resume`` exige progreso demostrable y no
+            trunca el flag; ``rebuild`` exige aprobación y respaldo verificado.
+            NGIO borra ``*.cgid``/``*.dgid``/``*.fail`` cuando el flag no tiene
+            progreso, así que el default es el modo que NO destruye.
+        rebuild_approval: Token literal de aprobación (``REBUILD``) para el
+            modo destructivo. Se exige explícito en el payload HITL.
+        backup_root: Raíz durable donde viven el respaldo verificado y la
+            evidencia de progreso archivada (``<state>/grass_cache``). Sin ella
+            no hay ``rebuild`` con caché preexistente ni ``resume`` archivado.
     """
 
     game_path: pathlib.Path
@@ -123,6 +151,9 @@ class GrassCacheConfig:
     heartbeat_interval_s: float = 60.0
     min_free_bytes: int = _GIB
     game_exe_names: tuple[str, ...] = ("SkyrimSE.exe",)
+    mode: GrassCacheMode = "new"
+    rebuild_approval: str | None = None
+    backup_root: pathlib.Path | None = None
 
     def __post_init__(self) -> None:
         if not self.game_path.is_dir():
@@ -133,6 +164,8 @@ class GrassCacheConfig:
                 "(el probe de disco necesita un ancestro real)."
             )
         assert_safe_component(self.profile, field="profile")
+        if self.mode not in MODOS_GRASS_CACHE:
+            raise ValueError(f"mode debe ser uno de {MODOS_GRASS_CACHE}, no {self.mode!r}")
         if self.max_restarts < 1:
             raise ValueError(f"max_restarts debe ser >= 1, no {self.max_restarts}")
         if self.stall_threshold < 1:
@@ -180,6 +213,10 @@ class GrassCacheRunResult:
     elapsed_s: float
     cancelled: bool = False
     stalled: bool = False
+    #: Modo con el que arrancó el ritual (contrato P0 SAFE CACHE).
+    mode: GrassCacheMode = "new"
+    #: Respaldo verificado del intento (cadena vacía si no hubo rebuild con caché).
+    backup_dir: str = ""
 
 
 class GrassCacheRunner:
@@ -212,6 +249,10 @@ class GrassCacheRunner:
         flag = config.game_path / _PRECACHE_FLAG
         self._flag_path = path_validator.validate(flag, strict_symlink=False) if path_validator else flag
         self._start_mono = 0.0
+        #: Plan de arranque aplicado (None si el run no llegó al preflight).
+        self._plan: PlanArranque | None = None
+        #: Respaldo verificado de este run ("" si no hubo rebuild con caché).
+        self._backup_dir = ""
 
     # ------------------------------------------------------------------
     # API pública
@@ -223,6 +264,8 @@ class GrassCacheRunner:
         Raises:
             FileNotFoundError: ``ModOrganizer.exe`` ausente (misconfiguración —
                 propaga desde ``launch_game``; la capa servicio la reporta).
+            GrassCacheSafetyError: El arranque no cumple las precondiciones de
+                su modo (F-01). Se levanta ANTES de tocar el flag o lanzar nada.
         """
         cancel = cancel_event if cancel_event is not None else asyncio.Event()
         self._start_mono = time.monotonic()
@@ -230,6 +273,10 @@ class GrassCacheRunner:
         stall_streak = 0
         game_ever_seen = False
         game_pid: _GamePid | None = None
+        # Un flag que NO escribimos nosotros no es nuestro para borrarlo: si el
+        # guard de abajo se niega, el ``finally`` no puede destruir el progreso
+        # de un precache ajeno (sería cambiar un borrado de caché por otro).
+        flag_apropiado = False
 
         # -- Pre-vuelo: sin side effects hasta pasar estos guards --
         if cancel.is_set():
@@ -243,10 +290,26 @@ class GrassCacheRunner:
             )
 
         try:
+            # P0 SAFE CACHE (F-01): NGIO borra .cgid/.dgid/.fail cuando el flag
+            # no tiene progreso, así que escribir el flag es el punto sin
+            # retorno. El plan lo decide grass_cache_safety (misma función que
+            # usa el servicio): NEW exige caché vacío, RESUME nunca trunca,
+            # REBUILD exige aprobación + respaldo VERIFICADO.
+            plan = await asyncio.to_thread(
+                preparar_arranque,
+                modo=self._config.mode,
+                game_path=self._config.game_path,
+                grass_dir=self._config.overwrite_grass_dir,
+                aprobacion=self._config.rebuild_approval,
+                raiz_estado=self._config.backup_root,
+            )
+            self._plan = plan
+            self._backup_dir = ruta_de_respaldo(plan)
             # El try cubre DESDE la escritura del flag: una cancelación dura
             # durante el snapshot inicial o el primer progress (que propaga
             # CancelledError) también debe limpiar el flag en el finally.
-            await asyncio.to_thread(self._flag_path.write_text, "", encoding="utf-8")
+            await asyncio.to_thread(aplicar_plan, plan, self._flag_path)
+            flag_apropiado = True
             # Baseline del stall detector: el estado del cache ANTES del primer
             # lanzamiento — un primer ciclo sin .cgid nuevos ya cuenta como racha.
             last_snapshot = await self._snapshot_cache()
@@ -395,7 +458,10 @@ class GrassCacheRunner:
             # Síncrono deliberado: un await acá, durante una CancelledError,
             # puede re-cancelarse ANTES del unlink y dejar el flag residual
             # (que pondría el juego del usuario en modo precache al abrirlo).
-            self._remove_flag_sync()
+            # Antes de borrarlo se archiva el progreso: neutralizar el flag no
+            # puede costar la reanudación (P0, evidencia de F-01).
+            if flag_apropiado:
+                self._neutralizar_flag_sync()
 
     # ------------------------------------------------------------------
     # Fases internas
@@ -694,10 +760,19 @@ class GrassCacheRunner:
         except Exception:  # noqa: BLE001 — cualquier fallo del observador se aísla
             logger.warning("El callback on_progress falló; el ritual continúa.", exc_info=True)
 
-    def _remove_flag_sync(self) -> None:
-        """Borra el flag (missing_ok: en éxito NGIO ya lo borró)."""
-        with contextlib.suppress(OSError):
-            self._flag_path.unlink(missing_ok=True)
+    def _neutralizar_flag_sync(self) -> None:
+        """Archiva el progreso y borra el flag (missing_ok: en éxito NGIO ya lo borró).
+
+        El borrado es obligatorio —un flag residual haría que el juego del
+        usuario arranque en modo precache—, pero el contenido se archiva antes,
+        atado a la huella del caché de este momento: es lo que un ``resume``
+        posterior restaura. Best-effort: nunca enmascara la excepción original.
+        """
+        neutralizar_flag(
+            flag_path=self._flag_path,
+            grass_dir=self._config.overwrite_grass_dir,
+            raiz_estado=self._config.backup_root,
+        )
 
     def _resultado(
         self,
@@ -718,6 +793,8 @@ class GrassCacheRunner:
             elapsed_s=time.monotonic() - self._start_mono,
             cancelled=outcome == "cancelled",
             stalled=outcome == "stalled",
+            mode=self._config.mode,
+            backup_dir=self._backup_dir,
         )
 
 

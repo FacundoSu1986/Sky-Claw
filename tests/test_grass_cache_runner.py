@@ -39,6 +39,11 @@ from sky_claw.local.tools.grass_cache_runner import (
     GrassCacheRunner,
     GrassCacheRunResult,
 )
+from sky_claw.local.tools.grass_cache_safety import (
+    GrassCacheSafetyError,
+    archivar_progreso,
+    inventariar_cache,
+)
 from tests.polling_utils import poll_until
 
 _USO_DISCO = namedtuple("_USO_DISCO", "total used free")  # shape de shutil.disk_usage
@@ -207,6 +212,25 @@ def config(entorno: tuple[pathlib.Path, pathlib.Path]) -> GrassCacheConfig:
         poll_interval_s=0.01,
         spawn_poll_interval_s=0.01,
         heartbeat_interval_s=60.0,
+    )
+
+
+@pytest.fixture
+def config_rebuild(config: GrassCacheConfig) -> GrassCacheConfig:
+    """Config que declara REBUILD sobre un caché preexistente, con respaldo.
+
+    Desde P0 SAFE CACHE (F-01) el default ``new`` **se niega** a arrancar con
+    ``.cgid`` preexistentes: NGIO los borraría al ver el flag sin progreso. Los
+    tests que necesitan un caché de partida (baseline del detector de stall,
+    "el parcial se conserva") declaran la decisión explícita en vez de heredar
+    un default que destruiría datos en producción.
+    """
+    raiz_estado = config.overwrite_grass_dir.parent / "estado_grass"
+    return dataclasses.replace(
+        config,
+        mode="rebuild",
+        rebuild_approval="REBUILD",
+        backup_root=raiz_estado,
     )
 
 
@@ -605,8 +629,9 @@ async def test_tres_crashes_consecutivos_terminan_en_exito(
 
 
 async def test_flag_borrado_justo_antes_del_crash_no_relanza(
-    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+    config_rebuild: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
 ) -> None:
+    config = config_rebuild
     # NGIO borra el flag y el juego muere en la MISMA iteración: el re-check
     # post-crash evita un relanzamiento espurio (juego en modo normal eterno).
     _escribir_cgid(config.overwrite_grass_dir, "Tamriel.cgid")
@@ -631,8 +656,9 @@ async def test_flag_borrado_justo_antes_del_crash_no_relanza(
 
 
 async def test_flag_borrado_en_el_ciclo_del_stall_gana_el_exito(
-    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+    config_rebuild: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
 ) -> None:
+    config = config_rebuild
     # Auditoría adversarial #287: con la racha de stall en el umbral, si NGIO
     # borró el flag en el MISMO ciclo (resume casi completo que muere sin
     # escribir nada), el resultado es completed — jamás stalled.
@@ -889,8 +915,9 @@ async def test_timeout_global_cierra_el_juego_y_no_deja_flag(config: GrassCacheC
 
 
 async def test_cancelacion_cierra_el_juego_y_conserva_el_cache_parcial(
-    config: GrassCacheConfig, mo2: AsyncMock
+    config_rebuild: GrassCacheConfig, mo2: AsyncMock
 ) -> None:
+    config = config_rebuild
     _escribir_cgid(config.overwrite_grass_dir, "parcial.cgid")
     cancel = asyncio.Event()
     tarea = asyncio.create_task(_runner(config, mo2).run(cancel))
@@ -907,8 +934,9 @@ async def test_cancelacion_cierra_el_juego_y_conserva_el_cache_parcial(
 
 
 async def test_disco_lleno_durante_el_run_corta_con_disk_full(
-    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    config_rebuild: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    config = config_rebuild
     _escribir_cgid(config.overwrite_grass_dir, "parcial.cgid")
     lecturas = itertools.count()
 
@@ -1010,3 +1038,154 @@ async def test_excepcion_inesperada_cierra_el_juego_y_limpia_el_flag(
 
     mo2.close_game.assert_awaited()
     assert not (config.game_path / "PrecacheGrass.txt").exists(), "el finally limpia el flag ante bugs"
+
+
+# ---------------------------------------------------------------------------
+# P0 SAFE CACHE (F-01) — el arranque jamás destruye el caché sin decisión
+# ---------------------------------------------------------------------------
+#
+# NGIO-NG (1.0.13, ``GidFileCache.cpp::Init``) BORRA ``*.cgid``/``*.dgid``/
+# ``*.fail`` de ``Data/Grass`` cuando ``PrecacheGrass.txt`` no tiene progreso.
+# El runner escribía el flag vacío SIEMPRE, así que cualquier corrida —incluso
+# una que solo quería reanudar— borraba horas de precache. Estos tests fijan el
+# contrato NEW/RESUME/REBUILD del lado del runner.
+
+
+async def test_cache_existente_sin_decision_no_inicia(config: GrassCacheConfig, mo2: AsyncMock) -> None:
+    # Caché previo + modo NEW (default): NGIO lo borraría al ver el flag vacío.
+    # El runner debe negarse ANTES de lanzar y sin tocar un solo byte.
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        await _correr(_runner(config, mo2))
+
+    assert excinfo.value.codigo == "cache_existente_sin_decision"
+    mo2.launch_game.assert_not_awaited()
+    assert (config.overwrite_grass_dir / "previo.cgid").read_bytes() == b"prec"
+    assert not (config.game_path / "PrecacheGrass.txt").exists()
+
+
+async def test_flag_con_progreso_no_se_trunca(config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos) -> None:
+    # Un flag con progreso es la ÚNICA evidencia de reanudación que NGIO tiene:
+    # truncarlo es lo que dispara el borrado del caché. Sin decisión, no se toca.
+    flag = config.game_path / "PrecacheGrass.txt"
+    progreso = "Tamriel\n-2,4\n"
+    flag.write_text(progreso, encoding="utf-8")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        await _correr(_runner(config, mo2))
+
+    assert excinfo.value.codigo == "flag_con_progreso_sin_decision"
+    mo2.launch_game.assert_not_awaited()
+    assert flag.read_text(encoding="utf-8") == progreso, "el progreso no se trunca"
+
+
+async def test_rebuild_exige_aprobacion_explicita(config: GrassCacheConfig, mo2: AsyncMock) -> None:
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
+    cfg = dataclasses.replace(config, mode="rebuild")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        await _correr(_runner(cfg, mo2))
+
+    assert excinfo.value.codigo == "rebuild_sin_aprobacion"
+    mo2.launch_game.assert_not_awaited()
+    assert (config.overwrite_grass_dir / "previo.cgid").exists()
+
+
+async def test_rebuild_sin_raiz_de_respaldo_no_destruye(config: GrassCacheConfig, mo2: AsyncMock) -> None:
+    # Aprobación sin lugar donde respaldar = no hay respaldo verificable, y sin
+    # respaldo no se habilita una operación destructiva.
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
+    cfg = dataclasses.replace(config, mode="rebuild", rebuild_approval="REBUILD")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        await _correr(_runner(cfg, mo2))
+
+    assert excinfo.value.codigo == "rebuild_sin_respaldo"
+    mo2.launch_game.assert_not_awaited()
+    assert (config.overwrite_grass_dir / "previo.cgid").exists()
+
+
+async def test_rebuild_con_aprobacion_y_respaldo_respalda_y_arranca(
+    config: GrassCacheConfig,
+    mo2: AsyncMock,
+    mundo: _MundoProcesos,
+    tmp_path: pathlib.Path,
+) -> None:
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
+    estado = tmp_path / "estado"
+    cfg = dataclasses.replace(
+        config,
+        mode="rebuild",
+        rebuild_approval="REBUILD",
+        backup_root=estado,
+        max_runtime_s=0.3,
+    )
+
+    resultado = await _correr(_runner(cfg, mo2))
+
+    assert resultado.outcome == "timeout"
+    assert resultado.backup_dir, "el resultado expone dónde quedó el respaldo"
+    respaldo = pathlib.Path(resultado.backup_dir)
+    assert (respaldo / "previo.cgid").read_bytes() == b"prec"
+
+
+async def test_resume_con_flag_con_progreso_lo_conserva(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, tmp_path: pathlib.Path
+) -> None:
+    # RESUME no reescribe el flag: NGIO reanuda desde ese progreso. Al salir se
+    # neutraliza (seguridad del juego del usuario) pero queda archivado.
+    progreso = "Tamriel\n-2,4\n"
+    flag = config.game_path / "PrecacheGrass.txt"
+    flag.write_text(progreso, encoding="utf-8")
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
+    cfg = dataclasses.replace(config, mode="resume", backup_root=tmp_path / "estado", max_runtime_s=0.3)
+
+    resultado = await _correr(_runner(cfg, mo2))
+
+    assert resultado.outcome == "timeout"
+    assert resultado.mode == "resume"
+    assert not flag.exists(), "el flag se neutraliza al salir (el juego no debe arrancar en precache)"
+    assert (config.overwrite_grass_dir / "previo.cgid").read_bytes() == b"prec"
+    archivados = list((tmp_path / "estado" / "progreso").glob("*.json"))
+    assert archivados, "el progreso se archiva como evidencia de reanudación"
+
+
+async def test_resume_sin_evidencia_no_inicia(config: GrassCacheConfig, mo2: AsyncMock) -> None:
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
+    cfg = dataclasses.replace(config, mode="resume")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        await _correr(_runner(cfg, mo2))
+
+    assert excinfo.value.codigo == "resume_sin_progreso"
+    mo2.launch_game.assert_not_awaited()
+
+
+async def test_resume_restaura_el_progreso_archivado(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, tmp_path: pathlib.Path
+) -> None:
+    # Muerte dura previa: el run dejó el progreso archivado con la MISMA huella
+    # del caché. RESUME lo restaura antes de lanzar, en vez de empezar de cero.
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
+    estado = tmp_path / "estado"
+    progreso = "Tamriel\n-2,4\n"
+    inventario = inventariar_cache(
+        grass_dir=config.overwrite_grass_dir, flag_path=config.game_path / "PrecacheGrass.txt"
+    )
+    archivar_progreso(estado, inventario, progreso)
+    flag = config.game_path / "PrecacheGrass.txt"
+    visto: list[str] = []
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        visto.append(flag.read_text(encoding="utf-8"))
+        mundo.alta_juego(100, 1100)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    cfg = dataclasses.replace(config, mode="resume", backup_root=estado, max_runtime_s=0.3)
+
+    resultado = await _correr(_runner(cfg, mo2))
+
+    assert resultado.outcome == "timeout"
+    assert visto and visto[0] == progreso, "NGIO debe ver el progreso restaurado, no un flag vacío"

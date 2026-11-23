@@ -43,7 +43,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sky_claw.app.db.journal import OperationStatus, OperationType, TransactionStatus
 from sky_claw.app.db.journal_contracts import TEARDOWN_INCOMPLETE_KIND, is_flight_report_committed
@@ -54,12 +54,18 @@ from sky_claw.app.db.locks import (
     adquirir_lease_definitiva,
     liberar_lease_definitiva,
 )
+from sky_claw.config import SystemPaths
 from sky_claw.local.tools.grass_cache_runner import (
     _PRECACHE_FLAG,  # fuente de verdad del nombre del flag (evita duplicar el string mágico)
     GrassCacheConfig,
     GrassCacheProgress,
     GrassCacheRunner,
     GrassCacheRunResult,
+)
+from sky_claw.local.tools.grass_cache_safety import (
+    APROBACION_REBUILD,
+    GrassCacheMode,
+    preparar_arranque,
 )
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.xedit.grass_analyzer import GrassAnalyzer
@@ -210,6 +216,13 @@ class GenerateGrassCacheParams(BaseModel):
             los presupuestos del runner.
         force_stage_guard: Saltea el guard Stage 5→8 (visible en el prompt
             HITL — un bypass jamás es silencioso).
+        mode: Contrato de arranque (P0 SAFE CACHE). ``new`` (default) sólo
+            arranca con el caché vacío; ``resume`` continúa desde un progreso
+            demostrable sin truncarlo; ``rebuild`` regenera desde cero y exige
+            ``rebuild_approval``. NGIO borra el caché cuando el flag no tiene
+            progreso, así que el default es el que no destruye nada.
+        rebuild_approval: Token literal (``REBUILD``) que autoriza el modo
+            destructivo. Viaja al prompt HITL en ``describe_for_approval``.
     """
 
     model_config = ConfigDict(strict=True)
@@ -220,6 +233,23 @@ class GenerateGrassCacheParams(BaseModel):
     max_restarts: int | None = None
     stall_threshold: int | None = None
     force_stage_guard: bool = False
+    mode: GrassCacheMode = "new"
+    rebuild_approval: str | None = None
+
+    @model_validator(mode="after")
+    def _rebuild_exige_aprobacion(self) -> GenerateGrassCacheParams:
+        """REBUILD sin el token no llega ni al HITL: se rechaza en el payload.
+
+        La verificación de fondo (respaldo verificado) es del runner, que es el
+        punto sin retorno; esto sólo evita pedirle al operador que apruebe algo
+        que de todos modos va a ser rechazado.
+        """
+        if self.mode == "rebuild" and self.rebuild_approval != APROBACION_REBUILD:
+            raise ValueError(
+                f"mode='rebuild' exige rebuild_approval='{APROBACION_REBUILD}': regenera el caché desde cero "
+                "y NGIO borra el anterior."
+            )
+        return self
 
 
 class GrassCacheService:
@@ -399,6 +429,20 @@ class GrassCacheService:
         teardown_failures: list[str] = []
         try:
             async with tx, lo_tx:
+                # P0 SAFE CACHE (F-01): el guard de arranque corre ANTES de
+                # clonar el perfil. Es la MISMA función que usa el runner
+                # (``preparar_arranque``), así no hay dos políticas que puedan
+                # divergir: acá se evita el trabajo inútil de un run que el
+                # runner va a rechazar, y el runner vuelve a verificar sobre el
+                # inventario fresco (el punto sin retorno es el flag).
+                await asyncio.to_thread(
+                    preparar_arranque,
+                    modo=config.mode,
+                    game_path=config.game_path,
+                    grass_dir=config.overwrite_grass_dir,
+                    aprobacion=config.rebuild_approval,
+                    raiz_estado=config.backup_root,
+                )
                 if self._journal is not None:
                     journal_tx = await self._journal.begin_transaction(
                         "Grass precache (NGIO, Stage 8)", agent_id=self.AGENT_ID
@@ -525,10 +569,24 @@ class GrassCacheService:
                 game_path=game_path,
                 overwrite_grass_dir=grass_dir,
                 profile=pm.clone_profile,
+                mode=params.mode,
+                rebuild_approval=params.rebuild_approval,
+                backup_root=self._raiz_de_estado(),
                 **overrides,
             )
         except ValueError as exc:
             raise GrassCacheServiceError(f"Configuración del runner inválida: {exc}") from exc
+
+    @staticmethod
+    def _raiz_de_estado() -> pathlib.Path:
+        """Raíz durable del estado del ritual: respaldo + progreso archivado.
+
+        En ``SystemPaths.runtime_state_dir()`` (per usuario, estable entre runs)
+        por el mismo motivo que el resto de las etapas: una raíz relativa al
+        ``cwd`` haría que el respaldo de un ``rebuild`` quedara en un lugar
+        distinto según desde dónde se lanzó el ritual.
+        """
+        return SystemPaths.runtime_state_dir() / "grass_cache"
 
     def _make_progress_publisher(self) -> Callable[[GrassCacheProgress], Any]:
         """Callback runner→bus (el runner es agnóstico del bus — D3)."""
@@ -671,6 +729,8 @@ class GrassCacheService:
             "elapsed_s": run_result.elapsed_s,
             "cancelled": run_result.cancelled,
             "stalled": run_result.stalled,
+            "mode": run_result.mode,
+            "backup_dir": run_result.backup_dir,
             "duration_seconds": duracion,
         }
 

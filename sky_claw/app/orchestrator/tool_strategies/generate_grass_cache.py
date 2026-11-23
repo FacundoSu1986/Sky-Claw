@@ -39,7 +39,11 @@ class GenerateGrassCacheStrategy:
         partes = [
             f"worldspaces={params.worldspaces!r}",
             f"conflicting_mods={params.conflicting_mods!r}",
+            f"mode={params.mode!r}",
         ]
+        if params.mode == "rebuild":
+            # Lo que el humano tiene que saber ANTES de aprobar: esto borra.
+            partes.append("REBUILD: regenera el caché desde cero (NGIO borra el anterior)")
         if params.max_runtime_s is not None:
             partes.append(f"max_runtime_s={params.max_runtime_s!r}")
         if params.max_restarts is not None:

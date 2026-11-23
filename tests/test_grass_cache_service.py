@@ -1003,3 +1003,108 @@ async def test_generate_captura_runtime_error_de_resolucion_de_raices() -> None:
     assert result["success"] is False
     assert "Error resolviendo dependencias de MO2 para grass cache" in result["message"]
     assert "mod_directory declarado pero no disponible en disco" in result["message"]
+
+
+# ---------------------------------------------------------------------------
+# P0 SAFE CACHE (F-01) — el servicio no clona un perfil para un run inseguro
+# ---------------------------------------------------------------------------
+
+
+async def test_payload_rebuild_sin_aprobacion_cumple_contrato(tmp_path: pathlib.Path) -> None:
+    # La aprobación se exige en el payload: no se le pide al operador que
+    # apruebe algo que el runner va a rechazar de todos modos.
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+
+    resultado = await service.generate({**_PAYLOAD, "mode": "rebuild"})
+
+    _assert_error_de_contrato(resultado, "rebuild")
+    colaboradores["runner"].run.assert_not_awaited()
+    colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
+
+
+async def test_modo_invalido_cumple_contrato(tmp_path: pathlib.Path) -> None:
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado())
+
+    resultado = await service.generate({**_PAYLOAD, "mode": "destruir-todo"})
+
+    _assert_error_de_contrato(resultado, "payload")
+
+
+async def test_generate_no_clona_perfil_con_cache_preexistente_sin_decision(tmp_path: pathlib.Path) -> None:
+    # El punto del guard: el rechazo ocurre ANTES de tocar el árbol MO2 (clonar
+    # un perfil y crear el mod de config para un run condenado era trabajo inútil).
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    grass = service._overwrite_grass_dir
+    assert grass is not None
+    grass.mkdir(parents=True)
+    (grass / "previo.cgid").write_bytes(b"prec")
+
+    resultado = await service.generate(dict(_PAYLOAD))
+
+    _assert_error_de_contrato(resultado, "caché")
+    colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
+    colaboradores["runner"].run.assert_not_awaited()
+    assert (grass / "previo.cgid").read_bytes() == b"prec", "el caché previo no se toca"
+
+
+async def test_generate_rechaza_no_truncar_flag_con_progreso(tmp_path: pathlib.Path) -> None:
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    flag = tmp_path / "game" / "PrecacheGrass.txt"
+    progreso = "Tamriel\n-2,4\n"
+    flag.write_text(progreso, encoding="utf-8")
+
+    resultado = await service.generate(dict(_PAYLOAD))
+
+    _assert_error_de_contrato(resultado, "progreso")
+    colaboradores["runner"].run.assert_not_awaited()
+    assert flag.read_text(encoding="utf-8") == progreso
+
+
+async def test_el_modo_y_la_raiz_de_estado_viajan_al_runner(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    estado = tmp_path / "estado"
+    monkeypatch.setattr(GrassCacheService, "_raiz_de_estado", staticmethod(lambda: estado))
+    (tmp_path / "game" / "PrecacheGrass.txt").write_text("Tamriel\n", encoding="utf-8")
+
+    resultado = await service.generate({**_PAYLOAD, "mode": "resume"})
+
+    assert resultado["success"] is True
+    config = colaboradores["runner_factory"].call_args.args[0]
+    assert config.mode == "resume"
+    assert config.backup_root == estado
+
+
+async def test_rebuild_aprobado_respalda_antes_de_clonar(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    estado = tmp_path / "estado"
+    monkeypatch.setattr(GrassCacheService, "_raiz_de_estado", staticmethod(lambda: estado))
+    grass = service._overwrite_grass_dir
+    assert grass is not None
+    grass.mkdir(parents=True)
+    (grass / "previo.cgid").write_bytes(b"prec")
+
+    resultado = await service.generate({**_PAYLOAD, "mode": "rebuild", "rebuild_approval": "REBUILD"})
+
+    assert resultado["success"] is True
+    respaldos = list((estado / "respaldo").iterdir())
+    assert respaldos, "el respaldo queda verificado en la raíz de estado durable"
+    assert (respaldos[0] / "previo.cgid").read_bytes() == b"prec"
+    colaboradores["profile_manager"].create_clone_profile.assert_awaited()
+
+
+async def test_fallo_del_guard_no_deja_transaccion_pendiente(tmp_path: pathlib.Path) -> None:
+    # El rechazo de P0 no muta nada: el journal no registra una operación.
+    journal = _journal_con_loot_completado()
+    service, _ = _servicio(tmp_path, journal=journal)
+    grass = service._overwrite_grass_dir
+    assert grass is not None
+    grass.mkdir(parents=True)
+    (grass / "previo.cgid").write_bytes(b"prec")
+
+    await service.generate(dict(_PAYLOAD))
+
+    journal.begin_transaction.assert_not_awaited()

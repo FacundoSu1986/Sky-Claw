@@ -350,6 +350,7 @@ module = [
     "sky_claw.local.xedit.grass_analyzer",  # PR-2 grass cache: módulo nuevo, nace estricto
     "sky_claw.local.xedit.script_staging",  # PR-2 grass cache: módulo nuevo, nace estricto
     "sky_claw.local.tools.grass_cache_runner",  # PR-4 grass cache: módulo nuevo, nace estricto
+    "sky_claw.local.tools.grass_cache_safety",  # P0 SAFE CACHE (F-01): módulo nuevo, nace estricto
     "sky_claw.local.tools.grass_cache_service",  # PR-5 grass cache: módulo nuevo, nace estricto
     "sky_claw.app.orchestrator.tool_strategies.analyze_grass_prerequisites",  # PR-5, estricto
     "sky_claw.app.orchestrator.tool_strategies.generate_grass_cache",  # PR-5, estricto

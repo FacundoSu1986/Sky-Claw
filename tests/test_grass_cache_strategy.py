@@ -141,3 +141,30 @@ def test_dispatcher_registra_generate_gateada_y_analyze_libre() -> None:
     assert GenerateGrassCacheStrategy.name in gated
     assert AnalyzeGrassPrerequisitesStrategy.name in dispatcher._middleware, "analyze debe registrarse (con wrapping)"
     assert AnalyzeGrassPrerequisitesStrategy.name not in gated
+
+
+def test_describe_for_approval_hace_visible_el_modo() -> None:
+    # El modo decide si el ritual puede BORRAR el caché: el operador tiene que
+    # verlo en el prompt, igual que ve force_stage_guard (P0 SAFE CACHE).
+    strategy = GenerateGrassCacheStrategy(service=AsyncMock())
+
+    texto = strategy.describe_for_approval(_PAYLOAD)
+
+    assert "mode='new'" in texto
+
+
+def test_describe_for_approval_avisa_que_rebuild_borra() -> None:
+    strategy = GenerateGrassCacheStrategy(service=AsyncMock())
+
+    texto = strategy.describe_for_approval({**_PAYLOAD, "mode": "rebuild", "rebuild_approval": "REBUILD"})
+
+    assert "mode='rebuild'" in texto
+    assert "desde cero" in texto and "borra" in texto.lower()
+
+
+def test_validate_for_approval_rechaza_rebuild_sin_aprobacion() -> None:
+    # Un payload destructivo malformado no debe llegar a molestar al operador.
+    strategy = GenerateGrassCacheStrategy(service=AsyncMock())
+
+    with pytest.raises(ValueError, match="rebuild"):
+        strategy.validate_for_approval({**_PAYLOAD, "mode": "rebuild"})
