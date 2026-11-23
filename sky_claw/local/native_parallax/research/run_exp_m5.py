@@ -64,6 +64,7 @@ from sky_claw.local.native_parallax.research.solver_coherence import (
     solve_normal,
 )
 from sky_claw.local.native_parallax.research.trust_proxies import OracleOnly
+from sky_claw.sin_consola import creationflags_sin_consola
 
 RESOLUTION = 512  # primary §9 (continuidad M4)
 
@@ -212,6 +213,7 @@ def current_git_sha() -> str | None:
             check=True,
             timeout=10,
             cwd=Path(__file__).resolve().parent,
+            creationflags=creationflags_sin_consola(),
         )
     except (OSError, subprocess.SubprocessError):  # pragma: no cover - fuera de un checkout
         return None

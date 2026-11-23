@@ -56,6 +56,7 @@ from sky_claw.local.native_parallax.research.solver_coherence import (
     self_forward,
 )
 from sky_claw.local.native_parallax.research.trust_proxies import OracleOnly
+from sky_claw.sin_consola import creationflags_sin_consola
 
 DEFAULT_MANIFEST = (
     Path(__file__).resolve().parents[4]
@@ -210,7 +211,12 @@ def run_asset_native(entry: dict[str, Any], native_resolution: tuple[int, int]) 
 def environment_block(manifest_path: Path, resolution: int, phase: str, frozen_ack: str | None) -> dict[str, Any]:
     try:
         git_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=10
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+            creationflags=creationflags_sin_consola(),
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):  # pragma: no cover - fuera de un checkout
         git_sha = "unknown"
