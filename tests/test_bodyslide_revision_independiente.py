@@ -24,7 +24,7 @@ import asyncio
 import pathlib
 import sys
 import threading
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -313,3 +313,97 @@ def test_resolver_conflictos_rechaza_tupla_de_dicts_con_error_de_contrato() -> N
 def test_resolver_conflictos_mapping_sigue_funcionando() -> None:
     conflictos = [ConflictoDeSalida("meshes/femalebody.nif", ("Outfit A", "Outfit B"))]
     resolver_conflictos(conflictos, {"meshes/femalebody.nif": "Outfit A"})
+
+
+# --------------------------------------------------------------------------- #
+# P1-D (segunda revisión de #1003) — alias físicos de nombres de grupo en Win32
+# --------------------------------------------------------------------------- #
+#
+# El grupo es el ÚLTIMO componente del destino canónico (``BodySlide_Output/<group>``).
+# Win32 descarta puntos y espacios finales (``CBBE.`` ≡ ``CBBE``) y reserva nombres
+# de dispositivo (``CON``, ``NUL``, ``COM1``… también con extensión: ``CON.txt``):
+# esos nombres no son carpetas físicas independientes. Se rechazan antes de mutar
+# o spawnear. Los nombres válidos existentes siguen pasando.
+
+_GRUPOS_ALIAS_WIN32 = [
+    "CBBE.",
+    "CBBE..",
+    "CBBE ",
+    " CBBE",
+    "CBBE. ",
+    "CON",
+    "con",
+    "Con",
+    "PRN",
+    "AUX",
+    "NUL",
+    "COM0",
+    "COM1",
+    "com9",
+    "LPT0",
+    "LPT1",
+    "lpt9",
+    "COM¹",
+    "LPT³",
+    "CON.txt",
+    "nul.body",
+    "AUX.",
+    "CON .x",
+    "COM1 .tri",
+    "CBBE:ads",
+    "CBBE*",
+    "CBBE?",
+    'CB"BE',
+    "CB<BE",
+    "CB>BE",
+    "CB|BE",
+    "CB\tBE",
+    "CB\x1fBE",
+]
+
+_GRUPOS_VALIDOS = [
+    "CBBE",
+    "CBBE Body",
+    "Build",
+    "3BA",
+    "Preset 1.0",
+    "CBBE_SE-v2",
+    "Console",
+    "CONFIG",
+    "COM10",
+    "LPT",
+    "NULx",
+    "AUX_body",
+    "con-body",
+    "BHUNP 3BBB Advanced",
+]
+
+
+@pytest.mark.parametrize("group", _GRUPOS_ALIAS_WIN32)
+def test_p1d_contrato_rechaza_grupos_que_no_son_carpetas_win32_independientes(group: str) -> None:
+    with pytest.raises(HeadlessContractError):
+        headless.construir_argv("C:/BodySlide/BodySlide.exe", group, "C:/salida")
+
+
+@pytest.mark.parametrize("group", _GRUPOS_VALIDOS)
+def test_p1d_contrato_conserva_los_grupos_validos(group: str) -> None:
+    argv = headless.construir_argv("C:/BodySlide/BodySlide.exe", group, "C:/salida")
+    assert argv[1:3] == ["-gbuild", group]
+
+
+@pytest.mark.parametrize("group", ["CBBE.", "CON", "nul.body", "COM1 .tri", "CBBE "])
+async def test_p1d_runner_rechaza_alias_win32_sin_mutar_ni_spawnear(tmp_path: pathlib.Path, group: str) -> None:
+    runner = _runner(tmp_path)
+    config = runner.config.bodyslide_exe.parent / "Config.xml"
+    antes = config.read_bytes()
+    destino = _raiz(tmp_path) / group  # el target "canónico" que derivaría el nombre crudo
+    proceso = _proceso_que_construye(destino)
+    sembrar = MagicMock(return_value=True)  # la siembra real es síncrona (corre en un hilo)
+    with patch.object(mod, "run_capture", proceso), patch.object(mod, "sembrar_config_de_bodyslide", sembrar):
+        result = await runner.run_batch(group, str(destino))
+    assert proceso.await_count == 0, "un alias Win32 no puede lanzar BodySlide"
+    assert sembrar.call_count == 0, "la siembra (mutación) no puede correr"
+    assert result.success is False
+    assert result.estado == "ARGS_INVALID"
+    assert config.read_bytes() == antes, "Config.xml debe quedar intacto"
+    assert not (_raiz(tmp_path)).exists(), "no se crea nada bajo el staging"

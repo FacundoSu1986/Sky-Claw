@@ -587,9 +587,12 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
   conteo; conflictos sin ganador vs. verificables). El hallazgo de worktree (P0-4)
   quedó resuelto (rama `feat/bodyslide-pr1-headless`, worktree exclusivo, Draft PR
   #1003) y la revisión independiente de #1003 cerró P1-A (destino = target canónico
-  del grupo), P1-B (log ilegible ≠ ausente) y P1-C (siembra cancelada no escribe
-  tras el restore). **Sin ejecución productiva** hasta PR 2 (`CAPABILITY_UNKNOWN`
-  sin `quiet_verified`); rig Windows/MO2 pendiente. Evidencia:
+  del grupo), P1-B (log ilegible ≠ ausente), P1-C (siembra cancelada no escribe
+  tras el restore) y P1-D (grupo que no es carpeta Win32 independiente: punto o
+  espacio final, dispositivos reservados). **Sin ejecución productiva** hasta PR 2
+  (`CAPABILITY_UNKNOWN` sin `quiet_verified`); rig Windows/MO2 pendiente.
+  Pendiente para PR 2: espera indefinida del restore ante una siembra colgada,
+  carreras de procesos (staging↔spawn) y grupos que difieren sólo en mayúsculas. Evidencia:
   `docs/validation/2026-11-22_bodyslide-pr1-audit-corrections.md`.
 
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un

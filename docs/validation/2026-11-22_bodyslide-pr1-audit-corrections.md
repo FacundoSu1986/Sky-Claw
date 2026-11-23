@@ -9,7 +9,8 @@ describen el estado de ese día y quedan superadas por este bloque.
 - **Hallazgos cerrados (con test RED→GREEN):** P0-1, P0-2, P0-3, P1-5, P1-6,
   P1-7, P1-8 (primera auditoría); P0-A, P0-B, P0-C, P1-D, P1-E (segunda);
   P1-A, P1-B, P1-C y el tipo de `resolver_conflictos` (revisión independiente
-  de PR #1003, sección al final).
+  de PR #1003); P1-D, alias físicos Win32 del nombre de grupo (segunda
+  revisión de #1003). Detalle en las secciones al final.
 - **Worktree (P0-4) — RESUELTO:** PR 1 vive en la rama
   `feat/bodyslide-pr1-headless`, creada desde `origin/main` `255fb6d0` en el
   worktree exclusivo `.worktrees/bodyslide-pr1-headless` (convención de
@@ -26,7 +27,19 @@ describen el estado de ese día y quedan superadas por este bloque.
     journal durable = PR 2).
   - `ManifiestoArtefactos.procedencia` es declarada por el caller, no
     verificada contra catálogo/hashes (PR 3).
-  - Ventana TOCTOU entre el chequeo físico del staging y el spawn.
+  - **Pendiente para PR 2 — carreras de procesos:** ventana TOCTOU entre el
+    chequeo físico del staging y el spawn (un enlace creado en ese intervalo
+    no se detecta), y procesos concurrentes sobre el mismo staging fuera del
+    lock del agente.
+  - **Pendiente para PR 2 — espera indefinida:** si la siembra se cuelga en su
+    hilo (I/O bloqueado), la restauración de `_BarreraDeSiembra` la espera sin
+    límite; no hay timeout ni journal que la reemplace.
+  - **Grupos que difieren sólo en mayúsculas** (`CBBE` / `cbbe`) son la MISMA
+    carpeta en NTFS (ver sección P1-D). No se crea catálogo en PR 1.
+  - El schema del agente (`schemas.py`, `_SAFE_NAME_PATTERN`) no replica las
+    reglas Win32 de P1-D y `run_bodyslide_batch` deriva el target y abre el
+    move-aside (`DirectoryRollback`) ANTES de llamar al runner; hoy no hay
+    efecto porque el runner aborta, pero alinear esa capa queda para PR 2.
   - Atribución del log por firma con granularidad de día (falso negativo
     posible, nunca falso verde).
   - `sky_claw.local.tools.*` sigue exento de mypy en `pyproject.toml`; fuera
@@ -445,3 +458,54 @@ par inventado con un dict de dos claves).
 `run_bodyslide_batch` sigue sin pasar `quiet_verified` ⇒ `CAPABILITY_UNKNOWN`
 sin spawn. No se tocó Golden Master, Frozen Runtime ni perfiles MO2; no se
 inició PR 2.
+
+---
+
+# Segunda revisión independiente de PR #1003 (CHANGES_REQUESTED, 2026-11-23) — P1-D
+
+**Base:** `97e6bf7a`. P1-A/P1-B/P1-C y `resolver_conflictos` aceptados.
+
+### P1-D — Alias físicos de nombres de grupo en Win32 — CERRADO
+
+**Antes:** `_validar_nombre` (patrón ASCII `[a-zA-Z0-9_.\- ]`) aceptaba
+`CBBE.`, `CBBE `, `CON`, `nul.body`, `COM1 .tri`… El grupo es el último
+componente del destino canónico; Win32 descarta puntos/espacios finales y abre
+los nombres de dispositivo como dispositivo, así que esas identidades lógicas
+no son carpetas físicas independientes. RED sobre `97e6bf7a`: 22 casos de
+contrato aceptados y el runner **spawneaba** en los 5 casos probados
+(`await_count == 1`).
+
+**Ahora:** `bodyslide_headless._validar_nombre_de_grupo` (usado por
+`construir_argv` para el grupo; los nombres de outfit no son carpetas y siguen
+con `_validar_nombre`) rechaza: espacios alrededor, punto/espacio final,
+dispositivos reservados `CON PRN AUX NUL CONIN$ CONOUT$ COM0-9 LPT0-9` y
+superíndices `¹²³` (case-insensitive, también con extensión: se compara la
+parte anterior al primer punto sin espacios finales), caracteres `<>:"/\|?*` y
+de control 0-31. En el runner el rechazo ocurre en el gate de argv
+(`ARGS_INVALID`): sin siembra, sin spawn, `Config.xml` byte-idéntico y nada
+creado bajo el staging. Nombres válidos existentes conservados (tests):
+`CBBE`, `CBBE Body`, `Build`, `3BA`, `Preset 1.0`, `CBBE_SE-v2`, `Console`,
+`CONFIG`, `COM10`, `LPT`, `NULx`, `AUX_body`, `con-body`,
+`BHUNP 3BBB Advanced`. Los únicos grupos usados en tests/repo antes del cambio
+(`CBBE`, `CBBE Body`, `Build` y el default `CBBE` de `tools/__init__.py`) siguen
+pasando.
+
+### Riesgo documentado (no implementado): grupos que difieren sólo en mayúsculas
+
+`CBBE` y `cbbe` son identidades lógicas distintas para el contrato (y para el
+token de `-gbuild`, que BodySlide compara contra los nombres de grupo de sus
+XML), pero NTFS las resuelve a la MISMA carpeta `BodySlide_Output\CBBE`. Además
+`exigir_destino_canonico` compara case-insensitive contra un canónico Windows,
+así que un destino `…\cbbe` se acepta para el grupo `CBBE`. Consecuencia: dos
+corridas de grupos que difieren sólo en mayúsculas compartirían staging y
+move-aside. PR 1 no crea catálogo de grupos ni normaliza nombres (fuera de
+alcance); el lock del recurso de BodySlide en `run_bodyslide_batch` serializa
+las corridas del agente, pero no distingue el aliasing. Queda para PR 2/PR 3
+(catálogo o normalización canónica con evidencia del rig).
+
+### Pendiente explícito para PR 2
+
+- Espera indefinida de la restauración ante una siembra colgada.
+- Carreras de procesos (TOCTOU staging↔spawn; procesos externos).
+- La ejecución productiva **sigue deshabilitada**: `run_bodyslide_batch` no pasa
+  `quiet_verified` ⇒ `CAPABILITY_UNKNOWN` sin spawn.

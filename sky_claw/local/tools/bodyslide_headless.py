@@ -133,7 +133,7 @@ def construir_argv(
             verificación, o target fuera del staging administrado.
     """
     exe = _validar_exe(exe)
-    group = _validar_nombre(group, "group")
+    group = _validar_nombre_de_grupo(group)
     target = _validar_target(target, stage_root=stage_root)
 
     argv = [exe, "-gbuild", group, "-t", target]
@@ -179,6 +179,60 @@ def _validar_nombre(value: object, nombre: str) -> str:
         raise HeadlessContractError(f"{nombre} no puede ser un path ('{v}')")
     if not _PATTERN_DE_NOMBRE.fullmatch(v):
         raise HeadlessContractError(f"{nombre} contiene caracteres que no son nombre válido: '{v}'")
+    return v
+
+
+#: Nombres de dispositivo reservados por Win32 (``CreateFile`` los abre como
+#: dispositivo, no como archivo/carpeta), comparados sin distinguir mayúsculas.
+#: Incluye ``COM0``/``LPT0`` y las variantes con superíndice ``¹²³`` que la
+#: documentación de Win32 («Naming Files, Paths, and Namespaces») lista.
+_DISPOSITIVOS_WIN32 = frozenset(
+    {"con", "prn", "aux", "nul", "conin$", "conout$"}
+    | {f"{base}{d}" for base in ("com", "lpt") for d in "0123456789\u00b9\u00b2\u00b3"}
+)
+
+#: Caracteres que Win32 prohíbe en un componente de ruta (además de 0-31).
+_CARACTERES_PROHIBIDOS_WIN32 = frozenset('<>:"/\\|?*')
+
+
+def _validar_nombre_de_grupo(value: object) -> str:
+    """Valida el grupo como token de ``-gbuild`` Y como carpeta física Win32 (P1-D, #1003).
+
+    El grupo es el ÚLTIMO componente del destino canónico
+    (``BodySlide_Output/<group>``, ``output_targets.bodyslide_output_target``).
+    Win32 no lo respeta tal cual en estos casos, así que dos identidades
+    lógicas distintas terminarían en la misma carpeta física (o en un
+    dispositivo) — el aislamiento por grupo de P1-A dejaría de valer:
+
+    - punto o espacio FINAL: Win32 los descarta (``CBBE.`` ≡ ``CBBE ``≡ ``CBBE``);
+    - espacio INICIAL: el contrato recorta el token de ``-gbuild`` pero el
+      destino canónico usaría el nombre crudo — se exige el nombre sin
+      espacios alrededor en vez de elegir uno de los dos;
+    - nombre de dispositivo reservado (``CON``, ``PRN``, ``AUX``, ``NUL``,
+      ``COM0-9``, ``LPT0-9``, superíndices ``¹²³``), sin distinguir
+      mayúsculas y TAMBIÉN con extensión (``CON.txt``, ``CON .x``): Win32
+      mira la parte anterior al primer punto, sin espacios finales;
+    - caracteres prohibidos ``<>:"/\\|?*`` y de control 0-31 (el patrón
+      ASCII ya los excluye; se chequean explícitamente para que la propiedad
+      no dependa de ese patrón).
+
+    NO resuelve que dos grupos difieran sólo en mayúsculas (``CBBE`` y
+    ``cbbe`` son la MISMA carpeta en NTFS): es una limitación documentada
+    (sin catálogo de grupos en PR 1); ver la evidencia de PR 1.
+
+    Raises:
+        HeadlessContractError: si el nombre no es una carpeta Win32 independiente.
+    """
+    if isinstance(value, str) and value != value.strip():
+        raise HeadlessContractError(f"group no puede tener espacios al inicio ni al final: '{value}'")
+    v = _validar_nombre(value, "group")
+    if any(ord(c) < 32 for c in v) or any(c in _CARACTERES_PROHIBIDOS_WIN32 for c in v):
+        raise HeadlessContractError(f"group contiene caracteres prohibidos por Win32: '{v}'")
+    if v.endswith((".", " ")):
+        raise HeadlessContractError(f"group no puede terminar en punto ni en espacio (Win32 los descarta): '{v}'")
+    raiz_del_nombre = v.split(".", 1)[0].rstrip(" ").casefold()
+    if raiz_del_nombre in _DISPOSITIVOS_WIN32:
+        raise HeadlessContractError(f"group '{v}' es un nombre de dispositivo reservado por Win32")
     return v
 
 
