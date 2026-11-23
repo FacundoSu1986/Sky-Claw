@@ -26,11 +26,13 @@ from __future__ import annotations
 import pathlib
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from sky_claw.local.tools.bodyslide_config import sembrar_config_de_bodyslide
 from tests._symlink_guard import symlink_guard
 
 _CONFIG_DEL_USUARIO = """<Config>
-    <TargetGame>-1</TargetGame>
+    <TargetGame>4</TargetGame>
     <WarnMissingGamePath>true</WarnMissingGamePath>
     <GameDataFiles>
         <SkyrimSpecialEdition>Skyrim - Meshes0.bsa</SkyrimSpecialEdition>
@@ -56,17 +58,26 @@ def _texto(raiz: ET.Element, clave: str) -> str | None:
 
 
 def test_siembra_las_claves_que_evitan_los_modales(tmp_path: pathlib.Path) -> None:
-    """Las tres claves que apagan los chequeos modales quedan seteadas."""
+    """Las claves que apagan los chequeos modales quedan seteadas."""
     exe_dir = tmp_path / "tools" / "BodySlide"
     exe_dir.mkdir(parents=True)
+    # TargetGame es precondición de siembra: sin TargetGame valido la siembra
+    # aborta (fail-closed) en vez de setear nada — BodySlide mostraria el modal
+    # de setup.
+    fixture = _CONFIG_DEL_USUARIO
+    (exe_dir / "Config.xml").write_text(fixture, encoding="utf-8")
     salida = tmp_path / "game" / "BodySlide_Output"
 
-    sembrar_config_de_bodyslide(exe_dir=exe_dir, game_path=tmp_path / "game", output_root=salida)
+    assert sembrar_config_de_bodyslide(exe_dir=exe_dir, game_path=tmp_path / "game", output_root=salida) is True
 
     raiz = _leer(exe_dir / "Config.xml")
     assert _texto(raiz, "GameDataPath") == str((tmp_path / "game" / "Data").resolve())
     assert _texto(raiz, "OutputDataPath") == str(salida.resolve())
     assert _texto(raiz, "WarnMissingGamePath") == "false"
+    # PR 1: LogLevel=3 (wxLogMessage) — el nivel minimo para ver los markers de
+    # fallo parcial y conflicto del log post-check.
+    assert _texto(raiz, "LogLevel") == "3"
+    assert _texto(raiz, "TargetGame") == "4"
 
 
 def test_preserva_el_config_existente_del_usuario(tmp_path: pathlib.Path) -> None:
@@ -99,19 +110,23 @@ def test_preserva_el_config_existente_del_usuario(tmp_path: pathlib.Path) -> Non
 
 
 def test_crea_el_config_si_no_existe(tmp_path: pathlib.Path) -> None:
-    """Una instalación sin ``Config.xml`` es el peor caso: ``GameDataPath`` vacío
-    manda a BodySlide a resolver por registro y, si falla, al modal de la 2798."""
+    """Una instalacion sin ``Config.xml`` no puede sembrarse: sin TargetGame, la
+    siembra aborta fail-closed (BodySlide mostraria el modal de setup).
+
+    PR 1: el estado ausente deja de "crear un config vacio" — no se inventa el
+    juego del usuario; el operador debe configurar el juego primero.
+    """
+    from sky_claw.local.tools.bodyslide_config import BodySlideConfigPreconditionError
+
     exe_dir = tmp_path / "tools" / "BodySlide"
     exe_dir.mkdir(parents=True)
 
-    sembrar_config_de_bodyslide(
-        exe_dir=exe_dir,
-        game_path=tmp_path / "game",
-        output_root=tmp_path / "game" / "BodySlide_Output",
-    )
-
-    assert (exe_dir / "Config.xml").is_file()
-    assert _texto(_leer(exe_dir / "Config.xml"), "WarnMissingGamePath") == "false"
+    with pytest.raises(BodySlideConfigPreconditionError, match="TargetGame"):
+        sembrar_config_de_bodyslide(
+            exe_dir=exe_dir,
+            game_path=tmp_path / "game",
+            output_root=tmp_path / "game" / "BodySlide_Output",
+        )
 
 
 def test_es_idempotente(tmp_path: pathlib.Path) -> None:
@@ -122,6 +137,7 @@ def test_es_idempotente(tmp_path: pathlib.Path) -> None:
     """
     exe_dir = tmp_path / "tools" / "BodySlide"
     exe_dir.mkdir(parents=True)
+    (exe_dir / "Config.xml").write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
     args = {
         "exe_dir": exe_dir,
         "game_path": tmp_path / "game",
@@ -151,49 +167,66 @@ async def test_run_batch_siembra_antes_de_spawnear(tmp_path: pathlib.Path) -> No
 
     exe = tmp_path / "tools" / "BodySlide" / "BodySlide.exe"
     exe.parent.mkdir(parents=True)
-    runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=tmp_path / "game"))
+    # La siembra es fail-closed: el config del test debe traer TargetGame
+    # valido (upstream: sin TargetGame valido, BodySlide muestra el modal de setup).
+    (exe.parent / "Config.xml").write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
+    runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=tmp_path / "game", quiet_verified=True))
     destino = tmp_path / "game" / "BodySlide_Output" / "CBBE"
     destino.mkdir(parents=True)
-    (destino / "cuerpo.nif").write_bytes(b"\x00")
+    # sin artefactos preexistentes: el staging debe estar vacío para que
+    # el veredicto pueda afirmar un build limpio (PR 1).
 
     sembrado_al_spawnear: dict[str, bool] = {}
+    sembrado_en_el_instante: dict[str, str | None] = {}
 
-    async def _fake(args, *, timeout, cwd=None):
+    async def _fake(args, *, timeout, cwd=None, require_job=False):
         sembrado_al_spawnear["si"] = (exe.parent / "Config.xml").is_file()
+        raiz_instante = _leer(exe.parent / "Config.xml")
+        sembrado_en_el_instante["WarnMissingGamePath"] = _texto(raiz_instante, "WarnMissingGamePath")
+        sembrado_en_el_instante["OutputDataPath"] = _texto(raiz_instante, "OutputDataPath")
         return (b"", b"", 0)
 
     with patch("sky_claw.local.tools.bodyslide_runner.run_capture", AsyncMock(side_effect=_fake)):
         await runner.run_batch("CBBE", str(destino))
 
     assert sembrado_al_spawnear["si"] is True
-    raiz = _leer(exe.parent / "Config.xml")
-    assert _texto(raiz, "WarnMissingGamePath") == "false"
-    assert _texto(raiz, "OutputDataPath") == str((tmp_path / "game" / "BodySlide_Output").resolve())
+    # La siembra efectivamente ESTABA en vigor en el instante del spawn.
+    assert sembrado_en_el_instante["WarnMissingGamePath"] == "false"
+    assert sembrado_en_el_instante["OutputDataPath"] == str((tmp_path / "game" / "BodySlide_Output").resolve())
+    # P0-1 (auditoría): post-run el Config.xml queda restaurado al ORIGINAL —
+    # el snapshot anterior al seed lo garantiza (esta transformación es lo que
+    # este test original no verificaba: seed-antes-de-spawn + restore-al-final).
+    raiz_post = _leer(exe.parent / "Config.xml")
+    assert _texto(raiz_post, "WarnMissingGamePath") == "true"
 
 
-def test_un_config_corrupto_no_aborta_la_corrida(tmp_path: pathlib.Path) -> None:
-    """XML ilegible ⇒ se reporta ``False``, no se lanza.
+def test_un_config_corrupto_aborta_la_corrida(tmp_path: pathlib.Path) -> None:
+    """XML ilegible ⇒ se aborta con ``BodySlideConfigPreconditionError``, no se lanza.
 
-    La siembra es una mejora de robustez, no una precondición del build: si el
-    archivo del usuario está corrupto, el run debe poder seguir (y fallar, si
-    falla, por su propia causa) en vez de morir acá con un ``ParseError``.
+    El contrato PR 1 es fail-closed: un XML corrupto no puede convertirse en
+    ``False`` silencioso — eso convertiría un archivo hostil/dañado en "ok" y
+    BodySlide prendería con la config en un estado que no se controla. La
+    excepción es la señal veraz: el runner la traduce a
+    ``CONFIG_PRECONDITION_FAILED`` y no spawnea el proceso.
     """
+    from sky_claw.local.tools.bodyslide_config import BodySlideConfigPreconditionError
+
     exe_dir = tmp_path / "tools" / "BodySlide"
     exe_dir.mkdir(parents=True)
     (exe_dir / "Config.xml").write_text("<Config><roto>", encoding="utf-8")
 
-    resultado = sembrar_config_de_bodyslide(
-        exe_dir=exe_dir,
-        game_path=tmp_path / "game",
-        output_root=tmp_path / "game" / "BodySlide_Output",
-    )
+    with pytest.raises(BodySlideConfigPreconditionError):
+        sembrar_config_de_bodyslide(
+            exe_dir=exe_dir,
+            game_path=tmp_path / "game",
+            output_root=tmp_path / "game" / "BodySlide_Output",
+        )
 
-    assert resultado is False
     # Y no se destruyó el archivo del usuario en el intento.
     assert (exe_dir / "Config.xml").read_text(encoding="utf-8") == "<Config><roto>"
 
 
-def test_un_config_ilegible_no_aborta_la_corrida(tmp_path: pathlib.Path) -> None:
+def test_un_config_ilegible_aborta_la_corrida(tmp_path: pathlib.Path) -> None:
     """Un ``OSError`` al abrir tampoco puede tumbar el ritual (review CodeRabbit #433).
 
     ``run_batch`` llama a esta función ANTES de spawnear, así que un
@@ -203,38 +236,41 @@ def test_un_config_ilegible_no_aborta_la_corrida(tmp_path: pathlib.Path) -> None
     """
     from unittest.mock import patch
 
+    from sky_claw.local.tools.bodyslide_config import BodySlideConfigPreconditionError
+
     exe_dir = tmp_path / "tools" / "BodySlide"
     exe_dir.mkdir(parents=True)
     (exe_dir / "Config.xml").write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
 
-    with patch(
-        "sky_claw.local.tools.bodyslide_config.DefusedElementTree.parse",
-        side_effect=PermissionError("acceso denegado"),
+    with (
+        patch(
+            "sky_claw.local.tools.bodyslide_config.DefusedElementTree.parse",
+            side_effect=PermissionError("acceso denegado"),
+        ),
+        pytest.raises(BodySlideConfigPreconditionError),
     ):
-        resultado = sembrar_config_de_bodyslide(
+        sembrar_config_de_bodyslide(
             exe_dir=exe_dir,
             game_path=tmp_path / "game",
             output_root=tmp_path / "game" / "BodySlide_Output",
         )
 
-    assert resultado is False
 
+def test_un_fallo_al_escribir_aborta_la_corrida(tmp_path: pathlib.Path) -> None:
+    """La otra mitad del contrato: la ESCRITURA (review CodeRabbit #433).
 
-def test_un_fallo_al_escribir_tampoco_aborta_la_corrida(tmp_path: pathlib.Path) -> None:
-    """La otra mitad del best-effort: la ESCRITURA (review CodeRabbit #433).
-
-    Los otros casos cubren la lectura/parseo. Si el ``write`` falla —disco lleno,
-    archivo tomado por el AV, permisos— el contrato tiene que ser el mismo:
-    ``False`` sin excepción, porque ``run_batch`` sigue llamando a esto antes del
-    spawn. Una regresión acá volvería a impedir CORRER BodySlide.
+    Los casos de arriba cubren la lectura/parseo. Si el ``write`` falla —disco
+    lleno, archivo tomado por el AV, permisos— el contrato es el mismo:
+    ``BodySlideConfigPreconditionError`` y el runner aborta antes del spawn.
 
     Y sobre todo: el ``Config.xml`` del usuario tiene que quedar **byte a byte**
     como estaba (review CodeRabbit #433). Escribir directo sobre el destino lo
     trunca si el ``write`` muere a mitad — destruir la config del usuario por un
-    disco lleno es peor que no sembrar. La versión anterior de este test usaba un
-    directorio VACÍO, así que pasaba sin ejercitar la preservación.
+    disco lleno es peor que no sembrar.
     """
     from unittest.mock import patch
+
+    from sky_claw.local.tools.bodyslide_config import BodySlideConfigPreconditionError
 
     exe_dir = tmp_path / "tools" / "BodySlide"
     exe_dir.mkdir(parents=True)
@@ -251,14 +287,16 @@ def test_un_fallo_al_escribir_tampoco_aborta_la_corrida(tmp_path: pathlib.Path) 
         pathlib.Path(str(destino)).write_bytes(b"<Config><GameDataPath>a-medio-escri")
         raise OSError("disco lleno")
 
-    with patch("sky_claw.local.tools.bodyslide_config.ET.ElementTree.write", side_effect=_muere_a_mitad):
-        resultado = sembrar_config_de_bodyslide(
+    with (
+        patch("sky_claw.local.tools.bodyslide_config.ET.ElementTree.write", side_effect=_muere_a_mitad),
+        pytest.raises(BodySlideConfigPreconditionError),
+    ):
+        sembrar_config_de_bodyslide(
             exe_dir=exe_dir,
             game_path=tmp_path / "game",
             output_root=tmp_path / "game" / "BodySlide_Output",
         )
 
-    assert resultado is False
     assert config.read_bytes() == original, "un write fallido no puede dejar el Config.xml del usuario truncado"
 
 
@@ -271,6 +309,8 @@ def test_una_escritura_fallida_no_deja_temporales(tmp_path: pathlib.Path) -> Non
     """
     from unittest.mock import patch
 
+    from sky_claw.local.tools.bodyslide_config import BodySlideConfigPreconditionError
+
     exe_dir = tmp_path / "tools" / "BodySlide"
     exe_dir.mkdir(parents=True)
     (exe_dir / "Config.xml").write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
@@ -279,7 +319,10 @@ def test_una_escritura_fallida_no_deja_temporales(tmp_path: pathlib.Path) -> Non
         pathlib.Path(str(destino)).write_bytes(b"<Config>parcial")
         raise OSError("disco lleno")
 
-    with patch("sky_claw.local.tools.bodyslide_config.ET.ElementTree.write", side_effect=_muere_a_mitad):
+    with (
+        patch("sky_claw.local.tools.bodyslide_config.ET.ElementTree.write", side_effect=_muere_a_mitad),
+        pytest.raises(BodySlideConfigPreconditionError),
+    ):
         sembrar_config_de_bodyslide(
             exe_dir=exe_dir,
             game_path=tmp_path / "game",
@@ -290,35 +333,39 @@ def test_una_escritura_fallida_no_deja_temporales(tmp_path: pathlib.Path) -> Non
 
 
 @symlink_guard
-def test_un_config_enlazado_conserva_el_enlace(tmp_path: pathlib.Path) -> None:
-    """Sembrar sobre un ``Config.xml`` symlinkeado no puede romper el enlace (review qodo #433).
+def test_un_config_enlazado_falla_cerrado_sin_pisar_el_destino(tmp_path: pathlib.Path) -> None:
+    """Config.xml enlazado → la siembra falla cerrado (P0-B).
 
-    ``os.replace`` sobre un enlace reemplaza el ENLACE por un archivo regular:
-    el usuario que compartía su config entre perfiles se queda con una copia
-    desincronizada y sin darse cuenta. Se escribe a través del enlace —tmp junto
-    al destino REAL y ``os.replace`` sobre ese destino— así el enlace sobrevive y
-    el contenido llega adonde el usuario lo apuntó.
+    El comportamiento anterior (review qodo #433) escribía a través del enlace:
+    tmp junto al destino REAL y ``os.replace`` sobre ese destino. Preservaba el
+    enlace pero —verificado adversarialmente en P0-B— el destino del enlace no
+    está verificado al momento de escribir: un enlace re-targeted durante la
+    corrida (o un destino que cambió) hace que la escritura caiga en OTRO
+    archivo. La siembra fail-closed rechaza la config enlazada sin tocar nada:
+    ni el enlace, ni el destino externo, ni el exe_dir.
     """
+    from sky_claw.local.tools.bodyslide_config import BodySlideConfigPreconditionError
+
     real = tmp_path / "configs" / "Config.xml"
     real.parent.mkdir(parents=True)
     real.write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
+    contenido_original = real.read_bytes()
 
     exe_dir = tmp_path / "tools" / "BodySlide"
     exe_dir.mkdir(parents=True)
     enlace = exe_dir / "Config.xml"
     enlace.symlink_to(real)
 
-    resultado = sembrar_config_de_bodyslide(
-        exe_dir=exe_dir,
-        game_path=tmp_path / "game",
-        output_root=tmp_path / "game" / "BodySlide_Output",
-    )
+    with pytest.raises(BodySlideConfigPreconditionError, match="enlace"):
+        sembrar_config_de_bodyslide(
+            exe_dir=exe_dir,
+            game_path=tmp_path / "game",
+            output_root=tmp_path / "game" / "BodySlide_Output",
+        )
 
-    assert resultado is True
-    assert enlace.is_symlink(), "el enlace del usuario no puede reemplazarse por un archivo regular"
-    # Y el contenido aterrizó en el destino real, no en una copia suelta.
-    assert _texto(_leer(real), "WarnMissingGamePath") == "false"
-    assert [p.name for p in exe_dir.iterdir()] == ["Config.xml"]
+    assert enlace.is_symlink(), "el enlace del usuario no puede removerse"
+    assert real.read_bytes() == contenido_original, "el destino externo no puede mutarse"
+    assert [p for p in exe_dir.iterdir()] == [enlace], "sin archivos sueltos en el exe_dir"
 
 
 def test_rechaza_un_config_con_referencia_externa(tmp_path: pathlib.Path) -> None:
@@ -337,13 +384,15 @@ def test_rechaza_un_config_con_referencia_externa(tmp_path: pathlib.Path) -> Non
     )
     (exe_dir / "Config.xml").write_text(original, encoding="utf-8")
 
-    resultado = sembrar_config_de_bodyslide(
-        exe_dir=exe_dir,
-        game_path=tmp_path / "game",
-        output_root=tmp_path / "game" / "BodySlide_Output",
-    )
+    from sky_claw.local.tools.bodyslide_config import BodySlideConfigPreconditionError
 
-    assert resultado is False
+    with pytest.raises(BodySlideConfigPreconditionError):
+        sembrar_config_de_bodyslide(
+            exe_dir=exe_dir,
+            game_path=tmp_path / "game",
+            output_root=tmp_path / "game" / "BodySlide_Output",
+        )
+
     assert (exe_dir / "Config.xml").read_text(encoding="utf-8") == original, "no se toca el archivo del usuario"
 
 
@@ -363,11 +412,57 @@ def test_rechaza_un_config_con_entidades_xml(tmp_path: pathlib.Path) -> None:
         encoding="utf-8",
     )
 
-    resultado = sembrar_config_de_bodyslide(
-        exe_dir=exe_dir,
-        game_path=tmp_path / "game",
-        output_root=tmp_path / "game" / "BodySlide_Output",
-    )
+    from sky_claw.local.tools.bodyslide_config import BodySlideConfigPreconditionError
 
-    assert resultado is False
+    with pytest.raises(BodySlideConfigPreconditionError):
+        sembrar_config_de_bodyslide(
+            exe_dir=exe_dir,
+            game_path=tmp_path / "game",
+            output_root=tmp_path / "game" / "BodySlide_Output",
+        )
+
     assert "&lol2;" in (exe_dir / "Config.xml").read_text(encoding="utf-8"), "no se toca el archivo del usuario"
+
+
+def test_siembra_rechaza_target_game_del_juego_equivocado(tmp_path: pathlib.Path) -> None:
+    """P1-5: TargetGame válido pero del juego equivocado debe abortar.
+
+    Un TargetGame=4 es un enum válido, pero si el juego objetivo es el 9 el
+    build se prepararía para el juego equivocado. El abort debe ocurrir ANTES
+    de cualquier mutación (fail-closed).
+    """
+    from sky_claw.local.tools.bodyslide_config import BodySlideConfigPreconditionError
+
+    exe_dir = tmp_path / "tools" / "BodySlide"
+    exe_dir.mkdir(parents=True)
+    config = exe_dir / "Config.xml"
+    config.write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
+    original = config.read_bytes()
+
+    with pytest.raises(BodySlideConfigPreconditionError, match="no coincide con el juego objetivo"):
+        sembrar_config_de_bodyslide(
+            exe_dir=exe_dir,
+            game_path=tmp_path / "game",
+            output_root=tmp_path / "game" / "BodySlide_Output",
+            expected_target_game=9,
+        )
+
+    # No debe haberse mutado el archivo.
+    assert config.read_bytes() == original
+
+
+def test_siembra_acepta_target_game_que_coincide_con_el_esperado(tmp_path: pathlib.Path) -> None:
+    """El caso feliz: TargetGame == esperado ⇒ siembra igual que antes."""
+    exe_dir = tmp_path / "tools" / "BodySlide"
+    exe_dir.mkdir(parents=True)
+    (exe_dir / "Config.xml").write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
+
+    assert (
+        sembrar_config_de_bodyslide(
+            exe_dir=exe_dir,
+            game_path=tmp_path / "game",
+            output_root=tmp_path / "game" / "BodySlide_Output",
+            expected_target_game=4,
+        )
+        is True
+    )
