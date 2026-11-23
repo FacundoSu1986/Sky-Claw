@@ -68,6 +68,7 @@ from sky_claw.local.tools.dyndolod_guia import (
     chequear_salida_vieja,
     explicar_fallo,
     leer_output_de_preset,
+    outputs_administrados,
     resultado,
 )
 from sky_claw.local.tools.dyndolod_runner import (
@@ -96,7 +97,7 @@ from sky_claw.local.tools.dyndolod_workspace import (
     Stage9Coordination,
     WorkspaceResuelto,
 )
-from sky_claw.local.tools.output_targets import HerramientaDynDOLOD, derivar_layout_de_dyndolod
+from sky_claw.local.tools.output_targets import derivar_layout_de_dyndolod
 from sky_claw.local.tools.texgen_handoff import HandoffPendingAction
 from sky_claw.logging_config import correlacion_de_transaccion
 
@@ -862,13 +863,12 @@ class DynDOLODPipelineService:
         """
         if self._workspace is None:
             return []
-        layout = derivar_layout_de_dyndolod(external_work_root=self._workspace.root)
-        herramientas = {"TexGen": HerramientaDynDOLOD.TEXGEN, "DynDOLOD": HerramientaDynDOLOD.DYNDOLOD}
+        esperados = outputs_administrados(self._workspace.root)
         lecturas: list[LecturaDeOutputDePreset] = []
         for tool, exe in ejecutables:
-            if not isinstance(exe, pathlib.Path) or not exe.is_file():
+            if not isinstance(exe, pathlib.Path) or not exe.is_file() or tool not in esperados:
                 continue
-            lectura = leer_output_de_preset(tool, exe, esperado=layout.raiz_de(herramientas[tool]))
+            lectura = leer_output_de_preset(tool, exe, esperado=esperados[tool])
             if lectura is not None:
                 lecturas.append(lectura)
         return lecturas

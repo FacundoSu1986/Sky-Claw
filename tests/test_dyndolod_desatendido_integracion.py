@@ -801,7 +801,8 @@ def test_todo_retorno_del_servicio_declara_el_modo_de_interaccion():
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_attach_preflight"
     ]
     # 13: el corte desatendido previo al lock (#740) es un retorno más.
-    assert len(llamadas) == 13, "el detector tiene que ver todos los retornos del servicio"
+    # 14: el corte por el checklist del operador (#997), antes de cualquier efecto.
+    assert len(llamadas) == 14, "el detector tiene que ver todos los retornos del servicio"
     for llamada in llamadas:
         assert len(llamada.args) == 3, f"_attach_preflight sin modo en la línea {llamada.lineno}"
 

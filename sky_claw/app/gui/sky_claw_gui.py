@@ -714,7 +714,6 @@ def _dispatch_hitl_response(
     return scheduler(guard.respond(request_id, approved), name="gui-hitl-respond")
 
 
-@ui.refreshable
 def _revisar_checklist_de_la_etapa9() -> None:
     """#997: revisa el checklist de la etapa 9 en una tarea de fondo (nunca en el render ni bloqueando el loop).
 
@@ -734,6 +733,7 @@ def _revisar_checklist_de_la_etapa9() -> None:
     )
 
 
+@ui.refreshable
 def main_page() -> None:
     """Single page that gates between Wizard and Dashboard via the store."""
     ui.dark_mode().enable()

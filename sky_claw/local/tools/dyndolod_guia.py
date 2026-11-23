@@ -46,6 +46,7 @@ from sky_claw.local.tools.dyndolod_presets import PresetError, valor_de_clave
 from sky_claw.local.tools.dyndolod_uia_contrato import CONTRATOS_DE_UI, ContratoDeUIHerramienta
 from sky_claw.local.tools.dyndolod_uia_gate import ResolucionProtocoloReadiness
 from sky_claw.local.tools.dyndolod_uia_preflight import RazonPreflight
+from sky_claw.local.tools.output_targets import HerramientaDynDOLOD, derivar_layout_de_dyndolod
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +431,15 @@ class LecturaDeOutputDePreset:
     herramienta: str
     guardado: str | None
     esperado: str
+
+
+def outputs_administrados(external_work_root: pathlib.Path) -> Mapping[str, pathlib.Path]:
+    """El ``-o:`` de cada herramienta, derivado del work root con la MISMA función que usa el runner (``raiz_de``)."""
+    layout = derivar_layout_de_dyndolod(external_work_root=external_work_root)
+    return {
+        "TexGen": layout.raiz_de(HerramientaDynDOLOD.TEXGEN),
+        "DynDOLOD": layout.raiz_de(HerramientaDynDOLOD.DYNDOLOD),
+    }
 
 
 def leer_output_de_preset(
