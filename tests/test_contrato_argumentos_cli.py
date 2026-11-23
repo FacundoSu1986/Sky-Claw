@@ -320,8 +320,8 @@ PROCEDENCIA_DE_FLAGS = {
         "protocol.<name>.allow, submodule.recurse, credential.helper vacío, core.fsmonitor), git (-c, -C; "
         "GIT_CONFIG_NOSYSTEM, GIT_CONFIG_GLOBAL, GIT_TERMINAL_PROMPT), git-fetch (--depth, --no-tags, "
         "--no-recurse-submodules; fetch por SHA completo), git-checkout (--detach FETCH_HEAD) y git-rev-parse. "
-        "PENDIENTE: ejecución contra GitHub real en el rig (requiere autorización del propietario: bajar y "
-        "compilar código de terceros)"
+        "EJECUTADO contra GitHub real con git 2.51.1 en el rig (solo descarga, autorizada por el propietario: "
+        "Synthesis-Collective/FaceFixer por SHA; s5/evidence/PR3E_FUENTES_GIT_2026-11-23.md)"
     ),
     "sky_claw/local/tools/xedit_bridge_client.py": (
         "xEdit Bridge 1.1.0 — run_admit.py (argparse: config posicional, --mo2 'MO2 instance folder (the "
