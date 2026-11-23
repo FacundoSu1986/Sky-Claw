@@ -437,9 +437,16 @@ def render_forge_dashboard(
         # Pila de avisos: un solo ancla fija y los paneles apilados en flujo. Con
         # dos ``position:fixed`` a offsets fijos (22px / 96px) un toast de varias
         # líneas quedaba debajo del semáforo de preflight.
-        with ui.element("div").style(
-            "position:fixed; right:22px; bottom:22px; z-index:1000; width:min(520px, calc(100vw - 44px));"
-            "display:flex; flex-direction:column; align-items:stretch; pointer-events:none;"
+        # #996: la pila crece hacia ARRIBA desde ``bottom``. Sin tope, un aviso alto (texto largo ya partido)
+        # sacaba por arriba del viewport la × de su esquina superior. Acotada al viewport, scrollea.
+        with (
+            ui.element("div")
+            .classes("sc-scroll")
+            .style(
+                "position:fixed; right:22px; bottom:22px; z-index:1000; width:min(520px, calc(100vw - 44px));"
+                "max-height:calc(100vh - 44px); overflow-y:auto;"
+                "display:flex; flex-direction:column; align-items:stretch; pointer-events:none;"
+            )
         ):
             _ritual_preflight_panel()
             _ritual_feedback_panel()
@@ -1121,16 +1128,18 @@ def _ritual_feedback_panel() -> None:
     text = str(fb.get("text", ""))
     kind = str(fb.get("type", "info"))
     accent = {"positive": GREEN, "negative": RED, "warning": "#e0b341"}.get(kind, ACCENT)
+    # #996: ``overflow-wrap:anywhere`` se hereda, así que una ruta o una tupla COM sin espacios ya no
+    # fija el ancho mínimo de ningún hermano de la ×, y la × (``sc-dismiss``, que no se encoge) queda adentro.
     wrap = (
         "margin-top:10px; pointer-events:auto; display:flex; align-items:flex-start; gap:10px;"
-        "padding:13px 15px; border-radius:5px; color:#e8e2d4;"
+        "padding:13px 15px; border-radius:5px; color:#e8e2d4; overflow-wrap:anywhere;"
         f"background:linear-gradient(168deg, rgba(30,22,14,.97), rgba(14,10,7,.98)); border:1px solid {accent};"
         "box-shadow:0 18px 40px -18px rgba(0,0,0,.85);"
     )
     with ui.element("div").style(wrap):
         ui.html(
             f'<span style="width:8px; height:8px; margin-top:5px; flex-shrink:0; border-radius:50%; background:{accent}; box-shadow:0 0 7px {accent};"></span>'
-            f"<span style=\"flex:1; font-family:'EB Garamond',serif; font-size:14px; line-height:1.5;\">{_e(text)}</span>"
+            f"<span style=\"flex:1; min-width:0; font-family:'EB Garamond',serif; font-size:14px; line-height:1.5;\">{_e(text)}</span>"
         ).style(_FRAGMENTO)
         # F-001: la acción de Resume se deriva del dict ESTRUCTURAL del último
         # resultado — el panel no parsea el message ni decide por strings.
@@ -1154,13 +1163,13 @@ def _ritual_feedback_panel() -> None:
                     # artefacto. El rótulo «TexGen Output listo en:» era de la etapa 9 y
                     # se imprimía sobre cualquier tool con acción de resume — con la
                     # etapa 6 habría anunciado un TexGen inexistente junto a un .esp.
+                    # El wrapper de ``ui.html`` es el ítem de la fila: reparte el ancho con el texto (#996). Con el
+                    # ancho de su contenido, un ``texgen_mod_path`` largo empujaba la × fuera del aviso.
                     ui.html(
                         f"<div style=\"font-family:'EB Garamond',serif; font-size:11px; color:#8a8270; line-height:1.3;\">"
                         f"{detalle}</div>"
-                    )
-        x = ui.element("button").style(
-            "cursor:pointer; background:none; border:none; color:#8a8270; font-size:15px; line-height:1; padding:0 2px;"
-        )
+                    ).style("flex:1; min-width:0")
+        x = ui.element("button").props('aria-label="Cerrar aviso del ritual"').classes("sc-dismiss")
         x.on(
             "click",
             # La × cierra el AVISO, no la acción: «Ya construí el parche — verificar»
@@ -1189,13 +1198,14 @@ def _ritual_preflight_panel() -> None:
     report = get_store().get(STORE_KEY_RITUAL_PREFLIGHT)
     if not report:
         return
-    wrap = "margin-top:10px; pointer-events:auto; display:flex; align-items:flex-start; gap:8px;"
+    # #996: mismo arreglo que el aviso del ritual: la fila parte palabras largas y la × no se encoge.
+    wrap = (
+        "margin-top:10px; pointer-events:auto; display:flex; align-items:flex-start; gap:8px; overflow-wrap:anywhere;"
+    )
     with ui.element("div").style(wrap):
         with ui.element("div").style("flex:1; min-width:0;"):
             create_preflight_panel(report)
-        x = ui.element("button").style(
-            "cursor:pointer; background:none; border:none; color:#8a8270; font-size:15px; line-height:1; padding:0 2px;"
-        )
+        x = ui.element("button").props('aria-label="Cerrar semáforo de preflight"').classes("sc-dismiss")
         x.on(
             "click",
             lambda _=None: (get_store().set(STORE_KEY_RITUAL_PREFLIGHT, None), _ritual_preflight_panel.refresh()),
@@ -1254,7 +1264,7 @@ def _parallax_diagnostico_panel() -> None:
     titulo = "Elegibilidad de parallax" if elegibilidad else "Diagnóstico de parallax"
     wrap = (
         "position:fixed; right:22px; top:84px; z-index:1000; width:min(560px, calc(100vw - 44px));"
-        "max-height:70vh; display:flex; align-items:flex-start; gap:8px;"
+        "max-height:70vh; display:flex; align-items:flex-start; gap:8px; overflow-wrap:anywhere;"
     )
     card = (
         "flex:1; min-width:0; max-height:70vh; overflow:auto; padding:14px 16px; border-radius:10px;"
@@ -1270,13 +1280,7 @@ def _parallax_diagnostico_panel() -> None:
             else:
                 for linea in lineas_del_diagnostico_parallax(entrada.get("resultado")):
                     ui.label(linea).style("font-size:12.5px; line-height:1.5; color:#cfc5ad; word-break:break-word;")
-        x = (
-            ui.element("button")
-            .props('aria-label="Cerrar informe de parallax"')
-            .style(
-                "cursor:pointer; background:none; border:none; color:#8a8270; font-size:15px; line-height:1; padding:0 2px;"
-            )
-        )
+        x = ui.element("button").props('aria-label="Cerrar informe de parallax"').classes("sc-dismiss")
         x.on(
             "click",
             lambda _=None: (

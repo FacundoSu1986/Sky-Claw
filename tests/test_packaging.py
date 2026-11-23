@@ -51,3 +51,20 @@ def test_bridge_mo2_en_pyinstaller_datas() -> None:
     ) in spec
     assert '"sky_claw.local.mo2.vfs_worker"' in spec
     assert '"sky_claw.local.mo2.vfs_broker"' in spec
+
+
+_FUENTES_SHIM_SYNTHESIS = "sky_claw/local/tools/synthesis_shim_fuentes"
+
+
+def test_fuentes_del_shim_synthesis_en_las_dos_distribuciones() -> None:
+    """PR-3b: la Fase 1 compila el shim desde estas fuentes; sin ellas no hay Synthesis.
+
+    Las dos distribuciones son hermanas (wheel y exe congelado): se verifican juntas para que
+    agregar una sin la otra rompa el test.
+    """
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    force_include = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"].get("force-include", {})
+    spec = Path("sky_claw.spec").read_text(encoding="utf-8")
+
+    assert force_include.get(_FUENTES_SHIM_SYNTHESIS) == _FUENTES_SHIM_SYNTHESIS
+    assert f'("{_FUENTES_SHIM_SYNTHESIS}", "{_FUENTES_SHIM_SYNTHESIS}")' in spec

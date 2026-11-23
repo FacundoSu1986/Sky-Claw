@@ -369,6 +369,9 @@ module = [
     "sky_claw.local.tools.patcher_pipeline",  # PR-1 (#975): settings V2 y whitelist $type, estricto
     "sky_claw.local.tools.synthesis_runner",  # PR-1 (#975): contrato CLI 0.36.6 y recibos, estricto
     "sky_claw.local.tools.synthesis_prebuild",  # PR-3a: lanzamiento de patchers con CETCompat, nace estricto
+    "sky_claw.local.tools.synthesis_shim",  # PR-3b: shim de patchers de Synthesis, nace estricto
+    "sky_claw.local.tools.synthesis_compilacion",  # PR-3d: build de patchers en Fase 1, nace estricto
+    "sky_claw.local.tools.synthesis_fuentes_git",  # PR-3e: fuentes Git fijadas por commit, nace estricto
     "sky_claw.local.tools.dyndolod_uia_preflight",  # T5A: preflight UIA read-only, nace estricto
     "sky_claw.local.tools.dyndolod_uia_windows",  # T5-v2: backend COM real, nace estricto
     "sky_claw.local.tools.dyndolod_uia_gate",  # T5-v2: gate del preflight, nace estricto
@@ -471,3 +474,5 @@ packages = ["sky_claw"]
 # PR-2 grass cache: los .pas bundleados se stagean a "Edit Scripts" en runtime;
 # sin ellos run_script falla con script-not-found (anclado en test_packaging.py).
 "sky_claw/local/xedit/scripts" = "sky_claw/local/xedit/scripts"
+# PR-3b Synthesis: la Fase 1 compila el shim desde estas fuentes (anclado en test_packaging.py).
+"sky_claw/local/tools/synthesis_shim_fuentes" = "sky_claw/local/tools/synthesis_shim_fuentes"
