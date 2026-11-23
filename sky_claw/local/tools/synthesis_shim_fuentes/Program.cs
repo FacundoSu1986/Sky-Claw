@@ -64,8 +64,7 @@ internal static class Programa
         {
             foreach (var a in args)
             {
-                var l = a.ToLowerInvariant();
-                if (l is "-i" or "-f" || l.StartsWith("--internaldatafolder") || l.StartsWith("--defaultdatafolderpath"))
+                if (EsFlagDeDatos(a))
                 {
                     return Fallar(SalidaFlagAmbiguo, "el llamador ya paso un flag de datos internos; se rechaza la ambiguedad: " + a);
                 }
@@ -120,6 +119,19 @@ internal static class Programa
         {
             return Fallar(SalidaLanzamientoFallido, "no se pudo lanzar el patcher: " + e.GetType().Name + ": " + e.Message);
         }
+    }
+
+    // Flag de datos internos en cualquiera de sus formas. El parser de Synthesis acepta la corta
+    // separada (-i valor), con el valor pegado (-ivalor) y con '=' (-i=valor): una sola rayita
+    // seguida de 'i' o 'f' ya es el flag; "--..." es forma larga y se compara aparte.
+    internal static bool EsFlagDeDatos(string argumento)
+    {
+        var l = argumento.ToLowerInvariant();
+        if (l.Length >= 2 && l[0] == '-' && (l[1] == 'i' || l[1] == 'f'))
+        {
+            return true;
+        }
+        return l.StartsWith("--internaldatafolder") || l.StartsWith("--defaultdatafolderpath");
     }
 
     // Hash de árbol canónico, igual que `hash_arbol` de synthesis_shim.py: sha256 sobre las líneas

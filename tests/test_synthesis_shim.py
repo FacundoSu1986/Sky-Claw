@@ -35,7 +35,7 @@ def _hash_esperado(archivos: dict[str, bytes]) -> str:
 def _dotnet(tmp_path: pathlib.Path) -> pathlib.Path:
     dotnet = tmp_path / "dotnet" / "dotnet.exe"
     dotnet.parent.mkdir(parents=True, exist_ok=True)
-    dotnet.write_bytes(b"muxer")
+    dotnet.write_bytes(pe_sintetico())  # x64
     return dotnet
 
 
@@ -184,6 +184,20 @@ def test_via_dotnet_sin_dotnet_falla(tmp_path: pathlib.Path) -> None:
 def test_via_dotnet_con_dotnet_invalido_falla(tmp_path: pathlib.Path, ruta: str) -> None:
     with pytest.raises(ss.ShimConfigError):
         ss.construir_config_shim(_patcher(tmp_path, cet=1), dotnet=pathlib.Path(ruta))
+
+
+@pytest.mark.parametrize(
+    "contenido",
+    [pe_sintetico(maquina=0x14C), pe_sintetico(maquina=0xAA64), b"no es un PE"],
+    ids=["x86", "arm64", "no_pe"],
+)
+def test_via_dotnet_exige_un_dotnet_x64_por_arquitectura(tmp_path: pathlib.Path, contenido: bytes) -> None:
+    # La ruta no alcanza: un dotnet x86 copiado fuera de `Program Files (x86)` pasaba el filtro.
+    dotnet = tmp_path / "Portable" / "dotnet" / "dotnet.exe"
+    dotnet.parent.mkdir(parents=True)
+    dotnet.write_bytes(contenido)
+    with pytest.raises(ss.ShimConfigError, match="x64"):
+        ss.construir_config_shim(_patcher(tmp_path, cet=1), dotnet=dotnet)
 
 
 def test_via_dotnet_con_dotnet_inexistente_falla(tmp_path: pathlib.Path) -> None:

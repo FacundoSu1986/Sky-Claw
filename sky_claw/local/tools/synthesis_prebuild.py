@@ -43,6 +43,7 @@ __all__ = [
     "Motivo",
     "argumentos_dotnet_build_patcher",
     "decidir_lanzamiento",
+    "es_ejecutable_x64",
     "es_framework_dependent",
     "leer_estado_cet",
     "verificar_apphost_sin_cet",
@@ -171,6 +172,25 @@ def leer_estado_cet(exe: pathlib.Path) -> EstadoCet:
         return EstadoCet.ENCENDIDO if bits & _CET_COMPAT else EstadoCet.APAGADO
     except Exception:  # noqa: BLE001 — cualquier inconsistencia del PE cuenta como ilegible
         return EstadoCet.ILEGIBLE
+    finally:
+        pe.close()
+
+
+_MAQUINA_X64 = 0x8664  # IMAGE_FILE_MACHINE_AMD64
+
+
+def es_ejecutable_x64(exe: pathlib.Path) -> bool:
+    """``True`` solo si *exe* es un PE cuyo ``FILE_HEADER.Machine`` es AMD64.
+
+    La arquitectura se lee del binario, no de su ruta: un ``dotnet.exe`` x86 copiado fuera de
+    ``Program Files (x86)`` no carga los runtimes x64 que piden los patchers. Ilegible → ``False``.
+    """
+    try:
+        pe = pefile.PE(str(exe), fast_load=True)
+    except (OSError, pefile.PEFormatError):
+        return False
+    try:
+        return bool(pe.FILE_HEADER.Machine == _MAQUINA_X64)
     finally:
         pe.close()
 

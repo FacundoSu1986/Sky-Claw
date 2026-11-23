@@ -31,6 +31,7 @@ def pe_sintetico(
     offsets_bundle: tuple[int, ...] = (0,),
     apps: tuple[bytes, ...] = (),
     dir_debug: tuple[int, int] | None = None,
+    maquina: int = 0x8664,
 ) -> bytes:
     """PE32+ mínimo que pefile parsea, con directorio de debug y marcadores de apphost."""
     seccion = bytearray()
@@ -57,7 +58,8 @@ def pe_sintetico(
     dos = bytearray(0x80)
     dos[0:2] = b"MZ"
     struct.pack_into("<I", dos, 0x3C, 0x80)
-    cabecera = struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, 0xF0, 0x22)
+    # `maquina`: 0x8664 = x64, 0x14C = x86, 0xAA64 = ARM64 (IMAGE_FILE_HEADER.Machine).
+    cabecera = struct.pack("<HHIIIHH", maquina, 1, 0, 0, 0, 0xF0, 0x22)
     dirs = [(0, 0)] * 16
     if n_entradas:
         dirs[6] = (va, 28 * n_entradas)

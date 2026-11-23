@@ -37,6 +37,7 @@ from sky_claw.local.tools.synthesis_prebuild import (
     CetCompatPersistenteError,
     ModoLanzamiento,
     decidir_lanzamiento,
+    es_ejecutable_x64,
     verificar_apphost_sin_cet,
 )
 
@@ -144,6 +145,9 @@ def _validar_dotnet(dotnet: pathlib.Path | None) -> pathlib.Path:
         raise ShimConfigError(f"dotnet apunta a la instalación x86 (Program Files (x86)): {dotnet}")
     if not dotnet.is_file():
         raise ShimConfigError(f"dotnet.exe no existe: {dotnet}")
+    if not es_ejecutable_x64(dotnet):
+        # La ruta no alcanza: un dotnet x86 copiado a otra carpeta pasaba el filtro de arriba.
+        raise ShimConfigError(f"dotnet.exe no es un ejecutable x64: {dotnet}")
     return dotnet
 
 
