@@ -750,6 +750,16 @@ class DynDOLODPipelineService:
         return await asyncio.to_thread(self._checklist_sincrono, run_texgen)
 
     def _checklist_sincrono(self, run_texgen: bool) -> ChecklistDeEtapa9:
+        if getattr(self, "_path_resolver", None) is None:
+            # Doble construido con ``__new__`` (contrato de errores de tools): sin resolver de rutas no hay nada
+            # que verificar. «No verificable» no bloquea; la autoridad aguas abajo (``_ensure_runner``) corta igual.
+            return ChecklistDeEtapa9(
+                resultados=tuple(
+                    resultado(ficha_id, Estado.NO_VERIFICABLE, detalle="sin resolver de rutas")
+                    for ficha_id in IdPrecondicion
+                    if run_texgen or ficha_id is not IdPrecondicion.TEXGEN_ENCONTRADO
+                )
+            )
         try:
             plugins_txt: pathlib.Path | None = self._plugins_txt_del_perfil_activo()
         except DynDOLODExecutionError:
