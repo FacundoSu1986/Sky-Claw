@@ -319,3 +319,10 @@ def test_mensajes_del_shim_son_ascii() -> None:
 def test_directorio_de_fuentes() -> None:
     assert ss.directorio_fuentes_shim() == _FUENTES
     assert sorted(p.name for p in _FUENTES.iterdir()) == ["Program.cs", "SkyClawSynthesisShim.csproj"]
+
+
+def test_validar_dotnet_x64_es_publica_y_es_la_que_usa_la_config(tmp_path: pathlib.Path) -> None:
+    # La Fase 1 (build) y el shim validan el MISMO dotnet con la MISMA función.
+    assert ss.validar_dotnet_x64(_dotnet(tmp_path)) == _dotnet(tmp_path)
+    with pytest.raises(ss.ShimConfigError):
+        ss.validar_dotnet_x64(None)

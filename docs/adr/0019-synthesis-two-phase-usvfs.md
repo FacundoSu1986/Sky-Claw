@@ -372,6 +372,21 @@ x64 instalado):
   la corrida: standalone y brokered (vía `vfs_worker` → `SynthesisRunner`) pasan por ahí. Ancla:
   `tests/test_synthesis_traductor_cli.py`. **Límite:** `SynthesisRunner` todavía no le pasa el mapa;
   se cablea junto con la caché y el build orquestado de la Fase 1.
+- **PR-3d (build de Fase 1 para patchers locales):** `sky_claw/local/tools/synthesis_compilacion.py`
+  (estricto en `mypy`) compila un `SolutionPatcherSettings` sobre una COPIA de la solución en la caché
+  (las fuentes del usuario no se tocan), con caché por hash del árbol de fuentes: un acierto revalida
+  la huella de la salida y el apphost sin CET, sin red ni HITL; una salida alterada falla cerrado sin
+  recompilar encima. Un fallo de caché pide primero la compuerta HITL de egress (`api.nuget.org`) y
+  recién después lanza `dotnet restore` y `dotnet build` (argumentos de PR-3a con `-o`) bajo
+  `run_capture(require_job=True, max_output_bytes)`. El entorno es el mismo que el del CLI:
+  `construir_entorno_dotnet` se extrajo de `SynthesisRunner` (una sola lista blanca, que ya incluye
+  `PROGRAMFILES`), más `NUGET_PACKAGES` y `TEMP` dentro de la caché. Publicación atómica con
+  `os.replace`, sin borrar. **Rig (fuera de USVFS):** MinimalPatcher real compilado en 9 s con un
+  pedido HITL; el segundo llamado es acierto de caché en 0,1 s; la cadena 3a→3b→3c sobre ese build
+  funciona (decisión directa, shim que reenvía igual que el patcher, `CliPatcherSettings` traducido);
+  una DLL alterada en la caché se detecta. Una solución con `ProjectReference` fuera de su carpeta
+  falla cerrado en el build. Falta: patchers Git, el orquestador que arma el mapa de shims y lo pasa a
+  `SynthesisRunner`, y la corrida bajo USVFS/MO2 real.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.

@@ -342,3 +342,19 @@ def test_verificacion_post_build_falla_si_no_hay_apphost(tmp_path: pathlib.Path)
         sp.verificar_apphost_sin_cet(tmp_path / "NoSeGenero.exe")
     assert "no existe" in str(exc.value)
     assert "no quedó sin CETCompat" not in str(exc.value)
+
+
+def test_argumentos_de_build_con_carpeta_de_salida() -> None:
+    # PR-3d: la Fase 1 compila hacia una carpeta propia de la caché; el resto no cambia.
+    proyecto = pathlib.Path("C:/cache/fuentes/MiPatcher/MiPatcher.csproj")
+    salida = pathlib.Path("C:/cache/salida")
+    assert sp.argumentos_dotnet_build_patcher(proyecto, salida=salida) == [
+        *sp.argumentos_dotnet_build_patcher(proyecto),
+        "-o",
+        str(salida),
+    ]
+
+
+def test_argumentos_de_restore_del_patcher() -> None:
+    proyecto = pathlib.Path("C:/cache/fuentes/MiPatcher/MiPatcher.csproj")
+    assert sp.argumentos_dotnet_restore_patcher(proyecto) == ["restore", str(proyecto), "--disable-build-servers"]

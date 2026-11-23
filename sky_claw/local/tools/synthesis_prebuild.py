@@ -42,6 +42,7 @@ __all__ = [
     "ModoLanzamiento",
     "Motivo",
     "argumentos_dotnet_build_patcher",
+    "argumentos_dotnet_restore_patcher",
     "decidir_lanzamiento",
     "es_ejecutable_x64",
     "es_framework_dependent",
@@ -332,7 +333,7 @@ def decidir_lanzamiento(exe: pathlib.Path) -> DecisionLanzamiento:
 # --- Fase 1: build sin CET --------------------------------------------------------------
 
 
-def argumentos_dotnet_build_patcher(proyecto: pathlib.Path) -> list[str]:
+def argumentos_dotnet_build_patcher(proyecto: pathlib.Path, *, salida: pathlib.Path | None = None) -> list[str]:
     """Argumentos de ``dotnet`` para compilar un patcher en Fase 1 (tras el restore con HITL).
 
     ``--no-incremental`` es obligatorio: un build incremental conserva el apphost previo con CET
@@ -348,7 +349,13 @@ def argumentos_dotnet_build_patcher(proyecto: pathlib.Path) -> list[str]:
         "Release",
         "-p:UseSharedCompilation=false",
         "-p:CETCompat=false",
+        *(["-o", str(salida)] if salida is not None else []),
     ]
+
+
+def argumentos_dotnet_restore_patcher(proyecto: pathlib.Path) -> list[str]:
+    """Argumentos de ``dotnet restore`` de la Fase 1: abre red (NuGet), solo tras la compuerta HITL."""
+    return ["restore", str(proyecto), "--disable-build-servers"]
 
 
 def verificar_apphost_sin_cet(exe: pathlib.Path) -> None:

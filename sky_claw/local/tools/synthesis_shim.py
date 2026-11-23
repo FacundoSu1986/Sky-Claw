@@ -52,6 +52,7 @@ __all__ = [
     "directorio_fuentes_shim",
     "hash_arbol",
     "materializar_shim",
+    "validar_dotnet_x64",
 ]
 
 ESQUEMA_CONFIG_SHIM = 1
@@ -135,7 +136,8 @@ def _exigir_ruta_absoluta(ruta: pathlib.Path, que: str) -> None:
         raise ShimConfigError(f"{que} debe ser una ruta absoluta: {ruta}")
 
 
-def _validar_dotnet(dotnet: pathlib.Path | None) -> pathlib.Path:
+def validar_dotnet_x64(dotnet: pathlib.Path | None) -> pathlib.Path:
+    """Valida el ``dotnet.exe`` x64 absoluto y existente; la usan el shim y el build de la Fase 1."""
     if dotnet is None:
         raise ShimConfigError("El patcher se lanza vía dotnet.exe y no se indicó el dotnet x64 verificado.")
     _exigir_ruta_absoluta(dotnet, "dotnet")
@@ -185,7 +187,7 @@ def construir_config_shim(
     if decision.modo is ModoLanzamiento.VIA_DOTNET:
         assert decision.dll is not None  # garantizado por DecisionLanzamiento
         dll = str(decision.dll)
-        ruta_dotnet = str(_validar_dotnet(dotnet))
+        ruta_dotnet = str(validar_dotnet_x64(dotnet))
     return {
         "schema": ESQUEMA_CONFIG_SHIM,
         "modo": modo,
