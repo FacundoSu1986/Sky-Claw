@@ -346,6 +346,23 @@ x64 instalado):
   compuerta HITL de egress, `SynthesisPreset` e `install_synthesis_cli` quedan para los cortes
   siguientes de PR-3. No se probó un self-contained real (su forma `includedFrameworks` se cubre con
   `runtimeconfig.json` sintético).
+- **PR-3b (shim de producción):** fuentes C# en `sky_claw/local/tools/synthesis_shim_fuentes/`
+  (`CETCompat=false` declarado, sin `PackageReference`), que viajan en el wheel y en el congelado
+  (`tests/test_packaging.py` verifica las dos distribuciones juntas). El lado Python,
+  `sky_claw/local/tools/synthesis_shim.py` (estricto en `mypy`), fija el árbol completo del patcher
+  por hash (mismo algoritmo en Python y C#; rechaza enlaces y nombres fuera del BMP), construye un
+  `shim.json` de esquema cerrado decidiendo el lanzamiento con PR-3a (directo / `dotnet.exe exec
+  <nombre>.dll`; un patcher rechazado no tiene shim) y materializa una copia del shim por patcher sin
+  borrar nada. El shim C# revalida el esquema y el hash antes de lanzar, inyecta `-i`/`-f` cuando hay
+  carpetas de datos y devuelve el código del patcher. Anclas: claves y versión de esquema C#↔Python,
+  csproj, mensajes ASCII (la consola de Windows no está en UTF-8). **Rig (fuera de USVFS):** el shim
+  compilado con los argumentos de Fase 1 queda sin CET; lanza ShimProbe con CET vía `dotnet.exe` y sin
+  CET directo; el hash de Python coincide con el de C# en un árbol real de 48 archivos; DLL alterada o
+  archivo agregado → 6 sin lanzar; claves extra/faltantes o DLL ajena → 3. **Hallazgo para el build de
+  Fase 1:** con el entorno mínimo, `dotnet restore` falla dentro de NuGet si falta `ProgramFiles` (o
+  `ProgramFiles(x86)`); la lista blanca de Fase 1 lo tiene que incluir, y conviene aislar `APPDATA`,
+  `LOCALAPPDATA` y `NUGET_PACKAGES`. Falta: correr este shim bajo USVFS/MO2 real, el traductor a
+  `CliPatcherSettings` (PR-3c) y el build orquestado de la Fase 1.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.
