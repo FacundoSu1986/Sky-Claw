@@ -60,7 +60,7 @@ internal static class Programa
             return Fallar(SalidaConfigInvalida, "shim.json invalido: " + e.Message);
         }
 
-        if (cfg.InternalDataFolder is not null)
+        if (cfg.InternalDataFolder is not null || cfg.DefaultDataFolderPath is not null)
         {
             foreach (var a in args)
             {
@@ -101,12 +101,16 @@ internal static class Programa
         {
             psi.ArgumentList.Add(a);
         }
+        // Cada flag con su carpeta, por separado, como upstream (ConstructSolutionPatcherRunArgs 0.36.6).
         if (cfg.InternalDataFolder is not null)
         {
             psi.ArgumentList.Add("-i");
             psi.ArgumentList.Add(cfg.InternalDataFolder);
+        }
+        if (cfg.DefaultDataFolderPath is not null)
+        {
             psi.ArgumentList.Add("-f");
-            psi.ArgumentList.Add(cfg.DefaultDataFolderPath!);
+            psi.ArgumentList.Add(cfg.DefaultDataFolderPath);
         }
 
         try
@@ -271,13 +275,14 @@ internal static class Programa
                 default:
                     throw new InvalidDataException("modo desconocido: " + modo);
             }
-            if ((internalData is null) != (defaultData is null))
+            // Independientes, como upstream: cada una, si viene, tiene que existir.
+            if (internalData is not null && !Directory.Exists(internalData))
             {
-                throw new InvalidDataException("internalDataFolder y defaultDataFolderPath van juntos");
+                throw new InvalidDataException("internalDataFolder inexistente: " + internalData);
             }
-            if (internalData is not null && (!Directory.Exists(internalData) || !Directory.Exists(defaultData)))
+            if (defaultData is not null && !Directory.Exists(defaultData))
             {
-                throw new InvalidDataException("carpeta de recursos inexistente");
+                throw new InvalidDataException("defaultDataFolderPath inexistente: " + defaultData);
             }
             return new Config(modo, patcher, dll, dotnet, arbol, internalData, defaultData);
         }
