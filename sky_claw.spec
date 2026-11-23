@@ -113,6 +113,8 @@ datas = [
     ("sky_claw/app/gui/styles.css", "sky_claw/app/gui"),
     ("sky_claw/app/gui/assets", "sky_claw/app/gui/assets"),
     ("sky_claw/local/xedit/scripts", "sky_claw/local/xedit/scripts"),
+    # PR-3b Synthesis: fuentes del shim que compila la Fase 1 (anclado en test_packaging.py).
+    ("sky_claw/local/tools/synthesis_shim_fuentes", "sky_claw/local/tools/synthesis_shim_fuentes"),
     ("sky_claw/local/mo2/plugin_bundle/skyclaw_bridge", "sky_claw/local/mo2/plugin_bundle/skyclaw_bridge"),
     ("sky_claw/app/security/security_policy.yaml", "sky_claw/app/security"),
 ]

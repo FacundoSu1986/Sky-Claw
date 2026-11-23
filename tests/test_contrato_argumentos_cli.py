@@ -227,6 +227,12 @@ LANZADORES_ESPERADOS = {
     "sky_claw/local/tools/dyndolod_runner.py": 1,
     "sky_claw/local/tools/pandora_runner.py": 1,
     "sky_claw/local/tools/synthesis_runner.py": 1,
+    # PR-3d (ADR 0019): un único `run_capture` lanza `dotnet` (restore / build / msbuild
+    # -getProperty) para compilar patchers en la Fase 1.
+    "sky_claw/local/tools/synthesis_compilacion.py": 1,
+    # PR-3e (ADR 0019): un único `run_capture` lanza `git` (init / fetch / checkout / rev-parse) para
+    # bajar un patcher de GitHub fijado por commit.
+    "sky_claw/local/tools/synthesis_fuentes_git.py": 1,
     "sky_claw/local/tools/texconv_runner.py": 1,
     "sky_claw/local/tools/vramr_service.py": 1,
     # ADR 0018: un único `run_capture` lanza el xEdit Bridge (run_mcp.py / run_admit.py).
@@ -250,6 +256,8 @@ LANZADORES_DE_HERRAMIENTA = frozenset(
         "sky_claw/local/tools/dyndolod_runner.py",
         "sky_claw/local/tools/pandora_runner.py",
         "sky_claw/local/tools/synthesis_runner.py",
+        "sky_claw/local/tools/synthesis_compilacion.py",
+        "sky_claw/local/tools/synthesis_fuentes_git.py",
         "sky_claw/local/tools/texconv_runner.py",
         "sky_claw/local/tools/vramr_service.py",
         "sky_claw/local/xedit/runner.py",
@@ -306,6 +314,21 @@ PROCEDENCIA_DE_FLAGS = {
     "sky_claw/local/xedit/runner.py": (
         "TES5Edit/TES5Edit — xEdit/xeInit.pas (-T:/-P:, game mode); tes5edit.github.io/docs "
         "2-overview (-D: Data dir, -R: log filename) y 18-whatsnew 4.0.2 (-autoexit en modo Script)"
+    ),
+    "sky_claw/local/tools/synthesis_compilacion.py": (
+        "dotnet/sdk 10.0 — learn.microsoft.com dotnet-restore (--configfile: solo ese archivo, sin la "
+        "jerarquía de NuGet.Config; --disable-build-servers), dotnet-build (--no-restore, --no-incremental, "
+        "-c, -o) y MSBuild -getProperty; CETCompat=false por Synthesis Directory.Build.props 0.36.6. "
+        "EJECUTADO con el SDK 10.0.404 en el rig (s5/evidence/PR3D_BUILD_FASE1_2026-11-23.md: build real, "
+        "AssemblyName evaluado y control NU1301 que prueba el aislamiento de --configfile)"
+    ),
+    "sky_claw/local/tools/synthesis_fuentes_git.py": (
+        "git-scm.com/docs 2.51 — git-config (core.symlinks, core.longpaths, protocol.allow / "
+        "protocol.<name>.allow, submodule.recurse, credential.helper vacío, core.fsmonitor), git (-c, -C; "
+        "GIT_CONFIG_NOSYSTEM, GIT_CONFIG_GLOBAL, GIT_TERMINAL_PROMPT), git-fetch (--depth, --no-tags, "
+        "--no-recurse-submodules; fetch por SHA completo), git-checkout (--detach FETCH_HEAD) y git-rev-parse. "
+        "EJECUTADO contra GitHub real con git 2.51.1 en el rig (solo descarga, autorizada por el propietario: "
+        "Synthesis-Collective/FaceFixer por SHA; s5/evidence/PR3E_FUENTES_GIT_2026-11-23.md)"
     ),
     "sky_claw/local/tools/xedit_bridge_client.py": (
         "xEdit Bridge 1.1.0 — run_admit.py (argparse: config posicional, --mo2 'MO2 instance folder (the "
