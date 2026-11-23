@@ -568,15 +568,37 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
   (`store_true`, con destino en `-f`). **No existe flag de build headless**; el
   comando que usaba el repo ni siquiera parseaba, así que la etapa 6 fallaba con
   un exit code de `argparse` sin causa legible.
-- **BodySlide** (`src/program/BodySlideApp.cpp`, descriptor en `BodySlideApp.h`)
-  declara `gbuild`/`t` como nombres **cortos** de `wxCmdLineParser` (de ahí el
-  guion simple); el repo pasaba `-b`/`-o`. El descriptor declara además `p`
-  (preset) y `tri` (morfos), que quedaron sin usar en el fix del vector: sin
-  `-tri`, `GroupBuild` pasa `cmdTri=false` y no se emiten los `.tri` que OBody NG
-  / RaceMenu cargan en memoria — un build silenciosamente incompleto. Ambos se
-  cablearon después, con `-tri` por defecto.
+- **BodySlide** (`src/bodyslide/BodySlideApp.cpp`, descriptor en `BodySlideApp.h::g_cmdLineDesc`,
+  upstream v6.2.0 tag `99103c3`) declara `gbuild`/`b`/`f`/`regex`/`t`/`p`/`tri`/
+  `conformaddons`/`q`/`preview` como nombres **cortos** de `wxCmdLineParser`
+  (de ahí el guion simple). El repo pasaba `-b`/`-o`. `-gbuild` y `-t` se cablearon
+  con `-tri` por defecto (sin él, `GroupBuild` pasa `cmdTri=false` y no se emiten
+  los `.tri` que OBody NG / RaceMenu cargan en memoria). `-q`/quiet se emite
+  **sólo con capacidad verificada** y `-p` **sólo con preset explícitamente
+  verificado** — sin verificación, el runner aborta antes del spawn. Flags
+  declarados upstream pero fuera del contrato aprobado (`b`, `f`, `regex`,
+  `conformaddons`, `preview`) NO se emiten por defecto.
 - **Pandora** (README, "Startup Arguments"): `--game` y `--auto` no existen; los
   documentados para correr desatendido son `--auto_run`/`--auto_close`.
+- **BodySlide PR 1 (2026-11-22, auditoría interna CHANGES_REQUESTED):** correcciones
+  P0-1/P0-2/P0-3/P1-5/P1-6/P1-7/P1-8 implementadas en el árbol (snapshot original antes
+  de la siembra; restore byte a byte a través de enlaces; atribución de log al run
+  real con re-read acotado; expected_target_game; manifiesto verificado vs. solo
+  conteo; conflictos sin ganador vs. verificables). El hallazgo de worktree (P0-4)
+  quedó resuelto (rama `feat/bodyslide-pr1-headless`, worktree exclusivo, Draft PR
+  #1003) y la revisión independiente de #1003 cerró P1-A (destino = target canónico
+  del grupo), P1-B (log ilegible ≠ ausente), P1-C (siembra cancelada no escribe
+  tras el restore) y P1-D (grupo que no es carpeta Win32 independiente: punto o
+  espacio final, dispositivos reservados). El cierre contractual del propietario
+  cerró además: preset efectivo desconocido ⇒ nunca SUCCESS, Job Object obligatorio
+  (`require_job=True`, falla cerrada sin Job), grupos que difieren sólo en mayúsculas
+  de una carpeta existente (runner y tool, antes del move-aside) y log manipulado.
+  **Sin ejecución productiva** hasta PR 2 (`CAPABILITY_UNKNOWN` sin `quiet_verified`);
+  rig Windows/MO2 pendiente. Pendiente para PR 2: binario real, USVFS, terminalidad
+  brokered, concurrencia con BodySlide/Outfit Studio, revalidación física, journal y
+  espera acotada de la siembra; para PR 3: catálogo, conflictos pre-spawn, procedencia
+  del manifiesto y estados tipados al agente. Evidencia:
+  `docs/validation/2026-11-22_bodyslide-pr1-audit-corrections.md`.
 
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un
 flag en vez de enumerar el vector. El ancla `test_contrato_argumentos_cli.py`
