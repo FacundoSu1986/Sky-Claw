@@ -23,6 +23,8 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from sky_claw.app.security.path_validator import PathValidator
 
 from sky_claw.app.security.path_validator import PathViolationError
@@ -74,6 +76,38 @@ _ALLOWED_SYNTHESIS_PATCHER_TYPES = frozenset(
         "Synthesis.Bethesda.Execution.Settings.CliPatcherSettings",
     }
 )
+
+
+#: PR-3c (ADR 0019 §2.1): forma CERRADA del patcher traducido para la Fase 2. Cualquier campo de
+#: Git/Solution que sobreviva (``RemoteRepoPath``, ``SolutionPath``...) haría que Synthesis clone o
+#: compile bajo USVFS.
+_CLI_PATCHER_TYPE = f"Synthesis.Bethesda.Execution.Settings.CliPatcherSettings, {_CANONICAL_SYNTHESIS_ASSEMBLY}"
+CLAVES_CLI_PATCHER_TRADUCIDO = frozenset({"$type", "On", "Nickname", "PathToExecutable"})
+
+
+def _resolver_ejecutables_cli(
+    cli_executables: Mapping[str, pathlib.Path],
+    seleccionados: list[str],
+) -> dict[str, pathlib.Path]:
+    """Exige que el mapa cubra EXACTAMENTE los patchers seleccionados (por ID canónico)."""
+    por_clave: dict[str, pathlib.Path] = {}
+    for clave, ruta in cli_executables.items():
+        plegada = clave.strip().casefold()
+        if plegada in por_clave:
+            raise PatcherPipelineError(f"Mapa de ejecutables CLI de Synthesis con clave duplicada: {clave!r}")
+        if not pathlib.Path(ruta).is_absolute():
+            raise PatcherPipelineError(
+                f"El ejecutable CLI de Synthesis para {clave!r} debe ser una ruta absoluta: {ruta}"
+            )
+        por_clave[plegada] = pathlib.Path(ruta)
+    esperados = {canonical.casefold() for canonical in seleccionados}
+    faltan = sorted(c for c in seleccionados if c.casefold() not in por_clave)
+    if faltan:
+        raise PatcherPipelineError(f"Patchers de Synthesis sin ejecutable CLI traducido: {faltan}")
+    sobran = sorted(clave for clave in cli_executables if clave.strip().casefold() not in esperados)
+    if sobran:
+        raise PatcherPipelineError(f"El mapa de ejecutables CLI nombra patchers no seleccionados: {sobran}")
+    return por_clave
 
 
 def _validate_allowed_type_tag(
@@ -577,6 +611,7 @@ class PatcherPipeline:
         *,
         split_if_max_masters_exceeded: bool | None = None,
         dotnet_path_override: str | pathlib.Path | None = None,
+        cli_executables: Mapping[str, pathlib.Path] | None = None,
     ) -> tuple[pathlib.Path, SynthesisSettingsProfile]:
         """Materializa un settings temporal V2 sin mutar el archivo del usuario.
 
@@ -586,9 +621,22 @@ class PatcherPipeline:
         ``SplitIfMaxMastersExceeded`` (evitando la deriva 0.36.6 vs HEAD) y
         permite fijar ``DotNetPathOverride`` (``DotNetCommandPathProvider.cs:15``).
         El caller es dueño de borrar el archivo temporal que devuelve.
+
+        ``cli_executables`` (PR-3c, Fase 2 bajo USVFS): ID canónico de cada patcher
+        seleccionado → su shim (PR-3b). Cada patcher, sea Git, Solution o CLI, se
+        reemplaza por un ``CliPatcherSettings`` de forma cerrada
+        (:data:`CLAVES_CLI_PATCHER_TRADUCIDO`) que conserva el ``Nickname`` de
+        ejecución, del que dependen los recibos. El mapa tiene que cubrir
+        exactamente la selección. El traductor vive acá, en el único productor del
+        settings de la corrida, para que no haya un segundo materializador.
         """
         raw_settings, profile, active_groups = cls._read_synthesis_profile(settings_path, profile_identifier)
         selected_entries = cls._select_synthesis_entries(active_groups, patcher_ids)
+        ejecutables_cli = (
+            None
+            if cli_executables is None
+            else _resolver_ejecutables_cli(cli_executables, [entry[2] for entry in selected_entries])
+        )
         selected_entry_keys = {(group_index, patcher_index) for group_index, patcher_index, _, _ in selected_entries}
         selected_group_indices = {group_index for group_index, _, _, _ in selected_entries}
         raw_split = profile.get("SplitIfMaxMastersExceeded", True)
@@ -616,6 +664,17 @@ class PatcherPipeline:
             chosen_patchers: list[dict[str, Any]] = []
             for patcher_index, patcher, canonical_id, _ in patchers:
                 if (group_index, patcher_index) not in selected_entry_keys:
+                    continue
+                if ejecutables_cli is not None:
+                    # La lista blanca de $type ya se validó al leer el perfil.
+                    chosen_patchers.append(
+                        {
+                            "$type": _CLI_PATCHER_TYPE,
+                            "On": True,
+                            "Nickname": _resolve_patcher_execution_name(patcher, canonical_id),
+                            "PathToExecutable": str(ejecutables_cli[canonical_id.casefold()]),
+                        }
+                    )
                     continue
                 patcher_copy = copy.deepcopy(patcher)
                 canonical_patcher_type = _validate_allowed_type_tag(

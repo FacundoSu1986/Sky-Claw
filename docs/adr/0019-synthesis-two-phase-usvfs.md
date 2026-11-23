@@ -363,6 +363,15 @@ x64 instalado):
   `ProgramFiles(x86)`); la lista blanca de Fase 1 lo tiene que incluir, y conviene aislar `APPDATA`,
   `LOCALAPPDATA` y `NUGET_PACKAGES`. Falta: correr este shim bajo USVFS/MO2 real, el traductor a
   `CliPatcherSettings` (PR-3c) y el build orquestado de la Fase 1.
+- **PR-3c (traductor V2 → `CliPatcherSettings`):** `prepare_synthesis_cli_settings` acepta
+  `cli_executables` (ID canónico → shim de PR-3b) y reemplaza cada patcher seleccionado —Git,
+  Solution o CLI— por un `CliPatcherSettings` de forma cerrada (`CLAVES_CLI_PATCHER_TRADUCIDO`:
+  `$type`, `On`, `Nickname`, `PathToExecutable`), conservando el `Nickname` de ejecución del que
+  dependen los recibos. El mapa debe cubrir exactamente la selección (faltante, sobrante, clave
+  duplicada por mayúsculas o ruta relativa → fail-closed). Vive en el único productor del settings de
+  la corrida: standalone y brokered (vía `vfs_worker` → `SynthesisRunner`) pasan por ahí. Ancla:
+  `tests/test_synthesis_traductor_cli.py`. **Límite:** `SynthesisRunner` todavía no le pasa el mapa;
+  se cablea junto con la caché y el build orquestado de la Fase 1.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.
