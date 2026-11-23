@@ -305,7 +305,9 @@ def test_toda_tool_se_registra_en_una_sola_superficie() -> None:
 #: (``... import BodySlideRunner as R``) tampoco lo esquiva.
 MODULOS_QUE_IMPORTAN_BODYSLIDE_RUNNER: set[str] = {"sky_claw/app/agent/tools/__init__.py"}
 MODULOS_QUE_INSTANCIAN_BODYSLIDE_RUNNER: set[str] = {"sky_claw/app/agent/tools/__init__.py"}
-MODULOS_QUE_EJECUTAN_BODYSLIDE: set[str] = {"sky_claw/app/agent/tools/system_tools.py"}
+#: PR 2a: la ejecución vive en el servicio compartido; la tool del agente (y la GUI
+#: de PR 4) lo construyen — ver ``tests/test_bodyslide_servicio.py``.
+MODULOS_QUE_EJECUTAN_BODYSLIDE: set[str] = {"sky_claw/local/tools/bodyslide_service.py"}
 
 
 def _censo_de_ejecucion_de_bodyslide() -> tuple[set[str], set[str], set[str]]:
