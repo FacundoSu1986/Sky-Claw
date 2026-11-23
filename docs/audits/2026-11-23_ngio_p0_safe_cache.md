@@ -273,3 +273,74 @@ los archivos alcanzables; el ack no reemplaza ninguna de las dos cosas.
 | mypy | `mypy sky_claw/ scripts/` | 694 errores preexistentes en 17 archivos (ninguno del write-set); **0** en los módulos de grass |
 | Suite completa | `pytest -q --tb=no --ignore=tests/test_runtime_vault_operator_verifier.py` | **20473 passed, 626 skipped, 136 failed** (7 tests nuevos verdes) |
 | Baseline | `git stash -u` + `pytest --lf` (mismo árbol sin el parche) | **136 fallos, node IDs idénticos** (`diff` vacío ⇒ 0 regresiones) |
+
+## 11. Cuarta revisión independiente (`87358bb`) — qué se corrigió
+
+La revisión aceptó como cerrados B7/B8/B9 y el invariante de `run()` en los caminos
+normales, y señaló dos bloqueantes nuevos. Los dos se reprodujeron en rojo **antes** de tocar
+el código, con tests que fallan por la causa correcta.
+
+| # | Defecto | Rojo reproducido | Corrección | Test |
+|---|---|---|---|---|
+| **B10** | `archivar_progreso()` validaba `raiz_estado`, pero el destino real es `<raiz_estado>/progreso/<huella>.json`: un enlace en el **subdirectorio** `progreso` pasaba los guards de la raíz y el JSON de evidencia se escribía fuera del árbol administrado, sobrescribiendo un archivo ajeno. Del lado de la lectura, la evidencia se recuperaba desde afuera | con `raiz_estado` real y `<raiz_estado>/progreso` → árbol externo, el archivo externo se sobrescribía con el JSON de evidencia (y una lectura tomaba evidencia de afuera) | `_validar_progreso_fisico()` valida la **cadena física completa del destino**, no sólo la raíz: se reutiliza `_validar_raiz_fisica` → `exigir_contencion_fisica` (ancla en la raíz del volumen, `lstat` de cada componente, symlinks **y** junctions), así que también cubre un **ancestro intermedio** enlazado. Se valida antes del `mkdir`, se revalida con el subdirectorio ya creado y se clasifica el archivo de evidencia (`progreso_es_enlace`); al recuperar se valida antes de leer | `test_archivado_rechaza_subdirectorio_de_progreso_enlazado`, `test_recuperar_rechaza_subdirectorio_de_progreso_enlazado`, `test_archivado_rechaza_un_ancestro_intermedio_enlazado` |
+| **B11** | `asyncio.to_thread(aplicar_plan)` no es cancelable: si la cancelación se entrega mientras el hilo escribe el flag, el `finally` corre **antes** de que el hilo termine, `estado.escrito` todavía es `False`, la limpieza se saltea y el hilo termina después dejando un flag vacío sin dueño —que el próximo arranque del juego convierte en borrado del caché—. Atrapar `GrassCacheSafetyError` no cambia nada: la cancelación no pasa por ahí | cancelando la tarea exactamente con la escritura en vuelo (barreras `threading.Event` + `asyncio.to_thread`), el flag vacío **quedaba** en disco | `_aplicar_plan_en_seccion_critica()`: la espera es a prueba de cancelación (`asyncio.shield` sobre la tarea del hilo); al recibir `CancelledError` **no se propaga mientras el hilo siga en vuelo**, se vuelve a esperar hasta que TERMINA y recién entonces se levanta. El `finally` externo adopta el flag con el estado ya consolidado (`escrito`), y la neutralización sigue siendo síncrona para no re-cancelarse entre el archivo y el `unlink` | `test_cancelacion_durante_la_escritura_del_flag_no_deja_flag_vacio` |
+
+**Por qué la sección crítica y no un `except` más.** El invariante que la revisión pidió no
+es "capturar la excepción correcta", es **"el run no abandona la escritura"**: quien decide si
+el flag es nuestro (`escrito`) sólo puede decidirlo cuando el hilo terminó. Por eso el
+`finally` que adopta el flag quedó **detrás** de una espera que no se interrumpe, y el
+`CancelledError` se propaga después —la cancelación sigue siendo cancelación para el
+llamador, pero ya no puede dejar basura en disco.
+
+### Integración con `origin/main` (autorizada)
+
+La rama se puso al día con `origin/main` **sólo en este sentido**, según `AGENTS.md` y
+`docs/development/merge_and_conflict_resolution.md`:
+
+| Regla | Hecho |
+|---|---|
+| R1 — `merge`, no `rebase` | `git merge --no-ff origin/main`; la historia del PR se conserva |
+| R2 — `--no-ff` | el commit de sincronización es un merge real (`git log --merges origin/main..HEAD` no vacío; dos padres) |
+| R4 — `origin/main` ancestro | verificado con `git merge-base --is-ancestor origin/main HEAD` |
+| R3 — el PR no se mergea acá | no se tocó `main`; sin squash, sin merge del PR, sin force-push |
+| R5/R6 — clasificación | un solo archivo conflictuado (`CHANGELOG.md`), clase **MECANICO** (§6), resuelto conservando **los dos** lados; ningún `--ours`/`--theirs` |
+| R7 — un merge limpio no es evidencia | `pyproject.toml` auto-mergeado se revisó a mano (las dos entradas de `mypy` conviven); inventario de call sites (R10) rehecho sobre el árbol mergeado |
+| R8/R11 — artefactos | sin artefactos generados en el conflicto; no se regeneró nada a mano |
+| R13 — registro | tabla de §6 en el cuerpo del PR #1008 |
+| R15 — anclas | todos los gates de abajo corren sobre el árbol **mergeado** |
+
+**Clasificación del hunk de `CHANGELOG.md`.** Los dos lados agregaron su propia entrada al
+tope de `## [Unreleased] / ### Added`; ninguna línea existente cambió. Se conservaron las dos
+(primero la de este PR, después la de `#1007`): `git diff -w <base> -- CHANGELOG.md` da
+**0 líneas eliminadas**, o sea que el lado ajeno no perdió nada. No hay invariante en juego,
+así que no es `SEMANTICO`; tampoco cambia ninguna firma, así que no es `DE_CONTRATO`.
+
+**Inventario de call sites (R10) sobre el árbol mergeado.** `archivar_progreso` y
+`recuperar_progreso` sólo se llaman desde `grass_cache_safety.py` (`neutralizar_flag`,
+`preparar_arranque`) y `aplicar_plan` sólo desde el runner (ahora vía la sección crítica). El
+PR **no cambia ninguna firma ni el tipo de retorno** de las primitivas públicas, y `main` no
+trajo consumidores nuevos de grass cache: la integración no puede romper un call site ajeno.
+
+### Gates de la cuarta revisión (árbol mergeado, 2026-11-23, Linux, Python 3.11.2)
+
+| Gate | Comando | Resultado |
+|---|---|---|
+| ROJO por defecto | B10/B11 escritos antes del arreglo | **3 fallos con la causa correcta** (evidencia escrita fuera del árbol administrado por un enlace en `progreso`, lectura de evidencia ajena, y flag vacío sobreviviente a la cancelación con la escritura en vuelo) y **verde** después. El test de B11 se repitió 5 veces: 5/5 verde (no es flaky) |
+| VERDE focalizado | `pytest tests/test_grass_cache_{safety,runner,service,strategy}.py` | **171 passed** (167 + 4 nuevos) |
+| VERDE focalizado ampliado | `+ tests/test_grass_profile.py tests/test_hitl_destructive_gate.py tests/bdd` | **239 passed, 2 skipped** |
+| Ruff | `ruff check` + `ruff format --check` sobre `sky_claw/ scripts/ tests/` | *All checks passed!* / *1172 files already formatted* |
+| mypy | `mypy sky_claw/ scripts/` | 694 errores preexistentes en 17 archivos (ninguno del write-set); **0** en los módulos de grass |
+| Suite completa | `pytest -q --tb=no -p no:randomly --ignore=tests/test_runtime_vault_operator_verifier.py` | **20917 passed, 628 skipped, 136 failed** en 1534 s |
+| Baseline | 136 node IDs de fallo comparados contra la línea base de la tercera revisión (`comm` en ambos sentidos) | **conjuntos idénticos ⇒ 0 regresiones**; ninguno pertenece a grass, HITL, BDD ni al dispatcher |
+| Anclas del repo | `tests/test_worktree_convention_invariant.py` | **23 passed**. Detectó el worktree auxiliar que se creó fuera de la convención para comparar contra `origin/main`; retirado, el fallo desaparece. Se declara acá porque apareció en el log de la suite y no es un defecto del producto |
+
+**Nota sobre el conteo.** La corrida imprimió `137 failed`: 136 son la línea base preexistente y 1
+era `test_los_worktrees_no_principales_viven_bajo_la_convencion`, que falló por el worktree
+temporal usado para comparar con `origin/main` (en `/tmp`). Sin ese worktree el test pasa; por eso
+el número que se declara es **136**. No se introdujo ningún artefacto al repo.
+
+**Limitación que sigue en pie.** Nada de esto se midió en Windows con MO2/USVFS/SKSE/NGIO reales:
+la contención física de symlinks se ejerció en Linux, y el camino de junction de Windows queda
+cubierto por la primitiva compartida (`exigir_contencion_fisica`) y sus tests, no por una corrida
+en ese sistema. El veredicto es el mismo que en las revisiones anteriores:
+**código listo para humo humano en rig**, no certificación.
