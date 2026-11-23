@@ -36,7 +36,7 @@ from sky_claw.app.security.hitl import Decision, new_hitl_request_id
 from sky_claw.app.security.links import exigir_arbol_copiable_sin_reparse, rmtree_link_aware
 from sky_claw.local.tools._process import run_capture
 from sky_claw.local.tools.synthesis_runner import construir_entorno_dotnet
-from sky_claw.local.tools.synthesis_shim import ShimConfigError, hash_arbol
+from sky_claw.local.tools.synthesis_shim import ShimConfigError, hash_arbol, hilo_hasta_terminar
 
 if TYPE_CHECKING:
     from sky_claw.app.security.hitl import HITLGuard
@@ -257,7 +257,7 @@ async def _bajar_y_publicar(
         raise FuentesGitError(f"HEAD quedó en {head!r} y no en el commit pedido {sha}: se aborta.")
 
     # Disco pesado (copia + hash del árbol + publicación) fuera del event loop del servicio (PR-3h).
-    return await asyncio.to_thread(_guardar_y_publicar, repo, publicar, final, url_git, sha)
+    return await hilo_hasta_terminar(_guardar_y_publicar, repo, publicar, final, url_git, sha)
 
 
 def _guardar_y_publicar(repo: pathlib.Path, publicar: pathlib.Path, final: pathlib.Path, url_git: str, sha: str) -> str:

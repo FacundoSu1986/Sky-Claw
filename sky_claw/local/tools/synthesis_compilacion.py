@@ -50,7 +50,7 @@ from sky_claw.local.tools.synthesis_prebuild import (
     verificar_apphost_sin_cet,
 )
 from sky_claw.local.tools.synthesis_runner import construir_entorno_dotnet
-from sky_claw.local.tools.synthesis_shim import ShimConfigError, hash_arbol, validar_dotnet_x64
+from sky_claw.local.tools.synthesis_shim import ShimConfigError, hash_arbol, hilo_hasta_terminar, validar_dotnet_x64
 
 if TYPE_CHECKING:
     from sky_claw.app.security.hitl import HITLGuard
@@ -208,7 +208,7 @@ async def _compilar_y_publicar(
 
     try:
         # Disco pesado (copia + hash del árbol) fuera del event loop del servicio (PR-3h).
-        copia_fiel = await asyncio.to_thread(_copiar)
+        copia_fiel = await hilo_hasta_terminar(_copiar)
     except (OSError, ShimConfigError) as exc:
         raise CompilacionPatcherError(f"No se pudo copiar la solución a la caché: {exc}") from exc
     if not copia_fiel:
@@ -243,7 +243,7 @@ async def _compilar_y_publicar(
         max_output_bytes=max_output_bytes,
     )
     exe = salida / f"{_validar_assembly_name(salida_msbuild)}.exe"
-    return await asyncio.to_thread(_sellar_y_publicar, exe, publicar, final, proyecto)
+    return await hilo_hasta_terminar(_sellar_y_publicar, exe, publicar, final, proyecto)
 
 
 def _sellar_y_publicar(

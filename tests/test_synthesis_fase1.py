@@ -396,6 +396,7 @@ _BLOQUEANTES_DE_FASE1 = frozenset(
         "_sellar_y_publicar",
         "_guardar_y_publicar",
         "exigir_arbol_copiable_sin_reparse",
+        "construir_config_shim",
     }
 )
 _MODULOS_DE_FASE1 = (

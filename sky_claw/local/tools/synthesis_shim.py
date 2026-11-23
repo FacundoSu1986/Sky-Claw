@@ -24,12 +24,14 @@ podría cambiar el árbol (TOCTOU). Lo acota que el cache viva bajo
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
 import pathlib
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from typing import ParamSpec, TypeVar
 
 from sky_claw.app.security.links import exigir_arbol_copiable_sin_reparse
 from sky_claw.local.tools.patcher_pipeline import is_x86_dotnet_path
@@ -47,6 +49,7 @@ __all__ = [
     "MODO_SHIM_POR_MODO",
     "NOMBRE_CONFIG_SHIM",
     "NOMBRE_EJECUTABLE_SHIM",
+    "hilo_hasta_terminar",
     "ShimConfigError",
     "construir_config_shim",
     "directorio_fuentes_shim",
@@ -58,6 +61,34 @@ __all__ = [
 ESQUEMA_CONFIG_SHIM = 1
 NOMBRE_CONFIG_SHIM = "shim.json"
 NOMBRE_EJECUTABLE_SHIM = "SkyClawSynthesisShim.exe"
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+async def hilo_hasta_terminar(func: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs) -> _T:
+    """``asyncio.to_thread`` que, si cancelan al llamador, ESPERA a que el hilo termine antes de propagar.
+
+    Un hilo no se puede cancelar: con ``to_thread`` crudo, el ``finally`` del llamador limpiaría la
+    carpeta de trabajo mientras el hilo todavía la hashea, escribe la marca o la publica, y la caché
+    quedaría con una entrada que no coincide con su marca. Usarlo en todo paso que escriba en una
+    carpeta que el llamador borra al salir.
+    """
+    tarea = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
+    cancelado = False
+    while True:
+        try:
+            resultado = await asyncio.shield(tarea)
+            break
+        except asyncio.CancelledError:
+            if tarea.done():
+                raise
+            cancelado = True
+    if cancelado:
+        raise asyncio.CancelledError
+    return resultado
+
+
 CLAVES_CONFIG_SHIM = frozenset(
     {
         "schema",

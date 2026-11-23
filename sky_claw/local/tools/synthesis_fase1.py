@@ -224,7 +224,9 @@ async def preparar_fase1(
             configs.append(
                 (
                     patcher,
-                    construir_config_shim(
+                    # Hashea el árbol del patcher: fuera del loop del servicio.
+                    await asyncio.to_thread(
+                        construir_config_shim,
                         listo.exe,
                         dotnet=ctx.dotnet,
                         internal_data_folder=listo.internal_data,

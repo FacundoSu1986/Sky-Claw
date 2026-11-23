@@ -843,7 +843,11 @@ class SynthesisPipelineService:
                     settings_path, runner._config.profile, list(patcher_ids)
                 )
             except (Fase1Error, OSError) as exc:
-                logger.error("Fase 1 de Synthesis falló (stage 7): %s", exc)
+                logger.error(
+                    "Fase 1 de Synthesis falló (stage 7): %s",
+                    exc,
+                    extra={"pipeline_stage": self.PIPELINE_STAGE, "tx_id": None},
+                )
                 return _attach_preflight(self._error_dict(f"Fase 1 de Synthesis falló: {exc}"), preflight_report)
 
         output_base_paths = tuple(runner._config.output_path / f"{name}.esp" for name in settings_profile.group_names)
