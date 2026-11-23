@@ -8,6 +8,7 @@ bloquea la corrida y tampoco certifica nada.
 from __future__ import annotations
 
 import hashlib
+import os
 import pathlib
 from unittest.mock import MagicMock
 
@@ -246,6 +247,51 @@ def test_leer_output_de_preset_con_contrato_lee_la_clave_de_su_seccion(
     assert lectura == LecturaDeOutputDePreset(
         herramienta="TexGen", guardado="D:\\viejo", esperado=str(tmp_path / "out")
     )
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="la plataforma no tiene symlinks")
+def test_leer_output_de_preset_no_lee_un_preset_que_es_un_enlace(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hermano del runner (review CodeRabbit en #1007): ``leer_estado_de_preset`` rechaza un preset que es un enlace
+    (``_exigir_archivo_real``); el checklist tampoco lo abre, aunque apunte a un INI válido fuera de la carpeta."""
+    from sky_claw.local.tools import dyndolod_uia_contrato as contrato_mod
+
+    exe = _exe(tmp_path / "DynDOLOD", "TexGenx64.exe", b"build-medido")
+    sha = hashlib.sha256(b"build-medido").hexdigest()
+    contrato_real = next(c for c in contrato_mod.CONTRATOS_DE_UI.values() if c.tool == "TexGen")
+    monkeypatch.setattr(guia, "CONTRATOS_DE_UI", {("TexGen", sha): contrato_real})
+    afuera = tmp_path / "afuera" / "otro.ini"
+    afuera.parent.mkdir()
+    afuera.write_bytes(f"[{contrato_real.seccion_preset}]\nOutputPath=D:\\de_afuera\n".encode("latin-1"))
+    preset = exe.parent.joinpath(*contrato_real.preset_relativo)
+    preset.parent.mkdir(parents=True)
+    try:
+        preset.symlink_to(afuera)
+    except OSError:
+        pytest.skip("sin permiso para crear symlinks en esta plataforma")
+
+    assert guia.leer_output_de_preset("TexGen", exe, esperado=tmp_path / "out") is None
+
+
+def test_el_checklist_y_el_runner_leen_el_preset_con_la_misma_primitiva() -> None:
+    """La lectura del preset del checklist pasa por la primitiva compartida que exige archivo real, no por un
+    ``open`` propio: un control nuevo en esa primitiva cubre a los dos hermanos a la vez."""
+    import ast
+    import inspect
+
+    from sky_claw.local.tools import dyndolod_presets
+
+    arbol = ast.parse(inspect.getsource(guia.leer_output_de_preset))
+    llamadas = {
+        n.func.id if isinstance(n.func, ast.Name) else n.func.attr
+        for n in ast.walk(arbol)
+        if isinstance(n, ast.Call) and isinstance(n.func, (ast.Name, ast.Attribute))
+    }
+    assert "leer_contenido_de_preset" in llamadas
+    assert "open" not in llamadas
+    fuente_de_la_primitiva = inspect.getsource(dyndolod_presets.leer_contenido_de_preset)
+    assert "_exigir_archivo_real(" in fuente_de_la_primitiva
 
 
 # ---------------------------------------------------------------------------

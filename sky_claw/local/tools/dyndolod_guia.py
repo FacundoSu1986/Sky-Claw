@@ -42,7 +42,7 @@ from types import MappingProxyType
 from typing import Any
 
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
-from sky_claw.local.tools.dyndolod_presets import PresetError, valor_de_clave
+from sky_claw.local.tools.dyndolod_presets import PresetError, leer_contenido_de_preset, valor_de_clave
 from sky_claw.local.tools.dyndolod_uia_contrato import CONTRATOS_DE_UI, ContratoDeUIHerramienta
 from sky_claw.local.tools.dyndolod_uia_gate import ResolucionProtocoloReadiness
 from sky_claw.local.tools.dyndolod_uia_preflight import RazonPreflight
@@ -512,10 +512,10 @@ def leer_output_de_preset(
         return None
     ruta = exe.parent.joinpath(*contrato.preset_relativo)
     try:
-        with ruta.open("rb") as archivo:
-            contenido = archivo.read(4 * 1024 * 1024)
+        # Misma primitiva que el runner: un preset que es un enlace no se lee (review CodeRabbit en #1007).
+        contenido = leer_contenido_de_preset(ruta)
         guardado = valor_de_clave(contenido, seccion=contrato.seccion_preset, clave="OutputPath")
-    except (OSError, PresetError):
+    except PresetError:
         return None
     return LecturaDeOutputDePreset(herramienta=tool, guardado=guardado, esperado=str(esperado))
 
