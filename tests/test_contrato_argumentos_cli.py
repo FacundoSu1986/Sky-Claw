@@ -671,8 +671,8 @@ async def test_bodyslide_construye_el_vector_verificado(tmp_path: pathlib.Path) 
     )
     runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=tmp_path, quiet_verified=True))
     run_capture = AsyncMock(return_value=(b"ok", b"", 0))
-    # El target debe estar confinado al staging administrado (P0-C).
-    salida = tmp_path / "BodySlide_Output" / "CBBE"
+    # El target debe ser el destino canónico DEL GRUPO (P0-C + P1-A, revisión #1003).
+    salida = tmp_path / "BodySlide_Output" / "CBBE Body"
     salida.mkdir(parents=True)
 
     with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):
@@ -713,8 +713,8 @@ async def test_bodyslide_omite_preset_y_tri_cuando_no_se_piden(tmp_path: pathlib
     )
     runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=tmp_path, quiet_verified=True))
     run_capture = AsyncMock(return_value=(b"ok", b"", 0))
-    # El target debe estar confinado al staging administrado (P0-C).
-    salida = tmp_path / "BodySlide_Output" / "CBBE"
+    # El target debe ser el destino canónico DEL GRUPO (P0-C + P1-A, revisión #1003).
+    salida = tmp_path / "BodySlide_Output" / "CBBE Body"
     salida.mkdir(parents=True)
 
     with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):
@@ -740,8 +740,8 @@ async def test_bodyslide_rechaza_preset_sin_verificacion(tmp_path: pathlib.Path)
     )
     runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=tmp_path, quiet_verified=True))
     run_capture = AsyncMock(return_value=(b"ok", b"", 0))
-    # El target debe estar confinado al staging administrado (P0-C).
-    salida = tmp_path / "BodySlide_Output" / "CBBE"
+    # El target debe ser el destino canónico DEL GRUPO (P0-C + P1-A, revisión #1003).
+    salida = tmp_path / "BodySlide_Output" / "CBBE Body"
     salida.mkdir(parents=True)
 
     with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):
@@ -766,8 +766,8 @@ async def test_bodyslide_rechaza_spawn_sin_quiet_verificado(tmp_path: pathlib.Pa
     )
     runner = BodySlideRunner(BodySlideConfig(bodyslide_exe=exe, game_path=tmp_path))
     run_capture = AsyncMock(return_value=(b"ok", b"", 0))
-    # El target debe estar confinado al staging administrado (P0-C).
-    salida = tmp_path / "BodySlide_Output" / "CBBE"
+    # El target debe ser el destino canónico DEL GRUPO (P0-C + P1-A, revisión #1003).
+    salida = tmp_path / "BodySlide_Output" / "CBBE Body"
     salida.mkdir(parents=True)
 
     with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):

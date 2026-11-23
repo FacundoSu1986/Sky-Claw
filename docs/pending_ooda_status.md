@@ -584,8 +584,12 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
   P0-1/P0-2/P0-3/P1-5/P1-6/P1-7/P1-8 implementadas en el árbol (snapshot original antes
   de la siembra; restore byte a byte a través de enlaces; atribución de log al run
   real con re-read acotado; expected_target_game; manifiesto verificado vs. solo
-  conteo; conflictos sin ganador vs. verificables). P0-4 abierto — worktree aislado
-  no disponible — y el veredicto global sigue `PR1_BLOCKED_FOR_REVIEW`. Evidencia:
+  conteo; conflictos sin ganador vs. verificables). El hallazgo de worktree (P0-4)
+  quedó resuelto (rama `feat/bodyslide-pr1-headless`, worktree exclusivo, Draft PR
+  #1003) y la revisión independiente de #1003 cerró P1-A (destino = target canónico
+  del grupo), P1-B (log ilegible ≠ ausente) y P1-C (siembra cancelada no escribe
+  tras el restore). **Sin ejecución productiva** hasta PR 2 (`CAPABILITY_UNKNOWN`
+  sin `quiet_verified`); rig Windows/MO2 pendiente. Evidencia:
   `docs/validation/2026-11-22_bodyslide-pr1-audit-corrections.md`.
 
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un

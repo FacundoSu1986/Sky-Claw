@@ -1,5 +1,38 @@
 # BodySlide PR 1 — Auditoría interna (CHANGES_REQUESTED) y correcciones P0/P1
 
+## Estado vigente (2026-11-23, PR #1003 — prevalece sobre los veredictos históricos de abajo)
+
+Las secciones posteriores son el **registro histórico** de las dos auditorías
+internas del 2026-11-22; sus líneas `PR1_BLOCKED_FOR_REVIEW` / `PROCESS_HOLD`
+describen el estado de ese día y quedan superadas por este bloque.
+
+- **Hallazgos cerrados (con test RED→GREEN):** P0-1, P0-2, P0-3, P1-5, P1-6,
+  P1-7, P1-8 (primera auditoría); P0-A, P0-B, P0-C, P1-D, P1-E (segunda);
+  P1-A, P1-B, P1-C y el tipo de `resolver_conflictos` (revisión independiente
+  de PR #1003, sección al final).
+- **Worktree (P0-4) — RESUELTO:** PR 1 vive en la rama
+  `feat/bodyslide-pr1-headless`, creada desde `origin/main` `255fb6d0` en el
+  worktree exclusivo `.worktrees/bodyslide-pr1-headless` (convención de
+  `tests/test_worktree_convention_invariant.py`), con commit propio y Draft PR
+  #1003. El patch se aplicó con `git apply --check` limpio y el write-set se
+  verificó byte a byte.
+- **Limitaciones pendientes (no bloquean el Draft; deciden PR 2/PR 3 o el
+  propietario):**
+  - Sin rig real Windows/MO2/BodySlide: `-q`, junctions reales y el binario no
+    se ejercitaron. **BodySlide no tiene ejecución productiva**:
+    `run_bodyslide_batch` no pasa `quiet_verified` ⇒ `CAPABILITY_UNKNOWN` sin
+    spawn hasta PR 2.
+  - Restore best-effort en Python (crash duro del host ⇒ sin restauración;
+    journal durable = PR 2).
+  - `ManifiestoArtefactos.procedencia` es declarada por el caller, no
+    verificada contra catálogo/hashes (PR 3).
+  - Ventana TOCTOU entre el chequeo físico del staging y el spawn.
+  - Atribución del log por firma con granularidad de día (falso negativo
+    posible, nunca falso verde).
+  - `sky_claw.local.tools.*` sigue exento de mypy en `pyproject.toml`; fuera
+    de la exención quedan errores de estrechamiento de `Optional` sin efecto en
+    runtime (ver sección final).
+
 **Fecha:** 2026-11-22 · **Rama:** `arena/367dc766-sky-claw` @ `0106f85` (sin commit nuevo; P0-4 PROCESS_HOLD) · **Alcance:** PR 1 headless (no broker, no PR 2/3/4, no merge/push)
 
 > Nota de honestidad sobre el ESTADO: el verde de la suite NO certifica el PR. P0-4 (worktree aislado) sigue abierto y el veredicto global es `PR1_BLOCKED_FOR_REVIEW`. Las correcciones de P0-1/P0-2/P0-3/P1-5/P1-6/P1-7/P1-8 están implementadas en el árbol de trabajo sin commit, con evidencia AAA (RED→GREEN) descrita abajo.
@@ -342,3 +375,73 @@ No se tocó: `tests/test_contrato_veredicto_de_exito.py` (detector AST inmaculad
 - `PR1_BLOCKED_FOR_REVIEW` — P0-A/P0-B/P0-C/P1-D/P1-E cerrados con evidencia AAA + mutación verificada.
 - P0-4 parcialmente abierto: el worktree aislado existe y trae la PR 1 verificada; el hard-move del checkout primario queda para el cierre explícito del usuario.
 - No se hizo ningún commit, push, merge, PR ni worktree-lock.
+
+---
+
+# Revisión independiente de PR #1003 (CHANGES_REQUESTED, 2026-11-23) — P1-A/P1-B/P1-C
+
+**Base:** `feat/bodyslide-pr1-headless` @ `e2370fb7` (sobre `origin/main` `255fb6d0`).
+Los tests nuevos viven en `tests/test_bodyslide_revision_independiente.py` y se
+corrieron **ROJOS sobre `e2370fb7` antes del fix** (22 failed / 2 passed /
+1 skipped; los 2 que pasaban son controles: destino canónico y mapping válido).
+
+### P1-A — Aislamiento de salida por grupo — CERRADO
+
+**Antes:** `_confinado` sólo exigía prefijo del staging: `run_batch("CBBE",
+<raiz>/3BA)`, la raíz compartida (primer run) o `<raiz>/CBBE/sub` spawneaban
+(RED: `await_count == 1`).
+
+**Ahora:** `bodyslide_headless.exigir_destino_canonico` (igualdad de
+componentes; gramática fijada por el canónico: en Windows separadores
+indistintos, barra final ignorada, case-insensitive; en POSIX distingue
+mayúsculas; `.`/`..` rechazados) y el runner la aplica contra
+`bodyslide_output_target(game, group)` antes de mutar nada ⇒ `ARGS_INVALID`.
+Tests: cruce de grupos, raíz compartida, subdirectorio propio, destino canónico
+(control), variantes Windows (mayúsculas, `/` y `\`, barra final, otro drive,
+UNC igual/otro servidor, ruta relativa) y POSIX. El caso runner con
+mayúsculas distintas en disco real se saltea fuera de Windows (sólo NTFS hace
+que sea la misma carpeta). Fixtures existentes que usaban un destino de otro
+grupo (`"CBBE Body"` → `.../CBBE`, `"Build"` → `.../CBBE`) se corrigieron al
+target canónico del grupo — es exactamente la clase de error que P1-A cierra.
+`test_staging_identidad_no_verificable_symlink_en_subdirectorio` ahora se
+rechaza antes (`ARGS_INVALID`); el caso físico alcanzable (carpeta del grupo
+enlazada) se cubre con
+`test_staging_identidad_no_verificable_carpeta_del_grupo_enlazada`
+(`STAGING_UNVERIFIABLE`).
+
+### P1-B — Snapshot de log ilegible ≠ log ausente — CERRADO
+
+**Antes:** `_snapshot_log_inicial` devolvía `None` también ante un
+`PermissionError`; el log viejo, legible después, se atribuía a la corrida:
+RED con **`success=True`** (falso verde real) con artefacto nuevo y manifiesto
+verificado.
+
+**Ahora:** sólo `FileNotFoundError` en `stat` es "ausente"; cualquier otro
+fallo de `stat`/lectura lanza `BodySlideExecutionError` ⇒ el runner aborta
+antes de mutar y de spawnear (`CONFIG_PRECONDITION_FAILED`). En la lectura
+posterior a la corrida, un log ilegible es "no atribuible".
+
+### P1-C — Cancelación concurrente de la siembra — CERRADO
+
+**Antes:** cancelar `await asyncio.to_thread(sembrar…)` dejaba el hilo vivo;
+el `finally` restauraba con la siembra en vuelo y la siembra escribía después
+(RED: "la restauración corrió con la siembra todavía en vuelo").
+
+**Ahora:** `_BarreraDeSiembra` (lock + bandera `_restaurada`): la siembra corre
+entera bajo el lock; la restauración espera a la siembra en vuelo en su propio
+hilo; si la siembra no arrancó, la restauración la anula. Test determinista con
+`threading.Event` (los `wait(timeout)` son sólo guardas contra cuelgues): la
+restauración espera, la siembra termina, la restauración corre después y
+`Config.xml` queda byte-idéntico al original.
+
+### `resolver_conflictos` — tipo restringido — CERRADO
+
+Firma `selecciones: Mapping[str, str]`; cualquier otro tipo ⇒
+`HeadlessContractError` (antes: `ValueError` crudo con una tupla de dicts, o un
+par inventado con un dict de dos claves).
+
+### Sin cambio de contrato productivo
+
+`run_bodyslide_batch` sigue sin pasar `quiet_verified` ⇒ `CAPABILITY_UNKNOWN`
+sin spawn. No se tocó Golden Master, Frozen Runtime ni perfiles MO2; no se
+inició PR 2.

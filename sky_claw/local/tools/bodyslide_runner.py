@@ -32,7 +32,9 @@ import asyncio
 import logging
 import os
 import pathlib
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sky_claw.app.security.links import exigir_contencion_fisica, iter_archivos_propios
@@ -47,9 +49,10 @@ from sky_claw.local.tools.bodyslide_headless import (
     ManifiestoArtefactos,
     construir_argv,
     evaluar_veredicto,
+    exigir_destino_canonico,
     marcadores_de_corrida,
 )
-from sky_claw.local.tools.output_targets import bodyslide_output_root
+from sky_claw.local.tools.output_targets import bodyslide_output_root, bodyslide_output_target
 
 logger = logging.getLogger(__name__)
 
@@ -285,14 +288,26 @@ def _snapshot_log_inicial(exe: pathlib.Path) -> _SnapshotDeLog | None:
     editado in-place".
     """
     log = exe.parent / _NOMBRE_DEL_LOG
+    # P1-B (revisión #1003): AUSENTE e ILEGIBLE no son lo mismo. Sólo un
+    # archivo que no existe devuelve ``None`` ("no había log"). Un log que existe
+    # pero no se pudo leer (AV, lock de otro proceso, permisos) NO prueba nada
+    # sobre su contenido previo: si se tratara como ausente, el log VIEJO —
+    # legible de nuevo tras la corrida— se atribuiría a la corrida nueva.
+    # Fail-closed: se lanza y el runner aborta antes de mutar y de spawnear.
     try:
         st = log.stat()
-    except OSError:
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise BodySlideExecutionError(
+            f"No se puede inspeccionar '{log}' antes del spawn — la atribución del log sería imposible: {exc}"
+        ) from exc
     try:
         crudo = log.read_bytes()
-    except OSError:
-        return None
+    except OSError as exc:
+        raise BodySlideExecutionError(
+            f"No se puede leer '{log}' antes del spawn — la atribución del log sería imposible: {exc}"
+        ) from exc
     texto = crudo.decode("utf-8", errors="replace")
     corte = texto.rfind(_FIRMA_DE_CORRIDA)
     ultima_firma = _leer_firma(texto, corte) if corte != -1 else ""
@@ -336,7 +351,11 @@ def _atribuir_log_a_corrida(
     (streams wxLogStream en vuelo al terminar el proceso) sin dejar al caller
     girar.
     """
-    actual = _snapshot_log_inicial(exe)
+    try:
+        actual = _snapshot_log_inicial(exe)
+    except BodySlideExecutionError:
+        # Ilegible DESPUÉS de la corrida: no hay evidencia, no se atribuye.
+        return _ColaDeLog("", False, False, False, False)
 
     if actual is None:
         # Archivo ausente — el run no escribió log (ni nunca existió).
@@ -490,6 +509,49 @@ def _snapshot_y_restaurar_archivos(exe: pathlib.Path):
     return snapshot, restaurar
 
 
+class _BarreraDeSiembra:
+    """Excluye la siembra (en su hilo) de la restauración del ``finally`` (P1-C, revisión #1003).
+
+    Cancelar el ``await asyncio.to_thread(siembra)`` NO detiene el hilo: la
+    coroutine sale por ``CancelledError`` y su ``finally`` restauraba el
+    original MIENTRAS la siembra podía seguir escribiendo — la siembra quedaba
+    como último escritor y la config del usuario terminaba sembrada.
+
+    Propiedad: *la siembra nunca escribe después de la restauración*.
+    - La siembra corre entera bajo ``_lock``; la restauración también.
+    - Si la restauración llega con la siembra en vuelo, ESPERA a que termine
+      (bloquea su propio hilo, no el event loop) y recién ahí restaura.
+    - Si la siembra todavía no arrancó (job del executor aún sin correr), la
+      restauración marca ``_restaurada`` y la siembra, al llegar, no escribe.
+    Una segunda cancelación mientras se espera la restauración deja el hilo de
+    restauración corriendo: la propiedad sigue valiendo, porque es el hilo —no la
+    coroutine— el que respeta el orden.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._restaurada = False
+
+    def _al_esperar_la_siembra(self) -> None:
+        """Gancho de observación (tests): la restauración espera a la siembra en vuelo."""
+
+    def sembrar(self, siembra: Callable[..., bool], /, **kwargs: object) -> bool:
+        with self._lock:
+            if self._restaurada:
+                return False
+            return siembra(**kwargs)
+
+    def restaurar(self, restaurar: Callable[[], list[str]]) -> list[str]:
+        if not self._lock.acquire(blocking=False):
+            self._al_esperar_la_siembra()
+            self._lock.acquire()
+        try:
+            self._restaurada = True
+            return restaurar()
+        finally:
+            self._lock.release()
+
+
 def _verificar_identidad_del_staging(raiz: pathlib.Path, candidato: pathlib.Path) -> None:
     """Exige que el staging y el destino se alcancen FÍSICAMENTE sin enlaces.
 
@@ -599,6 +661,20 @@ class BodySlideRunner:
             logger.error("BodySlide aborted: %s", message)
             return resultado_de_fallo("ARGS_INVALID", message)
 
+        # 1c') P1-A (revisión #1003): el destino debe ser EXACTAMENTE el target
+        #      canónico del grupo. El confinamiento de 1c es de prefijo: aceptaba
+        #      la raíz compartida, la carpeta de OTRO grupo o un subdirectorio,
+        #      y el move-aside por grupo sólo protege el target canónico.
+        canonico = bodyslide_output_target(game=self.config.game_path, group=group)
+        try:
+            if canonico is None:
+                raise HeadlessContractError(f"el grupo '{group}' no tiene destino canónico administrado")
+            exigir_destino_canonico(output_path, str(canonico))
+        except HeadlessContractError as exc:
+            message = str(exc)
+            logger.error("BodySlide aborted: %s", message)
+            return resultado_de_fallo("ARGS_INVALID", message)
+
         # 1d) Identidad física del staging — la raíz y la cadena de ancestrales
         #     existentes deben ser directorios REALES (sin symlinks/junctions).
         #     Un destino a través de enlaces desvía la mutación fuera del
@@ -627,12 +703,14 @@ class BodySlideRunner:
         #    CancelledError, error inesperado— restaura el original y se
         #    propaga, nunca persiste cambios y declara éxito.
         resultado: BodySlideResult | None = None
+        barrera = _BarreraDeSiembra()
         try:
             # 4a) Siembra fail-closed — precondición del spawn (aborta antes de
             #     cualquier mutación del proceso).
             try:
                 if raiz_de_salida is not None:
                     await asyncio.to_thread(
+                        barrera.sembrar,
                         sembrar_config_de_bodyslide,
                         exe_dir=self.config.bodyslide_exe.parent,
                         game_path=self.config.game_path,
@@ -713,7 +791,8 @@ class BodySlideRunner:
         finally:
             # Restauración byte a byte (Post-Snapshot). Un fallo de restauración es un
             # desenlace de fallo veraz — no se declara éxito con config sin restaurar.
-            restaurados = await asyncio.to_thread(restaurar)
+            # P1-C: la restauración espera a la siembra en vuelo (ver _BarreraDeSiembra).
+            restaurados = await asyncio.to_thread(barrera.restaurar, restaurar)
             if resultado is not None:
                 resultado.config_restored = tuple(restaurados)
 

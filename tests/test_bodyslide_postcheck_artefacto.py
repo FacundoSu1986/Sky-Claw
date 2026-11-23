@@ -562,8 +562,11 @@ async def test_staging_identidad_no_verificable_symlink_en_subdirectorio(tmp_pat
     """Un subdirectorio intermedio del destino enlazado invalida la identidad.
 
     La raiz es real; un componente INTERMEDIO (``sub``) es un symlink hacia otro
-    árbol: el destino `.` no es un descendiente físico real del staging — el
-    build se rechaza con ``STAGING_UNVERIFIABLE``.
+    árbol. Desde P1-A (revisión #1003) el destino debe ser EXACTAMENTE el target
+    canónico del grupo (``<raiz>/CBBE``), así que ``<raiz>/sub/CBBE`` se rechaza
+    ANTES, en el gate de argv (``ARGS_INVALID``), sin llegar al chequeo físico.
+    El caso físico que sigue siendo alcanzable —la carpeta del grupo enlazada—
+    lo cubre ``test_staging_identidad_no_verificable_carpeta_del_grupo_enlazada``.
     """
     runner = _runner(tmp_path)
     exe = runner.config.bodyslide_exe
@@ -580,6 +583,36 @@ async def test_staging_identidad_no_verificable_symlink_en_subdirectorio(tmp_pat
         "sky_claw.local.tools.bodyslide_runner.run_capture", AsyncMock(return_value=(b"", b"", 0))
     ) as mock_capture:
         result = await runner.run_batch("CBBE", str(raiz / "sub" / "CBBE"))
+
+    assert result.success is False
+    assert result.estado == "ARGS_INVALID"
+    mock_capture.assert_not_awaited()
+    assert (exe.parent / "Config.xml").read_bytes() == config_bytes_antes
+    assert (fuera / "de_otro_mod.nif").exists()
+
+
+@symlink_guard
+async def test_staging_identidad_no_verificable_carpeta_del_grupo_enlazada(tmp_path: pathlib.Path) -> None:
+    """El target canónico (``<raiz>/CBBE``) es un symlink hacia otro árbol.
+
+    Pasa el gate léxico (es EXACTAMENTE el target del grupo) y lo rechaza el
+    chequeo físico con ``STAGING_UNVERIFIABLE``: no se spawnea, no se siembra.
+    """
+    runner = _runner(tmp_path)
+    exe = runner.config.bodyslide_exe
+    config_bytes_antes = (exe.parent / "Config.xml").read_bytes()
+
+    fuera = tmp_path / "fuera"
+    fuera.mkdir()
+    (fuera / "de_otro_mod.nif").write_bytes(b"\x00")
+    raiz = (tmp_path / "game").resolve() / "BodySlide_Output"
+    raiz.mkdir(parents=True)
+    (raiz / "CBBE").symlink_to(fuera, target_is_directory=True)
+
+    with patch(
+        "sky_claw.local.tools.bodyslide_runner.run_capture", AsyncMock(return_value=(b"", b"", 0))
+    ) as mock_capture:
+        result = await runner.run_batch("CBBE", str(raiz / "CBBE"))
 
     assert result.success is False
     assert result.estado == "STAGING_UNVERIFIABLE"

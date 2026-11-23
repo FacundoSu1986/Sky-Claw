@@ -43,6 +43,7 @@ lee ni escribe archivos externos.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Literal
@@ -300,6 +301,47 @@ def _confinado(target: str, stage_root: str) -> bool:
     return target_comps[: len(root_comps)] == root_comps
 
 
+def exigir_destino_canonico(target: str, canonico: str) -> None:
+    """Exige que *target* sea EXACTAMENTE el destino canónico de su grupo (P1-A, revisión #1003).
+
+    ``_confinado`` sólo prueba que el target cuelga del staging administrado: un
+    grupo ``CBBE`` con destino en ``BodySlide_Output/3BA`` (la carpeta de OTRO
+    grupo), en la raíz compartida o en un subdirectorio propio pasaba igual, y
+    el move-aside por grupo (``DirectoryRollback``) protege sólo el target
+    canónico. Esta comparación es de IGUALDAD de componentes, no de prefijo.
+
+    La gramática la fija el canónico (la ruta que deriva
+    ``bodyslide_output_target`` para el juego objetivo), no el host: contra un
+    canónico de Windows (drive o UNC) el target se interpreta como ruta de
+    Windows — separadores ``/`` o ``\\`` indistintos, barra final ignorada y
+    comparación case-insensitive (NTFS) —; contra un canónico POSIX la
+    comparación distingue mayúsculas. Componentes ``.``/``..`` se rechazan
+    antes de comparar (fail-closed, igual que el resto del contrato).
+
+    Raises:
+        HeadlessContractError: target vacío/no absoluto/no normalizado, de otro
+            volumen o servidor, la raíz compartida, otro grupo o un subdirectorio.
+    """
+    for nombre, valor in (("target", target), ("target canónico", canonico)):
+        if not isinstance(valor, str) or not valor.strip():
+            raise HeadlessContractError(f"{nombre} no puede estar vacío")
+        if "\x00" in valor:
+            raise HeadlessContractError(f"{nombre} contiene NUL byte")
+    flavour: type = PureWindowsPath if (_es_unc(canonico) or _PATRON_DE_DRIVE.match(canonico)) else PurePosixPath
+    base_canon, comps_canon = _estructuras_de_ruta(canonico, flavour, nombre="target canónico")
+    base_target, comps_target = _estructuras_de_ruta(target, flavour, nombre="target")
+    if flavour is PureWindowsPath:
+        base_canon = base_canon.casefold()
+        base_target = base_target.casefold()
+        comps_canon = tuple(c.casefold() for c in comps_canon)
+        comps_target = tuple(c.casefold() for c in comps_target)
+    if (base_target, comps_target) != (base_canon, comps_canon):
+        raise HeadlessContractError(
+            f"target '{target}' no es el destino canónico del grupo ('{canonico}') — "
+            "ni la raíz compartida, ni la carpeta de otro grupo, ni un subdirectorio"
+        )
+
+
 def _validar_target(target: object, *, stage_root: str | None = None) -> str:
     """Valida el target del batch: absoluto, normalizado y confinado al staging.
 
@@ -390,7 +432,7 @@ def validar_conflictos(conflictos: list[ConflictoDeSalida] | tuple[ConflictoDeSa
 
 def resolver_conflictos(
     conflictos: list[ConflictoDeSalida] | tuple[ConflictoDeSalida, ...],
-    selecciones: dict[str, str] | tuple[dict[str, str], ...],
+    selecciones: Mapping[str, str],
 ) -> None:
     """Verifica que todo conflicto tenga ganador EXPLICITAMENTE declarado.
 
@@ -403,7 +445,13 @@ def resolver_conflictos(
     Raises:
         HeadlessContractError: si hay conflictos sin elección explícita válida.
     """
-    selecciones = dict(selecciones) if isinstance(selecciones, dict) else dict(selecciones)
+    # Tipo restringido (revisión #1003): sólo un mapping ``path → outfit``. La
+    # firma anterior aceptaba una tupla de dicts que ``dict()`` no sabe leer
+    # (``ValueError`` crudo) o, peor, reinterpreta un dict de dos claves como
+    # un par ``(path, outfit)`` inventado. Fail-closed con error de contrato.
+    if not isinstance(selecciones, Mapping):
+        raise HeadlessContractError(f"selecciones debe ser un mapping path→outfit, no {type(selecciones).__name__}")
+    selecciones = dict(selecciones)
     faltantes: list[str] = []
     for conflicto in conflictos:
         seleccion = selecciones.get(conflicto.path)

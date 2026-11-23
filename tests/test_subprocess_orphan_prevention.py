@@ -70,8 +70,8 @@ def _bodyslide(tmp_path, timeout: float) -> tuple[BodySlideRunner, tuple]:
             quiet_verified=True,
         )
     )
-    # El target debe estar confinado al staging administrado (P0-C).
-    return runner, ("Build", str(tmp_path / "BodySlide_Output" / "CBBE"))
+    # El target debe ser el destino canónico DEL GRUPO (P0-C + P1-A, revisión #1003).
+    return runner, ("Build", str(tmp_path / "BodySlide_Output" / "Build"))
 
 
 def _pandora(tmp_path, timeout: float) -> tuple[PandoraRunner, tuple]:
