@@ -132,6 +132,10 @@ MECANISMO_DE_BORRADO: dict[str, str] = {
     # idéntico a `texconv_runner.py` y `dyndolod_uia_ejecutor.py`.
     "sky_claw/local/tools/synthesis_runner.py": "link-aware",
     "sky_claw/local/tools/texconv_runner.py": "link-aware",
+    # PR-3d/PR-3e (ADR 0019): la Fase 1 de Synthesis borra su PROPIA carpeta `.trabajo-<uuid>` de la
+    # caché (checkout con `.git`, copia de fuentes, temporales) al terminar, haya publicado o no.
+    "sky_claw/local/tools/synthesis_compilacion.py": "link-aware",
+    "sky_claw/local/tools/synthesis_fuentes_git.py": "link-aware",
     # NP-A0a: el lote borra su PROPIO directorio de trabajo (lo creó `mkdtemp`: las salidas intermedias).
     # Mismo criterio que el ejecutor de texconv: que el árbol sea propio no habilita `shutil.rmtree`.
     "sky_claw/local/native_parallax/lote.py": "link-aware",
@@ -481,6 +485,10 @@ POLITICA_DE_LIMPIAR_READONLY: dict[str, str] = {
     # PR-1 (#975): Synthesis/LibGit2Sharp/NuGet pueden dejar archivos read-only en el TEMP
     # efímero por corrida (`synthesis_runner.py` ya pasa `limpiar_readonly=True`).
     "sky_claw/local/tools/synthesis_runner.py": "requiere",
+    # PR-3d/PR-3e: la carpeta de trabajo de la Fase 1 contiene un checkout de git (sus packs
+    # `.git/objects` son de solo lectura en Windows) y salidas de NuGet/MSBuild.
+    "sky_claw/local/tools/synthesis_compilacion.py": "requiere",
+    "sky_claw/local/tools/synthesis_fuentes_git.py": "requiere",
     # NP-E0b: el espacio de texconv contiene una COPIA del binario hecha con `copy2`,
     # que propaga el modo de la fuente: si el original está en solo lectura, la copia
     # también y sin el flag el borrado de Windows fallaría dejando restos.
