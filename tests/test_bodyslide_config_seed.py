@@ -179,7 +179,7 @@ async def test_run_batch_siembra_antes_de_spawnear(tmp_path: pathlib.Path) -> No
     sembrado_al_spawnear: dict[str, bool] = {}
     sembrado_en_el_instante: dict[str, str | None] = {}
 
-    async def _fake(args, *, timeout, cwd=None):
+    async def _fake(args, *, timeout, cwd=None, require_job=False):
         sembrado_al_spawnear["si"] = (exe.parent / "Config.xml").is_file()
         raiz_instante = _leer(exe.parent / "Config.xml")
         sembrado_en_el_instante["WarnMissingGamePath"] = _texto(raiz_instante, "WarnMissingGamePath")

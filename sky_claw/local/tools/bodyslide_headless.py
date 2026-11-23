@@ -43,7 +43,7 @@ lee ni escribe archivos externos.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Literal
@@ -234,6 +234,32 @@ def _validar_nombre_de_grupo(value: object) -> str:
     if raiz_del_nombre in _DISPOSITIVOS_WIN32:
         raise HeadlessContractError(f"group '{v}' es un nombre de dispositivo reservado por Win32")
     return v
+
+
+def exigir_identidad_de_grupo_unica(group: str, existentes: Iterable[str]) -> None:
+    """Rechaza un grupo que sólo difiere en mayúsculas de una carpeta existente del staging (cierre #1003).
+
+    En NTFS ``BodySlide_Output/CBBE`` y ``BodySlide_Output/cbbe`` son la MISMA
+    carpeta: tratarlos como destinos independientes haría que el build de uno
+    aparte y descarte la salida del otro. Sin catálogo de grupos (PR 3), la
+    única evidencia de la otra identidad es la grafía de la carpeta que ya
+    existe; la misma grafía exacta es la misma identidad y se acepta.
+
+    Puro: el caller lista la raíz del staging ANTES de cualquier move-aside
+    (``DirectoryRollback`` renombra la carpeta con el nombre pedido y borra la
+    grafía original).
+
+    Raises:
+        HeadlessContractError: si alguna entrada existente es equivalente sin
+            distinguir mayúsculas pero con otra grafía.
+    """
+    clave = group.casefold()
+    for existente in existentes:
+        if existente != group and existente.casefold() == clave:
+            raise HeadlessContractError(
+                f"group '{group}' sólo difiere en mayúsculas del destino existente '{existente}': "
+                "en NTFS son la misma carpeta y no pueden tratarse como grupos independientes"
+            )
 
 
 def _es_absoluta(ruta: str) -> bool:
@@ -619,6 +645,12 @@ class EvidenciaDeBuild:
     #: no estaba vacío y su reparación no es mecánica — el veredicto no puede
     #: afirmar un build limpio sobre un staging sucio.
     preexistentes: int = 0
+    #: Preset EFECTIVO de la corrida verificado contra el plan (cierre #1003).
+    #: Sin ``-p``, ``CommandLineBuild`` usa el ``SelectedPreset`` que la GUI dejó
+    #: guardado en ``BodySlide.xml`` (upstream v6.2.0 ``BodySlideAppBuild.cpp``):
+    #: el preset real es desconocido ⇒ nunca SUCCESS. ``True`` sólo cuando se
+    #: emitió ``-p`` con un preset que el plan certificó (``preset_verified``).
+    preset_efectivo_verificado: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -717,8 +749,11 @@ def evaluar_veredicto(
     11. Manifiesto no satisfecho (nif/tri insuficientes) ⇒ FAILURE.
     12. Manifiesto SATISFECHO pero NO verificado (solo conteo) ⇒ EVIDENCE_INCOMPLETE
         — un count no certifica completitud de mallas (distinción explícita de P1-6).
-    13. Manifiesto SATISFECHO Y verificado ⇒ SUCCESS (contrato puro; NO implica
-        rig certificado).
+    13. Preset efectivo desconocido (sin ``-p`` verificado) ⇒ EVIDENCE_INCOMPLETE —
+        la herramienta construyó con el preset guardado de la GUI (cierre #1003).
+        Sólo puede bajar un SUCCESS: nunca enmascara un FAILURE de arriba.
+    14. Todo lo anterior satisfecho ⇒ SUCCESS (contrato puro; NO implica rig
+        certificado).
     """
     if not evidencia.proceso_terminado:
         return VeredictoContrato("EVIDENCE_INCOMPLETE", "terminalidad desconocida del proceso (HOLD)")
@@ -771,6 +806,12 @@ def evaluar_veredicto(
             "EVIDENCE_INCOMPLETE",
             "manifiesto de solo conteo — no certifica completitud de mallas "
             "(requiere fuentes verificadas: catálogo/hashes, PR 3)",
+        )
+    if not evidencia.preset_efectivo_verificado:
+        return VeredictoContrato(
+            "EVIDENCE_INCOMPLETE",
+            "preset efectivo desconocido — sin -p verificado, BodySlide construye con el "
+            "SelectedPreset guardado por la GUI, que el plan no certificó",
         )
     return VeredictoContrato("SUCCESS", "")
 

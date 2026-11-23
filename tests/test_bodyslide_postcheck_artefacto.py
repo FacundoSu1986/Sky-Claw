@@ -187,7 +187,7 @@ async def test_con_artefacto_es_exito_y_mensaje_vacio(tmp_path: pathlib.Path, ar
         "sky_claw.local.tools.bodyslide_runner.run_capture",
         _captura_con_artefactos(destino, [artefacto], log_destino=runner.config.bodyslide_exe.parent / "Log_BS.txt"),
     ):
-        result = await runner.run_batch("CBBE", str(destino), manifest=manifest)
+        result = await runner.run_batch("CBBE", str(destino), manifest=manifest, preset="Zeroed", preset_verified=True)
 
     assert result.success is True
     assert result.artifacts_built == 1
@@ -219,6 +219,8 @@ async def test_cuenta_artefactos_en_subdirectorios(tmp_path: pathlib.Path) -> No
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=2, verificado=True, procedencia="fixture"),
+            preset="Zeroed",
+            preset_verified=True,
         )
 
     assert result.success is True
@@ -307,6 +309,8 @@ async def test_fallo_de_una_corrida_anterior_no_contamina_la_actual(tmp_path: pa
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
+            preset="Zeroed",
+            preset_verified=True,
         )
 
     assert result.success is True, "un fallo de una corrida previa no es un fallo de esta"

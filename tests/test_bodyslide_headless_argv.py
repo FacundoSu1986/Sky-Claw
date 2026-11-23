@@ -333,7 +333,9 @@ def test_veredicto_manifiesto_de_solo_conteo_es_evidence_incomplete() -> None:
 
 def test_veredicto_manifiesto_verificado_completo_es_success() -> None:
     """Con manifiesto completo Y verificado por fuente, SUCCESS es legítimo."""
-    evidencia = EvidenciaDeBuild(return_code=0, log_atribuible=True, artefactos_nif=2, artefactos_tri=1)
+    evidencia = EvidenciaDeBuild(
+        return_code=0, log_atribuible=True, artefactos_nif=2, artefactos_tri=1, preset_efectivo_verificado=True
+    )
     veredicto = evaluar_veredicto(
         evidencia,
         ManifiestoArtefactos(nif_requeridos=2, tri_requeridos=1, verificado=True, procedencia="fixture:test"),
@@ -409,7 +411,9 @@ def test_manifiesto_verificado_con_requisitos_negativos_se_rechaza() -> None:
 
 def test_manifiesto_verificado_con_un_tri_y_procedencia_certificado() -> None:
     """Caso feliz coherente: 1 .tri requerido + verificado + procedencia."""
-    evidencia = EvidenciaDeBuild(return_code=0, log_atribuible=True, artefactos_nif=0, artefactos_tri=1)
+    evidencia = EvidenciaDeBuild(
+        return_code=0, log_atribuible=True, artefactos_nif=0, artefactos_tri=1, preset_efectivo_verificado=True
+    )
     veredicto = evaluar_veredicto(
         evidencia, ManifiestoArtefactos(tri_requeridos=1, verificado=True, procedencia="catálogo:v3")
     )

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import pathlib
 from typing import Any
 
@@ -776,6 +777,14 @@ class _BodySlideRunFallidoError(Exception):
         super().__init__(getattr(result, "stderr", "") or getattr(result, "stdout", "") or "BodySlide run failed")
 
 
+def _entradas_del_staging(raiz: pathlib.Path) -> list[str]:
+    """Nombres de la raíz del staging de BodySlide; raíz ausente ⇒ ninguno (cierre #1003)."""
+    try:
+        return [entrada.name for entrada in os.scandir(raiz)]
+    except FileNotFoundError:
+        return []
+
+
 def _bodyslide_dict_de_resultado(result: Any) -> dict[str, Any]:
     """Dict de salida compartido por el camino exitoso y el de ``_BodySlideRunFallidoError``.
 
@@ -861,6 +870,7 @@ async def run_bodyslide_batch(
 
     from sky_claw.app.db.locks import LockAcquisitionError, SnapshotTransactionLock
     from sky_claw.local.tools._dir_rollback import DirectoryRollback
+    from sky_claw.local.tools.bodyslide_headless import HeadlessContractError, exigir_identidad_de_grupo_unica
     from sky_claw.local.tools.output_targets import bodyslide_output_target
 
     game_path = getattr(getattr(bodyslide_runner, "config", None), "game_path", None)
@@ -888,6 +898,18 @@ async def run_bodyslide_batch(
             # lock que lo envuelve apliquen el MISMO criterio: si el heartbeat
             # perdió el lease durante la corrida, no se restaura pisando a un
             # dueño concurrente (review Codex #399, mismo patrón en Pandora).
+            # Cierre #1003: identidad del grupo ANTES del move-aside. En NTFS el
+            # rename de ``.../cbbe`` movería la carpeta ``CBBE`` y borraría su
+            # grafía, la única evidencia de la colisión: la misma regla pura que
+            # aplica el runner (``exigir_identidad_de_grupo_unica``) corre acá,
+            # dentro del lock, antes de DirectoryRollback. El runner no se importa
+            # (censo de importadores congelado en test_animation_tool_consolidation).
+            try:
+                nombres = await asyncio.to_thread(_entradas_del_staging, target.parent)
+                exigir_identidad_de_grupo_unica(group, nombres)
+            except (HeadlessContractError, OSError) as exc:
+                detail = sanitize_for_prompt(f"BodySlide no se lanzó: {exc}")
+                return json.dumps({"success": False, "message": detail, "error": detail})
             await stack.enter_async_context(DirectoryRollback(target, should_rollback=lambda: not tx.lease_lost))
             result = await bodyslide_runner.run_batch(
                 group,

@@ -10,7 +10,9 @@ describen el estado de ese día y quedan superadas por este bloque.
   P1-7, P1-8 (primera auditoría); P0-A, P0-B, P0-C, P1-D, P1-E (segunda);
   P1-A, P1-B, P1-C y el tipo de `resolver_conflictos` (revisión independiente
   de PR #1003); P1-D, alias físicos Win32 del nombre de grupo (segunda
-  revisión de #1003). Detalle en las secciones al final.
+  revisión de #1003); y el cierre contractual del propietario: preset
+  determinista, terminalidad con Job Object, identidad de grupo por mayúsculas
+  y log manipulado. Detalle en las secciones al final.
 - **Worktree (P0-4) — RESUELTO:** PR 1 vive en la rama
   `feat/bodyslide-pr1-headless`, creada desde `origin/main` `255fb6d0` en el
   worktree exclusivo `.worktrees/bodyslide-pr1-headless` (convención de
@@ -34,17 +36,27 @@ describen el estado de ese día y quedan superadas por este bloque.
   - **Pendiente para PR 2 — espera indefinida:** si la siembra se cuelga en su
     hilo (I/O bloqueado), la restauración de `_BarreraDeSiembra` la espera sin
     límite; no hay timeout ni journal que la reemplace.
-  - **Grupos que difieren sólo en mayúsculas** (`CBBE` / `cbbe`) son la MISMA
-    carpeta en NTFS (ver sección P1-D). No se crea catálogo en PR 1.
+  - ~~Grupos que difieren sólo en mayúsculas~~ — CERRADO en el cierre
+    contractual: se rechaza el grupo cuya grafía difiere sólo en mayúsculas de
+    una carpeta existente del staging, en el runner y en la tool ANTES del
+    move-aside. Sigue sin catálogo: dos grupos equivalentes sin carpeta previa
+    en el staging no se pueden distinguir hasta PR 3.
   - El schema del agente (`schemas.py`, `_SAFE_NAME_PATTERN`) no replica las
     reglas Win32 de P1-D y `run_bodyslide_batch` deriva el target y abre el
     move-aside (`DirectoryRollback`) ANTES de llamar al runner; hoy no hay
     efecto porque el runner aborta, pero alinear esa capa queda para PR 2.
+  - Sin `-p` verificado el veredicto nunca es SUCCESS (preset efectivo
+    desconocido ⇒ `EVIDENCE_INCOMPLETE`): la tool del agente no expone
+    `preset_verified`, así que hasta PR 3 (catálogo) toda corrida del agente
+    terminaría así aunque se habilitara el spawn.
   - Atribución del log por firma con granularidad de día (falso negativo
     posible, nunca falso verde).
-  - `sky_claw.local.tools.*` sigue exento de mypy en `pyproject.toml`; fuera
-    de la exención quedan errores de estrechamiento de `Optional` sin efecto en
-    runtime (ver sección final).
+  - **Deuda de mypy (documentada, no corregida por decisión del propietario):**
+    `sky_claw.local.tools.*` sigue exento en `pyproject.toml`; sin la exención,
+    `bodyslide_headless.py`, `bodyslide_runner.py` y `bodyslide_config.py`
+    tienen 9 errores (estrechamiento de `Optional` y reutilización de
+    variables, sin efecto en runtime). El cierre contractual no agregó
+    ninguno (ver sección final).
 
 **Fecha:** 2026-11-22 · **Rama:** `arena/367dc766-sky-claw` @ `0106f85` (sin commit nuevo; P0-4 PROCESS_HOLD) · **Alcance:** PR 1 headless (no broker, no PR 2/3/4, no merge/push)
 
@@ -509,3 +521,92 @@ las corridas del agente, pero no distingue el aliasing. Queda para PR 2/PR 3
 - Carreras de procesos (TOCTOU staging↔spawn; procesos externos).
 - La ejecución productiva **sigue deshabilitada**: `run_bodyslide_batch` no pasa
   `quiet_verified` ⇒ `CAPABILITY_UNKNOWN` sin spawn.
+
+---
+
+# Cierre contractual de PR #1003 (ronda final aprobada por el propietario, 2026-11-23)
+
+**Base:** `2951a09a`. Alcance cerrado por el propietario: preset determinista,
+terminalidad de procesos, identidad de grupos Windows y un test adversarial de
+log. Sin merge, sin refactor general, Draft. Hecha en el worktree de la sesión
+del escritorio (`.claude/worktrees/agitated-dirac-61cf78`, que la app crea fuera
+de la convención `.worktrees/`), sobre la misma rama `feat/bodyslide-pr1-headless`.
+
+Tests nuevos en `tests/test_bodyslide_cierre_contractual.py`. RED sobre
+`2951a09a`: **11 rojos** (los 15 que pasaban eran controles de aceptación y los
+adversariales del log, que ya resistían). GREEN: 26/26.
+
+### Preset determinista — CERRADO
+
+Upstream v6.2.0 (`99103c3b`), `BodySlideAppBuild.cpp`: el batch arranca con
+`activePreset = BodySlideConfig["SelectedPreset"]` y `CommandLineBuild` sólo
+lo reemplaza si hay `cmdPreset`. Sin `-p`, el preset efectivo es el que la GUI
+dejó guardado: el plan no lo conoce. `EvidenciaDeBuild` gana
+`preset_efectivo_verificado` (default `False`) y `evaluar_veredicto` (el
+contrato compartido, una sola implementación) devuelve `EVIDENCE_INCOMPLETE`
+cuando falta, como última regla antes de SUCCESS: nunca enmascara un FAILURE.
+El runner lo deriva de `preset is not None and preset_verified` (`-p` sólo se
+emite con preset verificado). La invocación sin `-p` sigue siendo válida
+(compatibilidad), pero ya no puede ser SUCCESS. Los tests de éxito existentes
+declaran ahora un preset verificado; ninguna aserción de fallo se relajó.
+
+El aviso «Preset '%s' from the command line is not available…» existe upstream
+(`BodySlideApp.cpp`), pero en la activación del outfit de la GUI, no en
+`CommandLineBuild`: no es un marcador confiable del batch y no se usa.
+
+### Terminalidad: Job Object obligatorio — CERRADO (con límites)
+
+`run_capture(..., require_job=True)`, igual que `synthesis_runner` y
+`xedit_bridge_client`. En Windows el árbol del hijo queda en un Job
+`KILL_ON_JOB_CLOSE` que `run_capture` cierra en toda salida (propiedad ya
+probada en `tests/test_process_helper.py`); si el Job no se asigna,
+`run_capture` mata al hijo y eleva `OSError` ⇒ `BodySlideExecutionError`, sin
+veredicto y con la config restaurada (test con `run_capture` REAL y un hijo
+real). **No** elimina la micro-ventana anterior a la asignación del PID ni las
+carreras previas al spawn, y **no** sustituye al broker USVFS de PR 2. Fuera de
+Windows `require_job` no tiene efecto. `test_subprocess_orphan_prevention.py`
+simula el Job para su proceso doble (sin PID real), porque su objeto es el kill
+por timeout/cancelación, no el Job.
+
+### Identidad de grupos por mayúsculas — CERRADO
+
+`bodyslide_headless.exigir_identidad_de_grupo_unica` (pura) rechaza un grupo
+cuya grafía difiere sólo en mayúsculas de una entrada existente de la raíz del
+staging (NTFS: misma carpeta). Corre en los DOS caminos: el runner
+(`verificar_identidad_de_grupo_en_staging`, `ARGS_INVALID` sin siembra ni
+spawn) y `run_bodyslide_batch`, dentro del lock y ANTES de `DirectoryRollback`
+(que renombra la carpeta con el nombre pedido y borra la grafía original).
+`system_tools.py` usa la regla pura y no importa el runner: el censo de
+importadores de `test_animation_tool_consolidation.py` queda intacto. Límite:
+sin catálogo (PR 3), dos grupos equivalentes sin carpeta previa no se
+distinguen.
+
+### Log manipulado — test adversarial
+
+Casos: log viejo de éxito intacto (con y sin artefacto nuevo), log reescrito
+con firmas nuevas y "éxito" sin mallas, firmas nuevas con mallas
+preexistentes, y log editado in situ sin firma nueva. Ninguno da SUCCESS aun
+con preset y manifiesto verificados.
+
+### Mutation checks (focalizados)
+
+| Mutación | Tests rojos |
+|---|---|
+| Sin la regla del preset en `evaluar_veredicto` | 2 |
+| Sin `require_job=True` | 2 |
+| Sin el chequeo de identidad en el runner | 1 |
+| Sin el chequeo de identidad en la tool | 1 |
+| Sin el gate de atribución del log | 2 |
+
+### Diferido explícitamente
+
+- **PR 2:** validación del binario real y su capacidad `-q`, USVFS,
+  terminalidad brokered, concurrencia con BodySlide/Outfit Studio abiertos
+  (comparten `Config.xml`, `Log_BS.txt` y `BuildSelection.xml`), revalidación
+  física del staging posterior al spawn, journal durable y espera acotada de la
+  siembra.
+- **PR 3:** catálogo de outfits/presets (y con él `preset_verified` en la tool
+  del agente), conflictos resueltos antes del spawn (`CONFLICT_UNRESOLVED`),
+  procedencia verificable del manifiesto y estados tipados hacia el agente
+  (hoy `estado` no viaja en el dict de la tool).
+- **Deuda de mypy:** los 9 errores sin exención siguen igual; ninguno nuevo.

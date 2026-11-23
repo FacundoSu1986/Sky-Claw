@@ -50,6 +50,7 @@ from sky_claw.local.tools.bodyslide_headless import (
     construir_argv,
     evaluar_veredicto,
     exigir_destino_canonico,
+    exigir_identidad_de_grupo_unica,
     marcadores_de_corrida,
 )
 from sky_claw.local.tools.output_targets import bodyslide_output_root, bodyslide_output_target
@@ -561,7 +562,9 @@ def _verificar_identidad_del_staging(raiz: pathlib.Path, candidato: pathlib.Path
     staging — ``exigir_contencion_fisica`` recorre la cadena con ``lstat``
     sin seguir enlaces, revalida la identidad de cada componente y rechaza
     cualquier redirección. Si la raíz todavía no está materializada (primer run),
-    no hay nada que verificar: se deja la propiedad al gate léxico y al post-spawn.
+    no hay nada que verificar: queda el gate léxico. La revalidación física
+    POSTERIOR al spawn no existe en PR 1 (diferida a PR 2, junto con la ventana
+    TOCTOU entre este chequeo y el spawn).
 
     Raises:
         OSError: si la identidad no puede verificarse (enlace en la cadena,
@@ -574,6 +577,26 @@ def _verificar_identidad_del_staging(raiz: pathlib.Path, candidato: pathlib.Path
         # demostrar. El gate léxico lo cubrió; el post-spawn lo revalida.
         return
     exigir_contencion_fisica(raiz, candidato, exigir_existencia=False)
+
+
+def verificar_identidad_de_grupo_en_staging(raiz: pathlib.Path, group: str) -> None:
+    """Lista la raíz del staging y exige que *group* no colisione por mayúsculas (cierre #1003).
+
+    Única implementación para los DOS caminos que llegan al staging: el runner
+    (público) y ``run_bodyslide_batch``, que la llama ANTES de
+    ``DirectoryRollback`` — después del move-aside la grafía original de la
+    carpeta ya no existe y la colisión sería invisible. Raíz ausente ⇒ no hay
+    carpetas con las que colisionar.
+
+    Raises:
+        HeadlessContractError: grupo equivalente por mayúsculas a una carpeta existente.
+        OSError: la raíz existe pero no se pudo listar (el caller falla cerrado).
+    """
+    try:
+        nombres = [entrada.name for entrada in os.scandir(raiz)]
+    except FileNotFoundError:
+        return
+    exigir_identidad_de_grupo_unica(group, nombres)
 
 
 class BodySlideRunner:
@@ -675,6 +698,19 @@ class BodySlideRunner:
             logger.error("BodySlide aborted: %s", message)
             return resultado_de_fallo("ARGS_INVALID", message)
 
+        # 1c'') Cierre #1003: el grupo no puede ser una identidad equivalente por
+        #       mayúsculas a otra carpeta del staging (NTFS: misma carpeta física).
+        try:
+            await asyncio.to_thread(verificar_identidad_de_grupo_en_staging, raiz_de_salida, group)
+        except HeadlessContractError as exc:
+            message = str(exc)
+            logger.error("BodySlide aborted: %s", message)
+            return resultado_de_fallo("ARGS_INVALID", message)
+        except OSError as exc:
+            message = f"No se pudo listar el staging '{raiz_de_salida}': {exc}"
+            logger.error("BodySlide aborted: %s", message)
+            return resultado_de_fallo("STAGING_UNVERIFIABLE", message)
+
         # 1d) Identidad física del staging — la raíz y la cadena de ancestrales
         #     existentes deben ser directorios REALES (sin symlinks/junctions).
         #     Un destino a través de enlaces desvía la mutación fuera del
@@ -729,12 +765,19 @@ class BodySlideRunner:
             destino_propio = not destino.is_symlink()
             preexistentes = len(previos)
 
-            # 4b) Spawn — evidencia + veredicto.
+            # 4b) Spawn — evidencia + veredicto. ``require_job=True`` (cierre #1003,
+            #     mismo contrato que synthesis_runner/xedit_bridge_client): en
+            #     Windows el árbol queda en un Job KILL_ON_JOB_CLOSE que
+            #     ``run_capture`` cierra en TODA salida; si no se puede asignar,
+            #     ``run_capture`` mata al hijo y eleva OSError ⇒ falla cerrada.
+            #     No cubre la micro-ventana previa a la asignación del PID ni
+            #     sustituye al broker USVFS (PR 2).
             try:
                 stdout, stderr, return_code = await run_capture(
                     args,
                     timeout=self.config.timeout_seconds,
                     cwd=str(self.config.game_path),
+                    require_job=True,
                 )
             except TimeoutError as exc:
                 logger.error("BodySlide execution timed out.")
@@ -757,6 +800,9 @@ class BodySlideRunner:
                 artefactos_nif=nuevos_nif,
                 artefactos_tri=nuevos_tri,
                 preexistentes=preexistentes,
+                # ``-p`` sólo sale con un preset verificado (construir_argv rechaza
+                # el resto): sin preset, BodySlide usa el SelectedPreset guardado.
+                preset_efectivo_verificado=preset is not None and preset_verified,
             )
             veredicto = evaluar_veredicto(evidencia, manifest)
 

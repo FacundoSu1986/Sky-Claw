@@ -98,6 +98,8 @@ async def test_successful_run_restores_original_config_byte_for_byte(tmp_path: p
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
+            preset="Zeroed",
+            preset_verified=True,
         )
 
     assert (exe.parent / "Config.xml").read_bytes() == original, (
@@ -124,6 +126,8 @@ async def test_spawn_failure_still_restores_original_config(tmp_path: pathlib.Pa
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
+            preset="Zeroed",
+            preset_verified=True,
         )
 
     assert (exe.parent / "Config.xml").read_bytes() == original
@@ -200,6 +204,8 @@ async def test_successful_run_restores_bodyslide_and_buildselection(tmp_path: pa
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
+            preset="Zeroed",
+            preset_verified=True,
         )
 
     assert (exe.parent / "BodySlide.xml").read_bytes() == bodyslide_original
@@ -229,6 +235,8 @@ async def test_process_creates_new_config_and_runner_deletes_it(tmp_path: pathli
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
+            preset="Zeroed",
+            preset_verified=True,
         )
 
     assert not (exe.parent / "BodySlide.xml").exists()
@@ -275,6 +283,8 @@ async def test_process_mutates_external_target_of_symlink_and_runner_restores_it
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
+            preset="Zeroed",
+            preset_verified=True,
         )
 
     # El destino externo se restaura byte a byte:
@@ -340,6 +350,8 @@ async def test_previa_de_escaneo_os_error_restaura_original(tmp_path: pathlib.Pa
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
+            preset="Zeroed",
+            preset_verified=True,
         )
 
     assert (exe.parent / "Config.xml").read_bytes() == original, (
@@ -367,6 +379,8 @@ async def test_previa_de_escaneo_cancelacion_restaura_original(tmp_path: pathlib
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
+            preset="Zeroed",
+            preset_verified=True,
         )
 
     assert (exe.parent / "Config.xml").read_bytes() == original
@@ -394,6 +408,8 @@ async def test_pre_spawn_unexpected_exception_restores_and_propagates(tmp_path: 
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
+            preset="Zeroed",
+            preset_verified=True,
         )
 
     assert (exe.parent / "Config.xml").read_bytes() == original
@@ -490,6 +506,8 @@ async def test_buildselection_retargeteado_no_se_escribe_a_traves_del_enlace(tmp
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
+            preset="Zeroed",
+            preset_verified=True,
         )
 
     # B queda byte a byte intacto — no se puede sobrescribir con el blob de A.

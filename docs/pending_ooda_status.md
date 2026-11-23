@@ -589,10 +589,15 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
   #1003) y la revisión independiente de #1003 cerró P1-A (destino = target canónico
   del grupo), P1-B (log ilegible ≠ ausente), P1-C (siembra cancelada no escribe
   tras el restore) y P1-D (grupo que no es carpeta Win32 independiente: punto o
-  espacio final, dispositivos reservados). **Sin ejecución productiva** hasta PR 2
-  (`CAPABILITY_UNKNOWN` sin `quiet_verified`); rig Windows/MO2 pendiente.
-  Pendiente para PR 2: espera indefinida del restore ante una siembra colgada,
-  carreras de procesos (staging↔spawn) y grupos que difieren sólo en mayúsculas. Evidencia:
+  espacio final, dispositivos reservados). El cierre contractual del propietario
+  cerró además: preset efectivo desconocido ⇒ nunca SUCCESS, Job Object obligatorio
+  (`require_job=True`, falla cerrada sin Job), grupos que difieren sólo en mayúsculas
+  de una carpeta existente (runner y tool, antes del move-aside) y log manipulado.
+  **Sin ejecución productiva** hasta PR 2 (`CAPABILITY_UNKNOWN` sin `quiet_verified`);
+  rig Windows/MO2 pendiente. Pendiente para PR 2: binario real, USVFS, terminalidad
+  brokered, concurrencia con BodySlide/Outfit Studio, revalidación física, journal y
+  espera acotada de la siembra; para PR 3: catálogo, conflictos pre-spawn, procedencia
+  del manifiesto y estados tipados al agente. Evidencia:
   `docs/validation/2026-11-22_bodyslide-pr1-audit-corrections.md`.
 
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un
