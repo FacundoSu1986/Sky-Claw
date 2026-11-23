@@ -54,7 +54,6 @@ from sky_claw.local.tools.grass_cache_safety import (
     PRECACHE_FLAG,
     EstadoAplicacion,
     GrassCacheMode,
-    GrassCacheSafetyError,
     NeutralizacionFlag,
     PlanArranque,
     aplicar_plan,
@@ -372,11 +371,18 @@ class GrassCacheRunner:
             # nuestro y limpiarlo sigue siendo responsabilidad de este run.
             estado_aplicacion = EstadoAplicacion()
             try:
-                await asyncio.to_thread(aplicar_plan, plan, self._flag_path, estado=estado_aplicacion)
-            except GrassCacheSafetyError:
+                await self._aplicar_plan_en_seccion_critica(plan, estado_aplicacion)
+            finally:
+                # La sección crítica NO vuelve mientras el hilo de escritura
+                # siga vivo, así que acá el estado en disco ya es conocido: si
+                # la sustitución ocurrió (aunque la cancelación o un error
+                # lleguen después), el flag es nuestro y limpiarlo es
+                # responsabilidad de este run.
                 if estado_aplicacion.escrito:
                     flag_apropiado = True
-                raise
+            # Con la escritura consolidada, el flag —escrito por el plan o
+            # conservado como evidencia de reanudación— queda bajo custodia de
+            # este run, que es quien lo archiva y lo neutraliza al salir.
             flag_apropiado = True
             # Baseline del stall detector: el estado del cache ANTES del primer
             # lanzamiento — un primer ciclo sin .cgid nuevos ya cuenta como racha.
@@ -530,6 +536,47 @@ class GrassCacheRunner:
             # puede costar la reanudación (P0, evidencia de F-01).
             if flag_apropiado:
                 self._neutralizacion = self._neutralizar_flag_sync()
+
+    async def _aplicar_plan_en_seccion_critica(self, plan: PlanArranque, estado: EstadoAplicacion) -> None:
+        """Escribe el flag sin poder abandonar la escritura a medias.
+
+        ``asyncio.to_thread`` NO es cancelable: al cancelar la tarea el ``await``
+        levanta ``CancelledError`` y el hilo SIGUE escribiendo. Un ``finally`` que
+        consulta ``estado.escrito`` en ese instante ve ``False``, se saltea la
+        limpieza, y el hilo termina después dejando un flag vacío sin dueño —que
+        el próximo arranque del juego convierte en borrado del caché—. Atrapar
+        ``GrassCacheSafetyError`` no cambia nada: la cancelación no pasa por ahí.
+
+        Por eso la espera es a prueba de cancelación: al recibir
+        ``CancelledError`` no se propaga mientras el hilo siga en vuelo; se
+        vuelve a esperar (``shield`` mantiene viva la tarea) hasta que TERMINA, y
+        recién entonces se levanta. Así el run conoce el resultado real de la
+        escritura antes de salir y el ``finally`` neutraliza lo que sea nuestro.
+        Un error del hilo también se propaga recién cuando el hilo terminó; la
+        cancelación tiene prioridad porque es la que el llamador pidió.
+        La neutralización en sí es síncrona (ver ``_neutralizar_flag_sync``), de
+        modo que tampoco puede re-cancelarse entre el archivo y el ``unlink``.
+        """
+        tarea = asyncio.ensure_future(asyncio.to_thread(aplicar_plan, plan, self._flag_path, estado=estado))
+        cancelado = False
+        fallo: BaseException | None = None
+        while True:
+            try:
+                await asyncio.shield(tarea)
+                break
+            except asyncio.CancelledError:
+                # Si la tarea ya terminó, el estado está consolidado: se sale.
+                # Si no, se sigue esperando al hilo antes de propagar.
+                cancelado = True
+                if tarea.done():
+                    break
+            except Exception as exc:  # noqa: BLE001 — el error del hilo es opaco: se re-lanza tal cual
+                fallo = exc
+                break
+        if cancelado:
+            raise asyncio.CancelledError
+        if fallo is not None:
+            raise fallo
 
     # ------------------------------------------------------------------
     # Fases internas

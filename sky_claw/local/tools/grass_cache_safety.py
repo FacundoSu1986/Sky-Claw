@@ -741,6 +741,34 @@ def _ruta_progreso(raiz_estado: pathlib.Path, huella: str) -> pathlib.Path:
     return _dir_progreso(raiz_estado) / f"{huella}.json"
 
 
+def _validar_progreso_fisico(directorio: pathlib.Path, *, que: str) -> None:
+    """Exige que el archivo de evidencia cuelgue de una cadena de directorios REALES.
+
+    **Qué problema cierra.** Validar ``raiz_estado`` no alcanza: el destino real
+    es ``<raiz_estado>/<progreso>/<huella>.json`` y ``<progreso>`` es OTRO
+    componente de la ruta de escritura. Un enlace ahí (``raiz_estado`` real,
+    ``raiz_estado/progreso`` → árbol externo) pasaba los guards de la raíz y el
+    JSON de evidencia se escribía fuera del árbol administrado, sobrescribiendo
+    el archivo de otra aplicación. Lo mismo del lado de la lectura: la evidencia
+    se recuperaba desde afuera.
+
+    **Cómo lo decide.** Se reutiliza :func:`_validar_raiz_fisica`, que ancla en
+    la raíz del volumen y hace ``lstat`` de CADA componente sin seguir enlaces
+    (symlinks y junctions de Windows incluidos), así que cubre también un
+    ancestro intermedio enlazado. Un componente inexistente no puede ser un
+    enlace y el recorrido se corta ahí. Se valida el DIRECTORIO del destino
+    (todos los componentes de la cadena son directorios) y el archivo en sí se
+    clasifica aparte con :func:`_rechazar_enlace`.
+    """
+    _validar_raiz_fisica(
+        directorio,
+        codigo_enlace="progreso_raiz_enlazada",
+        codigo_no_absoluta="progreso_raiz_no_absoluta",
+        codigo_ilegible="progreso_raiz_ilegible",
+        que=que,
+    )
+
+
 def archivar_progreso(
     raiz_estado: pathlib.Path,
     inventario: InventarioCache,
@@ -780,7 +808,14 @@ def archivar_progreso(
             f"({len(digests)} archivos): no se archiva evidencia que no corresponde.",
         )
     destino = _ruta_progreso(raiz_estado, inventario.huella)
+    # B10: la cadena física del DESTINO, no sólo ``raiz_estado``. El subdirectorio
+    # de progreso es parte de la ruta de escritura: sin este guard, un enlace en
+    # ``<estado>/progreso`` deja el JSON de evidencia fuera del árbol administrado.
+    _validar_progreso_fisico(destino.parent, que="del progreso archivado de Sky-Claw")
     destino.parent.mkdir(parents=True, exist_ok=True)
+    # Y se revalida con el subdirectorio ya creado: la escritura atómica elige
+    # el nombre final y su directorio real recién acá.
+    _validar_progreso_fisico(destino.parent, que="del progreso archivado de Sky-Claw")
     carga = {
         "version": _VERSION_MANIFIESTO,
         "huella": inventario.huella,
@@ -825,6 +860,10 @@ def recuperar_progreso(
         que="del estado de Sky-Claw",
     )
     ruta = _ruta_progreso(raiz_estado, inventario.huella)
+    # B10: tampoco se LEE evidencia que viva fuera del árbol administrado.
+    _validar_progreso_fisico(ruta.parent, que="del progreso archivado de Sky-Claw")
+    if path_present(ruta):
+        _rechazar_enlace(ruta, "progreso_es_enlace")
     carga = _leer_manifiesto(ruta)
     if carga is None or carga.get("version") != _VERSION_MANIFIESTO or carga.get("huella") != inventario.huella:
         return None

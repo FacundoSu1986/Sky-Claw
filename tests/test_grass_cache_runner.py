@@ -22,6 +22,7 @@ import asyncio
 import dataclasses
 import itertools
 import pathlib
+import threading
 import time
 from collections import namedtuple
 from typing import Any
@@ -41,6 +42,7 @@ from sky_claw.local.tools.grass_cache_runner import (
     GrassCacheRunResult,
 )
 from sky_claw.local.tools.grass_cache_safety import (
+    EstadoAplicacion,
     GrassCacheSafetyError,
     NeutralizacionFlag,
     archivar_progreso,
@@ -1353,3 +1355,49 @@ async def test_limpieza_incompleta_no_devuelve_exito(
     assert resultado.flag_residual is True
     assert resultado.success is False, "una limpieza incompleta no es éxito"
     assert "limpieza" in resultado.message.lower()
+
+
+# ---------------------------------------------------------------------------
+# CUARTA REVISIÓN — B11: la cancelación no puede abandonar la escritura
+# ---------------------------------------------------------------------------
+
+
+async def test_cancelacion_durante_la_escritura_del_flag_no_deja_flag_vacio(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # B11: la escritura corre en un hilo. Si la tarea se cancela mientras ese
+    # hilo está en vuelo, el `finally` corre ANTES de que el flag exista y la
+    # limpieza se omite: queda un flag vacío sin dueño. La sección crítica tiene
+    # que esperar a que el hilo termine, conocer su estado y recién entonces
+    # abandonar.
+    en_escritura = threading.Event()
+    liberar = threading.Event()
+
+    def _aplicar_lento(
+        plan: Any, flag_path: pathlib.Path, *, estado: EstadoAplicacion | None = None
+    ) -> EstadoAplicacion:
+        estado = estado if estado is not None else EstadoAplicacion()
+        flag_path.write_bytes(plan.contenido)  # la escritura real del flag vacío
+        estado.escrito = True
+        en_escritura.set()
+        liberar.wait(timeout=10)  # el test decide cuándo termina la escritura
+        estado.verificado = True
+        return estado
+
+    monkeypatch.setattr(gcr_mod, "aplicar_plan", _aplicar_lento)
+    tarea = asyncio.ensure_future(_correr(_runner(config, mo2)))
+
+    # Determinismo: se cancela EXACTAMENTE mientras la escritura está en vuelo.
+    assert await asyncio.to_thread(en_escritura.wait, 5.0), "la escritura no llegó a empezar"
+    assert (config.game_path / "PrecacheGrass.txt").exists()
+    tarea.cancel()
+    await asyncio.sleep(0)  # deja que la cancelación se entregue en el await del hilo
+    liberar.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=10)
+
+    assert not (config.game_path / "PrecacheGrass.txt").exists(), (
+        "quedó un flag vacío que el próximo arranque del juego convertiría en borrado del caché"
+    )
+    mo2.launch_game.assert_not_awaited()

@@ -981,3 +981,84 @@ def test_resume_rechaza_flag_borrado_despues_del_preflight(grass: pathlib.Path, 
 
     assert excinfo.value.codigo == "flag_cambio_despues_del_preflight"
     assert not ruta_del_flag(juego).exists()
+
+
+# ---------------------------------------------------------------------------
+# CUARTA REVISIÓN — B10: la cadena física del destino, no sólo la raíz
+# ---------------------------------------------------------------------------
+
+
+def test_archivado_rechaza_subdirectorio_de_progreso_enlazado(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # B10: validar `raiz_estado` no alcanza: `<estado>/progreso` es OTRO
+    # componente de la ruta de escritura, y un enlace ahí saca el JSON de
+    # evidencia del árbol administrado.
+    externo = tmp_path / "externo"
+    externo.mkdir()
+    estado.mkdir()
+    try:
+        (estado / "progreso").symlink_to(externo, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+    inventario = _inventario(grass, juego)
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        archivar_progreso(estado, inventario, b"Tamriel\n-2,4\n", grass_dir=grass)
+
+    assert excinfo.value.codigo == "progreso_raiz_enlazada"
+    assert not list(externo.iterdir()), "no se escribe fuera de la raíz administrada"
+
+
+def test_recuperar_rechaza_subdirectorio_de_progreso_enlazado(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # El mismo enlace, del lado de la lectura: no se acepta evidencia que viva
+    # fuera del árbol administrado.
+    externo = tmp_path / "externo"
+    externo.mkdir()
+    estado.mkdir()
+    inventario = _inventario(grass, juego)
+    ajeno = externo / f"{inventario.huella}.json"
+    ajeno.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "huella": inventario.huella,
+                "huella_contenido": "x",
+                "contenido_b64": "VGFtcmllbAo=",
+                "contenido_sha256": "0" * 64,
+                "contenido_bytes": 8,
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        (estado / "progreso").symlink_to(externo, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        recuperar_progreso(estado, inventario, grass_dir=grass)
+
+    assert excinfo.value.codigo == "progreso_raiz_enlazada"
+
+
+def test_archivado_rechaza_un_ancestro_intermedio_enlazado(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path
+) -> None:
+    # El enlace no está ni en la raíz del estado ni en `progreso`: está en un
+    # ANCESTRO de la raíz. La validación cubre la cadena completa.
+    externo = tmp_path / "externo"
+    externo.mkdir()
+    try:
+        (tmp_path / "enlazado").symlink_to(externo, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+    inventario = _inventario(grass, juego)
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        archivar_progreso(tmp_path / "enlazado" / "estado", inventario, b"Tamriel\n", grass_dir=grass)
+
+    assert excinfo.value.codigo == "estado_raiz_enlazada"
+    assert not list(externo.iterdir())
