@@ -571,6 +571,8 @@ CENSO_DE_LECTORES = {
     "sky_claw/local/mo2/brokered_dyndolod.py": 2,
     "sky_claw/local/mo2/vfs_attestation.py": 1,
     "sky_claw/local/native_parallax/diagnostico_perfil.py": 1,
+    # #997: la guía de la etapa 9 lista las capas de Data donde buscar el DLL de DynDOLOD DLL NG.
+    "sky_claw/local/tools/dyndolod_guia.py": 1,
     "sky_claw/local/tools/wrye_bash_service.py": 1,
     "sky_claw/local/validators/etapas_previas_lods.py": 1,
 }
@@ -584,6 +586,8 @@ CLASIFICACION_DE_CONSUMIDORES = {
     "sky_claw/local/mo2/mod_effectivity.py": "resuelve_indice",
     "sky_claw/local/mo2/vfs_attestation.py": "lee_y_resuelve_indice",
     "sky_claw/local/native_parallax/diagnostico_perfil.py": "delega_a_indexar_ganadores",
+    # #997: enumera capas (Data, overwrite, mods habilitados) para buscar un archivo; no resuelve identidad de mods.
+    "sky_claw/local/tools/dyndolod_guia.py": "enumera_capas",
     "sky_claw/local/tools/output_targets.py": "enumera_capas",
     "sky_claw/local/tools/wrye_bash_service.py": "delega_a_bashed_patch_en_overlay",
     "sky_claw/local/validators/etapas_previas_lods.py": "enumera_capas",

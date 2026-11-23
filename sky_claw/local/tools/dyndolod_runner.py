@@ -45,6 +45,7 @@ from sky_claw.local.tools._dir_rollback import (
 )
 from sky_claw.local.tools._process import assign_kill_on_close_job, close_job, kill_and_reap
 from sky_claw.local.tools.artifact_digest import TreeDigest, digest_arbol
+from sky_claw.local.tools.dyndolod_guia import AvisoDeFase, CambioDeFase, Corte, FaseAsistida
 from sky_claw.local.tools.dyndolod_presets import (
     GuardaDePresets,
     PresetCambiadoError,
@@ -2487,6 +2488,7 @@ class DynDOLODRunner:
         spawn_strategy: DynDOLODSpawnStrategy | None = None,
         desatendido: CapacidadDesatendidaUIA | None = None,
         on_progress: AvisoDeProgreso | None = None,
+        on_fase: AvisoDeFase | None = None,
     ) -> None:
         """
         Inicializa el runner de DynDOLOD.
@@ -2505,6 +2507,9 @@ class DynDOLODRunner:
         # H-11: quién recibe la muestra de cada latido. ``None`` = nadie (tests, uso directo): el latido sigue
         # solo escribiendo al logger, como siempre.
         self._on_progress = on_progress
+        # #997: quién recibe la fase del modo asistido (qué espera Sky-Claw ahora) y el corte con su código tipado.
+        # ``None`` = nadie (tests, uso directo). Best-effort como el latido: nunca decide la corrida.
+        self._on_fase = on_fase
         self._medicion_de_progreso = _MedicionUnicaEnVuelo()
         # Guard de runtime además del tipo: el runner corre con mypy exento, así
         # que un caller sin anotaciones podría pasar ``None`` — y ese ``None``
@@ -3047,6 +3052,10 @@ class DynDOLODRunner:
             if presupuesto <= 0:
                 raise TimeoutError()
             await _esperar_con_plazo(proc.wait(), timeout=presupuesto)
+            if preparacion is None and isinstance(self._readiness, CapacidadDeReadinessUIA):
+                # #997: entre que la herramienta cierra y la siguiente abre, Sky-Claw empaqueta y verifica: el
+                # operador lee que tiene que esperar, en vez de seguir viendo «ya podés apretar».
+                await self._reportar_fase(CambioDeFase(tool_name=tool_name, fase=FaseAsistida.HERRAMIENTA_TERMINO))
         except asyncio.CancelledError as exc:
             # R3 — RUNNER_P2_DOUBLE_CANCEL. Un shutdown externo debe matar el
             # árbol antes de propagar la cancelación: de otro modo DynDOLOD/TexGen
@@ -3321,6 +3330,10 @@ class DynDOLODRunner:
             # Opt-out explícito (tests/rig): modo directo, sin gate ni HITL.
             return
 
+        # #997: cada paso del protocolo le dice al operador qué espera Sky-Claw ahora, y cada corte avisa su código
+        # TIPADO justo antes del ``raise`` (enumerado por AST en ``tests/test_dyndolod_guia_fases.py``). Los avisos son
+        # best-effort: no cambian ni el orden ni el veredicto de los gates.
+        await self._reportar_fase(CambioDeFase(tool_name=tool_name, fase=FaseAsistida.ABRIENDO_VENTANA))
         resultado_inicial = await self._observar_output_con_gate(
             tool_name=tool_name,
             executable=executable,
@@ -3334,6 +3347,7 @@ class DynDOLODRunner:
             # UIA caída, identidad no demostrable, ambigüedad, enumeración
             # incompleta o errores estructurales: el humano no arregla ninguna de
             # esas desde esta GUI, así que el proceso muere sin convocarlo.
+            await self._reportar_corte(tool_name, resultado_inicial.razon)
             raise DynDOLODPreflightUIAError(resultado_inicial)
 
         # CONFIGURABLE_MISMATCH llega acá con el valor observado: el pedido HITL
@@ -3341,6 +3355,13 @@ class DynDOLODRunner:
         # misma fuente del -o:). MATCH también convoca: el operador todavía tiene
         # que elegir preset/worldspaces, y el campo Output es editable mientras
         # tanto.
+        await self._reportar_fase(
+            CambioDeFase(
+                tool_name=tool_name,
+                fase=FaseAsistida.ESPERANDO_TU_APROBACION,
+                esperado=str(self._expected_output_de(tool_name)),
+            )
+        )
         confirmacion = await self._confirmar_configuracion(
             tool_name=tool_name,
             executable=executable,
@@ -3349,6 +3370,7 @@ class DynDOLODRunner:
         )
         valor_esperado = str(self._expected_output_de(tool_name))
         if confirmacion is None:
+            await self._reportar_corte(tool_name, ResolucionProtocoloReadiness.PROCESO_TERMINO)
             raise DynDOLODReadinessProtocolError(
                 ResolucionProtocoloReadiness.PROCESO_TERMINO,
                 tool_name=tool_name,
@@ -3356,6 +3378,7 @@ class DynDOLODRunner:
                 valor_esperado=valor_esperado,
             )
         if confirmacion is not ResultadoConfirmacion.APROBADA:
+            await self._reportar_corte(tool_name, ResolucionProtocoloReadiness(confirmacion.value))
             raise DynDOLODReadinessProtocolError(
                 ResolucionProtocoloReadiness(confirmacion.value),
                 tool_name=tool_name,
@@ -3368,6 +3391,7 @@ class DynDOLODRunner:
         # del initial gate ya no certifica este instante. Se re-observa — nunca se
         # reusa el resultado anterior, y la excepción del initial (un MISMATCH
         # corregible) NO aplica acá: sólo MATCH autoriza.
+        await self._reportar_fase(CambioDeFase(tool_name=tool_name, fase=FaseAsistida.VERIFICANDO_OUTPUT))
         resultado_final = await self._observar_output_con_gate(
             tool_name=tool_name,
             executable=executable,
@@ -3377,7 +3401,9 @@ class DynDOLODRunner:
             intervalo_segundos=capacidad.gate_final_intervalo_segundos,
         )
         if resultado_final.estado is not EstadoPreflight.MATCH:
+            await self._reportar_corte(tool_name, resultado_final.razon)
             raise DynDOLODPreflightUIAError(resultado_final)
+        await self._reportar_fase(CambioDeFase(tool_name=tool_name, fase=FaseAsistida.PODES_APRETAR_START))
         await self._informar_operador(
             tool_name=tool_name,
             mensaje="Output verificado contra la raíz administrada: podés continuar con Start.",
@@ -5159,6 +5185,33 @@ class DynDOLODRunner:
                 exc_info=True,
                 extra={"operation_type": "dyndolod_progreso_no_reportado", "tx_id": _tx_id()},
             )
+
+    async def _reportar_fase(self, cambio: CambioDeFase) -> None:
+        """Entrega la fase del asistido al observador (#997), best-effort: su falla NO cambia la corrida.
+
+        Mismo contrato que :meth:`_reportar_progreso`: acotado por ``_PLAZO_DEL_AVISO_DE_PROGRESO_S`` (un observador
+        que no vuelve no puede frenar el protocolo de readiness), la cancelación externa se propaga, y cualquier otra
+        falla se registra y se sigue.
+        """
+        aviso = self._on_fase
+        if aviso is None:
+            return
+        try:
+            await _esperar_con_plazo(aviso(cambio), timeout=_PLAZO_DEL_AVISO_DE_PROGRESO_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- observador best-effort: nunca decide ni rompe la corrida
+            logger.warning(
+                "no se pudo avisar la fase %s de %s",
+                cambio.fase.value,
+                cambio.tool_name,
+                exc_info=True,
+                extra={"operation_type": "dyndolod_fase_no_reportada", "tx_id": _tx_id()},
+            )
+
+    async def _reportar_corte(self, tool_name: str, corte: Corte) -> None:
+        """Avisa el corte del protocolo con su código TIPADO, para que la guía lo explique sin parsear el mensaje."""
+        await self._reportar_fase(CambioDeFase(tool_name=tool_name, fase=FaseAsistida.CORTADA, corte=corte))
 
     def _firma_del_log(self, tool: str) -> tuple[int | str, ...] | None:
         """Firma de CONTINUIDAD del log ANTES de lanzar: ``(tamaño, digest)``.
