@@ -854,7 +854,9 @@ async def _synthesis_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
 
 async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     payload = manifest.job.payload
-    allowed = {"loot_exe", "game", "update_masterlist", "loot_data_path"}
+    # ``expected_plugins`` (C2) lo consume el gate genérico de visibilidad ANTES
+    # de este handler (``_expected_plugins_visibility``); acá sólo se admite.
+    allowed = {"loot_exe", "game", "update_masterlist", "loot_data_path", "expected_plugins"}
     unexpected = set(payload) - allowed
     if unexpected:
         raise ValueError(f"payload de loot_sort contiene campos no permitidos: {sorted(unexpected)}")
