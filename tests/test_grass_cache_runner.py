@@ -1737,41 +1737,47 @@ async def test_el_lease_sigue_vigente_durante_una_neutralizacion_mas_larga_que_e
     lectura: dict[str, Any] = {}
 
     def _neutralizar_lento(**kwargs: Any) -> NeutralizacionFlag:
-        # Barrera determinista: el observador NO mira "dos segundos después de
-        # arrancar el observador" (eso podía caer antes de que la neutralización
-        # empezara o después de que terminara), sino cuando el worker YA está
-        # dentro de `neutralizar_flag`.
+        # Barrera determinista: el worker señala al entrar y permanece bloqueado
+        # hasta que el observador termine de leer el lease (con timeout
+        # independiente como protección contra cuelgues).
         en_hilo.set()
-        suelta.wait(timeout=20)
+        if not suelta.wait(timeout=10):
+            lectura["timeout_worker"] = True
+            suelta.set()
         return NeutralizacionFlag(borrado=True, archivado=True, errores=())
 
     monkeypatch.setattr(gcr_mod, "neutralizar_flag", _neutralizar_lento)
 
     def _observar() -> None:
         """Mira la fila desde OTRO loop/conexión, DENTRO de la ventana de bloqueo."""
-        if not en_hilo.wait(timeout=15):
-            lectura["error"] = "la neutralización nunca empezó"
-            return
-        lectura["durante"] = not suelta.is_set()
-        time.sleep(2.0)
+        try:
+            if not en_hilo.wait(timeout=15):
+                lectura["error"] = "la neutralización nunca empezó"
+                return
+            time.sleep(2.0)
 
-        async def _leer() -> None:
-            lector = DistributedLockManager(ruta_bd, default_ttl=1.5, max_retries=1)
-            await lector.initialize()
-            try:
-                for _ in range(5):
-                    try:
-                        lectura["info"] = await lector.get_lock_info("grass-cache")
-                        lectura["ahora"] = time.time()
-                        lectura.pop("error", None)  # un reintento exitoso no deja el error viejo
-                        return
-                    except Exception as exc:  # noqa: BLE001 — reintento corto por lock de SQLite
-                        lectura["error"] = repr(exc)
-                        time.sleep(0.05)
-            finally:
-                await lector.close()
+            async def _leer() -> None:
+                lector = DistributedLockManager(ruta_bd, default_ttl=1.5, max_retries=1)
+                await lector.initialize()
+                try:
+                    for _ in range(5):
+                        try:
+                            lectura["info"] = await lector.get_lock_info("grass-cache")
+                            lectura["ahora"] = time.time()
+                            lectura.pop("error", None)  # un reintento exitoso no deja el error viejo
+                            return
+                        except Exception as exc:  # noqa: BLE001 — reintento corto por lock de SQLite
+                            lectura["error"] = repr(exc)
+                            time.sleep(0.05)
+                finally:
+                    await lector.close()
 
-        asyncio.run(_leer())
+            asyncio.run(_leer())
+            # Se registra DESPUÉS de leer el lease y ANTES de soltar al worker:
+            # si el worker se soltó por timeout antes de terminar _leer(), falla.
+            lectura["durante"] = not suelta.is_set()
+        finally:
+            suelta.set()
 
     manager = DistributedLockManager(ruta_bd, default_ttl=1.5, max_retries=1)
     await manager.initialize()
@@ -1779,7 +1785,6 @@ async def test_el_lease_sigue_vigente_durante_una_neutralizacion_mas_larga_que_e
     await snaps.initialize()
     evento = asyncio.Event()
     observador = threading.Thread(target=_observar, daemon=True)
-    liberacion: threading.Timer | None = None
     try:
         async with SnapshotTransactionLock(
             lock_manager=manager,
@@ -1789,16 +1794,13 @@ async def test_el_lease_sigue_vigente_durante_una_neutralizacion_mas_larga_que_e
             ttl=1.5,
         ):
             observador.start()
-            # La ventana de bloqueo (2,5 s) la cierra un temporizador, no el loop:
-            # en el mutante el loop está bloqueado y ningún `await` propio correría.
-            liberacion = threading.Timer(2.5, suelta.set)
-            liberacion.start()
             tarea = asyncio.ensure_future(_correr(_runner_que_cancela_en_el_progreso(config, mo2, evento), evento))
             resultado = await asyncio.wait_for(tarea, timeout=15)
             assert resultado.outcome == "cancelled"
             observador.join(timeout=15)
             assert not observador.is_alive(), "el observador no terminó"
             assert "error" not in lectura, f"el observador no pudo leer: {lectura['error']}"
+            assert not lectura.get("timeout_worker"), "el worker salió por timeout antes de terminar la lectura"
             info = lectura["info"]
             assert info is not None, "el lock desapareció mientras se neutralizaba"
             assert lectura.get("durante") is True, "la observación cayó fuera de la neutralización"
@@ -1807,8 +1809,6 @@ async def test_el_lease_sigue_vigente_durante_una_neutralizacion_mas_larga_que_e
                 f"(expires_at={info.expires_at:.3f} < ahora={lectura['ahora']:.3f})"
             )
     finally:
-        if liberacion is not None:
-            liberacion.cancel()
         suelta.set()
         observador.join(timeout=5)
         await manager.close()
