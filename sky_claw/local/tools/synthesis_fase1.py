@@ -332,6 +332,10 @@ class PreparadorFase1:
             # acá: un hilo de materialización podría seguir escribiendo en ella.
             await asyncio.to_thread(_borrar_corrida, corrida)
             raise
+        if not resultado.ejecutables:
+            # Sin shims no hay ruta que lleve a esta carpeta: liberar() no la encontraría nunca.
+            await asyncio.to_thread(_borrar_corrida, corrida)
+            raise Fase1Error("La Fase 1 no dejó ningún shim para los patchers seleccionados")
         return dict(resultado.ejecutables)
 
     async def liberar(self, ejecutables: Mapping[str, pathlib.Path]) -> None:

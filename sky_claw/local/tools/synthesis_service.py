@@ -1152,7 +1152,7 @@ class SynthesisPipelineService:
             )
 
         if cli_executables is not None and self._preparador_fase1 is not None:
-            await self._liberar_shims(cli_executables, conservar=conservar_shims)
+            await self._liberar_shims(cli_executables, conservar=conservar_shims, tx_id=tx_id)
 
         duration = time.monotonic() - t0
 
@@ -1187,20 +1187,24 @@ class SynthesisPipelineService:
             out["reason"] = "ActionManifestFailed"
         return _attach_preflight(out, preflight_report)
 
-    async def _liberar_shims(self, cli_executables: Mapping[str, pathlib.Path], *, conservar: bool) -> None:
+    async def _liberar_shims(
+        self, cli_executables: Mapping[str, pathlib.Path], *, conservar: bool, tx_id: int | None
+    ) -> None:
         """Libera la carpeta de shims de la corrida (PR-3j); nunca enmascara el resultado del run."""
         assert self._preparador_fase1 is not None
         if conservar:
             logger.warning(
                 "Shims de la Fase 1 conservados: terminalidad del worker desconocida (veto de rollback)",
-                extra={"pipeline_stage": self.PIPELINE_STAGE},
+                extra={"pipeline_stage": self.PIPELINE_STAGE, "tx_id": tx_id},
             )
             return
         try:
             await self._preparador_fase1.liberar(cli_executables)
         except Exception as exc:  # noqa: BLE001 - limpieza best-effort tras el run: el resultado ya está decidido
             logger.warning(
-                "No se pudieron liberar los shims de la Fase 1: %s", exc, extra={"pipeline_stage": self.PIPELINE_STAGE}
+                "No se pudieron liberar los shims de la Fase 1: %s",
+                exc,
+                extra={"pipeline_stage": self.PIPELINE_STAGE, "tx_id": tx_id},
             )
 
     # ------------------------------------------------------------------

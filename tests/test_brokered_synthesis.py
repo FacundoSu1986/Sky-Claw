@@ -1786,3 +1786,39 @@ async def test_un_fallo_al_liberar_no_cambia_el_resultado_del_run(
     # limpieza corrió, falló y no tapó ese resultado.
     assert out["success"] is False and "archivo en uso" not in out["message"]
     espia.assert_awaited_once()
+
+
+async def test_preparador_con_resultado_vacio_borra_la_corrida_y_falla(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hallazgo de PR-Agent en #1015: sin shims, nadie podría liberar la carpeta después."""
+    from sky_claw.local.tools import synthesis_fase1 as f1
+
+    async def _vacio(*_a: Any, **_k: Any) -> f1.ResultadoFase1:
+        return f1.ResultadoFase1(ejecutables={})
+
+    monkeypatch.setattr(f1, "preparar_fase1", _vacio)
+    prep = _preparador_real(tmp_path)
+    with pytest.raises(f1.Fase1Error, match="ningún shim"):
+        await prep.preparar(tmp_path / "s.json", "Default", ["a"])
+    assert list((tmp_path / "raiz").iterdir()) == []
+
+
+async def test_los_logs_de_los_shims_llevan_stage_y_tx_id(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Hallazgo de Codex en #1015: conservar o no poder liberar se correlaciona con la transacción."""
+    import logging
+
+    rutas = _escenario_mo2(tmp_path)
+
+    class _LiberaMal(_PreparadorFalso):
+        async def liberar(self, ejecutables: Any) -> None:
+            raise OSError("archivo en uso")
+
+    svc = _servicio_brokered(rutas, MagicMock(), _LiberaMal(rutas["mo2"] / "fase1"))
+    with caplog.at_level(logging.WARNING, logger="sky_claw.local.tools.synthesis_service"):
+        await svc._liberar_shims({"a": tmp_path / "s.exe"}, conservar=True, tx_id=42)
+        await svc._liberar_shims({"a": tmp_path / "s.exe"}, conservar=False, tx_id=None)
+    registros = [r for r in caplog.records if "shims" in r.getMessage().casefold()]
+    assert [(r.pipeline_stage, r.tx_id) for r in registros] == [(7, 42), (7, None)]  # type: ignore[attr-defined]
