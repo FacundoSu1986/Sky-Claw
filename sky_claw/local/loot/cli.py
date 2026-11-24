@@ -252,6 +252,11 @@ class LOOTRunner:
         self._config = config
         self._validator = path_validator
 
+    @property
+    def game_data_dir(self) -> pathlib.Path:
+        """``Data`` del juego que ordena este runner (``--game-path`` + ``Data``)."""
+        return self._config.game_path / "Data"
+
     async def sort(self, *, update_masterlist: bool = False) -> LOOTResult:
         """Run LOOT CLI to sort the load order.
 

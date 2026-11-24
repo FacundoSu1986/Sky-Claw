@@ -584,7 +584,7 @@ def _canonical_plugins_state(data: bytes | None, *, always_active: frozenset[str
 def read_enabled_plugins(
     plugins_path: pathlib.Path,
     *,
-    game_data_dir: pathlib.Path,
+    game_data_dir: pathlib.Path | None,
 ) -> tuple[str, ...]:
     """Plugins activos esperados en Data, con la misma semántica del fingerprint.
 
@@ -592,8 +592,13 @@ def read_enabled_plugins(
     y los plugins no primarios marcados con `*` en plugins.txt. Los nombres se
     expresan mediante su identidad case-insensitive canónica; el orden sólo es
     determinista y no representa prioridad.
+
+    ``game_data_dir=None`` (game root desconocido para el caller): sólo los
+    masters base cuentan como primary. Es la dirección conservadora: un plugin
+    de Creation Club listado con estrella queda como estado del perfil en vez de
+    perderse en silencio.
     """
-    always_active = _always_active_plugins(game_data_dir)
+    always_active = _always_active_plugins(game_data_dir) if game_data_dir is not None else _ALWAYS_ACTIVE_PLUGINS
     state = _canonical_plugins_state(_read_profile_file(plugins_path), always_active=always_active)
     enabled = () if not state else tuple(part.decode("latin-1") for part in state.split(b"\x00"))
     return tuple(sorted(always_active)) + enabled

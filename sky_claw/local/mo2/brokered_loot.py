@@ -206,6 +206,11 @@ class BrokeredLootRunner:
     def loot_data_base(self) -> pathlib.Path:
         return self._loot_data_base
 
+    @property
+    def game_data_dir(self) -> pathlib.Path:
+        """``Data`` físico del juego (su padre es el game root con ``Skyrim.ccc``)."""
+        return self._game_data_dir
+
     def for_profile(self, profile: str) -> BrokeredLootRunner:
         """Crea un runner aislado que resuelve targets del perfil solicitado.
 

@@ -58,12 +58,14 @@ from sky_claw.local.loot.data_root import (
     resolve_loot_data_path,
 )
 from sky_claw.local.loot.outcome import (
+    ActivePluginsState,
     LoadOrderSemanticState,
     LoadOrderUnobservableError,
     LootSortFailureReason,
     LootSortOutcome,
     LootSortVerdict,
     classify_loot_sort,
+    read_active_plugins_state,
     read_load_order_semantics,
 )
 from sky_claw.local.loot.parser import LOOTResult
@@ -142,6 +144,24 @@ def _is_per_profile_runner(runner: object) -> bool:
 # no la corrida real. Si esta detección se duplicara allá, sería exactamente el
 # desfasaje que el docstring de arriba existe para hacer imposible.
 es_runner_por_perfil = _is_per_profile_runner
+
+
+def _game_data_dir_del_runner(runner: object) -> pathlib.Path | None:
+    """``Data`` del juego que el runner va a ordenar, o ``None`` si no lo declara.
+
+    Los dos runners de producción lo exponen (``BrokeredLootRunner.game_data_dir``
+    y ``LOOTRunner.game_data_dir``) y el runner es la fuente correcta: es el que
+    comparten la GUI y el agente LLM. Se exige un ``Path`` real porque un
+    ``MagicMock`` fabrica atributos arbitrarios. Sin él, el caso G compara sólo
+    con los masters base (ver :func:`read_active_plugins_state`).
+    """
+    valor = getattr(runner, "game_data_dir", None)
+    return valor if isinstance(valor, pathlib.Path) else None
+
+
+def _tiene_archivo_de_activacion(paths: list[pathlib.Path]) -> bool:
+    """True si algún target es un ``plugins.txt`` (la activación vive ahí)."""
+    return any(path.name.lower() == "plugins.txt" for path in paths)
 
 
 def _primary_load_order_file(paths: list[pathlib.Path]) -> pathlib.Path | None:
@@ -854,6 +874,9 @@ class LootSortingService:
         # PR-2: veredicto verificado + telemetría física (no clasificadora).
         verdict: LootSortVerdict | None = None
         load_order_rewritten: bool | None = None
+        # C1: ``True``/``False`` sólo si la activación se observó antes Y después.
+        activos_preservados: bool | None = None
+        game_data_dir = _game_data_dir_del_runner(runner)
 
         # Referencia al lock fuera del with: rolled_back se deriva del resultado
         # REAL del rollback (tx.rollback_completed) — un restore fallido en la
@@ -922,6 +945,32 @@ class LootSortingService:
                             "verificable, el sort no se ejecutó.",
                         ),
                     )
+                # C1 (caso G): la activación vive en plugins.txt. Sin él entre los
+                # targets no hay forma de probar que el sort sólo reordenó, y un
+                # plugins.txt ilegible o ambiguo tampoco es baseline: ANTES de mutar.
+                if not _tiene_archivo_de_activacion(target_files):
+                    raise _LootSortFailedError(
+                        LOOTResult(return_code=-1, errors=[]),
+                        LootSortVerdict.fail(
+                            LootSortFailureReason.STATE_UNOBSERVABLE,
+                            "Ningún plugins.txt observable entre los archivos de load order: sin él "
+                            "no se puede verificar que LOOT sólo reordene (sin activar ni "
+                            "desactivar plugins). LOOT no se ejecutó.",
+                        ),
+                    )
+                try:
+                    activos_antes: ActivePluginsState = read_active_plugins_state(
+                        target_files, game_data_dir=game_data_dir
+                    )
+                except LoadOrderUnobservableError as exc:
+                    raise _LootSortFailedError(
+                        LOOTResult(return_code=-1, errors=[]),
+                        LootSortVerdict.fail(
+                            LootSortFailureReason.STATE_UNOBSERVABLE,
+                            f"No se pudo establecer qué plugins estaban habilitados ({exc}) antes "
+                            "de correr LOOT: sin esa evidencia el sort no se ejecutó.",
+                        ),
+                    ) from exc
                 # T-28: el "antes" del informe se lee DENTRO del lock, en el mismo
                 # dominio de serialización que el "después" (review adversarial
                 # #495). Best-effort: si no se puede leer, el informe no lleva diff.
@@ -947,12 +996,21 @@ class LootSortingService:
                 if post_ilegible is not None:
                     load_order_rewritten = None
                     logger.warning("Estado del load order inobservable tras la corrida de LOOT: %s", post_ilegible)
+                activos_despues: ActivePluginsState | None = None
+                try:
+                    activos_despues = read_active_plugins_state(target_files, game_data_dir=game_data_dir)
+                except LoadOrderUnobservableError as exc:
+                    logger.warning("Activación de plugins inobservable tras la corrida de LOOT: %s", exc)
+                if activos_despues is not None:
+                    activos_preservados = activos_antes == activos_despues
                 verdict = classify_loot_sort(
                     process_success=result.success,
                     process_detail=_mensaje_de_fallo_de_proceso(result),
                     witness=result.execution_witness,
                     before=semantica_antes,
                     after=semantica_despues,
+                    active_before=activos_antes,
+                    active_after=activos_despues,
                 )
                 if verdict.outcome is LootSortOutcome.FAIL:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
@@ -1103,6 +1161,8 @@ class LootSortingService:
             "verification": {
                 "execution_witness": witness.state.value if witness is not None else None,
                 "load_order_rewritten": load_order_rewritten,
+                # C1: el sort no activó ni desactivó plugins (None = no observado).
+                "active_plugins_preserved": activos_preservados,
             },
         }
         if verdict.failure_reason is not None:
