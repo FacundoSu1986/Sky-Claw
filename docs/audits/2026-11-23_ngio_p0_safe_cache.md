@@ -1012,3 +1012,19 @@ el caché no cambió y que no se escribió el flag.
 - **Ruff** `1177 files already formatted` + `All checks passed!`; **mypy** de runner, safety y service:
   `no issues found in 3 source files`.
 - **Suite completa y CI**: §18.8.
+
+### 18.8 Suite completa y CI
+
+- **Local (Linux, py3.11), árbol de `b3c42840`**: `139 failed, 21486 passed, 650 skipped, 1 error`
+  (1638 s). Línea base **independiente** —`3454f548`, el merge de `origin/main` `a23369a4` con
+  `095de215`, es decir el mismo árbol **sin** esta ronda, en un worktree desechable con el mismo rig y el
+  mismo comando—: `139 failed, 21354 passed, 650 skipped, 1 error` (1715 s). Comparación **por node ID**
+  sobre 140 entradas: `comm` **vacío en ambos sentidos** ⇒ **0 regresiones**, y los **+132 passed** son
+  exactamente los tests nuevos (131 del runner + 1 del servicio). Ningún test de grass cache falla en
+  ninguno de los dos árboles. El `error` de colección es el `ImportError` preexistente de
+  `tests/test_runtime_vault_operator_verifier.py` en Linux (`_SECURITY_ATTRIBUTES`, sólo Windows).
+- `test_worktree_convention_invariant` falla en **las dos** corridas por el worktree de línea base bajo
+  `/tmp`; retirado (`git worktree remove`), el ancla pasa (`23 passed`).
+- **CI sobre el SHA final**: ver el reporte de la ronda (Shards 1–6 de Windows, `Tests (Pytest)`,
+  `Tests / windows-latest`, POSIX Core, VFS Windows sandbox, Ruff, Mypy ×2, Security, Build, CodeQL,
+  Main en verde, Regression & Test Oracle, Auto-revisión).
