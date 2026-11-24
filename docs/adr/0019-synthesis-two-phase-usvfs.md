@@ -443,6 +443,28 @@ x64 instalado):
   `test_la_fase1_no_hace_disco_pesado_en_el_event_loop`.
   Limitaciones: las carpetas de shims por corrida no se borran todavía (peso: un apphost chico por
   patcher); sin rig de MO2.
+- **PR-3i (instalador del CLI, §2.2):** `ToolsInstaller.ensure_synthesis_cli(install_dir, dotnet=, git=,
+  cache_raiz=)` (nombre `ensure_*` para entrar en la familia congelada de mutadores del instalador,
+  receta de lock `install_dir`). Vía 1: un `Synthesis.Bethesda.CLI.exe` existente se usa solo si su PE
+  es de consola (`IMAGE_SUBSYSTEM_WINDOWS_CUI`, `synthesis_prebuild.es_ejecutable_de_consola`); si no,
+  `SYNTHESIS_CLI_MISSING`. Vía 2: compila LOCAL `Mutagen-Modding/Synthesis` `0.36.6`
+  (`d8150fb29d544216081e37e2704e56e3b48460f7`, `Synthesis.Bethesda.CLI/Synthesis.Bethesda.CLI.csproj`) con
+  PR-3e + PR-3d (dos compuertas HITL: github.com y NuGet) y copia la salida verificada por hash a
+  `install_dir` (vacío; con restos falla cerrado). Vía 3 (bundle de un mirror) **no se implementa**:
+  distribuir el binario sería redistribuir GPL-3.0. Dos hallazgos de las fuentes upstream, cerrados acá:
+  (a) su `Directory.Build.targets` corre `RD /S /Q "%USERPROFILE%\.nuget\packages\$(PackageId)"` en cada
+  build (los proyectos `Synthesis.Bethesda*` definen `IsWindows`), así que **todo** proceso de la Fase 1
+  (build y git) corre ahora con perfil privado (`synthesis_runner.con_perfil_privado`: `HOME`,
+  `USERPROFILE`, `DOTNET_CLI_HOME` → `<trabajo>/home`; sin `HOMEDRIVE`/`HOMEPATH`); (b) usa
+  `GitVersion.MsBuild`, que exige `.git` con historia, y la caché de fuentes lo descarta:
+  `compilar_patcher_local` acepta `propiedades` de una lista cerrada (`DisableGitVersionTask`,
+  `Version`; entran en la clave de caché) y el instalador fija `Version=0.36.6`. El build usa
+  `dotnet build -o` (el de PR-3d), no `publish` como en S1. **Rig (2026-11-24, sin MO2):** el
+  instalador real compiló el CLI en 74 s con 2 pedidos HITL (github.com, api.nuget.org); binario de
+  consola sin CET, versión 0.36.6, `run-pipeline --help` con las 8 flags del contrato e idéntico al
+  de S1 salvo el sufijo de GitVersion; la segunda llamada sale de lo instalado sin HITL. Control: el
+  mismo build SIN perfil privado borró la carpeta del paquete en el perfil visible; con perfil
+  privado el canario quedó intacto. No cubierto: una pipeline real bajo MO2/USVFS.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.

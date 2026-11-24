@@ -35,7 +35,7 @@ from urllib.parse import urlsplit
 from sky_claw.app.security.hitl import Decision, new_hitl_request_id
 from sky_claw.app.security.links import exigir_arbol_copiable_sin_reparse, rmtree_link_aware
 from sky_claw.local.tools._process import run_capture
-from sky_claw.local.tools.synthesis_runner import construir_entorno_dotnet
+from sky_claw.local.tools.synthesis_runner import con_perfil_privado, construir_entorno_dotnet
 from sky_claw.local.tools.synthesis_shim import ShimConfigError, hash_arbol, hilo_hasta_terminar
 
 if TYPE_CHECKING:
@@ -224,18 +224,14 @@ async def _bajar_y_publicar(
     except OSError as exc:
         raise FuentesGitError(f"No se pudo preparar la caché de fuentes: {exc}") from exc
 
-    env = construir_entorno_dotnet(dotnet_root=None, temp_dir=trabajo / "tmp")
-    for clave in [k for k in env if k.upper() in {"HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"}]:
-        del env[clave]
+    # Un HOME privado y vacío: sin .netrc/_netrc del usuario que autentique el fetch.
+    env = con_perfil_privado(construir_entorno_dotnet(dotnet_root=None, temp_dir=trabajo / "tmp"), hogar)
     env.update(
         {
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": str(config_global),
             "GIT_TERMINAL_PROMPT": "0",
             "GCM_INTERACTIVE": "never",
-            # Un HOME privado y vacío: sin .netrc/_netrc del usuario que autentique el fetch.
-            "HOME": str(hogar),
-            "USERPROFILE": str(hogar),
         }
     )
     for argumentos in (
