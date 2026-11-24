@@ -520,9 +520,22 @@ def _digests_del_cache(grass_dir: pathlib.Path) -> dict[str, tuple[int, str]]:
     except OSError as exc:
         raise GrassCacheSafetyError("cache_ilegible", f"No se pudo leer {grass_dir}: {exc}") from exc
     for archivo in candidatos:
-        if archivo.suffix.lower() not in EXTENSIONES_CACHE or not archivo.is_file():
+        if archivo.suffix.lower() not in EXTENSIONES_CACHE:
             continue
+        # El enlace se clasifica PRIMERO: `is_file()` sigue el enlace y devuelve
+        # False para un enlace a directorio o roto, así que preguntarlo antes
+        # descartaba la entrada en silencio — y el hash dejaba de ver un `.cgid`
+        # que el borrado de NGIO sí atraviesa (fail-open, F5).
         _rechazar_enlace(archivo, "cache_con_enlaces")
+        try:
+            info = archivo.stat()
+        except OSError as exc:
+            raise GrassCacheSafetyError("cache_ilegible", f"No se pudo leer {archivo}: {exc}") from exc
+        if not stat.S_ISREG(info.st_mode):
+            # Mismo criterio que `inventariar_cache`: un directorio con nombre de
+            # caché no es caché, pero se dice (no se descarta en silencio).
+            logger.warning("Se ignora %s: no es un archivo regular.", archivo)
+            continue
         try:
             digests[archivo.name] = _hash_de_archivo(archivo)
         except OSError as exc:
@@ -682,6 +695,73 @@ def _respaldo_existente_verifica(
     )
 
 
+def _ruta_fisica_normalizada(ruta: pathlib.Path) -> str:
+    """Ruta FÍSICA y normalizada: resuelve enlaces y unifica mayúsculas.
+
+    ``realpath`` resuelve la cadena de enlaces del sistema de archivos (no sólo
+    el último componente) y ``normcase`` pliega mayúsculas en Windows: dos rutas
+    que nombran el mismo directorio colapsan al mismo string.
+    """
+    return os.path.normcase(os.path.realpath(ruta))
+
+
+def _contiene(raiz: str, otra: str) -> bool:
+    """¿*otra* es *raiz* o vive dentro de *raiz*? (unidades distintas ⇒ no)."""
+    try:
+        return os.path.commonpath([raiz, otra]) == raiz
+    except ValueError:
+        return False  # rutas en unidades distintas: no pueden solaparse
+
+
+def _exigir_respaldo_disjunto(grass_dir: pathlib.Path, destino: pathlib.Path) -> None:
+    """El respaldo no puede ser el caché, ni estar dentro, ni contenerlo.
+
+    **Qué problema cierra.** La rotación de un respaldo inválido hace
+    ``os.replace(destino, <destino>.invalido-…)``. Si ``destino`` es el propio
+    ``Grass/`` —o un ancestro suyo—, esa cuarentena **mueve el caché original**
+    antes de copiar nada: el respaldo no existe y el origen ya no está en su
+    lugar. Si ``destino`` vive DENTRO del caché, la copia se escribiría dentro de
+    lo que se está respaldando (y el inventario la vería en la corrida
+    siguiente).
+
+    **Cómo lo decide.** Comparación física (``realpath`` + ``normcase``), no
+    textual: ``<mo2>/overwrite/Grass`` y ``<mo2>/overwrite/./Grass/../Grass``
+    son el mismo directorio, y un enlace intermedio no puede esquivar el chequeo.
+    Unidades distintas no pueden solaparse.
+    """
+    origen = _ruta_fisica_normalizada(grass_dir)
+    respaldo = _ruta_fisica_normalizada(destino)
+    if origen == respaldo or _contiene(origen, respaldo) or _contiene(respaldo, origen):
+        raise GrassCacheSafetyError(
+            "respaldo_solapa_el_cache",
+            f"El respaldo {destino} se solapa con el caché {grass_dir} (mismo directorio, dentro o "
+            "por encima). Un respaldo así no copia: la rotación movería el caché original. Elegí una "
+            "raíz de estado fuera del árbol del juego/MO2.",
+        )
+
+
+def _nombre_de_cuarentena(destino: pathlib.Path) -> pathlib.Path:
+    """Nombre ÚNICO para apartar un respaldo inválido (nunca pisa a otro).
+
+    ``int(time.time())`` colisiona entre dos corridas del mismo segundo, y el
+    ``os.replace`` siguiente apuntaba al mismo directorio: o fallaba (silenciado)
+    dejando el ``mkdir`` que revienta, o pisaba una cuarentena previa. El sufijo
+    aleatorio hace la colisión despreciable y el chequeo ``lexists`` la vuelve
+    imposible dentro de este proceso.
+    """
+    base = f"{destino.name}.invalido-{int(time.time())}"
+    for intento in range(16):
+        candidato = destino.with_name(
+            f"{base}-{secrets.token_hex(4)}" if intento == 0 else f"{base}-{secrets.token_hex(8)}"
+        )
+        if not os.path.lexists(candidato):
+            return candidato
+    raise GrassCacheSafetyError(
+        "respaldo_no_apartado",
+        f"No se encontró un nombre libre para apartar el respaldo inválido en {destino.parent}.",
+    )
+
+
 def respaldar_cache(
     *,
     grass_dir: pathlib.Path,
@@ -704,6 +784,8 @@ def respaldar_cache(
     nunca se pisa en silencio ni se borra.
     """
     _validar_raiz_fisica(grass_dir)
+    # Antes de CUALQUIER replace: el respaldo no puede solaparse con el caché.
+    _exigir_respaldo_disjunto(grass_dir, destino)
     _validar_raiz_fisica(
         destino,
         codigo_enlace="respaldo_raiz_enlazada",
@@ -737,9 +819,18 @@ def respaldar_cache(
     try:
         destino.mkdir(parents=True, exist_ok=False)
     except FileExistsError:
-        invalido = destino.with_name(f"{destino.name}.invalido-{int(time.time())}")
-        with contextlib.suppress(OSError):
+        invalido = _nombre_de_cuarentena(destino)
+        try:
             os.replace(destino, invalido)
+        except OSError as exc:
+            # Silenciarlo dejaba el `mkdir` siguiente fallando con un error que
+            # no nombra la causa real (y una cuarentena a medias).
+            raise GrassCacheSafetyError(
+                "respaldo_no_apartado",
+                f"No se pudo apartar el respaldo inválido {destino} a {invalido}: {exc}. "
+                "No se copia encima de un respaldo que no verifica.",
+            ) from exc
+        logger.warning("El respaldo %s no verificaba: se apartó a %s (no se borra).", destino, invalido)
         destino.mkdir(parents=True, exist_ok=False)
 
     archivos: list[dict[str, Any]] = []
@@ -1065,7 +1156,11 @@ def recuperar_progreso(
             "(mismos nombres y tamaños, otros bytes): reanudar con ella haría que NGIO "
             "saltee celdas que nunca se escribieron. Se niega la reanudación.",
         )
-    return contenido if any(linea.strip() for linea in contenido.splitlines()) else None
+    # El "¿NGIO vería progreso?" del contenido ARCHIVADO es el mismo predicado que
+    # el del flag vivo: `str.strip()` recorta tab y form feed (que NGIO NO
+    # recorta) y descartaría evidencia válida, empujando al operador a un
+    # `rebuild` destructivo. Se reusa la réplica, no una segunda definición.
+    return contenido if _ngio_tiene_progreso(contenido) else None
 
 
 # ---------------------------------------------------------------------------

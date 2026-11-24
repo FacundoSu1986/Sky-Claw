@@ -120,7 +120,15 @@ class GrassCacheConfig:
         game_path: Directorio que contiene ``SkyrimSE.exe`` (ahí va el flag).
         overwrite_grass_dir: ``<mo2>/overwrite/Grass`` — NGIO lo crea al
             escribir el primer ``.cgid``; puede no existir aún.
-        profile: Perfil MO2 dedicado a lanzar (PR-3).
+        profile: Perfil MO2 dedicado a LANZAR (PR-3, el clon ``SkyClaw-GrassCache``).
+            NO es la identidad del progreso: el clon es constante entre perfiles.
+        progress_profile: Perfil MO2 de ORIGEN — la identidad con la que se
+            archiva y se restaura la evidencia de progreso. Dos perfiles de
+            origen distintos comparten ``overwrite/Grass`` y el mismo clon, así
+            que atar el progreso al nombre del clon dejaría que el ``resume`` de
+            uno reanudara con el progreso del otro (otro conjunto de mods). El
+            servicio pasa acá el perfil activo del usuario. Vacío = se usa
+            ``profile`` (compatibilidad con construcciones directas).
         max_runtime_s: Deadline global del ritual (default 12 h).
         max_restarts: Presupuesto de relanzamientos tras el intento inicial.
         stall_threshold: Crashes consecutivos sin ``.cgid`` nuevos → stall.
@@ -164,6 +172,19 @@ class GrassCacheConfig:
     rebuild_approval: str | None = None
     backup_root: pathlib.Path | None = None
     ack_usvfs_no_verificado: bool = False
+    progress_profile: str = ""
+
+    @property
+    def perfil_de_progreso(self) -> str:
+        """Identidad del progreso archivado: perfil de ORIGEN, no el del clon.
+
+        Único punto donde se decide: las DOS superficies que archivan/restauran
+        evidencia —``preparar_arranque`` y ``neutralizar_flag``— leen de acá, así
+        que no pueden divergir. El fallback a ``profile`` mantiene el
+        comportamiento de una construcción directa (tests, uso embebido); en
+        producción el servicio siempre pasa ``progress_profile``.
+        """
+        return self.progress_profile or self.profile
 
     def __post_init__(self) -> None:
         if not self.game_path.is_dir():
@@ -440,7 +461,7 @@ class GrassCacheRunner:
                     aprobacion=self._config.rebuild_approval,
                     raiz_estado=self._config.backup_root,
                     ack_usvfs_no_verificado=self._config.ack_usvfs_no_verificado,
-                    perfil=self._config.profile,
+                    perfil=self._config.perfil_de_progreso,
                 ),
                 descripcion="preparar_arranque",
             )
@@ -632,13 +653,22 @@ class GrassCacheRunner:
                 await self._matar_todo(game_pid)
             raise
         finally:
-            # Síncrono deliberado: un await acá, durante una CancelledError,
-            # puede re-cancelarse ANTES del unlink y dejar el flag residual
-            # (que pondría el juego del usuario en modo precache al abrirlo).
-            # Antes de borrarlo se archiva el progreso: neutralizar el flag no
-            # puede costar la reanudación (P0, evidencia de F-01).
+            # Antes de borrar el flag se archiva el progreso: neutralizar el flag
+            # no puede costar la reanudación (P0, evidencia de F-01).
+            #
+            # Se hace en un HILO, no en el loop: archivar lee y hashea TODO el
+            # caché parcial (miles de .cgid/.dgid/.fail), y el heartbeat de los
+            # locks `grass-cache` y `load-order` vive en este mismo loop. Un hash
+            # largo bloqueaba la renovación y el lease podía expirar en silencio
+            # mientras el run seguía mutando (F2).
+            #
+            # Y se hace DRENADO (`esperar_terminar`): un await normal durante una
+            # CancelledError abandonaría el hilo y dejaría el flag vivo sin dueño
+            # (B11). La cancelación se propaga recién cuando el worker terminó, y
+            # `self._neutralizacion` queda cargado para que `run()` publique la
+            # limpieza incompleta antes de propagar.
             if flag_apropiado:
-                self._neutralizacion = self._neutralizar_flag_sync()
+                self._neutralizacion = await self._neutralizar_flag_drenado()
 
     async def _aplicar_plan_en_seccion_critica(self, plan: PlanArranque, estado: EstadoAplicacion) -> None:
         """Escribe el flag sin poder abandonar la escritura a medias.
@@ -654,8 +684,9 @@ class GrassCacheRunner:
         no se propaga mientras el hilo siga en vuelo; se espera a que TERMINE y
         recién entonces se levanta. Así el run conoce el resultado real de la
         escritura antes de salir y el ``finally`` neutraliza lo que sea nuestro.
-        La neutralización en sí es síncrona (ver ``_neutralizar_flag_sync``), de
-        modo que tampoco puede re-cancelarse entre el archivo y el ``unlink``.
+        La neutralización usa el mismo patrón (``_neutralizar_flag_drenado``):
+        corre en un hilo para no bloquear el heartbeat de los locks, y se espera
+        drenada para que la cancelación no la abandone a mitad de camino.
         """
         await esperar_terminar(
             asyncio.to_thread(aplicar_plan, plan, self._flag_path, estado=estado),
@@ -959,19 +990,29 @@ class GrassCacheRunner:
         except Exception:  # noqa: BLE001 — cualquier fallo del observador se aísla
             logger.warning("El callback on_progress falló; el ritual continúa.", exc_info=True)
 
-    def _neutralizar_flag_sync(self) -> NeutralizacionFlag:
-        """Archiva el progreso y borra el flag (missing_ok: en éxito NGIO ya lo borró).
+    async def _neutralizar_flag_drenado(self) -> NeutralizacionFlag:
+        """Archiva el progreso y borra el flag en un hilo, sin abandonarlo.
 
         El borrado es obligatorio —un flag residual haría que el juego del
         usuario arranque en modo precache—, pero el contenido se archiva antes,
         atado a la huella del caché de este momento: es lo que un ``resume``
-        posterior restaura. Best-effort: nunca enmascara la excepción original.
+        posterior restaura. ``neutralizar_flag`` no propaga errores: devuelve el
+        resultado con ``errores``/``progreso_perdido`` y ``run()`` lo publica.
+
+        ``esperar_terminar`` es lo que hace que sacarlo del loop NO reabra B11:
+        si la tarea se cancela, la espera no se propaga hasta que el hilo
+        termina, así que el flag queda neutralizado (o su fallo registrado)
+        ANTES de que el servicio suelte los locks y haga teardown.
         """
-        return neutralizar_flag(
-            flag_path=self._flag_path,
-            grass_dir=self._config.overwrite_grass_dir,
-            raiz_estado=self._config.backup_root,
-            perfil=self._config.profile,
+        return await esperar_terminar(
+            asyncio.to_thread(
+                neutralizar_flag,
+                flag_path=self._flag_path,
+                grass_dir=self._config.overwrite_grass_dir,
+                raiz_estado=self._config.backup_root,
+                perfil=self._config.perfil_de_progreso,
+            ),
+            descripcion="neutralizar_flag",
         )
 
     def _resultado(

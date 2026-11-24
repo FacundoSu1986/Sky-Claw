@@ -30,6 +30,7 @@ from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.local.mo2.grass_profile import GrassProfileError
 from sky_claw.local.tools.grass_cache_runner import GrassCacheRunResult
 from sky_claw.local.tools.grass_cache_service import (
+    GenerateGrassCacheParams,
     GrassCacheService,
     GrassRuntimeDeps,
 )
@@ -112,6 +113,9 @@ def _servicio(
 
     profile_manager = AsyncMock()
     profile_manager.clone_profile = "SkyClaw-GrassCache"
+    # El clon (LANZAMIENTO) y el perfil de ORIGEN (identidad del progreso)
+    # son nombres distintos: el mock declara los dos.
+    profile_manager.source_profile = "Default"
     # teardown() ahora devuelve la lista de paths que no pudo borrar (§1.6).
     profile_manager.teardown.return_value = []
 
@@ -805,6 +809,9 @@ async def test_generate_resuelve_deps_por_provider_lazy(tmp_path: pathlib.Path) 
 
     profile_manager = AsyncMock()
     profile_manager.clone_profile = "SkyClaw-GrassCache"
+    # El clon (LANZAMIENTO) y el perfil de ORIGEN (identidad del progreso)
+    # son nombres distintos: el mock declara los dos.
+    profile_manager.source_profile = "Default"
     profile_manager.teardown.return_value = []
     runner = AsyncMock()
     runner.run.return_value = _resultado_runner()
@@ -1247,3 +1254,125 @@ async def test_cancelacion_al_anotar_el_teardown_incompleto_no_deja_la_tx_pendie
     journal.get_transaction.assert_awaited_once_with(77)
     journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
     colab["profile_manager"].teardown.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# F1: identidad del progreso = perfil de ORIGEN (no el nombre del clon)
+# ---------------------------------------------------------------------------
+
+
+def _arbol_mo2(tmp_path: pathlib.Path, perfiles: tuple[str, ...]) -> pathlib.Path:
+    """Instancia MO2 sintética con los perfiles pedidos y ``overwrite/``."""
+    root = tmp_path / "mo2"
+    for perfil in perfiles:
+        directorio = root / "profiles" / perfil
+        directorio.mkdir(parents=True, exist_ok=True)
+        (directorio / "modlist.txt").write_bytes(b"\xef\xbb\xbf+ModA\r\n")
+        (directorio / "plugins.txt").write_bytes(b"\xef\xbb\xbf*Skyrim.esm\r\n")
+        (directorio / "Skyrim.ini").write_bytes(b"[General]\r\n")
+        (directorio / "settings.txt").write_bytes(b"[General]\r\n")
+    (root / "mods").mkdir(exist_ok=True)
+    (root / "overwrite").mkdir(exist_ok=True)
+    return root
+
+
+def test_build_runner_config_separa_lanzamiento_de_identidad_de_progreso(tmp_path: pathlib.Path) -> None:
+    # El clon dedicado es CONSTANTE entre perfiles: si la identidad del progreso
+    # sale del clon, dos perfiles de origen comparten evidencia. El camino
+    # productivo (``_build_runner_config`` con un manager REAL) tiene que
+    # declarar los dos nombres por separado.
+    from sky_claw.app.security.path_validator import PathValidator
+    from sky_claw.local.mo2.grass_profile import GrassProfileManager
+    from sky_claw.local.tools.grass_cache_service import GenerateGrassCacheParams
+
+    mo2 = _arbol_mo2(tmp_path, ("PerfilA",))
+    manager = GrassProfileManager(mo2, PathValidator(roots=[mo2]), source_profile="PerfilA")
+    service = GrassCacheService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        game_path=mo2 / "game",
+        overwrite_grass_dir=mo2 / "overwrite" / "Grass",
+    )
+    (mo2 / "game").mkdir()
+    (mo2 / "game" / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    config = service._build_runner_config(GenerateGrassCacheParams(worldspaces=["Tamriel"]), manager)
+
+    assert config.profile == "SkyClaw-GrassCache", "el LANZAMIENTO sigue usando el clon dedicado"
+    assert config.progress_profile == "PerfilA", "la identidad del progreso es el perfil de ORIGEN"
+    assert config.perfil_de_progreso == "PerfilA"
+
+
+async def test_generate_transmite_el_perfil_de_origen_al_runner(tmp_path: pathlib.Path) -> None:
+    # El servicio REAL (no una GrassCacheConfig armada a mano) es quien cablea la
+    # identidad: se intercepta la construcción del runner y se mira la config.
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    colaboradores["profile_manager"].source_profile = "PerfilA"
+
+    await service.generate(_PAYLOAD)
+
+    config = colaboradores["runner_factory"].call_args.args[0]
+    assert config.profile == "SkyClaw-GrassCache"
+    assert config.progress_profile == "PerfilA"
+    assert config.perfil_de_progreso == "PerfilA"
+
+
+async def test_dos_perfiles_de_origen_no_se_prestan_el_progreso(tmp_path: pathlib.Path) -> None:
+    # Integración: el mismo servicio, dos perfiles de origen sobre la MISMA
+    # instalación (mismo overwrite/Grass y mismo clon). El progreso que archiva
+    # A no puede reanudar el run de B.
+    from sky_claw.app.security.path_validator import PathValidator
+    from sky_claw.local.mo2.grass_profile import GrassProfileManager
+    from sky_claw.local.tools.grass_cache_safety import (
+        GrassCacheSafetyError,
+        archivar_progreso,
+        inventariar_cache,
+        preparar_arranque,
+        ruta_del_flag,
+    )
+
+    mo2 = _arbol_mo2(tmp_path, ("PerfilA", "PerfilB"))
+    grass = mo2 / "overwrite" / "Grass"
+    grass.mkdir(parents=True)
+    (grass / "Tamriel.cgid").write_bytes(b"celda-tamriel")
+    juego = mo2 / "game"
+    juego.mkdir()
+    (juego / "SkyrimSE.exe").write_bytes(b"MZ")
+    estado = tmp_path / "estado"
+
+    manager_a = GrassProfileManager(mo2, PathValidator(roots=[mo2]), source_profile="PerfilA")
+    manager_b = GrassProfileManager(mo2, PathValidator(roots=[mo2]), source_profile="PerfilB")
+    servicio = GrassCacheService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        game_path=juego,
+        overwrite_grass_dir=grass,
+    )
+    config_a = servicio._build_runner_config(GenerateGrassCacheParams(worldspaces=["Tamriel"]), manager_a)
+    config_b = servicio._build_runner_config(GenerateGrassCacheParams(worldspaces=["Tamriel"]), manager_b)
+    assert config_a.perfil_de_progreso != config_b.perfil_de_progreso
+
+    inventario = inventariar_cache(grass_dir=grass, flag_path=ruta_del_flag(juego))
+    archivar_progreso(estado, inventario, b"Tamriel\n-2,4\n", grass_dir=grass, perfil=config_a.perfil_de_progreso)
+
+    # A reanuda con SU propia evidencia.
+    plan_a = preparar_arranque(
+        modo="resume",
+        game_path=juego,
+        grass_dir=grass,
+        raiz_estado=estado,
+        perfil=config_a.perfil_de_progreso,
+    )
+    assert plan_a.accion == "restaurar"
+    assert plan_a.contenido == b"Tamriel\n-2,4\n"
+
+    # B no puede quedarse con el progreso de A.
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        preparar_arranque(
+            modo="resume",
+            game_path=juego,
+            grass_dir=grass,
+            raiz_estado=estado,
+            perfil=config_b.perfil_de_progreso,
+        )
+    assert excinfo.value.codigo == "progreso_de_otra_instalacion"

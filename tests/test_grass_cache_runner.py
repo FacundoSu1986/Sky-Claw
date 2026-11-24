@@ -1393,33 +1393,48 @@ async def test_cancelacion_durante_la_escritura_del_flag_no_deja_flag_vacio(
     # limpieza se omite: queda un flag vacío sin dueño. La sección crítica tiene
     # que esperar a que el hilo termine, conocer su estado y recién entonces
     # abandonar.
-    en_escritura = threading.Event()
+    #
+    # LA BARRERA VA ANTES DE ESCRIBIR. Con la barrera después (versión anterior:
+    # escribir → `estado.escrito = True` → bloquear), el `finally` ya veía
+    # `escrito == True` y neutralizaba igual: el test pasaba TAMBIÉN sin
+    # `esperar_terminar`, así que no podía matar el mutante M4 (verificado: verde
+    # con la protección eliminada). Bloqueando antes de la escritura, sin
+    # protección la cancelación gana la carrera y el flag queda escrito después
+    # por un hilo huérfano.
+    en_espera = threading.Event()
     liberar = threading.Event()
+    termino = threading.Event()
 
     def _aplicar_lento(
         plan: Any, flag_path: pathlib.Path, *, estado: EstadoAplicacion | None = None
     ) -> EstadoAplicacion:
         estado = estado if estado is not None else EstadoAplicacion()
-        flag_path.write_bytes(plan.contenido)  # la escritura real del flag vacío
+        en_espera.set()
+        liberar.wait(timeout=10)  # la barrera está ANTES de tocar el disco
+        flag_path.write_bytes(plan.contenido)
         estado.escrito = True
-        en_escritura.set()
-        liberar.wait(timeout=10)  # el test decide cuándo termina la escritura
         estado.verificado = True
+        termino.set()
         return estado
 
     monkeypatch.setattr(gcr_mod, "aplicar_plan", _aplicar_lento)
     tarea = asyncio.ensure_future(_correr(_runner(config, mo2)))
 
-    # Determinismo: se cancela EXACTAMENTE mientras la escritura está en vuelo.
-    assert await asyncio.to_thread(en_escritura.wait, 5.0), "la escritura no llegó a empezar"
-    assert (config.game_path / "PrecacheGrass.txt").exists()
+    # Determinismo: se cancela EXACTAMENTE mientras el worker todavía NO escribió.
+    assert await asyncio.to_thread(en_espera.wait, 5.0), "la escritura no llegó a empezar"
+    assert not (config.game_path / "PrecacheGrass.txt").exists(), "la barrera tiene que ir antes de escribir"
     tarea.cancel()
     await asyncio.sleep(0)  # deja que la cancelación se entregue en el await del hilo
+
+    # Discriminador del mutante: sin la protección de `esperar_terminar` la tarea
+    # ya estaría terminada acá. Con ella, la operación protegida sigue pendiente.
+    assert not tarea.done(), "la cancelación se propagó con la escritura todavía en vuelo"
     liberar.set()
 
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(tarea, timeout=10)
 
+    assert termino.is_set(), "el run salió antes de que el worker terminara"
     assert not (config.game_path / "PrecacheGrass.txt").exists(), (
         "quedó un flag vacío que el próximo arranque del juego convertiría en borrado del caché"
     )
@@ -1556,3 +1571,200 @@ async def test_cancelacion_pedida_desde_el_progreso_no_lanza_el_juego(config: Gr
     assert resultado.outcome == "cancelled"
     mo2.launch_game.assert_not_awaited()
     assert not (config.game_path / "PrecacheGrass.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# F2: la neutralización no bloquea el loop y no se abandona
+# ---------------------------------------------------------------------------
+
+
+def _neutralizador_con_barrera(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[threading.Event, threading.Event, threading.Event]:
+    """Sustituye ``neutralizar_flag`` por un worker lento con barreras deterministas."""
+    en_hilo = threading.Event()
+    liberar = threading.Event()
+    termino = threading.Event()
+
+    def _neutralizar_lento(**kwargs: Any) -> NeutralizacionFlag:
+        en_hilo.set()
+        liberar.wait(timeout=20)
+        termino.set()
+        return NeutralizacionFlag(borrado=True, archivado=True, errores=())
+
+    monkeypatch.setattr(gcr_mod, "neutralizar_flag", _neutralizar_lento)
+    return en_hilo, liberar, termino
+
+
+def _runner_que_cancela_en_el_progreso(
+    config: GrassCacheConfig, mo2: AsyncMock, evento: asyncio.Event
+) -> GrassCacheRunner:
+    """Runner que pide cancelación al emitir ``launching`` (llega al ``finally``)."""
+
+    async def _progreso(info: Any) -> None:
+        if info.phase == "launching":
+            evento.set()
+
+    return _runner(config, mo2, on_progress=_progreso)
+
+
+async def test_la_neutralizacion_corre_en_un_hilo_y_no_bloquea_el_loop(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F2: archivar el progreso lee y hashea TODO el caché parcial en el `finally`.
+    # Síncrono, bloquea el loop —donde vive el heartbeat de los locks
+    # `grass-cache`/`load-order`— y el lease puede expirar en silencio.
+    en_hilo, liberar, termino = _neutralizador_con_barrera(monkeypatch)
+    evento = asyncio.Event()
+    tarea = asyncio.ensure_future(_correr(_runner_que_cancela_en_el_progreso(config, mo2, evento), evento))
+
+    assert await asyncio.to_thread(en_hilo.wait, 10.0), "la neutralización no llegó a empezar"
+    # El loop tiene que seguir despachando MIENTRAS el worker archiva. Si la
+    # neutralización fuera síncrona, estos `sleep` no correrían.
+    for _ in range(3):
+        await asyncio.wait_for(asyncio.sleep(0.01), timeout=5)
+    assert not tarea.done(), "el run no puede salir con la neutralización en vuelo"
+    liberar.set()
+
+    resultado = await asyncio.wait_for(tarea, timeout=10)
+
+    assert termino.is_set(), "se salió antes de que el worker terminara"
+    assert resultado.outcome == "cancelled"
+
+
+async def test_el_lease_no_expira_y_nadie_mas_entra_mientras_se_neutraliza(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    # Con locks REALES y TTL corto: durante la neutralización el heartbeat tiene
+    # que poder renovar (si el loop está bloqueado, no renueva y el lease vence)
+    # y ningún otro dueño puede adquirir hasta que el teardown termine.
+    from sky_claw.app.db.locks import (
+        DistributedLockManager,
+        LockAcquisitionError,
+        SnapshotTransactionLock,
+    )
+    from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+
+    en_hilo, liberar, termino = _neutralizador_con_barrera(monkeypatch)
+    manager = DistributedLockManager(tmp_path / "locks.db", default_ttl=1.5, max_retries=1)
+    await manager.initialize()
+    snaps = FileSnapshotManager(snapshot_dir=tmp_path / "snaps")
+    await snaps.initialize()
+    evento = asyncio.Event()
+    try:
+        async with SnapshotTransactionLock(
+            lock_manager=manager,
+            snapshot_manager=snaps,
+            resource_id="grass-cache",
+            agent_id="grass-test",
+            ttl=1.5,
+        ) as tx:
+            assert tx.lock_info is not None
+            expira_antes = tx.lock_info.expires_at
+            tarea = asyncio.ensure_future(_correr(_runner_que_cancela_en_el_progreso(config, mo2, evento), evento))
+
+            assert await asyncio.to_thread(en_hilo.wait, 10.0), "la neutralización no llegó a empezar"
+            # Más que un intervalo de heartbeat (TTL/3 = 0.5 s) con el worker vivo.
+            await asyncio.sleep(1.2)
+            info = await manager.get_lock_info("grass-cache")
+            assert info is not None, "el lease venció mientras se neutralizaba"
+            assert info.expires_at > expira_antes, "el heartbeat no pudo renovar: el loop estaba bloqueado"
+            with pytest.raises(LockAcquisitionError):
+                await manager.acquire_lock("grass-cache", "otro-dueno", ttl=1.5)
+            assert not tarea.done(), "el run salió con el worker todavía archivando"
+
+            liberar.set()
+            resultado = await asyncio.wait_for(tarea, timeout=10)
+            assert termino.is_set(), "se liberó el lock con una tarea de escritura activa"
+            assert resultado.outcome == "cancelled"
+            assert not tx.lease_lost
+        # Fuera del `async with`: la lease se liberó.
+        assert await manager.get_lock_info("grass-cache") is None
+    finally:
+        liberar.set()
+        await manager.close()
+
+
+async def test_el_lease_sigue_vigente_durante_una_neutralizacion_mas_larga_que_el_ttl(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    # Reproducción REAL de la pérdida silenciosa de lease (F2): TTL de 1,5 s y una
+    # neutralización que "hashea" durante 2,5 s. Un OBSERVADOR INDEPENDIENTE —otro
+    # proceso lógico, con su propia conexión y su propio loop, como el servicio
+    # hermano— mira la fila del lock en plena ventana. Si la renovación vive en el
+    # loop y la neutralización lo bloquea, la fila está VENCIDA ahí mismo: el dueño
+    # sigue mutando el caché sin exclusividad y nadie se entera (`renew_lock` no
+    # resucita vencidos, pero el heartbeat nunca llega a intentarlo porque
+    # `__aexit__` cancela la tarea antes).
+    from sky_claw.app.db.locks import DistributedLockManager, SnapshotTransactionLock
+    from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+
+    ruta_bd = tmp_path / "locks.db"
+    suelta = threading.Event()
+    lectura: dict[str, Any] = {}
+
+    def _neutralizar_lento(**kwargs: Any) -> NeutralizacionFlag:
+        suelta.wait(timeout=20)
+        return NeutralizacionFlag(borrado=True, archivado=True, errores=())
+
+    monkeypatch.setattr(gcr_mod, "neutralizar_flag", _neutralizar_lento)
+
+    def _observar() -> None:
+        """Mira la fila desde OTRO loop/conexión, en plena ventana de bloqueo."""
+        time.sleep(2.0)
+
+        async def _leer() -> None:
+            lector = DistributedLockManager(ruta_bd, default_ttl=1.5, max_retries=1)
+            await lector.initialize()
+            try:
+                for _ in range(5):
+                    try:
+                        lectura["info"] = await lector.get_lock_info("grass-cache")
+                        lectura["ahora"] = time.time()
+                        return
+                    except Exception as exc:  # noqa: BLE001 — reintento corto por lock de SQLite
+                        lectura["error"] = repr(exc)
+                        time.sleep(0.05)
+            finally:
+                await lector.close()
+
+        asyncio.run(_leer())
+
+    manager = DistributedLockManager(ruta_bd, default_ttl=1.5, max_retries=1)
+    await manager.initialize()
+    snaps = FileSnapshotManager(snapshot_dir=tmp_path / "snaps")
+    await snaps.initialize()
+    evento = asyncio.Event()
+    observador = threading.Thread(target=_observar, daemon=True)
+    liberacion: threading.Timer | None = None
+    try:
+        async with SnapshotTransactionLock(
+            lock_manager=manager,
+            snapshot_manager=snaps,
+            resource_id="grass-cache",
+            agent_id="grass-test",
+            ttl=1.5,
+        ):
+            observador.start()
+            # La ventana de bloqueo (2,5 s) la cierra un temporizador, no el loop:
+            # en el mutante el loop está bloqueado y ningún `await` propio correría.
+            liberacion = threading.Timer(2.5, suelta.set)
+            liberacion.start()
+            tarea = asyncio.ensure_future(_correr(_runner_que_cancela_en_el_progreso(config, mo2, evento), evento))
+            resultado = await asyncio.wait_for(tarea, timeout=15)
+            assert resultado.outcome == "cancelled"
+            observador.join(timeout=15)
+            assert not observador.is_alive(), "el observador no terminó"
+            assert "error" not in lectura, f"el observador no pudo leer: {lectura['error']}"
+            info = lectura["info"]
+            assert info is not None, "el lock desapareció mientras se neutralizaba"
+            assert info.expires_at > lectura["ahora"], (
+                "el lease estaba VENCIDO en plena neutralización: se perdió la exclusividad "
+                f"(expires_at={info.expires_at:.3f} < ahora={lectura['ahora']:.3f})"
+            )
+    finally:
+        if liberacion is not None:
+            liberacion.cancel()
+        suelta.set()
+        observador.join(timeout=5)
+        await manager.close()

@@ -1462,3 +1462,116 @@ def test_resume_con_flag_vivo_no_consulta_el_archivo_de_otro_origen(
     assert plan.modo == "resume"
     assert plan.accion == "conservar"
     assert plan.contenido == b"Tamriel\n-2,4\n"
+
+
+# ---------------------------------------------------------------------------
+# Corrección adversarial final (F4/F5/F6): parser, enlaces y rutas de respaldo
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("contenido", [b"\t\n", b"\x0c\n", b"Tamriel\t\n-2,4\x0c\n"])
+def test_el_progreso_archivado_se_lee_con_el_parser_de_ngio(
+    contenido: bytes, grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # F4: `recuperar_progreso` filtraba con `str.strip()`, que recorta tab y form
+    # feed — caracteres que NGIO NO recorta (`trim` = " \r\v\n"). Un flag
+    # `b"\t\n"` es progreso para el juego y "vacío" para nosotros: el run se
+    # negaba a reanudar y empujaba al operador a un `rebuild` destructivo.
+    inventario = _inventario(grass, juego)
+    archivar_progreso(estado, inventario, contenido, grass_dir=grass)
+
+    assert recuperar_progreso(estado, inventario, grass_dir=grass) == contenido
+
+
+def test_el_progreso_archivado_sin_progreso_se_sigue_descartando(
+    grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # El otro lado del contrato: lo que NGIO ve vacío sigue sin habilitar resume.
+    inventario = _inventario(grass, juego)
+    archivar_progreso(estado, inventario, b"   \r\n\r\n", grass_dir=grass)
+
+    assert recuperar_progreso(estado, inventario, grass_dir=grass) is None
+
+
+def test_verify_rechaza_un_enlace_del_cache_que_el_hash_ignoraba(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path
+) -> None:
+    # F5: `_digests_del_cache` preguntaba `is_file()` ANTES de clasificar el
+    # enlace, así que un `.cgid` que es enlace a un directorio (o un enlace roto)
+    # se descartaba en silencio. El respaldo "cubría" el caché y el borrado de
+    # NGIO se autorizaba con una entrada del caché que nadie copió.
+    respaldo = respaldar_cache(grass_dir=grass, destino=tmp_path / "respaldo", inventario=_inventario(grass, juego))
+    externo = tmp_path / "otro_arbol"
+    externo.mkdir()
+    try:
+        (grass / "fantasma.cgid").symlink_to(externo, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        verificar_respaldo_para_borrado(grass_dir=grass, respaldo=respaldo)
+
+    assert excinfo.value.codigo == "cache_con_enlaces"
+
+
+def test_verify_rechaza_un_enlace_roto_del_cache(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path
+) -> None:
+    respaldo = respaldar_cache(grass_dir=grass, destino=tmp_path / "respaldo", inventario=_inventario(grass, juego))
+    try:
+        (grass / "roto.cgid").symlink_to(tmp_path / "no_existe.cgid")
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        verificar_respaldo_para_borrado(grass_dir=grass, respaldo=respaldo)
+
+    assert excinfo.value.codigo == "cache_con_enlaces"
+
+
+@pytest.mark.parametrize("caso", ["mismo", "dentro", "contiene"])
+def test_el_respaldo_no_puede_solaparse_con_el_cache(caso: str, tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
+    # F6: sin invariante de disjunción, un `destino` igual/ancestro/descendiente
+    # del caché hacía que la CUARENTENA (`os.replace(destino, *.invalido-*)`)
+    # moviera el caché original antes de copiar nada.
+    grass = tmp_path / "overwrite" / "Grass"
+    _escribir(grass / "Tamriel.cgid", b"celda-tamriel")
+    _escribir(grass / "Solstheim.cgid", b"celda-solstheim")
+    inventario = _inventario(grass, juego)
+    destino = {
+        "mismo": grass,
+        "dentro": grass / "respaldo",
+        "contiene": tmp_path / "overwrite",
+    }[caso]
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        respaldar_cache(grass_dir=grass, destino=destino, inventario=inventario)
+
+    assert excinfo.value.codigo == "respaldo_solapa_el_cache"
+    assert (grass / "Tamriel.cgid").read_bytes() == b"celda-tamriel", "el caché original sigue intacto"
+    assert (grass / "Solstheim.cgid").read_bytes() == b"celda-solstheim"
+
+
+def test_dos_respaldos_invalidos_en_el_mismo_segundo_no_se_pisan(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F6: la cuarentena usaba `int(time.time())`, así que dos respaldos inválidos
+    # en el mismo segundo apuntaban al MISMO directorio: el segundo `os.replace`
+    # (silenciado con suppress(OSError)) fallaba o pisaba, y el `mkdir` siguiente
+    # reventaba. Cada cuarentena tiene que ser única y nadie puede perder bytes.
+    monkeypatch.setattr("sky_claw.local.tools.grass_cache_safety.time.time", lambda: 1_700_000_000.0)
+    inventario = _inventario(grass, juego)
+    destino = tmp_path / "respaldo" / "x"
+    cuarentenas: list[pathlib.Path] = []
+    for marca in (b"basura-1", b"basura-2"):
+        destino.mkdir(parents=True, exist_ok=True)
+        # Respaldo inválido: sin manifiesto legible, hay que apartarlo y recopiar.
+        (destino / "manifiesto.json").unlink(missing_ok=True)
+        (destino / "ajeno.txt").write_bytes(marca)
+        respaldar_cache(grass_dir=grass, destino=destino, inventario=inventario)
+        encontradas = sorted(destino.parent.glob("x.invalido-*"))
+        assert len(encontradas) == len(cuarentenas) + 1, f"cuarentenas: {encontradas}"
+        cuarentenas = encontradas
+
+    assert [p for p in cuarentenas if (p / "ajeno.txt").read_bytes() == b"basura-1"], "se perdió la primera"
+    assert [p for p in cuarentenas if (p / "ajeno.txt").read_bytes() == b"basura-2"], "se perdió la segunda"

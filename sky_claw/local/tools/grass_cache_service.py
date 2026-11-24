@@ -455,7 +455,7 @@ class GrassCacheService:
                         aprobacion=config.rebuild_approval,
                         raiz_estado=config.backup_root,
                         ack_usvfs_no_verificado=config.ack_usvfs_no_verificado,
-                        perfil=config.profile,
+                        perfil=config.perfil_de_progreso,
                     ),
                     descripcion="preparar_arranque",
                 )
@@ -613,6 +613,10 @@ class GrassCacheService:
                 rebuild_approval=params.rebuild_approval,
                 backup_root=self._raiz_de_estado(),
                 ack_usvfs_no_verificado=params.ack_usvfs_no_verificado,
+                # `profile` es el CLON (constante, para lanzar); la evidencia de
+                # progreso se ata al perfil de ORIGEN para que dos perfiles de la
+                # misma instalación no se presten progreso.
+                progress_profile=pm.source_profile,
                 **overrides,
             )
         except ValueError as exc:

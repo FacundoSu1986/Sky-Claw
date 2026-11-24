@@ -510,3 +510,111 @@ verificaron después; el aplazado (D) queda declarado acá y en el reporte, no s
   veredicto (`Tests (Pytest)`, `Tests / windows-latest`) en verde.
 
 Hilo abierto a propósito: el de la fila **D** (§13), aplazado a P1 con motivo.
+
+## 14. Ronda 8 — corrección adversarial final (F1–F6)
+
+Cuarta revisión adversarial sobre el paquete P0, con el árbol **mergeado** con `origin/main`
+(`79c583a`) en `41ff6929` y worktree aislado. Seis hallazgos (F1–F6) se reprodujeron **antes** de
+tocar código; los seis resultaron válidos y quedaron corregidos.
+
+### 14.1 F1 — la identidad del progreso era el nombre del CLON
+
+`GrassCacheService._build_runner_config()` pasaba `profile=pm.clone_profile`, y el runner usaba
+`config.profile` como identidad del progreso archivado. El clon se llama siempre
+`SkyClaw-GrassCache`, así que dos perfiles de ORIGEN de la misma instalación MO2 —que comparten
+`overwrite/Grass` y el mismo clon— producían la **misma** evidencia de progreso: el `resume` de
+uno restauraba el progreso del otro, que es de otro conjunto de mods.
+
+Corrección: `GrassProfileManager.source_profile` (nuevo) y `GrassCacheConfig.progress_profile` +
+`perfil_de_progreso` (propiedad, única fuente de verdad, con fallback a `profile` para
+construcciones directas). `profile` sigue siendo el perfil de LANZAMIENTO, así que
+`MO2Controller` no cambia. Las dos superficies que archivan/restauran evidencia
+(`preparar_arranque` en runner y servicio, y `neutralizar_flag`) leen `perfil_de_progreso`, y el
+servicio inyecta `pm.source_profile`.
+
+Tests: `test_build_runner_config_separa_lanzamiento_de_identidad_de_progreso`,
+`test_generate_transmite_el_perfil_de_origen_al_runner` y
+`test_dos_perfiles_de_origen_no_se_prestan_el_progreso` (dos perfiles reales sobre el mismo árbol
+MO2: el segundo arranque se rechaza con `progreso_de_otra_instalacion`). Mutante **M-F1**
+(`progress_profile=""`, es decir identidad = clon): los tres fallan
+(`la identidad del progreso es el perfil de ORIGEN`).
+
+### 14.2 F2 — la neutralización bloqueaba el loop y el lease se perdía en silencio
+
+El `finally` de `run()` neutralizaba el flag de forma **síncrona**: lee y hashea miles de
+`.cgid/.dgid/.fail` en el event loop donde vive el heartbeat de `SnapshotTransactionLock`. La
+ventana de exclusividad se midió con locks **reales**: `TTL=1,5 s`, neutralización de 2,5 s y un
+observador independiente (otra conexión, otro loop) leyendo la fila en plena ventana ⇒
+`expires_at=…646.619 < ahora=…647.122`: **el lease estaba vencido mientras el run seguía mutando**,
+sin que nadie se enterara (`renew_lock` no resucita vencidos, pero `__aexit__` cancela el heartbeat
+antes de que intente renovar, así que `lease_lost` nunca se pone).
+
+Corrección: `_neutralizar_flag_drenado()` — `asyncio.to_thread` (fuera del loop) **más**
+`esperar_terminar` (la cancelación no se propaga hasta que el worker termina). Esto último es lo
+que hace que sacarlo del loop **no** reabra B11, y contradice la fila **D** de §13, que había
+aplazado el arreglo por esa razón: la objeción era válida para un `await` sin drenar, no para el
+drenado.
+
+Tests: `test_la_neutralizacion_corre_en_un_hilo_y_no_bloquea_el_loop`,
+`test_el_lease_no_expira_y_nadie_mas_entra_mientras_se_neutraliza` (heartbeat renueva durante la
+ventana y un segundo dueño no puede adquirir ni con el worker vivo) y
+`test_el_lease_sigue_vigente_durante_una_neutralizacion_mas_larga_que_el_ttl` (observador
+independiente). Mutante **M-F2** (neutralización síncrona): los tres fallan, el último con la
+medición del lease vencido.
+
+### 14.3 F3 — el test de cancelación no discriminaba el mutante M4
+
+`test_cancelacion_durante_la_escritura_del_flag_no_deja_flag_vacio` escribía el flag y marcaba
+`estado.escrito=True` **antes** de la barrera, así que quitar `esperar_terminar` de la escritura
+(mutante **M4**) dejaba 204 tests en verde. Reescrito: la barrera va **antes** de la escritura, se
+afirma `not tarea.done()` mientras el worker está en vuelo (la operación protegida sigue pendiente)
+y `termino.is_set()` después. Con M4 el test falla
+(`el run salió antes de que el worker terminara`); sin M4, verde.
+
+### 14.4 F4 — `recuperar_progreso()` usaba otro predicado que NGIO
+
+`splitlines()` + `str.strip()` recorta tab y form feed, que NGIO **no** recorta (`Util.h` recorta
+sólo `" \r\v\n"`). Un archivo de progreso con `b"\t\n"` o `b"\f\n"` se declaraba vacío y empujaba
+al operador al `rebuild` destructivo. Ahora se reusa `_ngio_tiene_progreso()` —una sola definición
+del predicado—. Tests: `test_el_progreso_archivado_se_lee_con_el_parser_de_ngio` (binarios con
+`write_bytes()`, tab/form feed sí cuentan) y
+`test_el_progreso_archivado_sin_progreso_se_sigue_descartando` (sólo blancos NGIO ⇒ `None`).
+
+### 14.5 F5 — `is_file()` antes de clasificar el enlace
+
+`_digests_del_cache()` filtraba con `archivo.is_file()` **antes** de `_rechazar_enlace()`; `is_file()`
+sigue el enlace y devuelve `False` para un enlace roto o a directorio, así que esa entrada se
+descartaba en silencio y el hash dejaba de ver un `.cgid` que el borrado de NGIO sí atraviesa
+(fail-open). Ahora el enlace se clasifica primero (`lexists`), luego `stat()` y
+`stat.S_ISREG`; lo que no es archivo regular se informa con `logger.warning` (mismo criterio que
+`inventariar_cache`). Tests: `test_verify_rechaza_un_enlace_del_cache_que_el_hash_ignoraba` y
+`test_verify_rechaza_un_enlace_roto_del_cache` (symlinks reales; `skip` si la plataforma no los
+permite). Los junctions de Windows no se pueden crear en Linux: quedan cubiertos por
+`exigir_contencion_fisica` en CI Windows y **NO VERIFICADOS** en este rig.
+
+### 14.6 F6 — el respaldo podía mover el caché original
+
+Dos defectos en `respaldar_cache()`: (1) la cuarentena de un respaldo inválido usaba
+`int(time.time())` (colisión a segundo resuelto) con `suppress(OSError)`, de modo que dos corridas
+en el mismo segundo apuntaban al mismo nombre y el `mkdir` siguiente reventaba o pisaba una
+cuarentena previa; (2) no había invariante que impidiera `destino` == `grass_dir` (o ancestro /
+descendiente): la rotación `os.replace(destino, <destino>.invalido-…)` **movía el caché original**
+antes de copiar nada. Ahora: `_exigir_respaldo_disjunto()` compara rutas **físicas**
+(`realpath` + `normcase`, con `commonpath`) y falla cerrado con `respaldo_solapa_el_cache`;
+`_nombre_de_cuarentena()` usa sufijo aleatorio + `lexists` y, si no puede apartar, falla con
+`respaldo_no_apartado` en vez de silenciar el `OSError`. Tests:
+`test_el_respaldo_no_puede_solaparse_con_el_cache` (mismo directorio, dentro, por encima vía
+`..`) y `test_dos_respaldos_invalidos_en_el_mismo_segundo_no_se_pisan` (el original queda intacto
+y cada cuarentena conserva sus bytes). Todo en directorios temporales.
+
+### 14.7 Gates de la ronda 8
+
+- **Foco** (safety + runner + service): **205 passed** (safety 90, runner 57, service 58).
+- **Ampliado** (grass + strategy + profile + analyzer + runtime deps + scripts + BDD + locks +
+  HITL): **520 passed, 2 skipped**.
+- **Mutantes**: M4 (quitar `esperar_terminar` de la escritura) **muere**; M-F1 **muere** (3 tests);
+  M-F2 **muere** (3 tests, con la medición del lease vencido).
+- **Ruff** `All checks passed!` / `format --check` limpio; **mypy** de los cuatro módulos del
+  write-set: `no issues found` (están en el bloque estricto de `pyproject.toml`, fuera de
+  `ignore_errors`).
+- **Suite completa** y **CI de Windows**: ver §14.8.

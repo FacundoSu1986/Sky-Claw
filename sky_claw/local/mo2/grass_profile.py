@@ -355,6 +355,19 @@ class GrassProfileManager:
         return self._data_root
 
     @property
+    def source_profile(self) -> str:
+        """Perfil MO2 de ORIGEN (el que se clona).
+
+        Es la identidad del perfil del usuario, distinta del ``clone_profile``
+        —que es constante (``SkyClaw-GrassCache``) y sirve para LANZAR—. La
+        evidencia de progreso del precache se ata a ESTE nombre: dos perfiles de
+        origen distintos sobre la misma instalación MO2 comparten
+        ``overwrite/Grass`` y el mismo clon, así que sin esta identidad el
+        progreso de uno se restauraría en el otro.
+        """
+        return self._source_profile
+
+    @property
     def clone_profile(self) -> str:
         """Nombre del perfil dedicado (para lanzar el juego en Fase C)."""
         return self._clone_profile
