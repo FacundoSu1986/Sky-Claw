@@ -374,6 +374,7 @@ module = [
     "sky_claw.local.tools.synthesis_compilacion",  # PR-3d: build de patchers en Fase 1, nace estricto
     "sky_claw.local.tools.synthesis_fuentes_git",  # PR-3e: fuentes Git fijadas por commit, nace estricto
     "sky_claw.local.tools.synthesis_fase1",  # PR-3f: orquestador de la Fase 1, nace estricto
+    "sky_claw.local.tools.synthesis_presets",  # PR-3k: pins de tags/ramas dinámicos, nace estricto
     "sky_claw.local.tools.bodyslide_service",  # BodySlide PR 2a: servicio compartido, nace estricto
     "sky_claw.local.tools.bodyslide_journal",  # BodySlide PR 2b: journal durable de la config, nace estricto
     "sky_claw.local.tools.dyndolod_uia_preflight",  # T5A: preflight UIA read-only, nace estricto
