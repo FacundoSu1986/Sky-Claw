@@ -82,7 +82,8 @@ USUARIOS_DEL_MOVE_ASIDE: dict[str, str] = {
     # etapa 9 — el mismo que el servicio toma para la corrida que los produce.
     "sky_claw/local/tools/dyndolod_runner.py": "dyndolod",
     "sky_claw/local/tools/pandora_service.py": "pandora",
-    "sky_claw/app/agent/tools/system_tools.py": "bodyslide",
+    # BodySlide PR 2a: el move-aside del grupo vive en el servicio compartido, no en la tool.
+    "sky_claw/local/tools/bodyslide_service.py": "bodyslide",
 }
 
 #: Excluidos con motivo: **consumen** el prefijo, no lo producen. El

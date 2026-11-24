@@ -416,6 +416,33 @@ x64 instalado):
   y shims; el shim recompilado inyecta `-f` o `-i` por separado; la segunda preparación sale de caché
   sin HITL. Falta: cablear `preparar_fase1` en el servicio y transportar el mapa al worker (PR-3g),
   `SynthesisPreset` e `install_synthesis_cli`.
+- **PR-3g (transporte del mapa de shims al worker):** `BrokeredSynthesisRunner._build_job_payload` deja
+  de rechazar `cli_executables` y lo manda como `payload.cli_executables` (`{ID: ruta}`; mapa vacío o
+  ruta con enlaces → error). El worker (`_synthesis_cli_executables` en `vfs_worker.py`) lo acepta como
+  clave opcional del esquema cerrado y exige por cada shim: ruta absoluta sin traversal ni enlaces,
+  confinada a las mismas raíces autorizadas que el resto del payload, nombre `SkyClawSynthesisShim.exe`
+  y su `shim.json` regular al lado; recién entonces lo pasa a `SynthesisConfig`, y el traductor exige
+  que cubra exactamente los patchers seleccionados. Consecuencia para el corte siguiente: los shims de
+  la corrida tienen que quedar bajo una de esas raíces (p. ej. el temporal del sistema), no en la caché.
+  Falta: cablear `preparar_fase1` en el servicio (PR-3h: HITL, `dotnet`/`git` x64, las dos
+  superficies que construyen el servicio), `SynthesisPreset` e `install_synthesis_cli`. Sin rig: el
+  backend brokered sigue bloqueado por `_CONTENCION_SYNTHESIS_VERIFICADA = False`.
+- **PR-3h (Fase 1 en el servicio):** `SynthesisPipelineService` recibe `preparador_fase1`
+  (`PreparadorFase1Protocol`; implementación productiva `synthesis_fase1.PreparadorFase1`: `dotnet`,
+  `git`, `cache_raiz`, `HITLGuard`, timeout 600 s). En el dominio `virtual_usvfs`, después del preflight
+  y **antes** de abrir lock/journal, prepara la Fase 1 para los patchers de la corrida; sin preparador,
+  o si la Fase 1 falla, corta con error sin despachar al worker (no degrada a correr sin shims). El
+  mapa viaja por corrida como kwarg `cli_executables` de `run_pipeline`, que aceptan las tres clases
+  runner (ancla enumerante `test_todas_las_run_pipeline_aceptan_el_mapa_de_la_corrida`); standalone no
+  lo recibe. Cada corrida estrena `skyclaw-synthesis-shims-*` bajo el temporal del sistema (raíz
+  autorizada del worker); la caché persiste. Los dos composition roots no cambian: no eligen backend
+  brokered hasta **PR-2b**, que es donde se construye el `PreparadorFase1` con rutas reales. Como la
+  Fase 1 corre ahora en el loop del servicio, el disco pesado de `synthesis_compilacion`,
+  `synthesis_fuentes_git` y `synthesis_fase1` (hash y copia de árboles, verificación de caché,
+  publicación, limpieza, lectura del perfil) pasa por `asyncio.to_thread`; ancla AST
+  `test_la_fase1_no_hace_disco_pesado_en_el_event_loop`.
+  Limitaciones: las carpetas de shims por corrida no se borran todavía (peso: un apphost chico por
+  patcher); sin rig de MO2.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.

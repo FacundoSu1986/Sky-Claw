@@ -88,7 +88,8 @@ MECANISMO_DE_ROLLBACK: dict[str, str] = {
     "sky_claw/local/tools/dyndolod_service.py": "directorio",
     "sky_claw/local/tools/pandora_service.py": "directorio",
     "sky_claw/local/tools/vramr_service.py": "no-muta",
-    "sky_claw/app/agent/tools/system_tools.py": "directorio",
+    # BodySlide PR 2a: el lock y el move-aside se mudaron de la tool del agente al servicio compartido.
+    "sky_claw/local/tools/bodyslide_service.py": "directorio",
     # NP-O0b2: el escritor de la salida del generador nativo de parallax toma el
     # lock con target_files=[] porque su rollback no es el snapshot: es el
     # protocolo propio de papelera + pendiente, que el lote no puede saltear.

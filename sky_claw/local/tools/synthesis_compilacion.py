@@ -24,6 +24,7 @@ Contrato:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -49,7 +50,7 @@ from sky_claw.local.tools.synthesis_prebuild import (
     verificar_apphost_sin_cet,
 )
 from sky_claw.local.tools.synthesis_runner import construir_entorno_dotnet
-from sky_claw.local.tools.synthesis_shim import ShimConfigError, hash_arbol, validar_dotnet_x64
+from sky_claw.local.tools.synthesis_shim import ShimConfigError, hash_arbol, hilo_hasta_terminar, validar_dotnet_x64
 
 if TYPE_CHECKING:
     from sky_claw.app.security.hitl import HITLGuard
@@ -196,13 +197,18 @@ async def _compilar_y_publicar(
     publicar = trabajo / "publicar"
     salida = publicar / "salida"
     temporal = trabajo / "tmp"
-    try:
+    configfile = trabajo / "nuget.config"
+
+    def _copiar() -> bool:
         exigir_arbol_copiable_sin_reparse(raiz_fuentes)
         temporal.mkdir(parents=True)
         shutil.copytree(raiz_fuentes, fuentes, symlinks=True)
-        copia_fiel = hash_arbol(fuentes) == arbol_fuentes
-        configfile = trabajo / "nuget.config"
         configfile.write_text(contenido_nuget_config_aprobado(), encoding="utf-8")
+        return hash_arbol(fuentes) == arbol_fuentes
+
+    try:
+        # Disco pesado (copia + hash del árbol) fuera del event loop del servicio (PR-3h).
+        copia_fiel = await hilo_hasta_terminar(_copiar)
     except (OSError, ShimConfigError) as exc:
         raise CompilacionPatcherError(f"No se pudo copiar la solución a la caché: {exc}") from exc
     if not copia_fiel:
@@ -237,9 +243,16 @@ async def _compilar_y_publicar(
         max_output_bytes=max_output_bytes,
     )
     exe = salida / f"{_validar_assembly_name(salida_msbuild)}.exe"
+    return await hilo_hasta_terminar(_sellar_y_publicar, exe, publicar, final, proyecto)
+
+
+def _sellar_y_publicar(
+    exe: pathlib.Path, publicar: pathlib.Path, final: pathlib.Path, proyecto: PurePosixPath
+) -> tuple[str, str]:
+    """Verifica CET, hashea la salida, escribe la marca y publica (síncrono: corre en un hilo)."""
     try:
         verificar_apphost_sin_cet(exe)
-        salida_sha256 = hash_arbol(salida)
+        salida_sha256 = hash_arbol(exe.parent)
     except (CetCompatPersistenteError, ShimConfigError) as exc:
         raise CompilacionPatcherError(str(exc)) from exc
     marca = {
@@ -271,9 +284,9 @@ async def compilar_patcher_local(
 ) -> PatcherCompilado:
     """Deja el patcher de *proyecto_rel* (dentro de *raiz_fuentes*) compilado y verificado.
 
-    Los procesos corren con ``run_capture`` (async). El hash y la copia del árbol son síncronos y
-    corren en el hilo del llamador: un consumidor que no pueda bloquear el loop lo llama desde un
-    worker.
+    Los procesos corren con ``run_capture`` (async) y la compuerta HITL en el loop del llamador; el
+    disco pesado (hash y copia del árbol, verificación de la caché, publicación y limpieza) corre en
+    hilos con ``asyncio.to_thread`` para no trabar el loop del servicio (PR-3h).
     """
     try:
         dotnet = validar_dotnet_x64(dotnet)
@@ -286,17 +299,17 @@ async def compilar_patcher_local(
         raise CompilacionPatcherError(f"La caché debe ser una ruta absoluta: {cache_raiz}")
     proyecto = _validar_proyecto(raiz_fuentes, proyecto_rel)
     try:
-        arbol_fuentes = hash_arbol(raiz_fuentes)
+        arbol_fuentes = await asyncio.to_thread(hash_arbol, raiz_fuentes)
     except ShimConfigError as exc:
         raise CompilacionPatcherError(str(exc)) from exc
 
     try:
-        toolchain = _identidad_toolchain(dotnet)
+        toolchain = await asyncio.to_thread(_identidad_toolchain, dotnet)
     except OSError as exc:
         raise CompilacionPatcherError(f"No se pudo leer el toolchain de {dotnet}: {exc}") from exc
     final = cache_raiz / _clave_de_cache(arbol_fuentes, proyecto, toolchain)
     if os.path.lexists(final):
-        return _verificar_salida(final)
+        return await asyncio.to_thread(_verificar_salida, final)
 
     # Sin acierto de caché hay que abrir red: primero la compuerta, después cualquier proceso.
     detalle = (
@@ -332,8 +345,8 @@ async def compilar_patcher_local(
     except _YaPublicadoError:
         # Otro build del mismo patcher publicó primero: su entrada se revalida y se usa.
         logger.info("Otro build publicó %s primero; se revalida y se usa esa entrada", final)
-        return _verificar_salida(final)
+        return await asyncio.to_thread(_verificar_salida, final)
     finally:
-        _limpiar_trabajo(trabajo)
+        await asyncio.to_thread(_limpiar_trabajo, trabajo)
     logger.info("Patcher %s compilado en la caché %s", proyecto.as_posix(), final)
     return PatcherCompilado(exe=final / "salida" / exe_nombre, salida_sha256=salida_sha256, cache_hit=False)

@@ -676,8 +676,12 @@ class SynthesisRunner:
         *,
         expected_settings_fingerprint: str | None = None,
         expected_load_order_fingerprint: str | None = None,
+        cli_executables: Mapping[str, pathlib.Path] | None = None,
     ) -> SynthesisResult:
         """Ejecuta el contrato ``run-pipeline`` de Synthesis CLI V2.
+
+        ``cli_executables`` (PR-3h): mapa de shims de la Fase 1 de ESTA corrida; ``None`` usa el de
+        ``SynthesisConfig``. El servicio lo prepara por corrida porque depende de los patchers elegidos.
 
         ``patcher_ids`` selecciona patchers del perfil V2; no se traducen a un
         ``--patcher`` inexistente. Un settings temporal conserva los patchers y
@@ -725,7 +729,7 @@ class SynthesisRunner:
                     self._config.profile,
                     patcher_ids,
                     dotnet_path_override=dotnet_override,
-                    cli_executables=self._config.cli_executables,
+                    cli_executables=(cli_executables if cli_executables is not None else self._config.cli_executables),
                 )
             except PatcherPipelineError as exc:
                 raise SynthesisExecutionError(f"Invalid Synthesis pipeline settings: {exc}", stderr=str(exc)) from exc

@@ -46,7 +46,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sky_claw.app.agent.tools.job_ids import nuevo_id_de_trabajo
-from sky_claw.local.tools.dyndolod_guia import FaseEnCurso, checklist_temprano
+from sky_claw.local.tools.dyndolod_guia import (
+    FaseEnCurso,
+    checklist_temprano,
+    rechazo_temprano_por_corrida_en_curso,
+)
 from sky_claw.local.tools.dyndolod_progreso import progreso_en_hechos
 from sky_claw.local.tools.dyndolod_uia_contrato import CodigoDesatendido
 from sky_claw.local.tools.dyndolod_uia_gate import ResultadoConfirmacion
@@ -219,6 +223,12 @@ class GestorDeTrabajosDeLods:
             servicio = self._proveedor()
             if servicio is None:
                 return {"success": False, "message": MOTIVO_SIN_SERVICIO}
+            # Una etapa 9 a la vez para TODAS las superficies: ``_actual`` solo ve los trabajos de este gestor, no una
+            # corrida lanzada desde la GUI. El turno es del servicio (que igual lo hace cumplir en ``execute``).
+            en_curso = rechazo_temprano_por_corrida_en_curso(servicio, interaction_mode=interaction_mode)
+            if en_curso is not None:
+                logger.warning("la etapa 9 remota no se lanza: %s", en_curso["message"])
+                return en_curso
             # #997: el MISMO checklist que ve la GUI, antes de preguntar por las etapas previas y de ocupar el lugar
             # del trabajo: con un ❌ la corrida va a cortar igual en el servicio. Un ⚠️ no frena y se cuenta abajo.
             checklist = await checklist_temprano(servicio, run_texgen=run_texgen)

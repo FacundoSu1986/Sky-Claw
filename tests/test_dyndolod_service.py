@@ -3107,6 +3107,7 @@ _NOMBRE_DE_LA_CONSTANTE = "_ETAPA_DYNDOLOD"
 _SERVICIOS_COMPLETOS = {"dyndolod_service.py"}
 _SERVICIOS_PARCIALES = {"grass_cache_service.py", "wrye_bash_service.py"}
 _SERVICIOS_SIN_COBERTURA = {
+    "bodyslide_service.py": "etapa 3; PR 2a extrajo la tool sin cambio de conducta: sin registros de fallo, error solo por payload",
     "loot_service.py": "etapa 5; hoy solo la emite su runner (loot/cli.py)",
     "pandora_service.py": "etapa 4; solo prosa (stage 4)",
     "synthesis_service.py": "etapa 7; solo prosa (stage 7)",
