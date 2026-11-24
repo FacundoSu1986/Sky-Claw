@@ -997,6 +997,7 @@ el caché no cambió y que no se escribió el flag.
 | **M-AUT-4** | se quita el re-chequeo del deadline | 1 (el de deadline) |
 | **M-AUT-5** | `limpio` ignora `alternativo_residual` | 2 |
 | **M-AUT-6** | vuelve el atajo «caché físico vacío» de la ronda 10 | 13 |
+| **M-AUT-7** | se quita el dedupe del aviso de limpieza incompleta | 2 |
 
 ### 18.7 Integración y gates
 
@@ -1007,8 +1008,8 @@ el caché no cambió y que no se escribió el flag.
   verificar_respaldo_para_borrado\(" sky_claw/` da **13 call sites, todos en
   `grass_cache_runner.py` (4) y `grass_cache_safety.py` (9)** — ni `frozen_runtime` ni `synthesis`
   consumen esas primitivas, así que la integración no puede cambiarles la semántica por detrás.
-- **Foco**: **367 passed** (runner 216, safety 91, service 60). **Ampliado** (8 archivos `test_grass_*`):
-  **458 passed, 2 skipped**.
+- **Foco**: **368 passed** (runner 217, safety 91, service 60). **Ampliado** (8 archivos `test_grass_*`):
+  **459 passed, 2 skipped**.
 - **Ruff** `1177 files already formatted` + `All checks passed!`; **mypy** de runner, safety y service:
   `no issues found in 3 source files`.
 - **Suite completa y CI**: §18.8.
@@ -1020,7 +1021,8 @@ el caché no cambió y que no se escribió el flag.
   `095de215`, es decir el mismo árbol **sin** esta ronda, en un worktree desechable con el mismo rig y el
   mismo comando—: `139 failed, 21354 passed, 650 skipped, 1 error` (1715 s). Comparación **por node ID**
   sobre 140 entradas: `comm` **vacío en ambos sentidos** ⇒ **0 regresiones**, y los **+132 passed** son
-  exactamente los tests nuevos (131 del runner + 1 del servicio). Ningún test de grass cache falla en
+  exactamente los tests nuevos (131 netos del runner —144 de la matriz + 7 e2e + 1 del aviso, menos los 21
+  del guard anterior que la matriz reemplaza— + 1 del servicio). Ningún test de grass cache falla en
   ninguno de los dos árboles. El `error` de colección es el `ImportError` preexistente de
   `tests/test_runtime_vault_operator_verifier.py` en Linux (`_SECURITY_ATTRIBUTES`, sólo Windows).
 - `test_worktree_convention_invariant` falla en **las dos** corridas por el worktree de línea base bajo
