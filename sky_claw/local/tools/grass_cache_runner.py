@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import psutil  # import de módulo completo: los tests reemplazan el objeto entero
 
+from sky_claw.app.security.links import path_present
 from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.local.mo2.vfs import GameLaunchTimeoutError, MO2Controller
 from sky_claw.local.tools.grass_cache_safety import (
@@ -61,6 +62,7 @@ from sky_claw.local.tools.grass_cache_safety import (
     neutralizar_flag,
     preparar_arranque,
     ruta_de_respaldo,
+    ruta_del_flag_alternativo,
 )
 
 if TYPE_CHECKING:
@@ -832,6 +834,16 @@ class GrassCacheRunner:
         segundo parser. Corre en un hilo, drenado, como el resto del E/S del
         runner.
 
+        **Regla (ronda 10):** TODO relanzamiento automático exige que el flag
+        siga siendo progreso, en los tres modos. Ni `resume` ni el hecho de que
+        el caché físico esté vacío habilitan un relanzamiento: el caché vacío no
+        acredita nada, porque la USVFS puede superponer `.cgid` de mods en
+        `Data/Grass` y NGIO los borraría igual. Si NGIO murió antes de registrar
+        progreso, el ritual se detiene y el operador decide con la evidencia a la
+        vista (trade-off aceptado: no se auto-inicia otra operación destructiva).
+        El flag ALTERNATIVO (`PrecacheGrass.txt.txt`, que NGIO abre cuando el
+        primario falta) también bloquea el relanzamiento.
+
         **Alcance:** los archivos que se pueden inventariar son los del caché
         FÍSICO (`overwrite/Grass`). Los `.cgid` de mods que la USVFS superpone en
         `Data/Grass` **no** son visibles acá: su cobertura sigue NO VERIFICADA
@@ -848,20 +860,29 @@ class GrassCacheRunner:
         )
         if inventario.flag_progreso is not None:
             return None  # NGIO reanuda: el relanzamiento continúa el trabajo
-        if not inventario.tiene_cache:
-            return None  # nada que NGIO pueda borrar
+        # Sin progreso NO se relanza nunca. El caché físico vacío no habilita nada
+        # (la USVFS puede superponer `.cgid` de mods que NGIO borraría igual) y el
+        # plan solo autorizó el lanzamiento que validó el flag.
+        alternativo = ruta_del_flag_alternativo(self._config.game_path)
+        if path_present(alternativo):
+            return (
+                f"El flag de precache quedó sin progreso y existe el flag ALTERNATIVO "
+                f"{alternativo.name!r}: NGIO lo abre como flag de progreso cuando el primario falta, "
+                "así que el estado del caché no es confiable. No se relanza ni se toca el caché; "
+                "resolvé ese archivo a mano y volvé a correr."
+            )
         if self._config.mode == "resume":
             return (
-                "El flag de precache quedó SIN progreso y el caché parcial tiene "
-                f"{inventario.archivos_cache} archivo(s): relanzar dejaría que NGIO los borre. "
-                "No se relanza y el caché no se toca; revisá qué vació el flag y, si hay que "
-                "regenerar, usá mode='rebuild' con respaldo verificado."
+                "El flag de precache quedó SIN progreso: `resume` exige progreso siempre, así que no "
+                f"se relanza. El caché ({inventario.archivos_cache} archivo(s) en el caché físico) no se "
+                "borra ni se restaura; revisá qué vació el flag y, si hay que regenerar, usá "
+                "mode='rebuild' con respaldo verificado."
             )
         return (
-            f"El flag de precache quedó sin progreso y hay {inventario.archivos_cache} archivo(s) de "
-            f"caché parcial: relanzar en modo '{self._config.mode}' dejaría que NGIO borre lo generado "
-            "en esta corrida. Se corta sin borrar ni restaurar nada; el caché parcial queda en disco "
-            "para decidir resume/rebuild con la evidencia a la vista."
+            f"El flag de precache quedó sin progreso en modo '{self._config.mode}': no se autoriza "
+            f"otro lanzamiento automático. El caché físico tiene {inventario.archivos_cache} archivo(s) "
+            "y no se borra ni se restaura. Si NGIO murió antes de registrar progreso, el ritual se "
+            "detiene acá: decidí resume/rebuild con la evidencia a la vista."
         )
 
     async def _snapshot_cache(self) -> tuple[int, int]:

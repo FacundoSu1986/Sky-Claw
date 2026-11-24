@@ -96,15 +96,16 @@ Módulo nuevo `sky_claw/local/tools/grass_cache_safety.py` (mypy estricto) que c
 | Modo | Precondición | Acción sobre el flag |
 |---|---|---|
 | `new` (default) | sin `.cgid/.dgid/.fail` **y** sin progreso **y** `ack_usvfs_no_verificado` (también con el caché vacío: el flag vacío es el mismo disparador de borrado de NGIO) | escribe vacío |
-| `resume` | flag con progreso **o** progreso archivado con huella coincidente (sin `ack`: no escribe el flag) | **no lo toca** (o lo restaura byte a byte) |
-| `rebuild` | `REBUILD` **+** `ack_usvfs_no_verificado` **+** respaldo verificado por **contenido** contra el caché actual **sólo si hay caché**; raíz de estado **sólo si hay progreso vivo que archivar** (con caché y progreso vacíos, aprobación + `ack` alcanzan) | archiva el progreso y escribe vacío |
+| `resume` | flag con progreso **o** progreso archivado con huella coincidente (sin `ack`: no escribe un flag **vacío**) | lo **conserva** byte a byte; si restaura progreso archivado, lo **escribe** byte a byte |
+| `rebuild` | `REBUILD` **+** `ack_usvfs_no_verificado` **+** respaldo verificado por **contenido** contra el caché actual **sólo si hay caché**; raíz de estado **si hay caché** (es donde vive el respaldo) **o** progreso vivo que archivar (con caché y progreso vacíos, aprobación + `ack` alcanzan) | archiva el progreso y escribe vacío |
 
 Propiedades que quedan ancladas por tests:
 
 - Un run `new` con caché previo **no lanza**: `cache_existente_sin_decision`.
 - Un flag con progreso **nunca se trunca** sin decisión; `resume` lo conserva byte a byte.
-- `rebuild` sin aprobación, sin raíz de estado o sin respaldo que cubra el inventario
-  actual **no arranca**.
+- `rebuild` sin aprobación, sin respaldo que cubra el inventario actual **cuando hay caché**, o sin
+  la raíz de estado que ese respaldo o el progreso vivo necesitan **no arranca** (con caché y
+  progreso vacíos no hacen falta ninguna de las dos).
 - El respaldo se verifica **por contenido en los dos lados**: lo que el manifiesto declara
   tiene que coincidir con el origen *actual* y con los bytes *actuales* del destino. Un
   respaldo de un caché con los mismos nombres y tamaños pero distinto contenido (o alterado
@@ -144,8 +145,10 @@ Propiedades que quedan ancladas por tests:
    `rebuild`. **No es el único camino que hashea el caché:** `resume` que restaura progreso
    archivado vuelve a hashear el `Grass/` completo para probar que la evidencia es de *este*
    caché, y la neutralización de salida hashea el caché parcial para archivar el progreso
-   (por eso corre en un hilo: §14.2). Un run con caché de GB paga al menos esa pasada de
-   salida, en cualquier modo.
+   (por eso corre en un hilo: §14.2). Esa pasada de salida **sólo hashea si hay algo que archivar**:
+   el flag tiene que existir, contener progreso y haber una raíz de estado donde guardarlo; en los
+   demás casos la neutralización sólo borra el flag. Cuando corresponde, un run con caché de GB paga
+   esa lectura completa, en cualquier modo.
 7. **El rechazo de enlaces es conservador por diseño:** un rig cuyo `overwrite/` cuelgue de
    un junction legítimo (bibliotecas movidas, perfiles redirigidos) se rechaza con
    `cache_raiz_enlazada` en vez de operar sobre él. No hay escape manual en P0; el operador
@@ -654,7 +657,7 @@ P2** con motivo.
 | C | `tests`: si una lectura del observador fallaba y la siguiente funcionaba, `lectura["error"]` quedaba seteado y el test fallaba igual | **válido** (test propio) | El error se limpia en la lectura exitosa |
 | D | `docs` §3: la tabla de modos no decía que `new` exige el `ack` **también con el caché vacío**, que `rebuild` pide respaldo **sólo si hay caché** y raíz de estado **sólo si hay progreso vivo** | **válido** | Tabla de modos reescrita con las tres condiciones, contrastadas contra `planificar_arranque` |
 | E | `docs` §4.6: "el hashing se paga sólo en `rebuild`" | **válido** | Corregido: `resume` que restaura progreso archivado hashea el caché completo y la neutralización de salida también (§14.2) |
-| F | `docs` §13: pipes sin escapar dentro de una tabla (`O_CREAT|O_EXCL|O_NOFOLLOW`) rompían las celdas | **válido** | Escapados |
+| F | `docs` §13: pipes sin escapar dentro de una tabla (`O_CREAT\|O_EXCL\|O_NOFOLLOW`) rompían las celdas | **válido** | Escapados (también en la fila de §15 que los citaba) |
 | G | `docs` §14.7 remitía a §14.8, que no existía todavía | **válido en su momento** | §14.8 existe en `eb2ea0db`; el hilo queda respondido con el puntero, no se resuelve en bloque |
 | H | `runner.py`: antes de **cada relanzamiento** de un `resume` no se comprueba que el flag siga teniendo progreso; un flag vaciado por un tercero haría que NGIO borre el caché | **válido, P2 — registrado, no implementado** | `aplicar_plan` revalida al aplicar y NGIO no trunca el archivo mientras corre; el escenario exige intervención externa (barrido U-03, antivirus, operador). Cerrarlo pide un `outcome`/error nuevo y un rig donde probar el detonante: va a P2, declarado acá |
 | I | `safety.py`: la clave del **archivo de progreso** (`<huella>-<ámbito>.json`) no incluye el contenido del caché; una generación posterior con los mismos nombres/tamaños reemplaza la evidencia de la anterior | **válido, P2 — registrado** | No destruye el caché (el peor caso es perder evidencia archivada de una generación anterior y tener que regenerarla); cambiar la clave es cambio de contrato del formato de archivo y va con su propia migración |
@@ -759,3 +762,131 @@ relanzamientos con el flag **vacío**, un estado que NGIO no produce (`Init()` a
 - **CI sobre el SHA final**: ver el reporte de la ronda (Shards 1–6 de Windows, `Tests (Pytest)`,
   `Tests / windows-latest`, POSIX Core, VFS Windows sandbox, Ruff, Mypy ×2, Security, Build, CodeQL,
   Main en verde, Regression & Test Oracle, Auto-revisión).
+
+## 17. Ronda 10 — segundo bloqueante: el relanzamiento se autorizaba con el caché físico vacío
+
+La revisión independiente sobre `8332ad95` aceptó la ronda 9 y dejó **una** contradicción concreta: en
+`GrassCacheRunner._motivo_para_no_relanzar()` sobrevivía un atajo —
+
+```python
+if not inventario.tiene_cache:
+    return None  # nada que NGIO pueda borrar
+```
+
+— que autorizaba el relanzamiento cuando `overwrite/Grass` estaba vacío **aunque el flag hubiera perdido
+el progreso**. Choca con lo que el propio §16.2 declara ("`resume` exige progreso siempre") y con el
+alcance del inventario: el caché **físico** vacío no acredita nada, porque la USVFS superpone el `Grass/`
+de los mods habilitados en `Data/Grass` (§4.1/§4.2) y el `remove()` de `GidFileCache.cpp::Init()` los
+borraría igual. O sea: el predicado protegía el caché que se veía, no el que NGIO alcanza.
+
+### 17.1 Reproducción (RED antes del arreglo)
+
+Matriz parametrizada nueva (`test_el_relanzamiento_solo_se_autoriza_con_progreso`): 3 modos × flag
+`ausente`/`vacio`/`con_progreso` × caché físico `vacio`/`presente` = 18 casos, más
+`test_el_relanzamiento_rechaza_el_flag_alternativo` (3 modos) y el extremo a extremo
+`test_el_relanzamiento_no_se_autoriza_con_cache_fisico_vacio`.
+
+| Grupo | Antes del arreglo |
+|---|---|
+| 6 casos `cache=vacio` × `flag=ausente\|vacio` (los 3 modos) | **FAILED** — `motivo is None`, o sea relanzaba |
+| 3 casos del flag ALTERNATIVO | **FAILED** — el relanzamiento no miraba `PrecacheGrass.txt.txt` |
+| `test_el_relanzamiento_no_se_autoriza_con_cache_fisico_vacio` (e2e `new`) | **FAILED** — `outcome` era `stalled` (relanzó y el detector de stall frenó después) en vez de `flag_sin_progreso` |
+| 12 casos restantes de la matriz | passed (ya cubiertos por el guard de progreso de la ronda 9) |
+
+Los 12 verdes son la razón por la que el bug pasó la ronda 9: **todos** los tests de entonces partían de
+un caché con al menos un archivo.
+
+### 17.2 Corrección
+
+`_motivo_para_no_relanzar()` queda con una sola regla de autorización:
+
+- **Hay progreso** (mismo inventario y mismo predicado de NGIO: `inventariar_cache` →
+  `_ngio_tiene_progreso`) ⇒ `None`, se relanza; el crash-loop sigue igual.
+- **No hay progreso** ⇒ motivo de corte **siempre**, en los tres modos, con o sin archivos. El caché
+  físico vacío deja de ser un criterio; el conteo de archivos aparece en el mensaje sólo como
+  información para el operador.
+- **Flag alternativo presente** ⇒ motivo de corte propio, **antes** de decidir por modo:
+  `ruta_del_flag_alternativo()` (la misma ruta que usa `_exigir_sin_flag_alternativo` en el preflight)
+  con `path_present()` del módulo de seguridad — sin duplicar la ruta ni el criterio de presencia.
+
+Se mantiene todo lo demás: el primer lanzamiento lo sigue autorizando el plan (§16.2), el corte publica
+`outcome="flag_sin_progreso"` con `success=False`, no borra ni restaura el caché, y el `finally` sigue
+neutralizando el flag (sin flag residual). No hay mecanismo nuevo de restauración automática.
+
+**Trade-off aceptado y ahora explícito en el mensaje del runner:** si NGIO muere antes de registrar
+progreso, el ritual se detiene y el operador decide (`resume`/`rebuild` con respaldo verificado) en vez de
+que Sky-Claw auto-inicie otra operación destructiva.
+
+### 17.3 Tests y mutantes
+
+| Pieza | Qué asegura |
+|---|---|
+| `test_el_relanzamiento_solo_se_autoriza_con_progreso[modo-flag-cache]` (18) | la regla completa: sólo `con_progreso` autoriza, en `new`/`resume`/`rebuild`, con el caché físico vacío o lleno |
+| `test_el_relanzamiento_rechaza_el_flag_alternativo[modo]` (3) | el alternativo bloquea el relanzamiento en los tres modos |
+| `test_el_relanzamiento_no_se_autoriza_con_cache_fisico_vacio` | el caso que reprodujo la revisión, de punta a punta: un solo `launch_game`, `flag_sin_progreso` |
+| `test_resume_con_cache_fisico_vacio_no_relanza_si_el_flag_pierde_el_progreso` | el escenario que pidió el revisor: `resume` que arranca con progreso y caché físico vacío, un tercero vacía el flag tras el crash ⇒ sin segundo lanzamiento |
+
+- **M-R10-A** (repone `if not inventario.tiene_cache: return None`): **mueren 11 tests** — los 6 casos de
+  caché vacío sin progreso, los 3 del alternativo (el atajo los cortocircuitaba antes de mirarlo), el
+  e2e de `new` y el de `resume`. Los 12 casos `con_progreso`/`cache=presente` siguen verdes.
+- **M-R10-B** (desactiva `if path_present(alternativo)`): **mueren exactamente los 3 tests del alternativo**
+  y nada más.
+- Restaurado el código bueno: **86 passed** en `tests/test_grass_cache_runner.py`.
+
+**Dos tests previos se corrigieron, no se relajaron.** `test_no_spawn_tras_ciclo_exitoso_cuenta_como_crash_y_reintenta`
+y `test_stall_crashes_sin_cgid_nuevos_corta_con_stalled` describían el relanzamiento con el flag vacío y el
+caché vacío —el estado que la ronda 10 prohíbe y que NGIO no produce—, así que con el arreglo cortaban en
+`flag_sin_progreso` y el detector de stall quedaba sin cobertura. Ahora el ciclo 0 del juego de mentira
+appendea su celda (`_juego_escribe_cgid`, el comportamiento real de `std::ios::app`) y los relanzamientos
+siguientes no escriben nada: el stall se sigue midiendo igual. El único número que cambió es
+`crash_count == 3 → 4` en el segundo (ciclo 0 que sí deja caché + 3 relanzamientos sin `.cgid` nuevo); el
+`outcome`, `stalled` y `success` no se tocaron. Ninguna aserción se suavizó.
+
+### 17.4 Integración y gates
+
+- `origin/main` avanzó `09bbc78 → **4c569808**` (#1016 LOOT PR-A, #1019 LOOT PR-B) y el PR dejó de ser
+  mergeable en GitHub. Merge `--no-ff` de `origin/main` sobre `8332ad95`: **`c7e2175c`**, limpio, 39
+  archivos, `+3429 −307`; el write-set de grass (5 módulos, 3 tests, este documento y `CHANGELOG.md`),
+  `pyproject.toml` y las políticas de CI **sin cambios** respecto de `8332ad95` (`git diff --stat` vacío
+  para esos paths), así que la política de este PR no se mezcló con la de LOOT.
+- **Foco**: **236 passed** (`test_grass_cache_runner.py` 86, `test_grass_cache_safety.py` 91,
+  `test_grass_cache_service.py` 59). **Ampliado** (los 8 archivos `test_grass_*`): **327 passed, 2 skipped**
+  (los dos skips son los condicionales de Windows que ya estaban).
+- **Ruff**: `1174 files already formatted` + `All checks passed!`. **mypy** de `grass_cache_runner.py` y
+  `grass_cache_safety.py`: `no issues found in 2 source files`.
+- **Suite completa y CI**: §17.5.
+
+### 17.5 Suite completa y CI
+
+- **Local (Linux, py3.11), árbol de `81ed8ac2`**: `138 failed, 21252 passed, 628 skipped, 1 error`
+  (1729 s). Línea base **independiente** en `c7e2175c` —el merge de `origin/main` **antes** de este
+  arreglo, en un worktree desechable, mismo rig y mismo comando con `--continue-on-collection-errors`
+  (el `ImportError` de `tests/test_runtime_vault_operator_verifier.py` es preexistente en Linux)—:
+  `138 failed, 21229 passed, 628 skipped, 1 error` (1614 s). Comparación **por node ID**: `comm` **vacío
+  en ambos sentidos** sobre 139 entradas ⇒ **0 regresiones**, y los **23 passed** de diferencia son
+  exactamente los tests nuevos (18 de la matriz + 3 del alternativo + 2 e2e). Ningún test de grass cache
+  falla en ninguno de los dos árboles.
+- `test_worktree_convention_invariant` falla en **las dos** corridas porque era mi worktree de línea base
+  bajo `/tmp`; retirado (`git worktree remove`), el ancla pasa (`23 passed`).
+- **CI sobre el SHA final**: ver el reporte de la ronda (Shards 1–6 de Windows, `Tests (Pytest)`,
+  `Tests / windows-latest`, POSIX Core, VFS Windows sandbox, Ruff, Mypy ×2, Security, Build, CodeQL,
+  Main en verde, Regression & Test Oracle, Auto-revisión).
+
+### 17.6 Precisión documental pedida por los hilos de la ronda 9
+
+Tres hilos de documentación de la ronda 9 seguían sin marcar como atendidos porque la letra no coincidía
+con el código. Se corrigieron contra el código, sin cambiar comportamiento:
+
+| Hilo | Qué decía | Qué dice ahora |
+|---|---|---|
+| `resume` en la tabla de §3 | "no escribe el flag" | no escribe un flag **vacío**: conserva el progreso byte a byte o lo **restaura** byte a byte |
+| `rebuild` en la tabla de §3 y el resumen de rechazos | la raíz de estado era requisito "sólo si hay progreso vivo"; el resumen la presentaba como incondicional | la raíz de estado hace falta **si hay caché** —es donde vive el respaldo— **o** si hay progreso vivo que archivar; con caché y progreso vacíos, aprobación + `ack` alcanzan |
+| §4.6 (pasada de salida) | se presentaba como obligatoria | la neutralización sólo **hashea** si el flag existe, tiene progreso y hay raíz de estado; si no, sólo borra el flag |
+| §15 fila F | citaba `O_CREAT|O_EXCL|O_NOFOLLOW` sin escapar | escapado en las dos tablas |
+| docstring de `_digests_del_cache` | "sólo la paga `rebuild`" | la usan el respaldo, su verificación, `archivar_progreso` (pasada de salida) y `recuperar_progreso` |
+
+Se re-ejecutaron los gates que tocan el cambio: `tests/test_grass_cache_safety.py` **91 passed**, ampliado
+**327 passed, 2 skipped**, los tres tests que leen los documentos del repo **177 passed**, `ruff format`
+(`1 file already formatted`), `ruff check` (`All checks passed!`) y `mypy` (`no issues found`). Es un cambio
+de documentación y docstrings: no altera ninguna rama ejecutable, así que la suite completa de §17.5 sigue
+aplicando al mismo código.

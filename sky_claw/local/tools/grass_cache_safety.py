@@ -507,10 +507,12 @@ def _leer_manifiesto(ruta: pathlib.Path) -> dict[str, Any] | None:
 def _digests_del_cache(grass_dir: pathlib.Path) -> dict[str, tuple[int, str]]:
     """``nombre -> (bytes, sha256)`` de los artefactos REALES del caché.
 
-    Es la lectura de contenido completa del origen. Sólo la paga ``rebuild``
-    (que ya es una operación que el operador acepta como costosa): es la única
-    forma de afirmar que el respaldo cubre *este* contenido y no uno con los
-    mismos tamaños.
+    Es la lectura de contenido completa del origen, y **no** la paga sólo
+    ``rebuild``: también la usan la verificación del respaldo, ``archivar_progreso``
+    (la pasada de salida, sólo si hay progreso que archivar y raíz de estado) y
+    ``recuperar_progreso`` al comprobar que la evidencia es de *este* caché. Es
+    la única forma de afirmar que un respaldo o un progreso cubren *este*
+    contenido y no uno con los mismos tamaños.
     """
     digests: dict[str, tuple[int, str]] = {}
     try:
