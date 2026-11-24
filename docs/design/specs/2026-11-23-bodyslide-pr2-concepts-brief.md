@@ -486,3 +486,44 @@ pasa a 2c), trabajo en segundo plano (R-8, también cambia el comportamiento: pa
 
 **Estado objetivo de 2a:** `PR2A_READY_FOR_INDEPENDENT_REVIEW`, sin push ni PR hasta que el propietario
 revise los resultados locales y el write-set.
+
+### 13.4 PR 2b — journal durable y recuperación (implementado, dormido)
+
+Estado: `BODYSLIDE_PR2B_READY_FOR_INDEPENDENT_REVIEW`. 2a se mergeó en #1012 (`79c583a8`).
+
+**Entra:** `sky_claw/local/tools/bodyslide_journal.py` (mypy estricto) y el consumidor
+`bodyslide-config` en `rollback_reconciler.reconcile_bodyslide_config_journals`.
+
+- **Journal:** `runtime_state_dir()/bodyslide_journal/<instancia>.json`, uno por instancia, creado con
+  `O_EXCL` (una transacción pendiente bloquea la siguiente). Schema v1 cerrado por igualdad de claves,
+  con checksum propio, `run_id` y `generacion` de 128 bits (la generación cambia en cada escritura y la
+  transacción viva aborta si el disco tiene otra), identidad de máquina e instancia, carpeta física
+  (ruta canónica + volumen + índice), dueño (pid + creación), `arranque_del_sistema` como dato, y por
+  archivo los bytes originales en base64, su hash y los hashes **esperados** (la siembra antes de
+  escribirla; lo observado al registrar `TERMINAL`). Cada escritura: temporal `O_EXCL` + `fsync` +
+  `os.replace` + relectura verificada. El directorio se endurece a solo-dueño al crearlo.
+- **Estados:** `PREPARADO → SEMBRADO → LANZADO → TERMINAL → RESTAURADO`, más `RESTAURACION_FALLIDA`
+  (reintentable) y `SIEMBRA_INDETERMINADA` (reservado para 2c, C3). `LANZADO` sólo sale a `TERMINAL`.
+  Tabla congelada por igualdad literal.
+- **Recuperación** (veredictos congelados): restaura sólo con journal íntegro, misma máquina
+  (`MachineGuid`; con el perfil aislado no se lee ⇒ `HOLD_IDENTIDAD`) e instancia, sin marcador de
+  cuarentena, dueño muerto (vivo ⇒ `HOLD_MUTACION_EN_VUELO`; indeterminado ⇒
+  `HOLD_TERMINALITY_UNKNOWN`), carpeta física idéntica y estado previo a `LANZADO` o en `TERMINAL`.
+  Clasifica todos los archivos antes de escribir: original ⇒ no se toca; esperado ⇒ se restaura;
+  tercero ⇒ `CONCURRENT_MODIFICATION` y no se escribe ninguno. Retira sólo temporales con patrón
+  propio. El reinicio de la máquina no autoriza (P-4).
+- **Consumidor:** bajo el lock `bodyslide-meshes` con `_bajo_el_lock_del_ritual` y la restauración
+  retenida por `mutar_hasta_terminal`. No es productor de move-aside (no figura en
+  `PRODUCTORES_CABLEADOS`).
+- **Censo de `winreg`:** `bodyslide_journal.py` entra como «guardado» (importa `perfil_aislado`).
+
+**No entra (2c):** cablear el journal en el runner/servicio y el consumidor en el arranque
+(`app_context`), el plazo de siembra y la escritura del marcador de cuarentena, la evidencia de
+terminalidad del broker (`worker_exit`) para pasar `LANZADO → TERMINAL`, y el cálculo puro de los bytes
+de la siembra desde `bodyslide_config` (2b recibe los bytes ya calculados). Un ancla AST exige que
+`iniciar_transaccion` y `reconcile_bodyslide_config_journals` no tengan call sites productivos.
+
+**Límites:** sin `fsync` de directorio en Windows (se relee cada escritura); el checksum no resiste a un
+adversario con escritura sobre el estado (la frontera es el ACL); un crash entre el `O_EXCL` y el final
+de la primera escritura deja un journal truncado ⇒ `HOLD` hasta intervención (fail-closed, igual que
+bloquea una transacción nueva). Por eso 2c debe crear el journal **bajo** la lease `bodyslide-meshes`.

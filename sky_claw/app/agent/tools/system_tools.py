@@ -129,6 +129,9 @@ async def run_loot_sort(
         out: dict[str, Any] = {
             "profile": profile,
             "success": res.get("success", False),
+            # Contrato success/message (AGENTS.md): el canónico del servicio,
+            # vacío en éxito. Antes faltaba y el FAIL tipado llegaba sin mensaje.
+            "message": res.get("message", ""),
             "return_code": res.get("return_code", -1),
             "sorted_plugins": res.get("sorted_plugins", []),
             "warnings": res.get("warnings", []),
@@ -138,7 +141,19 @@ async def run_loot_sort(
         # la GUI, que reenvía el dict del servicio tal cual). Sin esto el agente
         # LLM no distinguiría CHANGED de NO_CHANGE ni vería la razón tipada de un
         # FAIL. Ancla: tests/test_loot_verified_outcome.py.
-        for clave in ("outcome", "outcome_detail", "failure_reason"):
+        # M2/A1/A4/C1: también la evidencia de recuperación (rolled_back,
+        # rollback_vetoed, snapshots), el log de LOOT y la verificación física.
+        # Ancla: tests/test_loot_integridad_de_activos.py.
+        for clave in (
+            "outcome",
+            "outcome_detail",
+            "failure_reason",
+            "rolled_back",
+            "rollback_vetoed",
+            "snapshots",
+            "loot_log",
+            "verification",
+        ):
             if clave in res:
                 out[clave] = res[clave]
         if not out["success"] and res.get("logs"):

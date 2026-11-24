@@ -271,6 +271,8 @@ def test_valores_enumerables_congelados() -> None:
         "execution_not_attributable",
         "state_unobservable",
         "protocol_error",
+        # C1: el sort cambió qué plugins están habilitados (tests/test_loot_integridad_de_activos.py).
+        "active_plugins_changed",
     }
     assert {s.value for s in LootExecutionWitnessState} == {
         "fresh",
@@ -373,7 +375,11 @@ async def test_t2_no_change_sin_tocar_archivos_es_exito(lock_manager, snapshot_m
     assert res["message"] == ""
     assert "ya estaba ordenado" in res["outcome_detail"]
     assert res["rolled_back"] is False
-    assert res["verification"] == {"execution_witness": "fresh", "load_order_rewritten": False}
+    assert res["verification"] == {
+        "execution_witness": "fresh",
+        "load_order_rewritten": False,
+        "active_plugins_preserved": True,
+    }
     assert plugins.read_bytes() == _PLUGINS_ORIGINAL
     assert plugins.stat().st_mtime_ns == mtime_antes
 
@@ -526,7 +532,13 @@ async def test_t10_reescritura_solo_metadata_es_no_change(lock_manager, snapshot
     assert res["rolled_back"] is False
 
 
-async def test_t11_cambio_de_activacion_es_changed(lock_manager, snapshot_manager, tmp_path) -> None:  # noqa: ANN001
+async def test_t11_cambio_de_activacion_es_fail_y_revierte(lock_manager, snapshot_manager, tmp_path) -> None:  # noqa: ANN001
+    """C1: antes este test congelaba el defecto («desactivar un plugin = CHANGED»).
+
+    ``--auto-sort`` sólo reordena; un cambio de activación es lo que libloadorder
+    produce cuando LOOT no ve un plugin (visibilidad USVFS parcial) y nunca un
+    éxito. Detalle y evidencia en ``tests/test_loot_integridad_de_activos.py``.
+    """
     resolver, plugins, _ = _load_order(tmp_path)
 
     def desactivar() -> None:
@@ -535,7 +547,10 @@ async def test_t11_cambio_de_activacion_es_changed(lock_manager, snapshot_manage
     svc = _servicio(lock_manager, snapshot_manager, _runner(desactivar, resultado=_ok()), resolver)
     res = await svc.sort_load_order()
 
-    assert res["outcome"] == "changed"
+    assert res["outcome"] == "fail"
+    assert res["failure_reason"] == "active_plugins_changed"
+    assert res["rolled_back"] is True
+    assert plugins.read_bytes() == _PLUGINS_ORIGINAL
 
 
 async def test_t12_cambio_de_orden_en_loadorder_es_changed(lock_manager, snapshot_manager, tmp_path) -> None:  # noqa: ANN001

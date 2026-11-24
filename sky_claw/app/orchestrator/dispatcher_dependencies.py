@@ -91,7 +91,6 @@ def build_preview_chain_service_provider(
 
     def provide() -> ChainPreviewService:
         from sky_claw.app.orchestrator.preview.chain_preview_service import ChainPreviewService
-        from sky_claw.local.loot.cli import LOOTConfig, LOOTRunner
         from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer
         from sky_claw.local.xedit.runner import XEditRunner
 
@@ -100,11 +99,8 @@ def build_preview_chain_service_provider(
         if game_path is None or xedit_path is None:
             raise RuntimeError("Cannot preview the chain: SKYRIM_PATH and XEDIT_PATH must be configured.")
 
-        loot_exe = path_resolver.get_loot_exe() or pathlib.Path("loot.exe")
-        loot_runner = LOOTRunner(
-            LOOTConfig(loot_exe=loot_exe, game_path=game_path),
-            path_validator=path_validator,
-        )
+        # A3: el preview no construye runner de LOOT (era un LOOT a ciegas, sin
+        # broker ni data root aislado); la etapa LOOT usa el orden actual.
         xedit_runner = XEditRunner(
             xedit_path=xedit_path,
             game_path=game_path,
@@ -117,7 +113,6 @@ def build_preview_chain_service_provider(
             path_resolver=path_resolver,
             path_validator=path_validator,
             event_bus=event_bus,
-            loot_runner=loot_runner,
             xedit_runner=xedit_runner,
             conflict_analyzer=ConflictAnalyzer(),
             stage9_coordination=stage9_coordination,

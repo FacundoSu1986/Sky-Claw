@@ -1,14 +1,21 @@
 """Tests for ChainPreviewService — the dry-run of the LOOT->xEdit->DynDOLOD chain.
 
-The headline guarantee is **zero permanent mutation**: the chain runs for real
-inside a single ``SnapshotTransactionLock(force_rollback=True)`` and every target
-file is byte-identical afterwards.  We also verify rollback on a mid-stage crash
-and clean teardown (no orphan lock) on cancellation.
+The headline guarantee is **zero permanent mutation**: the chain runs inside a
+single ``SnapshotTransactionLock(force_rollback=True)`` and every target file is
+byte-identical afterwards.  We also verify rollback on a mid-stage crash and
+clean teardown (no orphan lock) on cancellation.
+
+A3: la etapa LOOT ya NO se ejecuta (era un LOOT a ciegas, sin broker ni data root
+aislado, desde una tool sin aprobación). Para seguir probando la red de
+force-rollback, los tests que necesitan una mutación la simulan desde la etapa
+xEdit (el analizador escribe el archivo), que es la otra etapa que corre de verdad.
 """
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
 import pathlib
 from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock
@@ -18,9 +25,9 @@ import pytest
 from sky_claw.app.core.event_bus import CoreEventBus
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
+from sky_claw.app.orchestrator.preview import chain_preview_service as chain_preview_module
 from sky_claw.app.orchestrator.preview.chain_preview_service import ChainPreviewService
 from sky_claw.app.security.path_validator import PathValidator
-from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.xedit.conflict_analyzer import (
     ConflictReport,
@@ -78,7 +85,6 @@ def _critical_report() -> ConflictReport:
 async def _build_service(
     tmp_path: pathlib.Path,
     *,
-    loot_sort: Callable[[], Awaitable[LOOTResult]],
     analyze: Callable[..., Awaitable[ConflictReport]],
     event_bus: AsyncMock,
 ) -> tuple[ChainPreviewService, DistributedLockManager]:
@@ -86,9 +92,6 @@ async def _build_service(
     await lock_mgr.initialize()
     snap_mgr = FileSnapshotManager(snapshot_dir=tmp_path / "snaps")
     await snap_mgr.initialize()
-
-    loot_runner = MagicMock()
-    loot_runner.sort = AsyncMock(side_effect=loot_sort)
 
     analyzer = MagicMock()
     analyzer.validate_load_order_limit = MagicMock(return_value=None)
@@ -103,7 +106,6 @@ async def _build_service(
         path_resolver=_resolver_without_paths(),
         path_validator=PathValidator(roots=[tmp_path]),
         event_bus=event_bus,
-        loot_runner=loot_runner,
         xedit_runner=MagicMock(),
         conflict_analyzer=analyzer,
     )
@@ -117,32 +119,26 @@ async def _build_service(
 
 @pytest.mark.asyncio
 async def test_preview_chain_no_mutation_and_full_manifest(tmp_path: pathlib.Path) -> None:
-    """The star test: the chain runs for real but every target file is reverted.
+    """The star test: every target file is reverted and the manifest is complete.
 
-    LOOT rewrites plugins.txt inside the transaction; on exit force_rollback
-    restores it byte-for-byte.  The manifest still captures the would-be diff,
-    conflicts, and LOD plan.
+    Una etapa que toca disco dentro de la transacción (simulada desde el scan de
+    xEdit) queda revertida byte a byte por el force_rollback. LOOT no se ejecuta
+    (A3): su etapa usa el orden actual y lo declara.
     """
     plugins_txt = tmp_path / "plugins.txt"
     plugins_txt.write_text("*B.esp\n*A.esm\n", encoding="utf-8")
     original_bytes = plugins_txt.read_bytes()
+    vistos: list[list[str]] = []
 
-    async def loot_sort() -> LOOTResult:
-        # LOOT reorders AND writes the file (the mutation we must revert).
-        plugins_txt.write_text("*A.esm\n*B.esp\n", encoding="utf-8")
-        return LOOTResult(
-            return_code=0,
-            sorted_plugins=["A.esm", "B.esp"],
-            warnings=["LOOT moved 2 plugins"],
-        )
-
-    async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
+    async def analyze(plugins: list[str], _runner: object) -> ConflictReport:
+        vistos.append(list(plugins))
+        plugins_txt.write_text("*A.esm\n*B.esp\n", encoding="utf-8")  # mutación a revertir
         return _critical_report()
 
     event_bus = AsyncMock(spec=CoreEventBus)
     event_bus.publish = AsyncMock()
 
-    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    service, lock_mgr = await _build_service(tmp_path, analyze=analyze, event_bus=event_bus)
     try:
         manifest = await service.preview_chain(
             workflow_id="wf-1",
@@ -160,10 +156,14 @@ async def test_preview_chain_no_mutation_and_full_manifest(tmp_path: pathlib.Pat
         assert manifest.stage_names() == ["loot", "xedit", "dyndolod"]
 
         loot_stage = manifest.stages[0]
-        assert loot_stage.executed_for_real is True
+        assert loot_stage.executed_for_real is False
+        assert loot_stage.files_touched == []
         assert loot_stage.load_order_diff is not None
         assert loot_stage.load_order_diff.before == ["B.esp", "A.esm"]
-        assert loot_stage.load_order_diff.after == ["A.esm", "B.esp"]
+        assert loot_stage.load_order_diff.after == ["B.esp", "A.esm"]
+        assert any("no se simula" in aviso for aviso in loot_stage.warnings)
+        # xEdit escanea el orden ACTUAL (no un orden que LOOT habría producido).
+        assert vistos == [["B.esp", "A.esm"]]
 
         xedit_stage = manifest.stages[1]
         assert xedit_stage.executed_for_real is False
@@ -187,27 +187,24 @@ async def test_preview_chain_no_mutation_and_full_manifest(tmp_path: pathlib.Pat
 
 @pytest.mark.asyncio
 async def test_preview_chain_reverts_when_a_stage_crashes(tmp_path: pathlib.Path) -> None:
-    """If xEdit scan crashes after LOOT wrote the order, the file is restored."""
+    """If a stage crashes after touching the load order, the file is restored."""
     plugins_txt = tmp_path / "plugins.txt"
     plugins_txt.write_text("*B.esp\n*A.esm\n", encoding="utf-8")
     original_bytes = plugins_txt.read_bytes()
 
-    async def loot_sort() -> LOOTResult:
-        plugins_txt.write_text("*A.esm\n*B.esp\n", encoding="utf-8")
-        return LOOTResult(return_code=0, sorted_plugins=["A.esm", "B.esp"])
-
     async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
+        plugins_txt.write_text("*A.esm\n*B.esp\n", encoding="utf-8")
         raise RuntimeError("xEdit scan exploded")
 
     event_bus = AsyncMock(spec=CoreEventBus)
     event_bus.publish = AsyncMock()
 
-    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    service, lock_mgr = await _build_service(tmp_path, analyze=analyze, event_bus=event_bus)
     try:
         with pytest.raises(RuntimeError, match="xEdit scan exploded"):
             await service.preview_chain(workflow_id="wf-2", load_order_file=plugins_txt)
 
-        # Load order restored despite LOOT having rewritten it before the crash.
+        # Load order restored despite the stage having rewritten it before the crash.
         assert plugins_txt.read_bytes() == original_bytes
         assert await lock_mgr.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
     finally:
@@ -238,14 +235,11 @@ async def test_preview_chain_cancellation_leaves_no_orphan(tmp_path: pathlib.Pat
     bytes_tras_loot: bytes | None = None
     bytes_durante_el_scan: bytes | None = None
 
-    async def loot_sort() -> LOOTResult:
-        nonlocal bytes_tras_loot
+    async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
+        nonlocal bytes_tras_loot, bytes_durante_el_scan
+        # La etapa escribe el load order (mutación viva al cancelar).
         plugins_txt.write_text("*A.esm\n*B.esp\n", encoding="utf-8")
         bytes_tras_loot = plugins_txt.read_bytes()
-        return LOOTResult(return_code=0, sorted_plugins=["A.esm", "B.esp"])
-
-    async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
-        nonlocal bytes_durante_el_scan
         bytes_durante_el_scan = plugins_txt.read_bytes()
         escaneo_iniciado.set()
         # Bloquea indefinidamente: el desenlace de este test es la cancelación.
@@ -255,7 +249,7 @@ async def test_preview_chain_cancellation_leaves_no_orphan(tmp_path: pathlib.Pat
     event_bus = AsyncMock(spec=CoreEventBus)
     event_bus.publish = AsyncMock()
 
-    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    service, lock_mgr = await _build_service(tmp_path, analyze=analyze, event_bus=event_bus)
     try:
         task = asyncio.create_task(service.preview_chain(workflow_id="wf-3", load_order_file=plugins_txt))
 
@@ -300,22 +294,18 @@ async def test_preview_chain_fails_fast_when_load_order_missing(tmp_path: pathli
     """
     missing = tmp_path / "does_not_exist.txt"
 
-    async def loot_sort() -> LOOTResult:
-        return LOOTResult(return_code=0, sorted_plugins=[])
-
     async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
         return _critical_report()
 
     event_bus = AsyncMock(spec=CoreEventBus)
     event_bus.publish = AsyncMock()
 
-    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    service, lock_mgr = await _build_service(tmp_path, analyze=analyze, event_bus=event_bus)
     try:
         with pytest.raises(FileNotFoundError):
             await service.preview_chain(workflow_id="wf-missing", load_order_file=missing)
 
-        # Nothing ran: no LOOT, no event, no orphan lock.
-        service._loot_runner.sort.assert_not_awaited()
+        # Nothing ran: no event, no orphan lock.
         event_bus.publish.assert_not_awaited()
         assert await lock_mgr.get_lock_info(LOAD_ORDER_RESOURCE_ID) is None
     finally:
@@ -329,16 +319,13 @@ async def test_preview_chain_event_payload_has_id(tmp_path: pathlib.Path) -> Non
     plugins_txt = tmp_path / "plugins.txt"
     plugins_txt.write_text("*A.esm\n", encoding="utf-8")
 
-    async def loot_sort() -> LOOTResult:
-        return LOOTResult(return_code=0, sorted_plugins=["A.esm"])
-
     async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
         return _critical_report()
 
     event_bus = AsyncMock(spec=CoreEventBus)
     event_bus.publish = AsyncMock()
 
-    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    service, lock_mgr = await _build_service(tmp_path, analyze=analyze, event_bus=event_bus)
     try:
         await service.preview_chain(workflow_id="wf-id", load_order_file=plugins_txt)
 
@@ -364,7 +351,6 @@ class TestLimitesConFlagsReales:
             path_resolver=resolver,
             path_validator=PathValidator(roots=[tmp_path]),
             event_bus=AsyncMock(),
-            loot_runner=MagicMock(),
             xedit_runner=MagicMock(),
             conflict_analyzer=analyzer,
         )
@@ -447,7 +433,6 @@ class TestLimitesConFlagsReales:
             path_resolver=resolver,
             path_validator=PathValidator(roots=[sandbox]),  # solo sandbox/ es válido
             event_bus=AsyncMock(),
-            loot_runner=MagicMock(),
             xedit_runner=MagicMock(),
             conflict_analyzer=analyzer,
         )
@@ -522,16 +507,13 @@ async def test_preview_xedit_adjunta_recomendaciones(tmp_path: pathlib.Path) -> 
     plugins_txt = tmp_path / "plugins.txt"
     plugins_txt.write_text("*A.esm\n", encoding="utf-8")
 
-    async def loot_sort() -> LOOTResult:
-        return LOOTResult(return_code=0, sorted_plugins=["A.esm"])
-
     async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
         return _report_con_recomendaciones()
 
     event_bus = AsyncMock(spec=CoreEventBus)
     event_bus.publish = AsyncMock()
 
-    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    service, lock_mgr = await _build_service(tmp_path, analyze=analyze, event_bus=event_bus)
     try:
         manifest = await service.preview_chain(workflow_id="wf-rec", load_order_file=plugins_txt)
 
@@ -566,9 +548,6 @@ async def test_preview_xedit_reconcilia_proposed_resolution_listas_niveladas(tmp
     plugins_txt = tmp_path / "plugins.txt"
     plugins_txt.write_text("*A.esm\n", encoding="utf-8")
 
-    async def loot_sort() -> LOOTResult:
-        return LOOTResult(return_code=0, sorted_plugins=["A.esm"])
-
     async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
         lvli = RecordConflict(
             form_id="00000010",
@@ -587,7 +566,7 @@ async def test_preview_xedit_reconcilia_proposed_resolution_listas_niveladas(tmp
     event_bus = AsyncMock(spec=CoreEventBus)
     event_bus.publish = AsyncMock()
 
-    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    service, lock_mgr = await _build_service(tmp_path, analyze=analyze, event_bus=event_bus)
     try:
         manifest = await service.preview_chain(workflow_id="wf-lvli", load_order_file=plugins_txt)
 
@@ -606,16 +585,13 @@ async def test_preview_xedit_sin_conflictos_recomendaciones_vacias(tmp_path: pat
     plugins_txt = tmp_path / "plugins.txt"
     plugins_txt.write_text("*A.esm\n", encoding="utf-8")
 
-    async def loot_sort() -> LOOTResult:
-        return LOOTResult(return_code=0, sorted_plugins=["A.esm"])
-
     async def analyze(_plugins: list[str], _runner: object) -> ConflictReport:
         return ConflictReport(total_conflicts=0, critical_conflicts=0, plugin_pairs=[])
 
     event_bus = AsyncMock(spec=CoreEventBus)
     event_bus.publish = AsyncMock()
 
-    service, lock_mgr = await _build_service(tmp_path, loot_sort=loot_sort, analyze=analyze, event_bus=event_bus)
+    service, lock_mgr = await _build_service(tmp_path, analyze=analyze, event_bus=event_bus)
     try:
         manifest = await service.preview_chain(workflow_id="wf-sin", load_order_file=plugins_txt)
 
@@ -624,3 +600,33 @@ async def test_preview_xedit_sin_conflictos_recomendaciones_vacias(tmp_path: pat
         assert xedit_stage.conflicts.recommendations == []
     finally:
         await lock_mgr.close()
+
+
+# ---------------------------------------------------------------------------
+# A3: el preview no puede lanzar LOOT
+# ---------------------------------------------------------------------------
+
+
+def test_el_preview_no_tiene_runner_de_loot() -> None:
+    """Ni parámetro ni referencia: el preview no puede construir ni llamar un LOOT."""
+    assert "loot_runner" not in inspect.signature(ChainPreviewService.__init__).parameters
+    arbol = ast.parse(pathlib.Path(chain_preview_module.__file__).read_text(encoding="utf-8"))
+    nombres = {n.id for n in ast.walk(arbol) if isinstance(n, ast.Name)} | {
+        n.attr for n in ast.walk(arbol) if isinstance(n, ast.Attribute)
+    }
+    assert not nombres & {"LOOTRunner", "LOOTConfig", "_loot_runner", "BrokeredLootRunner"}
+    importados = {
+        alias.name
+        for n in ast.walk(arbol)
+        if isinstance(n, ast.ImportFrom) and n.module and "loot" in n.module
+        for alias in n.names
+    }
+    assert importados <= {"LOAD_ORDER_RESOURCE_ID"}
+
+
+def test_el_provider_del_preview_no_construye_un_loot() -> None:
+    from sky_claw.app.orchestrator import dispatcher_dependencies
+
+    arbol = ast.parse(pathlib.Path(dispatcher_dependencies.__file__).read_text(encoding="utf-8"))
+    nombres = {n.id for n in ast.walk(arbol) if isinstance(n, ast.Name)}
+    assert "LOOTRunner" not in nombres
