@@ -16,6 +16,7 @@ import json
 import os
 import pathlib
 import re
+import stat
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -266,18 +267,23 @@ def _asegurar_bindings_mic_win32() -> None:
     _kernel32_mic = krn
 
 
+def _longitud_utf16(texto: str) -> int:
+    """Devuelve el número de unidades de código UTF-16 (límite real de MAX_PATH en Win32)."""
+    return len(texto.encode("utf-16-le")) // 2
+
+
 def _ruta_para_win32_security_info(ruta: pathlib.Path) -> str:
-    """Normaliza rutas largas (>= 248 chars) con prefijo extendido ``\\\\?\\`` para Win32.
+    """Normaliza rutas largas (>= 248 unidades UTF-16) con prefijo extendido ``\\\\?\\`` para Win32.
 
     En hosts Windows con ``LongPathsEnabled=0``, ``GetNamedSecurityInfoW`` sin
     prefijo extendido puede devolver ``ERROR_PATH_NOT_FOUND`` sobre rutas válidas
     que superan ``MAX_PATH`` (260). Las rutas cortas se conservan sin alterar.
     """
     cruda = os.fspath(ruta)
-    if cruda.startswith("\\\\?\\") or len(cruda) < _WIN32_LONG_PATH_THRESHOLD:
+    if cruda.startswith("\\\\?\\"):
         return cruda
-    absoluta = os.path.abspath(cruda).replace("/", "\\")
-    if absoluta.startswith("\\\\?\\") or len(absoluta) < _WIN32_LONG_PATH_THRESHOLD:
+    absoluta = os.path.normpath(os.path.abspath(cruda))
+    if absoluta.startswith("\\\\?\\") or _longitud_utf16(absoluta) < _WIN32_LONG_PATH_THRESHOLD:
         return cruda
     if absoluta.startswith("\\\\"):
         return "\\\\?\\UNC\\" + absoluta[2:]
@@ -369,8 +375,14 @@ def _leer_aces_etiqueta_mic(
         # con LongPathsEnabled=0 o error transitorio de resolución), jamás reportar MISSING.
         try:
             os.lstat(ruta_win32)
-        except OSError:
+        except FileNotFoundError:
             return (_EstadoLecturaMic.MISSING, (), f"ruta inexistente durante lectura MIC: '{ruta}'")
+        except OSError as exc:
+            return (
+                _EstadoLecturaMic.INDETERMINATE,
+                (),
+                f"os.lstat falló durante comprobación de existencia MIC en '{ruta}': {exc}",
+            )
         return (
             _EstadoLecturaMic.INDETERMINATE,
             (),
@@ -1562,8 +1574,24 @@ def verificar_runtime_clone(
             if clave_exe not in vistos_exe:
                 vistos_exe.add(clave_exe)
                 ejecutables_rel.append((crit.rel_path, True))
-    if "skse64_loader.exe" not in vistos_exe and (clone_root / "skse64_loader.exe").is_file():
-        ejecutables_rel.append(("skse64_loader.exe", False))
+    if "skyrimse.exe" not in vistos_exe:
+        vistos_exe.add("skyrimse.exe")
+        ejecutables_rel.append(("SkyrimSE.exe", True))
+    if "skse64_loader.exe" not in vistos_exe:
+        ruta_loader = clone_root / "skse64_loader.exe"
+        try:
+            st_loader = os.lstat(ruta_loader)
+        except FileNotFoundError:
+            st_loader = None
+        except OSError as exc:
+            return GenerationVerificationResult(
+                state=GenerationVerificationState.INDETERMINATE,
+                message=f"no se pudo comprobar presencia de 'skse64_loader.exe' para inspección MIC: {exc}",
+                recorded=gen_meta,
+                observed_identity=obs.runtime_identity,
+            )
+        if st_loader is not None and stat.S_ISREG(st_loader.st_mode):
+            ejecutables_rel.append(("skse64_loader.exe", False))
 
     mic_verificado_en_windows = bool(ejecutables_rel)
     for rel_exe, es_critico in ejecutables_rel:

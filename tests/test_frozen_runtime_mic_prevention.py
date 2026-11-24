@@ -978,16 +978,18 @@ class TestClasificacionMicUnitaria:
     def test_r2_rutas_largas_prefijo_extendido_y_contradiccion_rc3_devuelve_indeterminate(
         self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Arrange: probar formateo de ruta larga Win32 (>= 248 chars) y UNC
+        # Arrange: probar formateo de ruta larga Win32 (>= 248 unidades UTF-16, incl. pares sustitutos)
         ruta_corta = pathlib.Path("G:/Modding/SkyrimSE.exe")
         ruta_larga = pathlib.Path("G:/" + "/".join(["segmento_largo_de_directorio"] * 10) + "/SkyrimSE.exe")
+        ruta_surrogates = pathlib.Path("G:/" + ("😀" * 130) + "/SkyrimSE.exe")  # < 248 chars Python, > 260 UTF-16
         assert len(str(ruta_larga)) >= 260
+        assert len(str(ruta_surrogates)) < 248
         assert clones_mod._ruta_para_win32_security_info(ruta_corta) == str(ruta_corta)
-        extendida = clones_mod._ruta_para_win32_security_info(ruta_larga)
-        assert extendida.startswith("\\\\?\\")
+        assert clones_mod._ruta_para_win32_security_info(ruta_larga).startswith("\\\\?\\")
+        assert clones_mod._ruta_para_win32_security_info(ruta_surrogates).startswith("\\\\?\\")
 
         if sys.platform == "win32":
-            # Contradicción: el archivo existe en disco pero GetNamedSecurityInfoW responde ERROR_PATH_NOT_FOUND (3)
+            # Contradicción 1: el archivo existe en disco pero GetNamedSecurityInfoW responde ERROR_PATH_NOT_FOUND (3)
             exe = tmp_path / "existente.exe"
             exe.write_bytes(b"MZ")
             clones_mod._asegurar_bindings_mic_win32()
@@ -998,6 +1000,15 @@ class TestClasificacionMicUnitaria:
             assert res.status is MicEvaluationStatus.INDETERMINATE, (
                 "no debe clasificar como MISSING un archivo existente cuando Win32 devuelve rc=3"
             )
+
+            # Contradicción 2: os.lstat lanza PermissionError (distinto de FileNotFoundError) -> INDETERMINATE
+            monkeypatch.setattr(
+                clones_mod.os,
+                "lstat",
+                lambda *_a, **_k: (_ for _ in ()).throw(PermissionError("acceso denegado transitorio")),
+            )
+            res_perm = evaluar_etiqueta_mic_archivo(exe)
+            assert res_perm.status is MicEvaluationStatus.INDETERMINATE
 
 
 # ── 2. Integración en provisión, recuperación, verificación y consumidores ─
@@ -1248,7 +1259,7 @@ class TestPrevencionMicEnFlujosDeClone:
         chk = next(c for c in preflight.checks if c.check is PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY)
         assert chk.status is PreflightCheckStatus.FAIL
         assert "low" in chk.detail.lower()
-        with pytest.raises(EvidenciaTransicionError):
+        with pytest.raises(EvidenciaTransicionError, match="clone_physical_integrity_invalid"):
             derivar_evidencia_transicion(
                 storage_root=storage,
                 mo2_instance_dir=mo2_dir,
@@ -1516,13 +1527,17 @@ class TestIntegracionWindowsRealMic:
         for f in (f_untrusted, f_med, f_med_nwnrnx, f_sin_label):
             f.write_bytes(b"MZ")
 
-        # Ruta larga (> 265 caracteres) creada vía prefijo extendido Win32
-        profundo = tmp_path / ("a" * 60) / ("b" * 60) / ("c" * 60)
+        # Ruta larga (>= 270 caracteres independientemente de la longitud de tmp_path en CI)
+        profundo = tmp_path
+        indice = 0
+        while len(str(profundo / "SkyrimSE.exe")) < 270:
+            profundo = profundo / (f"d{indice}_" + "x" * 50)
+            indice += 1
         ext_profundo = pathlib.Path("\\\\?\\" + str(profundo))
         ext_profundo.mkdir(parents=True, exist_ok=True)
         (ext_profundo / "SkyrimSE.exe").write_bytes(b"MZ")
         f_larga = profundo / "SkyrimSE.exe"
-        assert len(str(f_larga)) >= 265
+        assert len(str(f_larga)) >= 270
 
         # S-1-16-0 = Untrusted; S-1-16-8192 = Medium explícito (NW y NW|NR|NX)
         _aplicar_sacl_sddl_en_tmp(f_untrusted, "S:(ML;;NW;;;S-1-16-0)")
