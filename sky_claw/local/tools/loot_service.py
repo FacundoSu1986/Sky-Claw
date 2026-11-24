@@ -46,19 +46,29 @@ from sky_claw.app.db.locks import (
     LockAcquisitionError,
     SnapshotTransactionLock,
 )
+from sky_claw.local.loot.binary_version import LootBinaryVersionError, read_loot_binary_version
 from sky_claw.local.loot.cli import (
+    DEFAULT_LOOT_INTERNAL_GAME_ID,
     LOOTConfig,
+    LOOTGameIdError,
     LOOTNotFoundError,
     LOOTPreconditionError,
     LOOTRunner,
     LOOTTimeoutError,
     LOOTWorkerProtocolError,
+    to_loot_cli_game_id,
 )
 from sky_claw.local.loot.data_root import (
     ensure_loot_data_path_exists,
     resolve_loot_data_path,
 )
 from sky_claw.local.loot.debug_log import LootLogFindings, read_loot_log_findings
+from sky_claw.local.loot.masterlist_provision import (
+    LootMasterlistError,
+    MasterlistFetcher,
+    MasterlistProvisionReport,
+    provision_masterlist,
+)
 from sky_claw.local.loot.outcome import (
     ActivePluginsState,
     LoadOrderSemanticState,
@@ -170,6 +180,18 @@ def _loot_data_path_del_runner(runner: object) -> pathlib.Path | None:
     """
     valor = getattr(runner, "loot_data_path", None)
     return valor if isinstance(valor, pathlib.Path) else None
+
+
+def _loot_exe_del_runner(runner: object) -> pathlib.Path | None:
+    """``LOOT.exe`` del runner (``LOOTRunner``/``BrokeredLootRunner.loot_exe``); ``Path`` real o ``None``."""
+    valor = getattr(runner, "loot_exe", None)
+    return valor if isinstance(valor, pathlib.Path) else None
+
+
+def _juego_del_runner(runner: object) -> str:
+    """Id interno del juego del runner; el default si no lo declara como ``str``."""
+    valor = getattr(runner, "game", None)
+    return valor if isinstance(valor, str) else DEFAULT_LOOT_INTERNAL_GAME_ID
 
 
 def _campos_del_log(hallazgos: LootLogFindings | None) -> dict[str, Any]:
@@ -487,8 +509,12 @@ class LootSortingService:
         vfs_broker: VfsBrokerProtocol | None = None,
         vfs_instance_id: str = "portable-main",
         require_vfs: bool = False,
+        masterlist_fetcher: MasterlistFetcher | None = None,
     ) -> None:
         self._lock_manager = lock_manager
+        # PR-B: egress del daemon para proveer masterlist/prelude (updateMasterlist=false).
+        # None = superficie sin red cableada: sólo vale una copia previa vigente.
+        self._masterlist_fetcher = masterlist_fetcher
         self._snapshot_manager = snapshot_manager
         self._path_resolver = path_resolver
         self._path_validator = path_validator
@@ -994,6 +1020,7 @@ class LootSortingService:
         loot_data_path = _loot_data_path_del_runner(runner)
         inicio_corrida: float | None = None
         hallazgos_log: LootLogFindings | None = None
+        informe_masterlist: MasterlistProvisionReport | None = None
 
         # Referencia al lock fuera del with: rolled_back se deriva del resultado
         # REAL del rollback (tx.rollback_completed) — un restore fallido en la
@@ -1090,6 +1117,11 @@ class LootSortingService:
                             "de correr LOOT: sin esa evidencia el sort no se ejecutó.",
                         ),
                     ) from exc
+                # PR-B: con updateMasterlist=false LOOT ordena con lo que haya en el
+                # data root; sin masterlist lo haría SIN metadatos y en silencio. Se
+                # provee ANTES del manifiesto: sin él no hay corrida que registrar.
+                if loot_data_path is not None:
+                    informe_masterlist = await self._provisionar_masterlist(runner, loot_data_path)
                 # T-28: el "antes" del informe se lee DENTRO del lock, en el mismo
                 # dominio de serialización que el "después" (review adversarial
                 # #495). Best-effort: si no se puede leer, el informe no lleva diff.
@@ -1314,6 +1346,11 @@ class LootSortingService:
             response["failure_reason"] = verdict.failure_reason.value
         response["rollback_vetoed"] = False
         response.update(_campos_del_log(hallazgos_log))
+        if informe_masterlist is not None:
+            response["masterlist"] = {
+                "acciones": dict(informe_masterlist.acciones),
+                "avisos": list(informe_masterlist.avisos),
+            }
         _aplicar_recuperacion(response, recuperacion)
         # Superficie de los warnings del preflight (T-30·3): un preflight no-verde
         # que NO bloquea (amarillo, p.ej. overwrite sucio) igual debe llegar al
@@ -1478,6 +1515,28 @@ class LootSortingService:
         if loot_data_path is None or inicio_corrida is None:
             return None
         return await asyncio.to_thread(read_loot_log_findings, loot_data_path, desde=inicio_corrida)
+
+    async def _provisionar_masterlist(self, runner: object, loot_data_path: pathlib.Path) -> MasterlistProvisionReport:
+        """Provee masterlist + prelude de la rama del ``LOOT.exe`` del runner (PR-B), o falla cerrado."""
+        loot_exe = _loot_exe_del_runner(runner)
+        try:
+            if loot_exe is None:
+                raise LootMasterlistError("el runner no declara su LOOT.exe: no se puede elegir la rama del masterlist")
+            loot_version = await asyncio.to_thread(read_loot_binary_version, loot_exe)
+            return await provision_masterlist(
+                loot_data_path,
+                game_folder=to_loot_cli_game_id(_juego_del_runner(runner)),
+                loot_version=loot_version,
+                fetch=self._masterlist_fetcher,
+            )
+        except (LootMasterlistError, LootBinaryVersionError, LOOTGameIdError) as exc:
+            raise _LootSortFailedError(
+                LOOTResult(return_code=-1, errors=[]),
+                LootSortVerdict.fail(
+                    LootSortFailureReason.PRECONDITION_FAILED,
+                    f"Masterlist de LOOT no disponible: {exc}. LOOT no se ejecutó.",
+                ),
+            ) from exc
 
     async def _cerrar_journal_tras_fallo(
         self,
