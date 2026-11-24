@@ -309,6 +309,9 @@ def _preparar_entorno_git(trabajo: pathlib.Path) -> dict[str, str]:
 
     Un HOME privado y vacío (sin ``.netrc``/``_netrc`` del usuario que autentique), sin config de
     sistema ni global (un ``url.insteadOf`` podría redirigir github.com), sin prompts.
+    ``GIT_CEILING_DIRECTORIES`` en el padre de *trabajo*: si cae dentro de un checkout, git no sube a
+    buscar su ``.git`` ni carga su config (ls-remote corre en *trabajo*, que no es un repo; el fetch
+    usa su propio ``trabajo/repo``, que se encuentra antes del techo).
     """
     hogar = trabajo / "home"
     config_global = trabajo / "gitconfig-vacio"
@@ -326,6 +329,7 @@ def _preparar_entorno_git(trabajo: pathlib.Path) -> dict[str, str]:
             "GIT_CONFIG_GLOBAL": str(config_global),
             "GIT_TERMINAL_PROMPT": "0",
             "GCM_INTERACTIVE": "never",
+            "GIT_CEILING_DIRECTORIES": str(trabajo.parent),
         }
     )
     return env
