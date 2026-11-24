@@ -32,6 +32,7 @@ import os
 import pathlib
 import shutil
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -47,9 +48,10 @@ from sky_claw.local.tools.synthesis_prebuild import (
     argumentos_dotnet_build_patcher,
     argumentos_dotnet_restore_patcher,
     contenido_nuget_config_aprobado,
+    validar_propiedades_msbuild,
     verificar_apphost_sin_cet,
 )
-from sky_claw.local.tools.synthesis_runner import construir_entorno_dotnet
+from sky_claw.local.tools.synthesis_runner import con_perfil_privado, construir_entorno_dotnet
 from sky_claw.local.tools.synthesis_shim import ShimConfigError, hash_arbol, hilo_hasta_terminar, validar_dotnet_x64
 
 if TYPE_CHECKING:
@@ -107,8 +109,13 @@ def _identidad_toolchain(dotnet: pathlib.Path) -> str:
     return f"{os.path.normcase(str(dotnet))}|{'|'.join(versiones)}"
 
 
-def _clave_de_cache(arbol_fuentes: str, proyecto: PurePosixPath, toolchain: str) -> str:
+def _clave_de_cache(
+    arbol_fuentes: str, proyecto: PurePosixPath, toolchain: str, propiedades: tuple[tuple[str, str], ...] = ()
+) -> str:
     material = f"{_ESQUEMA_CACHE}\0{arbol_fuentes}\0{proyecto.as_posix().casefold()}\0{toolchain}"
+    if propiedades:
+        # Otra propiedad, otro binario: no puede compartir entrada (sin propiedades la clave no cambia).
+        material += "\0" + "\0".join(f"{clave}={valor}" for clave, valor in propiedades)
     return hashlib.sha256(material.encode()).hexdigest()[:32]
 
 
@@ -192,8 +199,10 @@ async def _compilar_y_publicar(
     dotnet: pathlib.Path,
     timeout_s: float,
     max_output_bytes: int,
+    propiedades: tuple[tuple[str, str], ...] = (),
 ) -> tuple[str, str]:
     fuentes = trabajo / "fuentes"
+    hogar = trabajo / "home"
     publicar = trabajo / "publicar"
     salida = publicar / "salida"
     temporal = trabajo / "tmp"
@@ -202,6 +211,7 @@ async def _compilar_y_publicar(
     def _copiar() -> bool:
         exigir_arbol_copiable_sin_reparse(raiz_fuentes)
         temporal.mkdir(parents=True)
+        hogar.mkdir()
         shutil.copytree(raiz_fuentes, fuentes, symlinks=True)
         configfile.write_text(contenido_nuget_config_aprobado(), encoding="utf-8")
         return hash_arbol(fuentes) == arbol_fuentes
@@ -218,12 +228,13 @@ async def _compilar_y_publicar(
             f"Las fuentes de {raiz_fuentes} cambiaron mientras se preparaba el build; se aborta sin publicar."
         )
 
-    env = construir_entorno_dotnet(dotnet_root=dotnet.parent, temp_dir=temporal)
+    # Perfil privado: el build no ve (ni borra) el perfil real del usuario; ver con_perfil_privado.
+    env = con_perfil_privado(construir_entorno_dotnet(dotnet_root=dotnet.parent, temp_dir=temporal), hogar)
     env["NUGET_PACKAGES"] = str(cache_raiz / "nuget")
     proyecto_copia = fuentes / proyecto
     for argumentos in (
         argumentos_dotnet_restore_patcher(proyecto_copia, configfile=configfile),
-        argumentos_dotnet_build_patcher(proyecto_copia, salida=salida),
+        argumentos_dotnet_build_patcher(proyecto_copia, salida=salida, propiedades=dict(propiedades)),
     ):
         await _correr_dotnet(
             dotnet,
@@ -281,6 +292,7 @@ async def compilar_patcher_local(
     hitl: HITLGuard | None,
     timeout_s: float,
     max_output_bytes: int,
+    propiedades: Mapping[str, str] | None = None,
 ) -> PatcherCompilado:
     """Deja el patcher de *proyecto_rel* (dentro de *raiz_fuentes*) compilado y verificado.
 
@@ -299,6 +311,10 @@ async def compilar_patcher_local(
         raise CompilacionPatcherError(f"La caché debe ser una ruta absoluta: {cache_raiz}")
     proyecto = _validar_proyecto(raiz_fuentes, proyecto_rel)
     try:
+        propiedades_validas = validar_propiedades_msbuild(propiedades)
+    except ValueError as exc:
+        raise CompilacionPatcherError(str(exc)) from exc
+    try:
         arbol_fuentes = await asyncio.to_thread(hash_arbol, raiz_fuentes)
     except ShimConfigError as exc:
         raise CompilacionPatcherError(str(exc)) from exc
@@ -307,7 +323,7 @@ async def compilar_patcher_local(
         toolchain = await asyncio.to_thread(_identidad_toolchain, dotnet)
     except OSError as exc:
         raise CompilacionPatcherError(f"No se pudo leer el toolchain de {dotnet}: {exc}") from exc
-    final = cache_raiz / _clave_de_cache(arbol_fuentes, proyecto, toolchain)
+    final = cache_raiz / _clave_de_cache(arbol_fuentes, proyecto, toolchain, propiedades_validas)
     if os.path.lexists(final):
         return await asyncio.to_thread(_verificar_salida, final)
 
@@ -341,6 +357,7 @@ async def compilar_patcher_local(
             dotnet=dotnet,
             timeout_s=timeout_s,
             max_output_bytes=max_output_bytes,
+            propiedades=propiedades_validas,
         )
     except _YaPublicadoError:
         # Otro build del mismo patcher publicó primero: su entrada se revalida y se usa.

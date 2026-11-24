@@ -36,6 +36,8 @@ MUTADORES_DE_INSTALACION = frozenset(
         "ensure_skse",
         "ensure_ngio",
         "ensure_community_shaders",
+        # PR-3i (ADR 0019 §2.2): compila el Synthesis CLI y lo copia a install_dir.
+        "ensure_synthesis_cli",
         "_ensure_github_mod",
         "_ensure_nexus_mod",
     }
@@ -53,6 +55,7 @@ RECETAS_DE_LOCK = {
     "ensure_skse": "game_dir",
     "ensure_ngio": "delega (mod_dir de sus componentes)",
     "ensure_community_shaders": "delega (mod_dir de sus componentes)",
+    "ensure_synthesis_cli": "install_dir",
     "_ensure_github_mod": "mod_dir",
     "_ensure_nexus_mod": "mod_dir",
 }

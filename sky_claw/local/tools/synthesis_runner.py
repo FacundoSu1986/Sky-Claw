@@ -149,6 +149,21 @@ _is_x86_dotnet_path = is_x86_dotnet_path
 # =============================================================================
 
 
+#: Variables que ubican el perfil del usuario. Un proceso de la Fase 1 (git, restore, build) no las ve
+#: con su valor real: el ``Directory.Build.targets`` de Synthesis 0.36.6 corre
+#: ``RD /S /Q "%USERPROFILE%\\.nuget\\packages\\$(PackageId)"`` en cada build, y un ``.netrc`` del
+#: usuario autenticaría un fetch.
+VARIABLES_DE_PERFIL = frozenset({"HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "DOTNET_CLI_HOME"})
+
+
+def con_perfil_privado(env: dict[str, str], hogar: pathlib.Path) -> dict[str, str]:
+    """Reemplaza el perfil del usuario por *hogar* (privado y vacío) en *env*, sin importar mayúsculas."""
+    for clave in [k for k in env if k.upper() in VARIABLES_DE_PERFIL]:
+        del env[clave]
+    env.update({"HOME": str(hogar), "USERPROFILE": str(hogar), "DOTNET_CLI_HOME": str(hogar)})
+    return env
+
+
 def construir_entorno_dotnet(
     *,
     dotnet_root: pathlib.Path | None,
