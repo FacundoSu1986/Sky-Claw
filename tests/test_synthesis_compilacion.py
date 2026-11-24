@@ -442,3 +442,64 @@ async def test_un_fallo_no_deja_carpetas_de_trabajo(
             tmp_path, _Hitl(Decision.APPROVED), _Dotnet(rc_restore=rc_restore, rc_build=rc_build), monkeypatch
         )
     assert not list((tmp_path / "cache").glob(".trabajo-*"))
+
+
+async def test_el_build_no_ve_el_perfil_real_del_usuario(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    r"""PR-3i: el Directory.Build.targets de Synthesis 0.36.6 borra %USERPROFILE%\.nuget\packages\<id>.
+
+    Restore, build y msbuild corren con un perfil privado dentro de la carpeta de trabajo: el perfil
+    real nunca llega a un proceso de la Fase 1.
+    """
+    perfil_real = str(tmp_path / "Users" / "real")
+    for clave in ("USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH"):
+        monkeypatch.setenv(clave, perfil_real)
+    dotnet = _Dotnet()
+    await _compilar(tmp_path, _Hitl(Decision.APPROVED), dotnet, monkeypatch)
+    for llamada in dotnet.llamadas:
+        env = llamada["env"]
+        assert perfil_real not in env.values()
+        trabajo = pathlib.Path(env["USERPROFILE"]).parent
+        assert trabajo.parent == tmp_path / "cache" and trabajo.name.startswith(".trabajo-")
+        assert env["HOME"] == env["DOTNET_CLI_HOME"] == env["USERPROFILE"]
+        assert not {k.upper() for k in env} & {"HOMEDRIVE", "HOMEPATH"}
+
+
+async def test_las_propiedades_llegan_al_build_y_cambian_la_clave_de_cache(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sc, "run_capture", _Dotnet())
+    base = await _compilar(tmp_path, _Hitl(Decision.APPROVED), _Dotnet(), monkeypatch)
+    dotnet = _Dotnet()
+    monkeypatch.setattr(sc, "run_capture", dotnet)
+    con_props = await sc.compilar_patcher_local(
+        tmp_path / "usuario" / "MiSolucion",
+        "MiPatcher/MiPatcher.csproj",
+        cache_raiz=tmp_path / "cache",
+        dotnet=tmp_path / "dotnet" / "dotnet.exe",
+        hitl=_Hitl(Decision.APPROVED),  # type: ignore[arg-type]
+        timeout_s=60,
+        max_output_bytes=1_000_000,
+        propiedades={"Version": "0.36.6"},
+    )
+    assert con_props.cache_hit is False and con_props.exe.parents[1] != base.exe.parents[1]
+    build = next(ll["args"] for ll in dotnet.llamadas if ll["args"][1] == "build")
+    assert "-p:Version=0.36.6" in build
+
+
+async def test_una_propiedad_no_admitida_falla_sin_red(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hitl, dotnet = _Hitl(Decision.APPROVED), _Dotnet()
+    monkeypatch.setattr(sc, "run_capture", dotnet)
+    with pytest.raises(sc.CompilacionPatcherError, match="no admitida"):
+        await sc.compilar_patcher_local(
+            _fuentes(tmp_path),
+            "MiPatcher/MiPatcher.csproj",
+            cache_raiz=tmp_path / "cache",
+            dotnet=_dotnet_exe(tmp_path),
+            hitl=hitl,  # type: ignore[arg-type]
+            timeout_s=60,
+            max_output_bytes=1_000_000,
+            propiedades={"CETCompat": "true"},
+        )
+    assert hitl.pedidos == [] and dotnet.llamadas == []

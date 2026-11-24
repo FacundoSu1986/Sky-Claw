@@ -32,6 +32,7 @@ def pe_sintetico(
     apps: tuple[bytes, ...] = (),
     dir_debug: tuple[int, int] | None = None,
     maquina: int = 0x8664,
+    subsistema: int = 3,
 ) -> bytes:
     """PE32+ mínimo que pefile parsea, con directorio de debug y marcadores de apphost."""
     seccion = bytearray()
@@ -88,7 +89,7 @@ def pe_sintetico(
         va + ((tam_raw + 0xFFF) & ~0xFFF),
         0x200,
         0,
-        3,
+        subsistema,  # 3 = CUI (consola), 2 = GUI
         0x8160,
         0x100000,
         0x1000,

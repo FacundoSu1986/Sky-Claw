@@ -537,6 +537,51 @@ def _validar_artifact_skse_nexus(file_info: FileInfo) -> None:
 # Dependencias del precache de grass (SOP §2.8): NGIO-NG desde GitHub; Address
 # Library y Grass Cache Helper NG desde Nexus. Los nombres son los directorios
 # que ensure_ngio crea bajo mods/ (el orquestador los activa en modlist.txt).
+#: Synthesis CLI (ADR 0019 §2.2, PR-3i): se compila LOCAL desde el tag pineado. No se redistribuye un
+#: binario (Synthesis es GPL-3.0; Sky-Claw es MIT y solo lo invoca como proceso externo).
+SYNTHESIS_CLI_REPOSITORIO = "https://github.com/Mutagen-Modding/Synthesis"
+SYNTHESIS_CLI_VERSION = "0.36.6"
+SYNTHESIS_CLI_COMMIT = "d8150fb29d544216081e37e2704e56e3b48460f7"
+SYNTHESIS_CLI_PROYECTO = "Synthesis.Bethesda.CLI/Synthesis.Bethesda.CLI.csproj"
+SYNTHESIS_CLI_EXE = "Synthesis.Bethesda.CLI.exe"
+#: El árbol cacheado no trae ``.git``: ``GitVersion.MsBuild`` se apaga y la versión se fija al tag.
+SYNTHESIS_CLI_PROPIEDADES_MSBUILD = {"DisableGitVersionTask": "true", "Version": SYNTHESIS_CLI_VERSION}
+_SYNTHESIS_CLI_TIMEOUT_S = 900.0
+_SYNTHESIS_CLI_MAX_SALIDA_BYTES = 50_000_000
+
+
+def _copiar_cli_verificado(salida: pathlib.Path, install_dir: pathlib.Path, salida_sha256: str) -> pathlib.Path:
+    """Publica en *install_dir* una copia de la salida verificada de la caché, o nada.
+
+    La copia va primero a un staging hermano (mismo volumen) y se compara por hash ahí; recién
+    entonces se promueve con un rename. Una copia cortada a la mitad (disco lleno, antivirus) nunca
+    deja en *install_dir* un ``Synthesis.Bethesda.CLI.exe`` sin sus DLL que la próxima llamada
+    aceptaría como "ya instalado".
+    """
+    from sky_claw.app.security.links import exigir_arbol_copiable_sin_reparse
+    from sky_claw.local.tools.synthesis_shim import hash_arbol
+
+    if install_dir.exists() and any(install_dir.iterdir()):
+        raise ToolInstallError(
+            f"{install_dir} tiene archivos pero no {SYNTHESIS_CLI_EXE}: vacialo (o elegí otra carpeta) "
+            "antes de instalar el Synthesis CLI; no se mezcla con una instalación a medias."
+        )
+    install_dir.parent.mkdir(parents=True, exist_ok=True)
+    exigir_arbol_copiable_sin_reparse(salida)
+    staging = pathlib.Path(tempfile.mkdtemp(prefix=f".{install_dir.name}.instalando-", dir=install_dir.parent))
+    try:
+        payload = staging / "cli"
+        shutil.copytree(salida, payload, symlinks=True)
+        if hash_arbol(payload) != salida_sha256:
+            raise ToolInstallError(f"La copia del Synthesis CLI no coincide con el build verificado ({payload})")
+        if install_dir.exists():
+            install_dir.rmdir()  # vacía (chequeado arriba, bajo el lock): se libera el nombre para el rename
+        _promover_payload_verificado(payload, install_dir, "Synthesis CLI")
+    finally:
+        _limpiar_payload_temporal(staging, "Synthesis CLI")
+    return install_dir / SYNTHESIS_CLI_EXE
+
+
 NGIO_MOD_NAME = "No Grass In Objects NG"
 ADDRESS_LIBRARY_MOD_NAME = "Address Library for SKSE Plugins"
 GRASS_CACHE_HELPER_MOD_NAME = "Grass Cache Helper NG"
@@ -2425,6 +2470,97 @@ class ToolsInstaller:
                 tool_name="BodySlide",
                 exe_path=exe,
                 version="Nexus",
+                already_existed=False,
+            )
+
+    async def ensure_synthesis_cli(
+        self,
+        install_dir: pathlib.Path,
+        *,
+        dotnet: pathlib.Path,
+        git: pathlib.Path,
+        cache_raiz: pathlib.Path,
+    ) -> InstallResult:
+        """Deja el Synthesis CLI (``Synthesis.Bethesda.CLI.exe``, consola) en *install_dir* (ADR 0019 §2.2).
+
+        1. Si ya hay uno, se usa solo si es un PE de consola: ``Synthesis.exe`` (la GUI WPF) o un exe
+           de ventana con ese nombre fallan con ``SYNTHESIS_CLI_MISSING``.
+        2. Si no, se compila LOCAL el tag pineado: fuentes por commit completo (PR-3e, HITL de
+           github.com) y build verificado sin CET (PR-3d, HITL de NuGet, perfil privado), y se copia la
+           salida verificada a *install_dir*. La tercera vía del ADR (bundle precompilado de un mirror)
+           no se implementa: distribuir el binario sería redistribuir GPL.
+
+        Todo el ciclo corre bajo el lock cross-process de *install_dir* (T-31).
+        """
+        from sky_claw.local.tools.synthesis_compilacion import CompilacionPatcherError, compilar_patcher_local
+        from sky_claw.local.tools.synthesis_fuentes_git import FuentesGitError, obtener_fuentes_git
+        from sky_claw.local.tools.synthesis_prebuild import es_ejecutable_de_consola
+
+        self._validator.validate(install_dir)
+        if not cache_raiz.is_absolute():
+            raise ToolInstallError(f"La caché del Synthesis CLI debe ser una ruta absoluta: {cache_raiz}")
+        async with _bajo_lock_de_instalacion(
+            self._lock_manager,
+            _install_lock_resource_id(install_dir),
+            ttl=self._install_ttl,
+        ):
+            exe = await asyncio.to_thread(find_exe_in_dir, install_dir, SYNTHESIS_CLI_EXE)
+            if exe is not None:
+                if not await asyncio.to_thread(es_ejecutable_de_consola, exe):
+                    raise ToolInstallError(
+                        f"SYNTHESIS_CLI_MISSING: {exe} no es un ejecutable de consola; se requiere el CLI "
+                        f"{SYNTHESIS_CLI_EXE}, no la GUI Synthesis.exe"
+                    )
+                logger.info("Synthesis CLI already installed at %s", exe)
+                return InstallResult(
+                    tool_name="Synthesis CLI",
+                    exe_path=exe,
+                    version="existing",
+                    already_existed=True,
+                )
+
+            try:
+                fuentes = await obtener_fuentes_git(
+                    SYNTHESIS_CLI_REPOSITORIO,
+                    SYNTHESIS_CLI_COMMIT,
+                    cache_raiz=cache_raiz / "git",
+                    git=git,
+                    hitl=self._hitl,
+                    timeout_s=_SYNTHESIS_CLI_TIMEOUT_S,
+                    max_output_bytes=_SYNTHESIS_CLI_MAX_SALIDA_BYTES,
+                )
+                compilado = await compilar_patcher_local(
+                    fuentes.raiz,
+                    SYNTHESIS_CLI_PROYECTO,
+                    cache_raiz=cache_raiz / "builds",
+                    dotnet=dotnet,
+                    hitl=self._hitl,
+                    timeout_s=_SYNTHESIS_CLI_TIMEOUT_S,
+                    max_output_bytes=_SYNTHESIS_CLI_MAX_SALIDA_BYTES,
+                    propiedades=SYNTHESIS_CLI_PROPIEDADES_MSBUILD,
+                )
+            except (FuentesGitError, CompilacionPatcherError) as exc:
+                raise ToolInstallError(f"No se pudo compilar el Synthesis CLI {SYNTHESIS_CLI_VERSION}: {exc}") from exc
+            if compilado.exe.name.casefold() != SYNTHESIS_CLI_EXE.casefold():
+                raise ToolInstallError(
+                    f"El build del Synthesis CLI produjo {compilado.exe.name}, no {SYNTHESIS_CLI_EXE}"
+                )
+
+            try:
+                # La copia escribe en install_dir: el lock no se suelta con el hilo vivo.
+                exe = await _esperar_hilo_ininterrumpible(
+                    _copiar_cli_verificado, compilado.exe.parent, install_dir, compilado.salida_sha256
+                )
+            except OSError as exc:
+                raise ToolInstallError(f"No se pudo copiar el Synthesis CLI a {install_dir}: {exc}") from exc
+            if not await asyncio.to_thread(es_ejecutable_de_consola, exe):
+                raise ToolInstallError(f"SYNTHESIS_CLI_MISSING: el build dejó {exe}, que no es de consola")
+
+            logger.info("Synthesis CLI %s installed at %s", SYNTHESIS_CLI_VERSION, exe)
+            return InstallResult(
+                tool_name="Synthesis CLI",
+                exe_path=exe,
+                version=SYNTHESIS_CLI_VERSION,
                 already_existed=False,
             )
 
