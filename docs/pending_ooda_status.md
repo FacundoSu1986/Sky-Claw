@@ -600,6 +600,21 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
   espera acotada de la siembra; para PR 3: catálogo, conflictos pre-spawn, procedencia
   del manifiesto y estados tipados al agente. Evidencia:
   `docs/validation/2026-11-22_bodyslide-pr1-audit-corrections.md`.
+- **BodySlide PR 2a (2026-11-23, cierre PARCIAL de PR 2 — sólo el servicio):** diseño
+  `docs/design/specs/2026-11-23-bodyslide-pr2-concepts-brief.md` aprobado con cambios
+  (`DESIGN_APPROVED_WITH_CHANGES / IMPLEMENTATION_PR2A_ONLY`). PR 2a extrae
+  `BodySlidePipelineService` (`sky_claw/local/tools/bodyslide_service.py`, mypy
+  estricto) como servicio compartido de la tool del agente y de la futura GUI; la
+  tool `run_bodyslide_batch` sólo delega, **sin cambio de conducta** (payload JSON
+  idéntico, mismos lock/move-aside). Vocabulario cerrado `EstadoBodySlide` con 16
+  estados reservados que 2a no puede construir; barrera productiva
+  `_CONTENCION_BODYSLIDE_VERIFICADA = False` anclada por AST. Anclas:
+  `tests/test_bodyslide_servicio.py` (vocabulario, reservados, barrera, censo de
+  superficies/importadores, delegación) y censos de rollback/ejecutores/cobertura de
+  etapa actualizados. **Sigue pendiente de PR 2:** journal y recuperación (2b),
+  broker USVFS y espera acotada de la siembra (2c, incl. paridad `_SAFE_NAME_PATTERN`
+  y background job), publicación MO2 con move-aside externo (2d), rig
+  `G:\SkyClaw_Rigs\BodySlide_Rig` (C4). Activación productiva sólo tras PR 3 + rig (C5).
 
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un
 flag en vez de enumerar el vector. El ancla `test_contrato_argumentos_cli.py`
