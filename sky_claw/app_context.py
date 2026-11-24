@@ -2208,6 +2208,40 @@ class AppContext:
                     exc_info=True,
                 )
 
+            # BodySlide PR 2c-1 — consumidor `bodyslide-config` del journal de la config
+            # (brief D5/C1/P-4). Corre DESPUÉS del barrido de move-aside y bajo el lock
+            # `bodyslide-meshes`: restaura sólo con identidad de máquina e instancia,
+            # dueño muerto, carpeta física idéntica, terminalidad probada y bytes
+            # esperados; si falta algo queda en HOLD y se reporta. Best-effort: nunca
+            # bloquea el arranque. Sin `bodyslide_exe` no hay instalación que recuperar.
+            try:
+                exe_bodyslide = getattr(local_cfg, "bodyslide_exe", None)
+                if exe_bodyslide:
+                    from sky_claw.local.tools.bodyslide_journal import AlmacenDeJournal, identidad_actual
+                    from sky_claw.local.tools.rollback_reconciler import reconcile_bodyslide_config_journals
+
+                    exe_dir_bodyslide = pathlib.Path(exe_bodyslide).parent
+                    resultado_bodyslide = await self._await_startup(
+                        reconcile_bodyslide_config_journals(
+                            almacen=AlmacenDeJournal(),
+                            exe_dir=exe_dir_bodyslide,
+                            identidad_actual=await asyncio.to_thread(identidad_actual, exe_dir_bodyslide),
+                            lock_manager=lock_manager,
+                        )
+                    )
+                    for informe in resultado_bodyslide.informes:
+                        logger.info(
+                            "Journal de BodySlide '%s': %s %s",
+                            informe.journal.name,
+                            informe.veredicto.value,
+                            informe.detalle,
+                        )
+            except Exception:
+                logger.warning(
+                    "Recuperación del journal de config de BodySlide falló (no bloquea el arranque)",
+                    exc_info=True,
+                )
+
             # P0 de ADR 0011 — propiedad del `external_work_root`.
             #
             # Corre DESPUÉS del journal y del barrido de residuo, y las dos cosas

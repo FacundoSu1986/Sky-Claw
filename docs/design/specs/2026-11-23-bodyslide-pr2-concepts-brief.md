@@ -527,3 +527,41 @@ de la siembra desde `bodyslide_config` (2b recibe los bytes ya calculados). Un a
 adversario con escritura sobre el estado (la frontera es el ACL); un crash entre el `O_EXCL` y el final
 de la primera escritura deja un journal truncado ⇒ `HOLD` hasta intervención (fail-closed, igual que
 bloquea una transacción nueva). Por eso 2c debe crear el journal **bajo** la lease `bodyslide-meshes`.
+
+### 13.5 PR 2c-1 — plazo de siembra, cuarentena y journal en la corrida
+
+2b se mergeó en #1018 (`09bbc78d`). El propietario partió 2c en **2c-1** (esto) y **2c-2** (broker
+USVFS, paridad de `_SAFE_NAME_PATTERN` y trabajo en segundo plano) y aprobó, el 2026-11-24:
+
+| Decisión | Resolución |
+|---|---|
+| Config enlazada (`BodySlide.xml`/`BuildSelection.xml` symlink) | **Se rechaza** antes de mutar (`CONFIG_PRECONDITION_FAILED`). Retira el soporte P0-2 de PR 1 |
+| Cancelación con el proceso lanzado | **HOLD sin restaurar**: el journal queda en `LANZADO`. Retorno, timeout o error de `run_capture` (mata, cosecha y cierra el Job) registran `TERMINAL` y restauran |
+| Liberación de la cuarentena | **Automática** si el hilo de la siembra termina en este proceso y la restauración queda verificada; si no, **manual** con evidencia (`liberar_cuarentena`) |
+| Consumidor en el arranque | **Sí**: `app_context` corre `reconcile_bodyslide_config_journals` después del barrido de move-aside, best-effort |
+
+**Entra:**
+
+- `bodyslide_config.calcular_config_sembrada` (puro): la siembra es cálculo + escritura atómica, y el
+  journal registra el hash de esos bytes antes de escribir.
+- Runner: el snapshot propio, `_BarreraDeSiembra` y la restauración del `finally` se reemplazan por el
+  journal. Orden: cuarentena → cálculo → identidad → `PREPARADO` → siembra con plazo → `LANZADO` →
+  spawn → (`TERMINAL` + restauración) en **un** hilo retenido.
+- `SiembraConPlazo` (journal, mypy estricto): plazo de respuesta `plazo_de_siembra_segundos` (30 s).
+  Al vencer o al cancelar con la siembra en vuelo, escribe la cuarentena **antes** de devolver el
+  control; el hilo, al terminar, restaura y la retira sólo si queda verificado.
+- Cuarentena del recurso (`poner_en_cuarentena` / `liberar_cuarentena`): bloquea corridas nuevas de
+  cualquier instalación y la recuperación de arranque.
+- Estados liberados del vocabulario reservado: `PRECONDITION_FAILED`, `CONFIG_IO_HUNG`,
+  `CONCURRENT_MODIFICATION`, `RESTORE_FAILED`.
+- La restauración del journal sigue con los demás archivos si uno falla (propiedad de PR 1) y no deja
+  temporales a medio escribir.
+
+**No entra (2c-2):** broker USVFS y `worker_exit` como evidencia de terminalidad para `LANZADO`, paridad
+de `_SAFE_NAME_PATTERN`, trabajo en segundo plano. `SIEMBRA_INDETERMINADA` sigue sin usarse: la
+cuarentena expresa el abandono sin competir con la transición del hilo.
+
+**Límites:** producción sigue apagada (`quiet_verified=False` ⇒ `CAPABILITY_UNKNOWN`, y la barrera
+`_CONTENCION_BODYSLIDE_VERIFICADA = False`). Con el perfil aislado no hay identidad de máquina y la
+corrida falla cerrada antes de mutar. Una cancelación durante `iniciar_transaccion` deja un journal
+`PREPARADO` sin mutación: bloquea la instancia hasta el próximo arranque, que lo cierra sin cambios.

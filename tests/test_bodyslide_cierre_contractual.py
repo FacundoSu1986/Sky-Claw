@@ -411,30 +411,28 @@ async def test_cancelar_durante_la_restauracion_espera_a_que_termine(
 
     Si soltara, ``run_bodyslide_batch`` liberaría el lock con la restauración todavía
     en vuelo y esa escritura tardía pisaría la config del dueño siguiente (mismo
-    defecto que el P1 de #993, resuelto con ``mutar_hasta_terminal``).
+    defecto que el P1 de #993, resuelto con ``mutar_hasta_terminal``). Desde PR 2c-1
+    la restauración es la del journal (``TransaccionDeConfig.restaurar``).
     """
     import asyncio
     import threading
+
+    from sky_claw.local.tools import bodyslide_journal as journal_mod
 
     runner = _runner(tmp_path)
     en_curso = threading.Event()
     liberar = threading.Event()
     terminada = threading.Event()
-    original = mod._snapshot_y_restaurar_archivos
+    restaurar_real = journal_mod.TransaccionDeConfig.restaurar
 
-    def _snapshot_con_restauracion_lenta(exe):
-        snapshot, restaurar = original(exe)
+    def _lenta(self: journal_mod.TransaccionDeConfig) -> journal_mod.InformeDeRecuperacion:
+        en_curso.set()
+        liberar.wait(10.0)  # guarda contra cuelgues, no sincronización
+        resultado = restaurar_real(self)
+        terminada.set()
+        return resultado
 
-        def _lenta():
-            en_curso.set()
-            liberar.wait(10.0)  # guarda contra cuelgues, no sincronización
-            resultado = restaurar()
-            terminada.set()
-            return resultado
-
-        return snapshot, _lenta
-
-    monkeypatch.setattr(mod, "_snapshot_y_restaurar_archivos", _snapshot_con_restauracion_lenta)
+    monkeypatch.setattr(journal_mod.TransaccionDeConfig, "restaurar", _lenta)
     destino = _raiz(tmp_path) / "CBBE"
     with patch.object(mod, "run_capture", _proceso_sin_write_bytes(destino, _log(runner))):
         tarea = asyncio.create_task(
@@ -454,39 +452,51 @@ async def test_cancelar_durante_la_restauracion_espera_a_que_termine(
 async def test_restauracion_con_escritura_parcial_no_trunca_la_config(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Un fallo a mitad de la escritura (disco lleno) no puede dejar ``Config.xml`` truncado."""
+    """Un fallo a mitad de la escritura (disco lleno) no puede dejar ``Config.xml`` truncado.
+
+    PR 2c-1: la restauración es la del journal; el fallo no se eleva, se reporta como
+    ``RESTORE_FAILED`` (nunca éxito) y el temporal a medio escribir no queda en disco.
+    """
+    import os
+
+    from sky_claw.local.tools import bodyslide_journal as journal_mod
+
     runner = _runner(tmp_path)
     config = runner.config.bodyslide_exe.parent / "Config.xml"
-    original = mod._snapshot_y_restaurar_archivos
+    original = config.read_bytes()
+    escribir_real = journal_mod._escribir_y_sincronizar
+    write_real = os.write
 
-    def _escritura_parcial(self: pathlib.Path, data: bytes) -> int:
-        with self.open("wb") as handle:
-            handle.write(data[:7])
-        raise OSError(28, "No space left on device")
+    def _escritura_parcial(ruta: pathlib.Path, blob: bytes) -> None:
+        if not (ruta.name.startswith("Config.xml.") and blob == original):
+            escribir_real(ruta, blob)
+            return
+        llamadas = [0]
 
-    def _snapshot_con_disco_lleno(exe):
-        snapshot, restaurar = original(exe)
+        def _write(fd: int, datos: bytes) -> int:
+            if llamadas[0]:
+                raise OSError(28, "No space left on device")
+            llamadas[0] += 1
+            return write_real(fd, bytes(datos[:7]))
 
-        def _restaurar_con_disco_lleno():
-            with patch.object(pathlib.Path, "write_bytes", _escritura_parcial):
-                return restaurar()
+        with patch("os.write", _write):
+            escribir_real(ruta, blob)
 
-        return snapshot, _restaurar_con_disco_lleno
-
-    monkeypatch.setattr(mod, "_snapshot_y_restaurar_archivos", _snapshot_con_disco_lleno)
+    monkeypatch.setattr(journal_mod, "_escribir_y_sincronizar", _escritura_parcial)
     destino = _raiz(tmp_path) / "CBBE"
-    with pytest.raises(BodySlideExecutionError):
-        await _correr(
-            runner,
-            "CBBE",
-            destino,
-            _proceso_sin_write_bytes(destino, _log(runner)),
-            preset="Zeroed",
-            preset_verified=True,
-            manifest=_MANIFIESTO,
-        )
+    result = await _correr(
+        runner,
+        "CBBE",
+        destino,
+        _proceso_sin_write_bytes(destino, _log(runner)),
+        preset="Zeroed",
+        preset_verified=True,
+        manifest=_MANIFIESTO,
+    )
     import xml.etree.ElementTree as ET
 
+    assert result.success is False
+    assert result.estado == "RESTORE_FAILED"
     ET.fromstring(config.read_bytes())  # XML completo: original o sembrado, nunca truncado
     assert not list(config.parent.glob("*.tmp")), "no quedan temporales de la restauración"
 
@@ -574,28 +584,42 @@ def test_siembra_acepta_config_ordinaria(tmp_path: pathlib.Path) -> None:
 def test_restauracion_sigue_con_los_demas_archivos_tras_un_fallo(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Si restaurar ``Config.xml`` falla, ``BodySlide.xml`` y ``BuildSelection.xml`` se restauran igual."""
-    exe = tmp_path / "BodySlide" / "BodySlide.exe"
-    exe.parent.mkdir(parents=True)
+    """Si restaurar ``Config.xml`` falla, ``BodySlide.xml`` y ``BuildSelection.xml`` se restauran igual.
+
+    PR 2c-1: la propiedad vive en la restauración del journal (``_restaurar``).
+    """
+    from sky_claw.local.tools import bodyslide_journal as bj
+
+    exe_dir = tmp_path / "BodySlide"
+    exe_dir.mkdir(parents=True)
     originales = {n: f"<{n}>original</{n}>".encode() for n in ("Config.xml", "BodySlide.xml", "BuildSelection.xml")}
     for nombre, blob in originales.items():
-        (exe.parent / nombre).write_bytes(blob)
-    _snapshot, restaurar = mod._snapshot_y_restaurar_archivos(exe)
+        (exe_dir / nombre).write_bytes(blob)
+    almacen = bj.AlmacenDeJournal(tmp_path / "state", endurecer=lambda _p: None)
+    tx = bj.iniciar_transaccion(
+        almacen=almacen,
+        identidad=bj.IdentidadDeEjecucion(maquina="m", instancia=bj.identidad_de_instancia(exe_dir)),
+        exe_dir=exe_dir,
+        bytes_sembrados=b"<Config.xml>sembrado</Config.xml>",
+    )
+    tx.sembrar()
+    tx.marcar_lanzado()
     for nombre in originales:
-        (exe.parent / nombre).write_bytes(b"<mutado/>")
-
-    real = mod._escribir_atomico
+        (exe_dir / nombre).write_bytes(b"<mutado/>")
+    tx.marcar_terminal()
+    real = bj._reemplazar_atomico
 
     def _falla_en_config(destino: pathlib.Path, blob: bytes) -> None:
         if destino.name == "Config.xml":
             raise PermissionError(13, "Access is denied")
         real(destino, blob)
 
-    monkeypatch.setattr(mod, "_escribir_atomico", _falla_en_config)
-    with pytest.raises(BodySlideExecutionError, match="Config.xml"):
-        restaurar()
-    assert (exe.parent / "BodySlide.xml").read_bytes() == originales["BodySlide.xml"]
-    assert (exe.parent / "BuildSelection.xml").read_bytes() == originales["BuildSelection.xml"]
+    monkeypatch.setattr(bj, "_reemplazar_atomico", _falla_en_config)
+    informe = tx.restaurar()
+    assert informe.veredicto is bj.Veredicto.RESTORE_FAILED
+    assert "Config.xml" in informe.detalle
+    assert (exe_dir / "BodySlide.xml").read_bytes() == originales["BodySlide.xml"]
+    assert (exe_dir / "BuildSelection.xml").read_bytes() == originales["BuildSelection.xml"]
 
 
 async def test_restauracion_encolada_sobrevive_a_dos_cancelaciones(
@@ -626,17 +650,14 @@ async def test_restauracion_encolada_sobrevive_a_dos_cancelaciones(
         bloqueo_corriendo.set()
         liberar.wait(10.0)
 
-    original_snapshot = mod._snapshot_y_restaurar_archivos
+    from sky_claw.local.tools import bodyslide_journal as journal_mod
 
-    def _snapshot_observado(exe):
-        snapshot, restaurar = original_snapshot(exe)
+    restaurar_real = journal_mod.TransaccionDeConfig.restaurar
 
-        def _restaurar():
-            resultado = restaurar()
-            restaurada.set()
-            return resultado
-
-        return snapshot, _restaurar
+    def _restaurar_observado(self):
+        resultado = restaurar_real(self)
+        restaurada.set()
+        return resultado
 
     original_log = mod._atribuir_log_a_corrida
 
@@ -646,7 +667,7 @@ async def test_restauracion_encolada_sobrevive_a_dos_cancelaciones(
         loop.call_soon_threadsafe(loop.run_in_executor, None, _bloqueo)
         return original_log(*args, **kwargs)
 
-    monkeypatch.setattr(mod, "_snapshot_y_restaurar_archivos", _snapshot_observado)
+    monkeypatch.setattr(journal_mod.TransaccionDeConfig, "restaurar", _restaurar_observado)
     monkeypatch.setattr(mod, "_atribuir_log_a_corrida", _log_y_saturar)
     destino = _raiz(tmp_path) / "CBBE"
     try:

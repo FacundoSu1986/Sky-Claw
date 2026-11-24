@@ -45,6 +45,7 @@ capa de VFS.
 from __future__ import annotations
 
 import contextlib
+import io
 import logging
 import os
 import pathlib
@@ -94,6 +95,53 @@ def sembrar_config_de_bodyslide(
     expected_target_game: int | None = None,
 ) -> bool:
     """Aplica las claves que hacen posible un build headless. Devuelve True.
+
+    Es :func:`calcular_config_sembrada` más la escritura atómica: los bytes que se
+    escriben son EXACTAMENTE los que devuelve el cálculo (el journal de PR 2b
+    registra su hash antes de escribir).
+
+    Raises:
+        BodySlideConfigPreconditionError: ver :func:`calcular_config_sembrada`, o si
+            la escritura falla.
+    """
+    blob = calcular_config_sembrada(
+        exe_dir=exe_dir,
+        game_path=game_path,
+        output_root=output_root,
+        expected_target_game=expected_target_game,
+    )
+    config = exe_dir / NOMBRE_DEL_CONFIG
+    # Escritura ATÓMICA: tmp en el MISMO directorio (misma unidad → rename real)
+    # y ``os.replace`` recién cuando el árbol se serializó entero. Escribir
+    # directo sobre el destino lo trunca si el ``write`` muere a mitad —disco
+    # lleno, AV que toma el handle—, y eso destruiría la config del usuario para
+    # arreglar un modal. Mismo patrón que ``mo2.ini_editor._write_atomic``.
+    tmp = config.with_name(f"{config.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        _escribir_temporal(tmp, blob)
+        os.replace(tmp, config)
+    except OSError as exc:
+        raise BodySlideConfigPreconditionError(f"Config.xml ilegible en '{config}' ({exc})") from exc
+    finally:
+        # Best-effort: un error de unlink acá no debe enmascarar la causa raíz.
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+    return True
+
+
+def _escribir_temporal(tmp: pathlib.Path, blob: bytes) -> None:
+    """Escribe el temporal de la siembra (punto único: los tests simulan acá un fallo a mitad)."""
+    tmp.write_bytes(blob)
+
+
+def calcular_config_sembrada(
+    *,
+    exe_dir: pathlib.Path,
+    game_path: pathlib.Path,
+    output_root: pathlib.Path,
+    expected_target_game: int | None = None,
+) -> bytes:
+    """Bytes del ``Config.xml`` sembrado, SIN escribir nada. Determinista sobre el original.
 
     Raises:
         BodySlideConfigPreconditionError: si el XML está corrupto o contiene
@@ -160,23 +208,11 @@ def sembrar_config_de_bodyslide(
             nodo = ET.SubElement(raiz, clave)
         nodo.text = valor
 
-    # Escritura ATÓMICA: tmp en el MISMO directorio (misma unidad → rename real)
-    # y ``os.replace`` recién cuando el árbol se serializó entero. Escribir
-    # directo sobre el destino lo trunca si el ``write`` muere a mitad —disco
-    # lleno, AV que toma el handle—, y eso destruiría la config del usuario para
-    # arreglar un modal. Mismo patrón que ``mo2.ini_editor._write_atomic``.
-    destino = config
-    tmp = destino.with_name(f"{destino.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        ET.ElementTree(raiz).write(tmp, encoding="utf-8", xml_declaration=False)
-        os.replace(tmp, destino)
-    except OSError as exc:
-        raise BodySlideConfigPreconditionError(f"Config.xml ilegible en '{config}' ({exc})") from exc
-    finally:
-        # Best-effort: un error de unlink acá no debe enmascarar la causa raíz.
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
-    return True
+    # Misma serialización que escribía la siembra (``ElementTree.write`` a archivo):
+    # cambiarla cambiaría los bytes y el hash que el journal registra.
+    salida = io.BytesIO()
+    ET.ElementTree(raiz).write(salida, encoding="utf-8", xml_declaration=False)
+    return salida.getvalue()
 
 
 def _exigir_config_inequivoca(raiz: ET.Element, config: pathlib.Path, *, claves: tuple[str, ...]) -> None:

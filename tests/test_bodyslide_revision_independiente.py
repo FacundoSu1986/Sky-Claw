@@ -24,6 +24,7 @@ import asyncio
 import pathlib
 import sys
 import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -240,59 +241,54 @@ def test_p1b_snapshot_distingue_ausente_de_ilegible(tmp_path: pathlib.Path) -> N
 async def test_p1c_cancelar_durante_la_siembra_no_deja_la_config_sembrada(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """La siembra nunca escribe después de la restauración (P1-C), ahora con C3 (PR 2c-1).
+
+    Cancelar con la siembra en vuelo la ABANDONA: la cuarentena queda escrita antes de
+    soltar al caller, y el propio hilo de la siembra —el último escritor— restaura al
+    terminar y retira la cuarentena. Nadie restaura con la siembra todavía en vuelo.
+    """
+    from sky_claw.local.tools import bodyslide_journal as journal_mod
+
     runner = _runner(tmp_path)
     config = runner.config.bodyslide_exe.parent / "Config.xml"
     original = config.read_bytes()
     destino = _raiz(tmp_path) / "CBBE"
     destino.mkdir(parents=True)
+    almacen = journal_mod.AlmacenDeJournal()
 
     entro = threading.Event()  # la siembra empezó (en su hilo)
     liberar = threading.Event()  # el test deja que la siembra escriba
-    sembro = threading.Event()  # la siembra terminó de escribir
-    restauro = threading.Event()  # la restauración REAL corrió
-    progreso = threading.Event()  # restauró, o quedó esperando a la siembra
+    sembrar_real = journal_mod.TransaccionDeConfig.sembrar
 
-    def _siembra_lenta(**_kwargs: object) -> bool:
+    def _siembra_lenta(self: journal_mod.TransaccionDeConfig) -> None:
         entro.set()
         assert liberar.wait(_GUARDA_S), "guarda: el test nunca liberó la siembra"
-        config.write_bytes(b"<Config><TargetGame>4</TargetGame><SEMBRADO/></Config>")
-        sembro.set()
-        return True
+        sembrar_real(self)
 
-    real_snapshot = mod._snapshot_y_restaurar_archivos
-
-    def _snapshot_observado(exe: pathlib.Path):
-        snap, restaurar = real_snapshot(exe)
-
-        def _restaurar_observado() -> list[str]:
-            hecho = restaurar()
-            restauro.set()
-            progreso.set()
-            return hecho
-
-        return snap, _restaurar_observado
-
-    monkeypatch.setattr(mod, "sembrar_config_de_bodyslide", _siembra_lenta)
-    monkeypatch.setattr(mod, "_snapshot_y_restaurar_archivos", _snapshot_observado)
-    barrera = getattr(mod, "_BarreraDeSiembra", None)
-    if barrera is not None:
-        monkeypatch.setattr(barrera, "_al_esperar_la_siembra", lambda self: progreso.set())
+    monkeypatch.setattr(journal_mod.TransaccionDeConfig, "sembrar", _siembra_lenta)
 
     proceso = AsyncMock(return_value=(b"", b"", 0))
     with patch.object(mod, "run_capture", proceso):
         tarea = asyncio.create_task(runner.run_batch("CBBE", str(destino)))
         assert await asyncio.to_thread(entro.wait, _GUARDA_S)
         tarea.cancel()
-        assert await asyncio.to_thread(progreso.wait, _GUARDA_S)
-        restauro_antes_de_sembrar = restauro.is_set() and not sembro.is_set()
-        liberar.set()
         with pytest.raises(asyncio.CancelledError):
             await tarea
-        assert await asyncio.to_thread(sembro.wait, _GUARDA_S)
+        assert almacen.marcador_de_cuarentena.exists(), "responder no es soltar: la cuarentena va antes"
+        assert config.read_bytes() == original, "nadie restauró ni sembró todavía"
+        liberar.set()
+
+        def _cuarentena_retirada() -> bool:
+            limite = time.monotonic() + _GUARDA_S
+            while time.monotonic() < limite:
+                if not almacen.marcador_de_cuarentena.exists():
+                    return True
+                time.sleep(0.02)
+            return False
+
+        assert await asyncio.to_thread(_cuarentena_retirada), "el hilo de la siembra debe cerrar la corrida"
 
     assert proceso.await_count == 0
-    assert not restauro_antes_de_sembrar, "la restauración corrió con la siembra todavía en vuelo"
-    assert restauro.is_set(), "la restauración debe correr DESPUÉS de que la siembra termine"
     assert config.read_bytes() == original, "la siembra escribió después de la restauración"
 
 
@@ -399,7 +395,7 @@ async def test_p1d_runner_rechaza_alias_win32_sin_mutar_ni_spawnear(tmp_path: pa
     destino = _raiz(tmp_path) / group  # el target "canónico" que derivaría el nombre crudo
     proceso = _proceso_que_construye(destino)
     sembrar = MagicMock(return_value=True)  # la siembra real es síncrona (corre en un hilo)
-    with patch.object(mod, "run_capture", proceso), patch.object(mod, "sembrar_config_de_bodyslide", sembrar):
+    with patch.object(mod, "run_capture", proceso), patch.object(mod, "calcular_config_sembrada", sembrar):
         result = await runner.run_batch(group, str(destino))
     assert proceso.await_count == 0, "un alias Win32 no puede lanzar BodySlide"
     assert sembrar.call_count == 0, "la siembra (mutación) no puede correr"

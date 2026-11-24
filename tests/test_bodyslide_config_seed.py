@@ -283,13 +283,13 @@ def test_un_fallo_al_escribir_aborta_la_corrida(tmp_path: pathlib.Path) -> None:
     # test pasaría con la implementación rota. Se escribe contenido parcial en la
     # ruta que reciba el ``write`` —el destino real si la escritura es directa, el
     # temporal si es atómica— y recién ahí se levanta el error.
-    def _muere_a_mitad(destino: object, **_kwargs: object) -> None:
+    def _muere_a_mitad(destino: object, *_args: object, **_kwargs: object) -> None:
         pathlib.Path(str(destino)).write_bytes(b"<Config><GameDataPath>a-medio-escri")
         raise OSError("disco lleno")
 
     with (
-        patch("sky_claw.local.tools.bodyslide_config.ET.ElementTree.write", side_effect=_muere_a_mitad),
-        pytest.raises(BodySlideConfigPreconditionError),
+        patch("sky_claw.local.tools.bodyslide_config._escribir_temporal", side_effect=_muere_a_mitad) as escritor,
+        pytest.raises(BodySlideConfigPreconditionError, match="disco lleno"),
     ):
         sembrar_config_de_bodyslide(
             exe_dir=exe_dir,
@@ -297,6 +297,7 @@ def test_un_fallo_al_escribir_aborta_la_corrida(tmp_path: pathlib.Path) -> None:
             output_root=tmp_path / "game" / "BodySlide_Output",
         )
 
+    assert escritor.call_count == 1, "la escritura parcial tiene que haber ocurrido (no un rechazo previo)"
     assert config.read_bytes() == original, "un write fallido no puede dejar el Config.xml del usuario truncado"
 
 
@@ -315,13 +316,13 @@ def test_una_escritura_fallida_no_deja_temporales(tmp_path: pathlib.Path) -> Non
     exe_dir.mkdir(parents=True)
     (exe_dir / "Config.xml").write_text(_CONFIG_DEL_USUARIO, encoding="utf-8")
 
-    def _muere_a_mitad(destino: object, **_kwargs: object) -> None:
+    def _muere_a_mitad(destino: object, *_args: object, **_kwargs: object) -> None:
         pathlib.Path(str(destino)).write_bytes(b"<Config>parcial")
         raise OSError("disco lleno")
 
     with (
-        patch("sky_claw.local.tools.bodyslide_config.ET.ElementTree.write", side_effect=_muere_a_mitad),
-        pytest.raises(BodySlideConfigPreconditionError),
+        patch("sky_claw.local.tools.bodyslide_config._escribir_temporal", side_effect=_muere_a_mitad) as escritor,
+        pytest.raises(BodySlideConfigPreconditionError, match="disco lleno"),
     ):
         sembrar_config_de_bodyslide(
             exe_dir=exe_dir,
@@ -329,6 +330,7 @@ def test_una_escritura_fallida_no_deja_temporales(tmp_path: pathlib.Path) -> Non
             output_root=tmp_path / "game" / "BodySlide_Output",
         )
 
+    assert escritor.call_count == 1, "la escritura parcial tiene que haber ocurrido (no un rechazo previo)"
     assert [p.name for p in exe_dir.iterdir()] == ["Config.xml"]
 
 
