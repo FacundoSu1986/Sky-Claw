@@ -29,7 +29,9 @@ from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver
 from sky_claw.local.mo2.vfs_attestation import (
     VfsAttestationChallenge,
+    VfsAttestationError,
     build_attestation_challenge,
+    read_enabled_plugins,
 )
 from sky_claw.local.mo2.vfs_broker import VfsJobTimeoutError
 from sky_claw.local.mo2.vfs_contracts import JsonValue, VfsJob, VfsJobResult
@@ -206,6 +208,21 @@ class BrokeredLootRunner:
     def loot_data_base(self) -> pathlib.Path:
         return self._loot_data_base
 
+    @property
+    def loot_exe(self) -> pathlib.Path:
+        """``LOOT.exe`` que lanza el worker (su ``VERSIONINFO`` decide la rama del masterlist, PR-B)."""
+        return self._loot_exe
+
+    @property
+    def game(self) -> str:
+        """Id INTERNO del juego: el job siempre pide el default (``"game"`` del payload)."""
+        return DEFAULT_LOOT_INTERNAL_GAME_ID
+
+    @property
+    def game_data_dir(self) -> pathlib.Path:
+        """``Data`` físico del juego (su padre es el game root con ``Skyrim.ccc``)."""
+        return self._game_data_dir
+
     def for_profile(self, profile: str) -> BrokeredLootRunner:
         """Crea un runner aislado que resuelve targets del perfil solicitado.
 
@@ -278,6 +295,23 @@ class BrokeredLootRunner:
             physical_data_dir=self._game_data_dir,
         )
 
+    async def _expected_plugins(self) -> tuple[str, ...]:
+        """Plugins habilitados del perfil que el worker exige visibles (C2).
+
+        Misma lectura canónica que DynDOLOD (``brokered_dyndolod.spawn``) y que el
+        fingerprint del perfil: primary plugins + habilitados de ``plugins.txt``.
+        Un ``plugins.txt`` ilegible o ambiguo no arma el job: sin la lista
+        completa no hay prueba de visibilidad.
+        """
+        plugins_path = self._data_root / "profiles" / self._profile / "plugins.txt"
+        try:
+            return await asyncio.to_thread(read_enabled_plugins, plugins_path, game_data_dir=self._game_data_dir)
+        except VfsAttestationError as exc:
+            raise LOOTPreconditionError(
+                f"No se pudieron leer los plugins habilitados del perfil ({exc}): sin la lista "
+                "completa no se puede probar su visibilidad bajo USVFS y LOOT no se lanza."
+            ) from exc
+
     def clear_prepared_attestation(self) -> None:
         """Descarta el preview ligado a la invocación async actual."""
         self._prepared.set(None)
@@ -297,6 +331,7 @@ class BrokeredLootRunner:
             raise ValueError(f"loot_data_path no se pudo asegurar en disco: {exc}") from exc
         challenge = await self._take_or_build_challenge()
         targets = await asyncio.to_thread(self.mutation_targets)
+        expected_plugins = await self._expected_plugins()
         job = VfsJob.create(
             instance_id=self._instance_id,
             profile=self._profile,
@@ -307,10 +342,13 @@ class BrokeredLootRunner:
                 # contra la MISMA frontera (LOOT_CLI_GAME_IDENTIFIERS de
                 # sky_claw.local.loot.cli) y la traducción al dialecto de
                 # `--game` ocurre una sola vez, en el runner (PR-0).
-                "game": DEFAULT_LOOT_INTERNAL_GAME_ID,
+                "game": self.game,
                 "update_masterlist": update_masterlist,
                 # PR-1: data root propiedad de Sky-Claw, explícito, estable
                 "loot_data_path": str(self._loot_data_path),
+                # C2: el worker verifica CADA plugin habilitado en el Data virtual
+                # antes de lanzar LOOT (mismo gate que DynDOLOD y Synthesis).
+                "expected_plugins": list(expected_plugins),
             },
             timeout_seconds=float(self._timeout),
             expected_fingerprint=challenge.profile_fingerprint,
@@ -341,6 +379,11 @@ class BrokeredLootRunner:
             raise err from exc
         self._last_result.set(result)
         tool = result.tool_result
+        # El worker mezcla la evidencia de visibilidad en TODO resultado que pasó
+        # el gate: ``missing_plugins == []`` es la forma normal de éxito y de
+        # fallo posterior al gate. Sólo una lista no vacía (o malformada) es rechazo.
+        if "missing_plugins" in tool and tool.get("missing_plugins") != []:
+            _visibility_failure(result, tool.get("missing_plugins"))
         failure_kind = tool.get("loot_failure_kind")
         if failure_kind is not None:
             _typed_worker_failure(result, failure_kind, timeout=self._timeout)
@@ -442,6 +485,37 @@ def build_vfs_loot_runner(
         # anclado por _is_mo2_internal_loot) no se convierte en subprocess.
         # El mensaje del constructor ya lleva el prefijo "F8 guard:".
         return VfsRequiredLootRunner(str(exc))
+
+
+def _visibility_failure(result: VfsJobResult, missing: JsonValue | None) -> NoReturn:
+    """El worker rechazó el dispatch: plugins habilitados invisibles en el Data virtual (C2).
+
+    Es una precondición (LOOT no se lanzó), no un fallo de proceso. La clave sólo
+    la produce el gate de visibilidad del worker (``_expected_plugins_visibility``)
+    con ``success=False`` y una lista no vacía (la vacía es evidencia de éxito del
+    gate y el caller no llega acá): cualquier otra forma es
+    un mensaje fuera de contrato y no se usa como evidencia.
+
+    Raises:
+        LOOTPreconditionError: la lista de invisibles es válida.
+        LOOTWorkerProtocolError: la clave está presente con otra forma o con ``success=True``.
+    """
+    if (
+        result.success
+        or not isinstance(missing, list)
+        or not missing
+        or any(not isinstance(nombre, str) or not nombre for nombre in missing)
+    ):
+        raise LOOTWorkerProtocolError(
+            "resultado del worker contradictorio: missing_plugins fuera de contrato "
+            f"(success={result.success!r}, missing_plugins={missing!r})"
+        )
+    nombres = ", ".join(str(nombre) for nombre in missing)
+    raise LOOTPreconditionError(
+        "Load order incompleto bajo USVFS: estos plugins habilitados no son visibles en el Data "
+        f"virtual y LOOT no se lanzó (los descartaría de plugins.txt): {nombres}. Verificá en MO2 "
+        "que sus mods estén habilitados e instalados."
+    )
 
 
 def _typed_worker_failure(result: VfsJobResult, failure_kind: JsonValue, *, timeout: int) -> NoReturn:

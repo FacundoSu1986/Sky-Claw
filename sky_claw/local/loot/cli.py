@@ -46,6 +46,7 @@ from sky_claw.local.loot.headless_settings import (
     LootHeadlessSettingsError,
     ensure_loot_headless_settings,
 )
+from sky_claw.local.loot.masterlist_provision import LootMasterlistError, verify_masterlist_provisioned
 from sky_claw.local.loot.parser import LOOTOutputParser, LOOTResult
 from sky_claw.logging_config import subprocess_error_extra
 from sky_claw.sin_consola import creationflags_sin_consola
@@ -252,6 +253,26 @@ class LOOTRunner:
         self._config = config
         self._validator = path_validator
 
+    @property
+    def game_data_dir(self) -> pathlib.Path:
+        """``Data`` del juego que ordena este runner (``--game-path`` + ``Data``)."""
+        return self._config.game_path / "Data"
+
+    @property
+    def loot_data_path(self) -> pathlib.Path | None:
+        """Data root aislado (``--loot-data-path``) o ``None`` en el runner legacy."""
+        return self._config.loot_data_path
+
+    @property
+    def loot_exe(self) -> pathlib.Path:
+        """``LOOT.exe`` que se va a lanzar (su ``VERSIONINFO`` decide la rama del masterlist, PR-B)."""
+        return self._config.loot_exe
+
+    @property
+    def game(self) -> str:
+        """Id INTERNO del juego (se traduce con :func:`to_loot_cli_game_id`)."""
+        return self._config.game
+
     async def sort(self, *, update_masterlist: bool = False) -> LOOTResult:
         """Run LOOT CLI to sort the load order.
 
@@ -335,7 +356,7 @@ class LOOTRunner:
             logger.warning(
                 "LOOT: se pidió update_masterlist=True pero `--update-masterlist` no es un "
                 "flag válido de LOOT (verificado contra src/gui/qt/main.cpp) y "
-                "MasterlistDownloader no está cableado a este runner; se ordena sin refrescar."
+                "el masterlist lo provee el daemon antes del sort (PR-B, masterlist_provision)."
             )
 
         # PR-2: preparación headless SOLO sobre el data root aislado propiedad de
@@ -351,10 +372,19 @@ class LOOTRunner:
                 # settings gestionado y el sentinel se escriben ANTES del spawn.
                 loot_data_path.mkdir(parents=True, exist_ok=True)
                 settings_action = ensure_loot_headless_settings(loot_data_path, loot_version=loot_version)
+                # PR-B: con updateMasterlist=false LOOT ordenaría SIN metadatos si
+                # faltan (game.cpp:945-962, en silencio). El daemon los provee antes.
+                verify_masterlist_provisioned(loot_data_path, game_cli_id)
                 # Lo último antes del spawn: la ventana de atribución es
                 # arm → create_subprocess_exec → communicate → observe.
                 armed_witness = arm_execution_witness(loot_data_path)
-            except (OSError, LootBinaryVersionError, LootHeadlessSettingsError, LootExecutionWitnessError) as exc:
+            except (
+                OSError,
+                LootBinaryVersionError,
+                LootHeadlessSettingsError,
+                LootMasterlistError,
+                LootExecutionWitnessError,
+            ) as exc:
                 raise LOOTPreconditionError(str(exc)) from exc
             logger.info("LOOT headless settings: %s (LOOT %s, %s)", settings_action.value, loot_version, loot_data_path)
 

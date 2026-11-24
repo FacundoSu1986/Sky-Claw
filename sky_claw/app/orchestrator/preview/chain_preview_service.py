@@ -7,12 +7,19 @@ file**.  The whole chain runs inside ONE
 touched disk, every target file is reverted on the way out.
 
 Hybrid technique (per the tool x dry-run matrix):
-  * **LOOT** runs for real (it rewrites ``plugins.txt``); the lock reverts it.
+  * **LOOT** is NOT simulated (A3): el preview usa el orden actual. Correrlo
+    "de verdad" desde acá era un LOOT a ciegas —sin broker USVFS, sin data root
+    aislado ni testigo— contra el Data físico, desde una tool sin aprobación
+    HITL y con un snapshot de un solo archivo (``loadorder.txt`` quedaba sin
+    red). El sort real es ``execute_loot_sorting`` (``LootSortingService``), con
+    aprobación, brokered y con veredicto verificado.
   * **xEdit** runs a read-only conflict scan; the mutating patch is plan-only.
   * **DynDOLOD** is plan-only — the most expensive stage is never launched.
 
 The force-rollback lock is the universal safety net for any stage that does
-touch disk, which is what the no-mutation invariant test pins down.
+touch disk, which is what the no-mutation invariant test pins down. Ancla de
+que el preview no puede lanzar LOOT: ``tests/test_chain_preview_service.py``
+(``test_el_preview_no_tiene_runner_de_loot``).
 """
 
 from __future__ import annotations
@@ -44,7 +51,6 @@ if TYPE_CHECKING:
     from sky_claw.app.core.path_resolver import PathResolutionService
     from sky_claw.app.db.journal import OperationJournal
     from sky_claw.app.security.path_validator import PathValidator
-    from sky_claw.local.loot.cli import LOOTRunner
     from sky_claw.local.xedit.conflict_analyzer import ConflictAnalyzer
     from sky_claw.local.xedit.patch_advisor import PatchRecommendation
     from sky_claw.local.xedit.runner import XEditRunner
@@ -81,9 +87,9 @@ class ChainPreviewService:
 
     All collaborators are injected (DI via Protocols / concrete types).  The
     xEdit and DynDOLOD pipeline services are built internally from the shared
-    dependencies; the chain-specific runners (LOOT, xEdit) and the conflict
-    analyzer are injected so they can be mocked in tests and wired from the
-    supervisor in production.
+    dependencies; the xEdit runner and the conflict analyzer are injected so
+    they can be mocked in tests and wired from the supervisor in production.
+    No recibe runner de LOOT a propósito (A3, ver docstring del módulo).
     """
 
     AGENT_ID = "chain-preview-service"
@@ -97,7 +103,6 @@ class ChainPreviewService:
         path_resolver: PathResolutionService,
         path_validator: PathValidator,
         event_bus: CoreEventBus,
-        loot_runner: LOOTRunner,
         xedit_runner: XEditRunner,
         conflict_analyzer: ConflictAnalyzer,
         stage9_coordination: Stage9Coordination | None = None,
@@ -107,7 +112,6 @@ class ChainPreviewService:
         self._snapshot_manager = snapshot_manager
         self._path_validator = path_validator
         self._event_bus = event_bus
-        self._loot_runner = loot_runner
         self._xedit_runner = xedit_runner
         self._conflict_analyzer = conflict_analyzer
         # T-18: para resolver los dirs de plugins y contar límites con flags
@@ -235,18 +239,24 @@ class ChainPreviewService:
     # ------------------------------------------------------------------
 
     async def _preview_loot(self, load_order_file: pathlib.Path) -> StageChangeSet:
-        """Run LOOT for real (it writes the order); the lock reverts the file."""
-        before = await self._read_plugin_order(load_order_file)
-        result = await self._loot_runner.sort()
-        after = list(result.sorted_plugins) if result.sorted_plugins else before
+        """Etapa LOOT del preview: NO se ejecuta LOOT (A3); se usa el orden actual.
 
+        Las etapas siguientes (guard de 255 y scan de xEdit) leen el orden vigente
+        del perfil. El orden que produciría LOOT sólo existe tras el sort real,
+        que tiene su propia aprobación y su veredicto verificado.
+        """
+        current = await self._read_plugin_order(load_order_file)
+        aviso = (
+            "LOOT no se simula en el preview: el sort real corre bajo USVFS con aprobación "
+            "(execute_loot_sorting). Las etapas siguientes usan el orden actual del perfil."
+        )
         return StageChangeSet(
             stage="loot",
-            executed_for_real=True,
-            files_touched=[str(load_order_file)],
-            load_order_diff=LoadOrderDiff.from_orders(before, after),
-            warnings=list(result.warnings),
-            summary=f"LOOT would reorder {len(after)} plugin(s); file reverted after preview.",
+            executed_for_real=False,
+            files_touched=[],
+            load_order_diff=LoadOrderDiff.from_orders(current, current),
+            warnings=[aviso],
+            summary=aviso,
         )
 
     async def _preview_xedit(self, plugins: list[str], target_plugin: pathlib.Path) -> StageChangeSet:

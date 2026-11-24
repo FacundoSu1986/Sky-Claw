@@ -197,6 +197,15 @@ rig confirmation.
 - **Error "Something went wrong!":** `plugins.txt` is read-only. Clear the read-only attribute and retry.
 - **LOOT detects zero installed mods:** the VFS game path is built on symlinks. LOOT cannot resolve mods through symlinked VFS. Use a direct path or reconfigure the VFS without symlinks.
 
+**Verdict (Sky-Claw, `loot_service.sort_load_order`):** the exit code does NOT report the sort result, and a changed load order is NOT proof of success. LOOT is launched from ONE place (`local/loot/cli.py`, anchor `tests/test_loot_lanzador_unico.py`), always under MO2's USVFS through the broker in production, with an isolated `--loot-data-path`. The verdict (`local/loot/outcome.py`) requires, in order:
+1. a clean process exit;
+2. a FRESH execution witness (`LOOTDebugLog.txt` recreated by this run: a second instance blocked by the `LOOT.Shell.Instance` mutex also exits 0);
+3. an observable load order before and after, compared semantically;
+4. **an unchanged set of ENABLED plugins** — LOOT only reorders, and libloadorder silently drops plugins it cannot see, so a run that activates or deactivates anything is `FAIL`/`active_plugins_changed` and is rolled back;
+5. no fatal signature in this run's debug log (closed set in `local/loot/debug_log.py`; any other `[error]` is reported in `loot_log`, not gated — gating every error would false-red on benign lines such as the Xbox gaming root scan).
+
+The brokered job carries `expected_plugins`: the worker refuses to launch LOOT if an enabled plugin is not visible in the virtual Data (`PRECONDITION_FAILED`, nothing written). A rollback the lock vetoed (unknown worker terminality) or could not complete leaves the journal transaction `PENDING`, never `ROLLED_BACK`; the response carries the snapshot paths for manual recovery. `updateMasterlist = false` is a managed setting: the daemon downloads the masterlist and prelude through the `NetworkGateway` into the isolated data root before the sort (branch from the attested `LOOT.exe` version, `local/loot/masterlist_provision.py`), and the worker refuses to launch LOOT without them (`PRECONDITION_FAILED`) — upstream would silently sort without metadata. Offline, only a previous copy from the SAME source is reused. Rig checklist: [`../../docs/operations/loot_smoke_rig.md`](../../docs/operations/loot_smoke_rig.md).
+
 ---
 
 ### 2.6 Wrye Bash
@@ -334,6 +343,7 @@ There is no record-level merge for assets.
 |---------|-----------|---------------|
 | LOOT: "Something went wrong!" | `plugins.txt` read-only | Clear read-only attribute |
 | LOOT: zero mods detected | VFS path uses symlinks | Reconfigure VFS with direct path |
+| LOOT: `active_plugins_changed` / enabled plugins vanish from `plugins.txt` after a sort | LOOT did not see those plugins (partial USVFS projection or mod not installed) and libloadorder dropped them | Sky-Claw restores the snapshot; enable/reinstall the mod in MO2 and re-run. Do NOT accept the sorted file |
 | Wrye Bash: "FILE NOT FOUND" | Master moved/deleted between runs | Re-run LOOT, then rebuild |
 | Wrye Bash: "Unrecognized version" / CTD on Header 1.71 | Native incompatibility with 1.71 | Inject BEES mod before rebuild |
 | Magic overhaul: mana costs multiplied | Wrye Bash merged magic effects | Rebuild patch with Leveled Lists ONLY; NEVER merge magic |

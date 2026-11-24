@@ -201,11 +201,11 @@ LANZADORES_ESPERADOS = {
     # modding de terceros y la composición productiva permanece fail-closed
     # mediante resolve_production_verifier_executable().
     "sky_claw/local/runtime_vault/operator_verifier_bridge.py": 1,
-    # Mixto: además del `create_subprocess_exec` legacy que SÍ es lanzador de
-    # LOOT (con entrada propia en PROCEDENCIA_DE_FLAGS), este módulo tiene un
-    # `subprocess.run(["taskkill", ...])` puramente infra — mismo módulo, dos
-    # naturalezas distintas, un solo conteo agregado.
-    "sky_claw/app/core/windows_interop.py": 3,
+    # Infra: `wslpath` (create_subprocess_exec) y `subprocess.run(["taskkill", ...])`.
+    # M3: el `create_subprocess_exec` legacy que lanzaba LOOT (`ModdingToolsAgent.run_loot`,
+    # rutas hardcodeadas, sin lock/journal/testigo) se retiró; el único lanzador de LOOT
+    # es `local/loot/cli.py` (ancla: tests/test_loot_lanzador_unico.py).
+    "sky_claw/app/core/windows_interop.py": 2,
     # EXP-M4 (research-only): un único `subprocess.run(["git", "rev-parse", "HEAD"])`
     # para el bloque de reproducibilidad del reporte (SHA del head del worktree).
     # Infra de metadatos del propio repo: argv fijo sin flags de ninguna
@@ -221,7 +221,8 @@ LANZADORES_ESPERADOS = {
     "sky_claw/local/native_parallax/research/run_exp_m5.py": 1,
     # Lanzadores de herramienta: cada uno debe tener entrada en PROCEDENCIA_DE_FLAGS.
     "sky_claw/local/loot/cli.py": 1,
-    "sky_claw/local/loot/version.py": 1,
+    # M1: `local/loot/version.py` ya no lanza `LOOT.exe --version` (tomaba el mutex
+    # global de LOOT); lee el VERSIONINFO del PE (`binary_version`).
     "sky_claw/local/mo2/vfs.py": 1,
     "sky_claw/local/tools/bodyslide_runner.py": 1,
     "sky_claw/local/tools/dyndolod_runner.py": 1,
@@ -249,8 +250,6 @@ LANZADORES_ESPERADOS = {
 LANZADORES_DE_HERRAMIENTA = frozenset(
     {
         "sky_claw/local/loot/cli.py",
-        "sky_claw/local/loot/version.py",
-        "sky_claw/app/core/windows_interop.py",
         "sky_claw/local/mo2/vfs.py",
         "sky_claw/local/tools/bodyslide_runner.py",
         "sky_claw/local/tools/dyndolod_runner.py",
@@ -275,8 +274,6 @@ LANZADORES_DE_HERRAMIENTA = frozenset(
 #: herramienta. Un runner sin procedencia es un runner que nadie verificó.
 PROCEDENCIA_DE_FLAGS = {
     "sky_claw/local/loot/cli.py": "loot/loot — src/gui/qt/main.cpp (opciones Qt declaradas)",
-    "sky_claw/local/loot/version.py": "loot/loot — src/gui/qt/main.cpp (addVersionOption)",
-    "sky_claw/app/core/windows_interop.py": "loot/loot — src/gui/qt/main.cpp (lanzador legacy, deprecado)",
     "sky_claw/local/tools/bodyslide_runner.py": (
         "ousnius/BodySlide-and-Outfit-Studio — src/bodyslide/BodySlideApp.cpp::OnCmdLineParsed "
         "(tag v6.2.0 99103c3), descriptor g_cmdLineDesc"

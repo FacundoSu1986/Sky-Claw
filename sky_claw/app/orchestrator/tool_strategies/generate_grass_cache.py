@@ -39,7 +39,21 @@ class GenerateGrassCacheStrategy:
         partes = [
             f"worldspaces={params.worldspaces!r}",
             f"conflicting_mods={params.conflicting_mods!r}",
+            f"mode={params.mode!r}",
         ]
+        if params.mode == "rebuild":
+            # Lo que el humano tiene que saber ANTES de aprobar: esto borra.
+            partes.append("REBUILD: regenera el caché desde cero (NGIO borra el anterior)")
+        if params.mode == "new":
+            # NEW también escribe el flag vacío: el mismo disparador de borrado.
+            partes.append(
+                "NEW: escribe el flag vacío — cobertura USVFS sin demostrar: puede borrar .cgid de mods habilitados"
+            )
+        if params.ack_usvfs_no_verificado:
+            # El respaldo cubre overwrite/Grass, no el overlay de los mods.
+            partes.append(
+                "ack_usvfs_no_verificado=True (el respaldo NO cubre .cgid de mods habilitados: cobertura VFS sin demostrar)"
+            )
         if params.max_runtime_s is not None:
             partes.append(f"max_runtime_s={params.max_runtime_s!r}")
         if params.max_restarts is not None:

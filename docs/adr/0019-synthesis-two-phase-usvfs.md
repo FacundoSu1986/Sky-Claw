@@ -475,6 +475,22 @@ x64 instalado):
   cada corrida brokered **salvo con veto de rollback** (terminalidad del worker desconocida: podría seguir
   ejecutando los shims) o cancelación; un fallo al liberar se registra y no cambia el resultado del run.
   Censo de borrado: `synthesis_fase1` declarado `link-aware`/`requiere`.
+- **PR-3k (`SynthesisPreset` y versionado Git como upstream):** dos partes.
+  (1) **Fidelidad:** `synthesis_fase1.versionado_efectivo` copia `GitPatcherVersioning.Factory` 0.36.6:
+  `Tag` sin `LatestTag` y `Branch` sin `AutoUpdateToBranchTip` (el default) se ejecutan como `Commit`
+  con `TargetCommit`; defaults upstream `PatcherVersioning=Branch`, `LatestTag=true`,
+  `AutoUpdateToBranchTip=false`. PR-3f rechazaba esos perfiles aunque upstream los corre fijados.
+  (2) **Dinámicos** (`Tag`+`LatestTag` → `TargetTag`; `Branch`+`AutoUpdateToBranchTip` → punta de
+  `TargetBranch`, como `GetRepoTarget`): la Fase 1 **no** consulta la red; exige un pin del preset y sin
+  él falla cerrado. `synthesis_presets` (nuevo, estricto): `fijar_preset` junta los refs dinámicos de la
+  selección y los resuelve con `synthesis_fuentes_git.resolver_refs_remotos` (`git ls-remote` de refs
+  exactos, mismo aislamiento que el fetch, UNA compuerta HITL `synthesis-git-ls-remote` que enumera
+  repos/refs/host; tag anotado → `^{}`); `guardar_preset`/`cargar_preset` con esquema cerrado y escritura
+  atómica; `PreparadorFase1(pins=preset.pins)`. Volver a fijar es la única forma de "actualizar" un
+  patcher dinámico. Censos: productores HITL y clasificación por spawn. **Rig (solo lectura, sin MO2):**
+  `ls-remote` real resolvió el tag `0.36.6` de Synthesis a `d8150fb29d54…` (el pin de PR-3i) con 1 HITL.
+  Pendiente: dónde vive el preset y quién lo fija (GUI/agente) es PR-4; el modo "preset declarativo sin
+  `PipelineSettings.json`" del §2.6 no se implementa en este corte.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.
