@@ -284,6 +284,7 @@ class EvidenciaTransicion:
     outgoing_manual_runtime_root: pathlib.Path | None
     stock_reference_digest: str | None
     approval_provenance: str
+    mic_verified_on_windows: bool | None = None
 
     def campos_derivados(self) -> dict[str, object]:
         """Los campos del scope que salen de la evidencia (sin ``approval_id``/``seq``).
@@ -899,6 +900,7 @@ def derivar_evidencia_transicion(
         ),
         stock_reference_digest=stock_reference_digest,
         approval_provenance=provenance,
+        mic_verified_on_windows=clone_verificacion.mic_verified_on_windows,
     )
 
 

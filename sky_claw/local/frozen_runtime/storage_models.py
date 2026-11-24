@@ -113,13 +113,14 @@ class GenerationInventory:
 
 @dataclass(frozen=True, slots=True)
 class GenerationVerificationResult:
-    """Resultado de la verificación on-demand de una Generation (P2 hook)."""
+    """Resultado de la verificación on-demand de una Generation o Runtime Clone."""
 
     state: GenerationVerificationState
     message: str = ""
     recorded: GenerationMetadata | None = None
     observed_digest: TreeDigest | None = None
     observed_identity: RuntimeIdentity | None = None
+    mic_verified_on_windows: bool | None = None
 
     @property
     def success(self) -> bool:
