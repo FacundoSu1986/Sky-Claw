@@ -565,3 +565,88 @@ cuarentena expresa el abandono sin competir con la transición del hilo.
 `_CONTENCION_BODYSLIDE_VERIFICADA = False`). Con el perfil aislado no hay identidad de máquina y la
 corrida falla cerrada antes de mutar. Una cancelación durante `iniciar_transaccion` deja un journal
 `PREPARADO` sin mutación: bloquea la instancia hasta el próximo arranque, que lo cierra sin cambios.
+
+### 13.6 PR 2c-2 — propuesta de contrato (PENDIENTE DE APROBACIÓN)
+
+Estado: `PROPUESTA / SIN IMPLEMENTAR`. 2c-1 se mergeó en #1021 (`0c23c24`). §13.5 le asigna a 2c-2:
+broker USVFS con `worker_exit` como evidencia de terminalidad para `LANZADO`, paridad de
+`_SAFE_NAME_PATTERN` y trabajo en segundo plano. Hasta que el propietario apruebe esta sección no se
+escribe código.
+
+**Corte propuesto.** Las tres piezas no comparten superficie ni riesgo. Dos cambian el comportamiento
+visible de la tool y no dependen del broker; la tercera agrega un `tool_id` al protocolo firmado. Se
+propone partir 2c-2 en dos PRs secuenciales, cada uno con su revisión adversarial (P-6):
+
+| PR | Contenido | Superficie | Depende de |
+|---|---|---|---|
+| **2c-2a** | Paridad del schema + trabajo en segundo plano | tool del agente (`schemas.py`, `system_tools.py`, `AppContext`) | 2c-1 |
+| **2c-2b** | `tool_id="bodyslide"` + handler del worker + `brokered_bodyslide.py` dormido + `worker_exit` → `TERMINAL` | protocolo VFS (`vfs_contracts`, `vfs_worker`, broker) | 2c-2a |
+
+#### 2c-2a — paridad del schema y trabajo en segundo plano
+
+1. **Paridad (§6, fila «estado de salida inconsistente»).** `BodySlideBatchParams.group` hoy acepta
+   lo que `_SAFE_NAME_PATTERN` admite (`CBBE.`, `CON`, ` CBBE`) y el servicio lo rechaza después.
+   Propiedad: *el schema rechaza exactamente lo que rechaza el contrato*. Receta: el validador de
+   `group` delega en `bodyslide_headless.validar_nombre_de_grupo`: una sola implementación, sin copiar
+   la regla en el schema. Se conservan `pattern` y el chequeo de `.`/`..`.
+   Ancla: un corpus enumerado (espacios iniciales y finales, punto final, cada dispositivo Win32 con y
+   sin extensión, superíndices, caracteres prohibidos, nombres válidos con punto interior) donde
+   `schema acepta ⇔ validar_nombre_de_grupo acepta`, más un test AST que exige que el validador del
+   schema llame a la función del contrato. `preset` no es carpeta y queda igual.
+2. **Segundo plano (R-8).** `DEFAULT_TOOL_ROUND_TIMEOUT` (120 s) **cancela** la llamada. Con 2c-1,
+   cancelar con el proceso lanzado deja el journal en `LANZADO` (HOLD). Un build largo bajo el agente
+   termina siempre en HOLD. Receta: el patrón de `generate_lods` y `run_synthesis` (ADR 0019 §2.6).
+   `run_bodyslide_batch` responde enseguida con `trabajo_id` y el aviso final viaja por
+   `notify_operator`. El gestor admite **una** corrida a la vez y sigue toda tarea sin terminar.
+   `AppContext` registra su `cerrar()` en el cleanup. El apagado cancela, y eso sigue la regla de 2c-1:
+   HOLD si el proceso estaba lanzado, nunca una restauración a ciegas.
+   Anclas: la tool devuelve `trabajo_id` antes del plazo del router; una segunda corrida con la
+   primera en curso se rechaza; `cerrar()` cancela la tarea viva; el censo de superficies de 2a sigue
+   exigiendo que solo el servicio llame a `run_batch(`.
+
+#### 2c-2b — broker USVFS dormido y `worker_exit`
+
+1. **Protocolo.** `ALLOWED_VFS_TOOL_IDS` suma `"bodyslide"`; no es de sesión, es un solo job.
+   `_bodyslide_handler` recibe un payload cerrado por igualdad de claves: `bodyslide_exe` (ruta
+   virtual), `exe_sha256`, `group`, `target`, `preset`, `build_morphs` y `quiet_verified`. El worker
+   **reconstruye** el argv con `construir_argv`; nunca recibe un argv armado. El worker no siembra ni
+   restaura, porque el journal es del daemon (D1, ADR 0007).
+2. **Identidad del exe (D7, mitad del worker).** El worker abre el exe con `FILE_SHARE_READ`, sin
+   `WRITE` ni `DELETE`, lo re-hashea, compara contra `exe_sha256` y retiene el handle hasta que
+   `CreateProcess` vuelve. Si no coincide: fallo tipado, sin spawn. El registro de binarios atestiguados
+   (la otra mitad de D7) queda fuera.
+3. **Estrategia.** `brokered_bodyslide.py` sigue la forma de `brokered_synthesis.py`:
+   `resolve_bodyslide_backend` (`standalone` | `brokered`, sin fallback), guard
+   `VfsRequiredBodySlideRunner` y barrera propia `_CONTENCION_BODYSLIDE_VERIFICADA` (la del servicio,
+   que sigue en `False`). No hay call site productivo del backend brokered: ancla AST, igual que en 2b.
+4. **`worker_exit` como evidencia (la propiedad de 2c-2).** `submit` solo devuelve después del fence
+   `worker_exit` con el Job vacío. Por eso:
+   - `submit` vuelve con resultado: `marcar_terminal` y restauración en el mismo hilo retenido de 2c-1;
+   - `VfsJobTimeoutError` o `VfsTeardownError` con `exception_forbids_rollback`: **no** hay
+     terminalidad. El journal queda en `LANZADO`, la instancia queda en la cuarentena VFS existente y
+     el resultado es `HOLD_TERMINALITY_UNKNOWN`;
+   - cancelación: igual que en 2c-1 (HOLD con el proceso lanzado).
+
+   Propiedad: *solo el fence del broker convierte `LANZADO` en `TERMINAL`*. Ancla: tabla enumerada
+   {resultado, timeout con veto, timeout sin veto, teardown, cancelación} → {estado del journal, ¿se
+   restauró?} congelada por igualdad literal, con un doble del broker.
+5. **Fuera de 2c-2b:** registro de binarios atestiguados (D7), censo de procesos (D8), staging nuevo con
+   handles (D2/D9) y scratch como overwrite forzado (D3). D3 y D4 son hipótesis hasta el sondeo del
+   rig (C4). D2 y D9 nacen con la raíz de staging que consume la publicación (2d). Hasta entonces, el
+   backend brokered usa el destino legacy `<game>/BodySlide_Output/<grupo>`, que está fuera del `Data`
+   virtual, y sigue dormido.
+
+#### Decisión abierta para el propietario
+
+**`worker_exit` tardío.** Si el teardown falla, el broker libera su cuarentena VFS cuando llega un
+`worker_exit` tardío (`_liberar_cuarentena_por_worker_exit`). El journal v1 no guarda el `job_id`, así
+que ese evento no puede probar la terminalidad de **esta** corrida. Opciones:
+
+- **(a) Recomendada:** no se automatiza. El journal queda en `LANZADO` y se libera solo con evidencia
+  del operador, con una función nueva `registrar_terminalidad_por_operador(evidencia)` (`LANZADO →
+  TERMINAL`, mismo vocabulario que `liberar_cuarentena`). No cambia el schema.
+- **(b)** Schema v2 del journal con `vfs_job_id`, y el broker notifica el `worker_exit` tardío al
+  journal. Es automático, pero cambia un schema cerrado y acopla el broker con BodySlide.
+
+**Semáforo de la propuesta:** 🟡 AMARILLO, espera aprobación. No se encontró defecto P0/P1 en `main`;
+producción sigue apagada (`quiet_verified=False`, barrera en `False`).
