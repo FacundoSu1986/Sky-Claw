@@ -510,3 +510,154 @@ async def test_cancelar_durante_lanzado_registra_terminal_y_restaura(
     assert run_capture.await_count == 0
     assert (exe.parent / "Config.xml").read_text(encoding="utf-8") == _CONFIG
     assert not _ruta_del_journal(runner).exists()
+
+
+# ---------------------------------------------------------------------------
+# Review CodeRabbit #1021 (segunda ronda)
+# ---------------------------------------------------------------------------
+
+
+def test_cr3_un_guardado_entre_clasificar_y_escribir_no_se_pisa(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cada archivo se re-clasifica justo antes de escribirlo: un guardado intermedio frena todo."""
+    exe_dir = tmp_path / "BodySlideCR3"
+    exe_dir.mkdir()
+    (exe_dir / "Config.xml").write_text(_CONFIG, encoding="utf-8")
+    (exe_dir / "BodySlide.xml").write_text(_APP, encoding="utf-8")
+    tx = bj.iniciar_transaccion(
+        almacen=_almacen(tmp_path),
+        identidad=bj.IdentidadDeEjecucion(maquina="m", instancia=identidad_de_instancia(exe_dir)),
+        exe_dir=exe_dir,
+        bytes_sembrados=b"<Config><TargetGame>4</TargetGame><Sembrado/></Config>",
+    )
+    tx.sembrar()
+    tx.marcar_lanzado()
+    (exe_dir / "BodySlide.xml").write_text("<BodySlideConfig>corrida</BodySlideConfig>", encoding="utf-8")
+    tx.marcar_terminal()
+    guardado = "<BodySlideConfig>guardado-del-usuario</BodySlideConfig>"
+    real = bj._reemplazar_atomico
+
+    def _usuario_guarda_en_el_medio(destino: pathlib.Path, blob: bytes) -> None:
+        if destino.name == "Config.xml":
+            (exe_dir / "BodySlide.xml").write_text(guardado, encoding="utf-8")
+        real(destino, blob)
+
+    monkeypatch.setattr(bj, "_reemplazar_atomico", _usuario_guarda_en_el_medio)
+    informe = tx.restaurar()
+    assert informe.veredicto is bj.Veredicto.CONCURRENT_MODIFICATION
+    assert (exe_dir / "BodySlide.xml").read_text(encoding="utf-8") == guardado
+    assert tx.ruta.exists()
+
+
+async def test_cr4_la_limpieza_automatica_no_borra_la_cuarentena_de_otra_corrida(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tx, _ = _tx_sembrable(tmp_path)
+    liberar = threading.Event()
+    sembrar_real = bj.TransaccionDeConfig.sembrar
+
+    def _colgado(self: bj.TransaccionDeConfig) -> None:
+        liberar.wait(30)
+        sembrar_real(self)
+
+    monkeypatch.setattr(bj.TransaccionDeConfig, "sembrar", _colgado)
+    with pytest.raises(bj.SiembraColgadaError):
+        await bj.SiembraConPlazo(tx, plazo=0.05).ejecutar()
+    # El operador libera la cuarentena de A y otra corrida B publica la suya.
+    assert bj.liberar_cuarentena(tx.almacen, evidencia="prueba")
+    bj.poner_en_cuarentena(tx.almacen, run_id="b" * 32, motivo="corrida B colgada")
+    liberar.set()
+    assert await asyncio.to_thread(_esperar, lambda: not tx.ruta.exists())
+    marcador = json.loads(tx.almacen.marcador_de_cuarentena.read_text(encoding="utf-8"))
+    assert marcador["run_id"] == "b" * 32, "la limpieza de A borró la cuarentena de B"
+
+
+async def test_cr8_config_cambiado_entre_calcular_y_snapshot_no_siembra_contenido_viejo(
+    tmp_path: pathlib.Path,
+) -> None:
+    runner = _runner(tmp_path)
+    exe = runner.config.bodyslide_exe
+    real = calcular_config_sembrada
+    llamadas = [0]
+
+    def _calculo_con_edicion_concurrente(**kwargs: object) -> bytes:
+        bytes_calculados = real(**kwargs)  # type: ignore[arg-type]
+        llamadas[0] += 1
+        if llamadas[0] == 1:
+            # El usuario guarda Config.xml justo después del cálculo y antes del snapshot.
+            (exe.parent / "Config.xml").write_text(_CONFIG.replace("/mis/proyectos", "/otros"), encoding="utf-8")
+        return bytes_calculados
+
+    run_capture = AsyncMock()
+    with (
+        patch("sky_claw.local.tools.bodyslide_runner.calcular_config_sembrada", _calculo_con_edicion_concurrente),
+        patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture),
+    ):
+        resultado = await _correr(runner, _destino(tmp_path))
+    assert resultado.estado == "CONCURRENT_MODIFICATION"
+    assert run_capture.await_count == 0
+    assert "/otros" in (exe.parent / "Config.xml").read_text(encoding="utf-8")
+    assert not _ruta_del_journal(runner).exists()
+
+
+async def test_cr9_cancelar_mientras_se_abre_el_journal_no_lo_deja_huerfano(
+    tmp_path: pathlib.Path,
+) -> None:
+    runner = _runner(tmp_path)
+    exe = runner.config.bodyslide_exe
+    entro = threading.Event()
+    liberar = threading.Event()
+
+    def _apertura_lenta(**kwargs: object) -> bj.TransaccionDeConfig:
+        entro.set()
+        liberar.wait(30)
+        return bj.iniciar_transaccion(**kwargs)  # type: ignore[arg-type]
+
+    run_capture = AsyncMock()
+    with (
+        patch("sky_claw.local.tools.bodyslide_runner.iniciar_transaccion", _apertura_lenta),
+        patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture),
+    ):
+        tarea = asyncio.create_task(_correr(runner, _destino(tmp_path)))
+        assert await asyncio.to_thread(entro.wait, 10)
+        tarea.cancel()
+        liberar.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+    assert run_capture.await_count == 0
+    assert (exe.parent / "Config.xml").read_text(encoding="utf-8") == _CONFIG
+    assert not _ruta_del_journal(runner).exists(), "el PREPARADO de una apertura cancelada bloquea la instancia"
+
+
+def test_cr12_un_archivo_inclasificable_no_impide_registrar_terminal(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TERMINAL se registra igual; el archivo inclasificable queda fuera de la restauración."""
+    exe_dir = tmp_path / "BodySlideCR12"
+    exe_dir.mkdir()
+    (exe_dir / "Config.xml").write_text(_CONFIG, encoding="utf-8")
+    tx = bj.iniciar_transaccion(
+        almacen=_almacen(tmp_path),
+        identidad=bj.IdentidadDeEjecucion(maquina="m", instancia=identidad_de_instancia(exe_dir)),
+        exe_dir=exe_dir,
+        bytes_sembrados=b"<Config><TargetGame>4</TargetGame><Sembrado/></Config>",
+    )
+    tx.sembrar()
+    tx.marcar_lanzado()
+    real = bj._huella_actual
+
+    def _buildselection_es_un_enlace(destino: pathlib.Path) -> str:
+        if destino.name == "BuildSelection.xml":
+            raise bj.ModificacionConcurrenteError("'BuildSelection.xml' es un enlace")
+        return real(destino)
+
+    monkeypatch.setattr(bj, "_huella_actual", _buildselection_es_un_enlace)
+    tx.marcar_terminal()
+    assert _estado_en_disco(tx.ruta) == "TERMINAL"
+    assert tx.restaurar().veredicto is bj.Veredicto.CONCURRENT_MODIFICATION
+    assert _estado_en_disco(tx.ruta) == "TERMINAL", "la evidencia de terminalidad se conserva"
+    # El operador retira el enlace: la siguiente restauración ya puede cerrar.
+    monkeypatch.setattr(bj, "_huella_actual", real)
+    assert tx.restaurar().veredicto is bj.Veredicto.RESTAURADO
+    assert (exe_dir / "Config.xml").read_text(encoding="utf-8") == _CONFIG

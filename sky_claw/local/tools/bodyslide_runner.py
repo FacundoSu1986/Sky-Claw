@@ -29,6 +29,7 @@ Limites honestos (ADR 0019 / PR 2):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import pathlib
@@ -625,12 +626,24 @@ class BodySlideRunner:
             )
             logger.error("BodySlide aborted before spawn: %s", message)
             return resultado_de_fallo("CONFIG_PRECONDITION_FAILED", message)
-        try:
-            tx = await mutar_hasta_terminal(
-                lambda: iniciar_transaccion(
-                    almacen=almacen, identidad=identidad, exe_dir=exe_dir, bytes_sembrados=bytes_sembrados
-                )
+        abiertas: list[TransaccionDeConfig] = []
+
+        def _abrir() -> TransaccionDeConfig:
+            transaccion = iniciar_transaccion(
+                almacen=almacen, identidad=identidad, exe_dir=exe_dir, bytes_sembrados=bytes_sembrados
             )
+            abiertas.append(transaccion)
+            return transaccion
+
+        try:
+            tx = await mutar_hasta_terminal(_abrir)
+        except asyncio.CancelledError:
+            # Review CodeRabbit #1021: el hilo pudo dejar PREPARADO durable antes de que
+            # se propagara la cancelación. Nada se mutó todavía: se cierra sin cambios.
+            if abiertas:
+                with contextlib.suppress(JournalError, OSError):
+                    await mutar_hasta_terminal(abiertas[0].abortar_sin_mutar)
+            raise
         except JournalOcupadoError as exc:
             message = (
                 f"Hay una corrida anterior de BodySlide sin recuperar ({exc}). El reconciliador la resuelve "
@@ -643,6 +656,27 @@ class BodySlideRunner:
             message = f"La configuración de BodySlide no admite una transacción segura: {exc}"
             logger.error("BodySlide aborted before spawn: %s", message)
             return resultado_de_fallo("CONFIG_PRECONDITION_FAILED", message)
+
+        # 3c) Review CodeRabbit #1021: la siembra se calculó ANTES del snapshot del
+        #     journal. Si Config.xml cambió en esa ventana, el journal registró el nuevo
+        #     original con el hash de una siembra vieja. Se recalcula sobre lo que hay
+        #     ahora (= el original registrado); si difiere, se cierra sin mutar.
+        try:
+            recalculada = await asyncio.to_thread(
+                calcular_config_sembrada,
+                exe_dir=exe_dir,
+                game_path=self.config.game_path,
+                output_root=raiz_de_salida,
+                expected_target_game=self.config.expected_target_game,
+            )
+        except BodySlideConfigPreconditionError:
+            recalculada = None
+        if recalculada != bytes_sembrados:
+            with contextlib.suppress(JournalError, OSError):
+                await mutar_hasta_terminal(tx.abortar_sin_mutar)
+            message = "Config.xml cambió entre el cálculo de la siembra y el snapshot del journal; no se siembra."
+            logger.error("BodySlide aborted before spawn: %s", message)
+            return resultado_de_fallo("CONCURRENT_MODIFICATION", message)
 
         # 4) PERÍMETRO TRANSACCIONAL — el journal decide qué se restaura y cuándo.
         #    - Siembra abandonada por plazo/cancelación: el hilo de la siembra es el

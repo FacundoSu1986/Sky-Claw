@@ -805,6 +805,29 @@ def _restaurar(
     fallos: list[str] = []
     for archivo in nuestros:
         destino = exe_dir / archivo.nombre
+        # Review CodeRabbit #1021: se re-clasifica JUSTO antes de escribir. Un guardado
+        # del usuario entre la clasificación y la escritura es de terceros: frena todo.
+        try:
+            huella = _huella_actual(destino)
+        except ModificacionConcurrenteError as exc:
+            return InformeDeRecuperacion(
+                Veredicto.CONCURRENT_MODIFICATION, ruta, str(exc), tuple(restaurados)
+            ), documento
+        except OSError as exc:
+            fallos.append(f"{archivo.nombre}: {exc}")
+            continue
+        if huella == archivo.huella_original:
+            continue
+        if huella not in archivo.esperados_sha256:
+            return (
+                InformeDeRecuperacion(
+                    Veredicto.CONCURRENT_MODIFICATION,
+                    ruta,
+                    f"{archivo.nombre}: cambió durante la restauración",
+                    tuple(restaurados),
+                ),
+                documento,
+            )
         try:
             if archivo.original is None:
                 _retirar(destino)
@@ -914,8 +937,17 @@ class TransaccionDeConfig:
         self._exigir(_E.TERMINAL)
         archivos = []
         for archivo in self._documento.archivos:
-            observado = _huella_actual(self._exe_dir / archivo.nombre)
-            esperados = () if observado == archivo.huella_original else (observado,)
+            # Review CodeRabbit #1021: el proceso YA terminó; un archivo que no se puede
+            # clasificar (enlace, no regular) no puede borrar esa evidencia. Queda sin
+            # contenido esperado, así que nunca se restaura sobre él.
+            try:
+                observado: str | None = _huella_actual(self._exe_dir / archivo.nombre)
+            except ModificacionConcurrenteError:
+                observado = None
+            if observado is None or observado == archivo.huella_original:
+                esperados: tuple[str, ...] = ()
+            else:
+                esperados = (observado,)
             archivos.append(dataclasses.replace(archivo, esperados_sha256=esperados))
         self._documento = _transicionar(
             self._almacen, self._ruta, self._documento, _E.TERMINAL, archivos=tuple(archivos)
@@ -1022,7 +1054,19 @@ def cuarentena_activa(almacen: AlmacenDeJournal) -> bool:
     return path_present(almacen.marcador_de_cuarentena)
 
 
-def _retirar_cuarentena(almacen: AlmacenDeJournal) -> bool:
+def _run_id_de_la_cuarentena(almacen: AlmacenDeJournal) -> str | None:
+    try:
+        datos = json.loads(almacen.marcador_de_cuarentena.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    run_id = datos.get("run_id") if isinstance(datos, dict) else None
+    return run_id if isinstance(run_id, str) else None
+
+
+def _retirar_cuarentena(almacen: AlmacenDeJournal, *, solo_de: str | None = None) -> bool:
+    """Retira el marcador. Con ``solo_de``, sólo si lo publicó ESA corrida (review CodeRabbit #1021)."""
+    if solo_de is not None and _run_id_de_la_cuarentena(almacen) != solo_de:
+        return False
     try:
         _retirar(almacen.marcador_de_cuarentena)
     except FileNotFoundError:
@@ -1080,7 +1124,7 @@ class SiembraConPlazo:
             logger.exception("BodySlide: la siembra abandonada terminó pero no se pudo restaurar; sigue en cuarentena")
             return
         if informe.veredicto in {Veredicto.RESTAURADO, Veredicto.SIN_CAMBIOS}:
-            _retirar_cuarentena(self._tx.almacen)
+            _retirar_cuarentena(self._tx.almacen, solo_de=self._tx.run_id)
             logger.warning("BodySlide: la siembra abandonada terminó y se restauró; cuarentena retirada.")
         else:
             logger.error("BodySlide: la siembra abandonada terminó en %s; sigue en cuarentena", informe.veredicto.value)

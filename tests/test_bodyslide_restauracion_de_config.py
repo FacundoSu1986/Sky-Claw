@@ -451,8 +451,9 @@ async def test_buildselection_retargeteado_no_se_escribe_a_traves_del_enlace(tmp
 
     PR 2c-1: la config de partida es regular (una enlazada se rechaza antes de mutar).
     Si durante la corrida ``BuildSelection.xml`` pasa a ser un enlace a B, el journal lo
-    clasifica como contenido ajeno al registrar ``TERMINAL``: no escribe nada a través
-    del enlace, el resultado es ``RESTORE_FAILED`` (nunca éxito) y B queda intacto.
+    clasifica como contenido ajeno: ``TERMINAL`` se registra igual (review CodeRabbit #1021),
+    nada se escribe a través del enlace, el resultado es ``CONCURRENT_MODIFICATION`` (nunca
+    éxito) y B queda intacto.
     """
     try:
         (tmp_path / "enlace_probe").symlink_to(tmp_path, target_is_directory=True)
@@ -485,6 +486,6 @@ async def test_buildselection_retargeteado_no_se_escribe_a_traves_del_enlace(tmp
         )
 
     assert result.success is False
-    assert result.estado == "RESTORE_FAILED"
+    assert result.estado == "CONCURRENT_MODIFICATION"
     assert externo_b.read_text(encoding="utf-8") == "<BuildSelection><zap>PRESERVADO-B</zap></BuildSelection>\n"
     assert enlace.is_symlink(), "el enlace no se reemplaza ni se borra"
