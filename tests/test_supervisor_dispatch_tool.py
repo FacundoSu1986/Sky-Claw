@@ -34,7 +34,6 @@ def supervisor() -> SupervisorAgent:
     sup.scraper = MagicMock()
     sup.scraper.query_nexus = AsyncMock()
     sup.tools = MagicMock()
-    sup.tools.run_loot = AsyncMock()
     sup._loot_service = MagicMock()
     sup._loot_service.sort_load_order = AsyncMock()
     sup.interface = MagicMock()
@@ -115,8 +114,6 @@ async def test_execute_loot_sorting_validates_params_and_sorts_via_service(super
     assert isinstance(loot_params, LootExecutionParams)
     assert loot_params.profile_name == "MyProfile"
     assert loot_params.update_masterlist is False
-    # The deprecated, lock-free path must no longer be used.
-    supervisor.tools.run_loot.assert_not_awaited()
     assert result == {"status": "ok"}
 
 

@@ -9,18 +9,20 @@ no resuelve symlinks). El preflight (T-15) combina esto con
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 import re
 
-from sky_claw.local.tools._process import run_capture
+from sky_claw.local.loot.binary_version import LootBinaryVersionError, read_loot_binary_version
 
 logger = logging.getLogger(__name__)
 
 #: Primera versión cuyo libloot no resuelve symlinks (permanece en el VFS).
 LOOT_MIN_SYMLINK_SAFE: tuple[int, int, int] = (0, 29, 0)
 
-#: Timeout corto: `--version` no carga masterlist ni orden de plugins.
+#: Se conserva por compatibilidad de firma (``timeout=``): la detección ya no
+#: lanza ningún proceso (M1).
 _VERSION_TIMEOUT_SECONDS = 15
 
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
@@ -64,34 +66,27 @@ async def detect_loot_version(
     *,
     timeout: float = _VERSION_TIMEOUT_SECONDS,
 ) -> tuple[int, int, int] | None:
-    """Corre ``loot --version`` y parsea el resultado; None si falla.
+    """Versión de LOOT leída del ``VERSIONINFO`` del binario; ``None`` si no se puede.
+
+    M1: ya NO corre ``LOOT.exe --version``. Ese arranque toma el mutex global
+    ``LOOT.Shell.Instance`` antes de parsear argumentos (loot/loot 0.29.1
+    ``src/gui/qt/main.cpp``): con el GUI del operador abierto sale 0 sin
+    imprimir (versión "desconocida") y, si queda colgado, bloquea al sort real.
+    La lectura del PE es la misma que atestigua ``lastVersion`` antes de cada
+    sort (:func:`~sky_claw.local.loot.binary_version.read_loot_binary_version`),
+    así que el preflight, el manifiesto y los settings ven la MISMA versión.
 
     No propaga: la detección es informativa para el preflight — un binario
-    ausente/roto se reporta como versión desconocida (que también advierte).
+    ausente o sin versión atestiguable se reporta como versión desconocida (que
+    también advierte). ``timeout`` se acepta por compatibilidad y se ignora.
     """
+    del timeout
+    # Misma normalización que el lanzador anterior (``str(loot_exe)`` en el argv):
+    # identidad para un ``Path`` y nunca un TypeError para un valor no-path.
+    ruta = pathlib.Path(str(loot_exe))
     try:
-        stdout, stderr, return_code = await run_capture(
-            [str(loot_exe), "--version"],
-            timeout=timeout,
-        )
-    except (OSError, TimeoutError, ValueError) as exc:
+        texto = await asyncio.to_thread(read_loot_binary_version, ruta)
+    except LootBinaryVersionError as exc:
         logger.warning("No se pudo detectar la versión de LOOT (%s): %s", loot_exe, exc)
         return None
-
-    output = stdout.decode(errors="replace") + "\n" + stderr.decode(errors="replace")
-
-    # Exit non-zero = detección fallida aunque el output tenga algo parseable:
-    # un falso verde suprimiría el advisory/bloqueo del preflight (review
-    # Copilot PR #239). La versión desconocida ya advierte con cautela.
-    if return_code != 0:
-        logger.warning(
-            "'loot --version' salió con código %d; se trata como versión desconocida: %r",
-            return_code,
-            output[:200],
-        )
-        return None
-
-    version = parse_loot_version(output)
-    if version is None:
-        logger.warning("Output de 'loot --version' no reconocible: %r", output[:200])
-    return version
+    return parse_loot_version(texto)
