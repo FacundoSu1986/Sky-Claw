@@ -24,6 +24,8 @@
 - [Smoke de la etapa 6 asistida en el rig Windows](etapa6_smoke_rig.md) — procedimiento y
   resultado de la corrida de Wrye Bash asistido (MO2 + USVFS); el informe completo queda fuera
   del repo.
+- [Smoke de LOOT desatendido en el rig Windows (R0–R8)](loot_smoke_rig.md) — preparado, **no
+  ejecutado**; checklist por superficie (GUI y agente) con verificación física y estado del journal.
 - [Alta de un build nuevo de TexGen/DynDOLOD en el contrato de UI](dyndolod_alta_de_build_uia.md) —
   procedimiento con el script de medición de **solo lectura**; probado solo con una GUI simulada, nunca
   contra la GUI real de un build.

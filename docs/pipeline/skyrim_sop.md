@@ -100,6 +100,7 @@ Documentación de los modos de fallo conocidos y reglas operativas específicas.
 ### 3.2 LOOT
 - **Error "Something went wrong!":** El archivo `plugins.txt` está marcado como Solo Lectura. Quitar el atributo y reintentar.
 - **Error "Cero mods detectados":** La ruta VFS del juego está construida sobre symlinks. LOOT no puede resolver mods a través de un VFS con symlinks. Reconfigurar el VFS para usar rutas directas.
+- **Plugins habilitados que desaparecen tras ordenar (`active_plugins_changed`):** LOOT no vio esos plugins (el VFS no proyectó su mod o el mod no está instalado) y los descartó al reescribir `plugins.txt`. Sky-Claw no acepta ese resultado: restaura el snapshot. **Solución:** habilitar/reinstalar el mod en MO2 y volver a ordenar. Un sort de LOOT sólo reordena; nunca activa ni desactiva plugins. Detalle canónico en `sky_claw/local/AGENTS.md` §2.5.
 
 ### 3.3 Wrye Bash
 - **Error "FILE NOT FOUND":** Un archivo maestro fue movido o eliminado entre ejecuciones. **Solución:** Re-ejecutar LOOT para refrescar la lista de maestros, luego reconstruir el parche.
