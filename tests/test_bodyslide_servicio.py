@@ -85,16 +85,12 @@ ESTADOS_ESPERADOS: frozenset[str] = frozenset(
 
 RESERVADOS_ESPERADOS: frozenset[str] = frozenset(
     {
-        "PRECONDITION_FAILED",
-        "CONFIG_IO_HUNG",
         "WRITE_OUTSIDE_STAGING",
         "STAGING_TAMPERED",
-        "CONCURRENT_MODIFICATION",
         "TIMEOUT",
         "CANCELLED",
         "HOLD_TERMINALITY_UNKNOWN",
         "HOLD_LEASE_LOST",
-        "RESTORE_FAILED",
         "OUTPUT_MOD_NOT_READY",
         "OUTPUT_MOD_NOT_OWNED",
         "CONFLICT_BETWEEN_GROUPS",

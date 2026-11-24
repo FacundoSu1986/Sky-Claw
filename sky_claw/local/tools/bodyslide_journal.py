@@ -44,6 +44,7 @@ escritura sobre el directorio de estado: esa frontera es el ACL de solo-dueño.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import contextlib
@@ -58,6 +59,7 @@ import pathlib
 import re
 import stat
 import sys
+import threading
 import time
 import types
 import uuid
@@ -500,8 +502,14 @@ def _escribir_y_sincronizar(ruta: pathlib.Path, blob: bytes) -> None:
             escritos = os.write(fd, vista)
             vista = vista[escritos:]
         os.fsync(fd)
-    finally:
+    except BaseException:
+        # Un archivo a medio escribir no queda en disco (disco lleno, AV): ni un
+        # temporal huérfano ni un journal truncado que bloquee la instancia.
         os.close(fd)
+        with contextlib.suppress(OSError):
+            ruta.unlink()
+        raise
+    os.close(fd)
 
 
 def _reemplazar_con_reintentos(origen: pathlib.Path, destino: pathlib.Path) -> None:
@@ -790,21 +798,29 @@ def _restaurar(
             documento,
         )
 
+    # Un fallo en un archivo NO corta la restauración de los demás (review CodeRabbit
+    # #1003, propiedad heredada de PR 1): cada archivo restaurado deja de ser "nuestro"
+    # y el reintento sólo vuelve sobre los que fallaron.
     restaurados: list[str] = []
-    try:
-        for archivo in nuestros:
-            destino = exe_dir / archivo.nombre
+    fallos: list[str] = []
+    for archivo in nuestros:
+        destino = exe_dir / archivo.nombre
+        try:
             if archivo.original is None:
                 _retirar(destino)
             else:
                 _reemplazar_atomico(destino, archivo.original)
             if _huella_actual(destino) != archivo.huella_original:
                 raise OSError(f"'{archivo.nombre}' no quedó igual al original tras restaurar")
-            restaurados.append(archivo.nombre)
-    except (OSError, ModificacionConcurrenteError) as exc:
-        logger.error("BodySlide: falló la restauración de la corrida %s: %s", documento.run_id, exc)
+        except (OSError, ModificacionConcurrenteError) as exc:
+            fallos.append(f"{archivo.nombre}: {exc}")
+            continue
+        restaurados.append(archivo.nombre)
+    if fallos:
+        detalle = "; ".join(fallos)
+        logger.error("BodySlide: falló la restauración de la corrida %s: %s", documento.run_id, detalle)
         documento = _transicionar(almacen, ruta, documento, _E.RESTAURACION_FALLIDA)
-        return InformeDeRecuperacion(Veredicto.RESTORE_FAILED, ruta, str(exc), tuple(restaurados)), documento
+        return InformeDeRecuperacion(Veredicto.RESTORE_FAILED, ruta, detalle, tuple(restaurados)), documento
 
     documento = _transicionar(almacen, ruta, documento, _E.RESTAURADO)
     _cerrar(ruta, exe_dir)
@@ -846,6 +862,10 @@ class TransaccionDeConfig:
     @property
     def run_id(self) -> str:
         return self._documento.run_id
+
+    @property
+    def almacen(self) -> AlmacenDeJournal:
+        return self._almacen
 
     def _tras_escribir_temporal(self) -> None:
         """Gancho de observación (tests de crash): el temporal de la siembra existe, el destino no cambió."""
@@ -978,6 +998,134 @@ def iniciar_transaccion(
 
 
 # ---------------------------------------------------------------------------
+# Cuarentena persistente del recurso (PR 2c-1, C3: "responder no es soltar")
+# ---------------------------------------------------------------------------
+
+
+def poner_en_cuarentena(almacen: AlmacenDeJournal, *, run_id: str, motivo: str) -> None:
+    """Escribe el marcador de cuarentena, durable, ANTES de responder al caller.
+
+    Mientras exista, ninguna corrida nueva arranca y el reconciliador no restaura: un
+    hilo de la corrida puede seguir escribiendo. Lo retira el propio hilo al terminar
+    (con el resultado verificado contra el journal) o el operador con evidencia.
+    """
+    almacen.asegurar_directorio()
+    contenido = {"recurso": "bodyslide-meshes", "run_id": run_id, "motivo": motivo, "creado": time.time()}
+    destino = almacen.marcador_de_cuarentena
+    temporal = destino.with_name(f".{destino.name}.{uuid.uuid4().hex}.tmp")
+    _escribir_y_sincronizar(temporal, _serializar(contenido))
+    _publicar_temporal(temporal, destino)
+    logger.error("BodySlide: recurso bodyslide-meshes en cuarentena (corrida %s): %s", run_id, motivo)
+
+
+def cuarentena_activa(almacen: AlmacenDeJournal) -> bool:
+    return path_present(almacen.marcador_de_cuarentena)
+
+
+def _retirar_cuarentena(almacen: AlmacenDeJournal) -> bool:
+    try:
+        _retirar(almacen.marcador_de_cuarentena)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+class SiembraColgadaError(JournalError):
+    """El plazo de la siembra venció con el hilo vivo: hay cuarentena y no se lanza nada."""
+
+
+class SiembraConPlazo:
+    """Corre ``tx.sembrar`` en un hilo con plazo de RESPUESTA, sin soltar la mutación (C3).
+
+    Un hilo de Python no se puede matar. Si el plazo vence (o el caller se cancela) con
+    la siembra en vuelo, la siembra queda **abandonada**: se escribe la cuarentena
+    ANTES de devolver el control y el propio hilo, al terminar, restaura con la
+    transacción y retira la cuarentena sólo si la restauración quedó verificada. El
+    candado garantiza el orden: o el hilo terminó antes de abandonar (y el caller sigue
+    normalmente), o la cuarentena ya existe cuando el hilo mira si fue abandonado.
+    """
+
+    def __init__(self, tx: TransaccionDeConfig, *, plazo: float) -> None:
+        self._tx = tx
+        self._plazo = plazo
+        self._candado = threading.Lock()
+        self._terminado = threading.Event()
+        self._abandonada = False
+        self._error: BaseException | None = None
+
+    @property
+    def abandonada(self) -> bool:
+        return self._abandonada
+
+    def _hilo(self) -> None:
+        try:
+            self._tx.sembrar()
+        except BaseException as exc:  # noqa: BLE001 — se re-eleva en el caller si no fue abandonada
+            self._error = exc
+        with self._candado:
+            abandonada = self._abandonada
+            self._terminado.set()
+        if abandonada:
+            self._cerrar_abandonada()
+
+    def _cerrar_abandonada(self) -> None:
+        """Último escritor de la corrida abandonada: restaura y, si queda probado, levanta la cuarentena."""
+        try:
+            informe = self._tx.restaurar()
+        except (JournalError, OSError):
+            logger.exception("BodySlide: la siembra abandonada terminó pero no se pudo restaurar; sigue en cuarentena")
+            return
+        if informe.veredicto in {Veredicto.RESTAURADO, Veredicto.SIN_CAMBIOS}:
+            _retirar_cuarentena(self._tx.almacen)
+            logger.warning("BodySlide: la siembra abandonada terminó y se restauró; cuarentena retirada.")
+        else:
+            logger.error("BodySlide: la siembra abandonada terminó en %s; sigue en cuarentena", informe.veredicto.value)
+
+    def _abandonar_si_sigue_viva(self, motivo: str) -> bool:
+        with self._candado:
+            if self._terminado.is_set():
+                return False
+            self._abandonada = True
+            poner_en_cuarentena(self._tx.almacen, run_id=self._tx.run_id, motivo=motivo)
+            return True
+
+    async def ejecutar(self) -> None:
+        """Vuelve con la siembra hecha (o su error); ``SiembraColgadaError`` si se abandonó por plazo."""
+        hilo = threading.Thread(target=self._hilo, name="bodyslide-siembra", daemon=True)
+        hilo.start()
+        try:
+            listo = await asyncio.to_thread(self._terminado.wait, self._plazo)
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                asyncio.to_thread(self._abandonar_si_sigue_viva, "corrida cancelada con la siembra en vuelo")
+            )
+            raise
+        if not listo and await asyncio.to_thread(
+            self._abandonar_si_sigue_viva, f"la siembra superó el plazo de {self._plazo:g} s"
+        ):
+            raise SiembraColgadaError(
+                f"La siembra de Config.xml superó el plazo de {self._plazo:g} s: el recurso bodyslide-meshes "
+                "queda en cuarentena hasta que la escritura termine y se restaure, o el operador la libere."
+            )
+        if self._error is not None:
+            raise self._error
+
+
+def liberar_cuarentena(almacen: AlmacenDeJournal, *, evidencia: str) -> bool:
+    """Liberación MANUAL del operador. Exige evidencia escrita; queda en el log.
+
+    Devuelve ``True`` si había cuarentena y se retiró. No toca la config ni el journal:
+    el journal pendiente lo resuelve después el reconciliador con sus propias pruebas.
+    """
+    if not evidencia.strip():
+        raise ValueError("liberar la cuarentena exige evidencia del operador")
+    retirada = _retirar_cuarentena(almacen)
+    if retirada:
+        logger.warning("BodySlide: cuarentena de bodyslide-meshes liberada por el operador: %s", evidencia.strip())
+    return retirada
+
+
+# ---------------------------------------------------------------------------
 # Recuperación (consumidor: ``rollback_reconciler.reconcile_bodyslide_config_journals``)
 # ---------------------------------------------------------------------------
 
@@ -1022,7 +1170,7 @@ def recuperar_journal(
         or (documento.maquina, documento.instancia) != (identidad_actual.maquina, identidad_actual.instancia)
     ):
         return _hold(Veredicto.HOLD_IDENTIDAD, ruta, "máquina o instancia distinta o desconocida")
-    if path_present(almacen.marcador_de_cuarentena):
+    if cuarentena_activa(almacen):
         return _hold(Veredicto.HOLD_CUARENTENA, ruta, "el recurso bodyslide-meshes está en cuarentena")
     vida = vivacidad(documento.duenio_pid, documento.duenio_creado)
     if vida is OwnerLiveness.ALIVE:

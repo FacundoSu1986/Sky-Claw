@@ -247,12 +247,12 @@ async def test_process_creates_new_config_and_runner_deletes_it(tmp_path: pathli
 # --------------------------------------------------------------------------- #
 
 
-async def test_process_mutates_external_target_of_symlink_and_runner_restores_it(tmp_path: pathlib.Path) -> None:
-    """Un BuildSelection.xml enlazado: el proceso muta el destino externo → se restaura.
+async def test_buildselection_enlazado_se_rechaza_antes_de_mutar(tmp_path: pathlib.Path) -> None:
+    """Un BuildSelection.xml enlazado ⇒ CONFIG_PRECONDITION_FAILED, sin mutar ni spawnear.
 
-    El restore no puede saltean enlaces: el enlace del usuario se pisa. La
-    restauración debe escribir el contenido ORIGINAL a través del enlace (el
-    enlace mismo queda intacto, no se delete ni reemplaza).
+    PR 2c-1 (decisión del propietario, 2026-11-24): el journal no registra ni restaura a
+    través de enlaces, así que una config enlazada se rechaza antes de la primera
+    mutación. Retira el soporte P0-2 de PR 1 (restaurar a través del enlace).
     """
     try:
         (tmp_path / "enlace_probe").symlink_to(tmp_path, target_is_directory=True)
@@ -260,41 +260,28 @@ async def test_process_mutates_external_target_of_symlink_and_runner_restores_it
         pytest.skip("symlink no disponible")
     runner = _runner(tmp_path)
     exe = runner.config.bodyslide_exe
-    destino = _destino(tmp_path)
+    config_original = (exe.parent / "Config.xml").read_bytes()
 
     externo = tmp_path / "otra" / "BuildSelection.xml"
     externo.parent.mkdir(parents=True)
     externo.write_text("<BuildSelection><zap>original</zap></BuildSelection>\n", encoding="utf-8")
     (exe.parent / "BuildSelection.xml").symlink_to(externo)
 
-    def _efecto(*_a, **_k):
-        (destino / "cuerpo.nif").write_bytes(b"\x00")
-        # El proceso muta via el symlink (el restore lo transmite al externo).
-        (exe.parent / "BuildSelection.xml").write_text(
-            "<BuildSelection><zap>MUTADO</zap></BuildSelection>\n", encoding="utf-8"
-        )
-        (exe.parent / "Log_BS.txt").write_text(
-            "[#Log 2026-11-22]\nAll sets processed successfully!\n", encoding="utf-8"
-        )
-        return (b"", b"", 0)
-
-    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", AsyncMock(side_effect=_efecto)):
+    run_capture = AsyncMock()
+    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):
         result = await runner.run_batch(
             "CBBE",
-            str(destino),
+            str(_destino(tmp_path)),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
             preset="Zeroed",
             preset_verified=True,
         )
 
-    # El destino externo se restaura byte a byte:
+    assert result.estado == "CONFIG_PRECONDITION_FAILED"
+    assert run_capture.await_count == 0, "configuración enlazada: no se spawnea"
     assert externo.read_text(encoding="utf-8") == "<BuildSelection><zap>original</zap></BuildSelection>\n"
-    # El enlace mismo queda intacto — no se unlink ni se reemplaza:
-    assert (exe.parent / "BuildSelection.xml").is_symlink()
-    assert (exe.parent / "BuildSelection.xml").read_text(
-        encoding="utf-8"
-    ) == "<BuildSelection><zap>original</zap></BuildSelection>\n"
-    assert "BuildSelection.xml" in result.config_restored
+    assert (exe.parent / "BuildSelection.xml").is_symlink(), "el enlace del usuario no se toca"
+    assert (exe.parent / "Config.xml").read_bytes() == config_original
 
 
 # --------------------------------------------------------------------------- #
@@ -460,10 +447,13 @@ async def test_config_enlazada_no_se_siembra_ni_se_spawnea(tmp_path: pathlib.Pat
 
 
 async def test_buildselection_retargeteado_no_se_escribe_a_traves_del_enlace(tmp_path: pathlib.Path) -> None:
-    """El snapshot registra el destino externo A; a mitad del run el enlace se
-    re-targeta a B. El restore NO puede escribir el blob A a través del enlace
-    actual (eso sobrescribiría B). Fail-closed: aborta la restauración y el
-    destino B queda intacto."""
+    """Un enlace que APARECE durante el run nunca recibe la restauración.
+
+    PR 2c-1: la config de partida es regular (una enlazada se rechaza antes de mutar).
+    Si durante la corrida ``BuildSelection.xml`` pasa a ser un enlace a B, el journal lo
+    clasifica como contenido ajeno al registrar ``TERMINAL``: no escribe nada a través
+    del enlace, el resultado es ``RESTORE_FAILED`` (nunca éxito) y B queda intacto.
+    """
     try:
         (tmp_path / "enlace_probe").symlink_to(tmp_path, target_is_directory=True)
     except (OSError, NotImplementedError):
@@ -472,22 +462,12 @@ async def test_buildselection_retargeteado_no_se_escribe_a_traves_del_enlace(tmp
     exe = runner.config.bodyslide_exe
     destino = _destino(tmp_path)
 
-    externo_a = tmp_path / "otra_a" / "BuildSelection.xml"
-    externo_a.parent.mkdir(parents=True)
-    externo_a.write_text("<BuildSelection><zap>original-A</zap></BuildSelection>\n", encoding="utf-8")
     externo_b = tmp_path / "otra_b" / "BuildSelection.xml"
     externo_b.parent.mkdir(parents=True)
     externo_b.write_text("<BuildSelection><zap>PRESERVADO-B</zap></BuildSelection>\n", encoding="utf-8")
-
     enlace = exe.parent / "BuildSelection.xml"
-    enlace.symlink_to(externo_a)
 
     def _efecto(*_a, **_k):
-        # El proceso muta A a través del enlace y el enlace se re-targeta a B.
-        (exe.parent / "BuildSelection.xml").write_text(
-            "<BuildSelection><zap>MUTADO-A</zap></BuildSelection>\n", encoding="utf-8"
-        )
-        enlace.unlink()
         enlace.symlink_to(externo_b)
         (destino / "cuerpo.nif").write_bytes(b"\x00")
         (exe.parent / "Log_BS.txt").write_text(
@@ -495,14 +475,8 @@ async def test_buildselection_retargeteado_no_se_escribe_a_traves_del_enlace(tmp
         )
         return (b"", b"", 0)
 
-    with (
-        patch(
-            "sky_claw.local.tools.bodyslide_runner.run_capture",
-            AsyncMock(side_effect=_efecto),
-        ),
-        pytest.raises(BodySlideExecutionError, match="no apunta"),
-    ):
-        await runner.run_batch(
+    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", AsyncMock(side_effect=_efecto)):
+        result = await runner.run_batch(
             "CBBE",
             str(destino),
             manifest=ManifiestoArtefactos(nif_requeridos=1, verificado=True, procedencia="fixture"),
@@ -510,7 +484,7 @@ async def test_buildselection_retargeteado_no_se_escribe_a_traves_del_enlace(tmp
             preset_verified=True,
         )
 
-    # B queda byte a byte intacto — no se puede sobrescribir con el blob de A.
+    assert result.success is False
+    assert result.estado == "RESTORE_FAILED"
     assert externo_b.read_text(encoding="utf-8") == "<BuildSelection><zap>PRESERVADO-B</zap></BuildSelection>\n"
-    # A queda con la mutación (no se puede restaurar sin pisar B) — honesto.
-    assert externo_a.read_text(encoding="utf-8") == "<BuildSelection><zap>MUTADO-A</zap></BuildSelection>\n"
+    assert enlace.is_symlink(), "el enlace no se reemplaza ni se borra"

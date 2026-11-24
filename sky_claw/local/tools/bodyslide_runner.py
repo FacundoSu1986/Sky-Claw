@@ -29,14 +29,10 @@ Limites honestos (ADR 0019 / PR 2):
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import pathlib
-import threading
 import time
-import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from sky_claw.app.security.links import exigir_contencion_fisica, iter_archivos_propios
@@ -44,7 +40,7 @@ from sky_claw.local.tools._dir_rollback import mutar_hasta_terminal
 from sky_claw.local.tools._process import run_capture
 from sky_claw.local.tools.bodyslide_config import (
     BodySlideConfigPreconditionError,
-    sembrar_config_de_bodyslide,
+    calcular_config_sembrada,
 )
 from sky_claw.local.tools.bodyslide_headless import (
     EvidenciaDeBuild,
@@ -55,6 +51,21 @@ from sky_claw.local.tools.bodyslide_headless import (
     exigir_destino_canonico,
     exigir_identidad_de_grupo_unica,
     marcadores_de_corrida,
+)
+from sky_claw.local.tools.bodyslide_journal import (
+    ARCHIVOS_JOURNALEADOS,
+    AlmacenDeJournal,
+    InformeDeRecuperacion,
+    JournalError,
+    JournalOcupadoError,
+    ModificacionConcurrenteError,
+    SiembraColgadaError,
+    SiembraConPlazo,
+    TransaccionDeConfig,
+    Veredicto,
+    cuarentena_activa,
+    identidad_actual,
+    iniciar_transaccion,
 )
 from sky_claw.local.tools.output_targets import bodyslide_output_root, bodyslide_output_target
 
@@ -97,7 +108,7 @@ _RETRASO_ENTRE_REINTENTOS_S = 0.05
 #: BodySlide.xml es la config de la app (donde ``CommandLineBuild`` persiste
 #: ``SelectedPreset``); BuildSelection.xml es la elección/zaps/build records del
 #: usuario.
-_ARCHIVOS_DE_CONFIGURACION = ("Config.xml", "BodySlide.xml", "BuildSelection.xml")
+_ARCHIVOS_DE_CONFIGURACION = ARCHIVOS_JOURNALEADOS
 
 
 class BodySlideExecutionError(Exception):
@@ -132,6 +143,12 @@ class BodySlideConfig:
     #: el ``TargetGame`` del Config.xml debe coincidir EXACTAMENTE — un enum
     #: válido del juego equivocado NO es precondición válida.
     expected_target_game: int | None = None
+    #: Journal durable de la config (PR 2b/2c-1). ``None`` ⇒ el almacén por defecto bajo
+    #: ``runtime_state_dir()``; los tests inyectan uno propio.
+    almacen_de_journal: AlmacenDeJournal | None = None
+    #: Plazo de RESPUESTA de la siembra (C3, ``bodyslide_config_io_timeout_seconds`` del brief).
+    #: Al vencer: cuarentena persistente y ``CONFIG_IO_HUNG``; el hilo no se suelta.
+    plazo_de_siembra_segundos: float = 30.0
 
 
 @dataclass
@@ -398,189 +415,6 @@ def _atribuir_log_a_corrida(
     return cola
 
 
-def _escribir_atomico(destino: pathlib.Path, blob: bytes) -> None:
-    """Reemplaza *destino* con *blob* sin pasar nunca por un archivo truncado (review Codex #1003).
-
-    ``Path.write_bytes`` trunca el destino ANTES de escribir: un fallo a mitad
-    (disco lleno tras un build de mallas, un AV que toma el handle) dejaba la
-    config del usuario como XML cortado y sin copia. Temporal en el MISMO
-    directorio (misma unidad ⇒ rename real) y ``os.replace`` recién con el
-    contenido completo — el mismo patrón que la siembra
-    (``bodyslide_config.sembrar_config_de_bodyslide``).
-    """
-    tmp = destino.with_name(f"{destino.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        tmp.write_bytes(blob)
-        os.replace(tmp, destino)
-    finally:
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
-
-
-@dataclass(frozen=True, slots=True)
-class _SnapshotConfig:
-    """Snapshot de un archivo de configuración: ruta original + byte + enlace."""
-
-    kind: str  # "missing" | "regular" | "symlink"
-    blob: bytes | None
-    link_target: str | None
-
-
-def _snapshot_y_restaurar_archivos(exe: pathlib.Path):
-    """Devuelve ``(snapshot, restaurar)`` — snapshot byte a byte y su restore.
-
-    Los archivos que el proceso pueda mutar se restauran byte a byte al estado
-    ORIGINAL (antes de cualquier seed): el restore del original es lo que hace
-    a la siembra transaccional, no best-effort (P0-1).
-
-    Un symlink se lee a través del enlace (el destino externo) y se restaura
-    a través del enlace — el enlace mismo NUNCA se conserva ni se borra
-    (P0-2). El destino externo es el que se restaura.
-    """
-    snapshot: dict[str, _SnapshotConfig] = {}
-    for nombre in _ARCHIVOS_DE_CONFIGURACION:
-        ruta = exe.parent / nombre
-        try:
-            if ruta.is_symlink():
-                try:
-                    target = os.readlink(ruta)
-                except OSError as exc:
-                    raise BodySlideExecutionError(f"No se puede leer el destino del enlace '{ruta}': {exc}") from exc
-                try:
-                    blob = ruta.read_bytes()
-                except OSError as exc:
-                    raise BodySlideExecutionError(f"No se puede leer '{ruta}' (enlace a '{target}'): {exc}") from exc
-                snapshot[nombre] = _SnapshotConfig("symlink", blob, target)
-            elif ruta.exists():
-                try:
-                    snapshot[nombre] = _SnapshotConfig("regular", ruta.read_bytes(), None)
-                except OSError as exc:
-                    raise BodySlideExecutionError(
-                        f"No se puede leer '{ruta}' — la restauración byte a byte post-proceso es imposible: {exc}"
-                    ) from exc
-            else:
-                snapshot[nombre] = _SnapshotConfig("missing", None, None)
-        except BodySlideExecutionError:
-            raise
-        except OSError as exc:
-            raise BodySlideExecutionError(
-                f"No se puede leer '{ruta}' — la restauración byte a byte post-proceso es imposible: {exc}"
-            ) from exc
-
-    def restaurar() -> list[str]:
-        restaurados: list[str] = []
-        # Review CodeRabbit #1003: un fallo en un archivo no corta la restauración
-        # de los demás; se acumula y se informa al final (la corrida sigue fallida).
-        fallos: list[str] = []
-        for nombre, snap in snapshot.items():
-            ruta = exe.parent / nombre
-            try:
-                if snap.kind == "missing":
-                    # El archivo no existía al snapshot: si apareció, hay que
-                    # quitarlo. Un symlink creado por el proceso se borra borrándolo
-                    # (unlink de enlace no toca al destino externo).
-                    if ruta.exists() or ruta.is_symlink():
-                        ruta.unlink()
-                        restaurados.append(nombre)
-                    continue
-                if snap.kind == "symlink":
-                    if not ruta.is_symlink():
-                        # El enlace desapareció durante el run — re-crear el
-                        # enlace al destino original y escribir byte a byte.
-                        ruta.symlink_to(snap.link_target)
-                    # P0-B: verificar que el enlace sigue apuntando al destino
-                    # que se snapshotó. Un enlace re-targeted durante el run
-                    # (o un enlace nuevo) apunta a OTRO archivo — escribir a
-                    # través del enlace sobrescribiría ese otro archivo.
-                    # Fail-closed: abortar la restauración, no pisar.
-                    try:
-                        destino_actual = os.readlink(ruta)
-                    except OSError as exc:
-                        raise BodySlideExecutionError(
-                            f"No se puede leer el destino del enlace '{ruta}' al restaurar: {exc}"
-                        ) from exc
-                    if destino_actual != snap.link_target:
-                        raise BodySlideExecutionError(
-                            f"El enlace '{ruta}' no apunta al destino snapshotado "
-                            f"('{snap.link_target}') — destino actual '{destino_actual}'. "
-                            "No se escribe a través de un enlace re-targeted (P0-B)"
-                        )
-                    # Escribimos a TRAVÉS del enlace: el destino externo es el
-                    # que se restaura (P0-2). El enlace mismo queda intacto: el
-                    # reemplazo atómico ocurre en el archivo real al que apunta.
-                    if ruta.read_bytes() != snap.blob:
-                        _escribir_atomico(pathlib.Path(os.path.realpath(ruta)), snap.blob)
-                        restaurados.append(nombre)
-                    continue
-                # Regular.
-                if not ruta.exists():
-                    # El proceso lo borró — recrearlo desde el snapshot.
-                    _escribir_atomico(ruta, snap.blob)
-                    restaurados.append(nombre)
-                    continue
-                if ruta.is_symlink():
-                    # El enlace apareció DURANTE el run — la config se perdió
-                    # medio-cubierta (no es nuestro symlink). Conservador:
-                    # abortar la restauración, no pisar.
-                    raise BodySlideExecutionError(
-                        f"'{ruta}' es un symlink al final del run (no era al snapshot) — no se restaura automáticamente"
-                    )
-                if ruta.read_bytes() != snap.blob:
-                    _escribir_atomico(ruta, snap.blob)
-                    restaurados.append(nombre)
-            except (OSError, BodySlideExecutionError) as exc:
-                logger.error("No se pudo restaurar '%s': %s", ruta, exc)
-                fallos.append(f"'{ruta}': {exc}")
-        if fallos:
-            raise BodySlideExecutionError("No se pudo restaurar: " + "; ".join(fallos))
-        return restaurados
-
-    return snapshot, restaurar
-
-
-class _BarreraDeSiembra:
-    """Excluye la siembra (en su hilo) de la restauración del ``finally`` (P1-C, revisión #1003).
-
-    Cancelar el ``await asyncio.to_thread(siembra)`` NO detiene el hilo: la
-    coroutine sale por ``CancelledError`` y su ``finally`` restauraba el
-    original MIENTRAS la siembra podía seguir escribiendo — la siembra quedaba
-    como último escritor y la config del usuario terminaba sembrada.
-
-    Propiedad: *la siembra nunca escribe después de la restauración*.
-    - La siembra corre entera bajo ``_lock``; la restauración también.
-    - Si la restauración llega con la siembra en vuelo, ESPERA a que termine
-      (bloquea su propio hilo, no el event loop) y recién ahí restaura.
-    - Si la siembra todavía no arrancó (job del executor aún sin correr), la
-      restauración marca ``_restaurada`` y la siembra, al llegar, no escribe.
-    Una segunda cancelación mientras se espera la restauración deja el hilo de
-    restauración corriendo: la propiedad sigue valiendo, porque es el hilo —no la
-    coroutine— el que respeta el orden.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._restaurada = False
-
-    def _al_esperar_la_siembra(self) -> None:
-        """Gancho de observación (tests): la restauración espera a la siembra en vuelo."""
-
-    def sembrar(self, siembra: Callable[..., bool], /, **kwargs: object) -> bool:
-        with self._lock:
-            if self._restaurada:
-                return False
-            return siembra(**kwargs)
-
-    def restaurar(self, restaurar: Callable[[], list[str]]) -> list[str]:
-        if not self._lock.acquire(blocking=False):
-            self._al_esperar_la_siembra()
-            self._lock.acquire()
-        try:
-            self._restaurada = True
-            return restaurar()
-        finally:
-            self._lock.release()
-
-
 def _verificar_identidad_del_staging(raiz: pathlib.Path, candidato: pathlib.Path) -> None:
     """Exige que el staging y el destino se alcancen FÍSICAMENTE sin enlaces.
 
@@ -750,56 +584,110 @@ class BodySlideRunner:
             logger.error("BodySlide aborted: %s", message)
             return resultado_de_fallo("STAGING_UNVERIFIABLE", message)
 
-        # 3) Snapshot byte a byte ANTES de la siembra (original completo).
-        #    Snapshot del log: evidenci la ausencia de escritura de este run (P0-3).
+        # 3) Log y cuarentena — antes de mutar nada.
+        #    Snapshot del log: evidencia la ausencia de escritura de este run (P0-3).
+        exe_dir = self.config.bodyslide_exe.parent
+        almacen = self.config.almacen_de_journal or AlmacenDeJournal()
         try:
-            _snapshot, restaurar = await asyncio.to_thread(_snapshot_y_restaurar_archivos, self.config.bodyslide_exe)
             pre_snapshot_log = await asyncio.to_thread(_snapshot_log_inicial, self.config.bodyslide_exe)
         except BodySlideExecutionError as exc:
             message = str(exc)
             logger.error("BodySlide aborted before spawn: %s", message)
             return resultado_de_fallo("CONFIG_PRECONDITION_FAILED", message)
+        if await asyncio.to_thread(cuarentena_activa, almacen):
+            message = (
+                "El recurso bodyslide-meshes está en cuarentena: una siembra anterior quedó en vuelo. "
+                "No se lanza hasta que termine y se restaure, o el operador la libere con evidencia."
+            )
+            logger.error("BodySlide aborted: %s", message)
+            return resultado_de_fallo("PRECONDITION_FAILED", message)
 
-        # 4) PERÍMETRO TRANSACCIONAL ÚNICO — todo lo que sigue a la primera
-        #    mutación (sembrar Config.xml) queda dentro de un único try/finally
-        #    que garantiza la restauración byte a byte del ORIGINAL
-        #    (P0-A, auditoría). Cualquier excepción aquí —OSError, asyncio
-        #    CancelledError, error inesperado— restaura el original y se
-        #    propaga, nunca persiste cambios y declara éxito.
-        resultado: BodySlideResult | None = None
-        barrera = _BarreraDeSiembra()
+        # 3b) Journal (PR 2b/2c-1): la siembra se CALCULA sin escribir, y PREPARADO
+        #     (originales + hash de la siembra) queda durable ANTES de la primera mutación.
         try:
-            # 4a) Siembra fail-closed — precondición del spawn (aborta antes de
-            #     cualquier mutación del proceso).
+            bytes_sembrados = await asyncio.to_thread(
+                calcular_config_sembrada,
+                exe_dir=exe_dir,
+                game_path=self.config.game_path,
+                output_root=raiz_de_salida,
+                expected_target_game=self.config.expected_target_game,
+            )
+        except BodySlideConfigPreconditionError as exc:
+            message = str(exc)
+            logger.error("BodySlide aborted before spawn: %s", message)
+            return resultado_de_fallo("CONFIG_PRECONDITION_FAILED", message)
+        identidad = await asyncio.to_thread(identidad_actual, exe_dir)
+        if identidad is None:
+            message = (
+                "No se pudo establecer la identidad de la máquina o de la instalación de BodySlide: "
+                "sin ella el journal no sería recuperable, así que no se muta la config."
+            )
+            logger.error("BodySlide aborted before spawn: %s", message)
+            return resultado_de_fallo("CONFIG_PRECONDITION_FAILED", message)
+        try:
+            tx = await mutar_hasta_terminal(
+                lambda: iniciar_transaccion(
+                    almacen=almacen, identidad=identidad, exe_dir=exe_dir, bytes_sembrados=bytes_sembrados
+                )
+            )
+        except JournalOcupadoError as exc:
+            message = (
+                f"Hay una corrida anterior de BodySlide sin recuperar ({exc}). El reconciliador la resuelve "
+                "al arrancar; hasta entonces no se lanza otra."
+            )
+            logger.error("BodySlide aborted before spawn: %s", message)
+            return resultado_de_fallo("PRECONDITION_FAILED", message)
+        except (JournalError, OSError) as exc:
+            # Incluye una config enlazada: el journal no escribe a través de enlaces.
+            message = f"La configuración de BodySlide no admite una transacción segura: {exc}"
+            logger.error("BodySlide aborted before spawn: %s", message)
+            return resultado_de_fallo("CONFIG_PRECONDITION_FAILED", message)
+
+        # 4) PERÍMETRO TRANSACCIONAL — el journal decide qué se restaura y cuándo.
+        #    - Siembra abandonada por plazo/cancelación: el hilo de la siembra es el
+        #      último escritor y restaura él mismo (cuarentena hasta entonces).
+        #    - LANZADO sin terminalidad demostrada (cancelación con el proceso en
+        #      vuelo): NO se restaura; el journal queda en LANZADO (HOLD).
+        #    - Cualquier otro final: TERMINAL (si se lanzó) y restauración verificada.
+        resultado: BodySlideResult | None = None
+        siembra = SiembraConPlazo(tx, plazo=self.config.plazo_de_siembra_segundos)
+        lanzado = False
+        terminal = False
+        try:
+            # 4a) Siembra con plazo de respuesta.
             try:
-                if raiz_de_salida is not None:
-                    await asyncio.to_thread(
-                        barrera.sembrar,
-                        sembrar_config_de_bodyslide,
-                        exe_dir=self.config.bodyslide_exe.parent,
-                        game_path=self.config.game_path,
-                        output_root=raiz_de_salida,
-                        expected_target_game=self.config.expected_target_game,
-                    )
-            except BodySlideConfigPreconditionError as exc:
+                await siembra.ejecutar()
+            except SiembraColgadaError as exc:
                 message = str(exc)
                 logger.error("BodySlide aborted before spawn: %s", message)
-                # Restore ocurre en el finally: el seed pudo escribir antes de
-                # fallar en la validación final.
-                return resultado_de_fallo("CONFIG_PRECONDITION_FAILED", message)
+                resultado = resultado_de_fallo("CONFIG_IO_HUNG", message)
+                return resultado
+            except ModificacionConcurrenteError as exc:
+                message = f"Config.xml cambió por fuera de la corrida: {exc}"
+                logger.error("BodySlide aborted before spawn: %s", message)
+                resultado = resultado_de_fallo("CONCURRENT_MODIFICATION", message)
+                return resultado
+            except (JournalError, OSError) as exc:
+                message = f"No se pudo sembrar Config.xml: {exc}"
+                logger.error("BodySlide aborted before spawn: %s", message)
+                resultado = resultado_de_fallo("CONFIG_PRECONDITION_FAILED", message)
+                return resultado
 
             destino = pathlib.Path(output_path)
             previos = await asyncio.to_thread(_conjunto_de_archivos_previos, destino)
             destino_propio = not destino.is_symlink()
             preexistentes = len(previos)
 
-            # 4b) Spawn — evidencia + veredicto. ``require_job=True`` (cierre #1003,
-            #     mismo contrato que synthesis_runner/xedit_bridge_client): en
-            #     Windows el árbol queda en un Job KILL_ON_JOB_CLOSE que
-            #     ``run_capture`` cierra en TODA salida; si no se puede asignar,
-            #     ``run_capture`` mata al hijo y eleva OSError ⇒ falla cerrada.
-            #     No cubre la micro-ventana previa a la asignación del PID ni
-            #     sustituye al broker USVFS (PR 2).
+            # 4b) LANZADO durable ANTES de pedir el spawn: sin esto un crash no
+            #     distingue "nunca se lanzó" de "puede seguir vivo".
+            await mutar_hasta_terminal(tx.marcar_lanzado)
+            lanzado = True
+
+            # 4c) Spawn — evidencia + veredicto. ``require_job=True`` (cierre #1003):
+            #     en Windows el árbol queda en un Job KILL_ON_JOB_CLOSE que
+            #     ``run_capture`` cierra en TODA salida. Retorno, timeout o error de
+            #     ``run_capture`` (mata, cosecha y cierra el Job) demuestran
+            #     terminalidad; una cancelación no (el reap puede quedar a medias).
             try:
                 stdout, stderr, return_code = await run_capture(
                     args,
@@ -807,12 +695,17 @@ class BodySlideRunner:
                     cwd=str(self.config.game_path),
                     require_job=True,
                 )
+            except asyncio.CancelledError:
+                raise
             except TimeoutError as exc:
+                terminal = True
                 logger.error("BodySlide execution timed out.")
                 raise BodySlideTimeoutError(self.config.timeout_seconds) from exc
             except Exception as e:
+                terminal = True
                 logger.error(f"BodySlide execution failed: {e}")
                 raise BodySlideExecutionError(f"Failed to execute BodySlide: {e}") from e
+            terminal = True
 
             nuevos_nif, nuevos_tri = await asyncio.to_thread(_contar_archivos_nuevos, destino, previos)
             log = await asyncio.to_thread(_atribuir_log_a_corrida, self.config.bodyslide_exe, pre_snapshot_log)
@@ -863,18 +756,63 @@ class BodySlideRunner:
             )
             return resultado
         finally:
-            # Restauración byte a byte (Post-Snapshot). Un fallo de restauración es un
-            # desenlace de fallo veraz — no se declara éxito con config sin restaurar.
-            # P1-C: la restauración espera a la siembra en vuelo (ver _BarreraDeSiembra).
-            # Review Codex #1003: y el CALLER espera a la restauración. Cancelar un
-            # ``to_thread`` suelta la coroutine pero no el hilo: la tool liberaría
-            # su lock con la restauración en vuelo y esa escritura tardía pisaría
-            # la config del dueño siguiente. ``mutar_hasta_terminal`` retiene al
-            # caller hasta que el hilo es terminal y recién ahí propaga la
-            # cancelación (mismo mecanismo que el P1 de #993).
-            restaurados = await mutar_hasta_terminal(barrera.restaurar, restaurar)
+            await self._cerrar_transaccion(tx, siembra=siembra, lanzado=lanzado, terminal=terminal, resultado=resultado)
+
+    @staticmethod
+    async def _cerrar_transaccion(
+        tx: TransaccionDeConfig,
+        *,
+        siembra: SiembraConPlazo,
+        lanzado: bool,
+        terminal: bool,
+        resultado: BodySlideResult | None,
+    ) -> None:
+        """Cierra el journal según lo DEMOSTRADO; nunca declara éxito con la config sin restaurar.
+
+        ``mutar_hasta_terminal`` retiene al caller hasta que el hilo es terminal (review
+        Codex #1003): la tool no puede soltar su lock con una restauración en vuelo.
+        Un fallo de cierre con una excepción ya en vuelo no la enmascara: el journal
+        queda durable y lo resuelve el reconciliador al arrancar.
+        """
+        if siembra.abandonada:
+            return
+        if lanzado and not terminal:
+            logger.error(
+                "BodySlide: corrida %s cancelada con el proceso lanzado y sin terminalidad demostrada; "
+                "la config NO se restaura (journal en LANZADO, HOLD hasta tener evidencia).",
+                tx.run_id,
+            )
+            return
+
+        def _terminar_y_restaurar() -> InformeDeRecuperacion:
+            # UN solo hilo retenido para las dos escrituras: con dos esperas separadas,
+            # una cancelación durante TERMINAL se propagaba antes de restaurar.
+            if lanzado:
+                tx.marcar_terminal()
+            return tx.restaurar()
+
+        try:
+            informe = await mutar_hasta_terminal(_terminar_y_restaurar)
+        except (JournalError, OSError) as exc:
+            logger.error("BodySlide: no se pudo cerrar la transacción %s: %s", tx.run_id, exc)
             if resultado is not None:
-                resultado.config_restored = tuple(restaurados)
+                resultado.success = False
+                resultado.estado = "RESTORE_FAILED"
+                resultado.message = f"No se pudo restaurar la configuración de BodySlide: {exc}"
+            return
+        if informe.veredicto in {Veredicto.RESTAURADO, Veredicto.SIN_CAMBIOS}:
+            if resultado is not None:
+                resultado.config_restored = informe.restaurados
+            return
+        logger.error(
+            "BodySlide: la restauración de %s terminó en %s: %s", tx.run_id, informe.veredicto.value, informe.detalle
+        )
+        if resultado is not None:
+            resultado.success = False
+            resultado.estado = informe.veredicto.value
+            resultado.message = (
+                f"La configuración de BodySlide no se restauró ({informe.veredicto.value}): {informe.detalle}"
+            )
 
     @staticmethod
     def _diagnostico(
