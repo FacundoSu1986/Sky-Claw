@@ -667,6 +667,9 @@ async def test_rerun_brokered_excluye_outputs_propios_de_expected_plugins_sin_de
         assert captured_jobs[0].payload["expected_plugins"] == ["Skyrim.esm", "MiModVirtual.esp"]
         # PR-3h: el mapa de la Fase 1 viajó y el worker lo aceptó (la corrida terminó bien con el shim).
         assert set(captured_jobs[0].payload["cli_executables"]) == {"id-patcher-a"}
+        # PR-3j: corrida terminada bien → se libera exactamente el mapa que viajó.
+        liberadas = svc._preparador_fase1.liberadas  # type: ignore[union-attr]
+        assert [{k: str(v) for k, v in m.items()} for m in liberadas] == [captured_jobs[0].payload["cli_executables"]]
         journal.commit_transaction.assert_awaited_once_with(11)
         journal.mark_transaction_rolled_back.assert_not_awaited()
     finally:
@@ -733,6 +736,8 @@ async def test_synthesis_service_respeta_rollback_veto_ante_timeout_y_teardown_e
 
             assert out["success"] is False
             assert split_parcial.exists() is True
+            # PR-3j: con terminalidad desconocida el worker podría seguir usando los shims: no se liberan.
+            assert svc._preparador_fase1.liberadas == []  # type: ignore[union-attr]
             journal.commit_transaction.assert_not_awaited()
             journal.mark_transaction_rolled_back.assert_not_awaited()
             assert completed_events and completed_events[0]["rolled_back"] is False
@@ -1145,6 +1150,8 @@ async def test_synthesis_service_hace_rollback_normal_ante_timeout_limpio_sin_ve
 
         assert out["success"] is False
         assert split_parcial.exists() is False
+        # PR-3j: teardown confirmado (sin veto): los shims de la corrida se liberan.
+        assert len(svc._preparador_fase1.liberadas) == 1  # type: ignore[union-attr]
         journal.commit_transaction.assert_not_awaited()
         journal.mark_transaction_rolled_back.assert_awaited_once_with(42)
         assert completed_events and completed_events[0]["rolled_back"] is True
@@ -1524,6 +1531,10 @@ class _PreparadorFalso:
         self._raiz = raiz
         self._error = error
         self.llamadas: list[tuple[pathlib.Path, str, list[str]]] = []
+        self.liberadas: list[dict[str, pathlib.Path]] = []
+
+    async def liberar(self, ejecutables: Any) -> None:
+        self.liberadas.append(dict(ejecutables))
 
     async def preparar(
         self, settings_path: pathlib.Path, profile_identifier: str, patcher_ids: list[str]
@@ -1678,3 +1689,100 @@ async def test_preparador_fase1_estrena_carpeta_de_shims_bajo_su_raiz(
     assert capturado["hitl"] is hitl and capturado["cache_raiz"] == tmp_path / "cache"
     assert capturado["timeout_s"] == f1.TIMEOUT_FASE1_S
     assert mapa1 == {"a": dir1 / "00-a" / "SkyClawSynthesisShim.exe"}
+
+
+# --- PR-3j: limpieza de las carpetas de shims por corrida -----------------------------------------
+
+
+async def test_la_fase1_es_el_ultimo_paso_y_una_salida_temprana_no_la_corre(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Salidas previas sin snapshot ni sandbox cortan ANTES de preparar shims: no queda carpeta huérfana."""
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
+    rutas = _escenario_mo2(tmp_path)
+    (rutas["mo2"] / "overwrite").mkdir(exist_ok=True)
+    (rutas["mo2"] / "overwrite" / "Synthesis.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+    preparador = _PreparadorFalso(rutas["mo2"] / "fase1")
+    broker = MagicMock(submit=AsyncMock())
+    out = await _servicio_brokered(rutas, broker, preparador).execute_pipeline(
+        patcher_ids=["PatcherA"], create_snapshot=False
+    )
+    assert out["success"] is False and "snapshot" in out["message"]
+    assert preparador.llamadas == [] and preparador.liberadas == []
+    broker.submit.assert_not_awaited()
+
+
+def _preparador_real(tmp_path: pathlib.Path) -> Any:
+    from sky_claw.local.tools.synthesis_fase1 import PreparadorFase1
+
+    raiz = tmp_path / "raiz"
+    raiz.mkdir()
+    return PreparadorFase1(
+        dotnet=tmp_path / "d.exe",
+        git=tmp_path / "g.exe",
+        cache_raiz=tmp_path / "cache",
+        hitl=MagicMock(),
+        raiz_shims=raiz,
+    )
+
+
+async def test_preparador_borra_la_corrida_si_la_fase1_falla(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sky_claw.local.tools import synthesis_fase1 as f1
+
+    async def _falla(*_a: Any, directorio_shims: pathlib.Path, **_k: Any) -> Any:
+        (directorio_shims / "00-a").mkdir(parents=True)
+        (directorio_shims / "00-a" / "SkyClawSynthesisShim.exe").write_bytes(b"MZ")
+        raise f1.Fase1Error("build roto")
+
+    monkeypatch.setattr(f1, "preparar_fase1", _falla)
+    prep = _preparador_real(tmp_path)
+    with pytest.raises(f1.Fase1Error, match="build roto"):
+        await prep.preparar(tmp_path / "s.json", "Default", ["a"])
+    assert list((tmp_path / "raiz").iterdir()) == []
+
+
+async def test_preparador_libera_solo_corridas_propias(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from sky_claw.local.tools import synthesis_fase1 as f1
+
+    async def _ok(*_a: Any, directorio_shims: pathlib.Path, **_k: Any) -> f1.ResultadoFase1:
+        exe = directorio_shims / "00-a" / "SkyClawSynthesisShim.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"MZ")
+        return f1.ResultadoFase1(ejecutables={"a": exe})
+
+    monkeypatch.setattr(f1, "preparar_fase1", _ok)
+    prep = _preparador_real(tmp_path)
+    mapa = await prep.preparar(tmp_path / "s.json", "Default", ["a"])
+    ajena = tmp_path / "ajena" / "shims" / "00-b"
+    ajena.mkdir(parents=True)
+    (ajena / "SkyClawSynthesisShim.exe").write_bytes(b"MZ")
+    otra_raiz = tmp_path / "raiz2" / "skyclaw-synthesis-shims-x" / "shims" / "00-c"
+    otra_raiz.mkdir(parents=True)
+    (otra_raiz / "SkyClawSynthesisShim.exe").write_bytes(b"MZ")
+
+    await prep.liberar({**mapa, "b": ajena / "SkyClawSynthesisShim.exe", "c": otra_raiz / "SkyClawSynthesisShim.exe"})
+    assert list((tmp_path / "raiz").iterdir()) == []  # la propia se borró
+    assert (ajena / "SkyClawSynthesisShim.exe").is_file()  # nombre ajeno: intacta
+    assert (otra_raiz / "SkyClawSynthesisShim.exe").is_file()  # fuera de raiz_shims: intacta
+
+
+async def test_un_fallo_al_liberar_no_cambia_el_resultado_del_run(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La limpieza es best-effort: si liberar() falla, el servicio devuelve lo que decidió el run."""
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
+    rutas = _escenario_mo2(tmp_path)
+
+    class _LiberaMal(_PreparadorFalso):
+        async def liberar(self, ejecutables: Any) -> None:
+            raise OSError("archivo en uso")
+
+    svc = _servicio_brokered(rutas, MagicMock(), _LiberaMal(rutas["mo2"] / "fase1"))
+    with patch.object(SynthesisPipelineService, "_liberar_shims", wraps=svc._liberar_shims) as espia:
+        out = await svc.execute_pipeline(patcher_ids=["PatcherA"])
+    # El broker MagicMock no es awaitable: el run falla por su cuenta; lo que importa es que la
+    # limpieza corrió, falló y no tapó ese resultado.
+    assert out["success"] is False and "archivo en uso" not in out["message"]
+    espia.assert_awaited_once()

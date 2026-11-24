@@ -818,8 +818,32 @@ class SynthesisPipelineService:
             blocked["preflight"] = preflight_report.to_dict()
             return blocked
 
+        output_base_paths = tuple(runner._config.output_path / f"{name}.esp" for name in settings_profile.group_names)
+        if not output_base_paths:
+            return _attach_preflight(
+                self._error_dict("Synthesis profile has no managed output group"), preflight_report
+            )
+        target_esp = output_base_paths[0]
+        try:
+            output_files_before = await asyncio.to_thread(
+                runner._discover_output_files_for_groups, settings_profile.group_names
+            )
+            outputs_fingerprint_before = await runner._probe_output_files(settings_profile.group_names)
+            if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
+                raise SynthesisExecutionError("Synthesis PipelineSettings.json changed before transaction setup")
+            if await asyncio.to_thread(runner.load_order_fingerprint) != load_order_fingerprint:
+                raise SynthesisExecutionError("The active MO2 plugins.txt changed before transaction setup")
+        except (SynthesisExecutionError, SynthesisValidationError) as exc:
+            return _attach_preflight(self._error_dict(str(exc)), preflight_report)
+        if output_files_before and not create_snapshot and self._output_path is None:
+            return _attach_preflight(
+                self._error_dict("Existing Synthesis outputs require a snapshot or an isolated sandbox before rerun"),
+                preflight_report,
+            )
+
         # PR-3h (ADR 0019 §2.1): bajo USVFS cada patcher corre a través de su shim de la Fase 1, que se
-        # prepara FUERA del VFS y ANTES del lock (puede bajar fuentes y compilar tras su propia compuerta
+        # prepara FUERA del VFS y ANTES del lock. PR-3j: es el ÚLTIMO paso antes de la transacción, así
+        # ninguna salida temprana deja una carpeta de shims huérfana; desde acá, la libera el final (puede bajar fuentes y compilar tras su propia compuerta
         # HITL). Sin shims, un patcher Git/Solution no tiene qué ejecutar con --BlockBuildingWithinMo2 y
         # un apphost con CET se cae bajo USVFS: brokered sin preparador falla cerrado, no degrada.
         cli_executables: Mapping[str, pathlib.Path] | None = None
@@ -849,29 +873,6 @@ class SynthesisPipelineService:
                     extra={"pipeline_stage": self.PIPELINE_STAGE, "tx_id": None},
                 )
                 return _attach_preflight(self._error_dict(f"Fase 1 de Synthesis falló: {exc}"), preflight_report)
-
-        output_base_paths = tuple(runner._config.output_path / f"{name}.esp" for name in settings_profile.group_names)
-        if not output_base_paths:
-            return _attach_preflight(
-                self._error_dict("Synthesis profile has no managed output group"), preflight_report
-            )
-        target_esp = output_base_paths[0]
-        try:
-            output_files_before = await asyncio.to_thread(
-                runner._discover_output_files_for_groups, settings_profile.group_names
-            )
-            outputs_fingerprint_before = await runner._probe_output_files(settings_profile.group_names)
-            if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
-                raise SynthesisExecutionError("Synthesis PipelineSettings.json changed before transaction setup")
-            if await asyncio.to_thread(runner.load_order_fingerprint) != load_order_fingerprint:
-                raise SynthesisExecutionError("The active MO2 plugins.txt changed before transaction setup")
-        except (SynthesisExecutionError, SynthesisValidationError) as exc:
-            return _attach_preflight(self._error_dict(str(exc)), preflight_report)
-        if output_files_before and not create_snapshot and self._output_path is None:
-            return _attach_preflight(
-                self._error_dict("Existing Synthesis outputs require a snapshot or an isolated sandbox before rerun"),
-                preflight_report,
-            )
 
         # --- Publish started event ---
         started_payload = SynthesisPipelineStartedPayload(
@@ -906,6 +907,9 @@ class SynthesisPipelineService:
         # hubiera fallado en __aexit__, dejando el .esp en estado parcial
         # mientras el caller creía que se había revertido.
         tx_lock: SnapshotTransactionLock | None = None
+        # PR-3j: con terminalidad desconocida (veto de rollback) el worker podría seguir ejecutando los
+        # shims de esta corrida: se conservan. En cualquier otro desenlace se liberan al final.
+        conservar_shims = False
 
         try:
             async with SnapshotTransactionLock(
@@ -1057,6 +1061,7 @@ class SynthesisPipelineService:
                 target_files=target_files,
                 output_override=self._output_path,
             )
+            conservar_shims = rollback_vetoed
             if tx_id is not None and journal_recovery_proven:
                 await self._journal.mark_transaction_rolled_back(tx_id)
             elif tx_id is not None:
@@ -1110,6 +1115,7 @@ class SynthesisPipelineService:
                 target_files=target_files,
                 output_override=self._output_path,
             )
+            conservar_shims = rollback_vetoed
             if tx_id is not None and journal_recovery_proven:
                 try:
                     await self._journal.mark_transaction_rolled_back(tx_id)
@@ -1145,6 +1151,9 @@ class SynthesisPipelineService:
                 output_esps=partial_outputs,
             )
 
+        if cli_executables is not None and self._preparador_fase1 is not None:
+            await self._liberar_shims(cli_executables, conservar=conservar_shims)
+
         duration = time.monotonic() - t0
 
         # --- Publish completed event ---
@@ -1177,6 +1186,22 @@ class SynthesisPipelineService:
         if manifest_failed:
             out["reason"] = "ActionManifestFailed"
         return _attach_preflight(out, preflight_report)
+
+    async def _liberar_shims(self, cli_executables: Mapping[str, pathlib.Path], *, conservar: bool) -> None:
+        """Libera la carpeta de shims de la corrida (PR-3j); nunca enmascara el resultado del run."""
+        assert self._preparador_fase1 is not None
+        if conservar:
+            logger.warning(
+                "Shims de la Fase 1 conservados: terminalidad del worker desconocida (veto de rollback)",
+                extra={"pipeline_stage": self.PIPELINE_STAGE},
+            )
+            return
+        try:
+            await self._preparador_fase1.liberar(cli_executables)
+        except Exception as exc:  # noqa: BLE001 - limpieza best-effort tras el run: el resultado ya está decidido
+            logger.warning(
+                "No se pudieron liberar los shims de la Fase 1: %s", exc, extra={"pipeline_stage": self.PIPELINE_STAGE}
+            )
 
     # ------------------------------------------------------------------
     # Caja negra de vuelo (T-26/T-28, ADR 0002) — espejo de xedit_service

@@ -465,6 +465,16 @@ x64 instalado):
   de S1 salvo el sufijo de GitVersion; la segunda llamada sale de lo instalado sin HITL. Control: el
   mismo build SIN perfil privado borró la carpeta del paquete en el perfil visible; con perfil
   privado el canario quedó intacto. No cubierto: una pipeline real bajo MO2/USVFS.
+- **PR-3j (limpieza de los shims por corrida):** cierra la limitación de PR-3h. La Fase 1 pasa a ser el
+  **último** paso antes de la transacción (después de las salidas tempranas por salidas previas sin
+  snapshot o fingerprints cambiados), así ninguna deja una carpeta huérfana. `PreparadorFase1Protocol`
+  gana `liberar(ejecutables)`: `PreparadorFase1` borra con `rmtree_link_aware` solo carpetas
+  `skyclaw-synthesis-shims-*` que cuelgan directamente de su `raiz_shims` (forma `<corrida>/shims/<NN-id>/`);
+  una ruta ajena se registra y no se toca. Si `preparar_fase1` falla, borra su propia corrida (nada se
+  despachó); una cancelación no limpia (un hilo podría seguir escribiendo). El servicio libera al final de
+  cada corrida brokered **salvo con veto de rollback** (terminalidad del worker desconocida: podría seguir
+  ejecutando los shims) o cancelación; un fallo al liberar se registra y no cambia el resultado del run.
+  Censo de borrado: `synthesis_fase1` declarado `link-aware`/`requiere`.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.

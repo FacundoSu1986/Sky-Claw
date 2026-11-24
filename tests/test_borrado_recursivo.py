@@ -136,6 +136,8 @@ MECANISMO_DE_BORRADO: dict[str, str] = {
     # caché (checkout con `.git`, copia de fuentes, temporales) al terminar, haya publicado o no.
     "sky_claw/local/tools/synthesis_compilacion.py": "link-aware",
     "sky_claw/local/tools/synthesis_fuentes_git.py": "link-aware",
+    # PR-3j: borra la carpeta de shims de una corrida propia (skyclaw-synthesis-shims-*).
+    "sky_claw/local/tools/synthesis_fase1.py": "link-aware",
     # NP-A0a: el lote borra su PROPIO directorio de trabajo (lo creó `mkdtemp`: las salidas intermedias).
     # Mismo criterio que el ejecutor de texconv: que el árbol sea propio no habilita `shutil.rmtree`.
     "sky_claw/local/native_parallax/lote.py": "link-aware",
@@ -489,6 +491,7 @@ POLITICA_DE_LIMPIAR_READONLY: dict[str, str] = {
     # `.git/objects` son de solo lectura en Windows) y salidas de NuGet/MSBuild.
     "sky_claw/local/tools/synthesis_compilacion.py": "requiere",
     "sky_claw/local/tools/synthesis_fuentes_git.py": "requiere",
+    "sky_claw/local/tools/synthesis_fase1.py": "requiere",
     # NP-E0b: el espacio de texconv contiene una COPIA del binario hecha con `copy2`,
     # que propaga el modo de la fuente: si el original está en solo lectura, la copia
     # también y sin el flag el borrado de Windows fallaría dejando restos.
