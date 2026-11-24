@@ -6,9 +6,12 @@ listo para la Fase 2 bajo USVFS:
 - **CLI** (``CliPatcherSettings``): su ``PathToExecutable`` tal cual (absoluto), sin carpetas de datos
   (``CliPatcherRun`` no las pasa).
 - **Solution** (``SolutionPatcherSettings``): se compila con PR-3d desde la carpeta de la solución.
-- **Git** (``GithubPatcherSettings``): solo ``PatcherVersioning=Commit`` con ``TargetCommit`` completo;
-  se baja con PR-3e y se compila con PR-3d. ``Tag``/``Branch`` fallan cerrado: resolverlos a un commit
-  consulta la red y es trabajo de los presets.
+- **Git** (``GithubPatcherSettings``): el versionado se interpreta como upstream
+  (``GitPatcherVersioning.Factory`` 0.36.6, ver :func:`versionado_efectivo`): ``Commit``, ``Tag`` sin
+  ``LatestTag`` y ``Branch`` sin ``AutoUpdateToBranchTip`` (el default) corren su ``TargetCommit``; un
+  ``Tag`` con ``LatestTag`` o una ``Branch`` con ``AutoUpdateToBranchTip`` corren el commit que fija el
+  ``SynthesisPreset`` (PR-3k, :mod:`synthesis_presets`), nunca uno consultado en el momento. Se baja con
+  PR-3e y se compila con PR-3d.
 
 Para Solution y Git, las carpetas de datos siguen a upstream (``ConstructSolutionPatcherRunArgs``,
 ``DefaultDataPathProvider`` y ``PatcherInternalDataPathProvider`` de 0.36.6): ``<dir del .csproj>/Data``
@@ -37,7 +40,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline, PatcherPipelineError, PatcherV2Seleccionado
 from sky_claw.local.tools.synthesis_compilacion import CompilacionPatcherError, compilar_patcher_local
-from sky_claw.local.tools.synthesis_fuentes_git import FuentesGitError, obtener_fuentes_git
+from sky_claw.local.tools.synthesis_fuentes_git import (
+    FuentesGitError,
+    RefRemoto,
+    obtener_fuentes_git,
+    ref_remoto,
+)
 from sky_claw.local.tools.synthesis_shim import (
     NOMBRE_EJECUTABLE_SHIM,
     ShimConfigError,
@@ -56,15 +64,17 @@ __all__ = [
     "PreparadorFase1Protocol",
     "ResultadoFase1",
     "preparar_fase1",
+    "ref_dinamico",
+    "versionado_efectivo",
 ]
 
 logger = logging.getLogger(__name__)
 
 _PROYECTO_SHIM = pathlib.Path(NOMBRE_EJECUTABLE_SHIM).with_suffix(".csproj").name
 _SHA_COMPLETO = re.compile(r"[0-9a-f]{40}")
-#: ``PatcherVersioningEnum.Commit`` de upstream: ``StringEnumConverter`` lo escribe como texto y
-#: Newtonsoft acepta también el valor numérico (Tag=0, Branch=1, Commit=2).
-_VERSIONADO_COMMIT = ("commit", 2)
+#: ``PatcherVersioningEnum`` de upstream: ``StringEnumConverter`` lo escribe como texto y Newtonsoft
+#: acepta también el valor numérico.
+_VERSIONADOS = {"tag": 0, "branch": 1, "commit": 2}
 #: Timeout por subproceso (git/restore/build) de la Fase 1: ``synthesis_build_timeout_seconds`` del ADR §2.
 TIMEOUT_FASE1_S = 600.0
 #: Tope de salida capturada por subproceso de la Fase 1 (un build verborrágico no llena la memoria).
@@ -90,6 +100,60 @@ class _Contexto:
     hitl: HITLGuard | None
     timeout_s: float
     max_output_bytes: int
+    pins: Mapping[RefRemoto, str]
+
+
+def _booleano(datos: dict[str, Any], clave: str, *, default: bool) -> bool:
+    valor = datos.get(clave, default)
+    if type(valor) is not bool:
+        raise Fase1Error(f"{clave} debe ser true/false, no {valor!r}")
+    return valor
+
+
+def versionado_efectivo(datos: dict[str, Any]) -> tuple[str, str]:
+    """``(tipo, objetivo)`` con el que upstream EJECUTA un ``GithubPatcherSettings``.
+
+    Copia de ``GitPatcherVersioning.Factory`` (0.36.6): ``Tag`` sin ``LatestTag`` y ``Branch`` sin
+    ``AutoUpdateToBranchTip`` se degradan a ``Commit`` (``TargetCommit``); el tipo final elige el
+    objetivo (``TargetTag``/``TargetBranch``/``TargetCommit``). Defaults de upstream:
+    ``PatcherVersioning=Branch``, ``LatestTag=true``, ``AutoUpdateToBranchTip=false``.
+    """
+    crudo = datos.get("PatcherVersioning", "Branch")
+    tipo = next(
+        (
+            nombre
+            for nombre, numero in _VERSIONADOS.items()
+            if (isinstance(crudo, str) and crudo.casefold() == nombre) or (type(crudo) is int and crudo == numero)
+        ),
+        None,
+    )
+    if tipo is None:
+        raise Fase1Error(f"PatcherVersioning desconocido: {crudo!r}")
+    if (
+        tipo == "tag"
+        and not _booleano(datos, "LatestTag", default=True)
+        or tipo == "branch"
+        and not _booleano(datos, "AutoUpdateToBranchTip", default=False)
+    ):
+        tipo = "commit"
+    campo = {"tag": "TargetTag", "branch": "TargetBranch", "commit": "TargetCommit"}[tipo]
+    objetivo = datos.get(campo, "")
+    if not isinstance(objetivo, str):
+        raise Fase1Error(f"{campo} debe ser texto, no {objetivo!r}")
+    return tipo, objetivo.strip()
+
+
+def ref_dinamico(datos: dict[str, Any]) -> RefRemoto | None:
+    """El tag/rama que hay que fijar en el preset, o ``None`` si el patcher ya corre un commit."""
+    tipo, objetivo = versionado_efectivo(datos)
+    if tipo == "commit":
+        return None
+    if not objetivo:
+        raise Fase1Error(f"el patcher sigue un {tipo} pero no nombra cuál (Target{tipo.title()} vacío)")
+    try:
+        return ref_remoto(_texto(datos, "RemoteRepoPath"), tipo, objetivo)
+    except FuentesGitError as exc:
+        raise Fase1Error(str(exc)) from exc
 
 
 @dataclass(frozen=True)
@@ -145,16 +209,21 @@ async def _preparar_solution(datos: dict[str, Any], ctx: _Contexto) -> _PatcherL
 
 
 async def _preparar_git(datos: dict[str, Any], ctx: _Contexto) -> _PatcherListo:
-    versionado = datos.get("PatcherVersioning", "Branch")  # default upstream: Branch
-    es_commit = (isinstance(versionado, str) and versionado.casefold() == _VERSIONADO_COMMIT[0]) or (
-        type(versionado) is int and versionado == _VERSIONADO_COMMIT[1]
-    )
-    commit = datos.get("TargetCommit")
-    if not es_commit or not isinstance(commit, str) or not _SHA_COMPLETO.fullmatch(commit):
-        raise Fase1Error(
-            "solo se admite un patcher Git fijado por commit (PatcherVersioning=Commit y TargetCommit de 40 hex); "
-            f"versionado={versionado!r}"
-        )
+    ref = ref_dinamico(datos)
+    if ref is None:
+        commit = versionado_efectivo(datos)[1]
+        if not _SHA_COMPLETO.fullmatch(commit):
+            raise Fase1Error(f"el patcher corre su TargetCommit y no es un commit completo de 40 hex: {commit!r}")
+    else:
+        fijado = ctx.pins.get(ref)
+        if fijado is None:
+            raise Fase1Error(
+                f"sigue el {ref.tipo} {ref.nombre!r} de {ref.repositorio} y no hay un commit fijado: "
+                "fijá el SynthesisPreset del perfil (la Fase 1 no consulta la red por su cuenta)"
+            )
+        if not _SHA_COMPLETO.fullmatch(fijado):
+            raise Fase1Error(f"el pin de {ref.tipo} {ref.nombre!r} no es un commit completo: {fijado!r}")
+        commit = fijado
     fuentes = await obtener_fuentes_git(
         _texto(datos, "RemoteRepoPath"),
         commit,
@@ -192,8 +261,12 @@ async def preparar_fase1(
     hitl: HITLGuard | None,
     timeout_s: float,
     max_output_bytes: int,
+    pins: Mapping[RefRemoto, str] | None = None,
 ) -> ResultadoFase1:
-    """Deja un shim por patcher seleccionado en *directorio_shims* (nuevo, de esta corrida)."""
+    """Deja un shim por patcher seleccionado en *directorio_shims* (nuevo, de esta corrida).
+
+    ``pins`` (PR-3k): commit fijado por el ``SynthesisPreset`` para cada tag/rama dinámico.
+    """
     if not directorio_shims.is_absolute() or os.path.lexists(directorio_shims):
         raise Fase1Error(f"El directorio de shims debe ser absoluto y nuevo (no existe): {directorio_shims}")
     try:
@@ -209,6 +282,7 @@ async def preparar_fase1(
         hitl=hitl,
         timeout_s=timeout_s,
         max_output_bytes=max_output_bytes,
+        pins=dict(pins or {}),
     )
 
     # Primero los patchers: un rechazo corta antes de compilar el shim o materializar nada.
@@ -305,6 +379,8 @@ class PreparadorFase1:
     raiz_shims: pathlib.Path | None = None
     timeout_s: float = TIMEOUT_FASE1_S
     max_output_bytes: int = MAX_SALIDA_FASE1_BYTES
+    #: PR-3k: commits fijados por el ``SynthesisPreset`` del perfil (``SynthesisPreset.pins``).
+    pins: Mapping[RefRemoto, str] | None = None
 
     async def preparar(
         self, settings_path: pathlib.Path, profile_identifier: str, patcher_ids: list[str]
@@ -326,6 +402,7 @@ class PreparadorFase1:
                 hitl=self.hitl,
                 timeout_s=self.timeout_s,
                 max_output_bytes=self.max_output_bytes,
+                pins=self.pins,
             )
         except Exception:
             # Nada se despachó: la carpeta (vacía o a medias) no la usa nadie. Una cancelación NO entra

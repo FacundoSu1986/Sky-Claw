@@ -220,7 +220,7 @@ class TestHitlProducerRequestIds:
         # PR-3d (ADR 0019): compuerta de egress (api.nuget.org) antes del restore de la Fase 1.
         "sky_claw/local/tools/synthesis_compilacion.py": {"compilar_patcher_local": 1},
         # PR-3e (ADR 0019): compuerta de egress (github.com) antes de bajar un patcher Git fijado por SHA.
-        "sky_claw/local/tools/synthesis_fuentes_git.py": {"obtener_fuentes_git": 1},
+        "sky_claw/local/tools/synthesis_fuentes_git.py": {"obtener_fuentes_git": 1, "resolver_refs_remotos": 1},
     }
 
     _EXPECTED_PREFIXES = {
@@ -248,6 +248,8 @@ class TestHitlProducerRequestIds:
         ("sky_claw/local/tools_installer.py", "_ensure_nexus_mod"): "nexus-mod-install",
         ("sky_claw/local/tools/synthesis_compilacion.py", "compilar_patcher_local"): "synthesis-restore",
         ("sky_claw/local/tools/synthesis_fuentes_git.py", "obtener_fuentes_git"): "synthesis-git-fetch",
+        # PR-3k: git ls-remote de los tags/ramas dinámicos del SynthesisPreset.
+        ("sky_claw/local/tools/synthesis_fuentes_git.py", "resolver_refs_remotos"): "synthesis-git-ls-remote",
     }
 
     @staticmethod
