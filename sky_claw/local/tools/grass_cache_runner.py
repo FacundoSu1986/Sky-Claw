@@ -343,6 +343,11 @@ class GrassCacheRunner:
         #: Resultado de archivar+borrar el flag (None si el run no adoptó el flag).
         self._neutralizacion: NeutralizacionFlag | None = None
 
+    @property
+    def neutralizacion(self) -> NeutralizacionFlag | None:
+        """Resultado de archivar/borrar el flag, o ``None`` si no se adoptó."""
+        return self._neutralizacion
+
     # ------------------------------------------------------------------
     # API pública
     # ------------------------------------------------------------------
@@ -668,7 +673,7 @@ class GrassCacheRunner:
             # `self._neutralizacion` queda cargado para que `run()` publique la
             # limpieza incompleta antes de propagar.
             if flag_apropiado:
-                self._neutralizacion = await self._neutralizar_flag_drenado()
+                await self._neutralizar_flag_drenado()
 
     async def _aplicar_plan_en_seccion_critica(self, plan: PlanArranque, estado: EstadoAplicacion) -> None:
         """Escribe el flag sin poder abandonar la escritura a medias.
@@ -1004,16 +1009,31 @@ class GrassCacheRunner:
         termina, así que el flag queda neutralizado (o su fallo registrado)
         ANTES de que el servicio suelte los locks y haga teardown.
         """
-        return await esperar_terminar(
-            asyncio.to_thread(
+
+        async def _archivar_y_registrar() -> NeutralizacionFlag:
+            resultado = await asyncio.to_thread(
                 neutralizar_flag,
                 flag_path=self._flag_path,
                 grass_dir=self._config.overwrite_grass_dir,
                 raiz_estado=self._config.backup_root,
                 perfil=self._config.perfil_de_progreso,
-            ),
-            descripcion="neutralizar_flag",
-        )
+            )
+            # Se registra ACÁ, no en el llamador: si la cancelación llega
+            # mientras el hilo neutraliza, `esperar_terminar` espera a que
+            # termine y recién entonces propaga, así que un
+            # `self._neutralizacion = await …` del llamador NUNCA correría y un
+            # flag que no se pudo borrar se perdería en silencio.
+            self._neutralizacion = resultado
+            if resultado.errores or not resultado.limpio:
+                logger.warning(
+                    "Neutralización del flag incompleta (borrado=%s, progreso_perdido=%s): %s",
+                    resultado.borrado,
+                    resultado.progreso_perdido,
+                    "; ".join(resultado.errores) or "sin detalle",
+                )
+            return resultado
+
+        return await esperar_terminar(_archivar_y_registrar(), descripcion="neutralizar_flag")
 
     def _resultado(
         self,

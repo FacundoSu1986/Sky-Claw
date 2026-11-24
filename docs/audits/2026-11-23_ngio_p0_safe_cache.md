@@ -95,9 +95,9 @@ Módulo nuevo `sky_claw/local/tools/grass_cache_safety.py` (mypy estricto) que c
 
 | Modo | Precondición | Acción sobre el flag |
 |---|---|---|
-| `new` (default) | sin `.cgid/.dgid/.fail` **y** sin progreso | escribe vacío |
-| `resume` | flag con progreso **o** progreso archivado con huella coincidente | **no lo toca** (o lo restaura byte a byte) |
-| `rebuild` | `REBUILD` **+** reconocimiento de cobertura USVFS **+** respaldo verificado por **contenido** contra el caché actual | archiva el progreso y escribe vacío |
+| `new` (default) | sin `.cgid/.dgid/.fail` **y** sin progreso **y** `ack_usvfs_no_verificado` (también con el caché vacío: el flag vacío es el mismo disparador de borrado de NGIO) | escribe vacío |
+| `resume` | flag con progreso **o** progreso archivado con huella coincidente (sin `ack`: no escribe el flag) | **no lo toca** (o lo restaura byte a byte) |
+| `rebuild` | `REBUILD` **+** `ack_usvfs_no_verificado` **+** respaldo verificado por **contenido** contra el caché actual **sólo si hay caché**; raíz de estado **sólo si hay progreso vivo que archivar** (con caché y progreso vacíos, aprobación + `ack` alcanzan) | archiva el progreso y escribe vacío |
 
 Propiedades que quedan ancladas por tests:
 
@@ -140,8 +140,12 @@ Propiedades que quedan ancladas por tests:
 6. Un `rebuild` sobre un caché de varios GB duplica ese espacio mientras dura el run, y la
    verificación de contenido **lee los dos lados completos** (dos pasadas sha256 sobre el
    origen y una sobre el destino): en un caché de GB eso es tiempo de E/S real, no un
-   chequeo instantáneo. Es el costo de que el respaldo signifique algo; se paga sólo en
-   `rebuild`.
+   chequeo instantáneo. Es el costo de que el respaldo signifique algo y se paga en
+   `rebuild`. **No es el único camino que hashea el caché:** `resume` que restaura progreso
+   archivado vuelve a hashear el `Grass/` completo para probar que la evidencia es de *este*
+   caché, y la neutralización de salida hashea el caché parcial para archivar el progreso
+   (por eso corre en un hilo: §14.2). Un run con caché de GB paga al menos esa pasada de
+   salida, en cualquier modo.
 7. **El rechazo de enlaces es conservador por diseño:** un rig cuyo `overwrite/` cuelgue de
    un junction legítimo (bibliotecas movidas, perfiles redirigidos) se rechaza con
    `cache_raiz_enlazada` en vez de operar sobre él. No hay escape manual en P0; el operador
@@ -397,7 +401,7 @@ premisa no se sostiene contra el código o contra la fuente primaria de NGIO).
 | 7 | `PRRT_kwDOR1JjU867CV3M` | `grass_cache_safety.py` | mayor | vigente | **VÁLIDO en parte** | La premisa de las comillas es **falsa** (`Util::StringHelpers::trim` recorta `" \r\v\n"`, no toca comillas) y el tab/form feed **sí** divergían. `_ngio_tiene_progreso` replica el lector literal. Test: `test_el_parser_de_progreso_replica_al_de_ngio` (10 casos) |
 | 8 | `PRRT_kwDOR1JjU867CV3Q` | `grass_cache_safety.py` | mayor | vigente | **VÁLIDO** | Un respaldo enlazado o hardlinkeado al origen verificaba por bytes y no sobrevivía al borrado. `_problemas_de_independencia` (link_kind_or_raise + identidad `st_dev`/`st_ino`) antes de reusar y antes de autorizar el borrado. Tests: `test_respaldo_con_hardlink_del_origen_no_autoriza_el_borrado`, `test_respaldo_con_enlace_del_origen_no_autoriza_el_borrado`, `test_respaldo_aliaseado_no_se_reutiliza_sino_que_se_recopia`, `test_manifiesto_enlazado_del_respaldo_no_autoriza_el_borrado` |
 | 9 | `PRRT_kwDOR1JjU867CV3X` | `grass_cache_safety.py` | mayor | vigente | **VÁLIDO** | La evidencia se archivaba por contenido solamente. Ahora el nombre lleva el **ámbito** (camino físico del caché + perfil) y el manifiesto lo declara; otro ámbito se rechaza (`progreso_de_otra_instalacion`). Tests: `test_progreso_de_otra_instalacion_no_se_restaura`, `test_progreso_de_otro_perfil_no_se_restaura`, `test_dos_ambitos_conviven_en_el_mismo_estado`, `test_resume_no_restaura_el_progreso_de_otro_perfil` |
-| 10 | `PRRT_kwDOR1JjU867CV3c` | `grass_cache_safety.py` | mayor | resuelto | **YA CORREGIDO** | Temporal exclusivo `O_CREAT|O_EXCL|O_NOFOLLOW` con nombre impredecible (B7). Test: `test_no_quedan_temporales_de_nombre_predecible_en_el_modulo` |
+| 10 | `PRRT_kwDOR1JjU867CV3c` | `grass_cache_safety.py` | mayor | resuelto | **YA CORREGIDO** | Temporal exclusivo `O_CREAT\|O_EXCL\|O_NOFOLLOW` con nombre impredecible (B7). Test: `test_no_quedan_temporales_de_nombre_predecible_en_el_modulo` |
 | 11 | `PRRT_kwDOR1JjU867CV3h` | `grass_cache_safety.py` | **crítica** | obsoleto | **NO VÁLIDO en el HEAD** | `_escribir_temporal_exclusivo` hace `flush()` + `os.fsync(fh.fileno())` **sobre el mismo handle escribible** (`os.fdopen(fd, "wb")`) y cierra antes del `os.replace`: no hay reapertura en `"rb"` en ningún lado del módulo |
 | 12 | `PRRT_kwDOR1JjU867CV3n` | `grass_cache_service.py` | mayor | vigente | **VÁLIDO** | Cancelación durante `to_thread(preparar_arranque)`: los dos locks se soltaban con la copia del respaldo en vuelo. Ahora `esperar_terminar` drena el hilo **dentro** de `async with tx, lo_tx`. Test: `test_cancelacion_durante_el_preflight_no_abandona_el_respaldo` |
 | 13 | `PRRT_kwDOR1JjU867CV3u` | `tests/test_grass_cache_safety.py` | mayor | vigente | **VÁLIDO** | Es el defecto de 12.1 (fixtures LF→CRLF). Ancla: `test_los_fixtures_del_flag_escriben_bytes_y_no_texto` |
@@ -636,3 +640,31 @@ y cada cuarentena conserva sus bytes). Todo en directorios temporales.
 - **CI en `de481b77`**: **26 pass, 3 skipping, 0 fallos** — Shards 1–6 (Windows), `Tests (Pytest)`,
   `Tests / windows-latest`, POSIX Core, Supervisión VFS (Windows, sandbox), Ruff, Mypy ×2, Security,
   Build, CodeQL, Main en verde, Regression & Test Oracle y Auto-revisión.
+
+## 15. Segunda tanda de la ronda 8: el revisor automático sobre estos cambios
+
+CodeRabbit revisó `de481b77` y abrió **10 hilos**. Triage contra el HEAD: **6 válidos y corregidos**
+(2 de código, 3 de documentación y 1 del propio test nuevo), **1 ya resuelto** y **3 registrados como
+P2** con motivo.
+
+| # | Hilo | Clase | Acción |
+|---|---|---|---|
+| A | `runner.py`: la asignación de `self._neutralizacion` quedaba **afuera** del trabajo drenado, así que una cancelación durante la neutralización la salteaba y el fallo (flag residual) se perdía | **válido — regresión introducida por F2** | El registro y el warning pasan **dentro** del trabajo: `esperar_terminar` espera al hilo y recién propaga, así que el resultado queda cargado aunque el llamador reciba `CancelledError`. Se agrega `GrassCacheRunner.neutralizacion`. Test: `test_la_neutralizacion_cancelada_igual_registra_el_resultado`; mutante **M-NEUT** (asignación afuera) muere |
+| B | `safety.py`: `respaldar_cache` sólo comparaba conteo y bytes, así que un **renombrado** (`A.cgid` → `B.cgid`, mismas cifras) dejaba el manifiesto identificando un conjunto que ya no era el respaldado | **válido** | Misma protección que `archivar_progreso`: se compara la huella `(nombre, tamaño)` del origen contra `inventario.huella` y se falla cerrado (`respaldo_de_otro_conjunto`) antes de escribir nada. Test: `test_el_respaldo_rechaza_un_renombrado_entre_inventario_y_copia` (antes: `DID NOT RAISE`) |
+| C | `tests`: si una lectura del observador fallaba y la siguiente funcionaba, `lectura["error"]` quedaba seteado y el test fallaba igual | **válido** (test propio) | El error se limpia en la lectura exitosa |
+| D | `docs` §3: la tabla de modos no decía que `new` exige el `ack` **también con el caché vacío**, que `rebuild` pide respaldo **sólo si hay caché** y raíz de estado **sólo si hay progreso vivo** | **válido** | Tabla de modos reescrita con las tres condiciones, contrastadas contra `planificar_arranque` |
+| E | `docs` §4.6: "el hashing se paga sólo en `rebuild`" | **válido** | Corregido: `resume` que restaura progreso archivado hashea el caché completo y la neutralización de salida también (§14.2) |
+| F | `docs` §13: pipes sin escapar dentro de una tabla (`O_CREAT|O_EXCL|O_NOFOLLOW`) rompían las celdas | **válido** | Escapados |
+| G | `docs` §14.7 remitía a §14.8, que no existía todavía | **válido en su momento** | §14.8 existe en `eb2ea0db`; el hilo queda respondido con el puntero, no se resuelve en bloque |
+| H | `runner.py`: antes de **cada relanzamiento** de un `resume` no se comprueba que el flag siga teniendo progreso; un flag vaciado por un tercero haría que NGIO borre el caché | **válido, P2 — registrado, no implementado** | `aplicar_plan` revalida al aplicar y NGIO no trunca el archivo mientras corre; el escenario exige intervención externa (barrido U-03, antivirus, operador). Cerrarlo pide un `outcome`/error nuevo y un rig donde probar el detonante: va a P2, declarado acá |
+| I | `safety.py`: la clave del **archivo de progreso** (`<huella>-<ámbito>.json`) no incluye el contenido del caché; una generación posterior con los mismos nombres/tamaños reemplaza la evidencia de la anterior | **válido, P2 — registrado** | No destruye el caché (el peor caso es perder evidencia archivada de una generación anterior y tener que regenerarla); cambiar la clave es cambio de contrato del formato de archivo y va con su propia migración |
+| J | `safety.py`: la clave del **directorio de respaldo** (`inventario.huella`) tampoco incluye contenido, así que dos instalaciones con nombres/tamaños idénticos comparten ruta | **válido, P2 — registrado** | F6 ya evita el peor caso: el respaldo ajeno se **aparta con nombre único** (`respaldo_no_apartado` si no se puede), nunca se borra ni se pisa. Cambiar la clave implica recomputar contenido antes de elegir destino (mismo costo que I) y migrar los respaldos existentes |
+
+### 15.1 Gates de esta tanda
+
+- **Foco** (safety + runner + service): **207 passed** (safety 91, runner 58, service 58).
+- **Ampliado** (strategy, profile, analyzer, runtime-deps, scripts, BDD, locks, HITL): **316 passed,
+  2 skipped**.
+- **Mutante M-NEUT** (asignación del resultado fuera del trabajo drenado): **muere**. M-F1, M-F2 y M4
+  siguen muriendo.
+- **Ruff** limpio (`1175 files already formatted`); **mypy** de los cuatro módulos: `no issues found`.

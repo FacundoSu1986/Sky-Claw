@@ -811,6 +811,18 @@ def respaldar_cache(
             f"{inventario.archivos_cache}/{inventario.bytes_cache}: cambió entre el inventario y el respaldo.",
         )
 
+    # Conteo y bytes no distinguen un RENOMBRADO (A.cgid → B.cgid conserva las dos
+    # cifras): el respaldo se escribiría con los bytes correctos pero el
+    # manifiesto identificaría el conjunto del inventario, que ya no es el suyo.
+    # Misma protección que `archivar_progreso` (huella ``(nombre, tamaño)``).
+    huella_del_origen = huella_del_cache((nombre, tamano) for nombre, (tamano, _) in origen.items())
+    if huella_del_origen != inventario.huella:
+        raise GrassCacheSafetyError(
+            "respaldo_de_otro_conjunto",
+            f"El conjunto (nombre, tamaño) del caché cambió entre el inventario ({inventario.huella}) y el "
+            f"respaldo ({huella_del_origen}): no se escribe un respaldo con identidad ajena.",
+        )
+
     reusado = _respaldo_existente_verifica(destino, inventario, origen, grass_dir) if path_present(destino) else None
     if reusado is not None:
         logger.info("Respaldo de grass verificado por contenido en %s; se reusa.", destino)

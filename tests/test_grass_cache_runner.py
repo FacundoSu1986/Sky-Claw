@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import itertools
+import logging
 import pathlib
 import threading
 import time
@@ -1721,6 +1722,7 @@ async def test_el_lease_sigue_vigente_durante_una_neutralizacion_mas_larga_que_e
                     try:
                         lectura["info"] = await lector.get_lock_info("grass-cache")
                         lectura["ahora"] = time.time()
+                        lectura.pop("error", None)  # un reintento exitoso no deja el error viejo
                         return
                     except Exception as exc:  # noqa: BLE001 — reintento corto por lock de SQLite
                         lectura["error"] = repr(exc)
@@ -1768,3 +1770,38 @@ async def test_el_lease_sigue_vigente_durante_una_neutralizacion_mas_larga_que_e
         suelta.set()
         observador.join(timeout=5)
         await manager.close()
+
+
+async def test_la_neutralizacion_cancelada_igual_registra_el_resultado(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # La asignación del resultado NO puede depender del `await` del llamador: si la
+    # cancelación llega mientras el hilo neutraliza, `esperar_terminar` espera y
+    # propaga CancelledError, así que un `self._neutralizacion = await …` externo
+    # nunca corre y el fallo del worker (flag residual) se pierde en silencio.
+    en_hilo, liberar, termino = _neutralizador_con_barrera(monkeypatch)
+    fallo = NeutralizacionFlag(borrado=False, archivado=True, errores=("no se pudo borrar el flag",))
+
+    def _neutralizar_y_fallar(**kwargs: Any) -> NeutralizacionFlag:
+        en_hilo.set()
+        liberar.wait(timeout=20)
+        termino.set()
+        return fallo
+
+    monkeypatch.setattr(gcr_mod, "neutralizar_flag", _neutralizar_y_fallar)
+    evento = asyncio.Event()
+    runner = _runner_que_cancela_en_el_progreso(config, mo2, evento)
+    tarea = asyncio.ensure_future(runner.run(evento))
+
+    assert await asyncio.to_thread(en_hilo.wait, 10.0), "la neutralización no llegó a empezar"
+    tarea.cancel()
+    liberar.set()
+    with caplog.at_level(logging.WARNING), pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=10)
+
+    assert termino.is_set(), "el worker terminó: el flag quedó neutralizado antes de propagar"
+    assert runner.neutralizacion is not None, "se perdió el resultado de la neutralización al cancelar"
+    assert runner.neutralizacion is fallo
+    assert any("neutraliz" in r.message.lower() for r in caplog.records), (
+        "el fallo de la limpieza tiene que quedar registrado, no sólo en memoria"
+    )

@@ -1575,3 +1575,24 @@ def test_dos_respaldos_invalidos_en_el_mismo_segundo_no_se_pisan(
 
     assert [p for p in cuarentenas if (p / "ajeno.txt").read_bytes() == b"basura-1"], "se perdió la primera"
     assert [p for p in cuarentenas if (p / "ajeno.txt").read_bytes() == b"basura-2"], "se perdió la segunda"
+
+
+# ---------------------------------------------------------------------------
+# Revisión automática (ronda 8): el conjunto debe ser el del inventario
+# ---------------------------------------------------------------------------
+
+
+def test_el_respaldo_rechaza_un_renombrado_entre_inventario_y_copia(
+    grass: pathlib.Path, juego: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    # Un renombrado conserva el CONTEO y los BYTES: la comprobación barata
+    # (n archivos, m bytes) lo deja pasar y el manifiesto queda identificando un
+    # conjunto que ya no es el respaldado. La huella ``(nombre, tamaño)`` sí lo ve.
+    inv = _inventario(grass, juego)
+    (grass / "Tamriel.cgid").rename(grass / "Tamriel_renombrado.cgid")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        respaldar_cache(grass_dir=grass, destino=tmp_path / "respaldo", inventario=inv)
+
+    assert excinfo.value.codigo == "respaldo_de_otro_conjunto"
+    assert not (tmp_path / "respaldo").exists(), "no se escribe un respaldo con identidad ajena"
