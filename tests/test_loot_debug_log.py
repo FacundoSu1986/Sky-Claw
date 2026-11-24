@@ -293,3 +293,27 @@ async def test_sin_data_root_conocido_no_hay_lectura_ni_campo(lock_manager, snap
 
     assert res["success"] is True
     assert "loot_log" not in res
+
+
+async def test_con_testigo_fresco_el_veredicto_no_depende_del_reloj(lock_manager, snapshot_manager, tmp_path) -> None:  # noqa: ANN001
+    """Revisión adversarial: el testigo fresco YA prueba que el log es de esta corrida.
+
+    Filtrar además por mtime ≥ inicio hacía que un desfase de reloj daemon↔filesystem
+    (p. ej. la deriva conocida de WSL2) descartara el log fresco y la firma fatal
+    pasara sin evaluarse: un fail-open del caso H.
+    """
+    import os
+
+    data_root = tmp_path / "loot_data"
+
+    def envejecer_el_log() -> None:
+        ruta = data_root / LOOT_DEBUG_LOG_FILENAME
+        os.utime(ruta, (1_000_000_000, 1_000_000_000))  # mtime en 2001: "anterior" al inicio
+
+    runner = _runner(data_root, _LOG_FATAL, efecto=envejecer_el_log)
+    svc, _ = _servicio(lock_manager, snapshot_manager, runner, tmp_path)
+    res = await svc.sort_load_order()
+
+    assert res["success"] is False
+    assert res["failure_reason"] == "process_error"
+    assert res["loot_log"]["fatales"]

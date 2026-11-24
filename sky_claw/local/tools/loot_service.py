@@ -328,6 +328,9 @@ class _Recuperacion:
         vetado: el restore se VETÓ por terminalidad desconocida del worker/LOOT
             (``rollback_veto.exception_forbids_rollback``): restaurar pisaría la
             escritura de un LOOT que pudo seguir vivo.
+        intentado: el lock ejecutó el restore (``rollback_attempted``). No lo
+            intenta con el veto ni con la lease perdida: en ese caso otra
+            operación pudo escribir el load order y restaurar a ciegas la pisaría.
         probada: el lock restauró TODOS los snapshots sin veto
             (``SnapshotTransactionLock.rollback_completed``). Es lo único que
             autoriza marcar la TX del journal como ROLLED_BACK.
@@ -336,6 +339,7 @@ class _Recuperacion:
     """
 
     vetado: bool
+    intentado: bool
     probada: bool
     snapshots: tuple[tuple[str, str], ...]
 
@@ -344,6 +348,7 @@ class _Recuperacion:
         vetado = tx.rollback_vetoed_unknown_terminality
         return cls(
             vetado=vetado,
+            intentado=tx.rollback_attempted,
             probada=tx.rollback_completed and not vetado,
             snapshots=tuple((snap.original_path, snap.snapshot_path) for snap in tx.snapshots),
         )
@@ -359,6 +364,14 @@ class _Recuperacion:
                 "journal queda PENDIENTE. Verificá que no queden procesos de LOOT/usvfs, liberá la "
                 "cuarentena de la instancia (`--mode vfs-quarantine`, docs/operations/recovery.md) "
                 "y restaurá plugins.txt/loadorder.txt desde los snapshots indicados."
+            )
+        if not self.intentado:
+            return (
+                "El rollback automático NO se ejecutó: el lock perdió la exclusividad del load "
+                "order y otra operación pudo escribir plugins.txt/loadorder.txt después de LOOT. "
+                "La transacción del journal queda PENDIENTE. Verificá quién escribió último antes "
+                "de restaurar desde los snapshots indicados: restaurar a ciegas podría pisar ese "
+                "cambio."
             )
         return (
             "El rollback quedó INCOMPLETO: no se pudieron reinstalar todos los snapshots. La "
@@ -1091,9 +1104,10 @@ class LootSortingService:
                 # A4: sólo con testigo fresco el log es de ESTA corrida.
                 testigo = result.execution_witness
                 if loot_data_path is not None and testigo is not None and testigo.fresh:
-                    hallazgos_log = await asyncio.to_thread(
-                        read_loot_log_findings, loot_data_path, desde=inicio_corrida
-                    )
+                    # Sin ``desde``: el testigo fresco ya prueba que el log es de esta
+                    # corrida, y filtrar por mtime lo haría depender del reloj
+                    # daemon↔filesystem (un desfase descartaría la firma fatal: fail-open).
+                    hallazgos_log = await asyncio.to_thread(read_loot_log_findings, loot_data_path)
                 # PR-2: estado final, TODAVÍA dentro del lock. La telemetría física
                 # ya no clasifica (en 0.29.1 un NO_CHANGE legítimo no reescribe
                 # nada, ver _capturar_estado_de_archivos): sólo aporta

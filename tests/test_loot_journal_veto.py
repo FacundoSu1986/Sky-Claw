@@ -266,3 +266,20 @@ def test_toda_rama_con_tx_cierra_por_el_helper_y_ninguna_marca_a_mano() -> None:
         if nombre in _RAMAS_SIN_TX:
             continue
         assert _llama_metodo(rama, "_cerrar_journal_tras_fallo"), nombre
+
+
+def test_aviso_si_el_rollback_no_se_intento_no_manda_a_restaurar_a_ciegas() -> None:
+    """Revisión adversarial: con la lease perdida el lock NO intenta el restore (otro
+    agente pudo escribir el load order). El aviso no puede ordenar restaurar a ciegas."""
+    from sky_claw.local.tools.loot_service import _Recuperacion
+
+    no_intentado = _Recuperacion(
+        vetado=False, intentado=False, probada=False, snapshots=(("plugins.txt", "snap/plugins.txt"),)
+    )
+    incompleto = _Recuperacion(
+        vetado=False, intentado=True, probada=False, snapshots=(("plugins.txt", "snap/plugins.txt"),)
+    )
+
+    assert "NO se ejecutó" in no_intentado.aviso()
+    assert "verificá" in no_intentado.aviso().lower()
+    assert "INCOMPLETO" in incompleto.aviso()
