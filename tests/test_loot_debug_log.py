@@ -37,6 +37,8 @@ from sky_claw.local.loot.outcome import LootSortFailureReason, LootSortOutcome, 
 from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver
 from sky_claw.local.tools.loot_service import LootSortingService
+from tests._loot_masterlist import sembrar_masterlist
+from tests._loot_pe import escribir_loot_exe
 from tests._loot_witness import TESTIGO_FRESCO
 
 _PLUGINS = b"*Mod A.esp\n*Mod B.esp\n"
@@ -240,6 +242,10 @@ def _runner(data_root: pathlib.Path, log: str, *, efecto: Any = None, excepcion:
     runner.sort = AsyncMock(side_effect=sort)
     runner.loot_data_path = data_root
     runner.game_data_dir = None
+    # PR-B: el servicio provee el masterlist de la rama del LOOT.exe antes del spawn.
+    runner.loot_exe = escribir_loot_exe(data_root.parent / "LOOT" / "LOOT.exe")
+    runner.game = "SkyrimSE"
+    sembrar_masterlist(data_root)
     return runner
 
 

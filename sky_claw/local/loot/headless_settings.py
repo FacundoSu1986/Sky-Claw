@@ -2,7 +2,7 @@
 
 Una corrida ``--auto-sort`` desatendida sólo cierra sola si ningún camino del GUI
 la detiene en un modal o le cancela el auto-cierre. Este módulo gestiona
-EXACTAMENTE tres claves top-level de ``<loot-data-path>/settings.toml``, cada
+EXACTAMENTE cuatro claves top-level de ``<loot-data-path>/settings.toml``, cada
 una con evidencia upstream; todo lo demás es de LOOT/del operador.
 
 Evidencia upstream — ``loot/loot`` tag ``0.29.1``, commit
@@ -59,6 +59,17 @@ semántica, líneas corridas entre paréntesis):
   corrida desatendida de 0.29.1 termina en timeout. El chequeo no aporta nada
   al sort: sólo produce ese mensaje.
 
+``updateMasterlist = false`` — descarga de red antes de cada sort (PR-B).
+
+* ``src/gui/state/loot_settings.cpp:841-842`` (``load``, ``value_or``; default
+  ``true``): clave TOML top-level exacta.
+* ``src/gui/qt/main_window.cpp:1245-1256``: con la clave activa el sort encola
+  la actualización de prelude + masterlist; un fallo de red termina en
+  ``handleError`` → ``QMessageBox::critical`` (modal) → timeout. Sky-Claw provee
+  esos archivos desde el daemon (:mod:`sky_claw.local.loot.masterlist_provision`)
+  y el runner exige que existan antes del spawn: sin la clave apagada, LOOT los
+  volvería a descargar igual.
+
 ``src/gui/state/loot_state.cpp:210-222``: un ``settings.toml`` que no parsea
 agrega un init error y ``MainWindow::initialise`` (``main_window.cpp:383-385``)
 retorna sin cargar el juego: sin sort y sin quit. Por eso esta política valida
@@ -75,9 +86,10 @@ Política de propiedad (managed vs user):
   cambia una clave gestionada, Sky-Claw la restaura antes de la próxima corrida.
 * **Todo lo demás es de LOOT/del operador** y se preserva byte a byte: la
   edición es textual (líneas antepuestas o el valor de una línea reemplazado),
-  nunca una reserialización del archivo. No se tocan masterlist, prelude,
-  ``updateMasterlist`` (PR-3), userlist ni ninguna otra preferencia.
-* Idempotente: si las tres claves ya tienen el valor gestionado no se escribe.
+  nunca una reserialización del archivo. No se tocan masterlist, prelude (los
+  provee :mod:`~sky_claw.local.loot.masterlist_provision`), userlist ni ninguna
+  otra preferencia.
+* Idempotente: si las cuatro claves ya tienen el valor gestionado no se escribe.
 * Escritura atómica: temporal exclusivo + ``os.replace`` en el mismo directorio.
 * Fail-closed: TOML inválido, no-UTF-8, versión mal formada o una forma de la
   clave que no se puede editar con garantías → :class:`LootHeadlessSettingsError`
@@ -105,6 +117,9 @@ LOOT_NO_SORTING_CHANGES_DIALOG_KEY: Final[str] = "useNoSortingChangesDialog"
 #: Clave TOML exacta del update check de LOOT (``loot_settings.cpp:843-844``).
 LOOT_UPDATE_CHECK_KEY: Final[str] = "enableLootUpdateCheck"
 
+#: Clave TOML exacta de la descarga previa al sort (``loot_settings.cpp:841-842``).
+LOOT_UPDATE_MASTERLIST_KEY: Final[str] = "updateMasterlist"
+
 #: Clave TOML exacta que decide el modal "First-Time Tips" (``loot_settings.cpp:854``).
 LOOT_LAST_VERSION_KEY: Final[str] = "lastVersion"
 
@@ -114,6 +129,7 @@ LOOT_LAST_VERSION_KEY: Final[str] = "lastVersion"
 MANAGED_LOOT_HEADLESS_SETTINGS: Final[Mapping[str, bool]] = {
     LOOT_NO_SORTING_CHANGES_DIALOG_KEY: False,
     LOOT_UPDATE_CHECK_KEY: False,
+    LOOT_UPDATE_MASTERLIST_KEY: False,
 }
 
 #: Conjunto COMPLETO de claves que Sky-Claw gestiona en el settings de LOOT:
@@ -141,6 +157,7 @@ def _patron_de_linea(clave: str, valor: str) -> re.Pattern[str]:
 _LINEA_GESTIONADA: Final[Mapping[str, re.Pattern[str]]] = {
     LOOT_NO_SORTING_CHANGES_DIALOG_KEY: _patron_de_linea(LOOT_NO_SORTING_CHANGES_DIALOG_KEY, _VALOR_BOOLEANO),
     LOOT_UPDATE_CHECK_KEY: _patron_de_linea(LOOT_UPDATE_CHECK_KEY, _VALOR_BOOLEANO),
+    LOOT_UPDATE_MASTERLIST_KEY: _patron_de_linea(LOOT_UPDATE_MASTERLIST_KEY, _VALOR_BOOLEANO),
     LOOT_LAST_VERSION_KEY: _patron_de_linea(LOOT_LAST_VERSION_KEY, _VALOR_STRING),
 }
 

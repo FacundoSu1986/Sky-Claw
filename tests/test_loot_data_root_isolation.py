@@ -49,6 +49,7 @@ from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob, VfsJobResult
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest
 from sky_claw.local.mo2.vfs_worker import _loot_handler
+from tests._loot_masterlist import sembrar_masterlist
 from tests._loot_pe import escribir_loot_exe
 
 # ---------------------------------------------------------------------------
@@ -169,6 +170,7 @@ async def test_t2_daemon_decide_una_vez_flujo_sin_divergencia(tmp_path: pathlib.
         data_root=mo2,
     )
     assert resolved == loot_data.resolve(strict=False) or resolved.is_relative_to(base)
+    sembrar_masterlist(resolved)
 
     broker = _Broker()
     runner = BrokeredLootRunner(
@@ -290,6 +292,7 @@ async def test_t4_pr0_intacto_con_loot_data_path(tmp_path: pathlib.Path) -> None
     game.mkdir()
     loot_data = tmp_path / "loot_data" / "mo2-abc" / "Default"
     loot_data.mkdir(parents=True)
+    sembrar_masterlist(loot_data)
     config = LOOTConfig(
         loot_exe=exe,
         game_path=game,
@@ -477,6 +480,7 @@ async def test_t10_argv_frozen_orden(tmp_path: pathlib.Path) -> None:
     game.mkdir()
     loot_data = tmp_path / "loot_data" / "mo2-abc" / "Default"
     loot_data.mkdir(parents=True)
+    sembrar_masterlist(loot_data)
     config = LOOTConfig(loot_exe=exe, game_path=game, game="SkyrimSE", loot_data_path=loot_data)
     runner = LOOTRunner(config)
     captured, fake_exec = _capturando_exec()
