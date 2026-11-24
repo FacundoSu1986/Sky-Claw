@@ -209,6 +209,16 @@ class BrokeredLootRunner:
         return self._loot_data_base
 
     @property
+    def loot_exe(self) -> pathlib.Path:
+        """``LOOT.exe`` que lanza el worker (su ``VERSIONINFO`` decide la rama del masterlist, PR-B)."""
+        return self._loot_exe
+
+    @property
+    def game(self) -> str:
+        """Id INTERNO del juego: el job siempre pide el default (``"game"`` del payload)."""
+        return DEFAULT_LOOT_INTERNAL_GAME_ID
+
+    @property
     def game_data_dir(self) -> pathlib.Path:
         """``Data`` físico del juego (su padre es el game root con ``Skyrim.ccc``)."""
         return self._game_data_dir
@@ -332,7 +342,7 @@ class BrokeredLootRunner:
                 # contra la MISMA frontera (LOOT_CLI_GAME_IDENTIFIERS de
                 # sky_claw.local.loot.cli) y la traducción al dialecto de
                 # `--game` ocurre una sola vez, en el runner (PR-0).
-                "game": DEFAULT_LOOT_INTERNAL_GAME_ID,
+                "game": self.game,
                 "update_masterlist": update_masterlist,
                 # PR-1: data root propiedad de Sky-Claw, explícito, estable
                 "loot_data_path": str(self._loot_data_path),

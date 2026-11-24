@@ -23,9 +23,9 @@ desatendido:
 - deja el `plugins.txt`/`loadorder.txt` del perfil como corresponde (aplicado, intacto o restaurado);
 - deja el journal en el estado verdadero (`COMMITTED`, `ROLLED_BACK` o `PENDING`).
 
-**No** valida el refresco del masterlist. Queda para PR-B: la política decidida es que Sky-Claw provea el
-masterlist con `updateMasterlist = false`. Mientras tanto, LOOT descarga el masterlist en cada
-sort y **necesita red**. Sin red, la corrida termina en `timeout` (R5).
+Desde PR-B, LOOT **no** descarga nada: `updateMasterlist = false` y el daemon provee masterlist y prelude
+(`<data root>/games/Skyrim Special Edition/masterlist.yaml` y `<data root>/prelude/prelude.yaml`, rama
+`v0.29`) antes de cada sort. Sin red sólo se reutiliza una copia previa de la misma fuente (R5).
 
 ## Preparación (una vez)
 
@@ -56,12 +56,12 @@ Por cada corrida, registrar:
 
 | # | Preparación | Resultado esperado | Verificación física |
 |---|---|---|---|
-| R0 | Borrar el data root de LOOT de Sky-Claw | `changed` o `no_change`, sin el diálogo «First-Time Tips» | En `settings.toml` del data root: `lastVersion` = versión del `LOOT.exe` instalado, `useNoSortingChangesDialog = false`, `enableLootUpdateCheck = false` |
+| R0 | Borrar el data root de LOOT de Sky-Claw (con red) | `changed` o `no_change`, sin el diálogo «First-Time Tips»; `masterlist.acciones` = `descargado` | En `settings.toml` del data root: `lastVersion` = versión del `LOOT.exe` instalado, `useNoSortingChangesDialog = false`, `enableLootUpdateCheck = false`, `updateMasterlist = false`; existen `games/Skyrim Special Edition/masterlist.yaml` y `prelude/prelude.yaml`. En `LOOTDebugLog.txt` no hay descarga de masterlist |
 | R1 | Orden desordenado | `outcome = changed`, `verification.execution_witness = fresh`, `active_plugins_preserved = true` | El orden cambió; la activación canónica es idéntica (la misma semántica de `read_active_plugins_state`: un master base o de Creation Club puede perder su `*` sin cambiar de estado); journal `COMMITTED` |
 | R2 | Repetir R1 de inmediato | `outcome = no_change`, `success = true`, `message = ""` | SHA-256 idénticos al final de R1; journal `COMMITTED` |
 | R3 | GUI de LOOT abierta (mutex `LOOT.Shell.Instance`) | `failure_reason = execution_not_attributable`, testigo `sentinel_intact` | SHA-256 idénticos a la preparación |
 | R4 | Fallo deliberado de sort (regla cíclica en el userlist del data root) | `fail`: `process_error` con `loot_log.fatales` citando `Failed to sort plugins`, o `timeout` con esa línea en `outcome_detail` | Archivos restaurados byte a byte; journal `ROLLED_BACK`. Anotar cuál de las dos salidas ocurrió |
-| R5 | Sin red (adaptador deshabilitado) | `failure_reason = timeout`; si LOOT registró el error de red, `loot_log` lo cita | Archivos restaurados; journal `ROLLED_BACK` |
+| R5 | Sin red (adaptador deshabilitado). (a) tras R0; (b) con el data root borrado | (a) éxito con `masterlist.acciones` = `vigente` o `copia_anterior` (+ aviso), sin modal ni timeout. (b) `failure_reason = precondition_failed` («Masterlist de LOOT no disponible»), LOOT no se lanzó | (a) journal `COMMITTED`. (b) SHA-256 idénticos a la preparación; no hay `LOOTDebugLog.txt` nuevo |
 | R6 | Un mod habilitado cuyo plugin **no** se proyecta en el Data virtual (por ejemplo, el `.esp` movido fuera de la carpeta del mod) | `failure_reason = precondition_failed`, con el nombre del plugin en `message`; **LOOT no se lanzó** (no hay `LOOTDebugLog.txt` nuevo) | SHA-256 idénticos a la preparación. Si se llegara a lanzar: `active_plugins_changed` y archivos restaurados |
 | R7 | Cambiar el perfil activo de MO2 entre la aprobación y el sort | Rechazo de la atestación VFS (perfil distinto), sin lanzar LOOT | SHA-256 idénticos |
 | R8 | Cerrar MO2 a mitad de un sort largo | `failure_reason = timeout` o de protocolo, `rollback_vetoed = true`, `snapshots` no vacío | Archivos **sin** restaurar (el veto es intencional), journal `PENDING`, instancia en cuarentena. Recuperación con [`recovery.md`](recovery.md) y restauración manual desde los `snapshots` informados |

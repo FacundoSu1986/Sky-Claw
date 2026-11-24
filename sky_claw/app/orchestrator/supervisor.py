@@ -231,6 +231,8 @@ class SupervisorAgent:
             stage9_coordination=stage9_coordination,
             dyndolod_workspace=dyndolod_workspace,
             dyndolod_spawn_strategy=dyndolod_spawn_strategy,
+            # PR-B: el masterlist de LOOT sale por el MISMO gateway del daemon.
+            gateway=self.gateway,
         )
         self._synthesis_service = composition.synthesis_service
         self._dyndolod_service = composition.dyndolod_service

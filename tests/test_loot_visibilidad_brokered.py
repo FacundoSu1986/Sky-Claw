@@ -25,6 +25,7 @@ from sky_claw.local.loot.cli import LOOTPreconditionError, LOOTTimeoutError, LOO
 from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.brokered_loot import BrokeredLootRunner
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob, VfsJobResult
+from tests._loot_masterlist import sembrar_masterlist
 from tests._loot_pe import escribir_loot_exe
 from tests._loot_witness import TESTIGO_FRESCO
 
@@ -78,6 +79,7 @@ def _runner(tmp_path: pathlib.Path, broker: Any, plugins: bytes = b"*Mod A.esp\n
     target.write_bytes(plugins)
     loot_data = tmp_path / "loot_data" / "portable-main" / "Default"
     loot_data.mkdir(parents=True)
+    sembrar_masterlist(loot_data)
     return BrokeredLootRunner(
         broker=broker,
         instance_id="portable-main",
@@ -262,6 +264,7 @@ async def test_handler_de_loot_admite_expected_plugins(tmp_path: pathlib.Path) -
     (profile / "plugins.txt").write_bytes(b"*Skyrim.esm\n")
     loot_data = tmp_path / "loot_data" / "portable-main" / "Default"
     loot_data.mkdir(parents=True)
+    sembrar_masterlist(loot_data)
     challenge = build_attestation_challenge(data_root=mo2, profile="Default", physical_data_dir=game_data)
     job = VfsJob.create(
         instance_id="portable-main",
