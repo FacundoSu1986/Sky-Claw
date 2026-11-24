@@ -72,6 +72,7 @@ from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.load_order import LoadOrderFileResolver, LoadOrderPaths
 from sky_claw.local.tools import loot_service as loot_service_module
 from sky_claw.local.tools.loot_service import LootSortingService
+from tests._loot_masterlist import sembrar_masterlist
 from tests._loot_pe import escribir_loot_exe, pe_con_version
 from tests._loot_witness import TESTIGO_FRESCO, TESTIGO_INTACTO
 
@@ -85,7 +86,7 @@ _LOADORDER_ORIGINAL = b"Skyrim.esm\nMod A.esp\nMod B.esp\n"
 _VERSION = "0.29.1"
 
 #: Contenido EXACTO de un data root nuevo para un LOOT.exe 0.29.1.
-_GESTIONADO = 'useNoSortingChangesDialog = false\nenableLootUpdateCheck = false\nlastVersion = "0.29.1"\n'
+_GESTIONADO = 'useNoSortingChangesDialog = false\nenableLootUpdateCheck = false\nupdateMasterlist = false\nlastVersion = "0.29.1"\n'
 
 
 # =============================================================================
@@ -767,6 +768,7 @@ def _segunda_instancia(_argv: list[str]) -> None:
 async def _correr_runner(tmp_path: pathlib.Path, comportamiento: Any, **kwargs: Any) -> tuple[LOOTResult, Any]:
     root = tmp_path / "loot_data"
     root.mkdir(exist_ok=True)
+    sembrar_masterlist(root)
     runner = LOOTRunner(LOOTConfig(loot_exe=_loot_exe(tmp_path), game_path=tmp_path, loot_data_path=root))
     capturado, fake_exec = _proceso_fake(comportamiento, **kwargs)
     with (
@@ -787,6 +789,7 @@ async def test_runner_crea_el_data_root_si_falta_antes_de_armar(tmp_path: pathli
     """Camino directo: el root puede no existir todavía (LOOT lo crearía, pero el
     settings y el sentinel se escriben ANTES del spawn)."""
     root = tmp_path / "nuevo" / "loot_data"
+    sembrar_masterlist(root)
     runner = LOOTRunner(LOOTConfig(loot_exe=_loot_exe(tmp_path), game_path=tmp_path, loot_data_path=root))
     _, fake_exec = _proceso_fake(_loot_que_supera_el_mutex)
     with (
@@ -865,6 +868,7 @@ async def test_runner_sin_poder_armar_el_testigo_no_lanza_loot(tmp_path: pathlib
     # Settings ya gestionado (UNCHANGED, sin escritura): el único os.replace de la
     # preparación es el del sentinel.
     ensure_loot_headless_settings(root, loot_version=_VERSION)
+    sembrar_masterlist(root)
     runner = LOOTRunner(LOOTConfig(loot_exe=_loot_exe(tmp_path), game_path=tmp_path, loot_data_path=root))
     fake_exec = AsyncMock()
     with (
@@ -883,6 +887,7 @@ async def test_runner_settings_invalido_no_lanza_loot_ni_lo_pisa(tmp_path: pathl
     root.mkdir()
     settings = root / "settings.toml"
     settings.write_bytes(b"this is = = not toml\n")
+    sembrar_masterlist(root)
     runner = LOOTRunner(LOOTConfig(loot_exe=_loot_exe(tmp_path), game_path=tmp_path, loot_data_path=root))
     fake_exec = AsyncMock()
     with (
@@ -900,6 +905,7 @@ async def test_runner_timeout_mata_reapea_y_no_observa(tmp_path: pathlib.Path) -
     observación del testigo (no hay proceso terminado que atribuir)."""
     root = tmp_path / "loot_data"
     root.mkdir()
+    sembrar_masterlist(root)
     runner = LOOTRunner(LOOTConfig(loot_exe=_loot_exe(tmp_path), game_path=tmp_path, loot_data_path=root, timeout=0))
 
     async def communicate_bloqueado() -> tuple[bytes, bytes]:
@@ -927,6 +933,7 @@ async def test_runner_timeout_mata_reapea_y_no_observa(tmp_path: pathlib.Path) -
 async def test_runner_cancelado_mata_reapea_y_repropaga(tmp_path: pathlib.Path) -> None:
     root = tmp_path / "loot_data"
     root.mkdir()
+    sembrar_masterlist(root)
     runner = LOOTRunner(LOOTConfig(loot_exe=_loot_exe(tmp_path), game_path=tmp_path, loot_data_path=root))
     iniciado = asyncio.Event()
 
@@ -971,8 +978,9 @@ async def test_t19_pr1_data_root_explicito_y_unico_lugar_escrito(tmp_path: pathl
     _, capturado = await _correr_runner(tmp_path, _loot_que_supera_el_mutex)
     argv = capturado["argv"]
     assert argv[argv.index("--loot-data-path") + 1] == str(root)
-    # Lo único que Sky-Claw prepara, y SOLO dentro del data root aislado.
-    assert sorted(p.name for p in root.iterdir()) == [LOOT_DEBUG_LOG_FILENAME, "settings.toml"]
+    # Lo único que el runner prepara, y SOLO dentro del data root aislado (games/ y
+    # prelude/ los sembró el test: en producción los provee el daemon, PR-B).
+    assert sorted(p.name for p in root.iterdir()) == [LOOT_DEBUG_LOG_FILENAME, "games", "prelude", "settings.toml"]
 
 
 async def test_t19_runner_sin_data_root_no_escribe_nada_ni_produce_testigo(tmp_path: pathlib.Path) -> None:
@@ -1078,6 +1086,7 @@ def _manifest_worker(tmp_path: pathlib.Path) -> Any:
     target.write_bytes(b"*Skyrim.esm\n")
     loot_data = tmp_path / "loot_data" / "portable-main" / "Default"
     loot_data.mkdir(parents=True)
+    sembrar_masterlist(loot_data)
     challenge = build_attestation_challenge(data_root=mo2, profile="Default", physical_data_dir=game_data)
     job = VfsJob.create(
         instance_id="portable-main",
@@ -1153,6 +1162,7 @@ def _runner_brokered(tmp_path: pathlib.Path, broker: Any) -> Any:
     target.write_bytes(b"*Skyrim.esm\n")
     loot_data = tmp_path / "loot_data_b" / "portable-main" / "Default"
     loot_data.mkdir(parents=True)
+    sembrar_masterlist(loot_data)
     return BrokeredLootRunner(
         broker=broker,
         instance_id="portable-main",
@@ -1470,24 +1480,29 @@ def test_s3_s6_claves_ajenas_y_masterlist_sobreviven_byte_a_byte(tmp_path: pathl
     assert ensure_loot_headless_settings(tmp_path, loot_version=_VERSION) is LootHeadlessSettingsAction.UPDATED
 
     texto = settings.read_text(encoding="utf-8")
-    esperado = _SETTINGS_LOOT.replace("enableLootUpdateCheck = true\n", "enableLootUpdateCheck = false\n", 1).replace(
-        "useNoSortingChangesDialog = true\ngame", "useNoSortingChangesDialog = false\ngame", 1
+    esperado = (
+        _SETTINGS_LOOT.replace("enableLootUpdateCheck = true\n", "enableLootUpdateCheck = false\n", 1)
+        .replace("useNoSortingChangesDialog = true\ngame", "useNoSortingChangesDialog = false\ngame", 1)
+        .replace("updateMasterlist = true\n", "updateMasterlist = false\n", 1)
     )
     assert texto == esperado  # sólo cambiaron los valores de las claves top-level gestionadas
     despues = tomllib.loads(texto)
     assert despues["useNoSortingChangesDialog"] is False
     assert despues["enableLootUpdateCheck"] is False
+    assert despues["updateMasterlist"] is False  # PR-B: clave gestionada
     assert despues["lastVersion"] == _VERSION  # ya coincidía: su línea no se tocó
-    # S6: masterlist/prelude/updateMasterlist intactos (incluida la clave homónima
+    # S6: fuentes de prelude/masterlist intactas (incluida la clave homónima
     # DENTRO de [[games]], que no es la gestionada).
-    for clave in ("updateMasterlist", "preludeSource", "filters", "games"):
+    for clave in ("preludeSource", "filters", "games"):
         assert despues[clave] == antes[clave], clave
 
 
 def test_s3_clave_ausente_se_antepone_sin_tocar_el_resto(tmp_path: pathlib.Path) -> None:
     settings = tmp_path / "settings.toml"
-    original = _SETTINGS_LOOT.replace("useNoSortingChangesDialog = true\ngame", "game", 1).replace(
-        "enableLootUpdateCheck = true", "enableLootUpdateCheck = false", 1
+    original = (
+        _SETTINGS_LOOT.replace("useNoSortingChangesDialog = true\ngame", "game", 1)
+        .replace("enableLootUpdateCheck = true", "enableLootUpdateCheck = false", 1)
+        .replace("updateMasterlist = true", "updateMasterlist = false", 1)
     )
     settings.write_text(original, encoding="utf-8")
     assert ensure_loot_headless_settings(tmp_path, loot_version=_VERSION) is LootHeadlessSettingsAction.UPDATED
@@ -1499,7 +1514,7 @@ def test_s3_clave_ausente_en_archivo_crlf_respeta_el_salto(tmp_path: pathlib.Pat
     settings.write_bytes(b'game = "x"\r\n[filters]\r\nhideCRCs = true\r\n')
     ensure_loot_headless_settings(tmp_path, loot_version=_VERSION)
     assert settings.read_bytes() == (
-        b"useNoSortingChangesDialog = false\r\nenableLootUpdateCheck = false\r\n"
+        b"useNoSortingChangesDialog = false\r\nenableLootUpdateCheck = false\r\nupdateMasterlist = false\r\n"
         b'lastVersion = "0.29.1"\r\ngame = "x"\r\n[filters]\r\nhideCRCs = true\r\n'
     )
 
@@ -1512,7 +1527,8 @@ def test_s3_bom_y_crlf_se_preservan(tmp_path: pathlib.Path) -> None:
     )
     ensure_loot_headless_settings(tmp_path, loot_version=_VERSION)
     assert settings.read_bytes() == (
-        b'\xef\xbb\xbfgame = "x"\r\nuseNoSortingChangesDialog = false # nota\r\n'
+        b"\xef\xbb\xbfupdateMasterlist = false\r\n"
+        b'game = "x"\r\nuseNoSortingChangesDialog = false # nota\r\n'
         b"enableLootUpdateCheck = false\r\nlastVersion = '0.29.1'\r\n"
     )
 
@@ -1554,13 +1570,19 @@ def test_s5_claves_y_valores_exactos_congelados_contra_upstream() -> None:
     assert LOOT_NO_SORTING_CHANGES_DIALOG_KEY == "useNoSortingChangesDialog"
     assert LOOT_UPDATE_CHECK_KEY == "enableLootUpdateCheck"
     assert LOOT_LAST_VERSION_KEY == "lastVersion"
-    assert dict(MANAGED_LOOT_HEADLESS_SETTINGS) == {"useNoSortingChangesDialog": False, "enableLootUpdateCheck": False}
+    assert dict(MANAGED_LOOT_HEADLESS_SETTINGS) == {
+        "useNoSortingChangesDialog": False,
+        "enableLootUpdateCheck": False,
+        "updateMasterlist": False,
+    }
     assert (
-        frozenset({"useNoSortingChangesDialog", "enableLootUpdateCheck", "lastVersion"}) == MANAGED_LOOT_SETTINGS_KEYS
+        frozenset({"useNoSortingChangesDialog", "enableLootUpdateCheck", "updateMasterlist", "lastVersion"})
+        == MANAGED_LOOT_SETTINGS_KEYS
     )
     assert managed_loot_settings("0.29.2") == {
         "useNoSortingChangesDialog": False,
         "enableLootUpdateCheck": False,
+        "updateMasterlist": False,
         "lastVersion": "0.29.2",
     }
 
@@ -1631,7 +1653,7 @@ lastGame = 'Skyrim Special Edition'
 lastVersion = '0.29.1'
 preludeSource = 'https://raw.githubusercontent.com/loot/prelude/v0.26/prelude.yaml'
 theme = 'default'
-updateMasterlist = true
+updateMasterlist = false
 useNoSortingChangesDialog = false
 warnOnCaseSensitiveGamePaths = true
 
@@ -1752,6 +1774,7 @@ async def test_h2_actualizar_loot_no_vuelve_a_mostrar_first_time_tips(tmp_path: 
     root.mkdir()
     (root / "settings.toml").write_text(_SETTINGS_ESCRITO_POR_LOOT, encoding="utf-8")
     assert _first_time_tips_se_mostraria(_SETTINGS_ESCRITO_POR_LOOT.encode(), "0.29.2")  # control
+    sembrar_masterlist(root)
     runner = LOOTRunner(LOOTConfig(loot_exe=_loot_exe(tmp_path, (0, 29, 2)), game_path=tmp_path, loot_data_path=root))
     capturas: dict[str, bytes] = {}
     _, fake_exec = _proceso_fake(_loot_que_lee_sus_settings(capturas))
@@ -1851,6 +1874,7 @@ async def test_h2_servicio_con_runner_real_reporta_precondicion_y_no_toca_el_loa
     exe.parent.mkdir()
     exe.write_bytes(b"no es un PE")
     root = tmp_path / "loot_data"
+    sembrar_masterlist(root)
     runner = LOOTRunner(LOOTConfig(loot_exe=exe, game_path=tmp_path, loot_data_path=root))
     fake_exec = AsyncMock()
     with (
@@ -1873,6 +1897,7 @@ def test_h3_clave_solo_dentro_de_games_no_bloquea_ni_se_toca(tmp_path: pathlib.P
     viaja intacta dentro de ``games`` (la validación excluye sólo claves top-level)."""
     original = (
         "enableLootUpdateCheck = false\n"
+        "updateMasterlist = false\n"
         "lastVersion = '0.29.1'\n"
         "\n"
         "[[games]]\n"

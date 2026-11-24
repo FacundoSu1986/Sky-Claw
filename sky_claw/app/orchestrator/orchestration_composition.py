@@ -44,6 +44,7 @@ from sky_claw.app.orchestrator.tool_strategies.middleware import (
     LoopGuardrailMiddleware,
 )
 from sky_claw.config import SystemPaths
+from sky_claw.local.loot.masterlist_provision import GatewayMasterlistFetcher
 from sky_claw.local.tools.dyndolod_runner import (
     DataVisibilityDomainError,
     DynDOLODSpawnStrategy,
@@ -72,6 +73,7 @@ if TYPE_CHECKING:
     from sky_claw.app.db.snapshot_manager import FileSnapshotManager
     from sky_claw.app.scraper.scraper_agent import ScraperAgent
     from sky_claw.app.security.hitl import HITLGuard
+    from sky_claw.app.security.network_gateway import NetworkGateway
     from sky_claw.app.security.path_validator import PathValidator
     from sky_claw.local.ai.patch_advisor_llm import LLMCallable
     from sky_claw.local.assets import AssetConflictReport
@@ -161,6 +163,9 @@ def build_orchestration_composition(
     # Seam PR-586B: el composition root puede inyectar una strategy brokered
     # construida con la instancia MO2 explícita. ``None`` conserva standalone.
     dyndolod_spawn_strategy: DynDOLODSpawnStrategy | None = None,
+    # PR-B: egress del daemon para el masterlist de LOOT (updateMasterlist=false).
+    # ``None`` = sin red: el sort sólo corre con una copia previa vigente.
+    gateway: NetworkGateway | None = None,
 ) -> OrchestrationComposition:
     """Construye el grafo completo de servicios, providers, middleware y dispatcher.
 
@@ -277,6 +282,7 @@ def build_orchestration_composition(
         loot_runner=loot_runner,
         require_vfs=require_vfs,
         journal=journal,
+        masterlist_fetcher=GatewayMasterlistFetcher(gateway) if gateway is not None else None,
     )
 
     # Follow-up A: Pandora regenera behavior graphs, así que la corrida real va

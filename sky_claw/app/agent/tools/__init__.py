@@ -200,6 +200,15 @@ class AsyncToolRegistry:
 
         return XEditBridgeService(path_resolver=self._path_resolver)
 
+    def _masterlist_fetcher(self) -> Any:
+        """Fetcher del masterlist de LOOT sobre el gateway resuelto, o ``None`` sin egress (PR-B)."""
+        gateway = self._resolve_gateway()
+        if gateway is None:
+            return None
+        from sky_claw.local.loot.masterlist_provision import GatewayMasterlistFetcher
+
+        return GatewayMasterlistFetcher(gateway)
+
     def _resolve_gateway(self) -> Any:
         """Resolve the active NetworkGateway using a best-effort fallback chain.
 
@@ -522,6 +531,8 @@ class AsyncToolRegistry:
                 # T-26 (follow-up de #243): emitir la caja negra de vuelo también
                 # en el path del agente cuando app_context cablea el journal.
                 journal=self._journal,
+                # PR-B: mismo gateway Zero-Trust que el resto de los tools del agente.
+                masterlist_fetcher=self._masterlist_fetcher(),
             ),
         )
         self._tools["run_xedit_script"] = ToolDescriptor(

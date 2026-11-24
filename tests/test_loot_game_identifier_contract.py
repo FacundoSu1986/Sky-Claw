@@ -72,6 +72,7 @@ from sky_claw.local.mo2.vfs_attestation import build_attestation_challenge
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob, VfsJobResult
 from sky_claw.local.mo2.vfs_manifest import VfsWorkerManifest
 from sky_claw.local.mo2.vfs_worker import _loot_handler
+from tests._loot_masterlist import sembrar_masterlist
 from tests._loot_pe import escribir_loot_exe
 
 # ---------------------------------------------------------------------------
@@ -221,6 +222,8 @@ def _entorno_broker(tmp_path: pathlib.Path):
     loot.write_bytes(b"loot")
     loot_data = tmp_path / "loot_data" / "portable-main" / "Default"
     loot_data.mkdir(parents=True)
+    sembrar_masterlist(loot_data)
+    sembrar_masterlist(loot_data, "Skyrim VR")
     return mo2, data, loot, loot_data
 
 
@@ -266,6 +269,8 @@ def _entorno_worker(tmp_path: pathlib.Path):
     exe = escribir_loot_exe(tmp_path / "LOOT" / "LOOT.exe")
     loot_data = tmp_path / "loot_data" / "portable-main" / "Default"
     loot_data.mkdir(parents=True)
+    sembrar_masterlist(loot_data)
+    sembrar_masterlist(loot_data, "Skyrim VR")
     return mo2, game_data, exe, loot_data
 
 

@@ -63,6 +63,7 @@ async def run_loot_sort(
     snapshot_manager: Any | None = None,
     path_validator: Any | None = None,
     journal: Any | None = None,
+    masterlist_fetcher: Any | None = None,
 ) -> str:
     """Invoke the LOOT CLI to sort the load order.
 
@@ -115,6 +116,8 @@ async def run_loot_sort(
             # T-26 (follow-up de #243): la caja negra de vuelo también en el
             # path del agente. None = comportamiento previo intacto.
             journal=journal,
+            # PR-B: paridad con la GUI — el masterlist sale por el gateway del agente.
+            masterlist_fetcher=masterlist_fetcher,
         )
         # update_masterlist=False preserves the agent tool's prior no-network
         # behavior (ProfileParams has no masterlist flag).
