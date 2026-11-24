@@ -10,12 +10,17 @@ ADR 0012 §19c, §34.10, §36.7 son las fuentes normativas:
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
 import pathlib
 import re
+import stat
 import sys
+from collections.abc import Sequence
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from sky_claw.app.security.links import link_kind_or_raise
@@ -64,17 +69,703 @@ __all__ = [
     "CANONICAL_ADMITTED_ROLE",
     "CLONE_ID_PATTERN",
     "CLONE_RECORD_SCHEMA_VERSION",
+    "MicEvaluationResult",
+    "MicEvaluationStatus",
     "RuntimeCloneLifecycle",
     "RuntimeCloneRecord",
     "VALID_LIFECYCLE_TRANSITIONS",
     "actualizar_lifecycle_clone",
     "admitir_clone_root_path",
     "cargar_runtime_clone_record",
+    "evaluar_etiqueta_mic_archivo",
+    "evaluar_herencia_mic_clone_parent",
     "leer_runtime_clone_record",
     "registrar_runtime_clone_record",
     "validar_clone_id",
     "verificar_runtime_clone",
 ]
+
+# ── Inspección MIC (Mandatory Integrity Control) Win32 de solo lectura ────
+
+SECURITY_MANDATORY_UNTRUSTED_RID = 0x0000
+SECURITY_MANDATORY_LOW_RID = 0x1000
+SECURITY_MANDATORY_MEDIUM_RID = 0x2000
+SECURITY_MANDATORY_HIGH_RID = 0x3000
+SECURITY_MANDATORY_SYSTEM_RID = 0x4000
+
+_SE_FILE_OBJECT = 1
+_LABEL_SECURITY_INFORMATION = 0x00000010
+_ACL_SIZE_INFORMATION = 2
+_SYSTEM_MANDATORY_LABEL_ACE_TYPE = 0x11
+_SYSTEM_MANDATORY_LABEL_NO_WRITE_UP = 0x00000001
+_SYSTEM_MANDATORY_LABEL_NO_READ_UP = 0x00000002
+_SYSTEM_MANDATORY_LABEL_NO_EXECUTE_UP = 0x00000004
+_SYSTEM_MANDATORY_LABEL_VALID_MASK = (
+    _SYSTEM_MANDATORY_LABEL_NO_WRITE_UP | _SYSTEM_MANDATORY_LABEL_NO_READ_UP | _SYSTEM_MANDATORY_LABEL_NO_EXECUTE_UP
+)
+_SYSTEM_MANDATORY_LABEL_RESTRICTIVE_MASK = _SYSTEM_MANDATORY_LABEL_NO_READ_UP | _SYSTEM_MANDATORY_LABEL_NO_EXECUTE_UP
+_OBJECT_INHERIT_ACE = 0x01
+_CONTAINER_INHERIT_ACE = 0x02
+_NO_PROPAGATE_INHERIT_ACE = 0x04
+_INHERIT_ONLY_ACE = 0x08
+_INHERITED_ACE = 0x10
+_ERROR_FILE_NOT_FOUND = 2
+_ERROR_PATH_NOT_FOUND = 3
+_MANDATORY_LABEL_AUTHORITY_BYTES = (0, 0, 0, 0, 0, 16)  # S-1-16-*
+_ACL_HEADER_SIZE = 8
+_ACE_HEADER_SIZE = 4
+_MANDATORY_LABEL_PREFIX_SIZE = 8  # sizeof(ACE_HEADER)=4 + sizeof(ACCESS_MASK)=4
+_SID_HEADER_SIZE = 8  # Revision(1) + SubAuthorityCount(1) + IdentifierAuthority(6)
+_SID_REVISION_1 = 1
+_MIN_MANDATORY_LABEL_ACE_SIZE = 20  # sizeof(ACE_HEADER)=4 + Mask=4 + SID(1 subauth: 8 + 4)=12
+_WIN32_LONG_PATH_THRESHOLD = 248
+_WIN32_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+
+
+class _SidIdentifierAuthority(ctypes.Structure):
+    _fields_ = [("Value", ctypes.c_ubyte * 6)]
+
+
+class _AclSizeInfo(ctypes.Structure):
+    _fields_ = [
+        ("AceCount", ctypes.c_uint32),
+        ("AclBytesInUse", ctypes.c_uint32),
+        ("AclBytesFree", ctypes.c_uint32),
+    ]
+
+
+class _AceHeader(ctypes.Structure):
+    """Cabecera mínima de 4 bytes común a toda ACE Win32 (ACE_HEADER)."""
+
+    _fields_ = [
+        ("AceType", ctypes.c_ubyte),
+        ("AceFlags", ctypes.c_ubyte),
+        ("AceSize", ctypes.c_uint16),
+    ]
+
+
+class _MandatoryLabelAceHeader(ctypes.Structure):
+    _fields_ = [
+        ("AceType", ctypes.c_ubyte),
+        ("AceFlags", ctypes.c_ubyte),
+        ("AceSize", ctypes.c_uint16),
+        ("Mask", ctypes.c_uint32),
+    ]
+
+
+class _EstadoLecturaMic(StrEnum):
+    OK = "OK"
+    MISSING = "MISSING"
+    INDETERMINATE = "INDETERMINATE"
+    NO_WINDOWS = "NO_WINDOWS"
+
+
+@dataclass(frozen=True)
+class _MicAceObservada:
+    rid: int
+    ace_flags: int
+    mask: int
+
+
+class MicEvaluationStatus(StrEnum):
+    """Clasificación fail-closed de etiqueta MIC para ejecutables y raíces de Clone."""
+
+    VERIFIED_COMPATIBLE = "VERIFIED_COMPATIBLE"
+    UNLABELED_DEFAULT_MEDIUM = "UNLABELED_DEFAULT_MEDIUM"
+    INCOMPATIBLE_LOW = "INCOMPATIBLE_LOW"
+    INCOMPATIBLE_POLICY = "INCOMPATIBLE_POLICY"
+    INDETERMINATE = "INDETERMINATE"
+    MISSING = "MISSING"
+    NOT_APPLICABLE_NON_WINDOWS = "NOT_APPLICABLE_NON_WINDOWS"
+
+
+@dataclass(frozen=True)
+class MicEvaluationResult:
+    """Resultado tipado de inspección MIC sin mutar descriptores de seguridad."""
+
+    status: MicEvaluationStatus
+    effective_rid: int | None
+    validated_on_windows: bool
+    detail: str
+
+    @property
+    def is_compatible(self) -> bool:
+        return self.status in (
+            MicEvaluationStatus.VERIFIED_COMPATIBLE,
+            MicEvaluationStatus.UNLABELED_DEFAULT_MEDIUM,
+            MicEvaluationStatus.NOT_APPLICABLE_NON_WINDOWS,
+        )
+
+
+_advapi32_mic: Any | None = None
+_kernel32_mic: Any | None = None
+
+
+def _asegurar_bindings_mic_win32() -> None:
+    """Configura una sola vez las firmas ctypes de lectura MIC en Windows."""
+    global _advapi32_mic, _kernel32_mic
+    if sys.platform != "win32" or (_advapi32_mic is not None and _kernel32_mic is not None):
+        return
+
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    krn = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    adv.GetNamedSecurityInfoW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    adv.GetNamedSecurityInfoW.restype = ctypes.c_uint32
+
+    adv.GetSecurityDescriptorSacl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_int32),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_int32),
+    ]
+    adv.GetSecurityDescriptorSacl.restype = ctypes.c_int32
+
+    adv.GetAclInformation.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+    ]
+    adv.GetAclInformation.restype = ctypes.c_int32
+
+    adv.GetAce.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    adv.GetAce.restype = ctypes.c_int32
+
+    adv.IsValidSid.argtypes = [ctypes.c_void_p]
+    adv.IsValidSid.restype = ctypes.c_int32
+
+    adv.GetLengthSid.argtypes = [ctypes.c_void_p]
+    adv.GetLengthSid.restype = ctypes.c_uint32
+
+    adv.GetSidIdentifierAuthority.argtypes = [ctypes.c_void_p]
+    adv.GetSidIdentifierAuthority.restype = ctypes.POINTER(_SidIdentifierAuthority)
+
+    adv.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
+    adv.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
+
+    adv.GetSidSubAuthority.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    adv.GetSidSubAuthority.restype = ctypes.POINTER(ctypes.c_uint32)
+
+    krn.LocalFree.argtypes = [ctypes.c_void_p]
+    krn.LocalFree.restype = ctypes.c_void_p
+
+    _advapi32_mic = adv
+    _kernel32_mic = krn
+
+
+def _longitud_utf16(texto: str) -> int:
+    """Devuelve el número de unidades de código UTF-16 (límite real de MAX_PATH en Win32)."""
+    return len(texto.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _ruta_para_win32_security_info(ruta: pathlib.Path) -> str:
+    """Normaliza rutas largas (>= 248 unidades UTF-16) con prefijo extendido ``\\\\?\\`` para Win32.
+
+    En hosts Windows con ``LongPathsEnabled=0``, ``GetNamedSecurityInfoW`` sin
+    prefijo extendido puede devolver ``ERROR_PATH_NOT_FOUND`` sobre rutas válidas
+    que superan ``MAX_PATH`` (260). Las rutas cortas se conservan sin alterar.
+    """
+    cruda = os.fspath(ruta)
+    if cruda.startswith("\\\\?\\"):
+        return cruda
+    absoluta = os.path.normpath(os.path.abspath(cruda))
+    if absoluta.startswith("\\\\?\\") or _longitud_utf16(absoluta) < _WIN32_LONG_PATH_THRESHOLD:
+        return cruda
+    if absoluta.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absoluta[2:]
+    return "\\\\?\\" + absoluta
+
+
+def _formatear_mascara_mic(mask: int) -> str:
+    bits: list[str] = []
+    if mask & _SYSTEM_MANDATORY_LABEL_NO_WRITE_UP:
+        bits.append("NO_WRITE_UP")
+    if mask & _SYSTEM_MANDATORY_LABEL_NO_READ_UP:
+        bits.append("NO_READ_UP")
+    if mask & _SYSTEM_MANDATORY_LABEL_NO_EXECUTE_UP:
+        bits.append("NO_EXECUTE_UP")
+    desconocidos = mask & ~_SYSTEM_MANDATORY_LABEL_VALID_MASK
+    if desconocidos:
+        bits.append(f"UNKNOWN(0x{desconocidos:x})")
+    return "|".join(bits) if bits else "NONE"
+
+
+def _nombre_nivel_mic(rid: int) -> str:
+    nombres = {
+        0x0000: "Untrusted Mandatory Level (S-1-16-0)",
+        0x1000: "Low Mandatory Level (S-1-16-4096)",
+        0x2000: "Medium Mandatory Level (S-1-16-8192)",
+        0x2100: "Medium Plus Mandatory Level (S-1-16-8448)",
+        0x3000: "High Mandatory Level (S-1-16-12288)",
+        0x4000: "System Mandatory Level (S-1-16-16384)",
+        0x5000: "Protected Process Mandatory Level (S-1-16-20480)",
+    }
+    return nombres.get(rid, f"Mandatory Level S-1-16-{rid}")
+
+
+def _formatear_flags_ace(flags: int) -> str:
+    etiquetas: list[str] = []
+    if flags & _OBJECT_INHERIT_ACE:
+        etiquetas.append("OI")
+    if flags & _CONTAINER_INHERIT_ACE:
+        etiquetas.append("CI")
+    if flags & _NO_PROPAGATE_INHERIT_ACE:
+        etiquetas.append("NP")
+    if flags & _INHERIT_ONLY_ACE:
+        etiquetas.append("IO")
+    if flags & _INHERITED_ACE:
+        etiquetas.append("ID")
+    return "|".join(etiquetas) if etiquetas else "NONE"
+
+
+def _leer_aces_etiqueta_mic(
+    ruta: pathlib.Path,
+) -> tuple[_EstadoLecturaMic, tuple[_MicAceObservada, ...], str]:
+    """Lee de forma estrictamente read-only las ACEs SYSTEM_MANDATORY_LABEL_ACE en Windows."""
+    if sys.platform != "win32":
+        return (
+            _EstadoLecturaMic.NO_WINDOWS,
+            (),
+            "inspección MIC Win32 no aplicable fuera de Windows",
+        )
+
+    _asegurar_bindings_mic_win32()
+    adv = _advapi32_mic
+    krn = _kernel32_mic
+    if adv is None or krn is None:
+        return (
+            _EstadoLecturaMic.INDETERMINATE,
+            (),
+            "no se pudieron inicializar los enlaces Win32 de lectura MIC",
+        )
+
+    ruta_win32 = _ruta_para_win32_security_info(ruta)
+    sacl_ptr = ctypes.c_void_p()
+    sd_ptr = ctypes.c_void_p()
+    rc = int(
+        adv.GetNamedSecurityInfoW(
+            ruta_win32,
+            _SE_FILE_OBJECT,
+            _LABEL_SECURITY_INFORMATION,
+            None,
+            None,
+            None,
+            ctypes.byref(sacl_ptr),
+            ctypes.byref(sd_ptr),
+        )
+    )
+    if rc in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND):
+        if sd_ptr.value:
+            krn.LocalFree(sd_ptr)
+        # Contradicción fail-closed: si el objeto sí existe en NTFS (p. ej. límite MAX_PATH
+        # con LongPathsEnabled=0 o error transitorio de resolución), jamás reportar MISSING.
+        try:
+            os.lstat(ruta_win32)
+        except FileNotFoundError:
+            return (_EstadoLecturaMic.MISSING, (), f"ruta inexistente durante lectura MIC: '{ruta}'")
+        except OSError as exc:
+            return (
+                _EstadoLecturaMic.INDETERMINATE,
+                (),
+                f"os.lstat falló durante comprobación de existencia MIC en '{ruta}': {exc}",
+            )
+        return (
+            _EstadoLecturaMic.INDETERMINATE,
+            (),
+            f"GetNamedSecurityInfoW devolvió código Win32 {rc} sobre una ruta existente: '{ruta}'",
+        )
+    if rc != 0:
+        if sd_ptr.value:
+            krn.LocalFree(sd_ptr)
+        return (
+            _EstadoLecturaMic.INDETERMINATE,
+            (),
+            f"GetNamedSecurityInfoW(LABEL_SECURITY_INFORMATION) falló con código Win32 {rc} en '{ruta}'",
+        )
+    if not sd_ptr.value:
+        return (
+            _EstadoLecturaMic.INDETERMINATE,
+            (),
+            f"GetNamedSecurityInfoW devolvió éxito con SecurityDescriptor nulo en '{ruta}'",
+        )
+
+    try:
+        sacl_present = ctypes.c_int32(0)
+        sacl_defaulted = ctypes.c_int32(0)
+        sacl_out = ctypes.c_void_p()
+        if not adv.GetSecurityDescriptorSacl(
+            sd_ptr,
+            ctypes.byref(sacl_present),
+            ctypes.byref(sacl_out),
+            ctypes.byref(sacl_defaulted),
+        ):
+            err = ctypes.get_last_error()
+            return (
+                _EstadoLecturaMic.INDETERMINATE,
+                (),
+                f"GetSecurityDescriptorSacl falló con error Win32 {err} en '{ruta}'",
+            )
+
+        if not sacl_present.value or not sacl_out.value:
+            return (_EstadoLecturaMic.OK, (), "")
+
+        acl_info = _AclSizeInfo()
+        if not adv.GetAclInformation(
+            sacl_out,
+            ctypes.byref(acl_info),
+            ctypes.sizeof(acl_info),
+            _ACL_SIZE_INFORMATION,
+        ):
+            err = ctypes.get_last_error()
+            return (
+                _EstadoLecturaMic.INDETERMINATE,
+                (),
+                f"GetAclInformation falló con error Win32 {err} en '{ruta}'",
+            )
+
+        acl_bytes_in_use = int(acl_info.AclBytesInUse)
+        if acl_bytes_in_use < _ACL_HEADER_SIZE:
+            return (
+                _EstadoLecturaMic.INDETERMINATE,
+                (),
+                f"ACL SACL truncada (AclBytesInUse={acl_bytes_in_use} < {_ACL_HEADER_SIZE}) en '{ruta}'",
+            )
+        acl_base = int(sacl_out.value)
+        acl_end = acl_base + acl_bytes_in_use
+
+        encontradas: list[_MicAceObservada] = []
+        for idx in range(int(acl_info.AceCount)):
+            ace_ptr = ctypes.c_void_p()
+            if not adv.GetAce(sacl_out, idx, ctypes.byref(ace_ptr)) or not ace_ptr.value:
+                err = ctypes.get_last_error()
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"GetAce({idx}) falló con error Win32 {err} en '{ruta}'",
+                )
+            ace_addr = int(ace_ptr.value)
+            # 1) Validar límites del buffer ACL antes de leer la cabecera mínima de 4 bytes (ACE_HEADER).
+            if ace_addr < acl_base + _ACL_HEADER_SIZE or ace_addr + _ACE_HEADER_SIZE > acl_end:
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"puntero ACE({idx}) fuera de los límites de la ACL en '{ruta}'",
+                )
+            base_hdr = ctypes.cast(ace_ptr, ctypes.POINTER(_AceHeader)).contents
+            ace_type = int(base_hdr.AceType)
+            ace_flags = int(base_hdr.AceFlags)
+            ace_size = int(base_hdr.AceSize)
+            if ace_size < _ACE_HEADER_SIZE or ace_addr + ace_size > acl_end:
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"ACE({idx}) con AceSize={ace_size} fuera de los límites de la ACL en '{ruta}'",
+                )
+            if ace_type != _SYSTEM_MANDATORY_LABEL_ACE_TYPE:
+                continue
+
+            # 2) Una SYSTEM_MANDATORY_LABEL_ACE con SID S-1-16-<RID> (1 subautoridad) exige >= 20 bytes.
+            if ace_size < _MIN_MANDATORY_LABEL_ACE_SIZE:
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"ACE MIC truncada (AceSize={ace_size} < {_MIN_MANDATORY_LABEL_ACE_SIZE}) en '{ruta}'",
+                )
+
+            # 3) Ya acotados >= 20 bytes dentro de la ACL, leer Mask (offset 4..7) y cabecera SID (offset 8..15).
+            ml_hdr = ctypes.cast(ace_ptr, ctypes.POINTER(_MandatoryLabelAceHeader)).contents
+            sid_addr = ace_addr + _MANDATORY_LABEL_PREFIX_SIZE
+            available_sid_bytes = ace_size - _MANDATORY_LABEL_PREFIX_SIZE
+            raw_sid_hdr = (ctypes.c_ubyte * _SID_HEADER_SIZE).from_address(sid_addr)
+            raw_sid_revision = int(raw_sid_hdr[0])
+            raw_subauth_count = int(raw_sid_hdr[1])
+            expected_sid_len = _SID_HEADER_SIZE + 4 * raw_subauth_count
+            if raw_sid_revision != _SID_REVISION_1:
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"revisión SID inválida ({raw_sid_revision}) en ACE MIC de '{ruta}'",
+                )
+            if expected_sid_len > available_sid_bytes:
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"SID de ACE MIC excede AceSize (requiere {expected_sid_len} B, disponible {available_sid_bytes} B) "
+                    f"en '{ruta}'",
+                )
+            if raw_subauth_count != 1:
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"SubAuthorityCount inválido ({raw_subauth_count}) en SID de integridad de '{ruta}'",
+                )
+
+            # 4) Validación Win32 completa sobre el puntero SID ya acotado en [sid_addr, ace_addr + ace_size).
+            sid_ptr = ctypes.c_void_p(sid_addr)
+            if not adv.IsValidSid(sid_ptr):
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"SID inválido en ACE MIC de '{ruta}'",
+                )
+            sid_len = int(adv.GetLengthSid(sid_ptr))
+            if sid_len != expected_sid_len or _MANDATORY_LABEL_PREFIX_SIZE + sid_len > ace_size:
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"longitud de SID inconsistente (GetLengthSid={sid_len}, AceSize={ace_size}) en '{ruta}'",
+                )
+            auth_ptr = adv.GetSidIdentifierAuthority(sid_ptr)
+            if not auth_ptr or tuple(auth_ptr.contents.Value) != _MANDATORY_LABEL_AUTHORITY_BYTES:
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"autoridad SID inesperada en ACE MIC de '{ruta}' (se esperaba S-1-16)",
+                )
+            sub_cnt_ptr = adv.GetSidSubAuthorityCount(sid_ptr)
+            if not sub_cnt_ptr or int(sub_cnt_ptr.contents.value) != 1:
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"SubAuthorityCount inválido en SID de integridad de '{ruta}'",
+                )
+            rid_ptr = adv.GetSidSubAuthority(sid_ptr, 0)
+            if not rid_ptr:
+                return (
+                    _EstadoLecturaMic.INDETERMINATE,
+                    (),
+                    f"no se pudo leer el RID de integridad en '{ruta}'",
+                )
+            encontradas.append(
+                _MicAceObservada(
+                    rid=int(rid_ptr.contents.value),
+                    ace_flags=ace_flags,
+                    mask=int(ml_hdr.Mask),
+                )
+            )
+        return (_EstadoLecturaMic.OK, tuple(encontradas), "")
+    finally:
+        if sd_ptr.value:
+            krn.LocalFree(sd_ptr)
+
+
+def _formatear_ace_o_vacio(flags: int) -> str:
+    return f" [flags={_formatear_flags_ace(flags)}]" if flags else ""
+
+
+def _evaluar_conjunto_aces_mic(
+    aces: Sequence[_MicAceObservada],
+    *,
+    objetivo: pathlib.Path,
+    es_directorio_padre: bool,
+) -> MicEvaluationResult:
+    """Evalúa de forma fail-closed un conjunto no vacío de ACEs MIC efectivas o heredables.
+
+    Prioridad:
+    1. Bits de máscara desconocidos (fuera de NW|NR|NX) -> INDETERMINATE.
+    2. Múltiples ACEs con (rid, mask) divergentes (p. ej. Medium + Low o High+NX + Medium+NW)
+       -> INDETERMINATE: la evidencia es ambigua (Windows solo aplica la primera ACE efectiva)
+       y nunca debe provocar PASS ni una degradación terminal prematura de PROVISIONED a INVALID.
+    3. Política única con RID < Medium (Low/Untrusted) -> INCOMPATIBLE_LOW.
+    4. Política única con RID > Medium y NO_READ_UP o NO_EXECUTE_UP -> INCOMPATIBLE_POLICY
+       (impide a un proceso MO2 Medium leer o ejecutar el binario).
+    5. Política única compatible (Medium con cualquier NW/NR/NX o >Medium con solo NW/0)
+       -> VERIFIED_COMPATIBLE.
+    """
+    for ace in aces:
+        if ace.mask & ~_SYSTEM_MANDATORY_LABEL_VALID_MASK:
+            return MicEvaluationResult(
+                status=MicEvaluationStatus.INDETERMINATE,
+                effective_rid=ace.rid,
+                validated_on_windows=True,
+                detail=(
+                    f"máscara MIC desconocida ({_formatear_mascara_mic(ace.mask)}) en '{objetivo}': "
+                    "evidencia no determinista (fail-closed)"
+                ),
+            )
+
+    politicas_distintas = {(a.rid, a.mask) for a in aces}
+    if len(politicas_distintas) > 1:
+        resumen = ", ".join(
+            f"{_nombre_nivel_mic(rid)}[{_formatear_mascara_mic(mask)}]" for rid, mask in sorted(politicas_distintas)
+        )
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.INDETERMINATE,
+            effective_rid=None,
+            validated_on_windows=True,
+            detail=(
+                f"SACL ambigua en '{objetivo}': coexisten múltiples ACEs MIC divergentes ({resumen}); "
+                "se clasifica INDETERMINATE (fail-closed sin degradación terminal)"
+            ),
+        )
+
+    primera = aces[0]
+    etiqueta_txt = _nombre_nivel_mic(primera.rid)
+    if primera.rid < SECURITY_MANDATORY_MEDIUM_RID:
+        if es_directorio_padre:
+            flags_txt = _formatear_flags_ace(primera.ace_flags)
+            return MicEvaluationResult(
+                status=MicEvaluationStatus.INCOMPATIBLE_LOW,
+                effective_rid=primera.rid,
+                validated_on_windows=True,
+                detail=(
+                    f"aprovisionamiento rechazado antes de copiar: el directorio destino '{objetivo}' posee "
+                    f"etiqueta MIC heredable {etiqueta_txt} (flags={flags_txt}); los ejecutables del futuro "
+                    "Clone heredarían integridad Low/inferior a Medium e impedirían inicializar USVFS y SKSE "
+                    "al ejecutar MO2 sin privilegios de administrador. Elija otro destino seguro para "
+                    "clone_parent fuera de un árbol con etiqueta Low (no se modifica el destino ni sus ACLs)"
+                ),
+            )
+        flags_txt = _formatear_ace_o_vacio(primera.ace_flags)
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.INCOMPATIBLE_LOW,
+            effective_rid=primera.rid,
+            validated_on_windows=True,
+            detail=(
+                f"ejecutable '{objetivo}' posee etiqueta MIC incompatible {etiqueta_txt}{flags_txt}: "
+                "bajo ejecución normal sin elevar desde MO2 el proceso se degradaría por debajo de Medium "
+                "y USVFS/SKSE fallarían al abrir memoria compartida"
+            ),
+        )
+
+    if primera.rid > SECURITY_MANDATORY_MEDIUM_RID and (primera.mask & _SYSTEM_MANDATORY_LABEL_RESTRICTIVE_MASK):
+        mascara_txt = _formatear_mascara_mic(primera.mask)
+        if es_directorio_padre:
+            flags_txt = _formatear_flags_ace(primera.ace_flags)
+            return MicEvaluationResult(
+                status=MicEvaluationStatus.INCOMPATIBLE_POLICY,
+                effective_rid=primera.rid,
+                validated_on_windows=True,
+                detail=(
+                    f"aprovisionamiento rechazado antes de copiar: el directorio destino '{objetivo}' posee "
+                    f"etiqueta MIC heredable restrictiva {etiqueta_txt} (mask={mascara_txt}, flags={flags_txt}); "
+                    "los ejecutables del futuro Clone heredarían NO_READ_UP/NO_EXECUTE_UP por encima de Medium "
+                    "e impedirían abrir o ejecutar el juego desde MO2 sin elevar. Elija otro destino seguro "
+                    "para clone_parent (no se modifica el destino ni sus ACLs)"
+                ),
+            )
+        flags_txt = _formatear_ace_o_vacio(primera.ace_flags)
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.INCOMPATIBLE_POLICY,
+            effective_rid=primera.rid,
+            validated_on_windows=True,
+            detail=(
+                f"ejecutable '{objetivo}' posee política MIC restrictiva incompatible {etiqueta_txt} "
+                f"(mask={mascara_txt}){flags_txt}: NO_READ_UP/NO_EXECUTE_UP sobre un nivel superior a Medium "
+                "impide a MO2 no elevado leer o ejecutar el binario"
+            ),
+        )
+
+    if es_directorio_padre:
+        flags_txt = _formatear_flags_ace(primera.ace_flags)
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.VERIFIED_COMPATIBLE,
+            effective_rid=primera.rid,
+            validated_on_windows=True,
+            detail=f"herencia MIC compatible en '{objetivo}': {etiqueta_txt} (flags={flags_txt})",
+        )
+    flags_txt = _formatear_ace_o_vacio(primera.ace_flags)
+    return MicEvaluationResult(
+        status=MicEvaluationStatus.VERIFIED_COMPATIBLE,
+        effective_rid=primera.rid,
+        validated_on_windows=True,
+        detail=f"etiqueta MIC compatible en '{objetivo}': {etiqueta_txt}{flags_txt}",
+    )
+
+
+def evaluar_etiqueta_mic_archivo(ruta: pathlib.Path) -> MicEvaluationResult:
+    """Evalúa de solo lectura si un ejecutable tiene nivel y política MIC compatibles con MO2 Medium."""
+    objetivo = pathlib.Path(ruta)
+    estado, aces, detalle = _leer_aces_etiqueta_mic(objetivo)
+    if estado is _EstadoLecturaMic.NO_WINDOWS:
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.NOT_APPLICABLE_NON_WINDOWS,
+            effective_rid=None,
+            validated_on_windows=False,
+            detail=detalle,
+        )
+    if estado is _EstadoLecturaMic.MISSING:
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.MISSING,
+            effective_rid=None,
+            validated_on_windows=True,
+            detail=detalle,
+        )
+    if estado is _EstadoLecturaMic.INDETERMINATE:
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.INDETERMINATE,
+            effective_rid=None,
+            validated_on_windows=True,
+            detail=detalle,
+        )
+
+    efectivas = [a for a in aces if not (a.ace_flags & _INHERIT_ONLY_ACE)]
+    if not efectivas:
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.UNLABELED_DEFAULT_MEDIUM,
+            effective_rid=SECURITY_MANDATORY_MEDIUM_RID,
+            validated_on_windows=True,
+            detail=f"sin etiqueta MIC explícita en '{objetivo}'; Windows aplica Medium por defecto",
+        )
+
+    return _evaluar_conjunto_aces_mic(efectivas, objetivo=objetivo, es_directorio_padre=False)
+
+
+def evaluar_herencia_mic_clone_parent(clone_parent: pathlib.Path) -> MicEvaluationResult:
+    """Evalúa antes de copiar si ``clone_parent`` propagaría etiquetas MIC incompatibles al nuevo Clone."""
+    padre = pathlib.Path(clone_parent)
+    estado, aces, detalle = _leer_aces_etiqueta_mic(padre)
+    if estado is _EstadoLecturaMic.NO_WINDOWS:
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.NOT_APPLICABLE_NON_WINDOWS,
+            effective_rid=None,
+            validated_on_windows=False,
+            detail=detalle,
+        )
+    if estado is _EstadoLecturaMic.MISSING:
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.MISSING,
+            effective_rid=None,
+            validated_on_windows=True,
+            detail=detalle,
+        )
+    if estado is _EstadoLecturaMic.INDETERMINATE:
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.INDETERMINATE,
+            effective_rid=None,
+            validated_on_windows=True,
+            detail=detalle,
+        )
+
+    # En NTFS (MS-DTYP §2.5.3.4), una ACE en clone_parent alcanza archivos dentro de
+    # <clone_parent>/<clone_id>/<exe> si y solo si posee OBJECT_INHERIT_ACE sin NO_PROPAGATE_INHERIT_ACE.
+    heredables_a_archivos_nietos = [
+        a for a in aces if (a.ace_flags & _OBJECT_INHERIT_ACE) and not (a.ace_flags & _NO_PROPAGATE_INHERIT_ACE)
+    ]
+    if not heredables_a_archivos_nietos:
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.UNLABELED_DEFAULT_MEDIUM,
+            effective_rid=SECURITY_MANDATORY_MEDIUM_RID,
+            validated_on_windows=True,
+            detail=f"'{padre}' no propaga etiquetas MIC incompatibles hacia ejecutables hijos",
+        )
+
+    return _evaluar_conjunto_aces_mic(heredables_a_archivos_nietos, objetivo=padre, es_directorio_padre=True)
+
 
 #: Charset seguro para clone_id: alfanuméricos, guiones, puntos y guiones bajos simples.
 CLONE_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9]+)?$")
@@ -867,9 +1558,85 @@ def verificar_runtime_clone(
                 observed_identity=obs.runtime_identity,
             )
 
+    # 5. Verificación MIC de solo lectura sobre los ejecutables de arranque del Clone
+    # (estrictamente SkyrimSE.exe obligatorio + skse64_loader.exe si está presente;
+    # otros .exe en critical_files, como SkyrimSELauncher.exe, mantienen su verificación
+    # SHA-256 en el paso 4 pero no bloquean la ejecución normal desde MO2).
+    criticos_por_clave = {crit.rel_path.casefold(): crit.rel_path for crit in gen_meta.critical_files}
+    ejecutables_rel: list[tuple[str, bool]] = [(criticos_por_clave.get("skyrimse.exe", "SkyrimSE.exe"), True)]
+    loader_en_criticos = criticos_por_clave.get("skse64_loader.exe")
+    if loader_en_criticos is not None:
+        ejecutables_rel.append((loader_en_criticos, True))
+    else:
+        ruta_loader = clone_root / "skse64_loader.exe"
+        try:
+            st_loader = os.lstat(ruta_loader)
+        except FileNotFoundError:
+            st_loader = None
+        except OSError as exc:
+            return GenerationVerificationResult(
+                state=GenerationVerificationState.INDETERMINATE,
+                message=f"no se pudo comprobar presencia de 'skse64_loader.exe' para inspección MIC: {exc}",
+                recorded=gen_meta,
+                observed_identity=obs.runtime_identity,
+            )
+        if st_loader is not None:
+            attrs_loader = getattr(st_loader, "st_file_attributes", 0)
+            if (attrs_loader & _WIN32_FILE_ATTRIBUTE_REPARSE_POINT) or stat.S_ISLNK(st_loader.st_mode):
+                return GenerationVerificationResult(
+                    state=GenerationVerificationState.INVALID,
+                    message="la entrada 'skse64_loader.exe' es un enlace/reparse point (fail-closed)",
+                    recorded=gen_meta,
+                    observed_identity=obs.runtime_identity,
+                )
+            if not stat.S_ISREG(st_loader.st_mode):
+                return GenerationVerificationResult(
+                    state=GenerationVerificationState.INVALID,
+                    message="la entrada 'skse64_loader.exe' en el Clone no es un archivo regular (fail-closed)",
+                    recorded=gen_meta,
+                    observed_identity=obs.runtime_identity,
+                )
+            ejecutables_rel.append(("skse64_loader.exe", False))
+
+    mic_verificado_en_windows = bool(ejecutables_rel)
+    for rel_exe, es_critico in ejecutables_rel:
+        res_mic = evaluar_etiqueta_mic_archivo(clone_root / rel_exe)
+        if not res_mic.validated_on_windows:
+            mic_verificado_en_windows = False
+        if res_mic.status in (MicEvaluationStatus.INCOMPATIBLE_LOW, MicEvaluationStatus.INCOMPATIBLE_POLICY):
+            return GenerationVerificationResult(
+                state=GenerationVerificationState.INVALID,
+                message=f"etiqueta MIC incompatible en Clone: {res_mic.detail}",
+                recorded=gen_meta,
+                observed_identity=obs.runtime_identity,
+            )
+        if res_mic.status is MicEvaluationStatus.INDETERMINATE:
+            return GenerationVerificationResult(
+                state=GenerationVerificationState.INDETERMINATE,
+                message=f"inspección MIC indeterminada en Clone: {res_mic.detail}",
+                recorded=gen_meta,
+                observed_identity=obs.runtime_identity,
+            )
+        if res_mic.status is MicEvaluationStatus.MISSING:
+            estado_missing = (
+                GenerationVerificationState.INVALID if es_critico else GenerationVerificationState.INDETERMINATE
+            )
+            return GenerationVerificationResult(
+                state=estado_missing,
+                message=f"ejecutable '{rel_exe}' ausente durante inspección MIC del Clone",
+                recorded=gen_meta,
+                observed_identity=obs.runtime_identity,
+            )
+
+    mensaje_ok = (
+        "Runtime Clone verificado exitosamente (MIC Win32 verificado)"
+        if mic_verificado_en_windows
+        else "Runtime Clone verificado sin comprobación MIC Win32 (entorno no Windows)"
+    )
     return GenerationVerificationResult(
         state=GenerationVerificationState.VALID,
-        message="Runtime Clone verificado exitosamente",
+        message=mensaje_ok,
         recorded=gen_meta,
         observed_identity=obs.runtime_identity,
+        mic_verified_on_windows=mic_verificado_en_windows,
     )
