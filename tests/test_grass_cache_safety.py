@@ -244,12 +244,29 @@ def test_resume_sin_progreso_se_niega(grass: pathlib.Path, juego: pathlib.Path) 
     assert excinfo.value.codigo == "resume_sin_progreso"
 
 
-def test_rebuild_sin_aprobacion_se_niega(grass: pathlib.Path, juego: pathlib.Path) -> None:
+def test_rebuild_sin_aprobacion_se_niega(grass: pathlib.Path, juego: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    # El destino de respaldo es REAL y escribible: así el "no se escribe nada"
+    # detecta escrituras indebidas. Con una raíz de estado inexistente y no
+    # declarada, la aserción anterior pasaba por la razón equivocada (nadie iba a
+    # escribir ahí ni con aprobación).
+    raiz_estado = tmp_path / "estado"
+    raiz_estado.mkdir()
+    antes = {ruta.name: ruta.read_bytes() for ruta in grass.iterdir()}
+
     with pytest.raises(GrassCacheSafetyError) as excinfo:
-        preparar_arranque(modo="rebuild", game_path=juego, grass_dir=grass)
+        preparar_arranque(
+            modo="rebuild",
+            game_path=juego,
+            grass_dir=grass,
+            raiz_estado=raiz_estado,
+            ack_usvfs_no_verificado=True,
+        )
 
     assert excinfo.value.codigo == "rebuild_sin_aprobacion"
-    assert not (grass.parent / "estado").exists(), "sin aprobación no se escribe nada"
+    assert list(raiz_estado.iterdir()) == [], "sin aprobación no se escribe en la raíz de estado"
+    assert not (raiz_estado / "respaldo").exists(), "sin aprobación no se respalda nada"
+    assert {ruta.name: ruta.read_bytes() for ruta in grass.iterdir()} == antes, "el caché no se toca"
+    assert not (juego / "PrecacheGrass.txt").exists(), "sin aprobación no se escribe el flag"
 
 
 def test_rebuild_sin_raiz_de_estado_se_niega(grass: pathlib.Path, juego: pathlib.Path) -> None:

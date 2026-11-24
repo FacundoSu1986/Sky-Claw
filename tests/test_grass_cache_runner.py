@@ -38,16 +38,20 @@ from sky_claw.app.security.path_validator import PathViolationError
 from sky_claw.local.mo2.vfs import GameLaunchTimeoutError, MO2Controller
 from sky_claw.local.tools.grass_cache_runner import (
     GrassCacheConfig,
+    GrassCacheOutcome,
     GrassCacheProgress,
     GrassCacheRunner,
     GrassCacheRunResult,
 )
 from sky_claw.local.tools.grass_cache_safety import (
     EstadoAplicacion,
+    GrassCacheMode,
     GrassCacheSafetyError,
     NeutralizacionFlag,
+    aplicar_plan,
     archivar_progreso,
     inventariar_cache,
+    preparar_arranque,
 )
 from tests.polling_utils import poll_until
 
@@ -1728,16 +1732,26 @@ async def test_el_lease_sigue_vigente_durante_una_neutralizacion_mas_larga_que_e
 
     ruta_bd = tmp_path / "locks.db"
     suelta = threading.Event()
+    en_hilo = threading.Event()
     lectura: dict[str, Any] = {}
 
     def _neutralizar_lento(**kwargs: Any) -> NeutralizacionFlag:
+        # Barrera determinista: el observador NO mira "dos segundos después de
+        # arrancar el observador" (eso podía caer antes de que la neutralización
+        # empezara o después de que terminara), sino cuando el worker YA está
+        # dentro de `neutralizar_flag`.
+        en_hilo.set()
         suelta.wait(timeout=20)
         return NeutralizacionFlag(borrado=True, archivado=True, errores=())
 
     monkeypatch.setattr(gcr_mod, "neutralizar_flag", _neutralizar_lento)
 
     def _observar() -> None:
-        """Mira la fila desde OTRO loop/conexión, en plena ventana de bloqueo."""
+        """Mira la fila desde OTRO loop/conexión, DENTRO de la ventana de bloqueo."""
+        if not en_hilo.wait(timeout=15):
+            lectura["error"] = "la neutralización nunca empezó"
+            return
+        lectura["durante"] = not suelta.is_set()
         time.sleep(2.0)
 
         async def _leer() -> None:
@@ -1786,6 +1800,7 @@ async def test_el_lease_sigue_vigente_durante_una_neutralizacion_mas_larga_que_e
             assert "error" not in lectura, f"el observador no pudo leer: {lectura['error']}"
             info = lectura["info"]
             assert info is not None, "el lock desapareció mientras se neutralizaba"
+            assert lectura.get("durante") is True, "la observación cayó fuera de la neutralización"
             assert info.expires_at > lectura["ahora"], (
                 "el lease estaba VENCIDO en plena neutralización: se perdió la exclusividad "
                 f"(expires_at={info.expires_at:.3f} < ahora={lectura['ahora']:.3f})"
@@ -1973,63 +1988,131 @@ async def test_el_corte_del_relanzamiento_deja_limpieza_y_no_borra_el_cache(
 
 
 # ---------------------------------------------------------------------------
-# El relanzamiento automático exige PROGRESO: la matriz de los tres modos
+# Ronda 11 — contrato ÚNICO de autorización, inmediatamente antes del spawn
 # ---------------------------------------------------------------------------
 
-
-def _config_para_modo(config: GrassCacheConfig, modo: str) -> GrassCacheConfig:
-    extra: dict[str, Any] = {"mode": modo}
-    if modo == "rebuild":
-        extra["rebuild_approval"] = "REBUILD"
-        extra["backup_root"] = config.overwrite_grass_dir.parent / "estado_grass"
-    return dataclasses.replace(config, **extra)
+#: Progreso que NGIO leería como reanudación (formato de ``PrecacheGrass.txt``).
+_PROGRESO_DEL_PLAN = b"Tamriel\n-2,4\n"
+#: Progreso válido pero DISTINTO del que el plan aplicó (tercero/otra corrida).
+_PROGRESO_AJENO = b"Solstheim\n"
 
 
-@pytest.mark.parametrize("modo", ["new", "resume", "rebuild"])
-@pytest.mark.parametrize("estado_flag", ["ausente", "vacio", "con_progreso"])
-@pytest.mark.parametrize("cache", ["vacio", "presente"])
-async def test_el_relanzamiento_solo_se_autoriza_con_progreso(
-    config: GrassCacheConfig,
-    mo2: AsyncMock,
-    modo: str,
-    estado_flag: str,
-    cache: str,
-) -> None:
-    # Matriz pedida por la revisión: tres modos × flag ausente/vacío/con progreso ×
-    # caché físico vacío/presente. El caché vacío NO acredita nada (la USVFS puede
-    # superponer .cgid de mods) y `resume` exige progreso siempre.
-    cfg = _config_para_modo(config, modo)
-    if cache == "presente":
-        _escribir_cgid(cfg.overwrite_grass_dir, "celda_0.cgid")
+def _tiene_progreso(contenido: bytes | None) -> bool:
+    """Predicado de NGIO (``getline`` + ``trim`` de ``" \\r\\v\\n"``) sobre el fixture."""
+    if contenido is None:
+        return False
+    return any(linea.strip(b" \r\v\n") for linea in contenido.split(b"\n"))
+
+
+@pytest.fixture(params=["new", "resume", "rebuild"])
+def escenario(
+    request: pytest.FixtureRequest, config: GrassCacheConfig, tmp_path: pathlib.Path
+) -> tuple[GrassCacheMode, GrassCacheConfig, Any]:
+    """(modo, cfg, plan REAL ya aplicado) en el estado que ese modo autoriza.
+
+    El plan se construye con la misma función que usa el runner
+    (``preparar_arranque``) y se aplica con ``aplicar_plan``: la matriz mide el
+    contrato de lanzamiento sobre el estado real que deja el ritual, no sobre un
+    plan de juguete. Cada caso después lo muta (flag, caché, alternativo).
+    """
+    modo = request.param
+    cfg = dataclasses.replace(
+        config,
+        mode=modo,
+        ack_usvfs_no_verificado=True,
+        rebuild_approval="REBUILD",
+        backup_root=tmp_path / "estado_grass",
+    )
     flag = cfg.game_path / "PrecacheGrass.txt"
-    if estado_flag == "vacio":
-        flag.write_bytes(b"")
-    elif estado_flag == "con_progreso":
-        flag.write_bytes(b"Tamriel\n")
+    if modo == "resume":
+        _escribir_cgid(cfg.overwrite_grass_dir, "Tamriel.cgid", datos=b"celda-tamriel")
+        flag.write_bytes(_PROGRESO_DEL_PLAN)
+    elif modo == "rebuild":
+        _escribir_cgid(cfg.overwrite_grass_dir, "previo.cgid", datos=b"previo")
+    plan = preparar_arranque(
+        modo=modo,
+        game_path=cfg.game_path,
+        grass_dir=cfg.overwrite_grass_dir,
+        aprobacion=cfg.rebuild_approval,
+        raiz_estado=cfg.backup_root,
+        ack_usvfs_no_verificado=True,
+        perfil=cfg.perfil_de_progreso,
+    )
+    aplicar_plan(plan, flag)
+    return modo, cfg, plan
 
-    motivo = await _runner(cfg, mo2)._motivo_para_no_relanzar()
 
-    if estado_flag == "con_progreso":
-        assert motivo is None, "con progreso válido el crash-loop continúa"
-    else:
-        assert motivo is not None, f"{modo}: relanzar con el flag {estado_flag} no puede autorizarse"
+def _contenido_tras_la_mutacion(estado: str, plan: Any) -> bytes | None:
+    return {
+        "igual_al_plan": plan.contenido,
+        "vacio": b"",
+        "ausente": None,
+        "progreso_ajeno": _PROGRESO_AJENO,
+    }[estado]
 
 
-@pytest.mark.parametrize("modo", ["new", "resume", "rebuild"])
-async def test_el_relanzamiento_rechaza_el_flag_alternativo(
-    config: GrassCacheConfig, mo2: AsyncMock, modo: str
+@pytest.mark.parametrize("intento", [0, 1], ids=["primer_lanzamiento", "relanzamiento"])
+@pytest.mark.parametrize("primario", ["igual_al_plan", "vacio", "ausente", "progreso_ajeno"])
+@pytest.mark.parametrize("alternativo", ["ausente", "presente"])
+@pytest.mark.parametrize("cambio_cache", ["ninguno", "agregar", "vaciar"])
+async def test_matriz_de_autorizacion_de_lanzamiento(
+    escenario: tuple[GrassCacheMode, GrassCacheConfig, Any],
+    mo2: AsyncMock,
+    intento: int,
+    primario: str,
+    alternativo: str,
+    cambio_cache: str,
 ) -> None:
-    # `Util::getProgressFilePath()` de NGIO abre `PrecacheGrass.txt.txt` cuando el
-    # primario no existe: en el punto de relanzamiento también se rechaza, porque el
-    # primario puede desaparecer y el alternativo tomar el control.
-    cfg = _config_para_modo(config, modo)
-    (cfg.game_path / "PrecacheGrass.txt").write_bytes(b"")
-    (cfg.game_path / "PrecacheGrass.txt.txt").write_bytes(b"Tamriel\n")
+    # Matriz completa del contrato: 3 modos × primer lanzamiento/relanzamiento ×
+    # 4 estados del flag primario × alternativo ausente/presente × 3 cambios del
+    # caché = 144 casos. Cada fila verifica el veredicto Y su código.
+    modo, cfg, plan = escenario
+    flag = cfg.game_path / "PrecacheGrass.txt"
+    grass = cfg.overwrite_grass_dir
 
-    motivo = await _runner(cfg, mo2)._motivo_para_no_relanzar()
+    contenido = _contenido_tras_la_mutacion(primario, plan)
+    if contenido is None:
+        flag.unlink(missing_ok=True)
+    else:
+        flag.write_bytes(contenido)
+    if cambio_cache == "agregar":
+        _escribir_cgid(grass, "extra.cgid", datos=b"extra")
+    elif cambio_cache == "vaciar":
+        for ruta in grass.glob("*"):
+            ruta.unlink()
+    if alternativo == "presente":
+        (cfg.game_path / "PrecacheGrass.txt.txt").write_bytes(_PROGRESO_AJENO)
 
-    assert motivo is not None
-    assert "alternativo" in motivo.lower()
+    corte = await _runner(cfg, mo2)._autorizar_lanzamiento(intento=intento, plan=plan)
+    obtenido = corte.outcome if corte is not None else None
+
+    hay_cache = grass.exists() and any(grass.iterdir())
+    if alternativo == "presente":
+        # Invariante 5: el alternativo bloquea TODOS los lanzamientos, incluso con
+        # el primario lleno de progreso.
+        esperado: GrassCacheOutcome | None = "flag_alternativo_presente"
+    elif intento:
+        # Invariante 4: todo relanzamiento exige progreso, sea cual sea el modo y
+        # el inventario físico.
+        esperado = None if _tiene_progreso(contenido) else "flag_sin_progreso"
+    elif contenido != plan.contenido:
+        # Invariantes 1-3: el flag tiene que seguir siendo el que el plan aplicó.
+        esperado = "cache_cambio_despues_del_plan"
+    elif modo == "new":
+        # Invariante 1: el inventario físico tiene que seguir vacío.
+        esperado = "cache_cambio_despues_del_plan" if hay_cache else None
+    elif modo == "rebuild":
+        # Invariante 2: el respaldo tiene que seguir cubriendo el caché actual.
+        esperado = "cache_cambio_despues_del_plan" if cambio_cache != "ninguno" else None
+    else:
+        # Invariante 3: en RESUME el inventario físico no participa de la decisión.
+        esperado = None
+
+    assert obtenido == esperado, (
+        f"modo={modo} intento={intento} primario={primario} alternativo={alternativo} "
+        f"cambio_cache={cambio_cache}: se esperaba {esperado!r} y se obtuvo {obtenido!r} "
+        f"({corte.motivo if corte else 'lanzamiento autorizado'})"
+    )
 
 
 async def test_el_relanzamiento_no_se_autoriza_con_cache_fisico_vacio(
@@ -2079,3 +2162,153 @@ async def test_resume_con_cache_fisico_vacio_no_relanza_si_el_flag_pierde_el_pro
     assert resultado.outcome == "flag_sin_progreso"
     assert resultado.success is False
     assert mo2.launch_game.await_count == 1, "el caché físico vacío no autoriza un segundo lanzamiento"
+
+
+# ---------------------------------------------------------------------------
+# Ronda 11 — el contrato único, de punta a punta (callback `launching` incluido)
+# ---------------------------------------------------------------------------
+
+
+async def test_new_no_lanza_si_el_cache_aparece_durante_el_callback_launching(
+    config: GrassCacheConfig, mo2: AsyncMock
+) -> None:
+    # La ventana real entre la última comprobación del plan y el spawn es el
+    # callback `launching`. Si ahí aparece un .cgid, NEW ya no tiene la cobertura
+    # que el plan evaluó (caché vacío) y no puede lanzar.
+    async def _progreso(info: Any) -> None:
+        if info.phase == "launching":
+            _escribir_cgid(config.overwrite_grass_dir, "intruso.cgid", datos=b"intruso")
+
+    resultado = await _correr(_runner(config, mo2, on_progress=_progreso))
+
+    assert resultado.outcome == "cache_cambio_despues_del_plan"
+    assert resultado.success is False
+    mo2.launch_game.assert_not_awaited()
+    assert (config.overwrite_grass_dir / "intruso.cgid").exists(), "no se borra nada"
+
+
+async def test_rebuild_no_lanza_si_el_cache_cambia_durante_el_callback_launching(
+    config_rebuild: GrassCacheConfig, mo2: AsyncMock
+) -> None:
+    # El respaldo verificó el caché al planificar; si el contenido cambia después
+    # (callback `launching`), el respaldo ya no cubre lo que NGIO borraría.
+    _escribir_cgid(config_rebuild.overwrite_grass_dir, "previo.cgid", datos=b"previo")
+
+    async def _progreso(info: Any) -> None:
+        if info.phase == "launching":
+            (config_rebuild.overwrite_grass_dir / "previo.cgid").write_bytes(b"contenido-nuevo")
+
+    resultado = await _correr(_runner(config_rebuild, mo2, on_progress=_progreso))
+
+    assert resultado.outcome == "cache_cambio_despues_del_plan"
+    assert "respaldo" in resultado.message.lower()
+    mo2.launch_game.assert_not_awaited()
+    assert (config_rebuild.overwrite_grass_dir / "previo.cgid").read_bytes() == b"contenido-nuevo"
+
+
+async def test_resume_no_spawnea_si_el_flag_se_vacia_durante_el_callback_launching(
+    config: GrassCacheConfig, mo2: AsyncMock
+) -> None:
+    # RESUME conserva el progreso byte a byte; si un tercero lo vacía en la
+    # ventana del callback, el primer spawn no puede ocurrir.
+    cfg = dataclasses.replace(config, mode="resume")
+    (cfg.game_path / "PrecacheGrass.txt").write_bytes(_PROGRESO_DEL_PLAN)
+
+    async def _progreso(info: Any) -> None:
+        if info.phase == "launching":
+            (cfg.game_path / "PrecacheGrass.txt").write_bytes(b"")
+
+    resultado = await _correr(_runner(cfg, mo2, on_progress=_progreso))
+
+    assert resultado.outcome == "cache_cambio_despues_del_plan"
+    mo2.launch_game.assert_not_awaited()
+
+
+async def test_cancelar_durante_la_inspeccion_no_lanza_el_juego(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Invariante 6: la inspección hace E/S. Si la cancelación llega AHÍ (no antes),
+    # el veredicto ya no alcanza: hay que volver a mirar antes del spawn.
+    cancel = asyncio.Event()
+    original = gcr_mod.inventariar_cache
+    llamadas = {"n": 0}
+
+    def _inventariar(**kwargs: Any) -> Any:
+        llamadas["n"] += 1
+        cancel.set()  # llega durante la inspección, no durante la preparación
+        return original(**kwargs)
+
+    monkeypatch.setattr(gcr_mod, "inventariar_cache", _inventariar)
+
+    resultado = await _correr(_runner(config, mo2), cancel)
+
+    assert llamadas["n"] == 1, "el disparo tiene que ser la inspección previa al lanzamiento"
+    assert resultado.outcome == "cancelled"
+    assert "autorización" in resultado.message
+    mo2.launch_game.assert_not_awaited()
+
+
+async def test_el_deadline_vencido_durante_la_inspeccion_no_lanza_el_juego(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Invariante 6 (segunda mitad): si el deadline se agota mientras se inspecciona,
+    # el run sale por timeout y no deja un juego recién lanzado fuera de plazo.
+    cfg = dataclasses.replace(config, max_runtime_s=30.0)
+    runner = _runner(cfg, mo2)
+    original = gcr_mod.inventariar_cache
+
+    def _inventariar(**kwargs: Any) -> Any:
+        runner._start_mono = time.monotonic() - cfg.max_runtime_s - 1.0
+        return original(**kwargs)
+
+    monkeypatch.setattr(gcr_mod, "inventariar_cache", _inventariar)
+
+    resultado = await _correr(runner)
+
+    assert resultado.outcome == "timeout"
+    assert "autorización" in resultado.message
+    mo2.launch_game.assert_not_awaited()
+
+
+async def test_el_flag_alternativo_aparecido_en_launching_bloquea_el_spawn(
+    config: GrassCacheConfig, mo2: AsyncMock
+) -> None:
+    # Invariante 5: el alternativo bloquea el lanzamiento aunque el primario esté
+    # en su estado esperado, y al salir se reporta como residual (no es nuestro).
+    async def _progreso(info: Any) -> None:
+        if info.phase == "launching":
+            (config.game_path / "PrecacheGrass.txt.txt").write_bytes(_PROGRESO_AJENO)
+
+    resultado = await _correr(_runner(config, mo2, on_progress=_progreso))
+
+    assert resultado.outcome == "flag_alternativo_presente"
+    assert resultado.success is False
+    assert resultado.flag_alternativo_residual is True
+    mo2.launch_game.assert_not_awaited()
+    assert (config.game_path / "PrecacheGrass.txt.txt").exists(), "un flag ajeno no se borra"
+    assert not (config.game_path / "PrecacheGrass.txt").exists(), "el primario sí se neutraliza"
+
+
+async def test_un_flag_alternativo_residual_invalida_la_limpieza_completa(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # Un run que termina bien (NGIO borra el flag y deja .cgid) sigue sin ser
+    # "limpieza completa" si quedó un alternativo: NGIO podría abrirlo como flag
+    # de progreso en el próximo arranque manual. Se preserva y se declara.
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "celda.cgid", datos=b"celda")
+        mundo.alta_juego(100, 1100, vidas=3)
+        (config.game_path / "PrecacheGrass.txt").unlink()
+        (config.game_path / "PrecacheGrass.txt.txt").write_bytes(_PROGRESO_AJENO)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "completed"
+    assert resultado.success is False, "una limpieza incompleta no es éxito"
+    assert resultado.flag_alternativo_residual is True
+    assert "ALTERNATIVO" in resultado.message
+    assert resultado.cgid_count == 1
+    assert (config.game_path / "PrecacheGrass.txt.txt").exists()

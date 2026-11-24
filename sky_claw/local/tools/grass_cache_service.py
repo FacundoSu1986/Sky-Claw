@@ -510,7 +510,9 @@ class GrassCacheService:
         # al juego del usuario en modo precache, y borrarlo sin archivar su
         # progreso se lleva la única evidencia de reanudación. Las dos cosas
         # viajan por la misma vía (resultado + marca en el journal).
-        limpieza_incompleta = run_result is not None and (run_result.flag_residual or run_result.progreso_perdido)
+        limpieza_incompleta = run_result is not None and (
+            run_result.flag_residual or run_result.progreso_perdido or run_result.flag_alternativo_residual
+        )
         exito = error_msg is None and run_result is not None and run_result.success and not limpieza_incompleta
         if run_result is not None and run_result.flag_residual:
             teardown_failures = [
@@ -521,6 +523,13 @@ class GrassCacheService:
             teardown_failures = [
                 *teardown_failures,
                 "progreso no archivado: " + ("; ".join(run_result.limpieza_errores) or "causa desconocida"),
+            ]
+        if run_result is not None and run_result.flag_alternativo_residual:
+            # El alternativo no es nuestro y no se borra, pero mientras exista NGIO
+            # puede abrirlo como flag de progreso: la limpieza no está completa.
+            teardown_failures = [
+                *teardown_failures,
+                "flag alternativo residual: " + ("; ".join(run_result.limpieza_errores) or "causa desconocida"),
             ]
         try:
             # U-09: la constancia del cleanup a medias va ANTES del cierre, para
@@ -778,6 +787,7 @@ class GrassCacheService:
             "backup_dir": run_result.backup_dir,
             "flag_residual": run_result.flag_residual,
             "progreso_perdido": run_result.progreso_perdido,
+            "flag_alternativo_residual": run_result.flag_alternativo_residual,
             "duration_seconds": duracion,
         }
 

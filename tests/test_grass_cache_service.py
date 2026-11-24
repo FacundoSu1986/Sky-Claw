@@ -1180,6 +1180,24 @@ async def test_flag_residual_llega_al_resultado_y_al_teardown(tmp_path: pathlib.
     assert any("archivo en uso" in fallo for fallo in resultado["teardown_failures"])
 
 
+async def test_un_flag_alternativo_residual_invalida_el_exito(tmp_path: pathlib.Path) -> None:
+    # El alternativo (`PrecacheGrass.txt.txt`) no lo escribe Sky-Claw y no se
+    # borra, pero mientras exista NGIO puede abrirlo como flag de progreso: el
+    # éxito del ritual no alcanza y el teardown lo declara.
+    runner_result = _resultado_runner(
+        flag_alternativo_residual=True,
+        limpieza_errores=("Queda el flag ALTERNATIVO PrecacheGrass.txt.txt en disco",),
+    )
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+
+    resultado = await service.generate(dict(_PAYLOAD))
+
+    assert resultado["success"] is False
+    assert resultado["flag_alternativo_residual"] is True
+    assert any("alternativo residual" in fallo for fallo in resultado["teardown_failures"])
+    assert any("ALTERNATIVO" in fallo for fallo in resultado["teardown_failures"])
+
+
 async def test_generate_new_sin_ack_de_usvfs_queda_en_hold(tmp_path: pathlib.Path) -> None:
     # B5: NEW escribe el flag vacío; con la cobertura USVFS sin demostrar el
     # servicio tampoco clona el perfil ni lanza el runner.

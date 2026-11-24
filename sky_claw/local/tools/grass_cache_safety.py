@@ -1194,19 +1194,26 @@ class NeutralizacionFlag:
       archivar: la única evidencia que permitía reanudar SIN destruir el caché
       se perdió. Borrar era obligatorio; declararlo "limpio" no lo es.
 
-    ``limpio`` exige las dos cosas: que no quede flag y que no se haya perdido
-    evidencia. Un ``unlink`` que funciona con un archivado que falla **no** es
-    limpieza exitosa.
+    ``alternativo_residual`` es el tercer eje: el flag ALTERNATIVO
+    (``PrecacheGrass.txt.txt``) no es nuestro, así que no se borra —pertenece a
+    otro dueño y destruirlo sería cambiar un borrado de caché por otro—, pero
+    mientras exista NGIO puede abrirlo como flag de progreso cuando el primario
+    falte: la limpieza **no** es completa y el resultado tiene que decirlo.
+
+    ``limpio`` exige las tres cosas: que no quede flag, que no se haya perdido
+    evidencia y que no quede un alternativo residual. Un ``unlink`` que funciona
+    con un archivado que falla **no** es limpieza exitosa.
     """
 
     borrado: bool
     archivado: bool
     errores: tuple[str, ...] = ()
     progreso_perdido: bool = False
+    alternativo_residual: bool = False
 
     @property
     def limpio(self) -> bool:
-        return self.borrado and not self.progreso_perdido
+        return self.borrado and not self.progreso_perdido and not self.alternativo_residual
 
 
 def neutralizar_flag(
@@ -1334,7 +1341,7 @@ class PlanArranque:
         }
 
 
-def _exigir_cobertura_usvfs(ack_usvfs_no_verificado: bool) -> None:
+def exigir_cobertura_usvfs(ack_usvfs_no_verificado: bool) -> None:
     """HOLD de cobertura: escribir el flag VACÍO es lo que dispara el ``remove()``.
 
     Aplica a TODO modo que escriba vacío —``new`` y ``rebuild``—, no sólo al
@@ -1374,7 +1381,7 @@ def _exigir_aprobacion_y_cobertura(*, aprobacion: str | None, ack_usvfs_no_verif
             f"El modo REBUILD regenera el caché desde cero y NGIO borra el anterior: exige "
             f"aprobación explícita ('{APROBACION_REBUILD}').",
         )
-    _exigir_cobertura_usvfs(ack_usvfs_no_verificado)
+    exigir_cobertura_usvfs(ack_usvfs_no_verificado)
 
 
 def planificar_arranque(
@@ -1408,8 +1415,8 @@ def planificar_arranque(
                 "Usá mode='resume' para continuar desde ese progreso.",
             )
         # NEW escribe el flag vacío: el mismo disparador de borrado de NGIO que
-        # REBUILD. Sin cobertura USVFS demostrada, HOLD (ver _exigir_cobertura_usvfs).
-        _exigir_cobertura_usvfs(ack_usvfs_no_verificado)
+        # REBUILD. Sin cobertura USVFS demostrada, HOLD (ver exigir_cobertura_usvfs).
+        exigir_cobertura_usvfs(ack_usvfs_no_verificado)
         return PlanArranque(modo="new", accion="escribir_vacio", contenido=b"", inventario=inventario)
 
     if modo == "resume":
@@ -1451,7 +1458,7 @@ def ruta_del_flag_alternativo(game_path: pathlib.Path) -> pathlib.Path:
     return game_path / PRECACHE_FLAG_ALTERNATIVO
 
 
-def _exigir_sin_flag_alternativo(game_path: pathlib.Path) -> None:
+def exigir_sin_flag_alternativo(game_path: pathlib.Path) -> None:
     """Se niega a arrancar si existe el flag alternativo de NGIO.
 
     **Qué problema cierra.** NGIO 1.0.13 no lee un nombre fijo:
@@ -1505,7 +1512,7 @@ def preparar_arranque(
     """
     # El flag alternativo se rechaza ANTES de cualquier decisión o escritura: con
     # él presente, ni el inventario ni el plan representan lo que NGIO va a leer.
-    _exigir_sin_flag_alternativo(game_path)
+    exigir_sin_flag_alternativo(game_path)
     if modo == "rebuild":
         # Fail-fast ANTES de tocar el disco: un HOLD no respalda nada.
         _exigir_aprobacion_y_cobertura(aprobacion=aprobacion, ack_usvfs_no_verificado=ack_usvfs_no_verificado)
@@ -1599,7 +1606,7 @@ class EstadoAplicacion:
     verificado: bool = False
 
 
-def _exigir_flag_conservado(flag_path: pathlib.Path, esperado: bytes) -> None:
+def exigir_flag_conservado(flag_path: pathlib.Path, esperado: bytes) -> None:
     """Revalida el flag JUSTO antes de dejar que NGIO reanude con él.
 
     Entre el preflight y la escritura hay una ventana: otro proceso (o el
@@ -1696,7 +1703,7 @@ def aplicar_plan(
     """
     estado = estado if estado is not None else EstadoAplicacion()
     if plan.accion == "conservar":
-        _exigir_flag_conservado(flag_path, plan.contenido)
+        exigir_flag_conservado(flag_path, plan.contenido)
         estado.verificado = True
         return estado
     _rechazar_enlace(flag_path, "flag_es_enlace")
@@ -1754,6 +1761,9 @@ __all__ = [
     "RespaldoVerificado",
     "aplicar_plan",
     "archivar_progreso",
+    "exigir_cobertura_usvfs",
+    "exigir_flag_conservado",
+    "exigir_sin_flag_alternativo",
     "huella_del_cache",
     "inventariar_cache",
     "neutralizar_flag",

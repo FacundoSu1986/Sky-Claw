@@ -55,14 +55,20 @@ from sky_claw.local.tools.grass_cache_safety import (
     PRECACHE_FLAG,
     EstadoAplicacion,
     GrassCacheMode,
+    GrassCacheSafetyError,
+    InventarioCache,
     NeutralizacionFlag,
     PlanArranque,
     aplicar_plan,
+    exigir_cobertura_usvfs,
+    exigir_flag_conservado,
+    exigir_sin_flag_alternativo,
     inventariar_cache,
     neutralizar_flag,
     preparar_arranque,
     ruta_de_respaldo,
     ruta_del_flag_alternativo,
+    verificar_respaldo_para_borrado,
 )
 
 if TYPE_CHECKING:
@@ -93,6 +99,8 @@ GrassCacheOutcome = Literal[
     "max_restarts",
     "spawn_failed",
     "flag_sin_progreso",
+    "flag_alternativo_presente",
+    "cache_cambio_despues_del_plan",
 ]
 GrassCachePhase = Literal["launching", "scanning", "crashed", "relaunching", "finished"]
 
@@ -257,8 +265,24 @@ class GrassCacheRunResult:
     #: True si el flag se borró pero su progreso NO se pudo archivar: la
     #: evidencia de reanudación de este caché se perdió.
     progreso_perdido: bool = False
+    #: True si quedó el flag ALTERNATIVO (``PrecacheGrass.txt.txt``) en disco: no es
+    #: nuestro y no se borra, pero la limpieza no es completa mientras exista.
+    flag_alternativo_residual: bool = False
     #: Errores concretos de la limpieza (archivado/borrado del flag).
     limpieza_errores: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _CorteDeLanzamiento:
+    """Veredicto que BLOQUEA un lanzamiento, con su código del contrato.
+
+    Lo devuelve :meth:`GrassCacheRunner._autorizar_lanzamiento`, el único punto
+    que autoriza un ``launch_game()``. ``outcome`` es el código que viaja al
+    resultado/journal; ``motivo`` explica el estado concreto que lo invalidó.
+    """
+
+    outcome: GrassCacheOutcome
+    motivo: str
 
 
 async def esperar_terminar(trabajo: Awaitable[T], *, descripcion: str) -> T:
@@ -396,6 +420,7 @@ class GrassCacheRunner:
                 + "Limpieza del flag incompleta: "
                 + ("; ".join(limpieza.errores) or "causa desconocida"),
                 flag_residual=not limpieza.borrado,
+                flag_alternativo_residual=limpieza.alternativo_residual,
                 progreso_perdido=limpieza.progreso_perdido,
                 limpieza_errores=limpieza.errores,
             )
@@ -413,6 +438,13 @@ class GrassCacheRunner:
         limpieza = self._neutralizacion
         if limpieza is None or limpieza.limpio:
             return
+        if limpieza.alternativo_residual:
+            logger.warning(
+                "Queda un flag ALTERNATIVO residual (%s): no es de este run y no se borra, pero NGIO "
+                "puede abrirlo como flag de progreso. La limpieza no es completa. Errores: %s",
+                ruta_del_flag_alternativo(self._config.game_path),
+                "; ".join(limpieza.errores) or "desconocido",
+            )
         if limpieza.borrado:
             logger.warning(
                 "El flag %s se borró, pero su progreso NO se archivó: la reanudación de este "
@@ -535,15 +567,37 @@ class GrassCacheRunner:
                         crash_count,
                         await self._snapshot_cache(),
                     )
-                if intento:
-                    # El plan sólo autorizó el PRIMER lanzamiento. Cada
-                    # relanzamiento se revalida contra el flag real: un archivo
-                    # que EXISTE pero ya no tiene progreso hace que NGIO borre
-                    # el caché parcial en el próximo arranque.
-                    motivo = await self._motivo_para_no_relanzar()
-                    if motivo is not None:
-                        await self._matar_todo(game_pid)
-                        return self._resultado("flag_sin_progreso", motivo, crash_count, await self._snapshot_cache())
+                # Contrato único de autorización: se corre para TODOS los
+                # lanzamientos —el primero incluido— inmediatamente antes del
+                # spawn. Cubre los seis invariantes (flag esperado, inventario
+                # sin cambios en NEW, respaldo aún válido en REBUILD, progreso
+                # concordante en RESUME, progreso válido en todo relanzamiento y
+                # ausencia del flag alternativo siempre).
+                corte = await self._autorizar_lanzamiento(intento=intento, plan=plan)
+                if corte is not None:
+                    await self._matar_todo(game_pid)
+                    return self._resultado(corte.outcome, corte.motivo, crash_count, await self._snapshot_cache())
+                # Invariante 6: la inspección hace E/S (hilo) y el callback
+                # `launching` ya corrió. Entre el veredicto y el spawn se vuelven
+                # a mirar cancelación y deadline: un juego que nadie va a mirar —
+                # o un run fuera de plazo— no se lanza.
+                if cancel.is_set():
+                    await self._matar_todo(game_pid)
+                    return self._resultado(
+                        "cancelled",
+                        "Cancelado durante la autorización del lanzamiento.",
+                        crash_count,
+                        await self._snapshot_cache(),
+                    )
+                if time.monotonic() - self._start_mono >= self._config.max_runtime_s:
+                    await self._matar_todo(game_pid)
+                    return self._resultado(
+                        "timeout",
+                        f"Deadline global de {self._config.max_runtime_s:.0f}s alcanzado durante la "
+                        "autorización del lanzamiento; el cache parcial se conserva.",
+                        crash_count,
+                        await self._snapshot_cache(),
+                    )
                 game_pid = None
                 try:
                     info: dict[str, Any] = await self._mo2.launch_game(self._config.profile)
@@ -817,73 +871,131 @@ class GrassCacheRunner:
     async def _flag_exists(self) -> bool:
         return await asyncio.to_thread(self._flag_path.exists)
 
-    async def _motivo_para_no_relanzar(self) -> str | None:
-        """¿Puede NGIO leer el flag como PROGRESO antes del próximo spawn?
+    async def _autorizar_lanzamiento(self, *, intento: int, plan: PlanArranque) -> _CorteDeLanzamiento | None:
+        """ÚNICO contrato de autorización, justo antes de CADA ``launch_game()``.
 
-        ``None`` = seguro relanzar. Un string = motivo del corte (fail-closed).
+        ``None`` = lanzamiento autorizado; un corte = no se lanza (fail-closed).
 
-        Que el archivo exista no es lo mismo que NGIO lo lea como progreso: con
-        el flag sin progreso y ``.cgid/.dgid/.fail`` alcanzables, el ``remove()``
-        de ``GidFileCache.cpp::Init()`` (1.0.13) borra el caché en el próximo
-        arranque. El plan autoriza un único lanzamiento —el que validó al
-        aplicar el flag—; los siguientes no pueden asumir que sigue siendo
-        seguro.
+        **Por qué un solo punto.** Antes había comprobaciones repartidas —el plan
+        en ``preparar_arranque``, el flag en ``aplicar_plan``, el progreso en el
+        viejo guard de relanzamiento—, y cada una veía una foto distinta del
+        disco. Entre la última de ellas y el ``launch_game()`` había una ventana
+        real: el callback ``launching`` corre exactamente ahí. Este método se
+        ejecuta inmediatamente antes del spawn y contesta por los seis
+        invariantes del contrato, con las primitivas del módulo de seguridad
+        (sin un segundo motor de planificación):
 
-        La decisión se toma con el MISMO inventario y predicado del módulo de
-        seguridad (`inventariar_cache` → `_ngio_tiene_progreso`): no hay un
-        segundo parser. Corre en un hilo, drenado, como el resto del E/S del
-        runner.
+        1. ``new`` en el primer lanzamiento: flag esperado, inventario físico
+           todavía vacío y autorización USVFS vigente;
+        2. ``rebuild`` en el primer lanzamiento: flag esperado y respaldo todavía
+           íntegro **y** correspondiente al caché actual (si el caché cambió
+           después del respaldo, no se lanza);
+        3. ``resume`` en el primer lanzamiento: progreso válido y concordante con
+           el plan aplicado, byte a byte;
+        4. todo relanzamiento: progreso válido, sea cual sea el modo y el
+           inventario físico (un caché físico vacío **no** acredita nada: la VFS
+           puede superponer ``.cgid`` de mods en ``Data/Grass``);
+        5. todos los lanzamientos: ausencia del flag ALTERNATIVO, incluso cuando
+           el primario tiene progreso (NGIO lo abre si el primario falta);
+        6. la cancelación y el deadline se vuelven a comprobar **después** de
+           esta inspección (que hace E/S) y antes del spawn — ver el bucle.
 
-        **Regla (ronda 10):** TODO relanzamiento automático exige que el flag
-        siga siendo progreso, en los tres modos. Ni `resume` ni el hecho de que
-        el caché físico esté vacío habilitan un relanzamiento: el caché vacío no
-        acredita nada, porque la USVFS puede superponer `.cgid` de mods en
-        `Data/Grass` y NGIO los borraría igual. Si NGIO murió antes de registrar
-        progreso, el ritual se detiene y el operador decide con la evidencia a la
-        vista (trade-off aceptado: no se auto-inicia otra operación destructiva).
-        El flag ALTERNATIVO (`PrecacheGrass.txt.txt`, que NGIO abre cuando el
-        primario falta) también bloquea el relanzamiento.
-
-        **Alcance:** los archivos que se pueden inventariar son los del caché
-        FÍSICO (`overwrite/Grass`). Los `.cgid` de mods que la USVFS superpone en
-        `Data/Grass` **no** son visibles acá: su cobertura sigue NO VERIFICADA
-        (§4.1/§4.2 de la auditoría) y por eso el contrato no promete nada sobre
-        ellos, ni antes ni después de este chequeo.
+        La E/S corre en un hilo drenado: si la cancelación llega mientras se
+        inspecciona, ``esperar_terminar`` espera al hilo y recién entonces
+        propaga, así que el veredicto nunca se pierde a mitad de camino.
         """
-        inventario = await esperar_terminar(
-            asyncio.to_thread(
-                inventariar_cache,
-                grass_dir=self._config.overwrite_grass_dir,
-                flag_path=self._flag_path,
-            ),
-            descripcion="inventariar_cache",
+        return await esperar_terminar(
+            asyncio.to_thread(self._inspeccionar_antes_de_lanzar, intento=intento, plan=plan),
+            descripcion="autorizar_lanzamiento",
         )
+
+    def _inspeccionar_antes_de_lanzar(self, *, intento: int, plan: PlanArranque) -> _CorteDeLanzamiento | None:
+        """Inspección síncrona (en hilo) de la matriz de autorización."""
+        try:
+            # Invariante 5: primero el alternativo, para todos los lanzamientos.
+            exigir_sin_flag_alternativo(self._config.game_path)
+        except GrassCacheSafetyError as exc:
+            return _CorteDeLanzamiento("flag_alternativo_presente", str(exc))
+        inventario = inventariar_cache(
+            grass_dir=self._config.overwrite_grass_dir,
+            flag_path=self._flag_path,
+        )
+        if intento:
+            return self._corte_del_relanzamiento(inventario)
+        return self._corte_del_primer_lanzamiento(plan, inventario)
+
+    def _corte_del_primer_lanzamiento(
+        self, plan: PlanArranque, inventario: InventarioCache
+    ) -> _CorteDeLanzamiento | None:
+        """Invariantes 1-3: el estado tiene que seguir siendo el que el plan autorizó."""
+        try:
+            # El flag que el plan aplicó (vacío en new/rebuild, progreso exacto en
+            # resume) sigue siendo ese: si un tercero lo tocó, el plan ya no rige.
+            exigir_flag_conservado(self._flag_path, plan.contenido)
+            if plan.modo == "resume":
+                if inventario.flag_progreso is None:
+                    return _CorteDeLanzamiento(
+                        "cache_cambio_despues_del_plan",
+                        "El flag de precache dejó de tener progreso entre el plan y el lanzamiento: "
+                        "NGIO empezaría de cero y borraría el caché. No se lanza el juego.",
+                    )
+            else:
+                exigir_cobertura_usvfs(self._config.ack_usvfs_no_verificado)
+                if plan.modo == "new":
+                    if inventario.tiene_cache:
+                        return _CorteDeLanzamiento(
+                            "cache_cambio_despues_del_plan",
+                            f"Aparecieron {inventario.archivos_cache} archivo(s) en el caché físico después "
+                            "de que NEW autorizara el arranque con el caché vacío: lanzar ahora dejaría que "
+                            "NGIO borre contenido que el plan no evaluó. No se lanza y no se toca el caché.",
+                        )
+                elif plan.respaldo is None:
+                    if inventario.tiene_cache:
+                        return _CorteDeLanzamiento(
+                            "cache_cambio_despues_del_plan",
+                            f"REBUILD se autorizó con el caché vacío y ahora hay {inventario.archivos_cache} "
+                            "archivo(s), sin respaldo: no hay copia verificada de lo que NGIO borraría. "
+                            "No se lanza y no se toca el caché.",
+                        )
+                else:
+                    # Vuelve a leer origen y destino: si el caché cambió después del
+                    # respaldo (o el respaldo fue alterado), REBUILD no arranca.
+                    verificar_respaldo_para_borrado(
+                        grass_dir=self._config.overwrite_grass_dir,
+                        respaldo=plan.respaldo,
+                    )
+        except GrassCacheSafetyError as exc:
+            return _CorteDeLanzamiento(
+                "cache_cambio_despues_del_plan",
+                f"El estado cambió después de que el plan autorizara el lanzamiento [{exc.codigo}]: {exc}",
+            )
+        return None
+
+    def _corte_del_relanzamiento(self, inventario: InventarioCache) -> _CorteDeLanzamiento | None:
+        """Invariante 4: sin progreso válido no hay relanzamiento, en ningún modo.
+
+        Que el archivo exista no es lo mismo que NGIO lo lea como progreso: con el
+        flag sin progreso y ``.cgid/.dgid/.fail`` alcanzables, el ``remove()`` de
+        ``GidFileCache.cpp::Init()`` (1.0.13) borra el caché en el próximo
+        arranque. El caché físico vacío tampoco habilita nada (§17.2).
+        """
         if inventario.flag_progreso is not None:
             return None  # NGIO reanuda: el relanzamiento continúa el trabajo
-        # Sin progreso NO se relanza nunca. El caché físico vacío no habilita nada
-        # (la USVFS puede superponer `.cgid` de mods que NGIO borraría igual) y el
-        # plan solo autorizó el lanzamiento que validó el flag.
-        alternativo = ruta_del_flag_alternativo(self._config.game_path)
-        if path_present(alternativo):
-            return (
-                f"El flag de precache quedó sin progreso y existe el flag ALTERNATIVO "
-                f"{alternativo.name!r}: NGIO lo abre como flag de progreso cuando el primario falta, "
-                "así que el estado del caché no es confiable. No se relanza ni se toca el caché; "
-                "resolvé ese archivo a mano y volvé a correr."
-            )
         if self._config.mode == "resume":
-            return (
+            motivo = (
                 "El flag de precache quedó SIN progreso: `resume` exige progreso siempre, así que no "
                 f"se relanza. El caché ({inventario.archivos_cache} archivo(s) en el caché físico) no se "
                 "borra ni se restaura; revisá qué vació el flag y, si hay que regenerar, usá "
                 "mode='rebuild' con respaldo verificado."
             )
-        return (
-            f"El flag de precache quedó sin progreso en modo '{self._config.mode}': no se autoriza "
-            f"otro lanzamiento automático. El caché físico tiene {inventario.archivos_cache} archivo(s) "
-            "y no se borra ni se restaura. Si NGIO murió antes de registrar progreso, el ritual se "
-            "detiene acá: decidí resume/rebuild con la evidencia a la vista."
-        )
+        else:
+            motivo = (
+                f"El flag de precache quedó sin progreso en modo '{self._config.mode}': no se autoriza "
+                f"otro lanzamiento automático. El caché físico tiene {inventario.archivos_cache} archivo(s) "
+                "y no se borra ni se restaura. Si NGIO murió antes de registrar progreso, el ritual se "
+                "detiene acá: decidí resume/rebuild con la evidencia a la vista."
+            )
+        return _CorteDeLanzamiento("flag_sin_progreso", motivo)
 
     async def _snapshot_cache(self) -> tuple[int, int]:
         return await asyncio.to_thread(self._scan_cgid_sync)
@@ -1105,6 +1217,25 @@ class GrassCacheRunner:
             # termine y recién entonces propaga, así que un
             # `self._neutralizacion = await …` del llamador NUNCA correría y un
             # flag que no se pudo borrar se perdería en silencio.
+            # El flag ALTERNATIVO no es nuestro: no se borra. Pero mientras exista,
+            # NGIO puede abrirlo como flag de progreso si el primario falta, así
+            # que la limpieza NO es completa y el resultado tiene que declararlo.
+            alternativo = ruta_del_flag_alternativo(self._config.game_path)
+            try:
+                residual = path_present(alternativo)
+            except OSError:
+                residual = True  # no se pudo inspeccionar: fail-closed
+            if residual:
+                resultado = dataclasses.replace(
+                    resultado,
+                    alternativo_residual=True,
+                    errores=(
+                        *resultado.errores,
+                        f"Queda el flag ALTERNATIVO {alternativo} en disco: no lo escribió este run, así "
+                        "que no se borra, pero NGIO lo abre como flag de progreso cuando falta el primario. "
+                        "La limpieza NO es completa: resolvelo con el juego cerrado.",
+                    ),
+                )
             self._neutralizacion = resultado
             if resultado.errores or not resultado.limpio:
                 logger.warning(
