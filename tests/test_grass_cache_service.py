@@ -30,6 +30,7 @@ from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.local.mo2.grass_profile import GrassProfileError
 from sky_claw.local.tools.grass_cache_runner import GrassCacheRunResult
 from sky_claw.local.tools.grass_cache_service import (
+    GenerateGrassCacheParams,
     GrassCacheService,
     GrassRuntimeDeps,
 )
@@ -112,6 +113,9 @@ def _servicio(
 
     profile_manager = AsyncMock()
     profile_manager.clone_profile = "SkyClaw-GrassCache"
+    # El clon (LANZAMIENTO) y el perfil de ORIGEN (identidad del progreso)
+    # son nombres distintos: el mock declara los dos.
+    profile_manager.source_profile = "Default"
     # teardown() ahora devuelve la lista de paths que no pudo borrar (§1.6).
     profile_manager.teardown.return_value = []
 
@@ -153,7 +157,13 @@ def _servicio(
     return service, colaboradores
 
 
-_PAYLOAD = {"worldspaces": ["Tamriel", "DLC2SolstheimWorld"], "conflicting_mods": ["ENB Helper"]}
+_PAYLOAD = {
+    "worldspaces": ["Tamriel", "DLC2SolstheimWorld"],
+    "conflicting_mods": ["ENB Helper"],
+    # La cobertura USVFS no está demostrada (P0): el operador lo reconoce. Los
+    # tests del HOLD lo apagan explícitamente.
+    "ack_usvfs_no_verificado": True,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +469,28 @@ async def test_generate_runner_fallido_conserva_cache_y_reporta(tmp_path: pathli
     assert resultado["outcome"] == "stalled"
     assert "sin ningún .cgid" in resultado["message"]
     assert normalize_tool_result(resultado)["message"] != "error desconocido"
+    colab["profile_manager"].teardown.assert_awaited()
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+async def test_generate_flag_sin_progreso_llega_al_contrato_y_al_journal(tmp_path: pathlib.Path) -> None:
+    # El corte de relanzamiento (ronda 9) tiene que ser visible: outcome propio en el
+    # resultado del tool, sin éxito, con teardown y la transacción del journal
+    # marcada como fallida — no un "run raro" que se pierde en el journal.
+    fallo = _resultado_runner(
+        success=False,
+        message="El flag de precache quedó SIN progreso y el caché parcial tiene 3 archivo(s)",
+        outcome="flag_sin_progreso",
+        cgid_count=3,
+    )
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal, runner_result=fallo)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is False
+    assert resultado["outcome"] == "flag_sin_progreso"
+    assert "SIN progreso" in resultado["message"]
     colab["profile_manager"].teardown.assert_awaited()
     journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
 
@@ -799,6 +831,9 @@ async def test_generate_resuelve_deps_por_provider_lazy(tmp_path: pathlib.Path) 
 
     profile_manager = AsyncMock()
     profile_manager.clone_profile = "SkyClaw-GrassCache"
+    # El clon (LANZAMIENTO) y el perfil de ORIGEN (identidad del progreso)
+    # son nombres distintos: el mock declara los dos.
+    profile_manager.source_profile = "Default"
     profile_manager.teardown.return_value = []
     runner = AsyncMock()
     runner.run.return_value = _resultado_runner()
@@ -914,7 +949,7 @@ async def test_reconcilia_flag_huerfano_sin_lock_lo_borra(tmp_path: pathlib.Path
     from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
 
     flag = tmp_path / "PrecacheGrass.txt"
-    flag.write_text("", encoding="utf-8")
+    flag.write_bytes(b"")
     mgr = _lock_manager(None)  # sin lock → no hay ritual activo
 
     removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
@@ -930,7 +965,7 @@ async def test_no_toca_flag_con_ritual_activo(tmp_path: pathlib.Path) -> None:
     from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
 
     flag = tmp_path / "PrecacheGrass.txt"
-    flag.write_text("", encoding="utf-8")
+    flag.write_bytes(b"")
     mgr = _lock_manager(_lock_info_vivo(600.0))  # lock no expirado → ritual en curso
 
     removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
@@ -947,7 +982,7 @@ async def test_race_ritual_gana_el_lock_no_borra(tmp_path: pathlib.Path) -> None
     from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
 
     flag = tmp_path / "PrecacheGrass.txt"
-    flag.write_text("", encoding="utf-8")
+    flag.write_bytes(b"")
     # get_lock_info=None (al chequear no había lock) pero acquire_lock falla:
     # el ritual ganó la carrera entre el chequeo y la adquisición.
     mgr = _lock_manager(None, acquire_falla=True)
@@ -964,7 +999,7 @@ async def test_lock_expirado_se_trata_como_huerfano(tmp_path: pathlib.Path) -> N
     from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
 
     flag = tmp_path / "PrecacheGrass.txt"
-    flag.write_text("", encoding="utf-8")
+    flag.write_bytes(b"")
     mgr = _lock_manager(_lock_info_vivo(-1.0))  # ya vencido → el dueño murió sin liberar
 
     removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
@@ -1003,3 +1038,381 @@ async def test_generate_captura_runtime_error_de_resolucion_de_raices() -> None:
     assert result["success"] is False
     assert "Error resolviendo dependencias de MO2 para grass cache" in result["message"]
     assert "mod_directory declarado pero no disponible en disco" in result["message"]
+
+
+# ---------------------------------------------------------------------------
+# P0 SAFE CACHE (F-01) — el servicio no clona un perfil para un run inseguro
+# ---------------------------------------------------------------------------
+
+
+async def test_payload_rebuild_sin_aprobacion_cumple_contrato(tmp_path: pathlib.Path) -> None:
+    # La aprobación se exige en el payload: no se le pide al operador que
+    # apruebe algo que el runner va a rechazar de todos modos.
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+
+    resultado = await service.generate({**_PAYLOAD, "mode": "rebuild"})
+
+    _assert_error_de_contrato(resultado, "rebuild")
+    colaboradores["runner"].run.assert_not_awaited()
+    colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
+
+
+async def test_modo_invalido_cumple_contrato(tmp_path: pathlib.Path) -> None:
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado())
+
+    resultado = await service.generate({**_PAYLOAD, "mode": "destruir-todo"})
+
+    _assert_error_de_contrato(resultado, "payload")
+
+
+async def test_generate_no_clona_perfil_con_cache_preexistente_sin_decision(tmp_path: pathlib.Path) -> None:
+    # El punto del guard: el rechazo ocurre ANTES de tocar el árbol MO2 (clonar
+    # un perfil y crear el mod de config para un run condenado era trabajo inútil).
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    grass = service._overwrite_grass_dir
+    assert grass is not None
+    grass.mkdir(parents=True)
+    (grass / "previo.cgid").write_bytes(b"prec")
+
+    resultado = await service.generate(dict(_PAYLOAD))
+
+    _assert_error_de_contrato(resultado, "caché")
+    colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
+    colaboradores["runner"].run.assert_not_awaited()
+    assert (grass / "previo.cgid").read_bytes() == b"prec", "el caché previo no se toca"
+
+
+async def test_generate_rechaza_no_truncar_flag_con_progreso(tmp_path: pathlib.Path) -> None:
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    flag = tmp_path / "game" / "PrecacheGrass.txt"
+    progreso = "Tamriel\n-2,4\n"
+    flag.write_bytes(progreso.encode("utf-8"))
+
+    resultado = await service.generate(dict(_PAYLOAD))
+
+    _assert_error_de_contrato(resultado, "progreso")
+    colaboradores["runner"].run.assert_not_awaited()
+    assert flag.read_text(encoding="utf-8") == progreso
+
+
+async def test_el_modo_y_la_raiz_de_estado_viajan_al_runner(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    estado = tmp_path / "estado"
+    monkeypatch.setattr(GrassCacheService, "_raiz_de_estado", staticmethod(lambda: estado))
+    (tmp_path / "game" / "PrecacheGrass.txt").write_bytes(b"Tamriel\n")
+
+    resultado = await service.generate({**_PAYLOAD, "mode": "resume"})
+
+    assert resultado["success"] is True
+    config = colaboradores["runner_factory"].call_args.args[0]
+    assert config.mode == "resume"
+    assert config.backup_root == estado
+
+
+async def test_rebuild_aprobado_respalda_antes_de_clonar(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    estado = tmp_path / "estado"
+    monkeypatch.setattr(GrassCacheService, "_raiz_de_estado", staticmethod(lambda: estado))
+    grass = service._overwrite_grass_dir
+    assert grass is not None
+    grass.mkdir(parents=True)
+    (grass / "previo.cgid").write_bytes(b"prec")
+
+    resultado = await service.generate(
+        {**_PAYLOAD, "mode": "rebuild", "rebuild_approval": "REBUILD", "ack_usvfs_no_verificado": True}
+    )
+
+    assert resultado["success"] is True
+    respaldos = list((estado / "respaldo").iterdir())
+    assert respaldos, "el respaldo queda verificado en la raíz de estado durable"
+    assert (respaldos[0] / "previo.cgid").read_bytes() == b"prec"
+    colaboradores["profile_manager"].create_clone_profile.assert_awaited()
+
+
+async def test_fallo_del_guard_no_deja_transaccion_pendiente(tmp_path: pathlib.Path) -> None:
+    # El rechazo de P0 no muta nada: el journal no registra una operación.
+    journal = _journal_con_loot_completado()
+    service, _ = _servicio(tmp_path, journal=journal)
+    grass = service._overwrite_grass_dir
+    assert grass is not None
+    grass.mkdir(parents=True)
+    (grass / "previo.cgid").write_bytes(b"prec")
+
+    await service.generate(dict(_PAYLOAD))
+
+    journal.begin_transaction.assert_not_awaited()
+
+
+async def test_generate_rebuild_sin_ack_de_usvfs_queda_en_hold(tmp_path: pathlib.Path) -> None:
+    # Sin cobertura USVFS demostrada, el servicio tampoco clona ni respalda.
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    grass = service._overwrite_grass_dir
+    assert grass is not None
+    grass.mkdir(parents=True)
+    (grass / "previo.cgid").write_bytes(b"prec")
+
+    resultado = await service.generate(
+        {**_PAYLOAD, "mode": "rebuild", "rebuild_approval": "REBUILD", "ack_usvfs_no_verificado": False}
+    )
+
+    _assert_error_de_contrato(resultado, "USVFS")
+    colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
+    colaboradores["runner"].run.assert_not_awaited()
+
+
+async def test_flag_residual_llega_al_resultado_y_al_teardown(tmp_path: pathlib.Path) -> None:
+    # Un flag que no se pudo borrar es limpieza incompleta: viaja en el
+    # resultado (y por la misma vía que el teardown), nunca en silencio.
+    runner_result = _resultado_runner(flag_residual=True, limpieza_errores=("archivo en uso",))
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+
+    resultado = await service.generate(dict(_PAYLOAD))
+
+    # B1: un flag que quedó en disco deja al juego del usuario arrancando en
+    # modo precache; eso NO es un éxito, aunque el ritual haya terminado.
+    assert resultado["success"] is False
+    assert resultado["flag_residual"] is True
+    assert any("PrecacheGrass.txt residual" in fallo for fallo in resultado["teardown_failures"])
+    assert any("archivo en uso" in fallo for fallo in resultado["teardown_failures"])
+
+
+async def test_un_flag_alternativo_residual_invalida_el_exito(tmp_path: pathlib.Path) -> None:
+    # El alternativo (`PrecacheGrass.txt.txt`) no lo escribe Sky-Claw y no se
+    # borra, pero mientras exista NGIO puede abrirlo como flag de progreso: el
+    # éxito del ritual no alcanza y el teardown lo declara.
+    runner_result = _resultado_runner(
+        flag_alternativo_residual=True,
+        limpieza_errores=("Queda el flag ALTERNATIVO PrecacheGrass.txt.txt en disco",),
+    )
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+
+    resultado = await service.generate(dict(_PAYLOAD))
+
+    assert resultado["success"] is False
+    assert resultado["flag_alternativo_residual"] is True
+    assert any("alternativo residual" in fallo for fallo in resultado["teardown_failures"])
+    assert any("ALTERNATIVO" in fallo for fallo in resultado["teardown_failures"])
+
+
+async def test_generate_new_sin_ack_de_usvfs_queda_en_hold(tmp_path: pathlib.Path) -> None:
+    # B5: NEW escribe el flag vacío; con la cobertura USVFS sin demostrar el
+    # servicio tampoco clona el perfil ni lanza el runner.
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+
+    resultado = await service.generate({**_PAYLOAD, "ack_usvfs_no_verificado": False})
+
+    _assert_error_de_contrato(resultado, "USVFS")
+    colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
+    colaboradores["runner"].run.assert_not_awaited()
+
+
+async def test_progreso_perdido_no_declara_exito(tmp_path: pathlib.Path) -> None:
+    # B4/B1: perder la evidencia de reanudación es una limpieza incompleta.
+    runner_result = _resultado_runner(
+        progreso_perdido=True, limpieza_errores=("No se pudo archivar el progreso: disco lleno",)
+    )
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+
+    resultado = await service.generate(dict(_PAYLOAD))
+
+    assert resultado["success"] is False
+    assert resultado["progreso_perdido"] is True
+    assert any("progreso" in fallo.lower() for fallo in resultado["teardown_failures"])
+
+
+# ---------------------------------------------------------------------------
+# Hallazgo de revisión: cancelación mientras el respaldo se prepara (locks vivos)
+# ---------------------------------------------------------------------------
+
+
+async def test_cancelacion_durante_el_preflight_no_abandona_el_respaldo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `preparar_arranque` copia el respaldo en un HILO. Si la cancelación llega
+    # mientras copia, el `to_thread` levanta CancelledError y el `async with`
+    # suelta los DOS locks con el hilo todavía escribiendo: un reintento entraría
+    # a los mismos caminos de respaldo/progreso en paralelo. La cancelación no
+    # puede propagarse hasta que el hilo termine.
+    import threading
+
+    import sky_claw.local.tools.grass_cache_service as svc_mod
+
+    en_copia = threading.Event()
+    liberar = threading.Event()
+    termino = threading.Event()
+
+    def _preflight_lento(*args: Any, **kwargs: Any) -> Any:
+        en_copia.set()
+        liberar.wait(timeout=10)
+        termino.set()
+        return MagicMock()
+
+    monkeypatch.setattr(svc_mod, "preparar_arranque", _preflight_lento)
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+
+    tarea = asyncio.ensure_future(service.generate(_PAYLOAD))
+    assert await asyncio.to_thread(en_copia.wait, 5.0), "el preflight no llegó a empezar"
+    tarea.cancel()
+    await asyncio.sleep(0)
+    liberar.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=10)
+
+    assert termino.is_set(), "la cancelación se propagó con el respaldo todavía en vuelo"
+    colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
+    assert colaboradores["llamadas_lock"], "los locks se pidieron antes del preflight"
+
+
+async def test_cancelacion_al_anotar_el_teardown_incompleto_no_deja_la_tx_pendiente(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # La anotación U-09 ("limpieza incompleta") corre justo ANTES del cierre y
+    # fuera del handler de cancelación: una cancelación exacta ahí escapaba sin
+    # ningún intento de cerrar la TX, que quedaba PENDING hasta el sweep de 24 h.
+    journal = _journal_con_loot_completado()
+    journal.get_transaction.return_value = MagicMock(status=TransactionStatus.PENDING)
+    journal.commit_transaction.side_effect = None
+    service, colab = _servicio(
+        tmp_path,
+        journal=journal,
+        runner_result=_resultado_runner(success=False, flag_residual=True, limpieza_errores=("unlink bloqueado",)),
+    )
+
+    async def _anotacion_cancelada(*args: Any, **kwargs: Any) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(service, "_journalizar_teardown_incompleto", _anotacion_cancelada)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.generate(_PAYLOAD)
+
+    journal.get_transaction.assert_awaited_once_with(77)
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    colab["profile_manager"].teardown.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# F1: identidad del progreso = perfil de ORIGEN (no el nombre del clon)
+# ---------------------------------------------------------------------------
+
+
+def _arbol_mo2(tmp_path: pathlib.Path, perfiles: tuple[str, ...]) -> pathlib.Path:
+    """Instancia MO2 sintética con los perfiles pedidos y ``overwrite/``."""
+    root = tmp_path / "mo2"
+    for perfil in perfiles:
+        directorio = root / "profiles" / perfil
+        directorio.mkdir(parents=True, exist_ok=True)
+        (directorio / "modlist.txt").write_bytes(b"\xef\xbb\xbf+ModA\r\n")
+        (directorio / "plugins.txt").write_bytes(b"\xef\xbb\xbf*Skyrim.esm\r\n")
+        (directorio / "Skyrim.ini").write_bytes(b"[General]\r\n")
+        (directorio / "settings.txt").write_bytes(b"[General]\r\n")
+    (root / "mods").mkdir(exist_ok=True)
+    (root / "overwrite").mkdir(exist_ok=True)
+    return root
+
+
+def test_build_runner_config_separa_lanzamiento_de_identidad_de_progreso(tmp_path: pathlib.Path) -> None:
+    # El clon dedicado es CONSTANTE entre perfiles: si la identidad del progreso
+    # sale del clon, dos perfiles de origen comparten evidencia. El camino
+    # productivo (``_build_runner_config`` con un manager REAL) tiene que
+    # declarar los dos nombres por separado.
+    from sky_claw.app.security.path_validator import PathValidator
+    from sky_claw.local.mo2.grass_profile import GrassProfileManager
+    from sky_claw.local.tools.grass_cache_service import GenerateGrassCacheParams
+
+    mo2 = _arbol_mo2(tmp_path, ("PerfilA",))
+    manager = GrassProfileManager(mo2, PathValidator(roots=[mo2]), source_profile="PerfilA")
+    service = GrassCacheService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        game_path=mo2 / "game",
+        overwrite_grass_dir=mo2 / "overwrite" / "Grass",
+    )
+    (mo2 / "game").mkdir()
+    (mo2 / "game" / "SkyrimSE.exe").write_bytes(b"MZ")
+
+    config = service._build_runner_config(GenerateGrassCacheParams(worldspaces=["Tamriel"]), manager)
+
+    assert config.profile == "SkyClaw-GrassCache", "el LANZAMIENTO sigue usando el clon dedicado"
+    assert config.progress_profile == "PerfilA", "la identidad del progreso es el perfil de ORIGEN"
+    assert config.perfil_de_progreso == "PerfilA"
+
+
+async def test_generate_transmite_el_perfil_de_origen_al_runner(tmp_path: pathlib.Path) -> None:
+    # El servicio REAL (no una GrassCacheConfig armada a mano) es quien cablea la
+    # identidad: se intercepta la construcción del runner y se mira la config.
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+    colaboradores["profile_manager"].source_profile = "PerfilA"
+
+    await service.generate(_PAYLOAD)
+
+    config = colaboradores["runner_factory"].call_args.args[0]
+    assert config.profile == "SkyClaw-GrassCache"
+    assert config.progress_profile == "PerfilA"
+    assert config.perfil_de_progreso == "PerfilA"
+
+
+async def test_dos_perfiles_de_origen_no_se_prestan_el_progreso(tmp_path: pathlib.Path) -> None:
+    # Integración: el mismo servicio, dos perfiles de origen sobre la MISMA
+    # instalación (mismo overwrite/Grass y mismo clon). El progreso que archiva
+    # A no puede reanudar el run de B.
+    from sky_claw.app.security.path_validator import PathValidator
+    from sky_claw.local.mo2.grass_profile import GrassProfileManager
+    from sky_claw.local.tools.grass_cache_safety import (
+        GrassCacheSafetyError,
+        archivar_progreso,
+        inventariar_cache,
+        preparar_arranque,
+        ruta_del_flag,
+    )
+
+    mo2 = _arbol_mo2(tmp_path, ("PerfilA", "PerfilB"))
+    grass = mo2 / "overwrite" / "Grass"
+    grass.mkdir(parents=True)
+    (grass / "Tamriel.cgid").write_bytes(b"celda-tamriel")
+    juego = mo2 / "game"
+    juego.mkdir()
+    (juego / "SkyrimSE.exe").write_bytes(b"MZ")
+    estado = tmp_path / "estado"
+
+    manager_a = GrassProfileManager(mo2, PathValidator(roots=[mo2]), source_profile="PerfilA")
+    manager_b = GrassProfileManager(mo2, PathValidator(roots=[mo2]), source_profile="PerfilB")
+    servicio = GrassCacheService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        game_path=juego,
+        overwrite_grass_dir=grass,
+    )
+    config_a = servicio._build_runner_config(GenerateGrassCacheParams(worldspaces=["Tamriel"]), manager_a)
+    config_b = servicio._build_runner_config(GenerateGrassCacheParams(worldspaces=["Tamriel"]), manager_b)
+    assert config_a.perfil_de_progreso != config_b.perfil_de_progreso
+
+    inventario = inventariar_cache(grass_dir=grass, flag_path=ruta_del_flag(juego))
+    archivar_progreso(estado, inventario, b"Tamriel\n-2,4\n", grass_dir=grass, perfil=config_a.perfil_de_progreso)
+
+    # A reanuda con SU propia evidencia.
+    plan_a = preparar_arranque(
+        modo="resume",
+        game_path=juego,
+        grass_dir=grass,
+        raiz_estado=estado,
+        perfil=config_a.perfil_de_progreso,
+    )
+    assert plan_a.accion == "restaurar"
+    assert plan_a.contenido == b"Tamriel\n-2,4\n"
+
+    # B no puede quedarse con el progreso de A.
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        preparar_arranque(
+            modo="resume",
+            game_path=juego,
+            grass_dir=grass,
+            raiz_estado=estado,
+            perfil=config_b.perfil_de_progreso,
+        )
+    assert excinfo.value.codigo == "progreso_de_otra_instalacion"
