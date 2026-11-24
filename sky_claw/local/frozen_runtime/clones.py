@@ -119,7 +119,7 @@ _SID_HEADER_SIZE = 8  # Revision(1) + SubAuthorityCount(1) + IdentifierAuthority
 _SID_REVISION_1 = 1
 _MIN_MANDATORY_LABEL_ACE_SIZE = 20  # sizeof(ACE_HEADER)=4 + Mask=4 + SID(1 subauth: 8 + 4)=12
 _WIN32_LONG_PATH_THRESHOLD = 248
-_MARCA_MIC_NO_VERIFICADO = "MIC no verificado"
+_WIN32_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 
 
 class _SidIdentifierAuthority(ctypes.Structure):
@@ -577,12 +577,13 @@ def _evaluar_conjunto_aces_mic(
 
     Prioridad:
     1. Bits de máscara desconocidos (fuera de NW|NR|NX) -> INDETERMINATE.
-    2. Cualquier ACE con RID < Medium (Low/Untrusted) -> INCOMPATIBLE_LOW.
-    3. Cualquier ACE con RID > Medium y NO_READ_UP o NO_EXECUTE_UP -> INCOMPATIBLE_POLICY
+    2. Múltiples ACEs con (rid, mask) divergentes (p. ej. Medium + Low o High+NX + Medium+NW)
+       -> INDETERMINATE: la evidencia es ambigua (Windows solo aplica la primera ACE efectiva)
+       y nunca debe provocar PASS ni una degradación terminal prematura de PROVISIONED a INVALID.
+    3. Política única con RID < Medium (Low/Untrusted) -> INCOMPATIBLE_LOW.
+    4. Política única con RID > Medium y NO_READ_UP o NO_EXECUTE_UP -> INCOMPATIBLE_POLICY
        (impide a un proceso MO2 Medium leer o ejecutar el binario).
-    4. Múltiples ACEs con (rid, mask) divergentes -> INDETERMINATE (SACL ambigua;
-       Windows usa solo la primera ACE efectiva y un bypass vía min(rid) es inaceptable).
-    5. Única política compatible (Medium con cualquier NW/NR/NX o >Medium con solo NW/0)
+    5. Política única compatible (Medium con cualquier NW/NR/NX o >Medium con solo NW/0)
        -> VERIFIED_COMPATIBLE.
     """
     for ace in aces:
@@ -597,69 +598,6 @@ def _evaluar_conjunto_aces_mic(
                 ),
             )
 
-    incompatibles_low = [a for a in aces if a.rid < SECURITY_MANDATORY_MEDIUM_RID]
-    if incompatibles_low:
-        menor = min(incompatibles_low, key=lambda a: a.rid)
-        etiqueta_txt = _nombre_nivel_mic(menor.rid)
-        if es_directorio_padre:
-            flags_txt = _formatear_flags_ace(menor.ace_flags)
-            return MicEvaluationResult(
-                status=MicEvaluationStatus.INCOMPATIBLE_LOW,
-                effective_rid=menor.rid,
-                validated_on_windows=True,
-                detail=(
-                    f"aprovisionamiento rechazado antes de copiar: el directorio destino '{objetivo}' posee "
-                    f"etiqueta MIC heredable {etiqueta_txt} (flags={flags_txt}); los ejecutables del futuro "
-                    "Clone heredarían integridad Low/inferior a Medium e impedirían inicializar USVFS y SKSE "
-                    "al ejecutar MO2 sin privilegios de administrador. Elija otro destino seguro para "
-                    "clone_parent fuera de un árbol con etiqueta Low (no se modifica el destino ni sus ACLs)"
-                ),
-            )
-        flags_txt = _formatear_ace_o_vacio(menor.ace_flags)
-        return MicEvaluationResult(
-            status=MicEvaluationStatus.INCOMPATIBLE_LOW,
-            effective_rid=menor.rid,
-            validated_on_windows=True,
-            detail=(
-                f"ejecutable '{objetivo}' posee etiqueta MIC incompatible {etiqueta_txt}{flags_txt}: "
-                "bajo ejecución normal sin elevar desde MO2 el proceso se degradaría por debajo de Medium "
-                "y USVFS/SKSE fallarían al abrir memoria compartida"
-            ),
-        )
-
-    incompatibles_politica = [
-        a for a in aces if a.rid > SECURITY_MANDATORY_MEDIUM_RID and (a.mask & _SYSTEM_MANDATORY_LABEL_RESTRICTIVE_MASK)
-    ]
-    if incompatibles_politica:
-        restrictiva = incompatibles_politica[0]
-        etiqueta_txt = _nombre_nivel_mic(restrictiva.rid)
-        mascara_txt = _formatear_mascara_mic(restrictiva.mask)
-        if es_directorio_padre:
-            flags_txt = _formatear_flags_ace(restrictiva.ace_flags)
-            return MicEvaluationResult(
-                status=MicEvaluationStatus.INCOMPATIBLE_POLICY,
-                effective_rid=restrictiva.rid,
-                validated_on_windows=True,
-                detail=(
-                    f"aprovisionamiento rechazado antes de copiar: el directorio destino '{objetivo}' posee "
-                    f"etiqueta MIC heredable restrictiva {etiqueta_txt} (mask={mascara_txt}, flags={flags_txt}); "
-                    "los ejecutables del futuro Clone heredarían NO_READ_UP/NO_EXECUTE_UP por encima de Medium "
-                    "e impedirían abrir o ejecutar el juego desde MO2 sin elevar. Elija otro destino seguro "
-                    "para clone_parent (no se modifica el destino ni sus ACLs)"
-                ),
-            )
-        flags_txt = _formatear_ace_o_vacio(restrictiva.ace_flags)
-        return MicEvaluationResult(
-            status=MicEvaluationStatus.INCOMPATIBLE_POLICY,
-            effective_rid=restrictiva.rid,
-            validated_on_windows=True,
-            detail=(
-                f"ejecutable '{objetivo}' posee política MIC restrictiva incompatible {etiqueta_txt} "
-                f"(mask={mascara_txt}){flags_txt}: NO_READ_UP/NO_EXECUTE_UP sobre un nivel superior a Medium "
-                "impide a MO2 no elevado leer o ejecutar el binario"
-            ),
-        )
-
     politicas_distintas = {(a.rid, a.mask) for a in aces}
     if len(politicas_distintas) > 1:
         resumen = ", ".join(
@@ -671,12 +609,67 @@ def _evaluar_conjunto_aces_mic(
             validated_on_windows=True,
             detail=(
                 f"SACL ambigua en '{objetivo}': coexisten múltiples ACEs MIC divergentes ({resumen}); "
-                "no se admite PASS automático ante políticas en conflicto"
+                "se clasifica INDETERMINATE (fail-closed sin degradación terminal)"
             ),
         )
 
     primera = aces[0]
     etiqueta_txt = _nombre_nivel_mic(primera.rid)
+    if primera.rid < SECURITY_MANDATORY_MEDIUM_RID:
+        if es_directorio_padre:
+            flags_txt = _formatear_flags_ace(primera.ace_flags)
+            return MicEvaluationResult(
+                status=MicEvaluationStatus.INCOMPATIBLE_LOW,
+                effective_rid=primera.rid,
+                validated_on_windows=True,
+                detail=(
+                    f"aprovisionamiento rechazado antes de copiar: el directorio destino '{objetivo}' posee "
+                    f"etiqueta MIC heredable {etiqueta_txt} (flags={flags_txt}); los ejecutables del futuro "
+                    "Clone heredarían integridad Low/inferior a Medium e impedirían inicializar USVFS y SKSE "
+                    "al ejecutar MO2 sin privilegios de administrador. Elija otro destino seguro para "
+                    "clone_parent fuera de un árbol con etiqueta Low (no se modifica el destino ni sus ACLs)"
+                ),
+            )
+        flags_txt = _formatear_ace_o_vacio(primera.ace_flags)
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.INCOMPATIBLE_LOW,
+            effective_rid=primera.rid,
+            validated_on_windows=True,
+            detail=(
+                f"ejecutable '{objetivo}' posee etiqueta MIC incompatible {etiqueta_txt}{flags_txt}: "
+                "bajo ejecución normal sin elevar desde MO2 el proceso se degradaría por debajo de Medium "
+                "y USVFS/SKSE fallarían al abrir memoria compartida"
+            ),
+        )
+
+    if primera.rid > SECURITY_MANDATORY_MEDIUM_RID and (primera.mask & _SYSTEM_MANDATORY_LABEL_RESTRICTIVE_MASK):
+        mascara_txt = _formatear_mascara_mic(primera.mask)
+        if es_directorio_padre:
+            flags_txt = _formatear_flags_ace(primera.ace_flags)
+            return MicEvaluationResult(
+                status=MicEvaluationStatus.INCOMPATIBLE_POLICY,
+                effective_rid=primera.rid,
+                validated_on_windows=True,
+                detail=(
+                    f"aprovisionamiento rechazado antes de copiar: el directorio destino '{objetivo}' posee "
+                    f"etiqueta MIC heredable restrictiva {etiqueta_txt} (mask={mascara_txt}, flags={flags_txt}); "
+                    "los ejecutables del futuro Clone heredarían NO_READ_UP/NO_EXECUTE_UP por encima de Medium "
+                    "e impedirían abrir o ejecutar el juego desde MO2 sin elevar. Elija otro destino seguro "
+                    "para clone_parent (no se modifica el destino ni sus ACLs)"
+                ),
+            )
+        flags_txt = _formatear_ace_o_vacio(primera.ace_flags)
+        return MicEvaluationResult(
+            status=MicEvaluationStatus.INCOMPATIBLE_POLICY,
+            effective_rid=primera.rid,
+            validated_on_windows=True,
+            detail=(
+                f"ejecutable '{objetivo}' posee política MIC restrictiva incompatible {etiqueta_txt} "
+                f"(mask={mascara_txt}){flags_txt}: NO_READ_UP/NO_EXECUTE_UP sobre un nivel superior a Medium "
+                "impide a MO2 no elevado leer o ejecutar el binario"
+            ),
+        )
+
     if es_directorio_padre:
         flags_txt = _formatear_flags_ace(primera.ace_flags)
         return MicEvaluationResult(
@@ -1590,7 +1583,22 @@ def verificar_runtime_clone(
                 recorded=gen_meta,
                 observed_identity=obs.runtime_identity,
             )
-        if st_loader is not None and stat.S_ISREG(st_loader.st_mode):
+        if st_loader is not None:
+            attrs_loader = getattr(st_loader, "st_file_attributes", 0)
+            if (attrs_loader & _WIN32_FILE_ATTRIBUTE_REPARSE_POINT) or stat.S_ISLNK(st_loader.st_mode):
+                return GenerationVerificationResult(
+                    state=GenerationVerificationState.INVALID,
+                    message="la entrada 'skse64_loader.exe' es un enlace/reparse point (fail-closed)",
+                    recorded=gen_meta,
+                    observed_identity=obs.runtime_identity,
+                )
+            if not stat.S_ISREG(st_loader.st_mode):
+                return GenerationVerificationResult(
+                    state=GenerationVerificationState.INVALID,
+                    message="la entrada 'skse64_loader.exe' en el Clone no es un archivo regular (fail-closed)",
+                    recorded=gen_meta,
+                    observed_identity=obs.runtime_identity,
+                )
             ejecutables_rel.append(("skse64_loader.exe", False))
 
     mic_verificado_en_windows = bool(ejecutables_rel)
@@ -1626,11 +1634,12 @@ def verificar_runtime_clone(
     mensaje_ok = (
         "Runtime Clone verificado exitosamente (MIC Win32 verificado)"
         if mic_verificado_en_windows
-        else f"Runtime Clone verificado sin comprobación MIC Win32 (entorno no Windows; {_MARCA_MIC_NO_VERIFICADO})"
+        else "Runtime Clone verificado sin comprobación MIC Win32 (entorno no Windows)"
     )
     return GenerationVerificationResult(
         state=GenerationVerificationState.VALID,
         message=mensaje_ok,
         recorded=gen_meta,
         observed_identity=obs.runtime_identity,
+        mic_verified_on_windows=mic_verificado_en_windows,
     )

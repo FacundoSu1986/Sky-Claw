@@ -1461,11 +1461,7 @@ def _recuperar_clone_existente(
         )
         if fallo is not None:
             return fallo
-        nota_mic = (
-            "; MIC Win32 no verificado (entorno no Windows)"
-            if "MIC no verificado" in verificacion_clone.message
-            else ""
-        )
+        nota_mic = "" if verificacion_clone.mic_verified_on_windows is True else "; MIC Win32 no acreditado"
         return ProvisionamientoResult(
             success=True,
             message=f"Runtime Clone '{cid}' ya estaba PROVISIONED y verifica (idempotente){nota_mic}",
@@ -1494,11 +1490,7 @@ def _recuperar_clone_existente(
         )
         if fallo is not None:
             return fallo
-        nota_mic = (
-            "; MIC Win32 no verificado (entorno no Windows)"
-            if "MIC no verificado" in verificacion_clone.message
-            else ""
-        )
+        nota_mic = "" if verificacion_clone.mic_verified_on_windows is True else "; MIC Win32 no acreditado"
         return ProvisionamientoResult(
             success=True,
             message=f"Runtime Clone '{cid}' recuperado de PROVISIONING y PROVISIONED (setup={setup.setup_id}){nota_mic}",
@@ -1685,11 +1677,7 @@ def crear_runtime_clone_desde_generation(
             if fallo is not None:
                 return fallo
             final = leer_runtime_clone_record(raiz, cid)
-            nota_mic = (
-                "; MIC Win32 no verificado (entorno no Windows)"
-                if "MIC no verificado" in verificacion_clone.message
-                else ""
-            )
+            nota_mic = "" if verificacion_clone.mic_verified_on_windows is True else "; MIC Win32 no acreditado"
             return ProvisionamientoResult(
                 success=True,
                 message=f"Runtime Clone '{cid}' creado y PROVISIONED (setup={setup.setup_id}){nota_mic}",

@@ -926,21 +926,28 @@ class TestClasificacionMicUnitaria:
     @pytest.mark.parametrize(
         ("aces", "esperado"),
         [
-            # Bypass previo de min(rid): High+NO_EXECUTE_UP junto a Medium+NW DEBE bloquear
+            # Políticas efectivas divergentes -> SACL ambigua -> INDETERMINATE (nunca PASS ni INVALID terminal)
             (
                 (
                     clones_mod._MicAceObservada(rid=0x3000, ace_flags=0x00, mask=0x4),
                     clones_mod._MicAceObservada(rid=0x2000, ace_flags=0x00, mask=0x1),
                 ),
-                MicEvaluationStatus.INCOMPATIBLE_POLICY,
+                MicEvaluationStatus.INDETERMINATE,
             ),
-            # Medium junto a Low -> INCOMPATIBLE_LOW
+            # Caso explícito V3: Medium + Low en el mismo objeto -> INDETERMINATE (preserva PROVISIONED)
             (
                 (
                     clones_mod._MicAceObservada(rid=0x2000, ace_flags=0x00, mask=0x1),
                     clones_mod._MicAceObservada(rid=0x1000, ace_flags=0x00, mask=0x1),
                 ),
-                MicEvaluationStatus.INCOMPATIBLE_LOW,
+                MicEvaluationStatus.INDETERMINATE,
+            ),
+            (
+                (
+                    clones_mod._MicAceObservada(rid=0x1000, ace_flags=0x00, mask=0x1),
+                    clones_mod._MicAceObservada(rid=0x2000, ace_flags=0x00, mask=0x1),
+                ),
+                MicEvaluationStatus.INDETERMINATE,
             ),
             # Múltiples ACEs efectivas divergentes (High+NW y Medium+NW) -> SACL ambigua -> INDETERMINATE
             (
@@ -949,6 +956,14 @@ class TestClasificacionMicUnitaria:
                     clones_mod._MicAceObservada(rid=0x2000, ace_flags=0x00, mask=0x1),
                 ),
                 MicEvaluationStatus.INDETERMINATE,
+            ),
+            # Políticas múltiples idénticas (ambas Low+NW) -> sin ambigüedad -> INCOMPATIBLE_LOW
+            (
+                (
+                    clones_mod._MicAceObservada(rid=0x1000, ace_flags=0x00, mask=0x1),
+                    clones_mod._MicAceObservada(rid=0x1000, ace_flags=0x10, mask=0x1),
+                ),
+                MicEvaluationStatus.INCOMPATIBLE_LOW,
             ),
         ],
     )
@@ -1188,14 +1203,10 @@ class TestPrevencionMicEnFlujosDeClone:
         assert recuperado.success is True, recuperado.message
         assert leer_runtime_clone_record(storage, "clone-rec-mic").lifecycle is RuntimeCloneLifecycle.PROVISIONED
 
-    def test_consumidores_oracle_preflight_y_hitl_respetan_verificacion_mic_del_clone(
+    def test_consumidores_oracle_y_preflight_respetan_verificacion_mic_del_clone(
         self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Arrange
-        from sky_claw.local.frozen_runtime.autorizacion_hitl_transicion import (
-            EvidenciaTransicionError,
-            derivar_evidencia_transicion,
-        )
         from sky_claw.local.frozen_runtime.binder_preflight import (
             PreflightCheckCode,
             PreflightCheckStatus,
@@ -1224,11 +1235,6 @@ class TestPrevencionMicEnFlujosDeClone:
             f"[General]\ngameName=Skyrim Special Edition\ngamePath={creado.clone_root.as_posix()}\n",
             encoding="utf-8",
         )
-        cfg_toml = storage.parent / "config.toml"
-        cfg_toml.write_text(
-            f'skyrim_path = "{creado.clone_root.as_posix()}"\n',
-            encoding="utf-8",
-        )
 
         # Control previo: con MIC compatible, oracle resuelve clone_root
         assert desired_runtime_from_storage(storage).clone_root == creado.clone_root
@@ -1254,19 +1260,11 @@ class TestPrevencionMicEnFlujosDeClone:
             managed_source_root=fuente,
         )
 
-        # Assert: oracle no admite clone_root, preflight falla CLONE_PHYSICAL_INTEGRITY y HITL rechaza
+        # Assert: oracle no admite clone_root y preflight falla CLONE_PHYSICAL_INTEGRITY
         assert desired.clone_root is None
         chk = next(c for c in preflight.checks if c.check is PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY)
         assert chk.status is PreflightCheckStatus.FAIL
         assert "low" in chk.detail.lower()
-        with pytest.raises(EvidenciaTransicionError, match="clone_physical_integrity_invalid"):
-            derivar_evidencia_transicion(
-                storage_root=storage,
-                mo2_instance_dir=mo2_dir,
-                clone_id="clone-consumidores",
-                managed_source_root=fuente,
-                config_path=cfg_toml,
-            )
 
     def test_f02_mascara_restrictiva_en_high_bloquea_setup_clone_y_clone_parent(
         self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
@@ -1416,16 +1414,17 @@ class TestPrevencionMicEnFlujosDeClone:
             ),
         )
 
-        # Act 1: aprovisionamiento sigue funcionando en Linux/POSIX, declarando explícitamente MIC no verificado
+        # Act 1: aprovisionamiento sigue funcionando en Linux/POSIX, declarando explícitamente MIC no acreditado
         creado = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-linux")
         assert creado.success is True, creado.message
         assert creado.clone_root is not None
-        assert "no verificado" in creado.message.lower()
+        assert "no acreditado" in creado.message.lower()
 
-        # Act 2: verificar_runtime_clone sigue devolviendo VALID, pero declara explícitamente que MIC no fue verificado
+        # Act 2: verificar_runtime_clone sigue devolviendo VALID, pero declara explícitamente mic_verified_on_windows=False
         verif = verificar_runtime_clone(storage, "clone-linux")
         assert verif.state is GenerationVerificationState.VALID
-        assert "no verificado" in verif.message.lower()
+        assert verif.mic_verified_on_windows is False
+        assert "sin comprobación mic win32" in verif.message.lower()
         assert "no windows" in verif.message.lower()
 
         # Act 3: binder_preflight refleja explícitamente en CLONE_PHYSICAL_INTEGRITY y en notes que MIC no fue verificado
@@ -1443,8 +1442,378 @@ class TestPrevencionMicEnFlujosDeClone:
         )
         chk = next(c for c in preflight.checks if c.check is PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY)
         assert chk.status is PreflightCheckStatus.PASS
-        assert "no verificado" in chk.detail.lower()
-        assert any("mic" in n.lower() and "no verificado" in n.lower() for n in preflight.notes)
+        assert "no acreditado" in chk.detail.lower() or "no verificado" in chk.detail.lower()
+        assert any(
+            "mic" in n.lower() and ("no acreditado" in n.lower() or "no verificado" in n.lower())
+            for n in preflight.notes
+        )
+
+    @pytest.mark.parametrize(
+        ("mic_flag", "mensaje_enganoso", "espera_acreditado"),
+        [
+            # Aunque message afirme falsamente "MIC Win32 verificado", False o None JAMÁS acreditan MIC Win32
+            (False, "Runtime Clone verificado exitosamente (MIC Win32 verificado)", False),
+            (None, "Runtime Clone verificado exitosamente (MIC Win32 verificado)", False),
+            # Aunque message diga "MIC no verificado", solo mic_verified_on_windows is True decide acreditación
+            (True, "texto arbitrario engañoso: MIC no verificado", True),
+        ],
+        ids=["false-con-mensaje-positivo", "none-con-mensaje-positivo", "true-con-mensaje-negativo"],
+    )
+    def test_v3_evidencia_mic_tipada_ignora_texto_de_message_en_preflight_y_provisioning(
+        self,
+        entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str],
+        monkeypatch: pytest.MonkeyPatch,
+        mic_flag: bool | None,
+        mensaje_enganoso: str,
+        espera_acreditado: bool,
+    ) -> None:
+        # Arrange
+        from sky_claw.local.frozen_runtime import binder_preflight as preflight_mod
+        from sky_claw.local.frozen_runtime.binder_preflight import (
+            PreflightCheckCode,
+            PreflightCheckStatus,
+            evaluar_binder_preflight,
+        )
+        from sky_claw.local.frozen_runtime.storage_models import GenerationVerificationResult
+
+        storage, fuente, clones_dir, gid = entorno_p7
+        creado = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-tipado")
+        assert creado.success and creado.clone_root is not None
+
+        verif_sintetica = GenerationVerificationResult(
+            state=GenerationVerificationState.VALID,
+            message=mensaje_enganoso,
+            mic_verified_on_windows=mic_flag,
+        )
+        monkeypatch.setattr(preflight_mod, "verificar_runtime_clone", lambda *_a, **_k: verif_sintetica)
+        monkeypatch.setattr(prov_mod, "verificar_runtime_clone", lambda *_a, **_k: verif_sintetica)
+
+        mo2_dir = storage.parent / "mo2-tipado"
+        mo2_dir.mkdir(exist_ok=True)
+        (mo2_dir / "ModOrganizer.ini").write_text(
+            f"[General]\ngameName=Skyrim Special Edition\ngamePath={creado.clone_root.as_posix()}\n",
+            encoding="utf-8",
+        )
+
+        # Act
+        preflight = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2_dir,
+            clone_id="clone-tipado",
+            managed_source_root=fuente,
+        )
+        reintento_prov = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-tipado")
+
+        # Assert: la certificación depende ÚNICAMENTE del campo tipado mic_verified_on_windows
+        chk = next(c for c in preflight.checks if c.check is PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY)
+        assert chk.status is PreflightCheckStatus.PASS
+        assert reintento_prov.success is True
+        if espera_acreditado:
+            assert "mic win32 verificado" in chk.detail.lower()
+            assert not any("mic win32 no" in n.lower() for n in preflight.notes)
+            assert "no acreditado" not in reintento_prov.message.lower()
+        else:
+            assert "mic win32 verificado" not in chk.detail.lower()
+            assert "no acreditado" in chk.detail.lower() or "no verificado" in chk.detail.lower()
+            assert any("mic win32 no" in n.lower() for n in preflight.notes)
+            assert "no acreditado" in reintento_prov.message.lower()
+
+    def test_v3_loader_skse_no_regular_directorio_enlaces_y_error_acceso(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: crear Clone válido y luego sustituir skse64_loader.exe por entradas anómalas
+        import os
+        import stat
+        import types
+
+        from sky_claw.local.frozen_runtime.independence import IndependenceState, PhysicalIndependenceResult
+
+        storage, _fuente, clones_dir, gid = entorno_p7
+        creado = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-loader-anomalo")
+        assert creado.success and creado.clone_root is not None
+        loader_path = creado.clone_root / "skse64_loader.exe"
+        loader_path.unlink()
+
+        # Caso 1: directorio llamado skse64_loader.exe -> rechazado como INVALID (nunca omitido en silencio)
+        loader_path.mkdir()
+        res_dir = verificar_runtime_clone(storage, "clone-loader-anomalo")
+        assert res_dir.state is GenerationVerificationState.INVALID
+        assert "regular" in res_dir.message.lower() or "skse64_loader.exe" in res_dir.message.lower()
+        loader_path.rmdir()
+
+        # Caso 2: defensa en profundidad del paso 5 ante enlace válido, enlace roto y reparse point
+        # (además de la defensa primaria de verify_clone_physical_integrity sobre el árbol real)
+        real_lstat = os.lstat
+
+        def _probar_modo_loader(fake_stat: object, esperado: GenerationVerificationState) -> None:
+            def _lstat_custom(path: object, *a: object, **k: object) -> object:
+                if pathlib.Path(os.fspath(path)).name.casefold() == "skse64_loader.exe":  # type: ignore[arg-type]
+                    if isinstance(fake_stat, BaseException):
+                        raise fake_stat
+                    return fake_stat
+                return real_lstat(path, *a, **k)  # type: ignore[arg-type]
+
+            with monkeypatch.context() as mp:
+                mp.setattr(
+                    clones_mod,
+                    "verify_clone_physical_integrity",
+                    lambda *_a, **_k: PhysicalIndependenceResult(
+                        state=IndependenceState.INDEPENDENT, message="bypass simulado para probar paso 5"
+                    ),
+                )
+                mp.setattr(clones_mod.os, "lstat", _lstat_custom)
+                res = verificar_runtime_clone(storage, "clone-loader-anomalo")
+                assert res.state is esperado, f"esperado {esperado}, obtuvo {res.state}: {res.message}"
+
+        # Enlace simbólico válido (S_IFLNK) -> INVALID
+        _probar_modo_loader(
+            types.SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_file_attributes=0),
+            GenerationVerificationState.INVALID,
+        )
+        # Enlace simbólico roto / reparse point Win32 (0x400) -> INVALID
+        _probar_modo_loader(
+            types.SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_file_attributes=0x00000400),
+            GenerationVerificationState.INVALID,
+        )
+        # Error de acceso (PermissionError en os.lstat) -> INDETERMINATE
+        _probar_modo_loader(
+            PermissionError("acceso denegado al inspeccionar loader"),
+            GenerationVerificationState.INDETERMINATE,
+        )
+
+        # Control de defensa primaria real (sin mockear verify_clone_physical_integrity):
+        # si existe un enlace real (junction en Windows o symlink en POSIX) en skse64_loader.exe,
+        # verify_clone_physical_integrity bloquea el Clone como INVALID antes del paso 5.
+        if sys.platform == "win32":
+            from tests._symlink_guard import crear_junction
+
+            objetivo_dir = storage.parent / "destino-junction"
+            objetivo_dir.mkdir()
+            crear_junction(loader_path, objetivo_dir)
+            try:
+                res_junc = verificar_runtime_clone(storage, "clone-loader-anomalo")
+                assert res_junc.state is GenerationVerificationState.INVALID
+            finally:
+                os.rmdir(loader_path)
+        else:
+            objetivo_ok = storage.parent / "real_loader.exe"
+            objetivo_ok.write_bytes(b"MZ")
+            loader_path.symlink_to(objetivo_ok)
+            assert verificar_runtime_clone(storage, "clone-loader-anomalo").state is GenerationVerificationState.INVALID
+            loader_path.unlink()
+            loader_path.symlink_to(storage.parent / "destino_inexistente.exe")
+            assert verificar_runtime_clone(storage, "clone-loader-anomalo").state is GenerationVerificationState.INVALID
+            loader_path.unlink()
+
+    def test_v3_multiples_aces_medium_y_low_en_clone_provisioned_conserva_bytes_y_lifecycle(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange
+        from sky_claw.local.frozen_runtime.storage import clone_record_path
+
+        storage, _fuente, clones_dir, gid = entorno_p7
+        creado = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-multi-ace")
+        assert creado.success
+
+        ruta_reg = clone_record_path(storage, "clone-multi-ace")
+        bytes_antes = ruta_reg.read_bytes()
+        sha_antes = hashlib.sha256(bytes_antes).hexdigest()
+
+        # Inyectar SACL ambigua con Medium + Low en SkyrimSE.exe
+        monkeypatch.setattr(
+            clones_mod,
+            "_leer_aces_etiqueta_mic",
+            lambda _p: (
+                clones_mod._EstadoLecturaMic.OK,
+                (
+                    clones_mod._MicAceObservada(rid=0x2000, ace_flags=0x00, mask=0x1),
+                    clones_mod._MicAceObservada(rid=0x1000, ace_flags=0x00, mask=0x1),
+                ),
+                "",
+            ),
+        )
+
+        # Act
+        verif = verificar_runtime_clone(storage, "clone-multi-ace")
+        reintento = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-multi-ace")
+
+        # Assert: bloquea como INDETERMINATE sin quemar PROVISIONED ni alterar bytes del registro durable
+        assert verif.state is GenerationVerificationState.INDETERMINATE
+        assert reintento.success is False
+        bytes_despues = ruta_reg.read_bytes()
+        assert hashlib.sha256(bytes_despues).hexdigest() == sha_antes
+        assert bytes_despues == bytes_antes
+        assert leer_runtime_clone_record(storage, "clone-multi-ace").lifecycle is RuntimeCloneLifecycle.PROVISIONED
+
+    def test_v3_contratos_verificar_runtime_setup_con_indeterminate_missing_y_jerarquia_excepciones(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: confirmar jerarquía canónica de excepciones (Item 5 V3)
+        from sky_claw.local.frozen_runtime.errors import (
+            FrozenRuntimeError,
+            ProvisioningBlockedError,
+            ProvisioningError,
+        )
+
+        assert issubclass(ProvisioningBlockedError, ProvisioningError)
+        assert issubclass(ProvisioningError, FrozenRuntimeError)
+        assert issubclass(RuntimeSetupError, ProvisioningError)
+
+        storage, _fuente, clones_dir, gid = entorno_p7
+        creado = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-setup-contratos")
+        assert creado.success and creado.clone_root is not None
+
+        # Act & Assert 1: INDETERMINATE -> ProvisioningBlockedError
+        monkeypatch.setattr(
+            prov_mod,
+            "evaluar_etiqueta_mic_archivo",
+            lambda p: MicEvaluationResult(
+                status=MicEvaluationStatus.INDETERMINATE,
+                effective_rid=None,
+                validated_on_windows=True,
+                detail=f"lectura Win32 indeterminada en '{p}'",
+            ),
+        )
+        with pytest.raises(ProvisioningBlockedError, match="indeterminada"):
+            verificar_runtime_setup(creado.clone_root)
+
+        # Act & Assert 2: MISSING durante lectura MIC -> RuntimeSetupError
+        monkeypatch.setattr(
+            prov_mod,
+            "evaluar_etiqueta_mic_archivo",
+            lambda p: MicEvaluationResult(
+                status=MicEvaluationStatus.MISSING,
+                effective_rid=None,
+                validated_on_windows=True,
+                detail=f"archivo desaparecido '{p}'",
+            ),
+        )
+        with pytest.raises(RuntimeSetupError, match="falta el archivo de setup"):
+            verificar_runtime_setup(creado.clone_root)
+
+    def test_v3_cr6_hitl_preflight_y_oracle_discriminantes_positivo_low_e_indeterminate(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, parche_identidad_pe: None
+    ) -> None:
+        # Arrange: rig determinista completo con probes válidos y precondiciones HITL completas
+        from sky_claw.local.frozen_runtime.autorizacion_hitl_transicion import (
+            EvidenciaTransicionError,
+            derivar_evidencia_transicion,
+        )
+        from sky_claw.local.frozen_runtime.binder_preflight import (
+            BinderPreflightVerdict,
+            BinderTransitionPolicy,
+            PreflightCheckCode,
+            PreflightCheckStatus,
+            PreflightReasonCode,
+            evaluar_binder_preflight,
+        )
+        from sky_claw.local.frozen_runtime.effective_runtime.oracle import desired_runtime_from_storage
+        from sky_claw.local.frozen_runtime.state import write_json_atomic
+        from sky_claw.local.frozen_runtime.storage import active_state_path
+        from tests._rig_p7_a5 import RigStockManual
+
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        write_json_atomic(
+            active_state_path(rig.storage),
+            {
+                "schema_version": 2,
+                "desired_generation_id": rig.generation_id,
+                "desired_clone_id": rig.clone_id,
+                "updated_at_ns": 1,
+            },
+        )
+        kwargs_hitl = {
+            "storage_root": rig.storage,
+            "mo2_instance_dir": rig.mo2_active_global,
+            "clone_id": rig.clone_id,
+            "transition_policy": BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            "managed_source_root": rig.managed_source,
+            "outgoing_manual_runtime_root": rig.manual_runtime,
+            "stock_source_root": rig.stock_source,
+            "approved_stock_reference_digest_file": rig.approved_digest_file,
+            "config_path": rig.config_path,
+            "environ": rig.environ,
+            "probes": rig.probes_globales_activos(),
+        }
+
+        # Control positivo: con MIC compatible, preflight es READY, oracle resuelve clone_root y HITL deriva evidencia
+        monkeypatch.setattr(
+            clones_mod,
+            "evaluar_etiqueta_mic_archivo",
+            lambda _p: MicEvaluationResult(
+                status=MicEvaluationStatus.VERIFIED_COMPATIBLE,
+                effective_rid=0x2000,
+                validated_on_windows=True,
+                detail="Medium",
+            ),
+        )
+        monkeypatch.setattr(prov_mod, "evaluar_etiqueta_mic_archivo", clones_mod.evaluar_etiqueta_mic_archivo)
+
+        pref_ok = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            **rig.kwargs_preflight_stock(),  # type: ignore[arg-type]
+        )
+        assert pref_ok.verdict is BinderPreflightVerdict.READY, [r.value for r in pref_ok.reasons]
+        assert desired_runtime_from_storage(rig.storage).clone_root == rig.clone_root
+        evidencia_ok = derivar_evidencia_transicion(**kwargs_hitl)  # type: ignore[arg-type]
+        assert evidencia_ok.clone_id == rig.clone_id
+
+        # Control negativo 1: modificar EXCLUSIVAMENTE MIC a Low -> rechazo exacto por integridad física inválida
+        monkeypatch.setattr(
+            clones_mod,
+            "evaluar_etiqueta_mic_archivo",
+            lambda p: MicEvaluationResult(
+                status=MicEvaluationStatus.INCOMPATIBLE_LOW,
+                effective_rid=0x1000,
+                validated_on_windows=True,
+                detail=f"Low detectado en '{p}'",
+            ),
+        )
+        monkeypatch.setattr(prov_mod, "evaluar_etiqueta_mic_archivo", clones_mod.evaluar_etiqueta_mic_archivo)
+
+        pref_low = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            **rig.kwargs_preflight_stock(),  # type: ignore[arg-type]
+        )
+        assert pref_low.is_ready is False
+        assert PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INVALID in pref_low.reasons
+        assert desired_runtime_from_storage(rig.storage).clone_root is None
+        with pytest.raises(EvidenciaTransicionError, match="clone_physical_integrity_invalid"):
+            derivar_evidencia_transicion(**kwargs_hitl)  # type: ignore[arg-type]
+
+        # Control negativo 2: modificar EXCLUSIVAMENTE MIC a INDETERMINATE -> preflight, oracle y HITL bloquean
+        monkeypatch.setattr(
+            clones_mod,
+            "evaluar_etiqueta_mic_archivo",
+            lambda p: MicEvaluationResult(
+                status=MicEvaluationStatus.INDETERMINATE,
+                effective_rid=None,
+                validated_on_windows=True,
+                detail=f"fallo Win32 transitorio en '{p}'",
+            ),
+        )
+        monkeypatch.setattr(prov_mod, "evaluar_etiqueta_mic_archivo", clones_mod.evaluar_etiqueta_mic_archivo)
+
+        pref_indet = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            **rig.kwargs_preflight_stock(),  # type: ignore[arg-type]
+        )
+        chk_indet = next(c for c in pref_indet.checks if c.check is PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY)
+        assert chk_indet.status is PreflightCheckStatus.INDETERMINATE
+        assert pref_indet.is_ready is False
+        assert PreflightReasonCode.CLONE_PHYSICAL_INTEGRITY_INDETERMINATE in pref_indet.reasons
+        assert desired_runtime_from_storage(rig.storage).clone_root is None
+        with pytest.raises(EvidenciaTransicionError, match="clone_physical_integrity_indeterminate"):
+            derivar_evidencia_transicion(**kwargs_hitl)  # type: ignore[arg-type]
 
 
 # ── 3. Integración real Windows NTFS con archivos descartables en tmp_path ─
@@ -1564,6 +1933,50 @@ class TestIntegracionWindowsRealMic:
         assert r_larga.status is MicEvaluationStatus.UNLABELED_DEFAULT_MEDIUM
         assert r_larga.is_compatible is True
         assert r_missing.status is MicEvaluationStatus.MISSING
+
+    def test_v3_ntfs_real_herencia_dos_niveles_oi_bloquea_y_oinp_permite(
+        self, tmp_path: pathlib.Path, parche_identidad_pe: None
+    ) -> None:
+        # Arrange: storage + Generation limpios en tmp_path (cero rutas productivas)
+        base = _escribir_arbol_runtime(tmp_path / "stock-base-2h")
+        ref = construir_referencia_stock(base)
+        fuente = pathlib.Path(shutil.copytree(base, tmp_path / "stock-copia-2h"))
+        storage = tmp_path / "storage-2h"
+        assert initialize_frozen_runtime_storage(storage).success
+        pub = publicar_generation_desde_stock(storage, adoptar_copia_stock(fuente, ref, storage_root=storage))
+        assert pub.success and pub.generation_id is not None
+
+        # Caso 1: padre con OI únicamente (sin CI ni NP) -> en NTFS real propaga a <padre>/<clone_id>/<exe>
+        padre_oi = tmp_path / "clones_oi_solo"
+        padre_oi.mkdir()
+        _aplicar_sacl_sddl_en_tmp(padre_oi, "S:AI(ML;OI;NW;;;LW)")
+
+        sub_oi = padre_oi / "sonda-oi"
+        sub_oi.mkdir()
+        nieto_oi = sub_oi / "SkyrimSE.exe"
+        nieto_oi.write_bytes(b"MZ")
+        assert evaluar_etiqueta_mic_archivo(nieto_oi).status is MicEvaluationStatus.INCOMPATIBLE_LOW
+
+        res_oi = crear_runtime_clone_desde_generation(storage, pub.generation_id, padre_oi, "clone-bloqueado-oi")
+        assert res_oi.success is False
+        assert not (padre_oi / "clone-bloqueado-oi").exists()
+
+        # Caso 2: padre con OI|NP -> NO propaga a nietos <padre>/<clone_id>/<exe> -> permite crear Clone VALID
+        padre_oinp = tmp_path / "clones_oi_np"
+        padre_oinp.mkdir()
+        _aplicar_sacl_sddl_en_tmp(padre_oinp, "S:AI(ML;OINP;NW;;;LW)")
+
+        sub_oinp = padre_oinp / "sonda-oinp"
+        sub_oinp.mkdir()
+        nieto_oinp = sub_oinp / "SkyrimSE.exe"
+        nieto_oinp.write_bytes(b"MZ")
+        assert evaluar_etiqueta_mic_archivo(nieto_oinp).status is MicEvaluationStatus.UNLABELED_DEFAULT_MEDIUM
+
+        res_oinp = crear_runtime_clone_desde_generation(storage, pub.generation_id, padre_oinp, "clone-permitido-oinp")
+        assert res_oinp.success is True, res_oinp.message
+        verif_oinp = verificar_runtime_clone(storage, "clone-permitido-oinp")
+        assert verif_oinp.state is GenerationVerificationState.VALID
+        assert verif_oinp.mic_verified_on_windows is True
 
 
 # ── 4. Ancla AST por enumeración de paquete: solo lectura y punto único ───
