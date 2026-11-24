@@ -834,6 +834,8 @@ _ASK_FUERA_DE_LA_ETAPA_9 = {
     ("sky_claw/local/tools/synthesis_compilacion.py", "compilar_patcher_local"),
     # PR-3e (ADR 0019): egress de las fuentes Git de un patcher de Synthesis (Fase 1).
     ("sky_claw/local/tools/synthesis_fuentes_git.py", "obtener_fuentes_git"),
+    # PR-3k (ADR 0019): egress de solo lectura (git ls-remote) para fijar el SynthesisPreset.
+    ("sky_claw/local/tools/synthesis_fuentes_git.py", "resolver_refs_remotos"),
     # Gate de la cadena LOOT→xEdit→DynDOLOD con preview: hoy NO tiene call site de producción (lo prueba
     # ``test_el_gate_de_la_cadena_con_preview_no_tiene_call_site_de_produccion``); si se cablea, esto rompe.
     ("sky_claw/app/orchestrator/preview/approval_gate.py", "ChainPreviewApprovalGate.preview_then_execute"),

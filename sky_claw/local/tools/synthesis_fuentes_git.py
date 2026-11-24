@@ -48,8 +48,13 @@ __all__ = [
     "argumentos_git_checkout",
     "argumentos_git_fetch",
     "argumentos_git_init",
+    "argumentos_git_ls_remote",
     "argumentos_git_rev_parse",
+    "RefRemoto",
+    "TIPOS_DE_REF",
     "obtener_fuentes_git",
+    "ref_remoto",
+    "resolver_refs_remotos",
 ]
 
 logger = logging.getLogger(__name__)
@@ -119,6 +124,103 @@ def argumentos_git_checkout(repo: pathlib.Path) -> list[str]:
 
 def argumentos_git_rev_parse(repo: pathlib.Path) -> list[str]:
     return ["-C", str(repo), "rev-parse", "HEAD"]
+
+
+def argumentos_git_ls_remote(url: str, refs: list[str]) -> list[str]:
+    """``git ls-remote`` de refs exactos (sin patrones): solo lee, no baja objetos."""
+    return [*CONFIG_GIT_SEGURA, "ls-remote", "--exit-code", url, *refs]
+
+
+#: Nombre de tag o rama admitido: sin espacios, ``..``, ``@{``, ``\\``, ni prefijo ``-`` (no puede
+#: leerse como flag). Más estricto que ``git check-ref-format``; un nombre raro falla cerrado.
+_NOMBRE_DE_REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}")
+TIPOS_DE_REF = ("tag", "branch")
+
+
+@dataclass(frozen=True, order=True)
+class RefRemoto:
+    """Un tag o una rama de un repositorio de GitHub (``repositorio`` = identidad ``dueño/repo``)."""
+
+    repositorio: str
+    tipo: str
+    nombre: str
+
+
+def ref_remoto(url: str, tipo: str, nombre: str) -> RefRemoto:
+    """Valida y normaliza; ``FuentesGitError`` si la URL, el tipo o el nombre no son admisibles."""
+    _url_git, identidad = _normalizar_url(url)
+    if tipo not in TIPOS_DE_REF:
+        raise FuentesGitError(f"Tipo de ref no admitido: {tipo!r}")
+    if not _NOMBRE_DE_REF.fullmatch(nombre) or ".." in nombre or "//" in nombre or nombre.endswith(("/", ".", ".lock")):
+        raise FuentesGitError(f"Nombre de {tipo} inválido: {nombre!r}")
+    return RefRemoto(repositorio=identidad, tipo=tipo, nombre=nombre)
+
+
+def _sha_de_ls_remote(salida: bytes, ref: RefRemoto) -> str:
+    """El SHA del ref en la salida de ls-remote; para un tag anotado, el commit (``^{}``)."""
+    completo = f"refs/tags/{ref.nombre}" if ref.tipo == "tag" else f"refs/heads/{ref.nombre}"
+    encontrados: dict[str, str] = {}
+    for linea in salida.decode("utf-8", "replace").splitlines():
+        partes = linea.strip().split("\t")
+        if len(partes) == 2 and _SHA_COMPLETO.fullmatch(partes[0]):
+            encontrados[partes[1]] = partes[0]
+    sha = encontrados.get(completo + "^{}") or encontrados.get(completo)
+    if sha is None:
+        raise FuentesGitError(f"{ref.repositorio} no tiene el {ref.tipo} {ref.nombre!r}")
+    return sha
+
+
+async def resolver_refs_remotos(
+    refs: list[RefRemoto],
+    *,
+    trabajo_raiz: pathlib.Path,
+    git: pathlib.Path,
+    hitl: HITLGuard | None,
+    timeout_s: float,
+    max_output_bytes: int,
+) -> dict[RefRemoto, str]:
+    """Resuelve cada tag/rama a su commit con ``git ls-remote`` (PR-3k), tras UNA compuerta HITL.
+
+    El pedido enumera repositorios, refs y host. Corre con el mismo aislamiento que el fetch.
+    """
+    pendientes = sorted(set(refs))
+    if not pendientes:
+        return {}
+    if not git.is_absolute() or not git.is_file():
+        raise FuentesGitError(f"El ejecutable de git debe ser absoluto y existir: {git}")
+    if not trabajo_raiz.is_absolute():
+        raise FuentesGitError(f"La carpeta de trabajo debe ser una ruta absoluta: {trabajo_raiz}")
+    if hitl is None:
+        raise FuentesGitError("Resolver tags/ramas necesita egress (github.com) y no hay compuerta HITL: se aborta.")
+    detalle = "\n".join(f"{r.repositorio}: {r.tipo} {r.nombre}" for r in pendientes)
+    decision = await hitl.request_approval(
+        request_id=new_hitl_request_id("synthesis-git-ls-remote"),
+        reason=f"Consultar en GitHub el commit de {len(pendientes)} tag(s)/rama(s) de patchers?",
+        detail=f"{detalle}\nHosts: {_HOST_PERMITIDO}\nComando: git ls-remote (solo lectura)",
+        category="download",
+    )
+    if decision is not Decision.APPROVED:
+        raise FuentesGitError(f"El operador no aprobó la consulta a GitHub (decisión={decision.value}).")
+
+    trabajo = trabajo_raiz / f".trabajo-ls-remote-{uuid.uuid4().hex}"
+    try:
+        env = await asyncio.to_thread(_preparar_entorno_git, trabajo)
+        resueltos: dict[RefRemoto, str] = {}
+        for ref in pendientes:
+            completo = f"refs/tags/{ref.nombre}" if ref.tipo == "tag" else f"refs/heads/{ref.nombre}"
+            consulta = [completo, completo + "^{}"] if ref.tipo == "tag" else [completo]
+            salida = await _correr_git(
+                git,
+                argumentos_git_ls_remote(f"https://{_HOST_PERMITIDO}/{ref.repositorio}", consulta),
+                env=env,
+                cwd=trabajo,
+                timeout_s=timeout_s,
+                max_output_bytes=max_output_bytes,
+            )
+            resueltos[ref] = _sha_de_ls_remote(salida, ref)
+    finally:
+        await asyncio.to_thread(_limpiar_trabajo, trabajo)
+    return resueltos
 
 
 def _normalizar_url(url: str) -> tuple[str, str]:
@@ -202,6 +304,37 @@ def _limpiar_trabajo(trabajo: pathlib.Path) -> None:
         logger.warning("No se pudo limpiar la carpeta de trabajo %s: %s", trabajo, exc)
 
 
+def _preparar_entorno_git(trabajo: pathlib.Path) -> dict[str, str]:
+    """Crea *trabajo* y devuelve el entorno aislado de git (lo comparten fetch y ls-remote).
+
+    Un HOME privado y vacío (sin ``.netrc``/``_netrc`` del usuario que autentique), sin config de
+    sistema ni global (un ``url.insteadOf`` podría redirigir github.com), sin prompts.
+    ``GIT_CEILING_DIRECTORIES`` en el padre de *trabajo*: si cae dentro de un checkout, git no sube a
+    buscar su ``.git`` ni carga su config (ls-remote corre en *trabajo*, que no es un repo; el fetch
+    usa su propio ``trabajo/repo``, que se encuentra antes del techo).
+    """
+    hogar = trabajo / "home"
+    config_global = trabajo / "gitconfig-vacio"
+    try:
+        trabajo.mkdir(parents=True)
+        (trabajo / "tmp").mkdir()
+        hogar.mkdir()
+        config_global.write_text("", encoding="utf-8")
+    except OSError as exc:
+        raise FuentesGitError(f"No se pudo preparar la carpeta de trabajo de git: {exc}") from exc
+    env = con_perfil_privado(construir_entorno_dotnet(dotnet_root=None, temp_dir=trabajo / "tmp"), hogar)
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(config_global),
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "never",
+            "GIT_CEILING_DIRECTORIES": str(trabajo.parent),
+        }
+    )
+    return env
+
+
 async def _bajar_y_publicar(
     trabajo: pathlib.Path,
     final: pathlib.Path,
@@ -214,26 +347,7 @@ async def _bajar_y_publicar(
 ) -> str:
     repo = trabajo / "repo"
     publicar = trabajo / "publicar"
-    hogar = trabajo / "home"
-    try:
-        trabajo.mkdir(parents=True)
-        (trabajo / "tmp").mkdir()
-        hogar.mkdir()
-        config_global = trabajo / "gitconfig-vacio"
-        config_global.write_text("", encoding="utf-8")
-    except OSError as exc:
-        raise FuentesGitError(f"No se pudo preparar la caché de fuentes: {exc}") from exc
-
-    # Un HOME privado y vacío: sin .netrc/_netrc del usuario que autentique el fetch.
-    env = con_perfil_privado(construir_entorno_dotnet(dotnet_root=None, temp_dir=trabajo / "tmp"), hogar)
-    env.update(
-        {
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": str(config_global),
-            "GIT_TERMINAL_PROMPT": "0",
-            "GCM_INTERACTIVE": "never",
-        }
-    )
+    env = _preparar_entorno_git(trabajo)
     for argumentos in (
         argumentos_git_init(repo),
         argumentos_git_fetch(repo, url_git, sha),

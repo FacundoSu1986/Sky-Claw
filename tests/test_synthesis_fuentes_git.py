@@ -8,6 +8,8 @@ usuario y la caché sin red. La descarga real se verifica en el rig.
 from __future__ import annotations
 
 import pathlib
+import shutil
+import subprocess
 from typing import Any
 
 import pytest
@@ -312,3 +314,40 @@ async def test_un_fallo_no_deja_carpetas_de_trabajo(tmp_path: pathlib.Path, monk
     with pytest.raises(sg.FuentesGitError):
         await _obtener(tmp_path, _Hitl(Decision.APPROVED), _Git(rc_fetch=128), monkeypatch)
     assert not list((tmp_path / "cache").glob(".trabajo-*"))
+
+
+_GIT_REAL = shutil.which("git")
+
+
+@pytest.mark.skipif(_GIT_REAL is None, reason="requiere git real en PATH")
+def test_un_repo_ancestro_no_redirige_ls_remote_ni_fetch(tmp_path: pathlib.Path) -> None:
+    # Si la carpeta de trabajo cae dentro de un checkout, git sube buscando un `.git` y carga su
+    # config: un `url.insteadOf` del ancestro reescribiría github.com hacia otro host (CodeRabbit,
+    # #1017). Los dos hermanos que usan el entorno se verifican: ls-remote (cwd sin `.git`) y el
+    # fetch (corre sobre `trabajo/repo`, su propio repo).
+    assert _GIT_REAL is not None
+    ancestro = tmp_path / "checkout"
+    ancestro.mkdir()
+    subprocess.run([_GIT_REAL, "init", "--quiet", str(ancestro)], check=True)
+    subprocess.run(
+        [_GIT_REAL, "-C", str(ancestro), "config", "url.https://mirror.example/.insteadOf", "https://github.com/"],
+        check=True,
+    )
+    trabajo = ancestro / "raiz" / ".trabajo-x"
+    env = sg._preparar_entorno_git(trabajo)
+    url = "https://github.com/a/r"
+
+    def url_efectiva(*previos: str) -> str:
+        salida = subprocess.run(
+            [_GIT_REAL, *previos, "ls-remote", "--get-url", url],
+            cwd=trabajo,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return salida.stdout.strip()
+
+    assert url_efectiva() == url  # ls-remote: no hereda la config del checkout ancestro
+    subprocess.run([_GIT_REAL, *sg.argumentos_git_init(trabajo / "repo")], cwd=trabajo, env=env, check=True)
+    assert url_efectiva("-C", str(trabajo / "repo")) == url  # fetch: solo su propio repo

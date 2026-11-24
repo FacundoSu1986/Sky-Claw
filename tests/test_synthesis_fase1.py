@@ -217,7 +217,9 @@ async def test_git_sin_commit_fijado_falla_sin_red(
         ],
     )
     fakes = _Fakes(tmp_path)
-    with pytest.raises(f1.Fase1Error, match="commit"):
+    # PR-3k: cada caso falla por su motivo real según upstream (commit ausente/corto, o un tag/rama
+    # dinámico sin nombre o sin pin del preset); ninguno abre red.
+    with pytest.raises(f1.Fase1Error, match="commit|TargetTag"):
         await _preparar(tmp_path, settings, fakes, monkeypatch)
     assert fakes.descargas == []
 
