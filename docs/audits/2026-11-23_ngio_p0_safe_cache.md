@@ -618,3 +618,21 @@ y cada cuarentena conserva sus bytes). Todo en directorios temporales.
   write-set: `no issues found` (están en el bloque estricto de `pyproject.toml`, fuera de
   `ignore_errors`).
 - **Suite completa** y **CI de Windows**: ver §14.8.
+
+### 14.8 Suite completa y CI
+
+- **Local (Linux, Python 3.11), árbol de `de481b77`**: `138 failed, 21023 passed, 628 skipped` en
+  2109 s. La línea base **independiente** —mismo rig, mismo comando, worktree desechable sobre
+  `41ff6929`, el HEAD previo a esta ronda— dio `137 failed, 21008 passed, 628 skipped`. La
+  comparación es por **node ID**, no por conteo: `comm` no muestra ningún test nuevo en fallo salvo
+  `tests/test_runtime_vault_inventory.py::TestEstabilidadDeCaptura::test_archivo_reemplazado_antes_de_la_lectura_falla_cerrado`,
+  que **falla igual en el árbol base** (3/3 en aislamiento sobre `41ff6929`) y que este PR no toca:
+  es un test dependiente de orden/entorno del runtime vault, no una regresión de F1–F6. Ningún test
+  de grass cache figura en ninguna de las dos listas.
+- Los 136 fallos preexistentes son el mismo conjunto en ambos árboles; el fallo
+  `test_worktree_convention_invariant::test_los_worktrees_no_principales_viven_bajo_la_convencion`
+  que aparece en las dos corridas era **mi propio worktree de línea base** bajo `/tmp`: retirado
+  (`git worktree remove`) el test pasa (`23 passed`).
+- **CI en `de481b77`**: **26 pass, 3 skipping, 0 fallos** — Shards 1–6 (Windows), `Tests (Pytest)`,
+  `Tests / windows-latest`, POSIX Core, Supervisión VFS (Windows, sandbox), Ruff, Mypy ×2, Security,
+  Build, CodeQL, Main en verde, Regression & Test Oracle y Auto-revisión.
