@@ -558,6 +558,9 @@ def test_toda_llamada_al_keyring_sobrevive_a_un_backend_que_falla() -> None:
 LECTORES_DEL_REGISTRO = {
     "sky_claw/local/auto_detect.py": "guardado",
     "sky_claw/local/discovery/scanner.py": "guardado",
+    # BodySlide PR 2b (brief §13 P-4): MachineGuid de solo lectura para la identidad del journal;
+    # con el perfil aislado no se lee y la recuperación queda en HOLD_IDENTIDAD.
+    "sky_claw/local/tools/bodyslide_journal.py": "guardado",
     "sky_claw/local/frozen_runtime/effective_runtime/mo2_instance.py": (
         "exento: lectura de solo lectura (KEY_READ) de HKCU CurrentInstance; es la identidad de la instancia de MO2 que "
         "el runtime congelado compara, no descubre ni persiste rutas. PREGUNTA ABIERTA: ¿debe aislarse también?"

@@ -617,6 +617,17 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
   broker USVFS y espera acotada de la siembra (2c, incl. paridad `_SAFE_NAME_PATTERN`
   y background job), publicación MO2 con move-aside externo (2d), rig
   `G:\SkyClaw_Rigs\BodySlide_Rig` (C4). Activación productiva sólo tras PR 3 + rig (C5).
+- **BodySlide PR 2b (2026-11-24, cierre PARCIAL de PR 2 — journal y recuperación, dormidos):**
+  `sky_claw/local/tools/bodyslide_journal.py` (mypy estricto) implementa el journal durable de la
+  config (D5/C1/P-4): uno por instancia bajo `runtime_state_dir()`, `O_EXCL`, schema v1 cerrado con
+  checksum, escritura atómica verificada, transiciones congeladas; la recuperación restaura sólo con
+  identidad de máquina e instancia, dueño muerto, carpeta física idéntica, terminalidad probada y bytes
+  esperados, y si no, HOLD preservando todo. Consumidor `bodyslide-config` del reconciliador bajo el
+  lock `bodyslide-meshes`, **sin call site productivo** (ancla AST). Anclas:
+  `tests/test_bodyslide_journal.py` (crash en proceso real en 6 puntos, dos procesos reales para
+  iniciar y recuperar, corrupción enumerada) y censo de `winreg` en `test_aislamiento_perfil.py`.
+  Pendiente de 2c: cablear journal y consumidor, plazo de siembra y marcador de cuarentena, evidencia de
+  terminalidad del broker. Brief §13.4.
 
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un
 flag en vez de enumerar el vector. El ancla `test_contrato_argumentos_cli.py`
