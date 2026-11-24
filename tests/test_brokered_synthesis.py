@@ -1768,24 +1768,72 @@ async def test_preparador_libera_solo_corridas_propias(tmp_path: pathlib.Path, m
     assert (otra_raiz / "SkyClawSynthesisShim.exe").is_file()  # fuera de raiz_shims: intacta
 
 
-async def test_un_fallo_al_liberar_no_cambia_el_resultado_del_run(
+async def test_un_fallo_al_liberar_no_cambia_un_run_exitoso(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """La limpieza es best-effort: si liberar() falla, el servicio devuelve lo que decidió el run."""
+    """La limpieza es best-effort: un run EXITOSO sigue exitoso (y commiteado) aunque liberar() falle."""
     monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
     rutas = _escenario_mo2(tmp_path)
+    (rutas["mo2"] / "overwrite").mkdir(exist_ok=True)
+
+    class _WorkerBackedBroker:
+        async def submit(self, job: VfsJob, **kwargs: Any) -> VfsJobResult:
+            manifest = VfsWorkerManifest(
+                protocol_version=VFS_PROTOCOL_VERSION,
+                job=job,
+                challenge=kwargs["challenge"],
+                mo2_root=rutas["mo2"],
+                mods_dir=rutas["mods"],
+                virtual_data_dir=rutas["data_virtual"],
+                descriptor_path=rutas["mo2"] / "descriptor.json",
+            )
+
+            async def _fake_cli(_args: list[str], **_kw: Any) -> tuple[bytes, bytes, int]:
+                destino = pathlib.Path(_args[_args.index("--OutputDirectory") + 1])
+                (destino / "Synthesis.esp").write_bytes(_construir_tes4(["Skyrim.esm", "MiModVirtual.esp"]))
+                return (
+                    b"[PatcherA] Starting run.\n[PatcherA] Run successful.\nExported patch to final destination: out\n",
+                    b"",
+                    0,
+                )
+
+            with patch("sky_claw.local.tools.synthesis_runner.run_capture", _fake_cli):
+                return await execute_worker_manifest(manifest, grandchild_probe=_probe_ok)
 
     class _LiberaMal(_PreparadorFalso):
         async def liberar(self, ejecutables: Any) -> None:
+            self.liberadas.append(dict(ejecutables))
             raise OSError("archivo en uso")
 
-    svc = _servicio_brokered(rutas, MagicMock(), _LiberaMal(rutas["mo2"] / "fase1"))
-    with patch.object(SynthesisPipelineService, "_liberar_shims", wraps=svc._liberar_shims) as espia:
+    lock_mgr = DistributedLockManager(tmp_path / "locks_libera.db", default_ttl=5.0, max_retries=1)
+    await lock_mgr.initialize()
+    snap_dir = tmp_path / "snaps_libera"
+    snap_dir.mkdir()
+    snap_mgr = FileSnapshotManager(snapshot_dir=snap_dir)
+    await snap_mgr.initialize()
+    journal = AsyncMock()
+    journal.begin_transaction = AsyncMock(return_value=77)
+    event_bus = CoreEventBus()
+    await event_bus.start()
+    try:
+        preparador = _LiberaMal(rutas["mo2"] / "fase1")
+        svc = _servicio_brokered(
+            rutas,
+            _WorkerBackedBroker(),
+            preparador,
+            lock_manager=lock_mgr,
+            snapshot_manager=snap_mgr,
+            journal=journal,
+            event_bus=event_bus,
+        )
         out = await svc.execute_pipeline(patcher_ids=["PatcherA"])
-    # El broker MagicMock no es awaitable: el run falla por su cuenta; lo que importa es que la
-    # limpieza corrió, falló y no tapó ese resultado.
-    assert out["success"] is False and "archivo en uso" not in out["message"]
-    espia.assert_awaited_once()
+    finally:
+        await event_bus.stop()
+        await lock_mgr.close()
+    assert out["success"] is True, out
+    assert len(preparador.liberadas) == 1  # la limpieza corrió y falló
+    journal.commit_transaction.assert_awaited_once_with(77)
+    journal.mark_transaction_rolled_back.assert_not_awaited()
 
 
 async def test_preparador_con_resultado_vacio_borra_la_corrida_y_falla(
