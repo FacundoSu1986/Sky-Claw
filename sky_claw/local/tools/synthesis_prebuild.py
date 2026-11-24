@@ -30,6 +30,7 @@ import json
 import mmap
 import pathlib
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import pefile
@@ -199,6 +200,21 @@ def es_ejecutable_x64(exe: pathlib.Path) -> bool:
         pe.close()
 
 
+_SUBSISTEMA_CONSOLA = 3  # IMAGE_SUBSYSTEM_WINDOWS_CUI
+
+
+def es_ejecutable_de_consola(exe: pathlib.Path) -> bool:
+    """``True`` solo si *exe* es un PE de consola (CUI). ``Synthesis.exe`` (GUI WPF) da ``False``."""
+    try:
+        pe = pefile.PE(str(exe), fast_load=True)
+    except (OSError, pefile.PEFormatError):
+        return False
+    try:
+        return bool(pe.OPTIONAL_HEADER.Subsystem == _SUBSISTEMA_CONSOLA)
+    finally:
+        pe.close()
+
+
 def _offsets_de_bundle(datos: mmap.mmap) -> list[int]:
     offsets: list[int] = []
     pos = datos.find(_FIRMA_BUNDLE)
@@ -336,12 +352,38 @@ def decidir_lanzamiento(exe: pathlib.Path) -> DecisionLanzamiento:
 # --- Fase 1: build sin CET --------------------------------------------------------------
 
 
-def argumentos_dotnet_build_patcher(proyecto: pathlib.Path, *, salida: pathlib.Path | None = None) -> list[str]:
+#: Propiedades MSBuild extra que un build de la Fase 1 puede fijar (lista CERRADA). Las usa el
+#: instalador del CLI (PR-3i): ``GitVersion.MsBuild`` de Synthesis exige un ``.git`` con historia, y la
+#: caché de fuentes lo descarta; se apaga y la versión se fija a mano. Ninguna pisa un flag fijo.
+PROPIEDADES_MSBUILD_ADMITIDAS = frozenset({"DisableGitVersionTask", "Version"})
+_VALOR_DE_PROPIEDAD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def validar_propiedades_msbuild(propiedades: Mapping[str, str] | None) -> tuple[tuple[str, str], ...]:
+    """Propiedades ordenadas; ``ValueError`` si alguna no está admitida o su valor no es un token seguro."""
+    if not propiedades:
+        return ()
+    for clave, valor in propiedades.items():
+        if clave not in PROPIEDADES_MSBUILD_ADMITIDAS:
+            raise ValueError(f"Propiedad MSBuild no admitida en la Fase 1: {clave!r}")
+        if not isinstance(valor, str) or not _VALOR_DE_PROPIEDAD.fullmatch(valor):
+            raise ValueError(f"Valor inválido para la propiedad MSBuild {clave!r}: {valor!r}")
+    return tuple(sorted(propiedades.items()))
+
+
+def argumentos_dotnet_build_patcher(
+    proyecto: pathlib.Path,
+    *,
+    salida: pathlib.Path | None = None,
+    propiedades: Mapping[str, str] | None = None,
+) -> list[str]:
     """Argumentos de ``dotnet`` para compilar un patcher en Fase 1 (tras el restore con HITL).
 
     ``--no-incremental`` es obligatorio: un build incremental conserva el apphost previo con CET
-    aunque se pase ``-p:CETCompat=false`` (evidencia de rig 2026-11-22).
+    aunque se pase ``-p:CETCompat=false`` (evidencia de rig 2026-11-22). ``propiedades`` solo admite
+    :data:`PROPIEDADES_MSBUILD_ADMITIDAS`.
     """
+    extra = [f"-p:{clave}={valor}" for clave, valor in validar_propiedades_msbuild(propiedades)]
     return [
         "build",
         str(proyecto),
@@ -352,6 +394,7 @@ def argumentos_dotnet_build_patcher(proyecto: pathlib.Path, *, salida: pathlib.P
         "Release",
         "-p:UseSharedCompilation=false",
         "-p:CETCompat=false",
+        *extra,
         *(["-o", str(salida)] if salida is not None else []),
     ]
 

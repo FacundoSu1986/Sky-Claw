@@ -44,6 +44,12 @@ from typing import TYPE_CHECKING, Final
 from sky_claw.app.db.locks import LockAcquisitionError, adquirir_lease_definitiva, liberar_lease_definitiva
 from sky_claw.app.security.links import is_link, path_present, rmtree_link_aware
 from sky_claw.local.tools._dir_rollback import descartar_si_es_carpeta_vacia, mutar_hasta_terminal
+from sky_claw.local.tools.bodyslide_journal import (
+    AlmacenDeJournal,
+    IdentidadDeEjecucion,
+    InformeDeRecuperacion,
+    recuperar_todos,
+)
 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
 from sky_claw.local.tools.output_targets import (
@@ -574,6 +580,61 @@ def _listar_backups_move_aside(destinos: Sequence[pathlib.Path]) -> list[pathlib
                 vistos.add(hijo)
                 backups.append(hijo)
     return backups
+
+
+#: Consumidor del journal de la config de BodySlide (PR 2b, brief D5/C1). **No** es un
+#: productor de move-aside: no barre ``.rollback-*`` ni figura en
+#: ``PRODUCTORES_CABLEADOS``. Comparte con el productor ``bodyslide`` sólo el lock del
+#: recurso, porque es el mismo ritual el que produce los dos residuos.
+PRODUCTOR_BODYSLIDE_CONFIG: Final[str] = "bodyslide-config"
+
+
+@dataclass(frozen=True, slots=True)
+class ResultadoDeConfigBodySlide:
+    """Qué hizo el consumidor ``bodyslide-config``: un informe por journal, o nada si el recurso estaba tomado."""
+
+    informes: tuple[InformeDeRecuperacion, ...] = ()
+    omitido_por_lock: bool = False
+
+
+async def reconcile_bodyslide_config_journals(
+    *,
+    almacen: AlmacenDeJournal,
+    exe_dir: pathlib.Path,
+    identidad_actual: IdentidadDeEjecucion | None,
+    lock_manager: DistributedLockManager,
+) -> ResultadoDeConfigBodySlide:
+    """Recupera los journals de config de BodySlide bajo el lock ``bodyslide-meshes``.
+
+    Mismo guard que el resto del reconciliador (:func:`_bajo_el_lock_del_ritual`): si
+    otra instancia tiene el recurso, la corrida puede estar viva y no se toca nada. La
+    recuperación corre en un hilo retenido hasta terminal (:func:`mutar_hasta_terminal`)
+    para que una cancelación no suelte el lock con una restauración en vuelo.
+
+    PR 2b la deja **sin call site productivo** (ancla en ``tests/test_bodyslide_journal.py``):
+    la cablea PR 2c junto con el journal en la corrida.
+    """
+    acc = _Acumulador()
+    informes: list[InformeDeRecuperacion] = []
+
+    async def _recuperar() -> None:
+        informes.extend(
+            await mutar_hasta_terminal(
+                lambda: recuperar_todos(almacen=almacen, identidad_actual=identidad_actual, exe_dir=exe_dir)
+            )
+        )
+
+    await _bajo_el_lock_del_ritual(
+        nombre=PRODUCTOR_BODYSLIDE_CONFIG,
+        resource_id=BODYSLIDE_MESHES_RESOURCE_ID,
+        lock_manager=lock_manager,
+        acc=acc,
+        accion=_recuperar,
+    )
+    return ResultadoDeConfigBodySlide(
+        informes=tuple(informes),
+        omitido_por_lock=PRODUCTOR_BODYSLIDE_CONFIG in acc.omitidos,
+    )
 
 
 async def _reconciliar_clones_sandbox(sandbox_root: pathlib.Path, acc: _Acumulador) -> None:
