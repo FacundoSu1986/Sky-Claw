@@ -465,4 +465,4 @@ def test_sort_load_order_pasa_la_activacion_al_clasificador() -> None:
     assert llamadas, "sort_load_order dejó de llamar a classify_loot_sort"
     for llamada in llamadas:
         claves = {kw.arg for kw in llamada.keywords}
-        assert {"active_before", "active_after"} <= claves, ast.unparse(llamada)
+        assert {"active_before", "active_after", "log_fatal"} <= claves, ast.unparse(llamada)

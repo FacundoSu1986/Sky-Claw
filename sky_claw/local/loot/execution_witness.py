@@ -117,6 +117,10 @@ _SENTINEL_TEMPLATE: Final[str] = (
     "# sigue intacto tras una corrida, esa corrida NO alcanzo el runtime de LOOT.\n"
 )
 
+#: Prefijo común a todo sentinel (lo que precede al nonce). Lo usan los lectores
+#: del log (``debug_log``) para no confundir el sentinel con un log de LOOT.
+LOOT_WITNESS_SENTINEL_PREFIX: Final[bytes] = _SENTINEL_TEMPLATE.split("{nonce}", 1)[0].encode("ascii")
+
 
 class LootExecutionWitnessState(enum.StrEnum):
     """Estado observado del log tras la corrida. Sólo ``FRESH`` es positivo."""

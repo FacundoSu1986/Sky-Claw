@@ -56,6 +56,7 @@ E     estado antes o después inobservable                 FAIL / STATE_UNOBSERV
 D     rc 0, testigo NO fresco, sin cambio semántico       FAIL / EXECUTION_NOT_ATTRIBUTABLE
 F     rc 0, testigo NO fresco, CON cambio semántico       FAIL / EXECUTION_NOT_ATTRIBUTABLE
 G     testigo fresco, plugins HABILITADOS distintos       FAIL / ACTIVE_PLUGINS_CHANGED
+H     testigo fresco, firma fatal en el log de la corrida FAIL / PROCESS_ERROR
 A     testigo fresco, observable, semántica distinta      CHANGED (éxito)
 B     testigo fresco, observable, semántica igual         NO_CHANGE (éxito)
 ====  ==================================================  ===========================
@@ -72,6 +73,11 @@ que excluye los plugins de carga temprana — libloadorder los omite al escribir
 (``save_should_omit_early_loading_plugins_from_active_plugins_file``), así que
 quitar su línea no es un cambio de activación. La observabilidad de la
 activación sigue la regla E: observada a medias ⇒ ``STATE_UNOBSERVABLE``.
+
+Caso H (A4, U-06 b): con salida 0 y testigo fresco, una firma fatal en el
+``LOOTDebugLog.txt`` de ESTA corrida (:mod:`.debug_log`) es una contradicción —
+esos caminos upstream terminan en un modal o cancelan el auto-sort— y falla
+cerrado. Los demás ``[error]`` son diagnóstico, no veredicto.
 
 TIMEOUT, PRECONDITION_FAILED y PROTOCOL_ERROR no pasan por el clasificador:
 se deciden por excepción antes de que exista un resultado de proceso confiable
@@ -287,6 +293,7 @@ def classify_loot_sort(
     after: LoadOrderSemanticState | None,
     active_before: ActivePluginsState | None = None,
     active_after: ActivePluginsState | None = None,
+    log_fatal: tuple[str, ...] = (),
 ) -> LootSortVerdict:
     """Aplica la matriz canónica (ver docstring del módulo). Función pura.
 
@@ -302,6 +309,8 @@ def classify_loot_sort(
             servicio SIEMPRE los pasa — ancla en
             ``tests/test_loot_integridad_de_activos.py``). Uno solo ``None`` =
             activación inobservable ⇒ ``STATE_UNOBSERVABLE``.
+        log_fatal: líneas con firma fatal del log de ESTA corrida (caso H),
+            ya saneadas por :func:`sky_claw.local.loot.debug_log.read_loot_log_findings`.
     """
     if not process_success:
         return LootSortVerdict.fail(LootSortFailureReason.PROCESS_ERROR, process_detail)
@@ -342,6 +351,13 @@ def classify_loot_sort(
         return LootSortVerdict.fail(
             LootSortFailureReason.ACTIVE_PLUGINS_CHANGED,
             describe_active_plugins_change(active_before, active_after),
+        )
+    if log_fatal:
+        return LootSortVerdict.fail(
+            LootSortFailureReason.PROCESS_ERROR,
+            "LOOT salió con código 0 y testigo fresco, pero el log de esta corrida registra un "
+            "error fatal (esos caminos terminan en un diálogo o cancelan el auto-sort: el "
+            "resultado no es confiable): " + " | ".join(log_fatal[:3]),
         )
     if cambio:
         return LootSortVerdict(

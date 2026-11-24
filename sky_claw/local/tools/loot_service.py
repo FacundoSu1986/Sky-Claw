@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import pathlib
+import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -57,6 +58,7 @@ from sky_claw.local.loot.data_root import (
     ensure_loot_data_path_exists,
     resolve_loot_data_path,
 )
+from sky_claw.local.loot.debug_log import LootLogFindings, read_loot_log_findings
 from sky_claw.local.loot.outcome import (
     ActivePluginsState,
     LoadOrderSemanticState,
@@ -157,6 +159,24 @@ def _game_data_dir_del_runner(runner: object) -> pathlib.Path | None:
     """
     valor = getattr(runner, "game_data_dir", None)
     return valor if isinstance(valor, pathlib.Path) else None
+
+
+def _loot_data_path_del_runner(runner: object) -> pathlib.Path | None:
+    """Data root aislado de LOOT que usa el runner (donde vive ``LOOTDebugLog.txt``).
+
+    Los dos runners de producción lo exponen (``BrokeredLootRunner.loot_data_path``
+    y ``LOOTRunner.loot_data_path``). Se exige un ``Path`` real (un ``MagicMock``
+    fabrica atributos). Sin él no se leen hallazgos del log (A4).
+    """
+    valor = getattr(runner, "loot_data_path", None)
+    return valor if isinstance(valor, pathlib.Path) else None
+
+
+def _campos_del_log(hallazgos: LootLogFindings | None) -> dict[str, Any]:
+    """``loot_log`` para la respuesta, sólo si la corrida registró errores (A4)."""
+    if hallazgos is None or not hallazgos.errores:
+        return {}
+    return {"loot_log": hallazgos.to_payload()}
 
 
 def _tiene_archivo_de_activacion(paths: list[pathlib.Path]) -> bool:
@@ -392,7 +412,7 @@ def _respuesta_de_fallo(
     return response
 
 
-def _detalle_de_timeout(exc: LOOTTimeoutError) -> str:
+def _detalle_de_timeout(exc: LOOTTimeoutError, hallazgos: LootLogFindings | None = None) -> str:
     """Diagnóstico de TIMEOUT sin afirmar una causa que no se observó (PR-2).
 
     Enumera los caminos de loot/loot 0.29.1 que dejan ``--auto-sort`` sin salir
@@ -408,7 +428,15 @@ def _detalle_de_timeout(exc: LOOTTimeoutError) -> str:
         "main_window.cpp:1291-1292), mensajes de error (p. ej. de plugins) que cancelan el "
         "auto-sort o el auto-cierre (main_window.cpp:2835-2845/2878-2880) o un sort más lento "
         "que el timeout."
-    )
+    ) + _resumen_del_log(hallazgos)
+
+
+def _resumen_del_log(hallazgos: LootLogFindings | None) -> str:
+    """Frase con lo que registró el log de ESTA corrida (A4), o vacía."""
+    if hallazgos is None or not hallazgos.errores:
+        return ""
+    citadas = hallazgos.fatales or hallazgos.errores[-3:]
+    return " El log de LOOT de esta corrida registra: " + " | ".join(citadas[:3])
 
 
 class _ActionManifestError(Exception):
@@ -949,6 +977,10 @@ class LootSortingService:
         # C1: ``True``/``False`` sólo si la activación se observó antes Y después.
         activos_preservados: bool | None = None
         game_data_dir = _game_data_dir_del_runner(runner)
+        # A4: el log de la corrida se lee del data root aislado del runner.
+        loot_data_path = _loot_data_path_del_runner(runner)
+        inicio_corrida: float | None = None
+        hallazgos_log: LootLogFindings | None = None
 
         # Referencia al lock fuera del with: rolled_back se deriva del resultado
         # REAL del rollback (tx.rollback_completed) — un restore fallido en la
@@ -1054,7 +1086,14 @@ class LootSortingService:
                 # NO procede (se lanza dentro del lock → __aexit__ revierte).
                 if self._journal is not None:
                     journal_tx_id = await self._emit_action_manifest(tx, target_files, loot_version)
+                inicio_corrida = time.time()
                 result = await runner.sort(update_masterlist=update_masterlist)
+                # A4: sólo con testigo fresco el log es de ESTA corrida.
+                testigo = result.execution_witness
+                if loot_data_path is not None and testigo is not None and testigo.fresh:
+                    hallazgos_log = await asyncio.to_thread(
+                        read_loot_log_findings, loot_data_path, desde=inicio_corrida
+                    )
                 # PR-2: estado final, TODAVÍA dentro del lock. La telemetría física
                 # ya no clasifica (en 0.29.1 un NO_CHANGE legítimo no reescribe
                 # nada, ver _capturar_estado_de_archivos): sólo aporta
@@ -1085,6 +1124,7 @@ class LootSortingService:
                     after=semantica_despues,
                     active_before=activos_antes,
                     active_after=activos_despues,
+                    log_fatal=hallazgos_log.fatales if hallazgos_log is not None else (),
                 )
                 if verdict.outcome is LootSortOutcome.FAIL:
                     # Lanzar DENTRO del lock para que __aexit__ restaure el snapshot.
@@ -1160,13 +1200,15 @@ class LootSortingService:
                 result = replace(result, errors=[*result.errors, verdict.detail])
         except LOOTTimeoutError as exc:
             recuperacion = await self._cerrar_journal_tras_fallo(journal_tx_id, tx, contexto="timeout")
+            hallazgos_log = await self._hallazgos_tras_fallo(loot_data_path, inicio_corrida)
             logger.error("LOOT sort failed: %s", exc)
             return _respuesta_de_fallo(
                 LootSortFailureReason.TIMEOUT,
                 str(exc),
                 recuperacion=recuperacion,
-                outcome_detail=_detalle_de_timeout(exc),
+                outcome_detail=_detalle_de_timeout(exc, hallazgos_log),
                 rolled_back=tx.rollback_completed,
+                **_campos_del_log(hallazgos_log),
             )
         except (LOOTNotFoundError, LOOTPreconditionError) as exc:
             recuperacion = await self._cerrar_journal_tras_fallo(journal_tx_id, tx, contexto="precondición")
@@ -1181,12 +1223,14 @@ class LootSortingService:
             # Resultado del worker fuera de contrato: ningún campo es evidencia
             # (ni el success ni el kind). El __aexit__ ya intentó el restore.
             recuperacion = await self._cerrar_journal_tras_fallo(journal_tx_id, tx, contexto="protocolo del worker")
+            hallazgos_log = await self._hallazgos_tras_fallo(loot_data_path, inicio_corrida)
             logger.error("LOOT sort failed (protocolo del worker): %s", exc)
             return _respuesta_de_fallo(
                 LootSortFailureReason.PROTOCOL_ERROR,
                 str(exc),
                 recuperacion=recuperacion,
                 rolled_back=tx.rollback_completed,
+                **_campos_del_log(hallazgos_log),
             )
         except asyncio.CancelledError:
             # La cancelación propaga. Cerrar la TX del journal es best-effort (no
@@ -1206,6 +1250,7 @@ class LootSortingService:
             recuperacion = None
             if not journal_committed:
                 recuperacion = await self._cerrar_journal_tras_fallo(journal_tx_id, tx, contexto="error inesperado")
+            hallazgos_log = await self._hallazgos_tras_fallo(loot_data_path, inicio_corrida)
             logger.error("Error inesperado en el sort de LOOT: %s", exc, exc_info=True)
             detail = f"Error inesperado durante el sort: {exc}"
             return _respuesta_de_fallo(
@@ -1214,6 +1259,7 @@ class LootSortingService:
                 recuperacion=recuperacion,
                 logs=str(exc),
                 rolled_back=tx.rollback_completed,
+                **_campos_del_log(hallazgos_log),
             )
 
         # Invariante: toda ruta que llega acá produjo un veredicto (éxito dentro
@@ -1253,6 +1299,7 @@ class LootSortingService:
         if verdict.failure_reason is not None:
             response["failure_reason"] = verdict.failure_reason.value
         response["rollback_vetoed"] = False
+        response.update(_campos_del_log(hallazgos_log))
         _aplicar_recuperacion(response, recuperacion)
         # Superficie de los warnings del preflight (T-30·3): un preflight no-verde
         # que NO bloquea (amarillo, p.ej. overwrite sucio) igual debe llegar al
@@ -1404,6 +1451,19 @@ class LootSortingService:
                 journal_tx_id,
                 exc_info=True,
             )
+
+    async def _hallazgos_tras_fallo(
+        self, loot_data_path: pathlib.Path | None, inicio_corrida: float | None
+    ) -> LootLogFindings | None:
+        """Errores del log de ESTA corrida para diagnosticar un fallo sin resultado (A4).
+
+        Sin ``inicio_corrida`` LOOT nunca se lanzó. ``desde`` descarta el log de una
+        corrida anterior (el worker pudo no llegar a armar el sentinel) y el lector
+        ignora el sentinel: sólo queda un log que LOOT escribió durante este sort.
+        """
+        if loot_data_path is None or inicio_corrida is None:
+            return None
+        return await asyncio.to_thread(read_loot_log_findings, loot_data_path, desde=inicio_corrida)
 
     async def _cerrar_journal_tras_fallo(
         self,
