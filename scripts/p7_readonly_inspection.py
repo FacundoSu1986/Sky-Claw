@@ -600,6 +600,7 @@ def construir_informe(
         hallazgos.append(_hallazgo_de_dependencias(_dependencias_en_arbol(clone_root, agujas)))
 
     # --- Redacción de los detalles -----------------------------------------
+    preflight_notes = list(evaluacion.notes)
     if not mostrar_rutas:
         evid_datos = leer_directorios_datos_de_mo2(ini_path)
         conocidas = [
@@ -616,6 +617,7 @@ def construir_informe(
             *agujas,
         ]
         hallazgos = [dataclasses.replace(h, detalle=_redactar_texto(h.detalle, ruta, conocidas)) for h in hallazgos]
+        preflight_notes = [_redactar_texto(n, ruta, conocidas) for n in preflight_notes]
 
     # --- Veredicto consolidado ---------------------------------------------
     veredicto = _veredicto_consolidado(hallazgos)
@@ -637,6 +639,8 @@ def construir_informe(
         "clone_objetivo": objetivo,
         "preflight_verdict": evaluacion.verdict.value,
         "preflight_ready": evaluacion.is_ready,
+        "mic_verified_on_windows": evaluacion.mic_verified_on_windows,
+        "preflight_notes": preflight_notes,
         "hallazgos": [h.como_dict() for h in hallazgos],
         "matriz_p7": _matriz_p7(),
     }, managed_efectiva

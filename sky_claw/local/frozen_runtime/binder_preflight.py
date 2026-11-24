@@ -313,6 +313,7 @@ class BinderPreflightAssessment:
     plan_migracion_ejecutables: PlanMigracionEjecutablesMO2 | None = None
     assessed_at_ns: int = 0
     notes: tuple[str, ...] = ()
+    mic_verified_on_windows: bool | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -1850,12 +1851,14 @@ def evaluar_binder_preflight(
     # -------------------------------------------------------------------------
     # 10. Integridad física y linaje del Runtime Clone
     # -------------------------------------------------------------------------
+    clone_mic_verified_on_windows: bool | None = None
     try:
         clone_verif = verificar_runtime_clone(
             storage,
             target_clone_id,
             managed_source_root=ms_root_resolved,
         )
+        clone_mic_verified_on_windows = clone_verif.mic_verified_on_windows
         if clone_verif.state is GenerationVerificationState.VALID:
             if clone_verif.mic_verified_on_windows is True:
                 detalle_integridad = (
@@ -2140,6 +2143,7 @@ def evaluar_binder_preflight(
         plan_migracion_ejecutables=plan_ejecutables,
         assessed_at_ns=sello,
         notes=tuple(notes_list),
+        mic_verified_on_windows=clone_mic_verified_on_windows,
     )
 
 

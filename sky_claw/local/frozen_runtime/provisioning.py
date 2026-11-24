@@ -1416,13 +1416,24 @@ def _recuperar_clone_existente(
     metadata: GenerationMetadata,
     sidecar: _ProcedenciaGeneracion,
     managed_source_root: pathlib.Path | None,
+    *,
+    setup_generacion_id: str,
 ) -> ProvisionamientoResult:
     """Recovery/idempotencia cuando el árbol del Clone ya existe.
 
     Casos: (a) PROVISIONING tras un fallo entre registro y PROVISIONED →
     completar el MISMO clone; (b) PROVISIONED → idempotente si el setup
-    verificado coincide; cualquier otro estado/linaje/root → fail-closed.
+    verificado coincide; cualquier otro estado/linaje/root o directorio
+    preexistente sin registro → fail-closed (nunca adopta ni borra).
     """
+    existente = cargar_runtime_clone_record(raiz, cid)
+    if existente is None:
+        return _error(f"el destino del Clone existe pero no hay registro para '{cid}': reconciliación manual requerida")
+    if existente.source_generation_id != gid or existente.root_path != os.fspath(admitido):
+        return _error(f"registro de Clone '{cid}' incompatible con la Generation/root pedidos: no se reutiliza")
+    if existente.lifecycle not in (RuntimeCloneLifecycle.PROVISIONING, RuntimeCloneLifecycle.PROVISIONED):
+        return _error(f"registro de Clone '{cid}' en estado no recuperable ({existente.lifecycle.value}): fail-closed")
+
     gen_dir = generation_dir(raiz, gid)
     try:
         _verificar_arbol_en_destino(
@@ -1442,11 +1453,8 @@ def _recuperar_clone_existente(
     if not independencia.success:
         return _error(f"el Clone existente no es físicamente independiente: {independencia.message}")
     setup = verificar_runtime_setup(destino)
-    existente = cargar_runtime_clone_record(raiz, cid)
-    if existente is None:
-        return _error(f"el destino del Clone existe pero no hay registro para '{cid}': reconciliación manual requerida")
-    if existente.source_generation_id != gid or existente.root_path != os.fspath(admitido):
-        return _error(f"registro de Clone '{cid}' incompatible con la Generation/root pedidos: no se reutiliza")
+    if setup.setup_id != setup_generacion_id:
+        return _error("el setup del Clone existente no coincide con el setup verificado de la Generation: fail-closed")
     if existente.lifecycle is RuntimeCloneLifecycle.PROVISIONED:
         if existente.verified_runtime_setup_id != setup.setup_id:
             return _error(f"registro PROVISIONED de '{cid}' con setup verificado distinto al observado: fail-closed")
@@ -1605,6 +1613,7 @@ def crear_runtime_clone_desde_generation(
                     metadata,
                     sidecar,
                     managed_source_root,
+                    setup_generacion_id=setup_generacion.setup_id,
                 )
 
             mic_padre = evaluar_herencia_mic_clone_parent(padre)
@@ -1641,8 +1650,12 @@ def crear_runtime_clone_desde_generation(
             )
             if not independencia.success:
                 return _error(f"el Clone no es físicamente independiente: {independencia.message}")
-            setup = verificar_runtime_setup(destino)
-            if setup.setup_id != setup_generacion.setup_id:
+            # CR-5 (Opción A): validar primero el contenido/setup contra Generation y persistir
+            # PROVISIONING (verified_runtime_setup_id=None) ANTES de la inspección MIC que puede
+            # sufrir fallos transitorios Win32. Así el reintento recupera sin recopiar y sin
+            # promover nunca a PROVISIONED hasta que MIC + setup_id vuelvan a acreditarse.
+            setup_contenido = verificar_runtime_setup(destino, verificar_mic_ejecutables=False)
+            if setup_contenido.setup_id != setup_generacion.setup_id:
                 return _error("el setup del Clone copiado no coincide con el setup verificado de la Generation")
 
             if existente is None:
@@ -1653,7 +1666,7 @@ def crear_runtime_clone_desde_generation(
                         clone_id=cid,
                         source_generation_id=gid,
                         lifecycle=RuntimeCloneLifecycle.PROVISIONING,
-                        intended_runtime_setup_id=setup.setup_id,
+                        intended_runtime_setup_id=setup_contenido.setup_id,
                         verified_runtime_setup_id=None,
                         root_path=os.fspath(admitido),
                         admitted_role=CANONICAL_ADMITTED_ROLE,
@@ -1661,6 +1674,9 @@ def crear_runtime_clone_desde_generation(
                     ),
                     managed_source_root=managed_source_root,
                 )
+            setup = verificar_runtime_setup(destino, verificar_mic_ejecutables=True)
+            if setup.setup_id != setup_contenido.setup_id or setup.setup_id != setup_generacion.setup_id:
+                return _error("el setup del Clone cambió durante la verificación MIC (fail-closed)")
             _actualizar_lifecycle_clone_bajo_lock(
                 raiz,
                 cid,

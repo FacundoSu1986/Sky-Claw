@@ -269,7 +269,7 @@ def _asegurar_bindings_mic_win32() -> None:
 
 def _longitud_utf16(texto: str) -> int:
     """Devuelve el número de unidades de código UTF-16 (límite real de MAX_PATH en Win32)."""
-    return len(texto.encode("utf-16-le")) // 2
+    return len(texto.encode("utf-16-le", "surrogatepass")) // 2
 
 
 def _ruta_para_win32_security_info(ruta: pathlib.Path) -> str:
@@ -1559,18 +1559,15 @@ def verificar_runtime_clone(
             )
 
     # 5. Verificación MIC de solo lectura sobre los ejecutables de arranque del Clone
-    ejecutables_rel: list[tuple[str, bool]] = []
-    vistos_exe: set[str] = set()
-    for crit in gen_meta.critical_files:
-        if crit.rel_path.casefold().endswith(".exe"):
-            clave_exe = crit.rel_path.casefold()
-            if clave_exe not in vistos_exe:
-                vistos_exe.add(clave_exe)
-                ejecutables_rel.append((crit.rel_path, True))
-    if "skyrimse.exe" not in vistos_exe:
-        vistos_exe.add("skyrimse.exe")
-        ejecutables_rel.append(("SkyrimSE.exe", True))
-    if "skse64_loader.exe" not in vistos_exe:
+    # (estrictamente SkyrimSE.exe obligatorio + skse64_loader.exe si está presente;
+    # otros .exe en critical_files, como SkyrimSELauncher.exe, mantienen su verificación
+    # SHA-256 en el paso 4 pero no bloquean la ejecución normal desde MO2).
+    criticos_por_clave = {crit.rel_path.casefold(): crit.rel_path for crit in gen_meta.critical_files}
+    ejecutables_rel: list[tuple[str, bool]] = [(criticos_por_clave.get("skyrimse.exe", "SkyrimSE.exe"), True)]
+    loader_en_criticos = criticos_por_clave.get("skse64_loader.exe")
+    if loader_en_criticos is not None:
+        ejecutables_rel.append((loader_en_criticos, True))
+    else:
         ruta_loader = clone_root / "skse64_loader.exe"
         try:
             st_loader = os.lstat(ruta_loader)

@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import ast
 import ctypes
+import dataclasses
 import hashlib
+import os
 import pathlib
 import shutil
 import struct
@@ -999,11 +1001,17 @@ class TestClasificacionMicUnitaria:
         ruta_surrogates = pathlib.Path("G:/" + ("😀" * 130) + "/SkyrimSE.exe")  # < 248 chars Python, > 260 UTF-16
         assert len(str(ruta_larga)) >= 260
         assert len(str(ruta_surrogates)) < 248
-        assert clones_mod._ruta_para_win32_security_info(ruta_corta) == str(ruta_corta)
-        assert clones_mod._ruta_para_win32_security_info(ruta_larga).startswith("\\\\?\\")
-        assert clones_mod._ruta_para_win32_security_info(ruta_surrogates).startswith("\\\\?\\")
+        assert clones_mod._longitud_utf16(str(ruta_surrogates)) >= 260
 
         if sys.platform == "win32":
+            assert clones_mod._ruta_para_win32_security_info(ruta_corta) == str(ruta_corta)
+            assert clones_mod._ruta_para_win32_security_info(ruta_larga) == "\\\\?\\" + os.path.normpath(
+                os.path.abspath(str(ruta_larga))
+            )
+            assert clones_mod._ruta_para_win32_security_info(ruta_surrogates) == "\\\\?\\" + os.path.normpath(
+                os.path.abspath(str(ruta_surrogates))
+            )
+
             # Contradicción 1: el archivo existe en disco pero GetNamedSecurityInfoW responde ERROR_PATH_NOT_FOUND (3)
             exe = tmp_path / "existente.exe"
             exe.write_bytes(b"MZ")
@@ -1024,6 +1032,17 @@ class TestClasificacionMicUnitaria:
             )
             res_perm = evaluar_etiqueta_mic_archivo(exe)
             assert res_perm.status is MicEvaluationStatus.INDETERMINATE
+
+    def test_cr8_longitud_utf16_y_ruta_win32_toleran_surrogate_aislado_sin_excepcion(self) -> None:
+        # Arrange: cadena con surrogate UTF-16 aislado (presente en rutas/entradas malformadas de OS)
+        cadena_con_surrogate = "a\ud800b"
+        ruta_con_surrogate = pathlib.Path("G:/" + ("x" * 260) + "/\ud800/SkyrimSE.exe")
+
+        # Act & Assert: no debe lanzar UnicodeEncodeError
+        assert clones_mod._longitud_utf16(cadena_con_surrogate) == 3
+        normalizada = clones_mod._ruta_para_win32_security_info(ruta_con_surrogate)
+        assert isinstance(normalizada, str)
+        assert normalizada.startswith("\\\\?\\")
 
 
 # ── 2. Integración en provisión, recuperación, verificación y consumidores ─
@@ -1589,7 +1608,8 @@ class TestPrevencionMicEnFlujosDeClone:
 
             objetivo_dir = storage.parent / "destino-junction"
             objetivo_dir.mkdir()
-            crear_junction(loader_path, objetivo_dir)
+            err_junc = crear_junction(loader_path, objetivo_dir)
+            assert err_junc is None, f"crear_junction falló: {err_junc}"
             try:
                 res_junc = verificar_runtime_clone(storage, "clone-loader-anomalo")
                 assert res_junc.state is GenerationVerificationState.INVALID
@@ -2039,3 +2059,497 @@ class TestAnclaAstSoloLecturaMic:
 
         # Assert: igualdad literal — la lectura Win32 MIC vive ÚNICAMENTE en clones.py
         assert modulos_con_lector_win32 == {"clones.py"}
+
+
+# ── 5. CR-5 (recuperación durable), H3 (consumidores tipados) y CR-9 ──────
+
+
+def _snapshot_hashes_arbol(raiz: pathlib.Path) -> dict[str, str]:
+    """Fotografía determinista {ruta_relativa: sha256} de todos los archivos regulares."""
+    return {
+        p.relative_to(raiz).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(raiz.rglob("*"))
+        if p.is_file()
+    }
+
+
+class TestCr5RecuperacionDurableMic:
+    def test_cr5_fallo_mic_transitorio_persiste_provisioning_y_reintento_completa_sin_recopiar_sin_tocar_origenes(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: fotografiar Stock, Generation y Steam simulado; espiar copiar_arbol_independiente
+        storage, fuente_stock, clones_dir, gid = entorno_p7
+        gen_dir = generation_dir(storage, gid)
+        steam_sim = storage.parent / "steam_simulado"
+        shutil.copytree(fuente_stock, steam_sim)
+
+        snap_stock_antes = _snapshot_hashes_arbol(fuente_stock)
+        snap_gen_antes = _snapshot_hashes_arbol(gen_dir)
+        snap_steam_antes = _snapshot_hashes_arbol(steam_sim)
+
+        espia_copia = MagicMock(wraps=prov_mod.copiar_arbol_independiente)
+        monkeypatch.setattr(prov_mod, "copiar_arbol_independiente", espia_copia)
+        setup_gen = verificar_runtime_setup(gen_dir, verificar_mic_ejecutables=False)
+
+        # Inyectar fallo MIC transitorio (INDETERMINATE) solo en el primer intento tras copiar
+        fallo_activo = True
+
+        def _mic_transitorio(ruta: pathlib.Path) -> MicEvaluationResult:
+            if fallo_activo:
+                return MicEvaluationResult(
+                    status=MicEvaluationStatus.INDETERMINATE,
+                    effective_rid=None,
+                    validated_on_windows=True,
+                    detail=f"fallo Win32 transitorio al leer MIC en '{ruta}'",
+                )
+            return MicEvaluationResult(
+                status=MicEvaluationStatus.VERIFIED_COMPATIBLE,
+                effective_rid=0x2000,
+                validated_on_windows=True,
+                detail="Medium (S-1-16-8192)",
+            )
+
+        monkeypatch.setattr(prov_mod, "evaluar_etiqueta_mic_archivo", _mic_transitorio)
+        monkeypatch.setattr(clones_mod, "evaluar_etiqueta_mic_archivo", _mic_transitorio)
+
+        # Act 1: primer intento falla por MIC INDETERMINATE, pero persiste PROVISIONING durable
+        primero = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-cr5-transitorio")
+
+        # Assert 1: registro durable en PROVISIONING con verified_runtime_setup_id=None, copiado 1 vez
+        assert primero.success is False
+        assert "indeterminada" in primero.message.lower()
+        assert espia_copia.call_count == 1
+        reg_tras_fallo = leer_runtime_clone_record(storage, "clone-cr5-transitorio")
+        assert reg_tras_fallo.lifecycle is RuntimeCloneLifecycle.PROVISIONING
+        assert reg_tras_fallo.intended_runtime_setup_id == setup_gen.setup_id
+        assert reg_tras_fallo.verified_runtime_setup_id is None
+        assert _snapshot_hashes_arbol(fuente_stock) == snap_stock_antes
+        assert _snapshot_hashes_arbol(gen_dir) == snap_gen_antes
+        assert _snapshot_hashes_arbol(steam_sim) == snap_steam_antes
+
+        # Act 2: limpiar el fallo MIC y reintentar; debe completar vía recuperación SIN recopiar
+        fallo_activo = False
+        segundo = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-cr5-transitorio")
+
+        # Assert 2: PROVISIONED, copia ejecutada exactamente 1 vez, orígenes intactos
+        assert segundo.success is True, segundo.message
+        assert espia_copia.call_count == 1, "la recuperación no debe recopiar el árbol del Clone"
+        reg_final = leer_runtime_clone_record(storage, "clone-cr5-transitorio")
+        assert reg_final.lifecycle is RuntimeCloneLifecycle.PROVISIONED
+        assert reg_final.verified_runtime_setup_id == setup_gen.setup_id
+        assert verificar_runtime_clone(storage, "clone-cr5-transitorio").state is GenerationVerificationState.VALID
+        assert _snapshot_hashes_arbol(fuente_stock) == snap_stock_antes
+        assert _snapshot_hashes_arbol(gen_dir) == snap_gen_antes
+        assert _snapshot_hashes_arbol(steam_sim) == snap_steam_antes
+
+    def test_cr5_mic_low_persistente_nunca_promueve_ni_autoriza_en_oracle_preflight_binder_y_hitl(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, parche_identidad_pe: None
+    ) -> None:
+        # Arrange: entorno completo Stock+MO2+HITL+Binder con un Clone nuevo bloqueado por MIC Low persistente
+        from sky_claw.local.frozen_runtime.autorizacion_hitl_transicion import (
+            EvidenciaTransicionError,
+            derivar_evidencia_transicion,
+        )
+        from sky_claw.local.frozen_runtime.binder_preflight import (
+            BinderPreflightVerdict,
+            BinderTransitionPolicy,
+            PreflightReasonCode,
+            evaluar_binder_preflight,
+        )
+        from sky_claw.local.frozen_runtime.effective_runtime.oracle import desired_runtime_from_storage
+        from sky_claw.local.frozen_runtime.runtime_clone_binder import (
+            BinderPreflightFailedError,
+            ejecutar_transicion_binder,
+        )
+        from sky_claw.local.frozen_runtime.state import write_json_atomic
+        from sky_claw.local.frozen_runtime.storage import active_state_path
+        from tests._rig_p7_a5 import RigStockManual
+
+        rig = RigStockManual(tmp_path, steam_activo=False)
+        clones_dir = tmp_path / "clones-cr5-low"
+        clones_dir.mkdir()
+        cid_low = "clone-cr5-low"
+
+        espia_copia = MagicMock(wraps=prov_mod.copiar_arbol_independiente)
+        monkeypatch.setattr(prov_mod, "copiar_arbol_independiente", espia_copia)
+        monkeypatch.setattr(
+            prov_mod,
+            "evaluar_herencia_mic_clone_parent",
+            lambda _p: MicEvaluationResult(
+                status=MicEvaluationStatus.UNLABELED_DEFAULT_MEDIUM,
+                effective_rid=0x2000,
+                validated_on_windows=True,
+                detail="padre sin etiqueta heredable",
+            ),
+        )
+        monkeypatch.setattr(
+            prov_mod,
+            "evaluar_etiqueta_mic_archivo",
+            lambda p: MicEvaluationResult(
+                status=MicEvaluationStatus.INCOMPATIBLE_LOW,
+                effective_rid=0x1000,
+                validated_on_windows=True,
+                detail=f"Low persistente detectado en '{p}'",
+            ),
+        )
+        monkeypatch.setattr(clones_mod, "evaluar_etiqueta_mic_archivo", prov_mod.evaluar_etiqueta_mic_archivo)
+
+        # Act: crear + reintentar con Low persistente
+        primero = crear_runtime_clone_desde_generation(
+            rig.storage, rig.generation_id, clones_dir, cid_low, managed_source_root=rig.managed_source
+        )
+        reintento = crear_runtime_clone_desde_generation(
+            rig.storage, rig.generation_id, clones_dir, cid_low, managed_source_root=rig.managed_source
+        )
+
+        # Assert 1: nunca PROVISIONED, siempre PROVISIONING con verified_runtime_setup_id=None, 1 sola copia
+        assert primero.success is False
+        assert reintento.success is False
+        assert espia_copia.call_count == 1
+        reg = leer_runtime_clone_record(rig.storage, cid_low)
+        assert reg.lifecycle is RuntimeCloneLifecycle.PROVISIONING
+        assert reg.verified_runtime_setup_id is None
+
+        # Assert 2: Oracle, Preflight, HITL y Binder rechazan autorizar el Clone incompleto
+        write_json_atomic(
+            active_state_path(rig.storage),
+            {
+                "schema_version": 2,
+                "desired_generation_id": rig.generation_id,
+                "desired_clone_id": cid_low,
+                "updated_at_ns": 1,
+            },
+        )
+        assert desired_runtime_from_storage(rig.storage).clone_root is None
+
+        pref = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=cid_low,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            **rig.kwargs_preflight_stock(),  # type: ignore[arg-type]
+        )
+        assert pref.verdict is BinderPreflightVerdict.BLOCKED
+        assert pref.is_ready is False
+        assert PreflightReasonCode.CLONE_LIFECYCLE_NOT_PROVISIONED in pref.reasons
+
+        with pytest.raises(EvidenciaTransicionError):
+            derivar_evidencia_transicion(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                clone_id=cid_low,
+                transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+                managed_source_root=rig.managed_source,
+                outgoing_manual_runtime_root=rig.manual_runtime,
+                stock_source_root=rig.stock_source,
+                approved_stock_reference_digest_file=rig.approved_digest_file,
+                config_path=rig.config_path,
+                environ=rig.environ,
+                probes=rig.probes_globales_activos(),
+            )
+
+        ini_antes = (rig.mo2_active_global / "ModOrganizer.ini").read_bytes()
+        with pytest.raises(BinderPreflightFailedError):
+            ejecutar_transicion_binder(
+                storage_root=rig.storage,
+                mo2_instance_dir=rig.mo2_active_global,
+                target_clone_id=cid_low,
+                transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+                managed_source_root=rig.managed_source,
+                outgoing_manual_runtime_root=rig.manual_runtime,
+                stock_source_root=rig.stock_source,
+                approved_stock_reference_digest_file=rig.approved_digest_file,
+                config_path=rig.config_path,
+                environ=rig.environ,
+                probes=rig.probes_globales_activos(),
+            )
+        assert (rig.mo2_active_global / "ModOrganizer.ini").read_bytes() == ini_antes
+
+    def test_cr5_cambio_de_contenido_o_setup_id_antes_o_durante_recuperacion_es_rechazado(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: Caso A — mutación de setup_id entre persistencia PROVISIONING y confirmación post-MIC
+        storage, _fuente, clones_dir, gid = entorno_p7
+        original_setup = prov_mod.verificar_runtime_setup
+
+        def _mutar_setup_en_mic(
+            clone_root: pathlib.Path,
+            *,
+            expected_game_key: str = "skyrimse",
+            verificar_mic_ejecutables: bool = True,
+        ) -> object:
+            res = original_setup(
+                clone_root,
+                expected_game_key=expected_game_key,
+                verificar_mic_ejecutables=verificar_mic_ejecutables,
+            )
+            if verificar_mic_ejecutables:
+                return dataclasses.replace(res, setup_id="setup-" + ("0" * 64))
+            return res
+
+        espia_actualizar = MagicMock(wraps=prov_mod._actualizar_lifecycle_clone_bajo_lock)
+        with monkeypatch.context() as mp:
+            mp.setattr(prov_mod, "verificar_runtime_setup", _mutar_setup_en_mic)
+            mp.setattr(prov_mod, "_actualizar_lifecycle_clone_bajo_lock", espia_actualizar)
+            res_mut = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-cr5-mut-mic")
+
+        assert res_mut.success is False
+        assert "cambió durante la verificación mic" in res_mut.message.lower()
+        assert espia_actualizar.call_count == 0, "no debía intentar promover a PROVISIONED tras cambio de setup_id"
+        reg_mut = leer_runtime_clone_record(storage, "clone-cr5-mut-mic")
+        assert reg_mut.lifecycle is RuntimeCloneLifecycle.PROVISIONING
+        assert reg_mut.verified_runtime_setup_id is None
+
+        # Arrange: Caso B — cambio de contenido en disco antes de reintento de recuperación
+        destino_mut = clones_dir / "clone-cr5-mut-mic"
+        (destino_mut / "SkyrimSE.exe").write_bytes(b"MODIFICADO-DESPUES-DE-PROVISIONING")
+
+        res_rec_drift = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-cr5-mut-mic")
+        assert res_rec_drift.success is False
+        reg_drift = leer_runtime_clone_record(storage, "clone-cr5-mut-mic")
+        assert reg_drift.lifecycle is RuntimeCloneLifecycle.PROVISIONING
+        assert reg_drift.verified_runtime_setup_id is None
+
+    def test_cr5_directorio_preexistente_sin_registro_sigue_rechazado_sin_adopcion_ni_borrado(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str]
+    ) -> None:
+        # Arrange: crear directorio preexistente con árbol completo y centinela, sin registro durable
+        from sky_claw.local.frozen_runtime.clones import cargar_runtime_clone_record
+
+        storage, fuente, clones_dir, gid = entorno_p7
+        preexistente = clones_dir / "clone-cr5-preexistente"
+        shutil.copytree(fuente, preexistente)
+        centinela = preexistente / "centinela_no_borrar.txt"
+        centinela.write_text("preservar", encoding="utf-8")
+
+        # Act
+        res = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-cr5-preexistente")
+
+        # Assert: rechazado fail-closed, NO adopta ni registra, NO borra ningún archivo
+        assert res.success is False
+        assert "reconciliación manual" in res.message.lower()
+        assert cargar_runtime_clone_record(storage, "clone-cr5-preexistente") is None
+        assert centinela.exists() and centinela.read_text(encoding="utf-8") == "preservar"
+
+    def test_cr5_interrupcion_despues_de_persistir_provisioning_recupera_sin_recopiar(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: simular corte exacto tras persistir PROVISIONING (antes de validar MIC / PROVISIONED)
+        storage, _fuente, clones_dir, gid = entorno_p7
+        espia_copia = MagicMock(wraps=prov_mod.copiar_arbol_independiente)
+        monkeypatch.setattr(prov_mod, "copiar_arbol_independiente", espia_copia)
+        original_reg = prov_mod._registrar_runtime_clone_record_bajo_lock
+        cortado = False
+
+        def _registrar_y_cortar(*args: object, **kwargs: object) -> object:
+            nonlocal cortado
+            res = original_reg(*args, **kwargs)  # type: ignore[arg-type]
+            if not cortado:
+                cortado = True
+                raise OSError("interrupción simulada tras persistir PROVISIONING")
+            return res
+
+        with monkeypatch.context() as mp:
+            mp.setattr(prov_mod, "_registrar_runtime_clone_record_bajo_lock", _registrar_y_cortar)
+            primero = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-cr5-corte")
+
+        assert primero.success is False
+        assert cortado is True
+        assert espia_copia.call_count == 1
+        reg_intermedio = leer_runtime_clone_record(storage, "clone-cr5-corte")
+        assert reg_intermedio.lifecycle is RuntimeCloneLifecycle.PROVISIONING
+        assert reg_intermedio.verified_runtime_setup_id is None
+
+        # Act: reintentar recuperación sin recopiar
+        recuperado = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-cr5-corte")
+
+        # Assert
+        assert recuperado.success is True, recuperado.message
+        assert espia_copia.call_count == 1
+        reg_final = leer_runtime_clone_record(storage, "clone-cr5-corte")
+        assert reg_final.lifecycle is RuntimeCloneLifecycle.PROVISIONED
+        assert reg_final.verified_runtime_setup_id == reg_intermedio.intended_runtime_setup_id
+
+
+class TestH3EvidenciaMicTipadaConsumidores:
+    def test_h3_evidencia_transicion_preflight_e_inspector_json_propagan_mic_verified_on_windows(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, parche_identidad_pe: None
+    ) -> None:
+        # Arrange: rig Stock completo y construcción de informe JSON del inspector read-only
+        from scripts.p7_readonly_inspection import construir_informe
+
+        from sky_claw.local.frozen_runtime.autorizacion_hitl_transicion import derivar_evidencia_transicion
+        from sky_claw.local.frozen_runtime.binder_preflight import (
+            BinderPreflightVerdict,
+            BinderTransitionPolicy,
+            evaluar_binder_preflight,
+        )
+        from tests._rig_p7_a5 import RigStockManual
+
+        rig = RigStockManual(tmp_path, steam_activo=False)
+
+        # Subcaso 1: entorno no Windows (NO_WINDOWS) -> mantiene compatibilidad pero declara mic_verified_on_windows=False
+        monkeypatch.setattr(
+            clones_mod,
+            "_leer_aces_etiqueta_mic",
+            lambda _p: (
+                clones_mod._EstadoLecturaMic.NO_WINDOWS,
+                (),
+                "inspección MIC Win32 no aplicable fuera de Windows",
+            ),
+        )
+
+        pref_linux = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            **rig.kwargs_preflight_stock(),  # type: ignore[arg-type]
+        )
+        ev_linux = derivar_evidencia_transicion(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            config_path=rig.config_path,
+            environ=rig.environ,
+            probes=rig.probes_globales_activos(),
+        )
+        informe_linux, _ = construir_informe(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            managed_source_root=rig.managed_source,
+            clone_id=rig.clone_id,
+            config_path=rig.config_path,
+            mostrar_rutas=False,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+        )
+
+        assert pref_linux.verdict is BinderPreflightVerdict.READY
+        assert pref_linux.mic_verified_on_windows is False
+        assert ev_linux.mic_verified_on_windows is False
+        assert "mic_verified_on_windows" not in ev_linux.campos_derivados()
+        assert informe_linux["mic_verified_on_windows"] is False
+        assert any("mic" in nota.lower() for nota in informe_linux["preflight_notes"])
+
+        # Subcaso 2: entorno Windows con etiqueta Medium verificada -> mic_verified_on_windows=True
+        monkeypatch.setattr(
+            clones_mod,
+            "_leer_aces_etiqueta_mic",
+            lambda _p: (
+                clones_mod._EstadoLecturaMic.OK,
+                (clones_mod._MicAceObservada(rid=0x2000, ace_flags=0x00, mask=0x1),),
+                "",
+            ),
+        )
+
+        pref_win = evaluar_binder_preflight(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            **rig.kwargs_preflight_stock(),  # type: ignore[arg-type]
+        )
+        ev_win = derivar_evidencia_transicion(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            clone_id=rig.clone_id,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            managed_source_root=rig.managed_source,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+            config_path=rig.config_path,
+            environ=rig.environ,
+            probes=rig.probes_globales_activos(),
+        )
+        informe_win, _ = construir_informe(
+            storage_root=rig.storage,
+            mo2_instance_dir=rig.mo2_active_global,
+            managed_source_root=rig.managed_source,
+            clone_id=rig.clone_id,
+            config_path=rig.config_path,
+            mostrar_rutas=False,
+            transition_policy=BinderTransitionPolicy.STOCK_INDEPENDENT_TRANSITION,
+            outgoing_manual_runtime_root=rig.manual_runtime,
+            stock_source_root=rig.stock_source,
+            approved_stock_reference_digest_file=rig.approved_digest_file,
+        )
+
+        assert pref_win.verdict is BinderPreflightVerdict.READY
+        assert pref_win.mic_verified_on_windows is True
+        assert ev_win.mic_verified_on_windows is True
+        assert informe_win["mic_verified_on_windows"] is True
+
+    def test_cr9_verificar_runtime_clone_no_bloquea_launcher_en_critical_files_si_exes_arranque_son_medium(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: Clone válido + SkyrimSELauncher.exe añadido como critical_file con etiqueta Low
+        import sky_claw.local.frozen_runtime.generations as generations_mod
+        from sky_claw.local.frozen_runtime.storage_models import FileIdentity, GenerationVerificationResult
+
+        storage, _fuente, clones_dir, gid = entorno_p7
+        creado = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-cr9-launcher")
+        assert creado.success and creado.clone_root is not None
+
+        launcher_bytes = b"MZ-launcher-no-usado-por-mo2"
+        launcher_path = creado.clone_root / "SkyrimSELauncher.exe"
+        launcher_path.write_bytes(launcher_bytes)
+        launcher_digest = hashlib.sha256(launcher_bytes).hexdigest()
+
+        verif_gen_real = generations_mod.verificar_generation(storage, gid)
+        assert verif_gen_real.recorded is not None
+        meta_con_launcher = dataclasses.replace(
+            verif_gen_real.recorded,
+            critical_files=(
+                *verif_gen_real.recorded.critical_files,
+                FileIdentity(rel_path="SkyrimSELauncher.exe", size=len(launcher_bytes), digest=launcher_digest),
+            ),
+        )
+        monkeypatch.setattr(
+            generations_mod,
+            "verificar_generation",
+            lambda _root, _gid: GenerationVerificationResult(
+                state=GenerationVerificationState.VALID,
+                message="ok",
+                recorded=meta_con_launcher,
+                observed_identity=verif_gen_real.observed_identity,
+            ),
+        )
+
+        def _mic_launcher_low(ruta: pathlib.Path) -> MicEvaluationResult:
+            if ruta.name.casefold() == "skyrimselauncher.exe":
+                return MicEvaluationResult(
+                    status=MicEvaluationStatus.INCOMPATIBLE_LOW,
+                    effective_rid=0x1000,
+                    validated_on_windows=True,
+                    detail=f"Low en '{ruta}' (launcher no ejecutado por MO2)",
+                )
+            return MicEvaluationResult(
+                status=MicEvaluationStatus.VERIFIED_COMPATIBLE,
+                effective_rid=0x2000,
+                validated_on_windows=True,
+                detail="Medium (S-1-16-8192)",
+            )
+
+        monkeypatch.setattr(clones_mod, "evaluar_etiqueta_mic_archivo", _mic_launcher_low)
+
+        # Act 1: SkyrimSE.exe y skse64_loader.exe son Medium -> VALID aunque SkyrimSELauncher.exe sea Low
+        verif_ok = verificar_runtime_clone(storage, "clone-cr9-launcher")
+
+        # Assert 1
+        assert verif_ok.state is GenerationVerificationState.VALID, verif_ok.message
+        assert verif_ok.mic_verified_on_windows is True
+
+        # Act 2: la integridad SHA-256 de SkyrimSELauncher.exe en critical_files SIGUE exigiéndose
+        launcher_path.write_bytes(b"MZ-tampered-no-usado-por-mo2")
+        verif_tampered = verificar_runtime_clone(storage, "clone-cr9-launcher")
+        assert verif_tampered.state is GenerationVerificationState.INVALID
+        assert "digest" in verif_tampered.message.lower()
