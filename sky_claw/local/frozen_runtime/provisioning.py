@@ -67,10 +67,13 @@ from collections.abc import Callable, Sequence
 from sky_claw.local.frozen_runtime.clones import (
     CANONICAL_ADMITTED_ROLE,
     CLONE_RECORD_SCHEMA_VERSION,
+    MicEvaluationStatus,
     _actualizar_lifecycle_clone_bajo_lock,
     _registrar_runtime_clone_record_bajo_lock,
     admitir_clone_root_path,
     cargar_runtime_clone_record,
+    evaluar_etiqueta_mic_archivo,
+    evaluar_herencia_mic_clone_parent,
     leer_runtime_clone_record,
     validar_clone_id,
     verificar_runtime_clone,
@@ -1081,6 +1084,7 @@ def verificar_runtime_setup(
     clone_root: pathlib.Path,
     *,
     expected_game_key: str = "skyrimse",
+    verificar_mic_ejecutables: bool = True,
 ) -> RuntimeSetupEvidence:
     """Verifica el setup mínimo de P7 en un Clone y deriva un ``setup_id`` content-bound.
 
@@ -1089,6 +1093,10 @@ def verificar_runtime_setup(
     ``setup_id`` es ``"setup-" + sha256`` del payload canónico de esas
     identidades: mismo contenido ⇒ mismo id; cualquier byte distinto cambia el
     id. No promete el ``RuntimeSetupManifest`` completo del ADR (sigue faltando).
+    Cuando ``verificar_mic_ejecutables`` es ``True`` (por defecto sobre Clones),
+    exige además nivel de integridad MIC >= Medium en ``SkyrimSE.exe`` y en el
+    loader de SKSE; sobre una Generation (SFR-19, nunca ejecutada) se invoca con
+    ``False``.
     """
     raiz = pathlib.Path(clone_root)
     if not raiz.is_dir():
@@ -1112,6 +1120,17 @@ def verificar_runtime_setup(
         _identidad_archivo_clave(raiz, compatibilidad.skse_dll),
         _identidad_archivo_clave(raiz, "SkyrimSE.exe"),
     )
+    if verificar_mic_ejecutables:
+        for rel_exe in ("SkyrimSE.exe", compatibilidad.skse_loader):
+            res_mic = evaluar_etiqueta_mic_archivo(raiz / pathlib.PurePosixPath(rel_exe))
+            if res_mic.status is MicEvaluationStatus.INCOMPATIBLE_LOW:
+                raise RuntimeSetupError(res_mic.detail)
+            if res_mic.status is MicEvaluationStatus.INDETERMINATE:
+                raise ProvisioningBlockedError(
+                    f"inspección MIC indeterminada en ejecutable '{rel_exe}': {res_mic.detail}"
+                )
+            if res_mic.status is MicEvaluationStatus.MISSING:
+                raise RuntimeSetupError(f"falta el archivo de setup '{rel_exe}' durante inspección MIC")
     payload = {
         "schema_version": 1,
         "runtime_identity": {"game_key": identidad.game_key, "game_version": identidad.game_version},
@@ -1572,7 +1591,8 @@ def crear_runtime_clone_desde_generation(
                     )
             # Pre-verificación del setup sobre la Generation: evita crear un
             # árbol huérfano cuando el runtime no es ejecutable por SKSE.
-            setup_generacion = verificar_runtime_setup(gen_dir)
+            # La Generation nunca es ejecutada (SFR-19), por lo que no se exige MIC en ella.
+            setup_generacion = verificar_runtime_setup(gen_dir, verificar_mic_ejecutables=False)
             if destino.exists():
                 return _recuperar_clone_existente(
                     raiz,
@@ -1584,6 +1604,14 @@ def crear_runtime_clone_desde_generation(
                     sidecar,
                     managed_source_root,
                 )
+
+            mic_padre = evaluar_herencia_mic_clone_parent(padre)
+            if mic_padre.status is MicEvaluationStatus.INCOMPATIBLE_LOW:
+                return _error(mic_padre.detail)
+            if mic_padre.status is MicEvaluationStatus.INDETERMINATE:
+                return _error(f"inspección MIC indeterminada sobre el directorio destino '{padre}': {mic_padre.detail}")
+            if mic_padre.status is MicEvaluationStatus.MISSING:
+                return _error(f"el directorio destino del Clone no existe: '{padre}'")
 
             _exigir_espacio(padre, metadata.tree_digest.bytes, margen_bytes)
             try:
