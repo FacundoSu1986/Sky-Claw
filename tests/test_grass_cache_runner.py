@@ -286,6 +286,19 @@ def _escribir_cgid(grass_dir: pathlib.Path, nombre: str, datos: bytes = b"cgid")
     (grass_dir / nombre).write_bytes(datos)
 
 
+def _juego_escribe_cgid(config: GrassCacheConfig, nombre: str, *, celda: str | None = None) -> None:
+    """El juego de mentira escribe un ``.cgid`` y NGIO **appendea** la celda al flag.
+
+    ``GidFileCache`` (1.0.13) abre ``PrecacheGrass.txt`` en ``std::ios::app`` y
+    anota cada celda completada: un ciclo real deja SIEMPRE progreso detrás. Los
+    tests que modelaban un relanzamiento con el flag vacío describían un estado
+    que NGIO no produce (y que, de producirse, hace que borre el caché).
+    """
+    _escribir_cgid(config.overwrite_grass_dir, nombre)
+    with (config.game_path / "PrecacheGrass.txt").open("ab") as fh:
+        fh.write((celda or nombre).encode() + b"\n")
+
+
 # ---------------------------------------------------------------------------
 # Contratos: config y resultado
 # ---------------------------------------------------------------------------
@@ -620,10 +633,12 @@ async def test_tres_crashes_consecutivos_terminan_en_exito(
 
     async def _launch(profile: str) -> dict[str, Any]:
         n = next(llamada)
-        _escribir_cgid(config.overwrite_grass_dir, f"celda_{n}.cgid")
         if n == 3:
+            _escribir_cgid(config.overwrite_grass_dir, f"celda_{n}.cgid")
             (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
         else:
+            # NGIO appendea la celda al flag: el relanzamiento tiene progreso real.
+            _juego_escribe_cgid(config, f"celda_{n}.cgid")
             mundo.alta_juego(100 + n, 1100 + n, vidas=1)
         return {"pid": 100 + n, "status": "launched", "profile": profile}
 
@@ -899,7 +914,7 @@ async def test_max_restarts_agotado(config: GrassCacheConfig, mo2: AsyncMock, mu
 
     async def _launch(profile: str) -> dict[str, Any]:
         n = next(llamada)
-        _escribir_cgid(config.overwrite_grass_dir, f"celda_{n}.cgid")
+        _juego_escribe_cgid(config, f"celda_{n}.cgid")
         mundo.alta_juego(100 + n, 1100 + n, vidas=1)
         return {"pid": 100 + n, "status": "launched", "profile": profile}
 
@@ -1037,7 +1052,7 @@ async def test_excepcion_inesperada_cierra_el_juego_y_limpia_el_flag(
         n = next(llamada)
         if n == 1:
             raise RuntimeError("bug inesperado")
-        _escribir_cgid(config.overwrite_grass_dir, f"celda_{n}.cgid")
+        _juego_escribe_cgid(config, f"celda_{n}.cgid")
         mundo.alta_juego(100, 1100, vidas=1)
         return {"pid": 100, "status": "launched", "profile": profile}
 
@@ -1805,3 +1820,142 @@ async def test_la_neutralizacion_cancelada_igual_registra_el_resultado(
     assert any("neutraliz" in r.message.lower() for r in caplog.records), (
         "el fallo de la limpieza tiene que quedar registrado, no sólo en memoria"
     )
+
+
+# ---------------------------------------------------------------------------
+# Relanzamiento: el flag tiene que seguir siendo PROGRESO para NGIO
+# ---------------------------------------------------------------------------
+
+
+async def test_resume_no_relanza_si_el_flag_perdio_el_progreso(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # Un tercero (barrido, antivirus, operador) vacía el flag entre el crash y el
+    # relanzamiento. El archivo EXISTE, así que `_flag_exists()` no alcanza: NGIO
+    # lo leería sin progreso y borraría el caché parcial. No se relanza.
+    config = dataclasses.replace(config, mode="resume")
+    _escribir_cgid(config.overwrite_grass_dir, "Tamriel.cgid", datos=b"celda-tamriel")
+    (config.game_path / "PrecacheGrass.txt").write_bytes(b"Tamriel\n")
+    disparado = {"ya": False}
+
+    def _al_chequear(pid: int) -> None:
+        if pid in mundo.vivos and mundo.vidas.get(pid) == 0 and not disparado["ya"]:
+            disparado["ya"] = True
+            (config.game_path / "PrecacheGrass.txt").write_bytes(b"")
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    mundo.al_chequear_pid = _al_chequear
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "flag_sin_progreso"
+    assert resultado.success is False
+    assert mo2.launch_game.await_count == 1, "no puede haber un segundo lanzamiento"
+
+
+async def test_new_no_reinicia_destructivamente_un_cache_parcial(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # NEW escribe el flag vacío por contrato y el primer lanzamiento es válido.
+    # Después de un crash, si el flag sigue sin progreso y YA hay .cgid, relanzar
+    # deja que NGIO borre lo generado: se corta sin tocar el caché.
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "celda_0.cgid")
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "flag_sin_progreso"
+    assert resultado.success is False
+    assert mo2.launch_game.await_count == 1
+    assert (config.overwrite_grass_dir / "celda_0.cgid").exists(), "el caché parcial no se borra"
+
+
+async def test_progreso_valido_permite_seguir_el_crash_loop(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # NGIO APPENDEA progreso al flag mientras genera (Init() abre en std::ios::app):
+    # con progreso válido, el crash-loop sigue igual que antes.
+    config = dataclasses.replace(config, mode="resume")
+    _escribir_cgid(config.overwrite_grass_dir, "Tamriel.cgid", datos=b"celda-tamriel")
+    flag = config.game_path / "PrecacheGrass.txt"
+    flag.write_bytes(b"Tamriel\n")
+    llamada = itertools.count()
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        n = next(llamada)
+        if n == 2:
+            flag.unlink(missing_ok=True)  # NGIO terminó: borró el flag
+        else:
+            _escribir_cgid(config.overwrite_grass_dir, f"celda_{n}.cgid")
+            with flag.open("ab") as fh:
+                fh.write(f"celda_{n}\n".encode())
+            mundo.alta_juego(100 + n, 1100 + n, vidas=1)
+        return {"pid": 100 + n, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "completed"
+    assert mo2.launch_game.await_count == 3
+    assert resultado.crash_count == 2
+
+
+async def test_el_primer_lanzamiento_de_rebuild_con_flag_vacio_sigue_adelante(
+    config_rebuild: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # REBUILD archiva el progreso y escribe el flag VACÍO a propósito. El primer
+    # lanzamiento es válido y no puede confundirse con un flag que perdió progreso.
+    config = config_rebuild
+    _escribir_cgid(config.overwrite_grass_dir, "Tamriel.cgid", datos=b"celda-tamriel")
+    cancel = asyncio.Event()
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100, vidas=50)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    def _al_chequear(pid: int) -> None:
+        if pid == 1100:  # el juego está bajo vigilancia: el lanzamiento ocurrió
+            cancel.set()
+
+    mundo.al_chequear_pid = _al_chequear
+
+    resultado = await _correr(_runner(config, mo2), cancel)
+
+    assert resultado.outcome == "cancelled"
+    assert mo2.launch_game.await_count == 1
+    assert resultado.success is False
+
+
+async def test_el_corte_del_relanzamiento_deja_limpieza_y_no_borra_el_cache(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # El corte es una salida ORDENADA: el flag se neutraliza (no queda residual,
+    # el juego del usuario no arranca en modo precache), el caché parcial queda y
+    # el resultado no es exitoso ni simula una limpieza completa.
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "celda_0.cgid")
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    runner = _runner(config, mo2)
+
+    resultado = await _correr(runner)
+
+    assert resultado.outcome == "flag_sin_progreso"
+    assert resultado.flag_residual is False
+    assert resultado.success is False
+    assert not (config.game_path / "PrecacheGrass.txt").exists(), "el flag no puede quedar residual"
+    assert (config.overwrite_grass_dir / "celda_0.cgid").exists()
+    assert runner.neutralizacion is not None and runner.neutralizacion.limpio

@@ -473,6 +473,28 @@ async def test_generate_runner_fallido_conserva_cache_y_reporta(tmp_path: pathli
     journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
 
 
+async def test_generate_flag_sin_progreso_llega_al_contrato_y_al_journal(tmp_path: pathlib.Path) -> None:
+    # El corte de relanzamiento (ronda 9) tiene que ser visible: outcome propio en el
+    # resultado del tool, sin éxito, con teardown y la transacción del journal
+    # marcada como fallida — no un "run raro" que se pierde en el journal.
+    fallo = _resultado_runner(
+        success=False,
+        message="El flag de precache quedó SIN progreso y el caché parcial tiene 3 archivo(s)",
+        outcome="flag_sin_progreso",
+        cgid_count=3,
+    )
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal, runner_result=fallo)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is False
+    assert resultado["outcome"] == "flag_sin_progreso"
+    assert "SIN progreso" in resultado["message"]
+    colab["profile_manager"].teardown.assert_awaited()
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
 async def test_generate_cancelacion_hace_teardown_y_propaga(tmp_path: pathlib.Path) -> None:
     journal = _journal_con_loot_completado()
     service, colab = _servicio(tmp_path, journal=journal)

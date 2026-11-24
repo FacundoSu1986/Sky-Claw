@@ -57,6 +57,7 @@ from sky_claw.local.tools.grass_cache_safety import (
     NeutralizacionFlag,
     PlanArranque,
     aplicar_plan,
+    inventariar_cache,
     neutralizar_flag,
     preparar_arranque,
     ruta_de_respaldo,
@@ -89,6 +90,7 @@ GrassCacheOutcome = Literal[
     "cancelled",
     "max_restarts",
     "spawn_failed",
+    "flag_sin_progreso",
 ]
 GrassCachePhase = Literal["launching", "scanning", "crashed", "relaunching", "finished"]
 
@@ -508,7 +510,8 @@ class GrassCacheRunner:
             last_snapshot = await self._snapshot_cache()
             await self._emit_progress("launching", crash_count)
 
-            for _ in range(self._config.max_restarts + 1):
+            # ``intento`` = lanzamientos ya hechos: el 0 es el autorizado por el plan.
+            for intento in range(self._config.max_restarts + 1):
                 if time.monotonic() - self._start_mono >= self._config.max_runtime_s:
                     # Deadline global también entre relanzamientos: acota el
                     # overshoot a un relaunch_delay (auditoría #287).
@@ -530,6 +533,15 @@ class GrassCacheRunner:
                         crash_count,
                         await self._snapshot_cache(),
                     )
+                if intento:
+                    # El plan sólo autorizó el PRIMER lanzamiento. Cada
+                    # relanzamiento se revalida contra el flag real: un archivo
+                    # que EXISTE pero ya no tiene progreso hace que NGIO borre
+                    # el caché parcial en el próximo arranque.
+                    motivo = await self._motivo_para_no_relanzar()
+                    if motivo is not None:
+                        await self._matar_todo(game_pid)
+                        return self._resultado("flag_sin_progreso", motivo, crash_count, await self._snapshot_cache())
                 game_pid = None
                 try:
                     info: dict[str, Any] = await self._mo2.launch_game(self._config.profile)
@@ -802,6 +814,55 @@ class GrassCacheRunner:
 
     async def _flag_exists(self) -> bool:
         return await asyncio.to_thread(self._flag_path.exists)
+
+    async def _motivo_para_no_relanzar(self) -> str | None:
+        """¿Puede NGIO leer el flag como PROGRESO antes del próximo spawn?
+
+        ``None`` = seguro relanzar. Un string = motivo del corte (fail-closed).
+
+        Que el archivo exista no es lo mismo que NGIO lo lea como progreso: con
+        el flag sin progreso y ``.cgid/.dgid/.fail`` alcanzables, el ``remove()``
+        de ``GidFileCache.cpp::Init()`` (1.0.13) borra el caché en el próximo
+        arranque. El plan autoriza un único lanzamiento —el que validó al
+        aplicar el flag—; los siguientes no pueden asumir que sigue siendo
+        seguro.
+
+        La decisión se toma con el MISMO inventario y predicado del módulo de
+        seguridad (`inventariar_cache` → `_ngio_tiene_progreso`): no hay un
+        segundo parser. Corre en un hilo, drenado, como el resto del E/S del
+        runner.
+
+        **Alcance:** los archivos que se pueden inventariar son los del caché
+        FÍSICO (`overwrite/Grass`). Los `.cgid` de mods que la USVFS superpone en
+        `Data/Grass` **no** son visibles acá: su cobertura sigue NO VERIFICADA
+        (§4.1/§4.2 de la auditoría) y por eso el contrato no promete nada sobre
+        ellos, ni antes ni después de este chequeo.
+        """
+        inventario = await esperar_terminar(
+            asyncio.to_thread(
+                inventariar_cache,
+                grass_dir=self._config.overwrite_grass_dir,
+                flag_path=self._flag_path,
+            ),
+            descripcion="inventariar_cache",
+        )
+        if inventario.flag_progreso is not None:
+            return None  # NGIO reanuda: el relanzamiento continúa el trabajo
+        if not inventario.tiene_cache:
+            return None  # nada que NGIO pueda borrar
+        if self._config.mode == "resume":
+            return (
+                "El flag de precache quedó SIN progreso y el caché parcial tiene "
+                f"{inventario.archivos_cache} archivo(s): relanzar dejaría que NGIO los borre. "
+                "No se relanza y el caché no se toca; revisá qué vació el flag y, si hay que "
+                "regenerar, usá mode='rebuild' con respaldo verificado."
+            )
+        return (
+            f"El flag de precache quedó sin progreso y hay {inventario.archivos_cache} archivo(s) de "
+            f"caché parcial: relanzar en modo '{self._config.mode}' dejaría que NGIO borre lo generado "
+            "en esta corrida. Se corta sin borrar ni restaurar nada; el caché parcial queda en disco "
+            "para decidir resume/rebuild con la evidencia a la vista."
+        )
 
     async def _snapshot_cache(self) -> tuple[int, int]:
         return await asyncio.to_thread(self._scan_cgid_sync)

@@ -668,3 +668,94 @@ P2** con motivo.
 - **Mutante M-NEUT** (asignación del resultado fuera del trabajo drenado): **muere**. M-F1, M-F2 y M4
   siguen muriendo.
 - **Ruff** limpio (`1175 files already formatted`); **mypy** de los cuatro módulos: `no issues found`.
+
+## 16. Ronda 9 — bloqueante de la revisión independiente: relanzar sin validar progreso
+
+La revisión independiente sobre `47a890e0` aceptó F1–F6, R1 y R2 y dejó **un** bloqueante: después de
+un crash, el runner sólo comprobaba que `PrecacheGrass.txt` **existiera** (`_flag_exists()`), no que
+NGIO pudiera leerlo como progreso. Un archivo presente pero **vacío** habilitaba otro `launch_game()`,
+y con NGIO 1.0.13 (`GidFileCache.cpp::Init()`: `getline` + `trim`, líneas blancas descartadas,
+`IsResuming = !set.empty()`, y `remove()` de las tres extensiones si queda vacío) ese estado puede
+borrar el caché parcial.
+
+### 16.1 Reproducción (RED antes del arreglo)
+
+| Test | Antes |
+|---|---|
+| `test_resume_no_relanza_si_el_flag_perdio_el_progreso` | `stalled` — o sea: **relanzó** (y varias veces) antes de que el detector de stall lo frenara |
+| `test_new_no_reinicia_destructivamente_un_cache_parcial` | `stalled` — mismo relanzamiento destructivo |
+| `test_el_corte_del_relanzamiento_deja_limpieza_y_no_borra_el_cache` | `stalled` |
+
+El `stalled` no era un verde: era el síntoma de que el daño ya se había intentado `stall_threshold`
+veces antes de cortar por falta de progreso nuevo.
+
+### 16.2 Corrección
+
+`GrassCacheRunner._motivo_para_no_relanzar()` corre **antes de cada relanzamiento** (el primero lo
+autorizó el plan al aplicar el flag) y decide con el **mismo** inventario y predicado del módulo de
+seguridad —`inventariar_cache` → `_ngio_tiene_progreso`—, sin un segundo parser de NGIO. La E/S va en
+un hilo drenado (`esperar_terminar`), como el resto del runner.
+
+- **Hay progreso** ⇒ se relanza (el crash-loop sigue igual).
+- **No hay progreso y no hay archivos** ⇒ se relanza: no hay nada que NGIO pueda borrar.
+- **No hay progreso y hay `.cgid/.dgid/.fail`** ⇒ **se corta** con `outcome="flag_sin_progreso"` y
+  mensaje explícito por modo. No se borra el caché, no se restaura progreso sin comprobar identidad, y
+  el `finally` sigue neutralizando el flag (el flag sin progreso **no** puede quedar: el próximo
+  arranque del juego lo interpretaría como precache).
+
+Por modo: `new` y `rebuild` sólo admiten el flag vacío en el **primer** lanzamiento (es el que el plan
+escribió y validó); desde el segundo se exige progreso real o caché vacío. `resume` exige progreso
+siempre. El journal no cambia: el `outcome` viaja igual que los otros y `success` es `False`.
+
+**Alcance declarado:** "archivos alcanzables" son los del caché **físico** (`overwrite/Grass`). Los
+`.cgid` de mods que la USVFS superpone en `Data/Grass` siguen **NO VERIFICADOS** (§4) y este chequeo
+no promete nada sobre ellos.
+
+### 16.3 Tests AAA (5 nuevos) y mutante
+
+| Test | Qué asegura |
+|---|---|
+| `test_resume_no_relanza_si_el_flag_perdio_el_progreso` | un tercero vacía el flag entre el crash y el relanzamiento ⇒ `flag_sin_progreso` y **un solo** `launch_game` |
+| `test_new_no_reinicia_destructivamente_un_cache_parcial` | `new` con `.cgid` parcial y flag vacío ⇒ no relanza y el `.cgid` **sigue en disco** |
+| `test_progreso_valido_permite_seguir_el_crash_loop` | con progreso appendeado por NGIO el crash-loop continúa (`completed`, 3 lanzamientos, 2 crashes) |
+| `test_el_primer_lanzamiento_de_rebuild_con_flag_vacio_sigue_adelante` | el flag vacío del plan en `rebuild` **no** se confunde con progreso perdido: el primer lanzamiento ocurre |
+| `test_el_corte_del_relanzamiento_deja_limpieza_y_no_borra_el_cache` | el corte es ordenado: sin flag residual, caché intacto, `success=False`, `neutralizacion.limpio` |
+
+Y en el servicio, `test_generate_flag_sin_progreso_llega_al_contrato_y_al_journal`: el `outcome` nuevo
+llega al resultado del tool, `success=False`, con teardown y la transacción del journal marcada como
+fallida (trazabilidad, no un "run raro" invisible).
+
+Mutante **M-REL** (quitar el guard): mueren los tres tests que discriminan; los dos de regresión
+(progreso válido, primer lanzamiento) siguen verdes, como deben.
+
+**Tres tests previos se corrigieron, no se relajaron:** `test_tres_crashes_consecutivos_terminan_en_exito`,
+`test_max_restarts_agotado` y `test_excepcion_inesperada_cierra_el_juego_y_limpia_el_flag` simulaban
+relanzamientos con el flag **vacío**, un estado que NGIO no produce (`Init()` abre el archivo en
+`std::ios::app` y anota cada celda). Ahora el juego de mentira appendea la celda
+(`_juego_escribe_cgid`), que es el comportamiento real; ninguna aserción se suavizó.
+
+### 16.4 Integración y gates
+
+- `origin/main` **avanzó a `09bbc78`** (#1013, #1015, #1018). Merge `--no-ff` sin conflictos
+  (`e76b8e4b`); `pyproject.toml` sólo suma `bodyslide_journal` al bloque estricto (los cuatro módulos
+  del write-set siguen fuera de `ignore_errors`); `CHANGELOG.md` sin conflicto; write-set idéntico al
+  de `47a890e0` (`git diff --stat` vacío).
+- **Foco** (safety + runner + service): **213 passed** (91/63/59). **Ampliado** (+strategy, profile,
+  analyzer, runtime-deps, scripts, BDD, locks, HITL): **529 passed, 2 skipped**.
+- **Ruff** limpio (`1178 files already formatted`); **mypy** de los cuatro módulos: `no issues found`.
+- **Suite completa** y **CI**: ver §16.5.
+
+### 16.5 Suite completa y CI
+
+- **Local (Linux, py3.11), árbol de `7addf4a6`**: `138 failed, 21127 passed, 628 skipped` (2217 s).
+  Línea base **independiente** en `e76b8e4b` —el merge con `origin/main` **antes** de este arreglo,
+  worktree desechable, mismo rig y mismo comando—: `138 failed, 21121 passed, 628 skipped`. La
+  comparación es **por node ID**: `comm` **vacío en ambos sentidos** ⇒ **0 regresiones**, y la
+  diferencia de 6 passed son exactamente los tests nuevos (5 del runner + 1 del servicio). Ningún test
+  de grass cache falla en ninguno de los dos árboles.
+- El fallo `test_worktree_convention_invariant::test_los_worktrees_no_principales_viven_bajo_la_convencion`
+  aparece en **las dos** corridas porque era mi worktree de línea base bajo `/tmp`: retirado
+  (`git worktree remove`), el ancla pasa (`23 passed`).
+- **CI sobre el SHA final**: ver el reporte de la ronda (Shards 1–6 de Windows, `Tests (Pytest)`,
+  `Tests / windows-latest`, POSIX Core, VFS Windows sandbox, Ruff, Mypy ×2, Security, Build, CodeQL,
+  Main en verde, Regression & Test Oracle, Auto-revisión).
