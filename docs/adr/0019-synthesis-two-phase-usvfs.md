@@ -459,8 +459,12 @@ x64 instalado):
   `GitVersion.MsBuild`, que exige `.git` con historia, y la caché de fuentes lo descarta:
   `compilar_patcher_local` acepta `propiedades` de una lista cerrada (`DisableGitVersionTask`,
   `Version`; entran en la clave de caché) y el instalador fija `Version=0.36.6`. El build usa
-  `dotnet build -o` (el de PR-3d), no `publish` como en S1. **Pendiente de rig:** compilar el CLI real
-  así y correr `run-pipeline --help` con el binario resultante.
+  `dotnet build -o` (el de PR-3d), no `publish` como en S1. **Rig (2026-11-24, sin MO2):** el
+  instalador real compiló el CLI en 74 s con 2 pedidos HITL (github.com, api.nuget.org); binario de
+  consola sin CET, versión 0.36.6, `run-pipeline --help` con las 8 flags del contrato e idéntico al
+  de S1 salvo el sufijo de GitVersion; la segunda llamada sale de lo instalado sin HITL. Control: el
+  mismo build SIN perfil privado borró la carpeta del paquete en el perfil visible; con perfil
+  privado el canario quedó intacto. No cubierto: una pipeline real bajo MO2/USVFS.
 - **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
   rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
   para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.
