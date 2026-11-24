@@ -1123,7 +1123,7 @@ def verificar_runtime_setup(
     if verificar_mic_ejecutables:
         for rel_exe in ("SkyrimSE.exe", compatibilidad.skse_loader):
             res_mic = evaluar_etiqueta_mic_archivo(raiz / pathlib.PurePosixPath(rel_exe))
-            if res_mic.status is MicEvaluationStatus.INCOMPATIBLE_LOW:
+            if res_mic.status in (MicEvaluationStatus.INCOMPATIBLE_LOW, MicEvaluationStatus.INCOMPATIBLE_POLICY):
                 raise RuntimeSetupError(res_mic.detail)
             if res_mic.status is MicEvaluationStatus.INDETERMINATE:
                 raise ProvisioningBlockedError(
@@ -1461,9 +1461,14 @@ def _recuperar_clone_existente(
         )
         if fallo is not None:
             return fallo
+        nota_mic = (
+            "; MIC Win32 no verificado (entorno no Windows)"
+            if "MIC no verificado" in verificacion_clone.message
+            else ""
+        )
         return ProvisionamientoResult(
             success=True,
-            message=f"Runtime Clone '{cid}' ya estaba PROVISIONED y verifica (idempotente)",
+            message=f"Runtime Clone '{cid}' ya estaba PROVISIONED y verifica (idempotente){nota_mic}",
             generation_id=gid,
             generation_metadata=metadata,
             clone_id=cid,
@@ -1489,9 +1494,14 @@ def _recuperar_clone_existente(
         )
         if fallo is not None:
             return fallo
+        nota_mic = (
+            "; MIC Win32 no verificado (entorno no Windows)"
+            if "MIC no verificado" in verificacion_clone.message
+            else ""
+        )
         return ProvisionamientoResult(
             success=True,
-            message=f"Runtime Clone '{cid}' recuperado de PROVISIONING y PROVISIONED (setup={setup.setup_id})",
+            message=f"Runtime Clone '{cid}' recuperado de PROVISIONING y PROVISIONED (setup={setup.setup_id}){nota_mic}",
             generation_id=gid,
             generation_metadata=metadata,
             clone_id=cid,
@@ -1606,7 +1616,7 @@ def crear_runtime_clone_desde_generation(
                 )
 
             mic_padre = evaluar_herencia_mic_clone_parent(padre)
-            if mic_padre.status is MicEvaluationStatus.INCOMPATIBLE_LOW:
+            if mic_padre.status in (MicEvaluationStatus.INCOMPATIBLE_LOW, MicEvaluationStatus.INCOMPATIBLE_POLICY):
                 return _error(mic_padre.detail)
             if mic_padre.status is MicEvaluationStatus.INDETERMINATE:
                 return _error(f"inspección MIC indeterminada sobre el directorio destino '{padre}': {mic_padre.detail}")
@@ -1675,9 +1685,14 @@ def crear_runtime_clone_desde_generation(
             if fallo is not None:
                 return fallo
             final = leer_runtime_clone_record(raiz, cid)
+            nota_mic = (
+                "; MIC Win32 no verificado (entorno no Windows)"
+                if "MIC no verificado" in verificacion_clone.message
+                else ""
+            )
             return ProvisionamientoResult(
                 success=True,
-                message=f"Runtime Clone '{cid}' creado y PROVISIONED (setup={setup.setup_id})",
+                message=f"Runtime Clone '{cid}' creado y PROVISIONED (setup={setup.setup_id}){nota_mic}",
                 generation_id=gid,
                 generation_metadata=metadata,
                 clone_id=cid,

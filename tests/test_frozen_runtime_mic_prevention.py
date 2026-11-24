@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import ast
 import ctypes
+import hashlib
 import pathlib
 import shutil
+import struct
 import sys
 from unittest.mock import MagicMock
 
@@ -553,57 +555,449 @@ class TestClasificacionMicUnitaria:
 
         if escenario == "sacl_get_false":
             monkeypatch.setattr(clones_mod._advapi32_mic, "GetSecurityDescriptorSacl", lambda *_a: 0)
+            esperado_detalle = "GetSecurityDescriptorSacl"
         else:
+            # Buffer ACL contiguo real: 8B cabecera ACL + 20B ACE MIC con SID S-1-16-8192 válido
+            ace_size = 8 if escenario == "ace_truncada" else 20
+            ace_bytes = (
+                struct.pack("<BBHI", 0x11, 0x00, ace_size, 0x00000001)
+                + bytes([1, 1, 0, 0, 0, 0, 0, 16])
+                + struct.pack("<I", 0x2000)
+            )
+            acl_buf = (ctypes.c_ubyte * (8 + len(ace_bytes)))()
+            for idx, b in enumerate(ace_bytes):
+                acl_buf[8 + idx] = b
 
             def _fake_get_sacl(_sd: object, pres: object, sacl_p: object, _def: object) -> int:
                 ctypes.cast(pres, ctypes.POINTER(wintypes.BOOL))[0] = 1  # type: ignore[arg-type]
-                ctypes.cast(sacl_p, ctypes.POINTER(ctypes.c_void_p))[0] = 0xCAFE  # type: ignore[arg-type]
+                ctypes.cast(sacl_p, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(acl_buf)  # type: ignore[arg-type]
                 return 1
 
             def _fake_acl_info(_acl: object, info_ptr: object, _sz: int, _cls: int) -> int:
                 info = ctypes.cast(info_ptr, ctypes.POINTER(clones_mod._AclSizeInfo)).contents  # type: ignore[arg-type]
                 info.AceCount = 1
+                info.AclBytesInUse = 8 + ace_size
                 return 1
 
-            # Construimos en memoria un buffer de ACE sintético seguro
-            ace_size = 8 if escenario == "ace_truncada" else 20
-            raw_ace = (ctypes.c_ubyte * 32)()
-            raw_ace[0] = 0x11  # SYSTEM_MANDATORY_LABEL_ACE_TYPE
-            raw_ace[1] = 0x00
-            raw_ace[2] = ace_size & 0xFF
-            raw_ace[3] = (ace_size >> 8) & 0xFF
-
             def _fake_get_ace(_acl: object, _idx: int, ace_out: object) -> int:
-                ctypes.cast(ace_out, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(raw_ace)  # type: ignore[arg-type]
+                ctypes.cast(ace_out, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(acl_buf) + 8  # type: ignore[arg-type]
                 return 1
 
             monkeypatch.setattr(clones_mod._advapi32_mic, "GetSecurityDescriptorSacl", _fake_get_sacl)
             monkeypatch.setattr(clones_mod._advapi32_mic, "GetAclInformation", _fake_acl_info)
             monkeypatch.setattr(clones_mod._advapi32_mic, "GetAce", _fake_get_ace)
 
+            esperado_detalle = "truncada"
             if escenario == "sid_invalido":
                 monkeypatch.setattr(clones_mod._advapi32_mic, "IsValidSid", lambda _s: 0)
+                esperado_detalle = "SID inválido"
             elif escenario == "autoridad_ajena":
                 bad_auth = clones_mod._SidIdentifierAuthority((0, 0, 0, 0, 0, 5))  # NT AUTHORITY en vez de 16
                 monkeypatch.setattr(clones_mod._advapi32_mic, "IsValidSid", lambda _s: 1)
+                monkeypatch.setattr(clones_mod._advapi32_mic, "GetLengthSid", lambda _s: 12)
                 monkeypatch.setattr(
                     clones_mod._advapi32_mic, "GetSidIdentifierAuthority", lambda _s: ctypes.pointer(bad_auth)
                 )
+                esperado_detalle = "autoridad SID inesperada"
             elif escenario == "subauth_count_invalido":
                 ok_auth = clones_mod._SidIdentifierAuthority((0, 0, 0, 0, 0, 16))
                 cnt = ctypes.c_ubyte(2)
                 monkeypatch.setattr(clones_mod._advapi32_mic, "IsValidSid", lambda _s: 1)
+                monkeypatch.setattr(clones_mod._advapi32_mic, "GetLengthSid", lambda _s: 12)
                 monkeypatch.setattr(
                     clones_mod._advapi32_mic, "GetSidIdentifierAuthority", lambda _s: ctypes.pointer(ok_auth)
                 )
                 monkeypatch.setattr(clones_mod._advapi32_mic, "GetSidSubAuthorityCount", lambda _s: ctypes.pointer(cnt))
+                esperado_detalle = "SubAuthorityCount inválido"
 
         # Act
         res = evaluar_etiqueta_mic_archivo(exe)
 
-        # Assert: evidencia incompleta/corrupta -> INDETERMINATE y LocalFree invocado sobre sentinel_sd
+        # Assert: evidencia incompleta/corrupta -> INDETERMINATE con motivo exacto y LocalFree en finally
         assert res.status is MicEvaluationStatus.INDETERMINATE
+        assert esperado_detalle in res.detail
         assert liberados == [sentinel_sd], "debe liberar el SecurityDescriptor Win32 con LocalFree en finally"
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Prueba de límites binarios ACE/ACL/SID en Win32")
+    @pytest.mark.parametrize("ace_size", [4, 8, 15, 16, 19, 20])
+    def test_f01_ace_tamanos_4_8_15_16_19_rechazados_y_20_aceptado(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, ace_size: int
+    ) -> None:
+        # Arrange: construimos un buffer contiguo ACL(8B) + ACE(20B reales con RID=Medium) + cola
+        # pero declaramos AceSize=ace_size en la cabecera ACE de 4 bytes.
+        exe = tmp_path / "probe_sizes.exe"
+        exe.write_bytes(b"MZ")
+        clones_mod._asegurar_bindings_mic_win32()
+        assert clones_mod._advapi32_mic is not None and clones_mod._kernel32_mic is not None
+
+        # Layout real de SYSTEM_MANDATORY_LABEL_ACE con SID S-1-16-8192 (Medium):
+        # [0..3]=ACE_HEADER(0x11, flags=0, AceSize=ace_size), [4..7]=Mask(1),
+        # [8]=Rev(1), [9]=SubAuthCount(1), [10..15]=Authority(0,0,0,0,0,16), [16..19]=RID(0x2000)
+        ace_completa = (
+            struct.pack("<BBHI", 0x11, 0x00, ace_size, 0x00000001)
+            + bytes([1, 1, 0, 0, 0, 0, 0, 16])
+            + struct.pack("<I", 0x2000)
+        )
+        acl_buf = (ctypes.c_ubyte * (8 + len(ace_completa) + 8))()
+        for idx, b in enumerate(ace_completa):
+            acl_buf[8 + idx] = b
+
+        liberados: list[int] = []
+        sentinel_sd = 0x12345678
+        llamadas_is_valid_sid = 0
+        original_is_valid_sid = clones_mod._advapi32_mic.IsValidSid
+
+        def _spy_is_valid_sid(ptr: object) -> int:
+            nonlocal llamadas_is_valid_sid
+            llamadas_is_valid_sid += 1
+            return int(original_is_valid_sid(ptr))
+
+        def _fake_local_free(ptr: object) -> int:
+            val = getattr(ptr, "value", ptr)
+            if val:
+                liberados.append(int(val))  # type: ignore[arg-type]
+            return 0
+
+        def _fake_get_named(
+            _p: object, _ot: int, _si: int, _o: object, _g: object, _d: object, sacl_out: object, sd_out: object
+        ) -> int:
+            ctypes.cast(sd_out, ctypes.POINTER(ctypes.c_void_p))[0] = sentinel_sd  # type: ignore[arg-type]
+            ctypes.cast(sacl_out, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(acl_buf)  # type: ignore[arg-type]
+            return 0
+
+        def _fake_get_sacl(_sd: object, pres: object, sacl_p: object, _def: object) -> int:
+            ctypes.cast(pres, ctypes.POINTER(wintypes.BOOL))[0] = 1  # type: ignore[arg-type]
+            ctypes.cast(sacl_p, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(acl_buf)  # type: ignore[arg-type]
+            return 1
+
+        def _fake_acl_info(_acl: object, info_ptr: object, _sz: int, _cls: int) -> int:
+            info = ctypes.cast(info_ptr, ctypes.POINTER(clones_mod._AclSizeInfo)).contents  # type: ignore[arg-type]
+            info.AceCount = 1
+            info.AclBytesInUse = 8 + max(ace_size, 4)
+            return 1
+
+        def _fake_get_ace(_acl: object, _idx: int, ace_out: object) -> int:
+            ctypes.cast(ace_out, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(acl_buf) + 8  # type: ignore[arg-type]
+            return 1
+
+        monkeypatch.setattr(clones_mod._kernel32_mic, "LocalFree", _fake_local_free)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetNamedSecurityInfoW", _fake_get_named)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetSecurityDescriptorSacl", _fake_get_sacl)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetAclInformation", _fake_acl_info)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetAce", _fake_get_ace)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "IsValidSid", _spy_is_valid_sid)
+
+        # Act
+        res = evaluar_etiqueta_mic_archivo(exe)
+
+        # Assert
+        assert liberados == [sentinel_sd]
+        if ace_size < 20:
+            assert res.status is MicEvaluationStatus.INDETERMINATE, (
+                f"AceSize={ace_size} (<20) debía ser INDETERMINATE y no usar bytes fuera de límite"
+            )
+            assert "truncada" in res.detail.lower(), (
+                f"AceSize={ace_size} debe rechazarse tempranamente como ACE MIC truncada (<20B), obtuvo: {res.detail}"
+            )
+            assert llamadas_is_valid_sid == 0, "no debe desreferenciar SID cuando AceSize < 20"
+        else:
+            assert res.status is MicEvaluationStatus.VERIFIED_COMPATIBLE
+            assert res.effective_rid == 0x2000
+            assert llamadas_is_valid_sid == 1
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Prueba de límites SID > AceSize y ACL en Win32")
+    @pytest.mark.parametrize("caso", ["sid_excede_acesize", "acesize_excede_acl", "acl_menor_header_ace"])
+    def test_f01_sid_o_ace_fuera_de_limites_devuelve_indeterminate_sin_desreferenciar(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, caso: str
+    ) -> None:
+        # Arrange
+        exe = tmp_path / "probe_bounds.exe"
+        exe.write_bytes(b"MZ")
+        clones_mod._asegurar_bindings_mic_win32()
+        assert clones_mod._advapi32_mic is not None and clones_mod._kernel32_mic is not None
+
+        # SID con SubAuthorityCount=2 necesita 8 + 4*2 = 16 bytes -> ACE necesita 24 bytes, pero AceSize=20
+        subauth_cnt = 2 if caso == "sid_excede_acesize" else 1
+        ace_bytes = (
+            struct.pack("<BBHI", 0x11, 0x00, 20, 0x00000001)
+            + bytes([1, subauth_cnt, 0, 0, 0, 0, 0, 16])
+            + struct.pack("<II", 0x2000, 0x2000)
+        )
+        acl_buf = (ctypes.c_ubyte * (8 + len(ace_bytes)))()
+        for idx, b in enumerate(ace_bytes):
+            acl_buf[8 + idx] = b
+
+        acl_bytes_in_use = 28
+        if caso == "acesize_excede_acl":
+            acl_bytes_in_use = 24  # 8 + 20 = 28 > 24
+        elif caso == "acl_menor_header_ace":
+            acl_bytes_in_use = 10  # 8 + 4 = 12 > 10 (ni siquiera cabe la cabecera de 4 bytes)
+
+        liberados: list[int] = []
+        sentinel_sd = 0x55AA55AA
+        llamadas_api_sid = 0
+
+        def _prohibido_sid(*_a: object) -> int:
+            nonlocal llamadas_api_sid
+            llamadas_api_sid += 1
+            return 1
+
+        monkeypatch.setattr(
+            clones_mod._kernel32_mic,
+            "LocalFree",
+            lambda ptr: liberados.append(int(getattr(ptr, "value", ptr))) or 0,  # type: ignore[arg-type]
+        )
+
+        def _fake_get_named(
+            _p: object, _ot: int, _si: int, _o: object, _g: object, _d: object, sacl_out: object, sd_out: object
+        ) -> int:
+            ctypes.cast(sd_out, ctypes.POINTER(ctypes.c_void_p))[0] = sentinel_sd  # type: ignore[arg-type]
+            ctypes.cast(sacl_out, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(acl_buf)  # type: ignore[arg-type]
+            return 0
+
+        def _fake_get_sacl(_sd: object, pres: object, sacl_p: object, _def: object) -> int:
+            ctypes.cast(pres, ctypes.POINTER(wintypes.BOOL))[0] = 1  # type: ignore[arg-type]
+            ctypes.cast(sacl_p, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(acl_buf)  # type: ignore[arg-type]
+            return 1
+
+        def _fake_acl_info(_acl: object, info_ptr: object, _sz: int, _cls: int) -> int:
+            info = ctypes.cast(info_ptr, ctypes.POINTER(clones_mod._AclSizeInfo)).contents  # type: ignore[arg-type]
+            info.AceCount = 1
+            info.AclBytesInUse = acl_bytes_in_use
+            return 1
+
+        def _fake_get_ace(_acl: object, _idx: int, ace_out: object) -> int:
+            ctypes.cast(ace_out, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(acl_buf) + 8  # type: ignore[arg-type]
+            return 1
+
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetNamedSecurityInfoW", _fake_get_named)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetSecurityDescriptorSacl", _fake_get_sacl)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetAclInformation", _fake_acl_info)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetAce", _fake_get_ace)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "IsValidSid", _prohibido_sid)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetSidSubAuthority", _prohibido_sid)
+
+        # Act
+        res = evaluar_etiqueta_mic_archivo(exe)
+
+        # Assert
+        assert res.status is MicEvaluationStatus.INDETERMINATE
+        if caso == "sid_excede_acesize":
+            assert "excede acesize" in res.detail.lower(), res.detail
+        else:
+            assert "límites de la acl" in res.detail.lower(), res.detail
+        assert llamadas_api_sid == 0, "no debe invocar APIs de SID si se violan los límites de ACL/ACE/SID"
+        assert liberados == [sentinel_sd]
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Prueba adversarial de bytes externos a la ACE en Win32")
+    @pytest.mark.parametrize(
+        ("ace_size", "rid_interno", "bytes_externos_rid", "esperado"),
+        [
+            # ACE truncada a 16B: los bytes externos [16..19] contienen Medium (0x2000), jamás deben forjar PASS
+            (16, None, 0x2000, MicEvaluationStatus.INDETERMINATE),
+            # ACE truncada a 19B: último byte del RID queda fuera de AceSize -> jamás debe leer byte externo
+            (19, 0x2000, 0x2000, MicEvaluationStatus.INDETERMINATE),
+            # ACE válida de 20B Medium seguida de bytes externos Untrusted (0x0000) -> clasificación inalterada
+            (20, 0x2000, 0x0000, MicEvaluationStatus.VERIFIED_COMPATIBLE),
+            # ACE válida de 20B Low seguida de bytes externos Medium (0x2000) -> clasificación inalterada
+            (20, 0x1000, 0x2000, MicEvaluationStatus.INCOMPATIBLE_LOW),
+        ],
+    )
+    def test_f01_adversarial_bytes_externos_a_ace_no_alteran_clasificacion(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        ace_size: int,
+        rid_interno: int | None,
+        bytes_externos_rid: int,
+        esperado: MicEvaluationStatus,
+    ) -> None:
+        # Arrange
+        exe = tmp_path / "probe_adv.exe"
+        exe.write_bytes(b"MZ")
+        clones_mod._asegurar_bindings_mic_win32()
+        assert clones_mod._advapi32_mic is not None and clones_mod._kernel32_mic is not None
+
+        prefijo = struct.pack("<BBHI", 0x11, 0x00, ace_size, 0x00000001) + bytes([1, 1, 0, 0, 0, 0, 0, 16])
+        if ace_size < 20:
+            cuerpo = prefijo + struct.pack("<I", bytes_externos_rid)
+        else:
+            assert rid_interno is not None
+            cuerpo = prefijo + struct.pack("<I", rid_interno) + struct.pack("<I", bytes_externos_rid)
+
+        acl_buf = (ctypes.c_ubyte * (8 + len(cuerpo)))()
+        for idx, b in enumerate(cuerpo):
+            acl_buf[8 + idx] = b
+
+        def _fake_get_named(
+            _p: object, _ot: int, _si: int, _o: object, _g: object, _d: object, sacl_out: object, sd_out: object
+        ) -> int:
+            ctypes.cast(sd_out, ctypes.POINTER(ctypes.c_void_p))[0] = 0xCAFEBABE  # type: ignore[arg-type]
+            ctypes.cast(sacl_out, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(acl_buf)  # type: ignore[arg-type]
+            return 0
+
+        def _fake_get_sacl(_sd: object, pres: object, sacl_p: object, _def: object) -> int:
+            ctypes.cast(pres, ctypes.POINTER(wintypes.BOOL))[0] = 1  # type: ignore[arg-type]
+            ctypes.cast(sacl_p, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(acl_buf)  # type: ignore[arg-type]
+            return 1
+
+        def _fake_acl_info(_acl: object, info_ptr: object, _sz: int, _cls: int) -> int:
+            info = ctypes.cast(info_ptr, ctypes.POINTER(clones_mod._AclSizeInfo)).contents  # type: ignore[arg-type]
+            info.AceCount = 1
+            info.AclBytesInUse = 8 + ace_size
+            return 1
+
+        def _fake_get_ace(_acl: object, _idx: int, ace_out: object) -> int:
+            ctypes.cast(ace_out, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(acl_buf) + 8  # type: ignore[arg-type]
+            return 1
+
+        monkeypatch.setattr(clones_mod._kernel32_mic, "LocalFree", lambda _ptr: 0)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetNamedSecurityInfoW", _fake_get_named)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetSecurityDescriptorSacl", _fake_get_sacl)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetAclInformation", _fake_acl_info)
+        monkeypatch.setattr(clones_mod._advapi32_mic, "GetAce", _fake_get_ace)
+
+        # Act
+        res = evaluar_etiqueta_mic_archivo(exe)
+
+        # Assert
+        assert res.status is esperado
+
+    @pytest.mark.parametrize(
+        ("rid", "mask", "esperado"),
+        [
+            # High/System/MediumPlus con NO_READ_UP (0x2) o NO_EXECUTE_UP (0x4) bloquean MO2 Medium
+            (0x2100, 0x2, MicEvaluationStatus.INCOMPATIBLE_POLICY),
+            (0x3000, 0x2, MicEvaluationStatus.INCOMPATIBLE_POLICY),
+            (0x3000, 0x4, MicEvaluationStatus.INCOMPATIBLE_POLICY),
+            (0x3000, 0x7, MicEvaluationStatus.INCOMPATIBLE_POLICY),
+            (0x4000, 0x2, MicEvaluationStatus.INCOMPATIBLE_POLICY),
+            (0x4000, 0x4, MicEvaluationStatus.INCOMPATIBLE_POLICY),
+            # High/System con solo NO_WRITE_UP (0x1) permite lectura y ejecución desde MO2 Medium
+            (0x3000, 0x1, MicEvaluationStatus.VERIFIED_COMPATIBLE),
+            (0x4000, 0x1, MicEvaluationStatus.VERIFIED_COMPATIBLE),
+            # Medium con NW|NR|NX no restringe a un proceso Medium (Medium >= Medium)
+            (0x2000, 0x7, MicEvaluationStatus.VERIFIED_COMPATIBLE),
+            # Bits de máscara desconocidos -> INDETERMINATE fail-closed
+            (0x2000, 0x8, MicEvaluationStatus.INDETERMINATE),
+            (0x3000, 0x10, MicEvaluationStatus.INDETERMINATE),
+        ],
+    )
+    def test_f02_mascaras_mic_restrictivas_en_archivo_y_clone_parent(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        rid: int,
+        mask: int,
+        esperado: MicEvaluationStatus,
+    ) -> None:
+        # Arrange
+        exe = tmp_path / "SkyrimSE.exe"
+        exe.write_bytes(b"pe")
+        padre = tmp_path / "FrozenClones"
+        padre.mkdir()
+        monkeypatch.setattr(
+            clones_mod,
+            "_leer_aces_etiqueta_mic",
+            lambda p: (
+                clones_mod._EstadoLecturaMic.OK,
+                (
+                    clones_mod._MicAceObservada(
+                        rid=rid,
+                        ace_flags=0x03 if p == padre else 0x00,
+                        mask=mask,
+                    ),
+                ),
+                "",
+            ),
+        )
+
+        # Act
+        res_archivo = evaluar_etiqueta_mic_archivo(exe)
+        res_padre = evaluar_herencia_mic_clone_parent(padre)
+
+        # Assert
+        assert res_archivo.status is esperado
+        assert res_padre.status is esperado
+        if esperado in (MicEvaluationStatus.INCOMPATIBLE_POLICY, MicEvaluationStatus.INDETERMINATE):
+            assert res_archivo.is_compatible is False
+            assert res_padre.is_compatible is False
+
+    @pytest.mark.parametrize(
+        ("aces", "esperado"),
+        [
+            # Bypass previo de min(rid): High+NO_EXECUTE_UP junto a Medium+NW DEBE bloquear
+            (
+                (
+                    clones_mod._MicAceObservada(rid=0x3000, ace_flags=0x00, mask=0x4),
+                    clones_mod._MicAceObservada(rid=0x2000, ace_flags=0x00, mask=0x1),
+                ),
+                MicEvaluationStatus.INCOMPATIBLE_POLICY,
+            ),
+            # Medium junto a Low -> INCOMPATIBLE_LOW
+            (
+                (
+                    clones_mod._MicAceObservada(rid=0x2000, ace_flags=0x00, mask=0x1),
+                    clones_mod._MicAceObservada(rid=0x1000, ace_flags=0x00, mask=0x1),
+                ),
+                MicEvaluationStatus.INCOMPATIBLE_LOW,
+            ),
+            # Múltiples ACEs efectivas divergentes (High+NW y Medium+NW) -> SACL ambigua -> INDETERMINATE
+            (
+                (
+                    clones_mod._MicAceObservada(rid=0x3000, ace_flags=0x00, mask=0x1),
+                    clones_mod._MicAceObservada(rid=0x2000, ace_flags=0x00, mask=0x1),
+                ),
+                MicEvaluationStatus.INDETERMINATE,
+            ),
+        ],
+    )
+    def test_r3_multiples_aces_mic_en_archivo_fail_closed(
+        self,
+        tmp_path: pathlib.Path,
+        monkeypatch: pytest.MonkeyPatch,
+        aces: tuple[clones_mod._MicAceObservada, ...],
+        esperado: MicEvaluationStatus,
+    ) -> None:
+        # Arrange
+        exe = tmp_path / "SkyrimSE.exe"
+        exe.write_bytes(b"pe")
+        monkeypatch.setattr(
+            clones_mod,
+            "_leer_aces_etiqueta_mic",
+            lambda _p: (clones_mod._EstadoLecturaMic.OK, aces, ""),
+        )
+
+        # Act
+        res = evaluar_etiqueta_mic_archivo(exe)
+
+        # Assert
+        assert res.status is esperado
+        assert res.is_compatible is False
+
+    def test_r2_rutas_largas_prefijo_extendido_y_contradiccion_rc3_devuelve_indeterminate(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: probar formateo de ruta larga Win32 (>= 248 chars) y UNC
+        ruta_corta = pathlib.Path("G:/Modding/SkyrimSE.exe")
+        ruta_larga = pathlib.Path("G:/" + "/".join(["segmento_largo_de_directorio"] * 10) + "/SkyrimSE.exe")
+        assert len(str(ruta_larga)) >= 260
+        assert clones_mod._ruta_para_win32_security_info(ruta_corta) == str(ruta_corta)
+        extendida = clones_mod._ruta_para_win32_security_info(ruta_larga)
+        assert extendida.startswith("\\\\?\\")
+
+        if sys.platform == "win32":
+            # Contradicción: el archivo existe en disco pero GetNamedSecurityInfoW responde ERROR_PATH_NOT_FOUND (3)
+            exe = tmp_path / "existente.exe"
+            exe.write_bytes(b"MZ")
+            clones_mod._asegurar_bindings_mic_win32()
+            assert clones_mod._advapi32_mic is not None
+            monkeypatch.setattr(clones_mod._advapi32_mic, "GetNamedSecurityInfoW", lambda *_a: 3)
+
+            res = evaluar_etiqueta_mic_archivo(exe)
+            assert res.status is MicEvaluationStatus.INDETERMINATE, (
+                "no debe clasificar como MISSING un archivo existente cuando Win32 devuelve rc=3"
+            )
 
 
 # ── 2. Integración en provisión, recuperación, verificación y consumidores ─
@@ -863,6 +1257,184 @@ class TestPrevencionMicEnFlujosDeClone:
                 config_path=cfg_toml,
             )
 
+    def test_f02_mascara_restrictiva_en_high_bloquea_setup_clone_y_clone_parent(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange
+        storage, _fuente, clones_dir, gid = entorno_p7
+        creado = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-mask-high")
+        assert creado.success and creado.clone_root is not None
+
+        # Simular High (0x3000) con NO_EXECUTE_UP (0x4) en SkyrimSE.exe y en un clone_parent
+        monkeypatch.setattr(
+            clones_mod,
+            "_leer_aces_etiqueta_mic",
+            lambda p: (
+                clones_mod._EstadoLecturaMic.OK,
+                (
+                    clones_mod._MicAceObservada(
+                        rid=0x3000,
+                        ace_flags=0x03 if p.is_dir() else 0x00,
+                        mask=0x4,
+                    ),
+                ),
+                "",
+            ),
+        )
+
+        # Act & Assert 1: verificar_runtime_setup rechaza
+        with pytest.raises(RuntimeSetupError, match="NO_EXECUTE_UP|restrictiva|MIC"):
+            verificar_runtime_setup(creado.clone_root)
+
+        # Act & Assert 2: verificar_runtime_clone devuelve INVALID
+        verif = verificar_runtime_clone(storage, "clone-mask-high")
+        assert verif.state is GenerationVerificationState.INVALID
+
+        # Act & Assert 3: nuevo clone en clone_parent con High + NO_EXECUTE_UP heredable bloquea antes de copiar
+        res_nuevo = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-mask-bloqueado")
+        assert res_nuevo.success is False
+        assert not (clones_dir / "clone-mask-bloqueado").exists()
+
+    def test_f03_resultado_post_verificacion_clone_indeterminate_bloquea_sin_mutar_registro_provisioned(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str]
+    ) -> None:
+        # Arrange: crear Clone PROVISIONED válido y fotografiar bytes + SHA-256 de su archivo de registro
+        from sky_claw.local.frozen_runtime.storage import clone_record_path
+        from sky_claw.local.frozen_runtime.storage_models import GenerationVerificationResult
+
+        storage, _fuente, clones_dir, gid = entorno_p7
+        creado = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-post-indet")
+        assert creado.success
+
+        ruta_registro = clone_record_path(storage, "clone-post-indet")
+        bytes_antes = ruta_registro.read_bytes()
+        sha_antes = hashlib.sha256(bytes_antes).hexdigest()
+
+        verificacion_indet = GenerationVerificationResult(
+            state=GenerationVerificationState.INDETERMINATE,
+            message="inspección MIC indeterminada en Clone: GetNamedSecurityInfoW devolvió error 1359",
+        )
+
+        # Act: invocar directamente _resultado_post_verificacion_clone con INDETERMINATE
+        resultado = prov_mod._resultado_post_verificacion_clone(
+            storage,
+            "clone-post-indet",
+            verificacion_indet,
+            etiqueta="el Clone PROVISIONED existente 'clone-post-indet'",
+        )
+
+        # Assert: bloquea la operación, NO altera el archivo durable y NO degrada PROVISIONED a INVALID
+        assert resultado is not None
+        assert resultado.success is False
+        assert "indeterminate" in resultado.message.lower()
+        bytes_despues = ruta_registro.read_bytes()
+        assert hashlib.sha256(bytes_despues).hexdigest() == sha_antes
+        assert bytes_despues == bytes_antes
+        assert leer_runtime_clone_record(storage, "clone-post-indet").lifecycle is RuntimeCloneLifecycle.PROVISIONED
+
+    def test_f03_cobertura_multiplataforma_verificar_mic_ejecutables_false_para_generation(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: esta prueba corre en Linux y Windows (sin skipif)
+        storage, _fuente, clones_dir, gid = entorno_p7
+        gen_dir = generation_dir(storage, gid)
+
+        # 1) verificar_runtime_setup(..., verificar_mic_ejecutables=False) NO debe invocar lectura MIC
+        def _prohibido_llamar_mic(ruta: pathlib.Path) -> MicEvaluationResult:
+            raise AssertionError(f"no debía consultar MIC sobre Generation ({ruta})")
+
+        monkeypatch.setattr(prov_mod, "evaluar_etiqueta_mic_archivo", _prohibido_llamar_mic)
+        setup_gen = verificar_runtime_setup(gen_dir, verificar_mic_ejecutables=False)
+        assert setup_gen.setup_id.startswith("setup-")
+
+        # 2) Durante crear_runtime_clone_desde_generation, una Generation marcada Low NO bloquea el aprovisionamiento
+        # hacia un clone_parent compatible (SFR-19: la Generation nunca se ejecuta).
+        def _mic_low_solo_en_generation(ruta: pathlib.Path) -> MicEvaluationResult:
+            if gen_dir in ruta.parents or ruta == gen_dir:
+                return MicEvaluationResult(
+                    status=MicEvaluationStatus.INCOMPATIBLE_LOW,
+                    effective_rid=0x1000,
+                    validated_on_windows=True,
+                    detail=f"Generation bajo Low '{ruta}'",
+                )
+            return MicEvaluationResult(
+                status=MicEvaluationStatus.VERIFIED_COMPATIBLE,
+                effective_rid=0x2000,
+                validated_on_windows=True,
+                detail="Medium en destino",
+            )
+
+        monkeypatch.setattr(prov_mod, "evaluar_etiqueta_mic_archivo", _mic_low_solo_en_generation)
+        monkeypatch.setattr(clones_mod, "evaluar_etiqueta_mic_archivo", _mic_low_solo_en_generation)
+        monkeypatch.setattr(
+            prov_mod,
+            "evaluar_herencia_mic_clone_parent",
+            lambda _p: MicEvaluationResult(
+                status=MicEvaluationStatus.UNLABELED_DEFAULT_MEDIUM,
+                effective_rid=0x2000,
+                validated_on_windows=True,
+                detail="padre limpio",
+            ),
+        )
+
+        # Act
+        creado = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-desde-gen-low")
+
+        # Assert
+        assert creado.success is True, creado.message
+        assert leer_runtime_clone_record(storage, "clone-desde-gen-low").lifecycle is RuntimeCloneLifecycle.PROVISIONED
+
+    def test_f04_no_windows_preserva_compatibilidad_pero_declara_mic_no_verificado_en_informes(
+        self, entorno_p7: tuple[pathlib.Path, pathlib.Path, pathlib.Path, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Arrange: simular entorno no Windows donde validated_on_windows=False
+        from sky_claw.local.frozen_runtime.binder_preflight import (
+            PreflightCheckCode,
+            PreflightCheckStatus,
+            evaluar_binder_preflight,
+        )
+
+        storage, fuente, clones_dir, gid = entorno_p7
+        monkeypatch.setattr(
+            clones_mod,
+            "_leer_aces_etiqueta_mic",
+            lambda _p: (
+                clones_mod._EstadoLecturaMic.NO_WINDOWS,
+                (),
+                "inspección MIC Win32 no aplicable fuera de Windows",
+            ),
+        )
+
+        # Act 1: aprovisionamiento sigue funcionando en Linux/POSIX, declarando explícitamente MIC no verificado
+        creado = crear_runtime_clone_desde_generation(storage, gid, clones_dir, "clone-linux")
+        assert creado.success is True, creado.message
+        assert creado.clone_root is not None
+        assert "no verificado" in creado.message.lower()
+
+        # Act 2: verificar_runtime_clone sigue devolviendo VALID, pero declara explícitamente que MIC no fue verificado
+        verif = verificar_runtime_clone(storage, "clone-linux")
+        assert verif.state is GenerationVerificationState.VALID
+        assert "no verificado" in verif.message.lower()
+        assert "no windows" in verif.message.lower()
+
+        # Act 3: binder_preflight refleja explícitamente en CLONE_PHYSICAL_INTEGRITY y en notes que MIC no fue verificado
+        mo2_dir = storage.parent / "mo2-linux"
+        mo2_dir.mkdir()
+        (mo2_dir / "ModOrganizer.ini").write_text(
+            f"[General]\ngameName=Skyrim Special Edition\ngamePath={creado.clone_root.as_posix()}\n",
+            encoding="utf-8",
+        )
+        preflight = evaluar_binder_preflight(
+            storage_root=storage,
+            mo2_instance_dir=mo2_dir,
+            clone_id="clone-linux",
+            managed_source_root=fuente,
+        )
+        chk = next(c for c in preflight.checks if c.check is PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY)
+        assert chk.status is PreflightCheckStatus.PASS
+        assert "no verificado" in chk.detail.lower()
+        assert any("mic" in n.lower() and "no verificado" in n.lower() for n in preflight.notes)
+
 
 # ── 3. Integración real Windows NTFS con archivos descartables en tmp_path ─
 
@@ -935,22 +1507,34 @@ class TestIntegracionWindowsRealMic:
         assert _leer_sddl_completo_en_tmp(creado.clone_root / "SkyrimSE.exe") == sddl_exe_antes  # type: ignore[operator]
         assert _leer_sddl_completo_en_tmp(creado.clone_root / "SkyrimSELauncher.exe") == sddl_launcher_low  # type: ignore[operator]
 
-    def test_ntfs_real_untrusted_rechazado_y_high_aceptado(self, tmp_path: pathlib.Path) -> None:
+    def test_ntfs_real_untrusted_rechazado_y_medium_y_ruta_larga_aceptados(self, tmp_path: pathlib.Path) -> None:
         # Arrange
         f_untrusted = tmp_path / "untrusted.exe"
-        f_high_or_med = tmp_path / "medium_explicito.exe"
+        f_med = tmp_path / "medium_explicito.exe"
+        f_med_nwnrnx = tmp_path / "medium_nwnrnx.exe"
         f_sin_label = tmp_path / "sin_label.exe"
-        for f in (f_untrusted, f_high_or_med, f_sin_label):
+        for f in (f_untrusted, f_med, f_med_nwnrnx, f_sin_label):
             f.write_bytes(b"MZ")
 
-        # S-1-16-0 = Untrusted; S-1-16-8192 = Medium explícito
+        # Ruta larga (> 265 caracteres) creada vía prefijo extendido Win32
+        profundo = tmp_path / ("a" * 60) / ("b" * 60) / ("c" * 60)
+        ext_profundo = pathlib.Path("\\\\?\\" + str(profundo))
+        ext_profundo.mkdir(parents=True, exist_ok=True)
+        (ext_profundo / "SkyrimSE.exe").write_bytes(b"MZ")
+        f_larga = profundo / "SkyrimSE.exe"
+        assert len(str(f_larga)) >= 265
+
+        # S-1-16-0 = Untrusted; S-1-16-8192 = Medium explícito (NW y NW|NR|NX)
         _aplicar_sacl_sddl_en_tmp(f_untrusted, "S:(ML;;NW;;;S-1-16-0)")
-        _aplicar_sacl_sddl_en_tmp(f_high_or_med, "S:(ML;;NW;;;ME)")
+        _aplicar_sacl_sddl_en_tmp(f_med, "S:(ML;;NW;;;ME)")
+        _aplicar_sacl_sddl_en_tmp(f_med_nwnrnx, "S:(ML;;NWNRNX;;;ME)")
 
         # Act
         r_untrusted = evaluar_etiqueta_mic_archivo(f_untrusted)
-        r_med = evaluar_etiqueta_mic_archivo(f_high_or_med)
+        r_med = evaluar_etiqueta_mic_archivo(f_med)
+        r_med_nwnrnx = evaluar_etiqueta_mic_archivo(f_med_nwnrnx)
         r_default = evaluar_etiqueta_mic_archivo(f_sin_label)
+        r_larga = evaluar_etiqueta_mic_archivo(f_larga)
         r_missing = evaluar_etiqueta_mic_archivo(tmp_path / "no_existe.exe")
 
         # Assert
@@ -958,47 +1542,72 @@ class TestIntegracionWindowsRealMic:
         assert r_untrusted.effective_rid == 0x0000
         assert r_med.status is MicEvaluationStatus.VERIFIED_COMPATIBLE
         assert r_med.effective_rid == 0x2000
+        assert r_med_nwnrnx.status is MicEvaluationStatus.VERIFIED_COMPATIBLE
+        assert r_med_nwnrnx.effective_rid == 0x2000
         assert r_default.status is MicEvaluationStatus.UNLABELED_DEFAULT_MEDIUM
         assert r_default.is_compatible is True
+        assert r_larga.status is MicEvaluationStatus.UNLABELED_DEFAULT_MEDIUM
+        assert r_larga.is_compatible is True
         assert r_missing.status is MicEvaluationStatus.MISSING
 
 
-# ── 4. Ancla AST: solo lectura, sin subprocess/icacls ni duplicación Win32 ─
+# ── 4. Ancla AST por enumeración de paquete: solo lectura y punto único ───
 
 
 class TestAnclaAstSoloLecturaMic:
-    def test_clones_y_provisioning_no_usan_subprocess_icacls_ni_mutadores_win32_de_seguridad(self) -> None:
-        # Arrange
-        modulos = [
-            pathlib.Path(clones_mod.__file__),
-            pathlib.Path(prov_mod.__file__),
-        ]
-        prohibidos_atributos = {
+    def test_paquete_frozen_runtime_solo_lee_mic_en_clones_y_sin_mutadores_de_seguridad(self) -> None:
+        # Arrange: enumerar TODOS los módulos .py del paquete sky_claw/local/frozen_runtime/
+        paquete_dir = pathlib.Path(clones_mod.__file__).parent
+        todos_los_py = sorted(paquete_dir.rglob("*.py"))
+        assert len(todos_los_py) >= 10, "la enumeración debe cubrir todo el paquete frozen_runtime"
+
+        prohibidos_mutadores_win32 = {
             "SetNamedSecurityInfoW",
             "SetNamedSecurityInfoA",
+            "TreeSetNamedSecurityInfoW",
+            "TreeSetNamedSecurityInfoA",
             "SetSecurityInfo",
             "SetFileSecurityW",
             "SetFileSecurityA",
+            "SetKernelObjectSecurity",
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+            "ConvertStringSecurityDescriptorToSecurityDescriptorA",
         }
+        lectores_win32_seguridad = {
+            "GetNamedSecurityInfoW",
+            "GetNamedSecurityInfoA",
+            "GetSecurityInfo",
+            "GetFileSecurityW",
+            "GetFileSecurityA",
+        }
+        modulos_con_lector_win32: set[str] = set()
 
-        for ruta in modulos:
+        for ruta in todos_los_py:
+            rel = ruta.relative_to(paquete_dir).as_posix()
             fuente = ruta.read_text(encoding="utf-8")
             arbol = ast.parse(fuente, filename=str(ruta))
 
-            # Assert 1: sin import subprocess ni literales icacls
             for nodo in ast.walk(arbol):
-                if isinstance(nodo, ast.Import):
+                if isinstance(nodo, ast.Import) and rel in {"clones.py", "provisioning.py"}:
                     nombres = {alias.name for alias in nodo.names}
-                    assert "subprocess" not in nombres, f"{ruta.name} no debe importar subprocess"
-                elif isinstance(nodo, ast.ImportFrom) and nodo.module:
-                    assert not nodo.module.startswith("subprocess"), f"{ruta.name} no debe importar de subprocess"
+                    assert "subprocess" not in nombres, f"{rel} no debe importar subprocess"
+                elif isinstance(nodo, ast.ImportFrom) and nodo.module and rel in {"clones.py", "provisioning.py"}:
+                    assert not nodo.module.startswith("subprocess"), f"{rel} no debe importar de subprocess"
                 elif isinstance(nodo, ast.Attribute):
-                    assert nodo.attr not in prohibidos_atributos, (
-                        f"{ruta.name} no debe referenciar API mutante {nodo.attr}"
+                    assert nodo.attr not in prohibidos_mutadores_win32, (
+                        f"{rel} no debe referenciar API mutante {nodo.attr}"
                     )
+                    if nodo.attr in lectores_win32_seguridad:
+                        modulos_con_lector_win32.add(rel)
                 elif isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
-                    assert "icacls" not in nodo.value.lower(), f"{ruta.name} no debe invocar ni depender de icacls"
+                    valor = nodo.value
+                    for api_mut in prohibidos_mutadores_win32:
+                        assert api_mut not in valor, f"{rel} no debe referenciar literal mutante {api_mut}"
+                    if rel in {"clones.py", "provisioning.py"}:
+                        assert "icacls" not in valor.lower(), f"{rel} no debe invocar ni depender de icacls"
+                    for api_lec in lectores_win32_seguridad:
+                        if api_lec in valor:
+                            modulos_con_lector_win32.add(rel)
 
-        # Assert 2: GetNamedSecurityInfoW vive únicamente en clones.py (sin duplicar Win32 en provisioning.py)
-        assert "GetNamedSecurityInfoW" in pathlib.Path(clones_mod.__file__).read_text(encoding="utf-8")
-        assert "GetNamedSecurityInfoW" not in pathlib.Path(prov_mod.__file__).read_text(encoding="utf-8")
+        # Assert: igualdad literal — la lectura Win32 MIC vive ÚNICAMENTE en clones.py
+        assert modulos_con_lector_win32 == {"clones.py"}

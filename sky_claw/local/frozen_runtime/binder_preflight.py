@@ -1857,11 +1857,25 @@ def evaluar_binder_preflight(
             managed_source_root=ms_root_resolved,
         )
         if clone_verif.state is GenerationVerificationState.VALID:
+            mic_no_verificado = "MIC no verificado" in clone_verif.message
+            if mic_no_verificado:
+                detalle_integridad = (
+                    "clone físicamente independiente, hashes críticos coincidentes y st_nlink==1 "
+                    "(MIC Win32 no verificado: entorno no Windows)"
+                )
+                notes_list.append(
+                    "MIC Win32 no verificado en entorno no Windows: este preflight no certifica etiquetas "
+                    "de integridad NTFS"
+                )
+            else:
+                detalle_integridad = (
+                    "clone físicamente independiente, hashes críticos coincidentes, st_nlink==1 y MIC Win32 verificado"
+                )
             checks_map[PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY] = PreflightCheckResult(
                 check=PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY,
                 status=PreflightCheckStatus.PASS,
                 reason=PreflightReasonCode.PREFLIGHT_ALL_CHECKS_PASSED,
-                detail="clone físicamente independiente, hashes críticos coincidentes y st_nlink==1",
+                detail=detalle_integridad,
             )
         elif clone_verif.state is GenerationVerificationState.INDETERMINATE:
             checks_map[PreflightCheckCode.CLONE_PHYSICAL_INTEGRITY] = PreflightCheckResult(
