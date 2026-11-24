@@ -1512,9 +1512,10 @@ async def test_la_cancelacion_publica_la_limpieza_fallida(
         await asyncio.wait_for(tarea, timeout=10)
 
     avisos = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
-    assert any("NO se pudo eliminar" in aviso for aviso in avisos), (
-        f"la limpieza fallida no se publicó antes de propagar la cancelación: {avisos}"
-    )
+    # El hecho tiene que quedar publicado ANTES de propagar; da igual cuál de los
+    # dos puntos lo publique (el trabajo drenado o `run()`), pero una sola vez.
+    publicados = [aviso for aviso in avisos if "NO se pudo eliminar" in aviso or "Neutralización" in aviso]
+    assert len(publicados) == 1, f"la limpieza fallida no se publicó exactamente una vez: {avisos}"
     assert any("unlink bloqueado por el AV" in aviso for aviso in avisos)
 
 
@@ -1811,6 +1812,38 @@ async def test_el_lease_sigue_vigente_durante_una_neutralizacion_mas_larga_que_e
         suelta.set()
         observador.join(timeout=5)
         await manager.close()
+
+
+async def test_la_limpieza_incompleta_se_avisa_una_sola_vez(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Un unlink fallido se publicaba DOS veces: al neutralizar (dentro del trabajo
+    # drenado) y otra vez desde `run()`. El operador ve un solo hecho; el resultado
+    # sigue siendo el mismo (`flag_residual`, `success=False`).
+    monkeypatch.setattr(
+        gcr_mod,
+        "neutralizar_flag",
+        lambda **kwargs: NeutralizacionFlag(borrado=False, archivado=True, errores=("no se pudo borrar",)),
+    )
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "celda.cgid", datos=b"celda")
+        (config.game_path / "PrecacheGrass.txt").unlink()
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    with caplog.at_level(logging.WARNING, logger="sky_claw.local.tools.grass_cache_runner"):
+        resultado = await _correr(_runner(config, mo2))
+
+    avisos = [
+        registro
+        for registro in caplog.records
+        if "Neutralización del flag incompleta" in registro.getMessage()
+        or "NO se pudo eliminar" in registro.getMessage()
+    ]
+    assert len(avisos) == 1, f"el fallo de limpieza se avisó {len(avisos)} veces: {[r.getMessage() for r in avisos]}"
+    assert resultado.flag_residual is True
+    assert resultado.success is False
 
 
 async def test_la_neutralizacion_cancelada_igual_registra_el_resultado(

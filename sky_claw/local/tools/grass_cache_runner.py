@@ -370,6 +370,8 @@ class GrassCacheRunner:
         self._backup_dir = ""
         #: Resultado de archivar+borrar el flag (None si el run no adoptó el flag).
         self._neutralizacion: NeutralizacionFlag | None = None
+        #: True si el fallo de limpieza ya se logueó al neutralizar: `run()` no lo repite.
+        self._limpieza_logueada = False
 
     @property
     def neutralizacion(self) -> NeutralizacionFlag | None:
@@ -438,6 +440,11 @@ class GrassCacheRunner:
         limpieza = self._neutralizacion
         if limpieza is None or limpieza.limpio:
             return
+        if self._limpieza_logueada:
+            # El fallo ya se publicó al neutralizar (`_neutralizar_flag_drenado`):
+            # repetirlo acá duplicaba el mismo warning en el camino normal.
+            return
+        self._limpieza_logueada = True
         if limpieza.alternativo_residual:
             logger.warning(
                 "Queda un flag ALTERNATIVO residual (%s): no es de este run y no se borra, pero NGIO "
@@ -1238,6 +1245,7 @@ class GrassCacheRunner:
                 )
             self._neutralizacion = resultado
             if resultado.errores or not resultado.limpio:
+                self._limpieza_logueada = True
                 logger.warning(
                     "Neutralización del flag incompleta (borrado=%s, progreso_perdido=%s): %s",
                     resultado.borrado,
