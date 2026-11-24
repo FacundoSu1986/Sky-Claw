@@ -51,11 +51,18 @@ su ausencia sea la señal de "terminó" que usaba el runner.
    `1.0.17`/`1.0.17b3`: el instalador queda anclado a una release que no es la última
    (F-06 confirmado, ver §3).
 
-**NO VERIFICADO (sigue abierto):** el binario de Nexus #42161 2.2.0 no fue inspeccionado
-(no hay acceso al ZIP ni rig Windows). El contrato nuevo es fail-closed respecto de las
-dos versiones: si 2.2.0 conserva la semántica, Sky-Claw ya no destruye; si la cambió,
-Sky-Claw sigue sin destruir. Lo que **no** se puede afirmar es compatibilidad de
-instalación con 2.2.0.
+**NO VERIFICADO (sigue abierto):** el binario de Nexus #42161 2.2.0 **no fue inspeccionado**
+(no hay acceso al ZIP ni rig Windows). De 2.2.0 no se puede afirmar **ninguna** garantía: ni que
+borre, ni que no borre, ni la compatibilidad de instalación.
+
+Y de 1.0.13 —la versión que sí está inspeccionada— **tampoco** hay garantía de no-borrado: un
+`new` o un `rebuild` **con `ack_usvfs_no_verificado=True`** escriben el flag vacío, que es
+exactamente el disparador de `remove()` de `*.dgid`/`*.cgid`/`*.fail` sobre `Data/Grass` **a través
+de la USVFS**. El respaldo cubre el caché **físico** de `overwrite/Grass`, no los `.cgid` que vivan
+en mods habilitados. Por eso el arranque está en HOLD salvo reconocimiento explícito, y por eso ese
+reconocimiento es **aceptación de riesgo**, no certificación: antes de correrlo hay que respaldar
+los mods con caché de grass o inspeccionar el rig (Windows + MO2 + USVFS) para demostrar la
+cobertura.
 
 ## 2. Reconciliación F-01…F-12 contra la HEAD
 
@@ -469,3 +476,23 @@ Cada shard corre en Windows sobre el árbol del PR: el verde del 6/6 es la contr
   recorte del progreso, nombre del archivo abierto) valen para ese tag; el test de paridad es la
   alarma si cambia.
 - **El flag alternativo se rechaza, no se administra** (fuera de P0, ver 12.2 #6).
+
+## 13. Segunda tanda de la quinta revisión: el revisor automático sobre estos cambios
+
+CodeRabbit volvió a revisar **después** de `28f20f1`/`9ad6f8d` y abrió 8 hilos nuevos sobre el
+código recién escrito. Se triaron uno por uno contra el HEAD; **7 válidos (corregidos)** y **1
+aplazado con motivo**.
+
+| # | Hallazgo | Clase | Acción |
+|---|---|---|---|
+| A | `docs` §1 prometía "Sky-Claw sigue sin destruir" también para 2.2.0 | **válido** | Reescrito: de 2.2.0 no se afirma nada, y de 1.0.13 el no-borrado **no** está garantizado cuando se corre con `ack` (la USVFS expone `.cgid` de mods que el respaldo físico no cubre) |
+| B | `grass_cache_runner.py`: el runner vuelve a llamar `preparar_arranque` **sin drenar** | **válido** | `esperar_terminar` también acá: la cancelación no se propaga hasta que el hilo de la copia termina. Test: `test_cancelacion_durante_la_preparacion_no_abandona_el_hilo` |
+| C | `grass_cache_runner.py`: el `cancel_event` sólo se miraba **después** del lanzamiento | **válido** | Dos cortes nuevos: tras la preparación (`Cancelado durante la preparación del arranque.`) y antes de cada spawn (`Cancelado antes del lanzamiento.`). Tests: `test_cancelacion_pedida_durante_la_preparacion_no_escribe_el_flag`, `test_cancelacion_pedida_desde_el_progreso_no_lanza_el_juego` |
+| D | `grass_cache_runner.py`: la neutralización (leer+hashear el caché parcial y archivar) corre en el event loop | **aplazado** | Es liveness/UX, no corrección: el `finally` de una cancelación **no puede** esperar a un worker sin reintroducir el abandono que cierra B11. Moverlo pide un diseño propio (hash incremental con el loop libre o worker con garantía de finalización) y va a **P1**, no a este paquete |
+| E | `grass_cache_safety.py`: conteo+bytes no detectan un **renombrado** entre inventario y hash | **válido** | `archivar_progreso` compara además la huella `(nombre, tamaño)` de lo hasheado contra `inventario.huella`. Test: `test_archivado_rechaza_un_renombrado_entre_inventario_y_archivado` |
+| F | `grass_cache_safety.py`: REBUILD con progreso y **sin** raíz de estado pisaba la única evidencia | **válido** | `progreso_sin_destino_de_archivo`: se niega el arranque. Test: `test_rebuild_sin_raiz_de_estado_no_pisa_un_flag_con_progreso` |
+| G | `grass_cache_safety.py`: `resume` consultaba el archivo aunque el flag **vivo** tuviera progreso | **válido** | El archivo se consulta sólo si el flag vivo no trae progreso (con progreso el plan es `conservar`). Test: `test_resume_con_flag_vivo_no_consulta_el_archivo_de_otro_origen` |
+| H | `grass_cache_service.py`: la anotación U-09 corría fuera del handler de cancelación | **válido** | Anotación y cierre van bajo el mismo `try`; el handler reintenta el rollback. Test: `test_cancelacion_al_anotar_el_teardown_incompleto_no_deja_la_tx_pendiente` |
+
+Los siete corregidos se reprodujeron **antes** de tocar el código (fallo observado en cada uno) y se
+verificaron después; el aplazado (D) queda declarado acá y en el reporte, no silenciado.

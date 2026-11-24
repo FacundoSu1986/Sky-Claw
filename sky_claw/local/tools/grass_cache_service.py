@@ -522,10 +522,12 @@ class GrassCacheService:
                 *teardown_failures,
                 "progreso no archivado: " + ("; ".join(run_result.limpieza_errores) or "causa desconocida"),
             ]
-        # U-09: la constancia del cleanup a medias va ANTES del cierre, para que
-        # la entrada quede dentro de la TX que se está por commitear.
-        await self._journalizar_teardown_incompleto(journal_tx, teardown_failures)
         try:
+            # U-09: la constancia del cleanup a medias va ANTES del cierre, para
+            # que la entrada quede dentro de la TX que se está por commitear. Va
+            # DENTRO del try: una cancelación acá tampoco puede dejar la TX
+            # pendiente (antes escapaba sin ningún intento de cierre).
+            await self._journalizar_teardown_incompleto(journal_tx, teardown_failures)
             await self._journal_close(journal_tx, exito=exito)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             # Auditoría hostil (V-1): este cierre corre DESPUÉS de soltar los

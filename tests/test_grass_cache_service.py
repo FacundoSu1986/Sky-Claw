@@ -1219,3 +1219,31 @@ async def test_cancelacion_durante_el_preflight_no_abandona_el_respaldo(
     assert termino.is_set(), "la cancelación se propagó con el respaldo todavía en vuelo"
     colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
     assert colaboradores["llamadas_lock"], "los locks se pidieron antes del preflight"
+
+
+async def test_cancelacion_al_anotar_el_teardown_incompleto_no_deja_la_tx_pendiente(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # La anotación U-09 ("limpieza incompleta") corre justo ANTES del cierre y
+    # fuera del handler de cancelación: una cancelación exacta ahí escapaba sin
+    # ningún intento de cerrar la TX, que quedaba PENDING hasta el sweep de 24 h.
+    journal = _journal_con_loot_completado()
+    journal.get_transaction.return_value = MagicMock(status=TransactionStatus.PENDING)
+    journal.commit_transaction.side_effect = None
+    service, colab = _servicio(
+        tmp_path,
+        journal=journal,
+        runner_result=_resultado_runner(success=False, flag_residual=True, limpieza_errores=("unlink bloqueado",)),
+    )
+
+    async def _anotacion_cancelada(*args: Any, **kwargs: Any) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(service, "_journalizar_teardown_incompleto", _anotacion_cancelada)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.generate(_PAYLOAD)
+
+    journal.get_transaction.assert_awaited_once_with(77)
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+    colab["profile_manager"].teardown.assert_awaited()

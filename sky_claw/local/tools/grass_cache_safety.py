@@ -937,9 +937,17 @@ def archivar_progreso(
         que="del estado de Sky-Claw",
     )
     digests = _digests_del_cache(grass_dir)
+    # Conteo y bytes totales NO identifican el conjunto: renombrar ``A.cgid`` a
+    # ``B.cgid`` entre el inventario y el hash deja las dos cifras iguales, y la
+    # evidencia quedaría archivada bajo la clave vieja con el contenido nuevo —
+    # un reintento con el nombre nuevo no la encontraría. La huella barata
+    # ``(nombre, tamaño)`` sí distingue ese caso, y es la MISMA que calcula
+    # ``inventariar_cache``.
+    huella_de_los_digests = huella_del_cache((nombre, tamano) for nombre, (tamano, _) in digests.items())
     if (
         len(digests) != inventario.archivos_cache
         or sum(tamano for tamano, _ in digests.values()) != inventario.bytes_cache
+        or huella_de_los_digests != inventario.huella
     ):
         raise GrassCacheSafetyError(
             "progreso_no_coincide_con_el_cache",
@@ -1406,11 +1414,21 @@ def preparar_arranque(
             destino=raiz_estado / "respaldo" / inventario.huella,
             inventario=inventario,
         )
-    if modo == "rebuild" and inventario.flag_progreso is not None and raiz_estado is not None:
+    if modo == "rebuild" and inventario.flag_progreso is not None:
         # El flag con progreso se pisa en un REBUILD. Antes era best-effort
         # (``suppress(OSError)``): si el archivado fallaba, la evidencia se
         # perdía en silencio justo cuando nada la podía recuperar. Ahora se
         # niega el arranque: sin evidencia archivada no se pisa el progreso.
+        if raiz_estado is None:
+            # Sin raíz de estado no hay dónde archivar. Con caché vacío el
+            # arranque ni siquiera pide respaldo, así que este era el camino
+            # silencioso para destruir la única evidencia de reanudación.
+            raise GrassCacheSafetyError(
+                "progreso_sin_destino_de_archivo",
+                f"REBUILD pisaría {PRECACHE_FLAG}, que tiene progreso, y no hay raíz de estado "
+                "donde archivarlo: se niega el arranque para no perder la única evidencia de "
+                "reanudación. Pasá raiz_estado (el directorio de estado de Sky-Claw).",
+            )
         try:
             archivar_progreso(raiz_estado, inventario, inventario.flag_progreso, grass_dir=grass_dir, perfil=perfil)
         except (GrassCacheSafetyError, OSError) as exc:
@@ -1420,8 +1438,14 @@ def preparar_arranque(
                 f"{raiz_estado}: {exc}. Se niega el arranque para no perder la única evidencia "
                 "de reanudación (revisá permisos/espacio del directorio de estado).",
             ) from exc
+    # El archivo se consulta SÓLO si el flag vivo no trae progreso: con progreso
+    # vivo el plan es ``conservar`` (bytes exactos) y la evidencia archivada no
+    # participa, así que un archivo de otro origen no puede abortar un `resume`
+    # que nunca lo iba a mirar.
     progreso = (
-        recuperar_progreso(raiz_estado, inventario, grass_dir=grass_dir, perfil=perfil) if modo == "resume" else None
+        recuperar_progreso(raiz_estado, inventario, grass_dir=grass_dir, perfil=perfil)
+        if modo == "resume" and inventario.flag_progreso is None
+        else None
     )
     plan = planificar_arranque(
         modo=modo,

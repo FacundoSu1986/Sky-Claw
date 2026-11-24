@@ -1470,3 +1470,89 @@ async def test_la_cancelacion_publica_la_limpieza_fallida(
         f"la limpieza fallida no se publicó antes de propagar la cancelación: {avisos}"
     )
     assert any("unlink bloqueado por el AV" in aviso for aviso in avisos)
+
+
+# ---------------------------------------------------------------------------
+# Revisión adversarial automatizada (CodeRabbit) sobre el drenaje y la cancelación
+# ---------------------------------------------------------------------------
+
+
+async def test_cancelacion_durante_la_preparacion_no_abandona_el_hilo(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # El runner vuelve a llamar a `preparar_arranque` (el servicio ya lo hizo con
+    # SU copia). Si la cancelación llega durante ESTA copia y el `await` la deja
+    # atrás, el servicio suelta los dos locks y hace teardown del perfil con el
+    # hilo todavía escribiendo.
+    import threading
+
+    import sky_claw.local.tools.grass_cache_runner as gcr_mod
+
+    real = gcr_mod.preparar_arranque
+    en_copia = threading.Event()
+    liberar = threading.Event()
+    termino = threading.Event()
+
+    def _preparar_lento(**kwargs: Any) -> Any:
+        en_copia.set()
+        liberar.wait(timeout=10)
+        termino.set()
+        return real(**kwargs)
+
+    monkeypatch.setattr(gcr_mod, "preparar_arranque", _preparar_lento)
+    tarea = asyncio.ensure_future(_correr(_runner(config, mo2)))
+
+    assert await asyncio.to_thread(en_copia.wait, 5.0), "la preparación no llegó a empezar"
+    tarea.cancel()
+    await asyncio.sleep(0)
+    liberar.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=10)
+
+    assert termino.is_set(), "la cancelación se propagó con la copia del respaldo en vuelo"
+    mo2.launch_game.assert_not_awaited()
+
+
+async def test_cancelacion_pedida_durante_la_preparacion_no_escribe_el_flag(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Cancelación COOPERATIVA (evento) pedida mientras se prepara el arranque: el
+    # runner terminaba preparando, escribía el flag vacío y lanzaba el juego. El
+    # evento sólo se miraba después del lanzamiento.
+    import sky_claw.local.tools.grass_cache_runner as gcr_mod
+
+    real = gcr_mod.preparar_arranque
+    evento = asyncio.Event()
+    bucle = asyncio.get_running_loop()
+
+    def _preparar_y_pedir_cancelacion(**kwargs: Any) -> Any:
+        plan = real(**kwargs)
+        bucle.call_soon_threadsafe(evento.set)
+        return plan
+
+    monkeypatch.setattr(gcr_mod, "preparar_arranque", _preparar_y_pedir_cancelacion)
+
+    resultado = await _correr(_runner(config, mo2), evento)
+
+    assert resultado.outcome == "cancelled"
+    assert "preparación" in resultado.message
+    mo2.launch_game.assert_not_awaited()
+    assert not (config.game_path / "PrecacheGrass.txt").exists()
+
+
+async def test_cancelacion_pedida_desde_el_progreso_no_lanza_el_juego(config: GrassCacheConfig, mo2: AsyncMock) -> None:
+    # El evento también se puede pedir entre la escritura del flag y el spawn
+    # (snapshot/progress). Con el flag ya adoptado, el run sale por el camino de
+    # limpieza de siempre, sin lanzar el juego.
+    evento = asyncio.Event()
+
+    async def _progreso(info: Any) -> None:
+        if info.phase == "launching":
+            evento.set()
+
+    resultado = await _correr(_runner(config, mo2, on_progress=_progreso), evento)
+
+    assert resultado.outcome == "cancelled"
+    mo2.launch_game.assert_not_awaited()
+    assert not (config.game_path / "PrecacheGrass.txt").exists()

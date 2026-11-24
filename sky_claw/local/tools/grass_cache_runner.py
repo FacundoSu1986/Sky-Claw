@@ -427,17 +427,34 @@ class GrassCacheRunner:
             # retorno. El plan lo decide grass_cache_safety (misma función que
             # usa el servicio): NEW exige caché vacío, RESUME nunca trunca,
             # REBUILD exige aprobación + respaldo VERIFICADO.
-            plan = await asyncio.to_thread(
-                preparar_arranque,
-                modo=self._config.mode,
-                game_path=self._config.game_path,
-                grass_dir=self._config.overwrite_grass_dir,
-                aprobacion=self._config.rebuild_approval,
-                raiz_estado=self._config.backup_root,
-                ack_usvfs_no_verificado=self._config.ack_usvfs_no_verificado,
-                perfil=self._config.profile,
+            # Drenada: si la cancelación llega mientras se COPIA el respaldo, el
+            # servicio soltaría los dos locks y haría teardown del perfil con el
+            # hilo todavía escribiendo. `esperar_terminar` retiene la cancelación
+            # hasta que el hilo termina.
+            plan = await esperar_terminar(
+                asyncio.to_thread(
+                    preparar_arranque,
+                    modo=self._config.mode,
+                    game_path=self._config.game_path,
+                    grass_dir=self._config.overwrite_grass_dir,
+                    aprobacion=self._config.rebuild_approval,
+                    raiz_estado=self._config.backup_root,
+                    ack_usvfs_no_verificado=self._config.ack_usvfs_no_verificado,
+                    perfil=self._config.profile,
+                ),
+                descripcion="preparar_arranque",
             )
             self._plan = plan
+            # Cancelación COOPERATIVA pedida durante la preparación: sin este
+            # corte, el runner escribía el flag vacío y lanzaba el juego igual,
+            # porque el evento sólo se miraba después del lanzamiento.
+            if cancel.is_set():
+                return self._resultado(
+                    "cancelled",
+                    "Cancelado durante la preparación del arranque.",
+                    crash_count,
+                    (0, 0),
+                )
             self._backup_dir = ruta_de_respaldo(plan)
             # El try cubre DESDE la escritura del flag: una cancelación dura
             # durante el snapshot inicial o el primer progress (que propaga
@@ -474,6 +491,16 @@ class GrassCacheRunner:
                         "timeout",
                         f"Deadline global de {self._config.max_runtime_s:.0f}s alcanzado; "
                         "el cache parcial se conserva.",
+                        crash_count,
+                        await self._snapshot_cache(),
+                    )
+                if cancel.is_set():
+                    # Entre relanzamientos y antes del PRIMER spawn: el evento
+                    # pedido durante el snapshot o el progress no puede terminar
+                    # en un juego recién lanzado que nadie va a mirar.
+                    return self._resultado(
+                        "cancelled",
+                        "Cancelado antes del lanzamiento.",
                         crash_count,
                         await self._snapshot_cache(),
                     )

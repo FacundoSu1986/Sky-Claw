@@ -1399,3 +1399,66 @@ def test_el_fsync_del_temporal_va_sobre_un_descriptor_escribible(
 
     assert archivos == [os.O_WRONLY], f"el fsync del archivo no fue sobre el descriptor de escritura: {archivos}"
     assert flag.read_bytes() == b""
+
+
+# ---------------------------------------------------------------------------
+# Revisión adversarial automatizada (CodeRabbit) sobre estos cambios
+# ---------------------------------------------------------------------------
+
+
+def test_archivado_rechaza_un_renombrado_entre_inventario_y_archivado(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # Conteo y bytes totales iguales, nombres distintos: el inventario tiene la
+    # huella vieja y el hash de contenido, la nueva, así que la evidencia quedaría
+    # atada a una clave que un reintento con el nombre nuevo no puede encontrar.
+    inventario = _inventario(grass, juego)
+    (grass / "Tamriel.dgid").rename(grass / "renombrado.dgid")
+    assert (grass / "renombrado.dgid").stat().st_size == len(b"dgid")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        archivar_progreso(estado, inventario, b"Tamriel\n", grass_dir=grass)
+
+    assert excinfo.value.codigo == "progreso_no_coincide_con_el_cache"
+    assert not (estado / "progreso").exists() or not list((estado / "progreso").glob("*.json"))
+
+
+def test_rebuild_sin_raiz_de_estado_no_pisa_un_flag_con_progreso(tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
+    # Caché vacío + flag con progreso + sin raíz de estado: el plan es "escribir
+    # vacío", así que la única evidencia de reanudación se perdería sin archivar.
+    vacio = tmp_path / "vacio"
+    vacio.mkdir()
+    flag = juego / "PrecacheGrass.txt"
+    flag.write_bytes(b"Tamriel\n-2,4\n")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        preparar_arranque(
+            modo="rebuild",
+            game_path=juego,
+            grass_dir=vacio,
+            aprobacion=APROBACION_REBUILD,
+            ack_usvfs_no_verificado=True,
+        )
+
+    assert excinfo.value.codigo == "progreso_sin_destino_de_archivo"
+    assert flag.read_bytes() == b"Tamriel\n-2,4\n"
+
+
+def test_resume_con_flag_vivo_no_consulta_el_archivo_de_otro_origen(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # Si el flag VIVO ya trae progreso, el plan es `conservar` y el archivo no se
+    # usa. Consultarlo igual podía abortar un `resume` legítimo por evidencia de
+    # otro origen que este run ni iba a mirar.
+    otra = tmp_path / "otra" / "overwrite" / "Grass"
+    otra.mkdir(parents=True)
+    for archivo in grass.iterdir():
+        (otra / archivo.name).write_bytes(archivo.read_bytes())
+    archivar_progreso(estado, _inventario(otra, juego), b"Otra\n", grass_dir=otra, perfil="perfil-2")
+    (juego / "PrecacheGrass.txt").write_bytes(b"Tamriel\n-2,4\n")
+
+    plan = preparar_arranque(modo="resume", game_path=juego, grass_dir=grass, raiz_estado=estado)
+
+    assert plan.modo == "resume"
+    assert plan.accion == "conservar"
+    assert plan.contenido == b"Tamriel\n-2,4\n"
