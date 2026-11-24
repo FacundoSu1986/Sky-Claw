@@ -496,3 +496,17 @@ aplazado con motivo**.
 
 Los siete corregidos se reprodujeron **antes** de tocar el código (fallo observado en cada uno) y se
 verificaron después; el aplazado (D) queda declarado acá y en el reporte, no silenciado.
+
+### 13.1 Gates del SHA final (`efab444`)
+
+- **Foco** (safety+runner+service+strategy): **204 passed** (safety 80, runner 54, service 54,
+  strategy 15); ampliado (+`profile`, `hitl_destructive_gate`, `bdd`) **295 passed, 2 skipped**;
+  con el ancla de worktrees, **295 passed, 2 skipped**.
+- **Ruff** `All checks passed!` / `1172 files already formatted`; **mypy** del write-set: `no issues found`.
+- **Suite completa:** `136 failed, 20950 passed, 628 skipped` en 1483 s. Los 136 son **el mismo
+  conjunto** de node IDs de la línea base de `9632a46` (`comm -3` vacío en ambos sentidos ⇒ **0
+  regresiones**).
+- **CI sobre `efab444`:** **verde completo**, con los seis shards de Windows y los dos jobs de
+  veredicto (`Tests (Pytest)`, `Tests / windows-latest`) en verde.
+
+Hilo abierto a propósito: el de la fila **D** (§13), aplazado a P1 con motivo.
