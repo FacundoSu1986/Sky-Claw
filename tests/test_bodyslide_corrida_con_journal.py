@@ -661,3 +661,35 @@ def test_cr12_un_archivo_inclasificable_no_impide_registrar_terminal(
     monkeypatch.setattr(bj, "_huella_actual", real)
     assert tx.restaurar().veredicto is bj.Veredicto.RESTAURADO
     assert (exe_dir / "Config.xml").read_text(encoding="utf-8") == _CONFIG
+
+
+def test_cr12_un_archivo_ilegible_tampoco_impide_registrar_terminal(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hermano de cr12: un ``OSError`` al leer un archivo no deja el journal en LANZADO para siempre."""
+    exe_dir = tmp_path / "BodySlideCR12b"
+    exe_dir.mkdir()
+    (exe_dir / "Config.xml").write_text(_CONFIG, encoding="utf-8")
+    tx = bj.iniciar_transaccion(
+        almacen=_almacen(tmp_path),
+        identidad=bj.IdentidadDeEjecucion(maquina="m", instancia=identidad_de_instancia(exe_dir)),
+        exe_dir=exe_dir,
+        bytes_sembrados=b"<Config><TargetGame>4</TargetGame><Sembrado/></Config>",
+    )
+    tx.sembrar()
+    tx.marcar_lanzado()
+    real = bj._huella_actual
+
+    def _buildselection_ilegible(destino: pathlib.Path) -> str:
+        if destino.name == "BuildSelection.xml":
+            raise PermissionError(13, "Access is denied")
+        return real(destino)
+
+    monkeypatch.setattr(bj, "_huella_actual", _buildselection_ilegible)
+    tx.marcar_terminal()
+    assert _estado_en_disco(tx.ruta) == "TERMINAL"
+    assert tx.restaurar().veredicto is bj.Veredicto.RESTORE_FAILED
+    assert _estado_en_disco(tx.ruta) == "RESTAURACION_FALLIDA", "la terminalidad probada se conserva"
+    monkeypatch.setattr(bj, "_huella_actual", real)
+    assert tx.restaurar().veredicto is bj.Veredicto.RESTAURADO
+    assert (exe_dir / "Config.xml").read_text(encoding="utf-8") == _CONFIG

@@ -942,7 +942,8 @@ class TransaccionDeConfig:
             # contenido esperado, así que nunca se restaura sobre él.
             try:
                 observado: str | None = _huella_actual(self._exe_dir / archivo.nombre)
-            except ModificacionConcurrenteError:
+            except (ModificacionConcurrenteError, OSError):
+                # Enlace, no regular o ilegible: el proceso ya terminó igual (review CodeRabbit #1021).
                 observado = None
             if observado is None or observado == archivo.huella_original:
                 esperados: tuple[str, ...] = ()
