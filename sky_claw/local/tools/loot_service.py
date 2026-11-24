@@ -300,12 +300,83 @@ def _mensaje_de_fallo_de_proceso(result: LOOTResult) -> str:
     )
 
 
-def _respuesta_de_fallo(reason: LootSortFailureReason, message: str, **extra: Any) -> dict[str, Any]:
+@dataclass(frozen=True, slots=True)
+class _Recuperacion:
+    """Qué prueba el filesystem tras un fallo dentro del lock (A1).
+
+    Attributes:
+        vetado: el restore se VETÓ por terminalidad desconocida del worker/LOOT
+            (``rollback_veto.exception_forbids_rollback``): restaurar pisaría la
+            escritura de un LOOT que pudo seguir vivo.
+        probada: el lock restauró TODOS los snapshots sin veto
+            (``SnapshotTransactionLock.rollback_completed``). Es lo único que
+            autoriza marcar la TX del journal como ROLLED_BACK.
+        snapshots: ``(original, snapshot)`` de cada archivo protegido, para la
+            recuperación manual cuando ``probada`` es False.
+    """
+
+    vetado: bool
+    probada: bool
+    snapshots: tuple[tuple[str, str], ...]
+
+    @classmethod
+    def del_lock(cls, tx: SnapshotTransactionLock) -> _Recuperacion:
+        vetado = tx.rollback_vetoed_unknown_terminality
+        return cls(
+            vetado=vetado,
+            probada=tx.rollback_completed and not vetado,
+            snapshots=tuple((snap.original_path, snap.snapshot_path) for snap in tx.snapshots),
+        )
+
+    def aviso(self) -> str:
+        """Instrucción para el operador cuando la recuperación no quedó probada."""
+        if self.probada or not self.snapshots:
+            return ""
+        if self.vetado:
+            return (
+                "El rollback automático se VETÓ: LOOT o su worker USVFS pudieron seguir vivos "
+                "(terminalidad desconocida) y restaurar pisaría su escritura. La transacción del "
+                "journal queda PENDIENTE. Verificá que no queden procesos de LOOT/usvfs, liberá la "
+                "cuarentena de la instancia (`--mode vfs-quarantine`, docs/operations/recovery.md) "
+                "y restaurá plugins.txt/loadorder.txt desde los snapshots indicados."
+            )
+        return (
+            "El rollback quedó INCOMPLETO: no se pudieron reinstalar todos los snapshots. La "
+            "transacción del journal queda PENDIENTE; restaurá plugins.txt/loadorder.txt a mano "
+            "desde los snapshots indicados antes de volver a ordenar."
+        )
+
+
+def _aplicar_recuperacion(response: dict[str, Any], recuperacion: _Recuperacion | None) -> None:
+    """Agrega la evidencia de recuperación a una respuesta FAIL (A1)."""
+    if recuperacion is None:
+        return
+    response["rollback_vetoed"] = recuperacion.vetado
+    aviso = recuperacion.aviso()
+    if not aviso:
+        return
+    response["snapshots"] = [
+        {"original_path": original, "snapshot_path": snapshot} for original, snapshot in recuperacion.snapshots
+    ]
+    for clave in ("message", "outcome_detail", "logs"):
+        previo = response.get(clave)
+        response[clave] = f"{previo} {aviso}" if previo else aviso
+
+
+def _respuesta_de_fallo(
+    reason: LootSortFailureReason,
+    message: str,
+    *,
+    recuperacion: _Recuperacion | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
     """Respuesta FAIL de las rutas sin resultado de proceso (PR-2).
 
     Única fábrica de esas respuestas: garantiza ``outcome``/``failure_reason``
     en TODAS (``test_toda_salida_de_sort_load_order_lleva_outcome`` lo ancla
     por AST: ningún ``return`` de ``sort_load_order`` puede armar su dict a mano).
+    ``recuperacion`` (A1) suma ``rollback_vetoed`` y, si el filesystem no probó
+    la recuperación, los snapshots y la instrucción para el operador.
     """
     response: dict[str, Any] = {
         "status": "error",
@@ -317,6 +388,7 @@ def _respuesta_de_fallo(reason: LootSortFailureReason, message: str, **extra: An
         "outcome_detail": message,
     }
     response.update(extra)
+    _aplicar_recuperacion(response, recuperacion)
     return response
 
 
@@ -895,6 +967,8 @@ class LootSortingService:
             },
         )
         journal_tx_id: int | None = None
+        # A1: sólo se llena en la rama del veredicto FAIL (las demás responden ahí mismo).
+        recuperacion: _Recuperacion | None = None
         # Una vez commiteada la TX, ninguna ruta posterior debe re-marcarla
         # rolled-back: una cancelación mientras se compone/persiste el informe
         # (post-commit) corrompería el audit trail de una TX ya exitosa
@@ -1059,16 +1133,21 @@ class LootSortingService:
             detail = f"Could not acquire load-order lock '{self.RESOURCE_ID}': {exc}"
             return _respuesta_de_fallo(LootSortFailureReason.PRECONDITION_FAILED, detail)
         except _ActionManifestError as exc:
-            await self._mark_journal_rolled_back(journal_tx_id)
+            # La TX recién abierta ya la cerró _emit_action_manifest (journal_tx_id
+            # sigue en None acá): el helper no tiene nada que marcar.
+            recuperacion = await self._cerrar_journal_tras_fallo(journal_tx_id, tx, contexto="manifiesto")
             logger.error("No se pudo emitir el ActionManifest; sort abortado: %s", exc)
             detail = f"Manifiesto de vuelo requerido no emitido: {exc}"
             return _respuesta_de_fallo(
                 LootSortFailureReason.PRECONDITION_FAILED,
                 detail,
+                recuperacion=recuperacion,
                 rolled_back=tx.rollback_completed,
             )
         except _LootSortFailedError as exc:
-            await self._mark_journal_rolled_back(journal_tx_id)
+            recuperacion = await self._cerrar_journal_tras_fallo(
+                journal_tx_id, tx, contexto=f"veredicto {exc.verdict.failure_reason}"
+            )
             result = exc.result
             verdict = exc.verdict
             rolled_back = tx.rollback_completed
@@ -1080,53 +1159,59 @@ class LootSortingService:
                 # la verdad del proceso; el detalle explica el rechazo).
                 result = replace(result, errors=[*result.errors, verdict.detail])
         except LOOTTimeoutError as exc:
-            await self._mark_journal_rolled_back(journal_tx_id)
+            recuperacion = await self._cerrar_journal_tras_fallo(journal_tx_id, tx, contexto="timeout")
             logger.error("LOOT sort failed: %s", exc)
             return _respuesta_de_fallo(
                 LootSortFailureReason.TIMEOUT,
                 str(exc),
+                recuperacion=recuperacion,
                 outcome_detail=_detalle_de_timeout(exc),
                 rolled_back=tx.rollback_completed,
             )
         except (LOOTNotFoundError, LOOTPreconditionError) as exc:
-            await self._mark_journal_rolled_back(journal_tx_id)
+            recuperacion = await self._cerrar_journal_tras_fallo(journal_tx_id, tx, contexto="precondición")
             logger.error("LOOT sort failed: %s", exc)
             return _respuesta_de_fallo(
                 LootSortFailureReason.PRECONDITION_FAILED,
                 str(exc),
+                recuperacion=recuperacion,
                 rolled_back=tx.rollback_completed,
             )
         except LOOTWorkerProtocolError as exc:
             # Resultado del worker fuera de contrato: ningún campo es evidencia
-            # (ni el success ni el kind). El snapshot ya se restauró en __aexit__.
-            await self._mark_journal_rolled_back(journal_tx_id)
+            # (ni el success ni el kind). El __aexit__ ya intentó el restore.
+            recuperacion = await self._cerrar_journal_tras_fallo(journal_tx_id, tx, contexto="protocolo del worker")
             logger.error("LOOT sort failed (protocolo del worker): %s", exc)
             return _respuesta_de_fallo(
                 LootSortFailureReason.PROTOCOL_ERROR,
                 str(exc),
+                recuperacion=recuperacion,
                 rolled_back=tx.rollback_completed,
             )
         except asyncio.CancelledError:
-            # La cancelación propaga; el snapshot ya se restauró en __aexit__.
-            # Cerrar la TX del journal es best-effort (no debe tragar la cancelación).
-            # Si ya se commiteó (cancelación durante el informe post-vuelo) NO se
-            # revierte: la TX fue exitosa y el audit trail no debe mentir (#249).
+            # La cancelación propaga. Cerrar la TX del journal es best-effort (no
+            # debe tragar la cancelación). Si ya se commiteó (cancelación durante
+            # el informe post-vuelo) NO se toca: la TX fue exitosa y el audit
+            # trail no debe mentir (#249). Si no, el helper decide entre
+            # ROLLED_BACK (restore probado) y PENDIENTE (vetado/incompleto).
             if not journal_committed:
-                await self._mark_journal_rolled_back(journal_tx_id)
+                await self._cerrar_journal_tras_fallo(journal_tx_id, tx, contexto="cancelación")
             raise
         except Exception as exc:  # noqa: BLE001 — contrato: sort_load_order SIEMPRE devuelve dict
             # runner.sort() u otra pieza puede lanzar algo fuera de las excepciones
-            # LOOT-específicas (RuntimeError de subproceso, error de validador). El
-            # snapshot ya se restauró en __aexit__; acá cerramos la TX del manifiesto
-            # (no dejar PENDING) y devolvemos un dict serializable en vez de propagar
-            # (review Codex PR #243). Si ya se commiteó, no revertir (#249).
+            # LOOT-específicas (RuntimeError de subproceso, error de validador). La
+            # TX del manifiesto se cierra según lo que probó el restore (A1) y se
+            # devuelve un dict serializable en vez de propagar (review Codex PR
+            # #243). Si ya se commiteó, no se toca (#249).
+            recuperacion = None
             if not journal_committed:
-                await self._mark_journal_rolled_back(journal_tx_id)
+                recuperacion = await self._cerrar_journal_tras_fallo(journal_tx_id, tx, contexto="error inesperado")
             logger.error("Error inesperado en el sort de LOOT: %s", exc, exc_info=True)
             detail = f"Error inesperado durante el sort: {exc}"
             return _respuesta_de_fallo(
                 LootSortFailureReason.PROCESS_ERROR,
                 detail,
+                recuperacion=recuperacion,
                 logs=str(exc),
                 rolled_back=tx.rollback_completed,
             )
@@ -1167,6 +1252,8 @@ class LootSortingService:
         }
         if verdict.failure_reason is not None:
             response["failure_reason"] = verdict.failure_reason.value
+        response["rollback_vetoed"] = False
+        _aplicar_recuperacion(response, recuperacion)
         # Superficie de los warnings del preflight (T-30·3): un preflight no-verde
         # que NO bloquea (amarillo, p.ej. overwrite sucio) igual debe llegar al
         # operador. Sin esto solo se loguearía y el agente/GUI vería un success
@@ -1317,6 +1404,44 @@ class LootSortingService:
                 journal_tx_id,
                 exc_info=True,
             )
+
+    async def _cerrar_journal_tras_fallo(
+        self,
+        journal_tx_id: int | None,
+        tx: SnapshotTransactionLock,
+        *,
+        contexto: str,
+    ) -> _Recuperacion:
+        """Cierra la TX del journal según lo que PROBÓ el restore (A1). Helper único.
+
+        Propiedad: la TX sólo pasa a ROLLED_BACK si el lock restauró todos los
+        snapshots sin veto. Un restore VETADO por terminalidad desconocida (LOOT
+        o el worker pudieron seguir vivos) o INCOMPLETO deja la TX PENDIENTE con
+        un ``critical`` correlacionable por ``tx_id`` — misma regla que
+        ``synthesis_service`` y ``dyndolod_service``. Toda rama ``except`` de
+        :meth:`sort_load_order` con TX pasa por acá (ancla:
+        ``tests/test_loot_journal_veto.py``).
+
+        Sin ``pipeline_stage`` a propósito: el servicio está clasificado sin
+        cobertura de etapa (``_SERVICIOS_SIN_COBERTURA`` en
+        ``tests/test_dyndolod_service.py``) y cerrarla es otro cambio.
+        """
+        recuperacion = _Recuperacion.del_lock(tx)
+        if journal_tx_id is None or self._journal is None:
+            return recuperacion
+        if not recuperacion.probada:
+            logger.critical(
+                "LOOT: la transacción %d del journal queda PENDIENTE tras %s: rollback %s; "
+                "recuperación manual desde los snapshots %s",
+                journal_tx_id,
+                contexto,
+                "VETADO por terminalidad desconocida" if recuperacion.vetado else "incompleto o no ejecutado",
+                [snapshot for _, snapshot in recuperacion.snapshots],
+                extra={"tx_id": journal_tx_id},
+            )
+            return recuperacion
+        await self._mark_journal_rolled_back(journal_tx_id)
+        return recuperacion
 
     async def _mark_journal_rolled_back(self, journal_tx_id: int | None) -> None:
         """Marca la transacción del journal como rolled-back (best-effort).
