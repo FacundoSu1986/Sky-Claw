@@ -47,7 +47,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
-import yaml  # type: ignore[import-untyped]  # pyyaml sin stubs en el venv (mismo criterio que pefile/pynvml)
+import yaml  # type: ignore[import-untyped,unused-ignore]  # stubs de pyyaml presentes en CI, ausentes en venvs locales
 
 if TYPE_CHECKING:
     from sky_claw.app.security.network_gateway import NetworkGateway
