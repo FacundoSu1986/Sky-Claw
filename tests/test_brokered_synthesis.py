@@ -660,10 +660,13 @@ async def test_rerun_brokered_excluye_outputs_propios_de_expected_plugins_sin_de
             vfs_broker=_WorkerBackedBroker(),
             instance_id="portable-main",
             synthesis_backend="brokered",
+            preparador_fase1=_PreparadorFalso(rutas["mo2"] / "fase1"),
         )
         out = await svc.execute_pipeline(patcher_ids=["PatcherA"])
         assert out["success"] is True, out
         assert captured_jobs[0].payload["expected_plugins"] == ["Skyrim.esm", "MiModVirtual.esp"]
+        # PR-3h: el mapa de la Fase 1 viajó y el worker lo aceptó (la corrida terminó bien con el shim).
+        assert set(captured_jobs[0].payload["cli_executables"]) == {"id-patcher-a"}
         journal.commit_transaction.assert_awaited_once_with(11)
         journal.mark_transaction_rolled_back.assert_not_awaited()
     finally:
@@ -723,6 +726,7 @@ async def test_synthesis_service_respeta_rollback_veto_ante_timeout_y_teardown_e
                 vfs_broker=_OrphanedWorkerBroker(),
                 instance_id="portable-main",
                 synthesis_backend="brokered",
+                preparador_fase1=_PreparadorFalso(rutas["mo2"] / "fase1"),
             )
             out = await svc.execute_pipeline(patcher_ids=["PatcherA"])
             await event_bus.stop()
@@ -1134,6 +1138,7 @@ async def test_synthesis_service_hace_rollback_normal_ante_timeout_limpio_sin_ve
             vfs_broker=_CleanTimeoutBroker(),
             instance_id="portable-main",
             synthesis_backend="brokered",
+            preparador_fase1=_PreparadorFalso(rutas["mo2"] / "fase1"),
         )
         out = await svc.execute_pipeline(patcher_ids=["PatcherA"])
         await event_bus.stop()
@@ -1507,3 +1512,169 @@ async def test_worker_synthesis_rechaza_mapa_de_shims_invalido_antes_de_lanzar(
     assert res.success is False
     assert "cli_executables" in res.message
     run_capture_mock.assert_not_awaited()
+
+
+# --- PR-3h (ADR 0019): el servicio prepara la Fase 1 antes de cada corrida brokered -----------------
+
+
+class _PreparadorFalso:
+    """Deja un shim con forma válida bajo *raiz* (una raíz autorizada del worker) sin compilar nada."""
+
+    def __init__(self, raiz: pathlib.Path, *, error: Exception | None = None) -> None:
+        self._raiz = raiz
+        self._error = error
+        self.llamadas: list[tuple[pathlib.Path, str, list[str]]] = []
+
+    async def preparar(
+        self, settings_path: pathlib.Path, profile_identifier: str, patcher_ids: list[str]
+    ) -> dict[str, pathlib.Path]:
+        self.llamadas.append((settings_path, profile_identifier, list(patcher_ids)))
+        if self._error is not None:
+            raise self._error
+        return {"id-patcher-a": _shim_falso(self._raiz, f"corrida-{len(self.llamadas)}")}
+
+
+def _servicio_brokered(
+    rutas: dict[str, pathlib.Path], broker: Any, preparador: Any, **kw: Any
+) -> SynthesisPipelineService:
+    return SynthesisPipelineService(
+        lock_manager=kw.pop("lock_manager", MagicMock()),
+        snapshot_manager=kw.pop("snapshot_manager", MagicMock()),
+        journal=kw.pop("journal", AsyncMock()),
+        path_resolver=_resolver_para_servicio(rutas),
+        event_bus=kw.pop("event_bus", MagicMock(publish=AsyncMock())),
+        synthesis_settings_path=rutas["settings"],
+        vfs_broker=broker,
+        instance_id="portable-main",
+        synthesis_backend="brokered",
+        preparador_fase1=preparador,
+        **kw,
+    )
+
+
+async def test_servicio_brokered_sin_preparador_de_fase1_falla_cerrado_sin_despachar(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
+    rutas = _escenario_mo2(tmp_path)
+    broker = MagicMock(submit=AsyncMock())
+    journal = AsyncMock()
+    out = await _servicio_brokered(rutas, broker, None, journal=journal).execute_pipeline(patcher_ids=["PatcherA"])
+    assert out["success"] is False
+    assert "Fase 1" in out["message"]
+    broker.submit.assert_not_awaited()
+    journal.begin_transaction.assert_not_awaited()
+
+
+async def test_servicio_brokered_corta_si_la_fase1_falla_sin_abrir_transaccion(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sky_claw.local.tools.synthesis_fase1 import Fase1Error
+
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
+    rutas = _escenario_mo2(tmp_path)
+    broker = MagicMock(submit=AsyncMock())
+    journal = AsyncMock()
+    preparador = _PreparadorFalso(rutas["mo2"] / "fase1", error=Fase1Error("Patcher 'x' (git): HITL denegado"))
+    out = await _servicio_brokered(rutas, broker, preparador, journal=journal).execute_pipeline(
+        patcher_ids=["PatcherA"]
+    )
+    assert out["success"] is False
+    assert "HITL denegado" in out["message"]
+    assert preparador.llamadas == [(rutas["settings"], "Default", ["PatcherA"])]
+    broker.submit.assert_not_awaited()
+    journal.begin_transaction.assert_not_awaited()
+
+
+async def test_servicio_standalone_no_llama_a_la_fase1_ni_pasa_el_mapa(tmp_path: pathlib.Path) -> None:
+    rutas = _escenario_mo2(tmp_path)
+    preparador = _PreparadorFalso(rutas["mo2"] / "fase1")
+    runner = MagicMock(spec=SynthesisRunner)
+    runner._config = MagicMock(output_path=rutas["output"])
+    runner.data_visibility_domain = "physical"
+    runner.settings_fingerprint.return_value = "fp"
+    runner.load_order_fingerprint.return_value = "lo"
+    runner.inspect_settings.return_value = MagicMock(group_names=(), patcher_ids=("PatcherA",))
+    svc = SynthesisPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=AsyncMock(),
+        path_resolver=_resolver_para_servicio(rutas),
+        event_bus=MagicMock(),
+        synthesis_runner=runner,
+        preflight=MagicMock(run=AsyncMock(return_value=MagicMock(checks=(), blocks_mutations=False))),
+        preparador_fase1=preparador,
+    )
+    with (
+        patch.object(SynthesisPipelineService, "_build_master_overflow_check", return_value=MagicMock()),
+        patch.object(SynthesisPipelineService, "_build_synthesis_visibility_check", return_value=MagicMock()),
+        patch.object(SynthesisPipelineService, "_append_preflight_check", side_effect=lambda r, c: r),
+    ):
+        out = await svc.execute_pipeline(patcher_ids=["PatcherA"])
+    # Sin grupos de salida corta antes del run; lo que importa es que la Fase 1 no se tocó.
+    assert out["success"] is False
+    assert preparador.llamadas == []
+    runner.run_pipeline.assert_not_called()
+
+
+def test_todas_las_run_pipeline_aceptan_el_mapa_de_la_corrida() -> None:
+    """Ancla enumerante: toda clase con ``run_pipeline`` en los runners de Synthesis acepta el mapa."""
+    import inspect
+
+    from sky_claw.local.tools import synthesis_runner as sr
+
+    clases = sorted(
+        (
+            obj
+            for modulo in (sr, brokered_synthesis)
+            for _, obj in inspect.getmembers(modulo, inspect.isclass)
+            if obj.__module__ == modulo.__name__ and "run_pipeline" in vars(obj)
+        ),
+        key=lambda c: c.__qualname__,
+    )
+    assert [c.__qualname__ for c in clases] == [
+        "BrokeredSynthesisRunner",
+        "SynthesisRunner",
+        "VfsRequiredSynthesisRunner",
+    ]
+    for clase in clases:
+        parametro = inspect.signature(clase.run_pipeline).parameters.get("cli_executables")
+        assert parametro is not None, clase.__qualname__
+        assert parametro.kind is inspect.Parameter.KEYWORD_ONLY and parametro.default is None
+
+
+async def test_preparador_fase1_estrena_carpeta_de_shims_bajo_su_raiz(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sky_claw.local.tools import synthesis_fase1 as f1
+
+    capturado: dict[str, Any] = {}
+
+    async def _falso(*args: Any, **kwargs: Any) -> f1.ResultadoFase1:
+        capturado["args"] = args
+        capturado.update(kwargs)
+        return f1.ResultadoFase1(ejecutables={"a": kwargs["directorio_shims"] / "00-a" / "SkyClawSynthesisShim.exe"})
+
+    monkeypatch.setattr(f1, "preparar_fase1", _falso)
+    hitl = MagicMock()
+    prep = f1.PreparadorFase1(
+        dotnet=tmp_path / "dotnet.exe",
+        git=tmp_path / "git.exe",
+        cache_raiz=tmp_path / "cache",
+        hitl=hitl,
+        raiz_shims=tmp_path / "raiz",
+    )
+    (tmp_path / "raiz").mkdir()
+    mapa1 = await prep.preparar(tmp_path / "s.json", "Default", ["a"])
+    dir1 = capturado["directorio_shims"]
+    await prep.preparar(tmp_path / "s.json", "Default", ["a"])
+    dir2 = capturado["directorio_shims"]
+    assert dir1 != dir2
+    for d in (dir1, dir2):
+        assert d.parent.parent == tmp_path / "raiz"
+        assert d.parent.name.startswith("skyclaw-synthesis-shims-")
+        assert not d.exists()  # preparar_fase1 exige un directorio nuevo
+    assert capturado["args"] == (tmp_path / "s.json", "Default", ["a"])
+    assert capturado["hitl"] is hitl and capturado["cache_raiz"] == tmp_path / "cache"
+    assert capturado["timeout_s"] == f1.TIMEOUT_FASE1_S
+    assert mapa1 == {"a": dir1 / "00-a" / "SkyClawSynthesisShim.exe"}

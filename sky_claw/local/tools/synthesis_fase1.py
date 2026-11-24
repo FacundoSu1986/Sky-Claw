@@ -23,14 +23,16 @@ La lectura del perfil es la MISMA que usa el traductor (:meth:`PatcherPipeline.s
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import pathlib
 import re
-from collections.abc import Awaitable, Callable
+import tempfile
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline, PatcherPipelineError, PatcherV2Seleccionado
 from sky_claw.local.tools.synthesis_compilacion import CompilacionPatcherError, compilar_patcher_local
@@ -46,7 +48,14 @@ from sky_claw.local.tools.synthesis_shim import (
 if TYPE_CHECKING:
     from sky_claw.app.security.hitl import HITLGuard
 
-__all__ = ["PREPARADORES", "Fase1Error", "ResultadoFase1", "preparar_fase1"]
+__all__ = [
+    "PREPARADORES",
+    "Fase1Error",
+    "PreparadorFase1",
+    "PreparadorFase1Protocol",
+    "ResultadoFase1",
+    "preparar_fase1",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +64,10 @@ _SHA_COMPLETO = re.compile(r"[0-9a-f]{40}")
 #: ``PatcherVersioningEnum.Commit`` de upstream: ``StringEnumConverter`` lo escribe como texto y
 #: Newtonsoft acepta también el valor numérico (Tag=0, Branch=1, Commit=2).
 _VERSIONADO_COMMIT = ("commit", 2)
+#: Timeout por subproceso (git/restore/build) de la Fase 1: ``synthesis_build_timeout_seconds`` del ADR §2.
+TIMEOUT_FASE1_S = 600.0
+#: Tope de salida capturada por subproceso de la Fase 1 (un build verborrágico no llena la memoria).
+MAX_SALIDA_FASE1_BYTES = 50_000_000
 
 
 class Fase1Error(Exception):
@@ -110,7 +123,9 @@ async def _compilar(raiz: pathlib.Path, proyecto_rel: str, ctx: _Contexto) -> _P
         timeout_s=ctx.timeout_s,
         max_output_bytes=ctx.max_output_bytes,
     )
-    internal, default = _carpetas_de_datos(raiz / PurePosixPath(proyecto_rel.replace("\\", "/")))
+    internal, default = await asyncio.to_thread(
+        _carpetas_de_datos, raiz / PurePosixPath(proyecto_rel.replace("\\", "/"))
+    )
     return _PatcherListo(exe=compilado.exe, internal_data=internal, default_data=default)
 
 
@@ -181,7 +196,9 @@ async def preparar_fase1(
     if not directorio_shims.is_absolute() or os.path.lexists(directorio_shims):
         raise Fase1Error(f"El directorio de shims debe ser absoluto y nuevo (no existe): {directorio_shims}")
     try:
-        seleccion = PatcherPipeline.seleccionar_patchers_v2(settings_path, profile_identifier, patcher_ids)
+        seleccion = await asyncio.to_thread(
+            PatcherPipeline.seleccionar_patchers_v2, settings_path, profile_identifier, patcher_ids
+        )
     except PatcherPipelineError as exc:
         raise Fase1Error(f"Perfil de Synthesis inválido: {exc}") from exc
     ctx = _Contexto(
@@ -207,7 +224,9 @@ async def preparar_fase1(
             configs.append(
                 (
                     patcher,
-                    construir_config_shim(
+                    # Hashea el árbol del patcher: fuera del loop del servicio.
+                    await asyncio.to_thread(
+                        construir_config_shim,
                         listo.exe,
                         dotnet=ctx.dotnet,
                         internal_data_folder=listo.internal_data,
@@ -235,8 +254,61 @@ async def preparar_fase1(
     for indice, (patcher, config) in enumerate(configs):
         destino = directorio_shims / f"{indice:02d}-{_nombre_seguro(patcher.canonical_id)}"
         try:
-            ejecutables[patcher.canonical_id] = materializar_shim(shim.exe.parent, destino, config)
+            ejecutables[patcher.canonical_id] = await asyncio.to_thread(
+                materializar_shim, shim.exe.parent, destino, config
+            )
         except ShimConfigError as exc:
             raise Fase1Error(f"Patcher {patcher.canonical_id!r}: {exc}") from exc
     logger.info("Fase 1 de Synthesis lista: %d patcher(s) con shim en %s", len(ejecutables), directorio_shims)
     return ResultadoFase1(ejecutables=ejecutables)
+
+
+class PreparadorFase1Protocol(Protocol):
+    """Lo que el servicio necesita de la Fase 1: el mapa ``ID canónico → shim`` de UNA corrida."""
+
+    async def preparar(
+        self, settings_path: pathlib.Path, profile_identifier: str, patcher_ids: list[str]
+    ) -> Mapping[str, pathlib.Path]: ...
+
+
+@dataclass(frozen=True)
+class PreparadorFase1:
+    """Cableado de :func:`preparar_fase1` para ``SynthesisPipelineService`` (PR-3h).
+
+    Cada corrida estrena una carpeta de shims bajo ``raiz_shims``. Por defecto es el temporal del
+    sistema: el worker USVFS confina los shims a sus raíces autorizadas (PR-3g) y la caché de
+    ``runtime_state_dir`` no es una de ellas. La caché (``cache_raiz``) sí persiste entre corridas, así
+    que una segunda corrida sin cambios no abre red ni pide HITL.
+    """
+
+    dotnet: pathlib.Path
+    git: pathlib.Path
+    cache_raiz: pathlib.Path
+    hitl: HITLGuard
+    raiz_shims: pathlib.Path | None = None
+    timeout_s: float = TIMEOUT_FASE1_S
+    max_output_bytes: int = MAX_SALIDA_FASE1_BYTES
+
+    async def preparar(
+        self, settings_path: pathlib.Path, profile_identifier: str, patcher_ids: list[str]
+    ) -> dict[str, pathlib.Path]:
+        raiz = self.raiz_shims if self.raiz_shims is not None else pathlib.Path(tempfile.gettempdir())
+        try:
+            corrida = pathlib.Path(
+                await asyncio.to_thread(tempfile.mkdtemp, prefix="skyclaw-synthesis-shims-", dir=raiz)
+            )
+        except OSError as exc:
+            raise Fase1Error(f"No se pudo crear la carpeta de shims de la corrida bajo {raiz}: {exc}") from exc
+        resultado = await preparar_fase1(
+            settings_path,
+            profile_identifier,
+            patcher_ids,
+            cache_raiz=self.cache_raiz,
+            directorio_shims=corrida / "shims",
+            dotnet=self.dotnet,
+            git=self.git,
+            hitl=self.hitl,
+            timeout_s=self.timeout_s,
+            max_output_bytes=self.max_output_bytes,
+        )
+        return dict(resultado.ejecutables)

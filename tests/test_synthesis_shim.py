@@ -340,3 +340,69 @@ def test_validar_dotnet_x64_es_publica_y_es_la_que_usa_la_config(tmp_path: pathl
     assert ss.validar_dotnet_x64(_dotnet(tmp_path)) == _dotnet(tmp_path)
     with pytest.raises(ss.ShimConfigError):
         ss.validar_dotnet_x64(None)
+
+
+async def test_hilo_hasta_terminar_espera_al_hilo_si_cancelan_al_llamador() -> None:
+    """PR-3h: cancelado el llamador, el hilo termina ANTES de propagar (el finally no limpia en carrera)."""
+    import asyncio
+    import threading
+    import time
+
+    from sky_claw.local.tools.synthesis_shim import hilo_hasta_terminar
+
+    arranco = threading.Event()
+    estado: list[str] = []
+
+    def _lento() -> str:
+        arranco.set()
+        time.sleep(0.3)
+        estado.append("terminó")
+        return "listo"
+
+    async def _llamador() -> None:
+        try:
+            await hilo_hasta_terminar(_lento)
+        finally:
+            estado.append("finally")
+
+    tarea = asyncio.ensure_future(_llamador())
+    await asyncio.to_thread(arranco.wait)
+    tarea.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+    assert estado == ["terminó", "finally"]
+
+
+async def test_hilo_hasta_terminar_devuelve_y_propaga_errores() -> None:
+    from sky_claw.local.tools.synthesis_shim import hilo_hasta_terminar
+
+    assert await hilo_hasta_terminar(lambda a, b=0: a + b, 2, b=3) == 5
+
+    def _falla() -> None:
+        raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        await hilo_hasta_terminar(_falla)
+
+
+async def test_hilo_hasta_terminar_propaga_la_cancelacion_aunque_el_hilo_falle_despues() -> None:
+    """Si cancelan y después el hilo falla, sale CancelledError: el error del hilo no puede reanudar la corrida."""
+    import asyncio
+    import threading
+    import time
+
+    from sky_claw.local.tools.synthesis_shim import hilo_hasta_terminar
+
+    arranco = threading.Event()
+
+    def _falla_tarde() -> None:
+        arranco.set()
+        time.sleep(0.3)
+        raise FileExistsError("ya publicado")
+
+    tarea = asyncio.ensure_future(hilo_hasta_terminar(_falla_tarde))
+    await asyncio.to_thread(arranco.wait)
+    tarea.cancel()
+    with pytest.raises(asyncio.CancelledError) as info:
+        await tarea
+    assert isinstance(info.value.__cause__, FileExistsError)
