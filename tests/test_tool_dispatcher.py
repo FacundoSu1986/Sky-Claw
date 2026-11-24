@@ -225,18 +225,13 @@ _CHAIN_PREVIEW_PATCHES = [
 
 
 @pytest.mark.parametrize(
-    "loot_exe_configured,expected_loot_exe",
-    [
-        (pathlib.Path(r"C:\LOOT\loot.exe"), pathlib.Path(r"C:\LOOT\loot.exe")),
-        (None, pathlib.Path("loot.exe")),
-    ],
-    ids=["configured-path-is-used", "none-falls-back-to-loot.exe"],
+    "loot_exe_configured",
+    [pathlib.Path(r"C:\LOOT\loot.exe"), None],
+    ids=["con-loot-configurado", "sin-loot-configurado"],
 )
-def test_build_chain_preview_loot_exe_resolution(
-    loot_exe_configured: pathlib.Path | None,
-    expected_loot_exe: pathlib.Path,
-) -> None:
-    """El provider usa LOOT_EXE configurado o el fallback ``loot.exe``."""
+def test_build_chain_preview_no_construye_un_loot(loot_exe_configured: pathlib.Path | None) -> None:
+    """A3: el provider del preview NUNCA arma un runner de LOOT (antes armaba uno a
+    ciegas —sin broker ni data root aislado— con fallback a un ``loot.exe`` suelto)."""
     from sky_claw.app.orchestrator.dispatcher_dependencies import (
         build_preview_chain_service_provider,
     )
@@ -253,9 +248,10 @@ def test_build_chain_preview_loot_exe_resolution(
 
     with ExitStack() as stack:
         mocks = [stack.enter_context(patch(p)) for p in _CHAIN_PREVIEW_PATCHES]
-        mock_loot_config = mocks[0]  # sky_claw.local.loot.cli.LOOTConfig
+        mock_loot_config, mock_loot_runner = mocks[0], mocks[1]
 
         provider()
 
-        mock_loot_config.assert_called_once()
-        assert mock_loot_config.call_args.kwargs["loot_exe"] == expected_loot_exe
+        mock_loot_config.assert_not_called()
+        mock_loot_runner.assert_not_called()
+        assert "loot_runner" not in mocks[-1].call_args.kwargs

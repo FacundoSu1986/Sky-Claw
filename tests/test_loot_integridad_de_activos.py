@@ -466,3 +466,45 @@ def test_sort_load_order_pasa_la_activacion_al_clasificador() -> None:
     for llamada in llamadas:
         claves = {kw.arg for kw in llamada.keywords}
         assert {"active_before", "active_after", "log_fatal"} <= claves, ast.unparse(llamada)
+
+
+# =============================================================================
+# M2: la superficie del agente LLM respeta el contrato success/message y
+# reenvía la evidencia de recuperación y diagnóstico (paridad con la GUI, que
+# recibe el dict del servicio tal cual)
+# =============================================================================
+
+
+@pytest.mark.parametrize("falla", [True, False], ids=["fail", "exito"])
+async def test_agente_reenvia_message_y_evidencia_del_servicio(
+    lock_manager, snapshot_manager, tmp_path, monkeypatch, falla: bool
+) -> None:  # noqa: ANN001
+    from sky_claw.app.agent.tools.system_tools import run_loot_sort
+
+    la = tmp_path / "localappdata"
+    game_dir = la / "Skyrim Special Edition"
+    game_dir.mkdir(parents=True)
+    plugins = game_dir / "plugins.txt"
+    plugins.write_bytes(_PLUGINS)
+    monkeypatch.setenv("LOCALAPPDATA", str(la))
+
+    def efecto() -> None:
+        if falla:
+            plugins.write_bytes(b"*Mod A.esp\n")
+
+    agente = json.loads(
+        await run_loot_sort(
+            MagicMock(),
+            _runner(efecto),
+            None,
+            profile="Default",
+            lock_manager=lock_manager,
+            snapshot_manager=snapshot_manager,
+        )
+    )
+
+    assert isinstance(agente["message"], str)
+    assert bool(agente["message"]) is falla
+    assert agente["rolled_back"] is falla
+    assert agente["rollback_vetoed"] is False
+    assert agente["verification"]["active_plugins_preserved"] is (not falla)

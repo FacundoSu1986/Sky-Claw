@@ -17,7 +17,7 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
-from sky_claw.app.core.models import LootExecutionParams, WSLInteropError
+from sky_claw.app.core.models import WSLInteropError
 from sky_claw.sin_consola import creationflags_sin_consola
 
 #: Windows ``CREATE_NO_WINDOW`` — evita popups de consola al invocar taskkill.
@@ -209,79 +209,3 @@ class ModdingToolsAgent:
             WSLInteropError: If ``wslpath`` fails or times out.
         """
         return await _translate_wsl_to_win(wsl_path, timeout=timeout)
-
-    @staticmethod
-    async def run_loot(params: LootExecutionParams) -> dict:
-        """Execute LOOT.exe asynchronously with zombie prevention.
-
-        .. deprecated::
-            Prefer :class:`sky_claw.local.loot.cli.LOOTRunner` which uses
-            :class:`LOOTConfig` for configurable paths.
-
-        The hardcoded paths below are legacy defaults; new code should
-        inject paths via configuration.
-        """
-        loot_exe_wsl = "/mnt/c/Program Files/LOOT/loot.exe"
-        game_path_win = r"C:\Steam\steamapps\common\Skyrim Special Edition"
-
-        logger.info("Executing LOOT for profile: %s", params.profile_name)
-
-        args = [
-            loot_exe_wsl,
-            "--game",
-            "SkyrimSE",
-            "--game-path",
-            game_path_win,
-            # Mismo fix que `local/loot/cli.py`: LOOT declara `--auto-sort`, no
-            # `--sort` (loot/loot `src/gui/qt/main.cpp`). Este lanzador legacy es
-            # el "hermano" que quedaba fuera de cualquier corrección puntual.
-            "--auto-sort",
-        ]
-
-        if params.update_masterlist:
-            # Mismo hermano que el flag de arriba: `--update-masterlist` no es un
-            # flag válido de LOOT (verificado contra src/gui/qt/main.cpp) y
-            # `MasterlistDownloader` (local/loot/masterlist.py) no está cableado a
-            # ningún lanzador. Se ordena sin refrescar en vez de romper la
-            # invocación completa.
-            logger.warning(
-                "LOOT (legacy): se pidió update_masterlist=True pero `--update-masterlist` "
-                "no existe; se ordena sin refrescar el masterlist."
-            )
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                creationflags=creationflags_sin_consola(),
-            )
-        except FileNotFoundError:
-            logger.error("LOOT executable not found: %s", loot_exe_wsl)
-            return {
-                "status": "error",
-                "logs": f"LOOT executable not found: {loot_exe_wsl}",
-            }
-
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=120.0,
-            )
-        except TimeoutError:
-            await _kill_and_reap(proc, timeout=3.0)
-            logger.error("LOOT exceeded 120s timeout")
-            return {
-                "status": "error",
-                "logs": "LOOT exceeded 120 second timeout",
-            }
-
-        # Standard Patch 2026: prevent decoding crash on WSL2 crossing Windows I/O
-        out_str = stdout.decode("utf-8", errors="replace").strip()
-        err_str = stderr.decode("utf-8", errors="replace").strip()
-
-        if proc.returncode != 0:
-            logger.error("LOOT failed with code %d. Stderr: %s", proc.returncode, err_str)
-            return {"status": "error", "logs": err_str}
-
-        return {"status": "success", "logs": out_str}

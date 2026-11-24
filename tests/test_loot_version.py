@@ -2,8 +2,8 @@
 
 libloot <0.29 resuelve symlinks y "sale" del VFS de MO2 (LOOT ciego ante los
 mods virtualizados — informe mmodding §3). El preflight (T-15) necesita saber
-la versión instalada para advertir; la detección corre ``loot --version`` y
-el parseo/advisory son funciones puras testeables sin el binario.
+la versión instalada para advertir; la detección lee el ``VERSIONINFO`` del PE
+(M1, sin lanzar el binario) y el parseo/advisory son funciones puras.
 """
 
 import pathlib
@@ -17,6 +17,7 @@ from sky_claw.local.loot.version import (
     parse_loot_version,
     symlink_advisory,
 )
+from tests._loot_pe import escribir_loot_exe
 
 
 class TestParseo:
@@ -55,32 +56,45 @@ class TestAdvisory:
 
 
 class TestDeteccion:
-    async def test_detecta_desde_el_binario(self, tmp_path: pathlib.Path) -> None:
-        run_capture = AsyncMock(return_value=(b"LOOT v0.28.0\n", b"", 0))
+    """M1: la versión sale del ``VERSIONINFO`` del PE, sin lanzar ``LOOT.exe``.
 
-        with patch("sky_claw.local.loot.version.run_capture", run_capture):
-            version = await detect_loot_version(tmp_path / "loot.exe")
+    ``LOOT.exe --version`` toma el mutex global ``LOOT.Shell.Instance`` antes de
+    parsear argumentos (loot/loot 0.29.1 ``src/gui/qt/main.cpp``: el
+    ``ApplicationMutexGuard`` se construye antes del ``QCommandLineParser``):
+    con el GUI del operador abierto sale 0 sin imprimir y la versión quedaba
+    "desconocida". La lectura del PE es la misma que atestigua ``lastVersion``
+    (``binary_version.read_loot_binary_version``).
+    """
 
-        assert version == (0, 28, 0)
-        argv = run_capture.await_args.args[0]
-        assert argv[-1] == "--version"
+    async def test_detecta_desde_el_versioninfo_del_binario(self, tmp_path: pathlib.Path) -> None:
+        exe = escribir_loot_exe(tmp_path / "LOOT" / "LOOT.exe", (0, 28, 0))
 
-    async def test_fallo_del_subproceso_devuelve_none(self, tmp_path: pathlib.Path) -> None:
-        run_capture = AsyncMock(side_effect=OSError("no ejecutable"))
+        assert await detect_loot_version(exe) == (0, 28, 0)
 
-        with patch("sky_claw.local.loot.version.run_capture", run_capture):
-            assert await detect_loot_version(tmp_path / "loot.exe") is None
+    async def test_no_lanza_ningun_proceso(self, tmp_path: pathlib.Path) -> None:
+        exe = escribir_loot_exe(tmp_path / "LOOT" / "LOOT.exe", (0, 29, 2))
+        lanzador = AsyncMock(side_effect=AssertionError("no debe lanzar LOOT.exe"))
 
-    async def test_timeout_devuelve_none(self, tmp_path: pathlib.Path) -> None:
-        run_capture = AsyncMock(side_effect=TimeoutError())
+        with patch("asyncio.create_subprocess_exec", lanzador):
+            assert await detect_loot_version(exe) == (0, 29, 2)
+        lanzador.assert_not_awaited()
 
-        with patch("sky_claw.local.loot.version.run_capture", run_capture):
-            assert await detect_loot_version(tmp_path / "loot.exe") is None
+    async def test_binario_ausente_devuelve_none(self, tmp_path: pathlib.Path) -> None:
+        assert await detect_loot_version(tmp_path / "loot.exe") is None
 
-    async def test_exit_non_zero_devuelve_none_aunque_haya_version(self, tmp_path: pathlib.Path) -> None:
-        """Un exit != 0 es detección fallida: un falso verde suprimiría el
-        advisory/bloqueo del preflight (review Copilot PR #239)."""
-        run_capture = AsyncMock(return_value=(b"LOOT v0.29.0\n", b"error inesperado", 1))
+    async def test_binario_sin_versioninfo_devuelve_none(self, tmp_path: pathlib.Path) -> None:
+        exe = tmp_path / "loot.exe"
+        exe.write_bytes(b"MZ no es un PE completo")
 
-        with patch("sky_claw.local.loot.version.run_capture", run_capture):
-            assert await detect_loot_version(tmp_path / "loot.exe") is None
+        assert await detect_loot_version(exe) is None
+
+    def test_el_modulo_no_importa_lanzadores_de_procesos(self) -> None:
+        import ast
+
+        import sky_claw.local.loot.version as modulo
+
+        arbol = ast.parse(pathlib.Path(modulo.__file__).read_text(encoding="utf-8"))
+        nombres = {n.id for n in ast.walk(arbol) if isinstance(n, ast.Name)} | {
+            n.attr for n in ast.walk(arbol) if isinstance(n, ast.Attribute)
+        }
+        assert not nombres & {"run_capture", "create_subprocess_exec", "Popen", "run"}
