@@ -180,7 +180,7 @@ def test_construir_dispatcher_no_resuelve_providers_ni_binarios() -> None:
     resolver.get_mo2_instance_data_root.assert_not_called()
 
 
-def test_preview_lazy_conserva_wiring_y_fallback_de_loot() -> None:
+def test_preview_lazy_conserva_wiring_y_no_construye_loot() -> None:
     resolver = MagicMock()
     resolver.get_skyrim_path.return_value = pathlib.Path("/skyrim")
     resolver.get_xedit_path.return_value = pathlib.Path("/xedit.exe")
@@ -213,14 +213,9 @@ def test_preview_lazy_conserva_wiring_y_fallback_de_loot() -> None:
         resultado = provider()
 
     assert resultado is chain.return_value
-    assert loot_config.call_args.kwargs == {
-        "loot_exe": pathlib.Path("loot.exe"),
-        "game_path": pathlib.Path("/skyrim"),
-    }
-    loot_runner.assert_called_once_with(
-        loot_config.return_value,
-        path_validator=colaboradores["path_validator"],
-    )
+    # A3: el preview no simula LOOT; el provider ya no arma un runner a ciegas.
+    loot_config.assert_not_called()
+    loot_runner.assert_not_called()
     chain.assert_called_once_with(
         lock_manager=colaboradores["lock_manager"],
         snapshot_manager=colaboradores["snapshot_manager"],
@@ -228,7 +223,6 @@ def test_preview_lazy_conserva_wiring_y_fallback_de_loot() -> None:
         path_resolver=resolver,
         path_validator=colaboradores["path_validator"],
         event_bus=colaboradores["event_bus"],
-        loot_runner=loot_runner.return_value,
         xedit_runner=xedit_runner.return_value,
         conflict_analyzer=analyzer.return_value,
         stage9_coordination=coordinacion,
