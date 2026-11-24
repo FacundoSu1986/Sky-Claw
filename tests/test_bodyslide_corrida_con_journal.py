@@ -394,3 +394,119 @@ async def test_la_cuarentena_del_recurso_bloquea_aunque_no_haya_journal_propio(t
     assert run_capture.await_count == 0
     assert (exe.parent / "Config.xml").read_text(encoding="utf-8") == _CONFIG
     assert not _ruta_del_journal(runner).exists()
+
+
+# ---------------------------------------------------------------------------
+# Review Codex #1021 — cancelaciones en los bordes y plazo independiente del executor
+# ---------------------------------------------------------------------------
+
+
+def _tx_sembrable(tmp_path: pathlib.Path) -> tuple[bj.TransaccionDeConfig, pathlib.Path]:
+    exe_dir = tmp_path / "BodySlideTx"
+    exe_dir.mkdir()
+    (exe_dir / "Config.xml").write_text(_CONFIG, encoding="utf-8")
+    tx = bj.iniciar_transaccion(
+        almacen=_almacen(tmp_path),
+        identidad=bj.IdentidadDeEjecucion(maquina="m", instancia=identidad_de_instancia(exe_dir)),
+        exe_dir=exe_dir,
+        bytes_sembrados=b"<Config><TargetGame>4</TargetGame><Sembrado/></Config>",
+    )
+    return tx, exe_dir
+
+
+async def test_el_plazo_de_siembra_no_depende_del_executor_compartido(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Con el executor por defecto saturado, el plazo vence igual y la cuarentena se escribe."""
+    import concurrent.futures
+
+    tx, _ = _tx_sembrable(tmp_path)
+    liberar_siembra = threading.Event()
+    sembrar_real = bj.TransaccionDeConfig.sembrar
+
+    def _colgado(self: bj.TransaccionDeConfig) -> None:
+        liberar_siembra.wait(30)
+        sembrar_real(self)
+
+    monkeypatch.setattr(bj.TransaccionDeConfig, "sembrar", _colgado)
+    loop = asyncio.get_running_loop()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    loop.set_default_executor(executor)
+    ocupar = threading.Event()
+    try:
+        loop.run_in_executor(None, ocupar.wait, 30)  # el único worker queda tomado
+        with pytest.raises(bj.SiembraColgadaError):
+            await asyncio.wait_for(bj.SiembraConPlazo(tx, plazo=0.05).ejecutar(), timeout=5)
+        assert tx.almacen.marcador_de_cuarentena.exists()
+    finally:
+        ocupar.set()
+        liberar_siembra.set()
+        executor.shutdown(wait=True)
+
+
+async def test_cancelar_durante_el_abandono_retiene_hasta_dejar_la_cuarentena(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Una cancelación mientras se escribe la cuarentena no suelta al caller con ``abandonada=False``."""
+    tx, _ = _tx_sembrable(tmp_path)
+    liberar_siembra = threading.Event()
+    entro = threading.Event()
+    liberar_marcador = threading.Event()
+    sembrar_real = bj.TransaccionDeConfig.sembrar
+    poner_real = bj.poner_en_cuarentena
+
+    def _colgado(self: bj.TransaccionDeConfig) -> None:
+        liberar_siembra.wait(30)
+        sembrar_real(self)
+
+    def _marcador_lento(almacen: AlmacenDeJournal, **kwargs: str) -> None:
+        entro.set()
+        liberar_marcador.wait(30)
+        poner_real(almacen, **kwargs)
+
+    monkeypatch.setattr(bj.TransaccionDeConfig, "sembrar", _colgado)
+    monkeypatch.setattr(bj, "poner_en_cuarentena", _marcador_lento)
+    siembra = bj.SiembraConPlazo(tx, plazo=0.05)
+    tarea = asyncio.create_task(siembra.ejecutar())
+    try:
+        assert await asyncio.to_thread(entro.wait, 10)
+        tarea.cancel()
+        hechas, _ = await asyncio.wait({tarea}, timeout=0.3)
+        assert not hechas, "el caller salió con el abandono todavía en vuelo"
+        liberar_marcador.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+        assert siembra.abandonada is True
+        assert tx.almacen.marcador_de_cuarentena.exists()
+    finally:
+        liberar_marcador.set()
+        liberar_siembra.set()
+
+
+async def test_cancelar_durante_lanzado_registra_terminal_y_restaura(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Si la cancelación llega mientras se graba LANZADO, el spawn nunca se pidió: se restaura."""
+    runner = _runner(tmp_path)
+    exe = runner.config.bodyslide_exe
+    entro = threading.Event()
+    liberar = threading.Event()
+    lanzado_real = bj.TransaccionDeConfig.marcar_lanzado
+
+    def _lanzado_lento(self: bj.TransaccionDeConfig) -> None:
+        entro.set()
+        liberar.wait(30)
+        lanzado_real(self)
+
+    monkeypatch.setattr(bj.TransaccionDeConfig, "marcar_lanzado", _lanzado_lento)
+    run_capture = AsyncMock()
+    with patch("sky_claw.local.tools.bodyslide_runner.run_capture", run_capture):
+        tarea = asyncio.create_task(_correr(runner, _destino(tmp_path)))
+        assert await asyncio.to_thread(entro.wait, 10)
+        tarea.cancel()
+        liberar.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+    assert run_capture.await_count == 0
+    assert (exe.parent / "Config.xml").read_text(encoding="utf-8") == _CONFIG
+    assert not _ruta_del_journal(runner).exists()

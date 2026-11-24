@@ -55,6 +55,7 @@ from sky_claw.local.tools.bodyslide_headless import (
 from sky_claw.local.tools.bodyslide_journal import (
     ARCHIVOS_JOURNALEADOS,
     AlmacenDeJournal,
+    EstadoDelJournal,
     InformeDeRecuperacion,
     JournalError,
     JournalOcupadoError,
@@ -680,7 +681,15 @@ class BodySlideRunner:
 
             # 4b) LANZADO durable ANTES de pedir el spawn: sin esto un crash no
             #     distingue "nunca se lanzó" de "puede seguir vivo".
-            await mutar_hasta_terminal(tx.marcar_lanzado)
+            try:
+                await mutar_hasta_terminal(tx.marcar_lanzado)
+            except asyncio.CancelledError:
+                # Review Codex #1021: la cancelación llegó mientras se grababa LANZADO.
+                # El spawn NUNCA se pidió, así que la terminalidad está demostrada: se
+                # registra TERMINAL y se restaura en vez de dejar un LANZADO huérfano.
+                lanzado = tx.estado is EstadoDelJournal.LANZADO
+                terminal = True
+                raise
             lanzado = True
 
             # 4c) Spawn — evidencia + veredicto. ``require_job=True`` (cierre #1003):

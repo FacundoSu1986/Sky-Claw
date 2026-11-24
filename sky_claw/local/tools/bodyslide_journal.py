@@ -1052,6 +1052,7 @@ class SiembraConPlazo:
         self._terminado = threading.Event()
         self._abandonada = False
         self._error: BaseException | None = None
+        self._aviso: Callable[[], None] | None = None
 
     @property
     def abandonada(self) -> bool:
@@ -1065,6 +1066,9 @@ class SiembraConPlazo:
         with self._candado:
             abandonada = self._abandonada
             self._terminado.set()
+        aviso = self._aviso
+        if aviso is not None:
+            aviso()
         if abandonada:
             self._cerrar_abandonada()
 
@@ -1090,17 +1094,35 @@ class SiembraConPlazo:
             return True
 
     async def ejecutar(self) -> None:
-        """Vuelve con la siembra hecha (o su error); ``SiembraColgadaError`` si se abandonó por plazo."""
+        """Vuelve con la siembra hecha (o su error); ``SiembraColgadaError`` si se abandonó por plazo.
+
+        El plazo se mide en el event loop (review Codex #1021): esperarlo con
+        ``to_thread`` lo hacía depender de que el executor compartido tuviera un worker
+        libre. El abandono corre en un hilo PROPIO y se retiene hasta terminar aun ante
+        cancelaciones repetidas: el caller nunca sale con la siembra viva y
+        ``abandonada`` en falso.
+        """
+        loop = asyncio.get_running_loop()
+        lista = asyncio.Event()
+
+        def _avisar() -> None:
+            with contextlib.suppress(RuntimeError):  # loop ya cerrado: la siembra se abandonó
+                loop.call_soon_threadsafe(lista.set)
+
+        self._aviso = _avisar
         hilo = threading.Thread(target=self._hilo, name="bodyslide-siembra", daemon=True)
         hilo.start()
         try:
-            listo = await asyncio.to_thread(self._terminado.wait, self._plazo)
+            await asyncio.wait_for(lista.wait(), timeout=self._plazo)
+            vencido = False
+        except TimeoutError:
+            vencido = True
         except asyncio.CancelledError:
-            await asyncio.shield(
-                asyncio.to_thread(self._abandonar_si_sigue_viva, "corrida cancelada con la siembra en vuelo")
+            await _en_hilo_propio_hasta_terminal(
+                self._abandonar_si_sigue_viva, "corrida cancelada con la siembra en vuelo"
             )
             raise
-        if not listo and await asyncio.to_thread(
+        if vencido and await _en_hilo_propio_hasta_terminal(
             self._abandonar_si_sigue_viva, f"la siembra superó el plazo de {self._plazo:g} s"
         ):
             raise SiembraColgadaError(
@@ -1109,6 +1131,47 @@ class SiembraConPlazo:
             )
         if self._error is not None:
             raise self._error
+
+
+async def _en_hilo_propio_hasta_terminal(funcion: Callable[[str], bool], argumento: str) -> bool:
+    """Corre ``funcion`` en un hilo dedicado (no en el executor) y retiene al caller hasta que termina.
+
+    Una cancelación (aun repetida) no suelta al caller antes de tiempo: se espera el
+    resultado y recién después se propaga ``CancelledError``.
+    """
+    loop = asyncio.get_running_loop()
+    futuro: asyncio.Future[bool] = loop.create_future()
+
+    def _resolver(ok: bool, valor: object) -> None:
+        if futuro.done():
+            return
+        if ok:
+            futuro.set_result(bool(valor))
+        else:
+            assert isinstance(valor, BaseException)
+            futuro.set_exception(valor)
+
+    def _correr() -> None:
+        try:
+            resultado: tuple[bool, object] = (True, funcion(argumento))
+        except BaseException as exc:  # noqa: BLE001 — viaja al caller por el futuro
+            resultado = (False, exc)
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(_resolver, *resultado)
+
+    threading.Thread(target=_correr, name="bodyslide-abandono", daemon=True).start()
+    cancelado = False
+    while not futuro.done():
+        try:
+            await asyncio.shield(futuro)
+        except asyncio.CancelledError:
+            if futuro.done():
+                break
+            cancelado = True
+    resultado = futuro.result()
+    if cancelado:
+        raise asyncio.CancelledError
+    return resultado
 
 
 def liberar_cuarentena(almacen: AlmacenDeJournal, *, evidencia: str) -> bool:
