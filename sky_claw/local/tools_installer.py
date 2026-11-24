@@ -551,7 +551,13 @@ _SYNTHESIS_CLI_MAX_SALIDA_BYTES = 50_000_000
 
 
 def _copiar_cli_verificado(salida: pathlib.Path, install_dir: pathlib.Path, salida_sha256: str) -> pathlib.Path:
-    """Copia la salida verificada de la caché a *install_dir* (vacío) y comprueba que quedó idéntica."""
+    """Publica en *install_dir* una copia de la salida verificada de la caché, o nada.
+
+    La copia va primero a un staging hermano (mismo volumen) y se compara por hash ahí; recién
+    entonces se promueve con un rename. Una copia cortada a la mitad (disco lleno, antivirus) nunca
+    deja en *install_dir* un ``Synthesis.Bethesda.CLI.exe`` sin sus DLL que la próxima llamada
+    aceptaría como "ya instalado".
+    """
     from sky_claw.app.security.links import exigir_arbol_copiable_sin_reparse
     from sky_claw.local.tools.synthesis_shim import hash_arbol
 
@@ -560,10 +566,19 @@ def _copiar_cli_verificado(salida: pathlib.Path, install_dir: pathlib.Path, sali
             f"{install_dir} tiene archivos pero no {SYNTHESIS_CLI_EXE}: vacialo (o elegí otra carpeta) "
             "antes de instalar el Synthesis CLI; no se mezcla con una instalación a medias."
         )
+    install_dir.parent.mkdir(parents=True, exist_ok=True)
     exigir_arbol_copiable_sin_reparse(salida)
-    shutil.copytree(salida, install_dir, symlinks=True, dirs_exist_ok=True)
-    if hash_arbol(install_dir) != salida_sha256:
-        raise ToolInstallError(f"La copia del Synthesis CLI en {install_dir} no coincide con el build verificado")
+    staging = pathlib.Path(tempfile.mkdtemp(prefix=f".{install_dir.name}.instalando-", dir=install_dir.parent))
+    try:
+        payload = staging / "cli"
+        shutil.copytree(salida, payload, symlinks=True)
+        if hash_arbol(payload) != salida_sha256:
+            raise ToolInstallError(f"La copia del Synthesis CLI no coincide con el build verificado ({payload})")
+        if install_dir.exists():
+            install_dir.rmdir()  # vacía (chequeado arriba, bajo el lock): se libera el nombre para el rename
+        _promover_payload_verificado(payload, install_dir, "Synthesis CLI")
+    finally:
+        _limpiar_payload_temporal(staging, "Synthesis CLI")
     return install_dir / SYNTHESIS_CLI_EXE
 
 

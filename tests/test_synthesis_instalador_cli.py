@@ -50,11 +50,11 @@ def _installer(lock: _Lock | None = None) -> ti.ToolsInstaller:
 
 def _salida_de_build(raiz: pathlib.Path, *, subsistema: int = 3) -> sc.PatcherCompilado:
     salida = raiz / "builds" / "clave" / "salida"
-    salida.mkdir(parents=True)
+    salida.mkdir(parents=True, exist_ok=True)
     exe = salida / ti.SYNTHESIS_CLI_EXE
     exe.write_bytes(pe_sintetico(subsistema=subsistema))
     (salida / "Synthesis.Bethesda.CLI.dll").write_bytes(b"il")
-    (salida / "runtimes").mkdir()
+    (salida / "runtimes").mkdir(exist_ok=True)
     (salida / "runtimes" / "nativo.dll").write_bytes(b"n")
     return sc.PatcherCompilado(exe=exe, salida_sha256=hash_arbol(salida), cache_hit=False)
 
@@ -259,3 +259,40 @@ async def test_cancelar_durante_la_copia_no_suelta_el_lock_con_el_hilo_vivo(
         await tarea
     assert orden == ["copia:inicio", "copia:fin"]
     assert lock.release_lock.await_count == 1
+
+
+async def test_una_copia_cortada_no_deja_un_cli_que_despues_pase_por_instalado(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hallazgo de Codex en #1013: la copia se verifica en staging y se publica entera o nada."""
+    _falsos(monkeypatch, tmp_path)
+    destino = tmp_path / "tools" / "Synthesis"
+    copytree_real = ti.shutil.copytree
+
+    def _copia_que_se_corta(src: Any, dst: Any, **kw: Any) -> Any:
+        pathlib.Path(dst).mkdir(parents=True)
+        (pathlib.Path(dst) / ti.SYNTHESIS_CLI_EXE).write_bytes(pe_sintetico(subsistema=3))
+        raise OSError(28, "No queda espacio en el disco")
+
+    monkeypatch.setattr(ti.shutil, "copytree", _copia_que_se_corta)
+    with pytest.raises(ti.ToolInstallError, match="No se pudo copiar"):
+        await _instalar(_installer(), tmp_path, destino)
+    assert not destino.exists()
+    assert [p.name for p in destino.parent.iterdir()] == []  # ni destino ni staging
+
+    # El reintento no ve un "ya instalado": vuelve a compilar y publica la copia entera.
+    monkeypatch.setattr(ti.shutil, "copytree", copytree_real)
+    resultado = await _instalar(_installer(), tmp_path, destino)
+    assert resultado.already_existed is False
+    assert (destino / "Synthesis.Bethesda.CLI.dll").is_file()
+
+
+async def test_destino_vacio_preexistente_se_reemplaza_por_la_copia_verificada(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _falsos(monkeypatch, tmp_path)
+    destino = tmp_path / "Synthesis"
+    destino.mkdir()
+    resultado = await _instalar(_installer(), tmp_path, destino)
+    assert resultado.exe_path == destino / ti.SYNTHESIS_CLI_EXE
+    assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(".Synthesis")) == []
