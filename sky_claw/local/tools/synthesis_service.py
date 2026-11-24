@@ -44,8 +44,9 @@ from sky_claw.app.db.locks import (
     SnapshotTransactionLock,
 )
 from sky_claw.app.db.rollback_veto import exception_forbids_rollback
+from sky_claw.app.security.links import is_link
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
-from sky_claw.local.tools.output_targets import synthesis_output_target
+from sky_claw.local.tools.output_targets import SYNTHESIS_MANAGED_MOD_NAME, synthesis_output_target
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline
 from sky_claw.local.tools.synthesis_runner import (
     SynthesisConfig,
@@ -53,6 +54,7 @@ from sky_claw.local.tools.synthesis_runner import (
     SynthesisResult,
     SynthesisRunner,
     SynthesisValidationError,
+    es_output_de_grupo,
 )
 
 if TYPE_CHECKING:
@@ -67,6 +69,9 @@ logger = logging.getLogger(__name__)
 
 # Directorio de staging de backups (compartido con supervisor)
 _BACKUP_STAGING_DIR = ".skyclaw_backups/"
+
+#: ``synthesis_run_timeout_seconds`` del ADR 0019 §2.4: plazo de la corrida del CLI (Fase 2 o standalone).
+DEFAULT_RUN_TIMEOUT_SECONDS = 900
 
 
 def _attach_preflight(result: dict[str, Any], report: PreflightReport | None) -> dict[str, Any]:
@@ -142,7 +147,14 @@ class SynthesisPipelineService:
         synthesis_backend: str = "standalone",
         synthesis_runner: Any = None,
         preparador_fase1: PreparadorFase1Protocol | None = None,
+        run_timeout_seconds: int = DEFAULT_RUN_TIMEOUT_SECONDS,
     ) -> None:
+        # ADR 0019 §2.4 (PR-2b): timeout de la CORRIDA, compartido por los dos backends.
+        # Reemplaza los 300 s rígidos de standalone; la Fase 1 tiene el suyo
+        # (``PreparadorFase1.timeout_s``). ``bool`` es subclase de ``int``: se rechaza aparte.
+        if type(run_timeout_seconds) is not int or run_timeout_seconds <= 0:
+            raise ValueError(f"run_timeout_seconds debe ser un entero positivo, no {run_timeout_seconds!r}")
+        self._run_timeout_seconds = run_timeout_seconds
         self._lock_manager = lock_manager
         self._snapshot_manager = snapshot_manager
         self._journal = journal
@@ -193,6 +205,15 @@ class SynthesisPipelineService:
     # ------------------------------------------------------------------
     # Lazy initialization
     # ------------------------------------------------------------------
+
+    @property
+    def _salida_administrada(self) -> bool:
+        """``True`` si la salida va a la raíz administrada (backend brokered, ADR 0019 §2.3).
+
+        Sale del MISMO dominio de visibilidad que decide el backend, así que el runner, el
+        preflight y el chequeo de sombra no pueden discrepar sobre dónde se escribe.
+        """
+        return self._data_visibility_domain == "virtual_usvfs"
 
     def _ensure_synthesis_runner(self) -> Any:
         """Inicializa lazily el SynthesisRunner validando paths del entorno.
@@ -267,6 +288,7 @@ class SynthesisPipelineService:
             mo2=mo2_path,
             override=self._output_path,
             mods_dir=resolve_mods_dir,
+            administrada=self._salida_administrada,
         )
         assert output_path is not None  # mo2_path ya validado arriba
 
@@ -306,7 +328,7 @@ class SynthesisPipelineService:
                 mo2_path=mo2_path,
                 output_path=output_path,
                 synthesis_exe=synthesis_exe,
-                timeout_seconds=900,
+                timeout_seconds=self._run_timeout_seconds,
                 profile=synthesis_profile,
                 pipeline_settings_path=settings_path,
                 data_folder_path=game_path / "Data",
@@ -341,7 +363,7 @@ class SynthesisPipelineService:
             mo2_path=mo2_path,
             output_path=output_path,
             synthesis_exe=synthesis_exe,
-            timeout_seconds=300,
+            timeout_seconds=self._run_timeout_seconds,
             profile=synthesis_profile,
             pipeline_settings_path=settings_path,
             data_folder_path=game_path / "Data",
@@ -441,6 +463,7 @@ class SynthesisPipelineService:
             mo2=mo2,
             override=self._output_path,
             mods_dir=self._path_resolver.get_mo2_mods_path_para_destino,
+            administrada=self._salida_administrada,
         )
         assert output_dir is not None  # mo2 ya validado por el guard de arriba
 
@@ -614,6 +637,60 @@ class SynthesisPipelineService:
             name="synthesis_vfs_visibility",
             status=_PreflightStatus.GREEN,
             summary=f"Todos los {len(scan.mod_plugins)} plugin(s) activos de mods son visibles en el Data físico.",
+        )
+
+    def _build_overwrite_shadow_check(self, group_names: tuple[str, ...]) -> PreflightCheck | None:
+        """Fail closed si un output viejo en ``overwrite`` taparía la salida administrada.
+
+        En el overlay de MO2 el ``overwrite`` gana a todo mod: un ``<Grupo>.esp`` (o un split
+        ``<Grupo>_N.esp``) que dejó una corrida standalone anterior se cargaría EN LUGAR de la
+        salida nueva de ``Sky-Claw Synthesis Output``. El servicio no lo borra ni lo mueve —es
+        del operador hasta que lo decida—: lo nombra y bloquea. ``None`` cuando la salida no es
+        la administrada (standalone o sandbox), porque ahí un output en ``overwrite`` es el propio.
+        """
+        if not self._salida_administrada or self._output_path is not None:
+            return None
+        from sky_claw.local.validators.preflight import PreflightCheck as _PreflightCheck
+        from sky_claw.local.validators.preflight import PreflightStatus as _PreflightStatus
+
+        nombre = "synthesis_overwrite_shadow"
+        mo2 = self._path_resolver.get_mo2_instance_data_root()
+        if not isinstance(mo2, pathlib.Path):
+            return _PreflightCheck(
+                name=nombre,
+                status=_PreflightStatus.RED,
+                summary="No se pudo resolver la instancia MO2 para buscar outputs viejos en overwrite.",
+            )
+        overwrite = mo2 / "overwrite"
+        try:
+            if is_link(overwrite):
+                raise OSError("overwrite es un enlace")
+            entradas = [e.name for e in overwrite.iterdir()]
+        except FileNotFoundError:
+            entradas = []
+        except OSError as exc:
+            return _PreflightCheck(
+                name=nombre,
+                status=_PreflightStatus.RED,
+                summary=f"No se pudo enumerar {overwrite} para descartar outputs viejos de Synthesis: {exc}",
+            )
+        sombras = sorted(
+            entrada for entrada in entradas if any(es_output_de_grupo(entrada, grupo) for grupo in group_names)
+        )
+        if sombras:
+            return _PreflightCheck(
+                name=nombre,
+                status=_PreflightStatus.RED,
+                summary=(
+                    f"{len(sombras)} output(s) de Synthesis en {overwrite} taparían la salida administrada "
+                    f"'{SYNTHESIS_MANAGED_MOD_NAME}' (overwrite gana en MO2): movelos o borralos desde MO2."
+                ),
+                details=tuple(sombras),
+            )
+        return _PreflightCheck(
+            name=nombre,
+            status=_PreflightStatus.GREEN,
+            summary="Ningún output de los grupos seleccionados en overwrite tapa la salida administrada.",
         )
 
     def _build_master_overflow_check(self, runner: SynthesisRunner, patcher_ids: list[str]) -> PreflightCheck:
@@ -800,6 +877,7 @@ class SynthesisPipelineService:
                 if self._data_visibility_domain == "virtual_usvfs"
                 else await asyncio.to_thread(self._build_synthesis_visibility_check, runner)
             )
+            shadow_check = await asyncio.to_thread(self._build_overwrite_shadow_check, settings_profile.group_names)
             if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
                 raise SynthesisExecutionError("Synthesis PipelineSettings.json changed during preflight")
             if await asyncio.to_thread(runner.load_order_fingerprint) != load_order_fingerprint:
@@ -810,6 +888,8 @@ class SynthesisPipelineService:
         preflight_report = self._append_preflight_check(preflight_report, overflow_check)
         if visibility_check is not None:
             preflight_report = self._append_preflight_check(preflight_report, visibility_check)
+        if shadow_check is not None:
+            preflight_report = self._append_preflight_check(preflight_report, shadow_check)
         if preflight_report.blocks_mutations:
             red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
             logger.warning("Synthesis (stage 7) bloqueado por preflight en rojo: %s", red)

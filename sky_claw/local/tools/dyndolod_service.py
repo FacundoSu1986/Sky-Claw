@@ -98,7 +98,7 @@ from sky_claw.local.tools.dyndolod_workspace import (
     Stage9Coordination,
     WorkspaceResuelto,
 )
-from sky_claw.local.tools.output_targets import derivar_layout_de_dyndolod
+from sky_claw.local.tools.output_targets import carpetas_de_salida_de_synthesis, derivar_layout_de_dyndolod
 from sky_claw.local.tools.texgen_handoff import HandoffPendingAction
 from sky_claw.logging_config import correlacion_de_transaccion
 
@@ -722,11 +722,12 @@ class DynDOLODPipelineService:
         except (RuntimeError, OSError, ValueError):
             mods_dir = None
 
-        carpetas_salida: list[pathlib.Path] = []
-        if isinstance(data_root, pathlib.Path):
-            carpetas_salida.append(data_root / "overwrite")
-        if isinstance(mods_dir, pathlib.Path):
-            carpetas_salida.append(mods_dir / "Synthesis Output")
+        # Fuente única de los destinos de Synthesis (incluida la raíz administrada de PR-2b):
+        # una lista escrita acá a mano dejaba sin exigir los splits de un destino nuevo.
+        carpetas_salida = carpetas_de_salida_de_synthesis(
+            data_root=data_root if isinstance(data_root, pathlib.Path) else None,
+            mods_dir=mods_dir if isinstance(mods_dir, pathlib.Path) else None,
+        )
 
         try:
             profile_name = self._mo2_profile or (

@@ -491,6 +491,61 @@ x64 instalado):
   `ls-remote` real resolvió el tag `0.36.6` de Synthesis a `d8150fb29d54…` (el pin de PR-3i) con 1 HITL.
   Pendiente: dónde vive el preset y quién lo fija (GUI/agente) es PR-4; el modo "preset declarativo sin
   `PipelineSettings.json`" del §2.6 no se implementa en este corte.
-- **No verificado aún (pendiente de rig real):** Spikes S1–S5 (requieren `.NET 10 SDK` x64 en el
-  rig Windows + instancia portable aislada de MO2) y verificación E2E de contención del árbol `.NET`
-  para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`.
+- **Rig integrado bajo MO2/USVFS real (2026-11-24, sobre `a23369a`):** evidencia reportada por el
+  operador; no se re-ejecutó desde este repo. Base congelada sin cambios: MO2 2.5.2 portable aislado
+  (usvfs 0.5.6.1) abierto por el operador desde el Explorador, `SKYCLAW_ISOLATED=1`, worker
+  `SkyClawApp.exe` congelado desde `a23369a` (SHA-256 `00a57542…a68621a`), CLI 0.36.6 (SHA-256
+  `c2329015…df07de6`). El HOLD se levantó **solo en memoria**, dentro de un arnés local no commiteado
+  (opción (a) del runbook R0); el archivo siguió en `False` y el worktree quedó limpio.
+  - **PASS:**
+    - C1: preset con 1 HITL `synthesis-git-ls-remote`.
+    - C2: sin pin, falla cerrado y sin red.
+    - C3: Fase 1 real (sin CET, perfil privado, shims).
+    - C4: Fase 2 brokered. Árbol `ModOrganizer.exe` → `SkyClawApp.exe` → `Synthesis.Bethesda.CLI.exe`
+      → `SkyClawSynthesisShim.exe` → patchers, `success=True`, CLI rc 0, 0 conexiones externas y 0
+      procesos `git`/`MSBuild`/`VBCSCompiler` en la Fase 2 (solo `dotnet --info`). `plugins.txt`,
+      `modlist.txt` y `PipelineSettings.json` sin cambios.
+    - C5: shims liberados.
+    - C6a: cancelación en la Fase 1, sin huérfanos.
+    - C7: ADR 0017 sobre `modorganizer.ini` con MO2 abierto.
+    - C8: dos corridas con salida byte-idéntica (SHA-256 `fe9b7b8a…0625275`) y transacciones 6 y 7
+      `committed`.
+  - **NO MEDIDO:** C6b, la cancelación en la Fase 2: el arnés no la implementa. Es evidencia S4
+    pendiente para el PR que levante `_CONTENCION_SYNTHESIS_VERIFICADA`, no para PR-2b.
+  - **Observado:**
+    - La salida cayó en `mo2/overwrite`: destino previo a PR-2b, que este corte cambia.
+    - El camino feliz de `_liberar_shims` no emite log (el `tx_id` queda en el journal).
+    - Los cuatro cortes previos de C4 fueron del rig, no del código: MO2 reescribió `modlist.txt`,
+      `plugins.txt` estuvo inestable, quedaron settings o shims fuera de las raíces autorizadas y
+      faltaban runtimes .NET 3.1/9 para un tag viejo de un patcher.
+
+  La evidencia vive en el rig: `s5/evidence/PR3_INTEGRADA_MO2_2026-11-24.md` y su adenda.
+- **PR-2b1 (raíz administrada, timeout de la corrida y sombra del `overwrite`):** primer corte de PR-2b.
+  - **Destino:** `synthesis_output_target(..., administrada=True)` →
+    `<mods>/Sky-Claw Synthesis Output` (`SYNTHESIS_MANAGED_MOD_NAME`). No cae en `overwrite` aunque
+    exista, respeta el `mod_directory` declarado y el override del sandbox sigue mandando. El runner
+    brokered y el sondeo de permisos del preflight lo resuelven con el mismo flag
+    (`_salida_administrada`, derivado del dominio de visibilidad). Standalone no cambia: sigue en
+    `overwrite` o en el clon.
+  - **Timeout:** `SynthesisPipelineService(run_timeout_seconds=900)` es el plazo de la corrida en los
+    dos backends y reemplaza los 300 s rígidos de standalone. Solo acepta enteros positivos (`bool`
+    no). La Fase 1 conserva el suyo (`PreparadorFase1.timeout_s`, 600 s).
+  - **Sombra:** el preflight brokered `synthesis_overwrite_shadow` falla cerrado, antes de la Fase 1,
+    si `overwrite` tiene un `<Grupo>.esp` o un split `<Grupo>_N.esp` de los grupos seleccionados, que
+    taparía la salida administrada en el overlay. También falla si `overwrite` no se puede enumerar o
+    es un enlace. No mueve ni borra nada.
+  - **Hermano de lectura:** el guard de etapas previas de los LODs (`DynDOLODPipelineService.verificar_etapas_previas`)
+    escaneaba en busca de splits una lista escrita a mano (`overwrite` y `mods/Synthesis Output`), así
+    que no veía los splits de la raíz administrada y no los exigía habilitados. Ahora usa
+    `output_targets.carpetas_de_salida_de_synthesis`, y el ancla
+    `test_las_carpetas_de_salida_cubren_todo_destino_posible` exige igualdad con todas las ramas de
+    `synthesis_output_target`.
+  - **Sigue dormido bajo el HOLD.** Faltan PR-2b2 (staging vacío + promoción con
+    `DirectoryRollback` y productor del reconciliador) y PR-2b3 (dispatcher sin clon en brokered,
+    cableado productivo y diff de activación en solo lectura).
+- **No verificado aún:**
+  - **Pendiente de rig:** S3 (auto-split con más de 254 masters) y S4 completo (5/5 ciclos y la
+    cancelación en la Fase 2, C6b), ambos sobre `.NET 10 SDK` x64 en el rig Windows con MO2 portable
+    aislado.
+  - **Pendiente para levantar `_CONTENCION_SYNTHESIS_VERIFICADA`:** la verificación E2E de contención
+    del árbol `.NET` sobre el binario final, en su PR dedicado.

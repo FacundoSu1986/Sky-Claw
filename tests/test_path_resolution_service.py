@@ -2240,7 +2240,8 @@ class TestAnclaSemanticaDeRaicesMo2:
     - loot_service (2): preflight (sources/overwrite, + señal antes de
       detect) y ``LoadOrderFileResolver`` (profiles/<perfil>/).
     - pandora_service: overwrite + perfil.
-    - synthesis_service (2): output target y preflight.
+    - synthesis_service (3): output target, preflight y la sombra del ``overwrite`` sobre la salida
+      administrada (PR-2b, ADR 0019 §2.3: el ``overwrite`` cuelga de los DATOS de la instancia).
     - wrye_bash_service (4): preflight (overwrite + profile sources), la etapa 6
       asistida (``profiles/<perfil>/plugins.txt``, ADR 0016: verificar que el
       Bashed Patch esté ACTIVO en el perfil), ``_artefacto_asistido`` —que resuelve
@@ -2302,7 +2303,7 @@ class TestAnclaSemanticaDeRaicesMo2:
         "sky_claw/local/tools/dyndolod_service.py": 1,
         "sky_claw/local/tools/loot_service.py": 2,
         "sky_claw/local/tools/pandora_service.py": 1,
-        "sky_claw/local/tools/synthesis_service.py": 2,
+        "sky_claw/local/tools/synthesis_service.py": 3,
         "sky_claw/local/tools/wrye_bash_service.py": 4,
     }
 

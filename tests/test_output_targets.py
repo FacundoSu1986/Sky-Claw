@@ -38,6 +38,7 @@ from sky_claw.local.tools.dyndolod_workspace import (
 from sky_claw.local.tools.output_targets import (
     CAPA_DATA_JUEGO,
     CAPA_OVERWRITE,
+    SYNTHESIS_MANAGED_MOD_NAME,
     HerramientaDynDOLOD,
     bashed_patch_en_overlay,
     bashed_patch_target,
@@ -732,6 +733,66 @@ def test_synthesis_respeta_el_override_del_sandbox(tmp_path: pathlib.Path) -> No
     clon = tmp_path / "sandbox" / "overwrite"
 
     assert synthesis_output_target(mo2=mo2, override=clon) == clon
+
+
+def test_synthesis_administrada_ignora_el_overwrite_y_cuelga_del_mods_dir(tmp_path: pathlib.Path) -> None:
+    """PR-2b (ADR 0019 §2.3): la salida administrada es ``<mods>/Sky-Claw Synthesis Output``.
+
+    El ``overwrite`` es una carpeta compartida y mutable: la raíz administrada no
+    cae ahí aunque exista. El ``mods_dir`` declarado (``mod_directory`` custom)
+    manda sobre ``<datos>/mods``, igual que en la rama histórica, y el override
+    del sandbox sigue mandando sobre todo.
+    """
+    assert SYNTHESIS_MANAGED_MOD_NAME == "Sky-Claw Synthesis Output"
+    mo2 = tmp_path / "mo2"
+    (mo2 / "overwrite").mkdir(parents=True)
+    assert synthesis_output_target(mo2=mo2, override=None, administrada=True) == (
+        mo2 / "mods" / SYNTHESIS_MANAGED_MOD_NAME
+    )
+    declarado = tmp_path / "otro_disco" / "mods"
+    assert synthesis_output_target(mo2=mo2, override=None, mods_dir=lambda: declarado, administrada=True) == (
+        declarado / SYNTHESIS_MANAGED_MOD_NAME
+    )
+    clon = tmp_path / "sandbox" / "overwrite"
+    assert synthesis_output_target(mo2=mo2, override=clon, administrada=True) == clon
+    assert synthesis_output_target(mo2=None, override=None, administrada=True) is None
+
+
+def test_synthesis_brokered_runner_y_preflight_comparten_la_raiz_administrada(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hermano del ancla de arriba en el backend brokered (#373).
+
+    El runner brokered y el sondeo de permisos del preflight salen del mismo
+    resolver, y los dos apuntan a la raíz administrada aunque exista ``overwrite``.
+    Si uno de los dos siguiera mirando ``overwrite``, el preflight validaría una
+    carpeta en la que el runner no escribe (falso verde).
+    """
+    from sky_claw.local.mo2 import brokered_synthesis
+
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
+    game = tmp_path / "game"
+    exe = tmp_path / "Synthesis.Bethesda.CLI.exe"
+    exe.write_text("", encoding="utf-8")
+    mo2 = tmp_path / "mo2"
+    (mo2 / "overwrite").mkdir(parents=True)
+    base = _synthesis(mo2, game)
+    base._path_resolver.get_synthesis_exe.return_value = exe
+    base._path_resolver.get_mo2_mods_path_para_destino.return_value = mo2 / "mods"
+    base._path_resolver.get_mo2_mods_path_best_effort.return_value = mo2 / "mods"
+    svc = SynthesisPipelineService(
+        lock_manager=MagicMock(),
+        snapshot_manager=MagicMock(),
+        journal=MagicMock(),
+        path_resolver=base._path_resolver,
+        event_bus=MagicMock(),
+        vfs_broker=MagicMock(),
+        instance_id="portable-main",
+        synthesis_backend="brokered",
+    )
+    esperado = mo2 / "mods" / SYNTHESIS_MANAGED_MOD_NAME
+    assert svc._ensure_synthesis_runner()._config.output_path == esperado
+    assert _target_de_permisos(svc) == esperado
 
 
 # ---------------------------------------------------------------------------
