@@ -57,7 +57,7 @@ Por cada corrida, registrar:
 | # | Preparación | Resultado esperado | Verificación física |
 |---|---|---|---|
 | R0 | Borrar el data root de LOOT de Sky-Claw | `changed` o `no_change`, sin el diálogo «First-Time Tips» | En `settings.toml` del data root: `lastVersion` = versión del `LOOT.exe` instalado, `useNoSortingChangesDialog = false`, `enableLootUpdateCheck = false` |
-| R1 | Orden desordenado | `outcome = changed`, `verification.execution_witness = fresh`, `active_plugins_preserved = true` | El orden cambió; el conjunto de plugins con `*` es idéntico; journal `COMMITTED` |
+| R1 | Orden desordenado | `outcome = changed`, `verification.execution_witness = fresh`, `active_plugins_preserved = true` | El orden cambió; la activación canónica es idéntica (la misma semántica de `read_active_plugins_state`: un master base o de Creation Club puede perder su `*` sin cambiar de estado); journal `COMMITTED` |
 | R2 | Repetir R1 de inmediato | `outcome = no_change`, `success = true`, `message = ""` | SHA-256 idénticos al final de R1; journal `COMMITTED` |
 | R3 | GUI de LOOT abierta (mutex `LOOT.Shell.Instance`) | `failure_reason = execution_not_attributable`, testigo `sentinel_intact` | SHA-256 idénticos a la preparación |
 | R4 | Fallo deliberado de sort (regla cíclica en el userlist del data root) | `fail`: `process_error` con `loot_log.fatales` citando `Failed to sort plugins`, o `timeout` con esa línea en `outcome_detail` | Archivos restaurados byte a byte; journal `ROLLED_BACK`. Anotar cuál de las dos salidas ocurrió |

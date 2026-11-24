@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sky_claw.local.loot.cli import LOOTPreconditionError, LOOTWorkerProtocolError
+from sky_claw.local.loot.cli import LOOTPreconditionError, LOOTTimeoutError, LOOTWorkerProtocolError
 from sky_claw.local.loot.parser import LOOTResult
 from sky_claw.local.mo2.brokered_loot import BrokeredLootRunner
 from sky_claw.local.mo2.vfs_contracts import VFS_PROTOCOL_VERSION, VfsJob, VfsJobResult
@@ -142,10 +142,51 @@ async def test_plugin_invisible_en_la_usvfs_es_precondicion_sin_spawn(tmp_path: 
         await runner.sort()
 
 
+def _tool_result_del_worker(execution_tool_result: dict[str, Any]) -> dict[str, Any]:
+    """La forma REAL del ``tool_result`` con ``expected_plugins`` en el payload.
+
+    ``vfs_worker`` mezcla la evidencia de visibilidad en TODO resultado que pasó
+    el gate (``{**execution.tool_result, **visibility_evidence}``): con la lista
+    completa visible, ``missing_plugins`` viaja como ``[]`` en éxito y en fallo.
+    """
+    return {**execution_tool_result, "visible_plugins": ["Skyrim.esm", "Mod A.esp"], "missing_plugins": []}
+
+
+async def test_exito_del_worker_con_missing_plugins_vacio_devuelve_el_sort(tmp_path: pathlib.Path) -> None:
+    # Regresión (CodeRabbit en #1016): la evidencia vacía de un sort exitoso se
+    # tomaba como rechazo de visibilidad y TODO sort brokered terminaba en
+    # LOOTWorkerProtocolError.
+    broker = _BrokerQueCaptura(
+        success=True,
+        tool_result=_tool_result_del_worker(
+            {"sorted_plugins": ["Skyrim.esm", "Mod A.esp"], "execution_witness": {"schema": 1, "state": "fresh"}}
+        ),
+    )
+    runner = _runner(tmp_path, broker)
+
+    resultado = await runner.sort()
+
+    assert resultado.success is True
+    assert resultado.sorted_plugins == ["Skyrim.esm", "Mod A.esp"]
+
+
+async def test_fallo_tipado_del_worker_con_missing_plugins_vacio_conserva_su_tipo(tmp_path: pathlib.Path) -> None:
+    # El gate pasó y LOOT falló dentro del worker: manda el kind, no la visibilidad.
+    broker = _BrokerQueCaptura(
+        success=False,
+        message="LOOT excedió el timeout",
+        tool_result=_tool_result_del_worker({"loot_failure_kind": "timeout"}),
+    )
+    runner = _runner(tmp_path, broker)
+
+    with pytest.raises(LOOTTimeoutError):
+        await runner.sort()
+
+
 @pytest.mark.parametrize(
     "missing",
-    ["Mod A.esp", [], [7], ["ok.esp", ""]],
-    ids=["no_lista", "lista_vacia", "no_string", "string_vacio"],
+    ["Mod A.esp", [7], ["ok.esp", ""]],
+    ids=["no_lista", "no_string", "string_vacio"],
 )
 async def test_missing_plugins_fuera_de_contrato_es_error_de_protocolo(tmp_path: pathlib.Path, missing: Any) -> None:
     broker = _BrokerQueCaptura(success=False, message="x", tool_result={"missing_plugins": missing})

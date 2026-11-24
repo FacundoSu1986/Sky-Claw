@@ -369,7 +369,10 @@ class BrokeredLootRunner:
             raise err from exc
         self._last_result.set(result)
         tool = result.tool_result
-        if "missing_plugins" in tool:
+        # El worker mezcla la evidencia de visibilidad en TODO resultado que pasó
+        # el gate: ``missing_plugins == []`` es la forma normal de éxito y de
+        # fallo posterior al gate. Sólo una lista no vacía (o malformada) es rechazo.
+        if "missing_plugins" in tool and tool.get("missing_plugins") != []:
             _visibility_failure(result, tool.get("missing_plugins"))
         failure_kind = tool.get("loot_failure_kind")
         if failure_kind is not None:
@@ -479,7 +482,8 @@ def _visibility_failure(result: VfsJobResult, missing: JsonValue | None) -> NoRe
 
     Es una precondición (LOOT no se lanzó), no un fallo de proceso. La clave sólo
     la produce el gate de visibilidad del worker (``_expected_plugins_visibility``)
-    y siempre con ``success=False`` y una lista no vacía: cualquier otra forma es
+    con ``success=False`` y una lista no vacía (la vacía es evidencia de éxito del
+    gate y el caller no llega acá): cualquier otra forma es
     un mensaje fuera de contrato y no se usa como evidencia.
 
     Raises:
