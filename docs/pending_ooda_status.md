@@ -628,6 +628,14 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
   iniciar y recuperar, corrupción enumerada) y censo de `winreg` en `test_aislamiento_perfil.py`.
   Pendiente de 2c: cablear journal y consumidor, plazo de siembra y marcador de cuarentena, evidencia de
   terminalidad del broker. Brief §13.4.
+- **BodySlide PR 2c-1 (2026-11-24, cierre PARCIAL de PR 2 — journal en la corrida):** el runner usa el
+  journal de 2b (PREPARADO antes de mutar, LANZADO antes del spawn, TERMINAL + restauración en un hilo
+  retenido); la siembra tiene plazo con cuarentena persistente del recurso (C3), liberación automática
+  verificada o manual con evidencia; config enlazada rechazada; cancelación con el proceso lanzado =
+  HOLD sin restaurar; el arranque corre el consumidor `bodyslide-config`. Anclas:
+  `tests/test_bodyslide_corrida_con_journal.py` y censos congelados de call sites/importadores en
+  `tests/test_bodyslide_journal.py`. Pendiente de 2c-2: broker USVFS y `worker_exit`, paridad de
+  `_SAFE_NAME_PATTERN`, trabajo en segundo plano. Brief §13.5.
 
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un
 flag en vez de enumerar el vector. El ancla `test_contrato_argumentos_cli.py`

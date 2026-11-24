@@ -1130,14 +1130,18 @@ def _llamadores_en_produccion(nombre: str) -> set[str]:
     return encontrados
 
 
-def test_2b_no_activa_la_recuperacion_ni_el_journal_en_produccion() -> None:
-    """PR 2b deja el mecanismo dormido: ningún camino productivo lo invoca todavía (2c lo cablea)."""
-    assert _llamadores_en_produccion("reconcile_bodyslide_config_journals") == set()
-    assert _llamadores_en_produccion("iniciar_transaccion") == set()
+def test_los_call_sites_productivos_del_journal_estan_congelados() -> None:
+    """PR 2c-1 cableó el journal: el runner abre la transacción y el arranque corre el consumidor.
+
+    Un camino nuevo que abra transacciones o recupere journals rompe esto hasta que se
+    decida (y se pruebe) su participación. La producción sigue apagada por la barrera.
+    """
+    assert _llamadores_en_produccion("reconcile_bodyslide_config_journals") == {"sky_claw/app_context.py"}
+    assert _llamadores_en_produccion("iniciar_transaccion") == {"sky_claw/local/tools/bodyslide_runner.py"}
     assert _llamadores_en_produccion("recuperar_todos") == {"sky_claw/local/tools/rollback_reconciler.py"}
 
 
-def test_solo_el_reconciliador_importa_el_journal() -> None:
+def test_los_importadores_del_journal_estan_congelados() -> None:
     importadores: set[str] = set()
     for archivo in sorted((RAIZ / "sky_claw").rglob("*.py")):
         relativo = archivo.relative_to(RAIZ).as_posix()
@@ -1151,7 +1155,11 @@ def test_solo_el_reconciliador_importa_el_journal() -> None:
                 and any(a.name.endswith("bodyslide_journal") for a in nodo.names)
             ):
                 importadores.add(relativo)
-    assert importadores == {"sky_claw/local/tools/rollback_reconciler.py"}
+    assert importadores == {
+        "sky_claw/local/tools/rollback_reconciler.py",
+        "sky_claw/local/tools/bodyslide_runner.py",
+        "sky_claw/app_context.py",
+    }
 
 
 def test_la_barrera_productiva_sigue_en_false() -> None:
