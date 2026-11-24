@@ -436,13 +436,18 @@ async def test_game_launch_timeout_en_ciclo_cero_es_spawn_failed(config: GrassCa
 async def test_no_spawn_tras_ciclo_exitoso_cuenta_como_crash_y_reintenta(
     config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
 ) -> None:
-    # Ciclo 0 spawnea y crashea; los siguientes no spawnean. Sin .cgid nuevos,
-    # el stall detector acota la repetición (no aborta como spawn_failed).
+    # Ciclo 0 spawnea, crashea y deja el rastro de un ciclo NGIO real (un .cgid +
+    # el progreso appendeado); los siguientes no spawnean ni escriben. Sin .cgid
+    # nuevos, el stall detector acota la repetición (no aborta como spawn_failed).
+    # Ronda 10: el rastro del ciclo 0 es obligatorio; con el flag vacío el runner
+    # ya no relanza (outcome flag_sin_progreso) y este test quedaría sin cubrir
+    # el stall detector.
     llamada = itertools.count()
 
     async def _launch(profile: str) -> dict[str, Any]:
         n = next(llamada)
         if n == 0:
+            _juego_escribe_cgid(config, "celda_0.cgid")
             mundo.alta_juego(100, 1100, vidas=1)
         return {"pid": 100 + n, "status": "launched", "profile": profile}
 
@@ -889,11 +894,15 @@ async def test_error_transitorio_de_disco_no_aborta_el_run(
 async def test_stall_crashes_sin_cgid_nuevos_corta_con_stalled(
     config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
 ) -> None:
-    # El juego muere siempre en la misma celda sin escribir nada.
+    # El juego completa una celda y después muere siempre en la misma: el ciclo 0
+    # deja el progreso que NGIO appendea (ronda 10: sin él no hay relanzamiento,
+    # y el stall detector no llegaría a evaluarse), los siguientes no escriben nada.
     llamada = itertools.count()
 
     async def _launch(profile: str) -> dict[str, Any]:
         n = next(llamada)
+        if n == 0:
+            _juego_escribe_cgid(config, "celda_0.cgid")
         mundo.alta_juego(100 + n, 1100 + n, vidas=1)
         return {"pid": 100 + n, "status": "launched", "profile": profile}
 
@@ -905,7 +914,9 @@ async def test_stall_crashes_sin_cgid_nuevos_corta_con_stalled(
     assert resultado.outcome == "stalled"
     assert resultado.stalled is True
     assert resultado.success is False
-    assert resultado.crash_count == 3, "corta en el threshold, sin quemar max_restarts"
+    # 4 = el ciclo 0 (que sí dejó caché) + 3 relanzamientos consecutivos sin .cgid nuevo:
+    # el threshold corta sin quemar max_restarts.
+    assert resultado.crash_count == 4, "corta en el threshold, sin quemar max_restarts"
 
 
 async def test_max_restarts_agotado(config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos) -> None:
@@ -1959,3 +1970,112 @@ async def test_el_corte_del_relanzamiento_deja_limpieza_y_no_borra_el_cache(
     assert not (config.game_path / "PrecacheGrass.txt").exists(), "el flag no puede quedar residual"
     assert (config.overwrite_grass_dir / "celda_0.cgid").exists()
     assert runner.neutralizacion is not None and runner.neutralizacion.limpio
+
+
+# ---------------------------------------------------------------------------
+# El relanzamiento automático exige PROGRESO: la matriz de los tres modos
+# ---------------------------------------------------------------------------
+
+
+def _config_para_modo(config: GrassCacheConfig, modo: str) -> GrassCacheConfig:
+    extra: dict[str, Any] = {"mode": modo}
+    if modo == "rebuild":
+        extra["rebuild_approval"] = "REBUILD"
+        extra["backup_root"] = config.overwrite_grass_dir.parent / "estado_grass"
+    return dataclasses.replace(config, **extra)
+
+
+@pytest.mark.parametrize("modo", ["new", "resume", "rebuild"])
+@pytest.mark.parametrize("estado_flag", ["ausente", "vacio", "con_progreso"])
+@pytest.mark.parametrize("cache", ["vacio", "presente"])
+async def test_el_relanzamiento_solo_se_autoriza_con_progreso(
+    config: GrassCacheConfig,
+    mo2: AsyncMock,
+    modo: str,
+    estado_flag: str,
+    cache: str,
+) -> None:
+    # Matriz pedida por la revisión: tres modos × flag ausente/vacío/con progreso ×
+    # caché físico vacío/presente. El caché vacío NO acredita nada (la USVFS puede
+    # superponer .cgid de mods) y `resume` exige progreso siempre.
+    cfg = _config_para_modo(config, modo)
+    if cache == "presente":
+        _escribir_cgid(cfg.overwrite_grass_dir, "celda_0.cgid")
+    flag = cfg.game_path / "PrecacheGrass.txt"
+    if estado_flag == "vacio":
+        flag.write_bytes(b"")
+    elif estado_flag == "con_progreso":
+        flag.write_bytes(b"Tamriel\n")
+
+    motivo = await _runner(cfg, mo2)._motivo_para_no_relanzar()
+
+    if estado_flag == "con_progreso":
+        assert motivo is None, "con progreso válido el crash-loop continúa"
+    else:
+        assert motivo is not None, f"{modo}: relanzar con el flag {estado_flag} no puede autorizarse"
+
+
+@pytest.mark.parametrize("modo", ["new", "resume", "rebuild"])
+async def test_el_relanzamiento_rechaza_el_flag_alternativo(
+    config: GrassCacheConfig, mo2: AsyncMock, modo: str
+) -> None:
+    # `Util::getProgressFilePath()` de NGIO abre `PrecacheGrass.txt.txt` cuando el
+    # primario no existe: en el punto de relanzamiento también se rechaza, porque el
+    # primario puede desaparecer y el alternativo tomar el control.
+    cfg = _config_para_modo(config, modo)
+    (cfg.game_path / "PrecacheGrass.txt").write_bytes(b"")
+    (cfg.game_path / "PrecacheGrass.txt.txt").write_bytes(b"Tamriel\n")
+
+    motivo = await _runner(cfg, mo2)._motivo_para_no_relanzar()
+
+    assert motivo is not None
+    assert "alternativo" in motivo.lower()
+
+
+async def test_el_relanzamiento_no_se_autoriza_con_cache_fisico_vacio(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # El caso exacto que reprodujo la revisión: `overwrite/Grass` vacío y flag sin
+    # progreso. Antes se relanzaba ("no hay nada que borrar"), aunque la USVFS puede
+    # superponer `.cgid` de mods que NGIO SÍ borraría.
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100, vidas=1)  # el juego muere sin escribir nada
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "flag_sin_progreso"
+    assert resultado.success is False
+    assert mo2.launch_game.await_count == 1, "no se relanza sin progreso, ni con el caché físico vacío"
+
+
+async def test_resume_con_cache_fisico_vacio_no_relanza_si_el_flag_pierde_el_progreso(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    # El escenario exacto que pidió la revisión: `resume` arranca con progreso y el
+    # caché FÍSICO vacío (el plan lo autoriza: `conservar`), y un tercero vacía el
+    # flag tras el crash. El vacío físico no acredita nada —la USVFS puede superponer
+    # `.cgid` de mods—, así que no hay segundo lanzamiento.
+    config = dataclasses.replace(config, mode="resume")
+    (config.game_path / "PrecacheGrass.txt").write_bytes(b"Tamriel\n")
+    disparado = {"ya": False}
+
+    def _al_chequear(pid: int) -> None:
+        if pid in mundo.vivos and mundo.vidas.get(pid) == 0 and not disparado["ya"]:
+            disparado["ya"] = True
+            (config.game_path / "PrecacheGrass.txt").write_bytes(b"")
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    mundo.al_chequear_pid = _al_chequear
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "flag_sin_progreso"
+    assert resultado.success is False
+    assert mo2.launch_game.await_count == 1, "el caché físico vacío no autoriza un segundo lanzamiento"
