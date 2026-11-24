@@ -410,3 +410,62 @@ decide los hilos 6, 7 y 11:
 
 ### 12.3 Gates de la quinta revisión
 
+**Foco (write-set).** `tests/test_grass_cache_{safety,runner,service,strategy}.py` →
+**195 passed** (safety 77, runner 51, service 54, strategy 13).
+
+**Ampliado.** + `test_grass_profile.py`, `test_hitl_destructive_gate.py`, `tests/bdd/` →
+**263 passed, 2 skipped**; con `test_worktree_convention_invariant.py` → **286 passed, 2 skipped**.
+
+**Simulador de Windows (LF→CRLF).** Copia del módulo de safety con un `Path.write_text` forzado a
+`newline="\r\n"` (el default de Windows):
+
+| Momento | Resultado |
+|---|---|
+| fixtures previos (pre-fix) | **3 failed**, 51 deselected — exactamente los tres del log |
+| fixtures con `write_bytes()` | **77 passed** |
+
+**Calidad estática.** `ruff check sky_claw/ scripts/ tests/` → *All checks passed!*;
+`ruff format --check` → *1172 files already formatted*; `mypy sky_claw/ scripts/` → **694 errores en
+17 archivos**, el mismo número y los mismos archivos que antes de este cambio (**0** en el write-set,
+que está en la lista estricta).
+
+**Suite completa (HEAD de la quinta revisión).** `pytest -q` sobre `tests/` (sin
+`test_runtime_vault_operator_verifier.py`, que no colecta en Linux):
+
+```
+136 failed, 20943 passed, 628 skipped, 2 warnings in 1528.84s (0:25:28)
+```
+
+Los **136** node IDs son **el mismo conjunto** que la línea base medida en `9632a46`
+(`comm -3` vacío en ambos sentidos ⇒ **0 regresiones**, 0 fallos nuevos). Son de
+`runtime_vault*`, `frozen_runtime*`, `journal` y `telegram_sender`: tests que requieren Windows y que
+en Linux no aplican.
+
+**Reparto del shard 6 en Linux** (el shard que estaba rojo en Windows), con la misma partición que
+usa la CI: `3178 passed, 61 skipped, 34 failed, 18434 deselected` — y los 34 fallos son **todos**
+IDs de la línea base (`comm -13` vacío).
+
+**CI del HEAD de código (`28f20f1`).** Run `Sky-Claw CI/CD` = `45296552309`, **verde completo**,
+incluidos los que estaban rojos:
+
+| Check | Estado |
+|---|---|
+| `🧪 Shard 1/6 … 6/6 / py3.11` (Windows) | **verde** (6/6) |
+| `🧪 Tests (Pytest)` y `🧪 Tests / windows-latest / py3.11` (veredictos) | **verde** |
+| `🧪 POSIX Core`, `🔍 Lint (Ruff)`, `🏷️ Type Check (Mypy)` ×2, `🛡️ Security Scan`, CodeQL ×4, `📦 Build` | **verde** |
+| `🚦 Main en verde`, `Regression & Test Oracle`, `Auto-revisión en PR interno` | **verde** |
+
+Cada shard corre en Windows sobre el árbol del PR: el verde del 6/6 es la contraprueba de 12.1
+(misma partición, mismos tests, fixtures con bytes exactos).
+
+### 12.4 Límites que siguen en pie
+
+- **Windows/MO2/USVFS reales no ejecutados.** El simulador de 12.1 reproduce la *traducción de
+  fin de línea* de `Path.write_text`, no el resto de Windows (ACL, junctions, `MoveFileEx`). El
+  smoke real lo hace el propietario.
+- **La cobertura USVFS sigue sin demostrarse** (gate `usvfs_no_demostrado` + `ack_usvfs_no_verificado`
+  como aceptación de riesgo, no certificación).
+- **NGIO inspeccionado es 1.0.13.** Los tres hallazgos que dependen de su fuente (flag alternativo,
+  recorte del progreso, nombre del archivo abierto) valen para ese tag; el test de paridad es la
+  alarma si cambia.
+- **El flag alternativo se rechaza, no se administra** (fuera de P0, ver 12.2 #6).
