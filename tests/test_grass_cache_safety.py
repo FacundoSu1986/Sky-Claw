@@ -13,7 +13,9 @@ semántica real del binario de NGIO, que sigue NO VERIFICADA (ver el informe).
 from __future__ import annotations
 
 import json
+import os
 import pathlib
+import stat
 
 import pytest
 
@@ -21,6 +23,8 @@ import sky_claw.local.tools.grass_cache_safety as gcs_mod
 from sky_claw.local.tools.grass_cache_safety import (
     APROBACION_REBUILD,
     GrassCacheSafetyError,
+    PlanArranque,
+    RespaldoVerificado,
     aplicar_plan,
     archivar_progreso,
     huella_del_cache,
@@ -97,7 +101,7 @@ def test_inventario_de_carpeta_ausente_es_cache_vacio(tmp_path: pathlib.Path, ju
 def test_inventario_trata_cualquier_contenido_como_progreso(grass: pathlib.Path, juego: pathlib.Path) -> None:
     # No se interpreta el formato del progreso: un formato desconocido PROTEGE
     # (impide new/rebuild sin decisión), que es el lado seguro del error.
-    ruta_del_flag(juego).write_text("formato-que-no-conozco\n", encoding="utf-8")
+    ruta_del_flag(juego).write_bytes(b"formato-que-no-conozco\n")
 
     inv = _inventario(grass, juego)
 
@@ -106,12 +110,57 @@ def test_inventario_trata_cualquier_contenido_como_progreso(grass: pathlib.Path,
 
 
 def test_inventario_flag_en_blanco_no_es_progreso(grass: pathlib.Path, juego: pathlib.Path) -> None:
-    ruta_del_flag(juego).write_text("  \n\t\n", encoding="utf-8")
+    # Blanco PARA NGIO: su `trim` recorta " \r\v\n" (Util.h::trim, 1.0.13), así
+    # que un archivo de espacios, CR y LF no deja ninguna entrada de progreso.
+    ruta_del_flag(juego).write_bytes(b"   \r\n\r\n")
 
     inv = _inventario(grass, juego)
 
     assert inv.flag_presente is True
     assert inv.flag_progreso is None
+
+
+@pytest.mark.parametrize(
+    ("crudo", "hay_progreso"),
+    [
+        (b"", False),
+        (b"\n\n\n", False),
+        (b"   \r\n\r\n", False),
+        (b"\r\n", False),
+        (b"Tamriel\n-2,4\n", True),
+        (b"Tamriel", True),
+        (b" \nTamriel\n", True),
+        # NGIO recorta SÓLO " \r\v\n": el tab no está en el set, así que una
+        # línea de tab SÍ deja una entrada de progreso (y evita el borrado).
+        (b"\t\n", True),
+        # Tampoco recorta el form feed ni interpreta comillas.
+        (b"\x0c\n", True),
+        (b'"\n', True),
+    ],
+)
+def test_el_parser_de_progreso_replica_al_de_ngio(
+    crudo: bytes, hay_progreso: bool, grass: pathlib.Path, juego: pathlib.Path
+) -> None:
+    """NGIO 1.0.13: `std::getline` (sólo '\n') + `Util::StringHelpers::trim`.
+
+    `src/GidFileCache.cpp::Init()` parte el flag con ``std::getline`` (sólo
+    ``\n``), recorta cada línea con ``trim`` —que quita **únicamente**
+    ``" \r\v\n"``— y descarta las vacías; hay progreso si queda al menos una.
+    ``include/GrassControl/Util.h`` no toca comillas en ningún lado: la
+    diferencia real con ``str.strip()`` es el **tab** (y el form feed), que
+    Python recorta y NGIO no.
+
+    La dirección del error importa: si Sky-Claw dijera "hay progreso" donde NGIO
+    no lo ve, autorizaría un RESUME sobre un archivo que NGIO trata como vacío y
+    el ``remove()`` de ``.cgid``/``.dgid``/``.fail`` borraría el caché. Por eso
+    el predicado es el de NGIO, literal.
+    """
+    ruta_del_flag(juego).write_bytes(crudo)
+
+    inv = _inventario(grass, juego)
+
+    assert inv.flag_presente is True
+    assert (inv.flag_progreso is not None) is hay_progreso
 
 
 def test_huella_cambia_si_cambia_el_conjunto(grass: pathlib.Path, juego: pathlib.Path) -> None:
@@ -166,7 +215,7 @@ def test_new_con_cache_existente_se_niega(grass: pathlib.Path, juego: pathlib.Pa
 
 def test_new_no_trunca_un_flag_con_progreso(tmp_path: pathlib.Path, juego: pathlib.Path) -> None:
     progreso = "Tamriel\n-2,4\n"
-    ruta_del_flag(juego).write_text(progreso, encoding="utf-8")
+    ruta_del_flag(juego).write_bytes(progreso.encode("utf-8"))
 
     with pytest.raises(GrassCacheSafetyError) as excinfo:
         preparar_arranque(modo="new", game_path=juego, grass_dir=tmp_path / "overwrite" / "Grass")
@@ -179,7 +228,7 @@ def test_resume_conserva_el_contenido_exacto_del_flag(grass: pathlib.Path, juego
     # Byte a byte: cualquier normalización (recorte, fin de línea, BOM)
     # convertiría una reanudación correcta en un borrado de caché.
     progreso = "  Tamriel\r\n-2,4  \n"
-    ruta_del_flag(juego).write_text(progreso, encoding="utf-8", newline="")
+    ruta_del_flag(juego).write_bytes(progreso.encode("utf-8"))
 
     plan = preparar_arranque(modo="resume", game_path=juego, grass_dir=grass)
     aplicar_plan(plan, ruta_del_flag(juego))
@@ -242,7 +291,7 @@ def test_rebuild_archiva_el_progreso_antes_de_pisarlo(
     grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
 ) -> None:
     progreso = "Tamriel\n-2,4\n"
-    ruta_del_flag(juego).write_text(progreso, encoding="utf-8")
+    ruta_del_flag(juego).write_bytes(progreso.encode("utf-8"))
 
     plan = preparar_arranque(
         modo="rebuild",
@@ -407,7 +456,7 @@ def test_progreso_archivado_de_otro_cache_no_se_restaura(
 
 def test_neutralizar_flag_archiva_y_borra(grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path) -> None:
     progreso = "Tamriel\n-2,4\n"
-    ruta_del_flag(juego).write_text(progreso, encoding="utf-8")
+    ruta_del_flag(juego).write_bytes(progreso.encode("utf-8"))
     inv = _inventario(grass, juego)
 
     resultado = neutralizar_flag(flag_path=ruta_del_flag(juego), grass_dir=grass, raiz_estado=estado)
@@ -422,7 +471,7 @@ def test_neutralizar_flag_archiva_y_borra(grass: pathlib.Path, juego: pathlib.Pa
 def test_neutralizar_sin_estado_igual_borra_el_flag(juego: pathlib.Path, grass: pathlib.Path) -> None:
     # El borrado manda (el juego no puede quedar en modo precache), pero sin
     # raíz de estado no hay dónde archivar: la pérdida se DECLARA.
-    ruta_del_flag(juego).write_text("Tamriel\n", encoding="utf-8")
+    ruta_del_flag(juego).write_bytes(b"Tamriel\n")
 
     resultado = neutralizar_flag(flag_path=ruta_del_flag(juego), grass_dir=grass, raiz_estado=None)
 
@@ -920,11 +969,11 @@ def test_archivado_no_sobrescribe_victima_de_temporal_enlazado(
     except (OSError, NotImplementedError):
         pytest.skip("La plataforma no permite crear el enlace (permisos).")
 
-    archivar_progreso(estado, inventario, b"Tamriel\n-2,4\n", grass_dir=grass)
+    evidencia = archivar_progreso(estado, inventario, b"Tamriel\n-2,4\n", grass_dir=grass)
 
     assert victima.read_bytes() == b"contenido ajeno"
-    evidencia = estado / "progreso" / f"{inventario.huella}.json"
     assert evidencia.is_file(), "la evidencia se archiva igual, con un temporal propio"
+    assert evidencia.name.startswith(inventario.huella)
 
 
 def test_no_quedan_temporales_de_nombre_predecible_en_el_modulo() -> None:
@@ -1044,6 +1093,29 @@ def test_recuperar_rechaza_subdirectorio_de_progreso_enlazado(
     assert excinfo.value.codigo == "progreso_raiz_enlazada"
 
 
+def test_la_busqueda_de_otros_ambitos_valida_la_cadena_fisica_primero(
+    tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # Listar también es leer: la búsqueda de evidencia de OTRO ámbito no puede
+    # recorrer un `progreso` enlazado aunque haya un archivo que encaje con el
+    # patrón. Si la exploración fuera antes que el guard, este test vería el
+    # error de "otra instalación" en vez del de la cadena física.
+    externo = tmp_path / "externo"
+    externo.mkdir()
+    estado.mkdir()
+    inventario = _inventario(grass, juego)
+    (externo / f"{inventario.huella}-deadbeefdeadbeef.json").write_bytes(json.dumps({}).encode("utf-8"))
+    try:
+        (estado / "progreso").symlink_to(externo, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        recuperar_progreso(estado, inventario, grass_dir=grass)
+
+    assert excinfo.value.codigo == "progreso_raiz_enlazada"
+
+
 def test_archivado_rechaza_un_ancestro_intermedio_enlazado(
     tmp_path: pathlib.Path, grass: pathlib.Path, juego: pathlib.Path
 ) -> None:
@@ -1062,3 +1134,268 @@ def test_archivado_rechaza_un_ancestro_intermedio_enlazado(
 
     assert excinfo.value.codigo == "estado_raiz_enlazada"
     assert not list(externo.iterdir())
+
+
+def test_los_fixtures_del_flag_escriben_bytes_y_no_texto() -> None:
+    """El contenido del flag es BYTES: `write_text()` traduce LF→CRLF en Windows.
+
+    En Windows ``Path.write_text()`` con ``newline=None`` (el default) convierte
+    cada ``\\n`` en ``os.linesep`` (``\\r\\n``). Un fixture escrito como
+    ``write_text("Tamriel\\n-2,4\\n")`` NO contiene los bytes que el test compara
+    contra ``progreso.encode("utf-8")``: los tres tests de este módulo que
+    fallaban **sólo en Windows** fallaban por eso, no por el código bajo prueba.
+
+    La regla que este ancla sostiene: el contenido del flag se escribe con
+    ``write_bytes()`` (bytes exactos, iguales en toda plataforma). Las únicas
+    escrituras de texto que quedan permitidas son las que **tamperan** un JSON
+    de evidencia o respaldo con ``json.dumps()``, porque ahí no hay bytes
+    esperados.
+    """
+    import ast
+
+    modulos = (
+        "test_grass_cache_safety.py",
+        "test_grass_cache_runner.py",
+        "test_grass_cache_service.py",
+    )
+    for nombre in modulos:
+        fuente = (pathlib.Path(__file__).parent / nombre).read_text(encoding="utf-8")
+        for nodo in ast.walk(ast.parse(fuente)):
+            if not isinstance(nodo, ast.Call):
+                continue
+            funcion = nodo.func
+            if not (isinstance(funcion, ast.Attribute) and funcion.attr == "write_text"):
+                continue
+            es_tamper_json = any(
+                isinstance(arg, ast.Call) and getattr(arg.func, "attr", None) == "dumps" for arg in nodo.args
+            )
+            assert es_tamper_json, (
+                f"{nombre}:{nodo.lineno} escribe contenido con write_text(): en Windows traduce LF→CRLF y "
+                "los bytes esperados dejan de coincidir. Usá write_bytes() con los bytes exactos."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Hallazgo de revisión: el flag ALTERNATIVO que NGIO también lee
+# ---------------------------------------------------------------------------
+
+
+def test_flag_alternativo_de_ngio_se_rechaza(tmp_path: pathlib.Path, juego: pathlib.Path, grass: pathlib.Path) -> None:
+    # NGIO 1.0.13 (src/Util.cpp::getProgressFilePath) usa
+    # `<juego>/PrecacheGrass.txt.txt` cuando `PrecacheGrass.txt` NO existe
+    # ("Dumb user mode for .txt.txt file name"). Escribir el primario encima lo
+    # enmascara; al neutralizar el primario, el alternativo reaparece y el juego
+    # arranca en modo precache.
+    alternativo = juego / "PrecacheGrass.txt.txt"
+    alternativo.write_bytes(b"Tamriel\n-2,4\n")
+    ruta_del_flag(juego).unlink(missing_ok=True)
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        preparar_arranque(
+            modo="new",
+            game_path=juego,
+            grass_dir=tmp_path / "overwrite" / "Grass",
+            ack_usvfs_no_verificado=True,
+        )
+
+    assert excinfo.value.codigo == "flag_alternativo_presente"
+    assert not ruta_del_flag(juego).exists(), "no se escribe el primario encima del alternativo"
+    assert alternativo.read_bytes() == b"Tamriel\n-2,4\n", "el archivo del usuario no se toca"
+
+
+def test_flag_alternativo_se_rechaza_aunque_el_primario_exista(juego: pathlib.Path, grass: pathlib.Path) -> None:
+    # Con los DOS presentes NGIO usa el primario, pero el alternativo sigue ahí:
+    # después de neutralizar el primario vuelve a ser el flag efectivo.
+    ruta_del_flag(juego).write_bytes(b"Tamriel\n")
+    (juego / "PrecacheGrass.txt.txt").write_bytes(b"OtroMundo\n")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        preparar_arranque(modo="resume", game_path=juego, grass_dir=grass)
+
+    assert excinfo.value.codigo == "flag_alternativo_presente"
+
+
+def test_flag_alternativo_vacio_tambien_se_rechaza(juego: pathlib.Path, grass: pathlib.Path) -> None:
+    # NGIO decide por `exists(fi)`, no por contenido: un alternativo vacío
+    # también es el archivo que abriría (y borraría) NGIO.
+    (juego / "PrecacheGrass.txt.txt").write_bytes(b"")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        preparar_arranque(modo="resume", game_path=juego, grass_dir=grass)
+
+    assert excinfo.value.codigo == "flag_alternativo_presente"
+
+
+# ---------------------------------------------------------------------------
+# Hallazgo de revisión: el respaldo tiene que ser INDEPENDIENTE del origen
+# ---------------------------------------------------------------------------
+
+
+def _respaldo_independiente(grass: pathlib.Path, juego: pathlib.Path, destino: pathlib.Path) -> RespaldoVerificado:
+    return respaldar_cache(grass_dir=grass, destino=destino, inventario=_inventario(grass, juego))
+
+
+def test_respaldo_con_hardlink_del_origen_no_autoriza_el_borrado(
+    grass: pathlib.Path, juego: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    # Un "respaldo" que es el MISMO archivo que el origen (hardlink) pasa los
+    # hashes —los bytes son los mismos— pero no sobrevive al borrado que el
+    # respaldo autoriza. Se rechaza antes de escribir el flag vacío.
+    destino = tmp_path / "respaldo"
+    respaldo = _respaldo_independiente(grass, juego, destino)
+    copia = destino / "Tamriel.cgid"
+    copia.unlink()
+    try:
+        os.link(grass / "Tamriel.cgid", copia)
+    except (OSError, NotImplementedError, AttributeError):
+        pytest.skip("La plataforma no permite hardlinks.")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        verificar_respaldo_para_borrado(grass_dir=grass, respaldo=respaldo)
+
+    assert excinfo.value.codigo == "respaldo_aliaseado"
+
+
+def test_respaldo_con_enlace_del_origen_no_autoriza_el_borrado(
+    grass: pathlib.Path, juego: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    destino = tmp_path / "respaldo"
+    respaldo = _respaldo_independiente(grass, juego, destino)
+    copia = destino / "Tamriel.cgid"
+    copia.unlink()
+    try:
+        copia.symlink_to(grass / "Tamriel.cgid")
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        verificar_respaldo_para_borrado(grass_dir=grass, respaldo=respaldo)
+
+    assert excinfo.value.codigo == "respaldo_enlazado"
+
+
+def test_respaldo_aliaseado_no_se_reutiliza_sino_que_se_recopia(
+    grass: pathlib.Path, juego: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    # En la PREPARACIÓN sí hay reparación posible: el respaldo que aliasea el
+    # origen no se reusa; se aparta y se copia de nuevo una copia independiente.
+    destino = tmp_path / "respaldo"
+    _respaldo_independiente(grass, juego, destino)
+    copia = destino / "Tamriel.cgid"
+    copia.unlink()
+    try:
+        os.link(grass / "Tamriel.cgid", copia)
+    except (OSError, NotImplementedError, AttributeError):
+        pytest.skip("La plataforma no permite hardlinks.")
+
+    nuevo = _respaldo_independiente(grass, juego, destino)
+
+    assert nuevo.destino == destino
+    assert (destino / "Tamriel.cgid").read_bytes() == (grass / "Tamriel.cgid").read_bytes()
+    assert os.lstat(destino / "Tamriel.cgid").st_ino != os.lstat(grass / "Tamriel.cgid").st_ino, (
+        "el respaldo reusado seguía siendo el archivo del origen"
+    )
+    verificar_respaldo_para_borrado(grass_dir=grass, respaldo=nuevo)
+
+
+def test_manifiesto_enlazado_del_respaldo_no_autoriza_el_borrado(
+    grass: pathlib.Path, juego: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    destino = tmp_path / "respaldo"
+    respaldo = _respaldo_independiente(grass, juego, destino)
+    ajeno = tmp_path / "ajeno.json"
+    ajeno.write_bytes(respaldo.manifiesto.read_bytes())
+    respaldo.manifiesto.unlink()
+    try:
+        respaldo.manifiesto.symlink_to(ajeno)
+    except (OSError, NotImplementedError):
+        pytest.skip("La plataforma no permite crear el enlace (permisos).")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        verificar_respaldo_para_borrado(grass_dir=grass, respaldo=respaldo)
+
+    assert excinfo.value.codigo == "respaldo_enlazado"
+
+
+# ---------------------------------------------------------------------------
+# Hallazgo de revisión: identidad del progreso (instalación, perfil, contenido)
+# ---------------------------------------------------------------------------
+
+
+def test_progreso_de_otra_instalacion_no_se_restaura(
+    tmp_path: pathlib.Path, juego: pathlib.Path, estado: pathlib.Path
+) -> None:
+    # La huella del contenido no distingue DOS instalaciones con el mismo caché:
+    # dos MO2 con el mismo `Grass/` producirían la misma huella y compartirían la
+    # evidencia. El ámbito (camino físico del caché) los separa.
+    grass_a = tmp_path / "inst_a" / "overwrite" / "Grass"
+    grass_b = tmp_path / "inst_b" / "overwrite" / "Grass"
+    for grass in (grass_a, grass_b):
+        grass.mkdir(parents=True)
+        (grass / "Tamriel.cgid").write_bytes(b"cgid")
+    inventario = _inventario(grass_a, juego)
+    archivar_progreso(estado, inventario, b"Tamriel\n-2,4\n", grass_dir=grass_a)
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        recuperar_progreso(estado, _inventario(grass_b, juego), grass_dir=grass_b)
+
+    assert excinfo.value.codigo == "progreso_de_otra_instalacion"
+    # Y la misma instalación SÍ lo recupera, byte a byte.
+    assert recuperar_progreso(estado, inventario, grass_dir=grass_a) == b"Tamriel\n-2,4\n"
+
+
+def test_progreso_de_otro_perfil_no_se_restaura(grass: pathlib.Path, estado: pathlib.Path, juego: pathlib.Path) -> None:
+    # Dos perfiles comparten `overwrite/Grass`: sin el perfil en el ámbito, el
+    # progreso de un perfil reanudaría el precache de otro.
+    inventario = _inventario(grass, juego)
+    archivar_progreso(estado, inventario, b"Tamriel\n", grass_dir=grass, perfil="Perfil-A")
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        recuperar_progreso(estado, inventario, grass_dir=grass, perfil="Perfil-B")
+
+    assert excinfo.value.codigo == "progreso_de_otra_instalacion"
+    assert recuperar_progreso(estado, inventario, grass_dir=grass, perfil="Perfil-A") == b"Tamriel\n"
+
+
+def test_dos_ambitos_conviven_en_el_mismo_estado(
+    grass: pathlib.Path, estado: pathlib.Path, juego: pathlib.Path
+) -> None:
+    inventario = _inventario(grass, juego)
+    uno = archivar_progreso(estado, inventario, b"Perfil-A\n", grass_dir=grass, perfil="Perfil-A")
+    otro = archivar_progreso(estado, inventario, b"Perfil-B\n", grass_dir=grass, perfil="Perfil-B")
+
+    assert uno != otro, "el nombre del archivo de evidencia tiene que incluir el ámbito"
+    assert len(list((estado / "progreso").glob("*.json"))) == 2
+    assert recuperar_progreso(estado, inventario, grass_dir=grass, perfil="Perfil-B") == b"Perfil-B\n"
+
+
+def test_el_fsync_del_temporal_va_sobre_un_descriptor_escribible(
+    tmp_path: pathlib.Path, juego: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `fsync` tiene que ir sobre el descriptor con el que se ESCRIBIÓ. Reabrir en
+    # "rb" para sincronizar (el defecto de una revisión anterior) sincroniza un
+    # handle de sólo lectura: no hay garantía de que los datos de la escritura
+    # hayan llegado al disco antes del `os.replace`.
+    fcntl = pytest.importorskip("fcntl", reason="F_GETFL sólo existe en POSIX.")
+    archivos: list[int] = []
+    real_fsync = os.fsync
+
+    def _fsync_observado(fd: int) -> None:
+        # El fsync del DIRECTORIO es legítimamente de sólo lectura; el del
+        # archivo tiene que ser el descriptor escribible.
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            archivos.append(fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", _fsync_observado)
+    flag = juego / "PrecacheGrass.txt"
+
+    aplicar_plan(
+        PlanArranque(
+            modo="new", accion="escribir_vacio", contenido=b"", inventario=_inventario(tmp_path / "nada", juego)
+        ),
+        flag,
+    )
+
+    assert archivos == [os.O_WRONLY], f"el fsync del archivo no fue sobre el descriptor de escritura: {archivos}"
+    assert flag.read_bytes() == b""

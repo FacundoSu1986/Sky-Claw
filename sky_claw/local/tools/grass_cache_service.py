@@ -61,6 +61,7 @@ from sky_claw.local.tools.grass_cache_runner import (
     GrassCacheProgress,
     GrassCacheRunner,
     GrassCacheRunResult,
+    esperar_terminar,
 )
 from sky_claw.local.tools.grass_cache_safety import (
     APROBACION_REBUILD,
@@ -440,14 +441,23 @@ class GrassCacheService:
                 # divergir: acá se evita el trabajo inútil de un run que el
                 # runner va a rechazar, y el runner vuelve a verificar sobre el
                 # inventario fresco (el punto sin retorno es el flag).
-                await asyncio.to_thread(
-                    preparar_arranque,
-                    modo=config.mode,
-                    game_path=config.game_path,
-                    grass_dir=config.overwrite_grass_dir,
-                    aprobacion=config.rebuild_approval,
-                    raiz_estado=config.backup_root,
-                    ack_usvfs_no_verificado=config.ack_usvfs_no_verificado,
+                # `esperar_terminar`: si el llamador se cancela mientras el hilo
+                # COPIA EL RESPALDO, no se puede propagar hasta que el hilo
+                # termine. Soltar los dos locks con la copia en vuelo dejaría a
+                # un reintento escribir los mismos caminos de respaldo/progreso
+                # en paralelo con el hilo abandonado.
+                await esperar_terminar(
+                    asyncio.to_thread(
+                        preparar_arranque,
+                        modo=config.mode,
+                        game_path=config.game_path,
+                        grass_dir=config.overwrite_grass_dir,
+                        aprobacion=config.rebuild_approval,
+                        raiz_estado=config.backup_root,
+                        ack_usvfs_no_verificado=config.ack_usvfs_no_verificado,
+                        perfil=config.profile,
+                    ),
+                    descripcion="preparar_arranque",
                 )
                 if self._journal is not None:
                     journal_tx = await self._journal.begin_transaction(

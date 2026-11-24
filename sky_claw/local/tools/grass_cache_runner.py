@@ -43,7 +43,7 @@ import pathlib
 import shutil  # import de módulo completo: los tests mockean shutil.disk_usage
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import psutil  # import de módulo completo: los tests reemplazan el objeto entero
 
@@ -68,6 +68,8 @@ if TYPE_CHECKING:
     from sky_claw.app.security.path_validator import PathValidator
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 _GIB = 1024**3
 #: Flag que NGIO consume junto a SkyrimSE.exe; su borrado señala el fin.
@@ -234,6 +236,55 @@ class GrassCacheRunResult:
     limpieza_errores: tuple[str, ...] = ()
 
 
+async def esperar_terminar(trabajo: Awaitable[T], *, descripcion: str) -> T:
+    """Espera un trabajo en HILO sin poder abandonarlo por cancelación.
+
+    ``asyncio.to_thread`` no es cancelable: al cancelar la tarea, el ``await``
+    levanta ``CancelledError`` y **el hilo sigue escribiendo**. Cualquier
+    ``await`` normal devuelve el control con el trabajo en vuelo, y quien espera
+    suelta lo que protegía —locks, la limpieza del flag— sobre un estado que
+    todavía cambia. Los dos casos que lo necesitan: la escritura del flag del
+    runner (B11) y la preparación del respaldo del servicio (con los dos locks
+    del ritual tomados).
+
+    **Cómo lo garantiza.** ``asyncio.shield`` sobre la tarea del hilo: al recibir
+    ``CancelledError`` no se propaga mientras el trabajo siga vivo; se vuelve a
+    esperar hasta que TERMINA y recién entonces se levanta la cancelación (o el
+    error del trabajo, si falló). El llamador nunca ve un ``return`` con trabajo
+    pendiente, así que puede decidir con el estado consolidado.
+
+    Args:
+        trabajo: awaitable que corre en otro hilo (``asyncio.to_thread(...)``).
+        descripcion: qué trabajo es, para el mensaje de diagnóstico.
+
+    Raises:
+        asyncio.CancelledError: el llamador fue cancelado (después de drenar).
+    """
+    tarea = asyncio.ensure_future(trabajo)
+    cancelado = False
+    fallo: BaseException | None = None
+    while True:
+        try:
+            await asyncio.shield(tarea)
+            break
+        except asyncio.CancelledError:
+            # Si la tarea ya terminó, el estado está consolidado: se sale.
+            # Si no, se sigue esperando al hilo antes de propagar.
+            cancelado = True
+            if tarea.done():
+                break
+        except Exception as exc:  # noqa: BLE001 — el error del hilo es opaco: se re-lanza tal cual
+            fallo = exc
+            break
+    if cancelado:
+        with contextlib.suppress(Exception):
+            tarea.result()  # consume la excepción del trabajo: gana la cancelación
+        raise asyncio.CancelledError
+    if fallo is not None:
+        raise fallo
+    return tarea.result()
+
+
 class GrassCacheRunner:
     """Supervisor del crash-loop: lanza, vigila, relanza y corta con criterio.
 
@@ -291,22 +342,20 @@ class GrassCacheRunner:
             GrassCacheSafetyError: El arranque no cumple las precondiciones de
                 su modo (F-01). Se levanta ANTES de tocar el flag o lanzar nada.
         """
-        resultado = await self._run_interno(cancel_event)
+        try:
+            resultado = await self._run_interno(cancel_event)
+        except BaseException:
+            # La cancelación (o un bug) NO puede tragarse una limpieza fallida:
+            # el ``finally`` de ``_run_interno`` ya archivó y borró el flag, pero
+            # si esa limpieza no fue completa el resultado nunca se construye y
+            # el fallo no llega a ningún lado —el flag queda en disco y nadie lo
+            # dice—. Se publica ANTES de propagar y se preserva la excepción
+            # original (la cancelación sigue siendo cancelación para el llamador).
+            self._avisar_limpieza_incompleta()
+            raise
         limpieza = self._neutralizacion
         if limpieza is not None and not limpieza.limpio:
-            if limpieza.borrado:
-                logger.warning(
-                    "El flag %s se borró, pero su progreso NO se archivó: la reanudación de este "
-                    "caché se perdió. Errores: %s",
-                    self._flag_path,
-                    "; ".join(limpieza.errores) or "desconocido",
-                )
-            else:
-                logger.warning(
-                    "El flag %s NO se pudo eliminar: el juego puede arrancar en modo precache. Errores: %s",
-                    self._flag_path,
-                    "; ".join(limpieza.errores) or "desconocido",
-                )
+            self._avisar_limpieza_incompleta()
             # Una limpieza incompleta no es éxito, ni aunque el outcome haya
             # sido "completed": el contrato no depende de que el servicio lo
             # corrija más arriba.
@@ -321,6 +370,32 @@ class GrassCacheRunner:
                 limpieza_errores=limpieza.errores,
             )
         return resultado
+
+    def _avisar_limpieza_incompleta(self) -> None:
+        """Publica el fallo de limpieza del ``finally`` — también al propagar.
+
+        Es el único punto donde el fallo de ``neutralizar_flag`` se hace visible
+        cuando el run NO termina devolviendo un resultado (cancelación, error):
+        sin esto, un ``unlink`` fallido después de adoptar el flag quedaba
+        silencioso. El resultado estructurado (``success=False``,
+        ``flag_residual``, ``limpieza_errores``) sigue siendo el otro camino.
+        """
+        limpieza = self._neutralizacion
+        if limpieza is None or limpieza.limpio:
+            return
+        if limpieza.borrado:
+            logger.warning(
+                "El flag %s se borró, pero su progreso NO se archivó: la reanudación de este "
+                "caché se perdió. Errores: %s",
+                self._flag_path,
+                "; ".join(limpieza.errores) or "desconocido",
+            )
+        else:
+            logger.warning(
+                "El flag %s NO se pudo eliminar: el juego puede arrancar en modo precache. Errores: %s",
+                self._flag_path,
+                "; ".join(limpieza.errores) or "desconocido",
+            )
 
     async def _run_interno(self, cancel_event: asyncio.Event | None = None) -> GrassCacheRunResult:
         """Crash-loop supervisado (ver :meth:`run`)."""
@@ -360,6 +435,7 @@ class GrassCacheRunner:
                 aprobacion=self._config.rebuild_approval,
                 raiz_estado=self._config.backup_root,
                 ack_usvfs_no_verificado=self._config.ack_usvfs_no_verificado,
+                perfil=self._config.profile,
             )
             self._plan = plan
             self._backup_dir = ruta_de_respaldo(plan)
@@ -547,36 +623,17 @@ class GrassCacheRunner:
         el próximo arranque del juego convierte en borrado del caché—. Atrapar
         ``GrassCacheSafetyError`` no cambia nada: la cancelación no pasa por ahí.
 
-        Por eso la espera es a prueba de cancelación: al recibir
-        ``CancelledError`` no se propaga mientras el hilo siga en vuelo; se
-        vuelve a esperar (``shield`` mantiene viva la tarea) hasta que TERMINA, y
+        La espera la hace :func:`esperar_terminar`: al recibir ``CancelledError``
+        no se propaga mientras el hilo siga en vuelo; se espera a que TERMINE y
         recién entonces se levanta. Así el run conoce el resultado real de la
         escritura antes de salir y el ``finally`` neutraliza lo que sea nuestro.
-        Un error del hilo también se propaga recién cuando el hilo terminó; la
-        cancelación tiene prioridad porque es la que el llamador pidió.
         La neutralización en sí es síncrona (ver ``_neutralizar_flag_sync``), de
         modo que tampoco puede re-cancelarse entre el archivo y el ``unlink``.
         """
-        tarea = asyncio.ensure_future(asyncio.to_thread(aplicar_plan, plan, self._flag_path, estado=estado))
-        cancelado = False
-        fallo: BaseException | None = None
-        while True:
-            try:
-                await asyncio.shield(tarea)
-                break
-            except asyncio.CancelledError:
-                # Si la tarea ya terminó, el estado está consolidado: se sale.
-                # Si no, se sigue esperando al hilo antes de propagar.
-                cancelado = True
-                if tarea.done():
-                    break
-            except Exception as exc:  # noqa: BLE001 — el error del hilo es opaco: se re-lanza tal cual
-                fallo = exc
-                break
-        if cancelado:
-            raise asyncio.CancelledError
-        if fallo is not None:
-            raise fallo
+        await esperar_terminar(
+            asyncio.to_thread(aplicar_plan, plan, self._flag_path, estado=estado),
+            descripcion="aplicar_plan",
+        )
 
     # ------------------------------------------------------------------
     # Fases internas
@@ -887,6 +944,7 @@ class GrassCacheRunner:
             flag_path=self._flag_path,
             grass_dir=self._config.overwrite_grass_dir,
             raiz_estado=self._config.backup_root,
+            perfil=self._config.profile,
         )
 
     def _resultado(
@@ -920,4 +978,5 @@ __all__ = [
     "GrassCacheProgress",
     "GrassCacheRunResult",
     "GrassCacheRunner",
+    "esperar_terminar",
 ]

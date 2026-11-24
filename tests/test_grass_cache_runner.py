@@ -1079,7 +1079,7 @@ async def test_flag_con_progreso_no_se_trunca(config: GrassCacheConfig, mo2: Asy
     # truncarlo es lo que dispara el borrado del caché. Sin decisión, no se toca.
     flag = config.game_path / "PrecacheGrass.txt"
     progreso = "Tamriel\n-2,4\n"
-    flag.write_text(progreso, encoding="utf-8")
+    flag.write_bytes(progreso.encode("utf-8"))
 
     with pytest.raises(GrassCacheSafetyError) as excinfo:
         await _correr(_runner(config, mo2))
@@ -1148,7 +1148,7 @@ async def test_resume_con_flag_con_progreso_lo_conserva(
     # neutraliza (seguridad del juego del usuario) pero queda archivado.
     progreso = "Tamriel\n-2,4\n"
     flag = config.game_path / "PrecacheGrass.txt"
-    flag.write_text(progreso, encoding="utf-8")
+    flag.write_bytes(progreso.encode("utf-8"))
     _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
     cfg = dataclasses.replace(config, mode="resume", backup_root=tmp_path / "estado", max_runtime_s=0.3)
 
@@ -1184,7 +1184,9 @@ async def test_resume_restaura_el_progreso_archivado(
     inventario = inventariar_cache(
         grass_dir=config.overwrite_grass_dir, flag_path=config.game_path / "PrecacheGrass.txt"
     )
-    archivar_progreso(estado, inventario, progreso.encode("utf-8"), grass_dir=config.overwrite_grass_dir)
+    archivar_progreso(
+        estado, inventario, progreso.encode("utf-8"), grass_dir=config.overwrite_grass_dir, perfil=config.profile
+    )
     flag = config.game_path / "PrecacheGrass.txt"
     visto: list[str] = []
 
@@ -1200,6 +1202,27 @@ async def test_resume_restaura_el_progreso_archivado(
 
     assert resultado.outcome == "timeout"
     assert visto and visto[0] == progreso, "NGIO debe ver el progreso restaurado, no un flag vacío"
+
+
+async def test_resume_no_restaura_el_progreso_de_otro_perfil(
+    config: GrassCacheConfig, mo2: AsyncMock, tmp_path: pathlib.Path
+) -> None:
+    # Hallazgo de revisión: dos perfiles comparten `overwrite/Grass`. El progreso
+    # archivado por otro perfil no puede reanudar este: NGIO saltearía celdas que
+    # este run todavía no generó.
+    _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
+    estado = tmp_path / "estado"
+    inventario = inventariar_cache(
+        grass_dir=config.overwrite_grass_dir, flag_path=config.game_path / "PrecacheGrass.txt"
+    )
+    archivar_progreso(estado, inventario, b"Tamriel\n", grass_dir=config.overwrite_grass_dir, perfil="Perfil-Ajeno")
+    cfg = dataclasses.replace(config, mode="resume", backup_root=estado, max_runtime_s=0.3)
+
+    with pytest.raises(GrassCacheSafetyError) as excinfo:
+        await _correr(_runner(cfg, mo2))
+
+    assert excinfo.value.codigo == "progreso_de_otra_instalacion"
+    mo2.launch_game.assert_not_awaited()
 
 
 async def test_guard_que_se_niega_no_borra_el_flag_existente(config: GrassCacheConfig, mo2: AsyncMock) -> None:
@@ -1401,3 +1424,49 @@ async def test_cancelacion_durante_la_escritura_del_flag_no_deja_flag_vacio(
         "quedó un flag vacío que el próximo arranque del juego convertiría en borrado del caché"
     )
     mo2.launch_game.assert_not_awaited()
+
+
+async def test_la_cancelacion_publica_la_limpieza_fallida(
+    config: GrassCacheConfig, mo2: AsyncMock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Una cancelación posterior a la adopción del flag puede dejar la limpieza a
+    # medias. `_run_interno` propaga CancelledError, así que sin publicar ANTES de
+    # propagar, el `unlink` fallido no llega a ningún lado: el flag queda en disco
+    # y nadie lo dice.
+    import threading
+
+    en_escritura = threading.Event()
+    liberar = threading.Event()
+
+    def _aplicar_lento(
+        plan: Any, flag_path: pathlib.Path, *, estado: EstadoAplicacion | None = None
+    ) -> EstadoAplicacion:
+        estado = estado if estado is not None else EstadoAplicacion()
+        flag_path.write_bytes(plan.contenido)
+        estado.escrito = True
+        en_escritura.set()
+        liberar.wait(timeout=10)
+        estado.verificado = True
+        return estado
+
+    def _neutralizar_falla(**kwargs: Any) -> NeutralizacionFlag:
+        return NeutralizacionFlag(borrado=False, archivado=False, errores=("unlink bloqueado por el AV",))
+
+    monkeypatch.setattr(gcr_mod, "aplicar_plan", _aplicar_lento)
+    monkeypatch.setattr(gcr_mod, "neutralizar_flag", _neutralizar_falla)
+    caplog.set_level("WARNING", logger=gcr_mod.__name__)
+    tarea = asyncio.ensure_future(_correr(_runner(config, mo2)))
+
+    assert await asyncio.to_thread(en_escritura.wait, 5.0), "la escritura no llegó a empezar"
+    tarea.cancel()
+    await asyncio.sleep(0)
+    liberar.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=10)
+
+    avisos = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("NO se pudo eliminar" in aviso for aviso in avisos), (
+        f"la limpieza fallida no se publicó antes de propagar la cancelación: {avisos}"
+    )
+    assert any("unlink bloqueado por el AV" in aviso for aviso in avisos)

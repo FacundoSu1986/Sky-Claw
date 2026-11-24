@@ -920,7 +920,7 @@ async def test_reconcilia_flag_huerfano_sin_lock_lo_borra(tmp_path: pathlib.Path
     from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
 
     flag = tmp_path / "PrecacheGrass.txt"
-    flag.write_text("", encoding="utf-8")
+    flag.write_bytes(b"")
     mgr = _lock_manager(None)  # sin lock → no hay ritual activo
 
     removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
@@ -936,7 +936,7 @@ async def test_no_toca_flag_con_ritual_activo(tmp_path: pathlib.Path) -> None:
     from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
 
     flag = tmp_path / "PrecacheGrass.txt"
-    flag.write_text("", encoding="utf-8")
+    flag.write_bytes(b"")
     mgr = _lock_manager(_lock_info_vivo(600.0))  # lock no expirado → ritual en curso
 
     removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
@@ -953,7 +953,7 @@ async def test_race_ritual_gana_el_lock_no_borra(tmp_path: pathlib.Path) -> None
     from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
 
     flag = tmp_path / "PrecacheGrass.txt"
-    flag.write_text("", encoding="utf-8")
+    flag.write_bytes(b"")
     # get_lock_info=None (al chequear no había lock) pero acquire_lock falla:
     # el ritual ganó la carrera entre el chequeo y la adquisición.
     mgr = _lock_manager(None, acquire_falla=True)
@@ -970,7 +970,7 @@ async def test_lock_expirado_se_trata_como_huerfano(tmp_path: pathlib.Path) -> N
     from sky_claw.local.tools.grass_cache_service import reconcile_orphan_precache_flag
 
     flag = tmp_path / "PrecacheGrass.txt"
-    flag.write_text("", encoding="utf-8")
+    flag.write_bytes(b"")
     mgr = _lock_manager(_lock_info_vivo(-1.0))  # ya vencido → el dueño murió sin liberar
 
     removed = await reconcile_orphan_precache_flag(tmp_path, mgr)
@@ -1057,7 +1057,7 @@ async def test_generate_rechaza_no_truncar_flag_con_progreso(tmp_path: pathlib.P
     service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
     flag = tmp_path / "game" / "PrecacheGrass.txt"
     progreso = "Tamriel\n-2,4\n"
-    flag.write_text(progreso, encoding="utf-8")
+    flag.write_bytes(progreso.encode("utf-8"))
 
     resultado = await service.generate(dict(_PAYLOAD))
 
@@ -1072,7 +1072,7 @@ async def test_el_modo_y_la_raiz_de_estado_viajan_al_runner(
     service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
     estado = tmp_path / "estado"
     monkeypatch.setattr(GrassCacheService, "_raiz_de_estado", staticmethod(lambda: estado))
-    (tmp_path / "game" / "PrecacheGrass.txt").write_text("Tamriel\n", encoding="utf-8")
+    (tmp_path / "game" / "PrecacheGrass.txt").write_bytes(b"Tamriel\n")
 
     resultado = await service.generate({**_PAYLOAD, "mode": "resume"})
 
@@ -1175,3 +1175,47 @@ async def test_progreso_perdido_no_declara_exito(tmp_path: pathlib.Path) -> None
     assert resultado["success"] is False
     assert resultado["progreso_perdido"] is True
     assert any("progreso" in fallo.lower() for fallo in resultado["teardown_failures"])
+
+
+# ---------------------------------------------------------------------------
+# Hallazgo de revisión: cancelación mientras el respaldo se prepara (locks vivos)
+# ---------------------------------------------------------------------------
+
+
+async def test_cancelacion_durante_el_preflight_no_abandona_el_respaldo(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `preparar_arranque` copia el respaldo en un HILO. Si la cancelación llega
+    # mientras copia, el `to_thread` levanta CancelledError y el `async with`
+    # suelta los DOS locks con el hilo todavía escribiendo: un reintento entraría
+    # a los mismos caminos de respaldo/progreso en paralelo. La cancelación no
+    # puede propagarse hasta que el hilo termine.
+    import threading
+
+    import sky_claw.local.tools.grass_cache_service as svc_mod
+
+    en_copia = threading.Event()
+    liberar = threading.Event()
+    termino = threading.Event()
+
+    def _preflight_lento(*args: Any, **kwargs: Any) -> Any:
+        en_copia.set()
+        liberar.wait(timeout=10)
+        termino.set()
+        return MagicMock()
+
+    monkeypatch.setattr(svc_mod, "preparar_arranque", _preflight_lento)
+    service, colaboradores = _servicio(tmp_path, journal=_journal_con_loot_completado())
+
+    tarea = asyncio.ensure_future(service.generate(_PAYLOAD))
+    assert await asyncio.to_thread(en_copia.wait, 5.0), "el preflight no llegó a empezar"
+    tarea.cancel()
+    await asyncio.sleep(0)
+    liberar.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(tarea, timeout=10)
+
+    assert termino.is_set(), "la cancelación se propagó con el respaldo todavía en vuelo"
+    colaboradores["profile_manager"].create_clone_profile.assert_not_awaited()
+    assert colaboradores["llamadas_lock"], "los locks se pidieron antes del preflight"

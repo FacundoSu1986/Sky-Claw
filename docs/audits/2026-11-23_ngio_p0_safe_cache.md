@@ -344,3 +344,69 @@ la contención física de symlinks se ejerció en Linux, y el camino de junction
 cubierto por la primitiva compartida (`exigir_contencion_fisica`) y sus tests, no por una corrida
 en ese sistema. El veredicto es el mismo que en las revisiones anteriores:
 **código listo para humo humano en rig**, no certificación.
+
+## 12. Quinta revisión: CI de Windows y los hilos del PR
+
+Dictamen recibido: **`CI_RED_REVIEW_PENDING`**. Antes de cualquier funcionalidad, dos frentes:
+la CI roja de Windows y los 12 hilos de revisión sin resolver (9 vigentes + 3 obsoletos).
+
+### 12.1 CI roja: `Path.write_text()` traduce LF→CRLF en Windows
+
+El run `45287664877` / job `138094659875` (`Shard 6/6`, Windows) fallaba en **tres** tests de
+`tests/test_grass_cache_safety.py`, y la causa **no era el código bajo prueba**:
+
+| Test | Fixture previo | Aserción | Por qué falla en Windows |
+|---|---|---|---|
+| `test_inventario_trata_cualquier_contenido_como_progreso` | `write_text("formato-que-no-conozco\n")` | `flag_progreso == b"…\n"` | `write_text` con `newline=None` escribe `\r\n` (documentado: traduce a `os.linesep`) |
+| `test_rebuild_archiva_el_progreso_antes_de_pisarlo` | `write_text("Tamriel\n-2,4\n")` | `recuperar_progreso(…) == b"Tamriel\n-2,4\n"` | idem: lo archivado son los bytes CRLF |
+| `test_neutralizar_flag_archiva_y_borra` | idem | idem | idem |
+
+**Diagnóstico reproducido en Linux.** Se copió el archivo pre-fix y se le inyectó un `Path.write_text`
+que fuerza `newline="\r\n"` (exactamente lo que hace Windows con el default): los **tres** tests
+fallaron con `b'Tamriel\r\n-2,4\r\n' == b'Tamriel\n-2,4\n'`, los mismos tres que reportó el log.
+Con el archivo ya corregido y el mismo simulador: **75/75 verdes**.
+
+**Corrección.** Los fixtures del flag escriben **bytes exactos** con `write_bytes()` (contenido LF)
+en los tres módulos (`safety`, `runner`, `service`); no se normalizó nada en producción ni se
+tocó ninguna aserción. Ancla nueva `test_los_fixtures_del_flag_escriben_bytes_y_no_texto`: recorre
+el AST de los tres módulos y falla si alguna escritura de contenido usa `write_text()` —las únicas
+permitidas son las que tamperan un JSON con `json.dumps()`—. Es la regla que evita que el mismo
+defecto vuelva a entrar, y corre en Linux.
+
+### 12.2 Los 12 hilos del PR, contrastados contra el HEAD
+
+Clases: **VÁLIDO** (el defecto existe en el HEAD y se corrigió acá), **YA CORREGIDO** (el defecto
+existía en una versión anterior y el HEAD lo cierra; se demuestra con test), **NO VÁLIDO** (la
+premisa no se sostiene contra el código o contra la fuente primaria de NGIO).
+
+| # | Hilo | Archivo | Severidad | Estado | Clase | Evidencia en el HEAD |
+|---|---|---|---|---|---|---|
+| 1 | `PRRT_kwDOR1JjU867BFjS` | `grass_cache_safety.py` | P1 | vigente | **YA CORREGIDO** | `_respaldo_existente_verifica` compara el manifiesto contra `_digests_del_cache(grass_dir)` (hash de CONTENIDO del origen **actual**) y rehashea el destino: `AAAA`→`BBBB` del mismo tamaño no se reusa. Tests: `test_respaldo_no_se_reutiliza_si_el_origen_cambio_con_el_mismo_tamano`, `test_respaldo_alterado_en_el_destino_no_se_reutiliza` |
+| 2 | `PRRT_kwDOR1JjU867BFjW` | `grass_cache_runner.py` | P1 | obsoleto | **YA CORREGIDO** | Es B11: `esperar_terminar` drena el hilo antes de propagar. Test: `test_cancelacion_durante_la_escritura_del_flag_no_deja_flag_vacio` |
+| 3 | `PRRT_kwDOR1JjU867CV20` | `grass_cache_runner.py` | mayor | vigente | **VÁLIDO** | `run()` no publicaba `_neutralizacion` al propagar: `success=False` y el `warning` vivían sólo en el camino que devuelve resultado. Ahora `_avisar_limpieza_incompleta()` corre **antes** del `raise` y preserva la excepción. Test: `test_la_cancelacion_publica_la_limpieza_fallida` |
+| 4 | `PRRT_kwDOR1JjU867CV29` | `grass_cache_runner.py` | mayor | vigente | **NO VÁLIDO en el HEAD** | `preparar_arranque` corre `_exigir_cobertura_usvfs` **también en `new`** (línea del modo `new`), y sin `ack_usvfs_no_verificado` levanta `usvfs_no_demostrado`. Tests: `test_new_sin_ack_de_usvfs_queda_en_hold`, `test_new_sin_ack_de_usvfs_no_arranca` (runner: no lanza ni escribe). El comentario "no gate applies in new mode" describía el estado previo a la primera revisión |
+| 5 | `PRRT_kwDOR1JjU867CV3E` | `grass_cache_runner.py` | mayor | obsoleto | **YA CORREGIDO** | Igual que #2 (mismo hallazgo, otro redactor) |
+| 6 | `PRRT_kwDOR1JjU867CV3G` | `grass_cache_safety.py` | mayor | vigente | **VÁLIDO** | El flag alternativo `PrecacheGrass.txt.txt` es real: `Util::getProgressFilePath` (1.0.13) lo devuelve cuando el primario no existe. Ahora se **rechaza** el arranque (`flag_alternativo_presente`) antes de escribir nada. Tests: `test_flag_alternativo_de_ngio_se_rechaza`, `test_flag_alternativo_se_rechaza_aunque_el_primario_exista`, `test_flag_alternativo_vacio_tambien_se_rechaza` |
+| 7 | `PRRT_kwDOR1JjU867CV3M` | `grass_cache_safety.py` | mayor | vigente | **VÁLIDO en parte** | La premisa de las comillas es **falsa** (`Util::StringHelpers::trim` recorta `" \r\v\n"`, no toca comillas) y el tab/form feed **sí** divergían. `_ngio_tiene_progreso` replica el lector literal. Test: `test_el_parser_de_progreso_replica_al_de_ngio` (10 casos) |
+| 8 | `PRRT_kwDOR1JjU867CV3Q` | `grass_cache_safety.py` | mayor | vigente | **VÁLIDO** | Un respaldo enlazado o hardlinkeado al origen verificaba por bytes y no sobrevivía al borrado. `_problemas_de_independencia` (link_kind_or_raise + identidad `st_dev`/`st_ino`) antes de reusar y antes de autorizar el borrado. Tests: `test_respaldo_con_hardlink_del_origen_no_autoriza_el_borrado`, `test_respaldo_con_enlace_del_origen_no_autoriza_el_borrado`, `test_respaldo_aliaseado_no_se_reutiliza_sino_que_se_recopia`, `test_manifiesto_enlazado_del_respaldo_no_autoriza_el_borrado` |
+| 9 | `PRRT_kwDOR1JjU867CV3X` | `grass_cache_safety.py` | mayor | vigente | **VÁLIDO** | La evidencia se archivaba por contenido solamente. Ahora el nombre lleva el **ámbito** (camino físico del caché + perfil) y el manifiesto lo declara; otro ámbito se rechaza (`progreso_de_otra_instalacion`). Tests: `test_progreso_de_otra_instalacion_no_se_restaura`, `test_progreso_de_otro_perfil_no_se_restaura`, `test_dos_ambitos_conviven_en_el_mismo_estado`, `test_resume_no_restaura_el_progreso_de_otro_perfil` |
+| 10 | `PRRT_kwDOR1JjU867CV3c` | `grass_cache_safety.py` | mayor | resuelto | **YA CORREGIDO** | Temporal exclusivo `O_CREAT|O_EXCL|O_NOFOLLOW` con nombre impredecible (B7). Test: `test_no_quedan_temporales_de_nombre_predecible_en_el_modulo` |
+| 11 | `PRRT_kwDOR1JjU867CV3h` | `grass_cache_safety.py` | **crítica** | obsoleto | **NO VÁLIDO en el HEAD** | `_escribir_temporal_exclusivo` hace `flush()` + `os.fsync(fh.fileno())` **sobre el mismo handle escribible** (`os.fdopen(fd, "wb")`) y cierra antes del `os.replace`: no hay reapertura en `"rb"` en ningún lado del módulo |
+| 12 | `PRRT_kwDOR1JjU867CV3n` | `grass_cache_service.py` | mayor | vigente | **VÁLIDO** | Cancelación durante `to_thread(preparar_arranque)`: los dos locks se soltaban con la copia del respaldo en vuelo. Ahora `esperar_terminar` drena el hilo **dentro** de `async with tx, lo_tx`. Test: `test_cancelacion_durante_el_preflight_no_abandona_el_respaldo` |
+| 13 | `PRRT_kwDOR1JjU867CV3u` | `tests/test_grass_cache_safety.py` | mayor | vigente | **VÁLIDO** | Es el defecto de 12.1 (fixtures LF→CRLF). Ancla: `test_los_fixtures_del_flag_escriben_bytes_y_no_texto` |
+
+**Fuente primaria consultada (tag `1.0.13`, `DwemerEngineer/No-Grass-In-Objects-NG`)** — es lo que
+decide los hilos 6, 7 y 11:
+
+- `src/Util.cpp::Util::getProgressFilePath()`: usa `PrecacheGrass.txt` si existe; si no,
+  `PrecacheGrass.txt.txt` ("Dumb user mode for .txt.txt file name"); si tampoco, el primario.
+- `include/GrassControl/Util.h::StringHelpers::trim()`: `find_first_not_of(" \r\v\n")` — recorta
+  **sólo** espacio, CR, VT y LF. No recorta tab ni form feed y **no interpreta comillas**.
+- `src/GidFileCache.cpp::GidFileGenerationTask::Init()`: `std::getline` (corta sólo en `\n`) +
+  `trim` + descarta vacías ⇒ `IsResuming = !ProgressDone->empty()`; si queda vacío,
+  `remove()` de `.dgid`/`.cgid`/`.fail` bajo `Data/Grass`.
+- `GidFileGenerationTask::GidFileGenerationTask()`: abre `Util::getProgressFilePath()` con
+  `std::ios::app` — el archivo efectivo es el de la función de arriba.
+
+### 12.3 Gates de la quinta revisión
+

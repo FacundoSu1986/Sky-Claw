@@ -96,6 +96,7 @@ import pathlib
 import secrets
 import stat
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal
 
@@ -115,6 +116,11 @@ logger = logging.getLogger(__name__)
 #: Nombre del flag que NGIO consume junto a ``SkyrimSE.exe``. Vive acá porque
 #: el inventario, el plan y el runner tienen que hablar del MISMO archivo.
 PRECACHE_FLAG: Final = "PrecacheGrass.txt"
+#: Nombre del flag ALTERNATIVO que NGIO también lee. ``Util::getProgressFilePath``
+#: (``src/Util.cpp``, tag 1.0.13) hace: si ``PrecacheGrass.txt`` existe lo usa;
+#: si no, prueba ``PrecacheGrass.txt.txt`` —"Dumb user mode for .txt.txt file
+#: name"—; si tampoco, el primario.
+PRECACHE_FLAG_ALTERNATIVO: Final = "PrecacheGrass.txt.txt"
 
 #: Token de aprobación de una regeneración destructiva. Es literal a propósito:
 #: tiene que poder reconocerse en un prompt HITL y en un log, sin ambigüedad.
@@ -274,6 +280,32 @@ def _validar_raiz_fisica(
         raise GrassCacheSafetyError(codigo_ilegible, f"No se pudo validar la raíz {que} {ruta}: {exc}") from exc
 
 
+#: Caracteres que NGIO recorta de cada línea del flag: `Util::StringHelpers::trim`
+#: (`include/GrassControl/Util.h`, tag 1.0.13) quita EXACTAMENTE ``" \r\v\n"``.
+#: No incluye el tab ni el form feed, y no interpreta comillas.
+_NGIO_RECORTE = b" \r\v\n"
+
+
+def _ngio_tiene_progreso(crudo: bytes) -> bool:
+    """¿NGIO vería progreso en estos bytes? Réplica literal de 1.0.13.
+
+    ``GidFileGenerationTask::Init()`` (``src/GidFileCache.cpp``) parte el archivo
+    con ``std::getline`` —que corta **sólo** en ``\n``—, recorta cada línea con
+    ``Util::StringHelpers::trim`` —que quita **sólo** ``" \r\v\n"``— y descarta
+    las vacías: ``IsResuming = !ProgressDone->empty()``. Si el progreso queda
+    vacío, NGIO **borra** ``*.cgid``/``*.dgid``/``*.fail`` de ``Data/Grass``.
+
+    **Por qué una réplica y no ``str.strip()``.** ``str.strip()`` recorta más
+    (tab, form feed, ``\x1c``-``\x1f``, espacios Unicode) y ``splitlines()``
+    corta en más caracteres. La diferencia no es cosmética: si Sky-Claw viera
+    progreso donde NGIO no lo ve, autorizaría un ``resume`` sobre un archivo que
+    NGIO trata como vacío —y el ``remove()`` de ``Init()`` se llevaría el caché—.
+    Este predicado es el de NGIO, byte a byte, y lo usan por igual el flag vivo y
+    el contenido archivado (``neutralizar_flag`` archiva sólo si esto es ``True``).
+    """
+    return any(linea.strip(_NGIO_RECORTE) for linea in crudo.split(b"\n"))
+
+
 def _leer_flag(flag_path: pathlib.Path) -> tuple[bool, bytes | None]:
     """``(presente, progreso)`` del flag, con el progreso en BYTES EXACTOS.
 
@@ -282,9 +314,11 @@ def _leer_flag(flag_path: pathlib.Path) -> tuple[bool, bytes | None]:
     codificación inesperada (o con bytes sueltos) justo cuando ese contenido es
     la única evidencia de reanudación.
 
-    "Tiene progreso" se decide igual que NGIO: alguna línea con contenido no
-    blanco (``splitlines`` + ``strip``). Un formato desconocido entonces
-    *protege* —impide ``new``/``rebuild`` sin decisión—, que es el lado seguro.
+    "Tiene progreso" lo decide :func:`_ngio_tiene_progreso`, la réplica del
+    lector de NGIO 1.0.13. Un formato desconocido entonces *protege* —impide
+    ``new``/``resume``/``rebuild`` sin decisión—, que es el lado seguro: de las
+    dos formas de equivocarse, sólo "creer que hay progreso" puede terminar en
+    un borrado del caché, así que la clasificación nunca es más laxa que NGIO.
     """
     if not path_present(flag_path):
         return (False, None)
@@ -295,7 +329,7 @@ def _leer_flag(flag_path: pathlib.Path) -> tuple[bool, bytes | None]:
         crudo = flag_path.read_bytes()
     except OSError as exc:
         raise GrassCacheSafetyError("flag_ilegible", f"No se pudo leer {flag_path}: {exc}") from exc
-    hay_progreso = any(linea.strip() for linea in crudo.splitlines())
+    hay_progreso = _ngio_tiene_progreso(crudo)
     return (True, crudo if hay_progreso else None)
 
 
@@ -524,10 +558,68 @@ def _entradas_del_manifiesto(manifiesto: dict[str, Any]) -> dict[str, tuple[int,
     return entradas
 
 
+def _problemas_de_independencia(
+    origen_dir: pathlib.Path, destino: pathlib.Path, nombres: Iterable[str]
+) -> list[tuple[str, str]]:
+    """Enlaces o alias del ORIGEN dentro de los artefactos del respaldo.
+
+    **Qué problema cierra.** Los hashes de verificación leen el archivo del
+    respaldo *siguiendo el camino*: si esa entrada es un symlink, un junction o
+    un **hardlink** al original, los bytes coinciden —son los mismos— y el
+    respaldo "verifica". Pero no es un respaldo: cuando NGIO borre el original,
+    la entrada del respaldo desaparece con él (mismo inode) o queda apuntando a
+    la nada. El respaldo autorizaba así un borrado sin copia recuperable.
+
+    **Cómo lo decide.** Por cada artefacto declarado: ``link_kind_or_raise``
+    (la primitiva del repo: symlink/junction) y, si es un archivo regular,
+    comparación de identidad física ``(st_dev, st_ino)`` contra el origen. Un
+    hardlink comparte inode con el original; una copia independiente, no.
+    Devuelve ``[(codigo, mensaje), …]``: el llamador decide si lo trata como
+    "no reusar" (preparación, con recopia posible) o como fallo duro (antes de
+    autorizar el borrado).
+    """
+    problemas: list[tuple[str, str]] = []
+    for nombre in sorted(nombres):
+        ruta = destino / nombre
+        try:
+            tipo = link_kind_or_raise(ruta)
+        except OSError as exc:
+            problemas.append(("respaldo_alterado", f"No se pudo clasificar {ruta}: {exc}"))
+            continue
+        if tipo is not None:
+            problemas.append(
+                (
+                    "respaldo_enlazado",
+                    f"{ruta} del respaldo es un enlace ({tipo}) que redirige al origen: no es una copia.",
+                )
+            )
+            continue
+        try:
+            identidad_copia = ruta.lstat()
+            identidad_origen = (origen_dir / nombre).lstat()
+        except OSError as exc:
+            problemas.append(("respaldo_alterado", f"No se pudo inspeccionar {ruta}: {exc}"))
+            continue
+        if (
+            identidad_copia.st_ino
+            and identidad_copia.st_ino == identidad_origen.st_ino
+            and identidad_copia.st_dev == identidad_origen.st_dev
+        ):
+            problemas.append(
+                (
+                    "respaldo_aliaseado",
+                    f"{ruta} del respaldo es el MISMO archivo que {origen_dir / nombre} (hardlink): "
+                    "no sobrevive al borrado que el respaldo autoriza.",
+                )
+            )
+    return problemas
+
+
 def _respaldo_existente_verifica(
     destino: pathlib.Path,
     inventario: InventarioCache,
     origen: dict[str, tuple[int, str]],
+    origen_dir: pathlib.Path,
 ) -> RespaldoVerificado | None:
     """Reusa un respaldo previo sólo si su CONTENIDO cubre el caché actual.
 
@@ -542,7 +634,14 @@ def _respaldo_existente_verifica(
     tamaño, contenido distinto), y destino alterado a ``XXXX`` conservando el
     tamaño. En cualquiera de los dos, el llamador recopia desde el origen.
     """
-    manifiesto = _leer_manifiesto(destino / "manifiesto.json")
+    ruta_manifiesto = destino / "manifiesto.json"
+    if path_present(ruta_manifiesto):
+        try:
+            _rechazar_enlace(ruta_manifiesto, "respaldo_enlazado")
+        except GrassCacheSafetyError:
+            logger.warning("El manifiesto %s del respaldo es un enlace: no se reutiliza.", ruta_manifiesto)
+            return None
+    manifiesto = _leer_manifiesto(ruta_manifiesto)
     if manifiesto is None:
         return None
     declarado = _entradas_del_manifiesto(manifiesto)
@@ -554,6 +653,12 @@ def _respaldo_existente_verifica(
         return None
     total = sum(tamano for tamano, _ in origen.values())
     if len(origen) != inventario.archivos_cache or total != inventario.bytes_cache:
+        return None
+    # Un respaldo que enlaza o aliasea el origen no es un respaldo. Acá SÍ hay
+    # reparación: no se reusa, y `respaldar_cache` lo aparta y recopia.
+    problemas = _problemas_de_independencia(origen_dir, destino, origen)
+    if problemas:
+        logger.warning("El respaldo %s no es independiente del origen (%s): no se reutiliza.", destino, problemas[0][1])
         return None
     for nombre, (tamano, sha_esperado) in origen.items():
         ruta = destino / nombre
@@ -624,7 +729,7 @@ def respaldar_cache(
             f"{inventario.archivos_cache}/{inventario.bytes_cache}: cambió entre el inventario y el respaldo.",
         )
 
-    reusado = _respaldo_existente_verifica(destino, inventario, origen) if path_present(destino) else None
+    reusado = _respaldo_existente_verifica(destino, inventario, origen, grass_dir) if path_present(destino) else None
     if reusado is not None:
         logger.info("Respaldo de grass verificado por contenido en %s; se reusa.", destino)
         return reusado
@@ -701,6 +806,15 @@ def verificar_respaldo_para_borrado(*, grass_dir: pathlib.Path, respaldo: Respal
     arranca. El manifiesto histórico **no** alcanza por sí solo.
     """
     _validar_raiz_fisica(grass_dir)
+    _validar_raiz_fisica(
+        respaldo.destino,
+        codigo_enlace="respaldo_raiz_enlazada",
+        codigo_no_absoluta="respaldo_raiz_no_absoluta",
+        codigo_ilegible="respaldo_raiz_ilegible",
+        que="del respaldo",
+    )
+    if path_present(respaldo.manifiesto):
+        _rechazar_enlace(respaldo.manifiesto, "respaldo_enlazado")
     manifiesto = _leer_manifiesto(respaldo.manifiesto)
     declarado = _entradas_del_manifiesto(manifiesto or {})
     if declarado is None:
@@ -713,6 +827,13 @@ def verificar_respaldo_para_borrado(*, grass_dir: pathlib.Path, respaldo: Respal
             "respaldo_desactualizado",
             "El caché cambió después del respaldo: el respaldo ya no cubre el contenido actual. "
             "Se niega el borrado (volvé a correr el ritual para respaldar el estado vigente).",
+        )
+    problemas = _problemas_de_independencia(grass_dir, respaldo.destino, declarado)
+    if problemas:
+        codigo, mensaje = problemas[0]
+        raise GrassCacheSafetyError(
+            codigo,
+            f"{mensaje} Se niega el borrado del caché sin una copia independiente del origen.",
         )
     for nombre, (tamano, sha_esperado) in declarado.items():
         ruta = respaldo.destino / nombre
@@ -737,8 +858,26 @@ def _dir_progreso(raiz_estado: pathlib.Path) -> pathlib.Path:
     return raiz_estado / "progreso"
 
 
-def _ruta_progreso(raiz_estado: pathlib.Path, huella: str) -> pathlib.Path:
-    return _dir_progreso(raiz_estado) / f"{huella}.json"
+def _ambito_de_progreso(grass_dir: pathlib.Path, perfil: str) -> str:
+    """Identidad del ORIGEN del progreso: instalación (camino físico) + perfil.
+
+    La huella del caché identifica el *contenido*, y eso no alcanza para saber a
+    quién pertenece el progreso archivado: dos instalaciones MO2 con el mismo
+    ``Grass/`` (mismo nombre, tamaño y bytes) producen la misma huella, y dos
+    perfiles de la MISMA instalación comparten ``overwrite/Grass``. Sin el
+    ámbito, la evidencia de una reanudaría el precache de la otra, y NGIO
+    saltearía celdas que ese run todavía no generó.
+
+    ``normcase`` + ``realpath``: el mismo directorio es el mismo ámbito aunque
+    cambie el uso de mayúsculas (Windows) o haya un componente redundante.
+    """
+    identidad = os.path.normcase(os.path.realpath(grass_dir)) + "\x00" + perfil
+    return hashlib.sha256(identidad.encode("utf-8")).hexdigest()[:16]
+
+
+def _ruta_progreso(raiz_estado: pathlib.Path, huella: str, ambito: str) -> pathlib.Path:
+    """``<estado>/progreso/<huella>-<ambito>.json``: contenido **y** origen."""
+    return _dir_progreso(raiz_estado) / f"{huella}-{ambito}.json"
 
 
 def _validar_progreso_fisico(directorio: pathlib.Path, *, que: str) -> None:
@@ -775,6 +914,7 @@ def archivar_progreso(
     contenido: bytes,
     *,
     grass_dir: pathlib.Path,
+    perfil: str = "",
 ) -> pathlib.Path:
     """Guarda los BYTES del flag atados al CONTENIDO del caché de ESE momento.
 
@@ -807,7 +947,8 @@ def archivar_progreso(
             f"{inventario.bytes_cache} bytes) que ya no coincide con {grass_dir} "
             f"({len(digests)} archivos): no se archiva evidencia que no corresponde.",
         )
-    destino = _ruta_progreso(raiz_estado, inventario.huella)
+    ambito = _ambito_de_progreso(grass_dir, perfil)
+    destino = _ruta_progreso(raiz_estado, inventario.huella, ambito)
     # B10: la cadena física del DESTINO, no sólo ``raiz_estado``. El subdirectorio
     # de progreso es parte de la ruta de escritura: sin este guard, un enlace en
     # ``<estado>/progreso`` deja el JSON de evidencia fuera del árbol administrado.
@@ -819,6 +960,9 @@ def archivar_progreso(
     carga = {
         "version": _VERSION_MANIFIESTO,
         "huella": inventario.huella,
+        "ambito": ambito,
+        "origen": os.path.realpath(grass_dir),
+        "perfil": perfil,
         "inventario": inventario.a_dict(),
         "huella_contenido": _huella_de_contenido(digests),
         "contenido_b64": base64.b64encode(contenido).decode("ascii"),
@@ -835,6 +979,7 @@ def recuperar_progreso(
     inventario: InventarioCache,
     *,
     grass_dir: pathlib.Path,
+    perfil: str = "",
 ) -> bytes | None:
     """Progreso archivado para ESTE caché, o ``None``.
 
@@ -859,14 +1004,34 @@ def recuperar_progreso(
         codigo_ilegible="estado_raiz_ilegible",
         que="del estado de Sky-Claw",
     )
-    ruta = _ruta_progreso(raiz_estado, inventario.huella)
+    ambito = _ambito_de_progreso(grass_dir, perfil)
+    ruta = _ruta_progreso(raiz_estado, inventario.huella, ambito)
     # B10: tampoco se LEE evidencia que viva fuera del árbol administrado.
     _validar_progreso_fisico(ruta.parent, que="del progreso archivado de Sky-Claw")
+    # Si NO hay evidencia para este origen pero SÍ para este contenido en otro,
+    # se dice explícitamente: reanudar con el progreso de otra instalación/perfil
+    # saltearía celdas que este run todavía no generó. (La exploración va DESPUÉS
+    # de validar la cadena física: listar también es leer.)
+    if not path_present(ruta):
+        for otra in sorted(_dir_progreso(raiz_estado).glob(f"{inventario.huella}-*.json")):
+            if otra != ruta:
+                raise GrassCacheSafetyError(
+                    "progreso_de_otra_instalacion",
+                    f"El progreso archivado de este caché pertenece a otro origen ({otra.name}): "
+                    f"no es de la instalación/perfil ({perfil or 'sin perfil'}) que está reanudando. "
+                    "No se restaura evidencia de otro origen.",
+                )
     if path_present(ruta):
         _rechazar_enlace(ruta, "progreso_es_enlace")
     carga = _leer_manifiesto(ruta)
     if carga is None or carga.get("version") != _VERSION_MANIFIESTO or carga.get("huella") != inventario.huella:
         return None
+    if carga.get("ambito") != ambito:
+        raise GrassCacheSafetyError(
+            "progreso_de_otra_instalacion",
+            f"El manifiesto {ruta} declara otro ámbito ({carga.get('ambito')!r}) que el de este "
+            f"origen ({ambito!r}): la evidencia no se restaura.",
+        )
     b64 = carga.get("contenido_b64")
     sha_esperado = carga.get("contenido_sha256")
     if not isinstance(b64, str) or not isinstance(sha_esperado, str):
@@ -932,6 +1097,7 @@ def neutralizar_flag(
     flag_path: pathlib.Path,
     grass_dir: pathlib.Path,
     raiz_estado: pathlib.Path | None,
+    perfil: str = "",
 ) -> NeutralizacionFlag:
     """Archiva el progreso (si lo hay) y borra el flag. Nunca propaga errores.
 
@@ -985,7 +1151,7 @@ def neutralizar_flag(
         else:
             try:
                 inventario = inventariar_cache(grass_dir=grass_dir, flag_path=flag_path)
-                archivar_progreso(raiz_estado, inventario, progreso, grass_dir=grass_dir)
+                archivar_progreso(raiz_estado, inventario, progreso, grass_dir=grass_dir, perfil=perfil)
                 archivado = True
             except (GrassCacheSafetyError, OSError) as exc:
                 errores.append(f"No se pudo archivar el progreso: {exc}")
@@ -1163,6 +1329,46 @@ def planificar_arranque(
     )
 
 
+def ruta_del_flag_alternativo(game_path: pathlib.Path) -> pathlib.Path:
+    """``<juego>/PrecacheGrass.txt.txt``: el segundo nombre que NGIO abre."""
+    return game_path / PRECACHE_FLAG_ALTERNATIVO
+
+
+def _exigir_sin_flag_alternativo(game_path: pathlib.Path) -> None:
+    """Se niega a arrancar si existe el flag alternativo de NGIO.
+
+    **Qué problema cierra.** NGIO 1.0.13 no lee un nombre fijo:
+    ``Util::getProgressFilePath()`` devuelve ``PrecacheGrass.txt`` si existe y,
+    si no, ``PrecacheGrass.txt.txt``. Sky-Claw administraba sólo el primario, así
+    que con un alternativo con progreso:
+
+    1. ``resume`` no lo veía y se negaba (o, peor, veía "sin progreso" donde
+       NGIO veía progreso);
+    2. ``new`` escribía el primario vacío y **enmascaraba** el alternativo;
+    3. al neutralizar el primario, el alternativo volvía a ser el flag efectivo
+       y el próximo arranque manual del juego entraba en modo precache.
+
+    **Cómo lo decide.** Fail-closed sin administrar el alternativo: si existe
+    (aunque esté vacío, o sea un enlace roto: NGIO decide por ``exists()``), se
+    levanta ``flag_alternativo_presente`` antes de escribir nada y se le pide al
+    operador que lo resuelva con el juego cerrado. Administrarlo (archivarlo y
+    neutralizarlo junto al primario) queda fuera de P0: toca dos nombres a la vez
+    y no hay forma de verificar en este entorno cómo interactúa con la caché de
+    ``_ovFilePath`` que NGIO guarda en memoria.
+    """
+    alternativo = ruta_del_flag_alternativo(game_path)
+    if not path_present(alternativo):
+        return
+    raise GrassCacheSafetyError(
+        "flag_alternativo_presente",
+        f"NGIO abre {alternativo} como flag de progreso cuando {PRECACHE_FLAG} no existe "
+        "(Util::getProgressFilePath, 1.0.13). Mientras exista: `resume` no puede leer su "
+        "progreso, `new` lo enmascararía con el primario y, al neutralizar el primario, el "
+        "alternativo volvería a poner el juego en modo precache. Cerrá el juego, renombrá o "
+        "borrá ese archivo y volvé a intentar.",
+    )
+
+
 def preparar_arranque(
     *,
     modo: GrassCacheMode,
@@ -1171,6 +1377,7 @@ def preparar_arranque(
     aprobacion: str | None = None,
     raiz_estado: pathlib.Path | None = None,
     ack_usvfs_no_verificado: bool = False,
+    perfil: str = "",
 ) -> PlanArranque:
     """Inventaría, respalda si el modo lo exige y devuelve el plan — idempotente.
 
@@ -1179,6 +1386,9 @@ def preparar_arranque(
     la llamada no recopia el respaldo ni rearchiva el progreso: el respaldo se
     reusa sólo si su contenido verifica contra el caché actual.
     """
+    # El flag alternativo se rechaza ANTES de cualquier decisión o escritura: con
+    # él presente, ni el inventario ni el plan representan lo que NGIO va a leer.
+    _exigir_sin_flag_alternativo(game_path)
     if modo == "rebuild":
         # Fail-fast ANTES de tocar el disco: un HOLD no respalda nada.
         _exigir_aprobacion_y_cobertura(aprobacion=aprobacion, ack_usvfs_no_verificado=ack_usvfs_no_verificado)
@@ -1202,7 +1412,7 @@ def preparar_arranque(
         # perdía en silencio justo cuando nada la podía recuperar. Ahora se
         # niega el arranque: sin evidencia archivada no se pisa el progreso.
         try:
-            archivar_progreso(raiz_estado, inventario, inventario.flag_progreso, grass_dir=grass_dir)
+            archivar_progreso(raiz_estado, inventario, inventario.flag_progreso, grass_dir=grass_dir, perfil=perfil)
         except (GrassCacheSafetyError, OSError) as exc:
             raise GrassCacheSafetyError(
                 "progreso_no_archivado",
@@ -1210,7 +1420,9 @@ def preparar_arranque(
                 f"{raiz_estado}: {exc}. Se niega el arranque para no perder la única evidencia "
                 "de reanudación (revisá permisos/espacio del directorio de estado).",
             ) from exc
-    progreso = recuperar_progreso(raiz_estado, inventario, grass_dir=grass_dir) if modo == "resume" else None
+    progreso = (
+        recuperar_progreso(raiz_estado, inventario, grass_dir=grass_dir, perfil=perfil) if modo == "resume" else None
+    )
     plan = planificar_arranque(
         modo=modo,
         inventario=inventario,
@@ -1398,6 +1610,8 @@ __all__ = [
     "EXTENSIONES_CACHE",
     "MODOS_GRASS_CACHE",
     "PRECACHE_FLAG",
+    "PRECACHE_FLAG_ALTERNATIVO",
+    "ruta_del_flag_alternativo",
     "EstadoAplicacion",
     "GrassCacheMode",
     "GrassCacheSafetyError",
