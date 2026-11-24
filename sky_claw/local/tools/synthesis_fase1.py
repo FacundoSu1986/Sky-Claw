@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol
 
+from sky_claw.app.security.links import rmtree_link_aware
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline, PatcherPipelineError, PatcherV2Seleccionado
 from sky_claw.local.tools.synthesis_compilacion import CompilacionPatcherError, compilar_patcher_local
 from sky_claw.local.tools.synthesis_fuentes_git import FuentesGitError, obtener_fuentes_git
@@ -263,12 +264,28 @@ async def preparar_fase1(
     return ResultadoFase1(ejecutables=ejecutables)
 
 
+#: Prefijo de la carpeta de shims de cada corrida; :meth:`PreparadorFase1.liberar` solo borra estas.
+PREFIJO_CORRIDA_DE_SHIMS = "skyclaw-synthesis-shims-"
+
+
+def _borrar_corrida(corrida: pathlib.Path) -> None:
+    """Borra una carpeta de corrida con la primitiva link-aware; un fallo se registra, no se propaga."""
+    try:
+        rmtree_link_aware(corrida, limpiar_readonly=True)
+    except OSError as exc:
+        logger.warning("No se pudo borrar la carpeta de shims %s: %s", corrida, exc)
+
+
 class PreparadorFase1Protocol(Protocol):
     """Lo que el servicio necesita de la Fase 1: el mapa ``ID canónico → shim`` de UNA corrida."""
 
     async def preparar(
         self, settings_path: pathlib.Path, profile_identifier: str, patcher_ids: list[str]
     ) -> Mapping[str, pathlib.Path]: ...
+
+    async def liberar(self, ejecutables: Mapping[str, pathlib.Path]) -> None:
+        """Borra la carpeta de shims de una corrida ya terminada (el servicio decide cuándo, PR-3j)."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -294,21 +311,51 @@ class PreparadorFase1:
     ) -> dict[str, pathlib.Path]:
         raiz = self.raiz_shims if self.raiz_shims is not None else pathlib.Path(tempfile.gettempdir())
         try:
-            corrida = pathlib.Path(
-                await asyncio.to_thread(tempfile.mkdtemp, prefix="skyclaw-synthesis-shims-", dir=raiz)
-            )
+            corrida = pathlib.Path(await asyncio.to_thread(tempfile.mkdtemp, prefix=PREFIJO_CORRIDA_DE_SHIMS, dir=raiz))
         except OSError as exc:
             raise Fase1Error(f"No se pudo crear la carpeta de shims de la corrida bajo {raiz}: {exc}") from exc
-        resultado = await preparar_fase1(
-            settings_path,
-            profile_identifier,
-            patcher_ids,
-            cache_raiz=self.cache_raiz,
-            directorio_shims=corrida / "shims",
-            dotnet=self.dotnet,
-            git=self.git,
-            hitl=self.hitl,
-            timeout_s=self.timeout_s,
-            max_output_bytes=self.max_output_bytes,
-        )
+        try:
+            resultado = await preparar_fase1(
+                settings_path,
+                profile_identifier,
+                patcher_ids,
+                cache_raiz=self.cache_raiz,
+                directorio_shims=corrida / "shims",
+                dotnet=self.dotnet,
+                git=self.git,
+                hitl=self.hitl,
+                timeout_s=self.timeout_s,
+                max_output_bytes=self.max_output_bytes,
+            )
+        except Exception:
+            # Nada se despachó: la carpeta (vacía o a medias) no la usa nadie. Una cancelación NO entra
+            # acá: un hilo de materialización podría seguir escribiendo en ella.
+            await asyncio.to_thread(_borrar_corrida, corrida)
+            raise
+        if not resultado.ejecutables:
+            # Sin shims no hay ruta que lleve a esta carpeta: liberar() no la encontraría nunca.
+            await asyncio.to_thread(_borrar_corrida, corrida)
+            raise Fase1Error("La Fase 1 no dejó ningún shim para los patchers seleccionados")
         return dict(resultado.ejecutables)
+
+    async def liberar(self, ejecutables: Mapping[str, pathlib.Path]) -> None:
+        """Borra la carpeta de la corrida de *ejecutables*; solo una ``skyclaw-synthesis-shims-*`` propia.
+
+        Cada shim vive en ``<corrida>/shims/<NN-id>/``. Una ruta que no tenga esa forma, o cuya corrida
+        no cuelgue directamente de ``raiz_shims``, no se toca (se registra y se sigue).
+        """
+        raiz = (self.raiz_shims if self.raiz_shims is not None else pathlib.Path(tempfile.gettempdir())).resolve()
+        corridas: set[pathlib.Path] = set()
+        for exe in ejecutables.values():
+            corrida = pathlib.Path(exe).parents[2] if len(pathlib.Path(exe).parents) > 2 else None
+            if (
+                corrida is None
+                or pathlib.Path(exe).parent.parent.name != "shims"
+                or not corrida.name.startswith(PREFIJO_CORRIDA_DE_SHIMS)
+                or corrida.resolve().parent != raiz
+            ):
+                logger.warning("Shim fuera de una corrida propia; no se borra: %s", exe)
+                continue
+            corridas.add(corrida)
+        for corrida in sorted(corridas):
+            await asyncio.to_thread(_borrar_corrida, corrida)
