@@ -636,6 +636,15 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
   `tests/test_bodyslide_corrida_con_journal.py` y censos congelados de call sites/importadores en
   `tests/test_bodyslide_journal.py`. Pendiente de 2c-2: broker USVFS y `worker_exit`, paridad de
   `_SAFE_NAME_PATTERN`, trabajo en segundo plano. Brief §13.5.
+- **BodySlide PR 2c-2a (2026-11-25, cierre PARCIAL de PR 2 — schema y segundo plano):** el validador
+  de `group` en `BodySlideBatchParams` delega en `bodyslide_headless.validar_nombre_de_grupo` (el schema
+  rechaza exactamente lo que rechaza el contrato), y `run_bodyslide` corre como trabajo en segundo plano
+  (`sky_claw/app/agent/tools/bodyslide_tools.py`, mypy estricto): responde con `trabajo_id`, una corrida a
+  la vez, aviso por `notify_operator`, y `AppContext` registra `cerrar()` en el cleanup. Sin gestor, la
+  tool falla cerrada. Anclas: `tests/test_bodyslide_schema_paridad.py` (corpus enumerado desde el
+  contrato y ancla AST de la delegación) y `tests/test_bodyslide_segundo_plano.py` (gestor, tool y censo
+  de constructores productivos del registry). Pendiente de 2c-2b: broker USVFS dormido, `worker_exit` →
+  `TERMINAL` y liberación de `LANZADO` por el operador. Brief §13.6.
 
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un
 flag en vez de enumerar el vector. El ancla `test_contrato_argumentos_cli.py`

@@ -2350,6 +2350,15 @@ class AppContext:
             admisiones_nativas = GestorDeAdmisionesNativas(notificar=hitl.notify_operator)
             self._push_startup_cleanup(admisiones_nativas.cerrar)
 
+            # PR 2c-2a (R-8): BodySlide desde el agente corre como trabajo en segundo plano: el
+            # round del router cancela a los 120 s y, desde 2c-1, cancelar con el proceso
+            # lanzado deja la config en HOLD. El cleanup cancela la corrida viva al apagar
+            # (misma regla: HOLD si estaba lanzada, nunca una restauración a ciegas).
+            from sky_claw.app.agent.tools.bodyslide_tools import GestorDeTrabajosDeBodySlide
+
+            bodyslide_jobs = GestorDeTrabajosDeBodySlide(notificar=hitl.notify_operator)
+            self._push_startup_cleanup(bodyslide_jobs.cerrar)
+
             tool_registry = AsyncToolRegistry(
                 registry=self.database.registry,
                 mo2=mo2,
@@ -2382,6 +2391,7 @@ class AppContext:
                 mo2_profile=active_profile,
                 lod_jobs=lod_jobs,
                 admisiones_nativas=admisiones_nativas,
+                bodyslide_jobs=bodyslide_jobs,
                 # ADR 0016 (H-1, PR B): el MISMO resolver que arma el dispatcher de la
                 # GUI. Sin esto la etapa 6 asistida del agente LLM no puede ubicar el
                 # `plugins.txt` del perfil ni la superposición del artefacto.
