@@ -107,8 +107,8 @@ def calcular_diff_de_activacion(*, perfil: pathlib.Path, salidas: Sequence[str])
     """Compara el perfil de MO2 con las *salidas* (nombres de plugin) de la corrida, sin tocar nada.
 
     Raises:
-        DiffDeActivacionError: ``modlist.txt`` o ``plugins.txt`` ilegibles, o un ``modlist.txt``
-            malformado o ambiguo.
+        DiffDeActivacionError: ``modlist.txt`` o ``plugins.txt`` ilegibles, un ``modlist.txt``
+            malformado o ambiguo, o un ``plugins.txt`` con un plugin repetido.
     """
     estado = _estado_del_mod(perfil / "modlist.txt")
     plugins = _lineas(perfil / "plugins.txt")
@@ -119,7 +119,11 @@ def calcular_diff_de_activacion(*, perfil: pathlib.Path, salidas: Sequence[str])
         activo = linea.startswith("*")
         nombre = linea[1:].strip() if activo else linea
         clave = nombre.lower()
-        orden.setdefault(clave, indice)
+        if clave in orden:
+            # Mismo criterio que `read_enabled_mods` con el modlist: un load order repetido no tiene
+            # posición ni estado afirmables, así que el diff falla cerrado en vez de elegir una línea.
+            raise DiffDeActivacionError(f"plugins.txt repite el plugin {nombre!r}: el load order es ambiguo")
+        orden[clave] = indice
         if activo:
             activos.add(clave)
 

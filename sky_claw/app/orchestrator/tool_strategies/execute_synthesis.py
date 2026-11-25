@@ -259,8 +259,10 @@ class ExecuteSynthesisPipelineStrategy:
         from sky_claw.local.tools.synthesis_activacion import calcular_diff_de_activacion
 
         try:
-            if self._raices_mo2_provider is None or self._profile_getter is None:
-                raise ValueError("sin raíces de MO2 ni perfil cableados en la strategy")
+            if self._raices_mo2_provider is None:
+                raise ValueError("la strategy no tiene cableado el proveedor de raíces de MO2")
+            if self._profile_getter is None:
+                raise ValueError("la strategy no tiene cableado el proveedor del perfil")
             perfil = self._profile_getter()
             assert_safe_component(perfil, field="profile")
             directorio = self._raices_mo2_provider().data_root / "profiles" / perfil

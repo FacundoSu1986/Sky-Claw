@@ -198,3 +198,18 @@ def test_el_modulo_no_contiene_primitivas_de_escritura() -> None:
 
     assert mutadoras == []
     assert aperturas == [], "el diff lee con Path.read_text; ninguna apertura explícita (ni de lectura)"
+
+
+@pytest.mark.parametrize(
+    "plugins",
+    [
+        "*Synthesis.esp\nSynthesis.esp\n",  # el mismo plugin activo e inactivo
+        "*Synthesis.esp\n*Otro.esp\n*synthesis.esp\n",  # dos posiciones bajo la identidad de NTFS
+    ],
+)
+def test_plugins_txt_con_un_plugin_repetido_falla_cerrado(tmp_path: pathlib.Path, plugins: str) -> None:
+    """Triage PR-Agent #1026: un load order repetido no tiene posición ni estado afirmables."""
+    perfil = _perfil(tmp_path, modlist=_MODLIST_OK, plugins=plugins)
+
+    with pytest.raises(DiffDeActivacionError, match="plugins.txt"):
+        calcular_diff_de_activacion(perfil=perfil, salidas=["Synthesis.esp"])

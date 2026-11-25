@@ -173,6 +173,26 @@ async def test_brokered_con_perfil_inseguro_no_lee_fuera_del_arbol(perfil: str) 
     raices.assert_not_called()
 
 
+@pytest.mark.parametrize(("raices", "perfil", "falta"), [(None, "Default", "raíces"), (MagicMock(), None, "perfil")])
+async def test_brokered_sin_dependencias_del_diff_nombra_la_que_falta(raices: Any, perfil: Any, falta: str) -> None:
+    service = MagicMock()
+    service.execute_pipeline = AsyncMock(return_value={"success": True, "message": "", "output_esps": ["X.esp"]})
+    strategy = _strategy(
+        "brokered",
+        service_factory=lambda _o, _j: service,
+        raices_mo2_provider=raices,
+        profile_getter=(lambda: perfil) if perfil is not None else None,
+    )
+    strategy._emit_flight_report = AsyncMock()  # type: ignore[method-assign]
+
+    result = await strategy.execute({})
+
+    assert result["activacion"]["disponible"] is False
+    otra = "perfil" if falta == "raíces" else "raíces"
+    assert falta in result["activacion"]["motivo"]
+    assert otra not in result["activacion"]["motivo"], "el motivo nombra solo la dependencia que falta"
+
+
 async def test_brokered_fallido_no_adjunta_diff() -> None:
     service = MagicMock()
     service.execute_pipeline = AsyncMock(return_value={"success": False, "message": "boom"})
@@ -311,3 +331,25 @@ def test_todo_constructor_de_produccion_recibe_el_backend_completo() -> None:
     }
 
     assert all(not f for f in faltantes.values()), faltantes
+
+
+#: Sitios de producción que construyen la strategy. Igualdad literal: una superficie nueva (p. ej. el
+#: agente LLM en PR-4) rompe el ancla hasta que pasa el MISMO backend y las dependencias del diff.
+_CONSTRUCTORES_DE_LA_STRATEGY = {"sky_claw/app/orchestrator/tool_dispatcher.py": 1}
+_KWARGS_DE_LA_STRATEGY = frozenset({"synthesis_backend", "raices_mo2_provider", "profile_getter"})
+
+
+def test_todo_constructor_de_la_strategy_recibe_backend_y_dependencias_del_diff() -> None:
+    sitios: dict[str, list[ast.Call]] = {}
+    for archivo in sorted((_RAIZ / "sky_claw").rglob("*.py")):
+        for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8"))):
+            if isinstance(nodo, ast.Call):
+                nombre = nodo.func.id if isinstance(nodo.func, ast.Name) else getattr(nodo.func, "attr", None)
+                if nombre == "ExecuteSynthesisPipelineStrategy":
+                    sitios.setdefault(archivo.relative_to(_RAIZ).as_posix(), []).append(nodo)
+
+    assert {ruta: len(nodos) for ruta, nodos in sitios.items()} == _CONSTRUCTORES_DE_LA_STRATEGY
+    for ruta, nodos in sitios.items():
+        for nodo in nodos:
+            faltan = _KWARGS_DE_LA_STRATEGY - {kw.arg for kw in nodo.keywords if kw.arg is not None}
+            assert not faltan, f"{ruta}: la strategy no recibe {sorted(faltan)}"
