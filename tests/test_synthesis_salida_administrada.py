@@ -230,6 +230,38 @@ def test_dyndolod_descubre_los_splits_de_la_raiz_administrada(
     assert "Synthesis_2.esp" in plugins
 
 
+def test_dyndolod_exige_el_split_administrado_aunque_el_mods_dir_no_resuelva(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """De punta a punta, con el guard real: si ``get_mo2_mods_path()`` falla, el split
+    deshabilitado de ``<datos>/mods/Sky-Claw Synthesis Output`` sigue figurando como faltante.
+
+    Es la rama que el ancla de igualdad cubre por rutas; acá se verifica el veredicto que ve
+    el operador (review CodeRabbit, PR #1022).
+    """
+    from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
+
+    rutas = _escenario_mo2(tmp_path)
+    (rutas["output"] / "Synthesis.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+    (rutas["output"] / "Synthesis_2.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+    # El grupo base está habilitado; el split no.
+    rutas["plugins"].write_text("*Skyrim.esm\n*MiModVirtual.esp\n*Synthesis.esp\n", encoding="utf-8")
+    monkeypatch.setenv("SYNTHESIS_PIPELINE_SETTINGS", str(rutas["settings"]))
+    monkeypatch.delenv("SYNTHESIS_PROFILE_IDENTIFIER", raising=False)
+
+    svc = object.__new__(DynDOLODPipelineService)
+    resolver = _resolver_para_servicio(rutas)
+    resolver.get_mo2_instance_data_root_estricto.return_value = rutas["mo2"]
+    resolver.get_mo2_mods_path.side_effect = RuntimeError("mod_directory irresoluble")
+    svc._path_resolver = resolver  # type: ignore[attr-defined]
+    svc._mo2_profile = "Default"  # type: ignore[attr-defined]
+    monkeypatch.setattr(svc, "_plugins_txt_del_perfil_activo", lambda: rutas["plugins"], raising=False)
+
+    evidencia = svc.verificar_etapas_previas()
+
+    assert any("Synthesis_2.esp" in faltante for faltante in evidencia.faltantes), evidencia.faltantes
+
+
 # ---------------------------------------------------------------------------
 # Sondeo de permisos sobre un destino que todavía no existe
 # ---------------------------------------------------------------------------
