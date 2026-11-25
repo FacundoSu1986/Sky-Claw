@@ -26,6 +26,7 @@ from sky_claw.app.security.links import is_link
 from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.output_targets import (
     BODYSLIDE_MESHES_RESOURCE_ID,
+    SYNTHESIS_MANAGED_MOD_NAME,
     bodyslide_output_root,
     derivar_layout_de_dyndolod,
     dyndolod_legacy_recovery_target,
@@ -84,6 +85,9 @@ USUARIOS_DEL_MOVE_ASIDE: dict[str, str] = {
     "sky_claw/local/tools/pandora_service.py": "pandora",
     # BodySlide PR 2a: el move-aside del grupo vive en el servicio compartido, no en la tool.
     "sky_claw/local/tools/bodyslide_service.py": "bodyslide",
+    # PR-2b2 (ADR 0019 §2.3): el backend brokered aparta `<mods>/Sky-Claw Synthesis Output`
+    # bajo el lock del servicio (`Synthesis.esp`).
+    "sky_claw/local/tools/synthesis_service.py": "synthesis",
 }
 
 #: Excluidos con motivo: **consumen** el prefijo, no lo producen. El
@@ -893,7 +897,9 @@ def test_los_targets_activos_y_el_legacy_estan_separados_por_rol(tmp_path: pathl
     legacy = dyndolod_legacy_recovery_target(game=game)
     assert legacy is not None
     assert por_nombre[PRODUCTOR_LEGACY] == {legacy / DynDOLODRunner.TEXGEN_OUTPUT_NAME}
-    assert set(por_nombre) == {PRODUCTOR_DYNDOLOD, PRODUCTOR_LEGACY, "pandora", "bodyslide"}
+    # ACTIVE_TARGET de Synthesis (PR-2b2): la raíz administrada, nunca el padre `mods/`.
+    assert por_nombre["synthesis"] == {mo2 / "mods" / SYNTHESIS_MANAGED_MOD_NAME}
+    assert set(por_nombre) == {PRODUCTOR_DYNDOLOD, PRODUCTOR_LEGACY, "pandora", "bodyslide", "synthesis"}
 
 
 @pytest.mark.parametrize("herramienta", ["TexGen", "DynDOLOD"])
@@ -1055,6 +1061,8 @@ def test_los_mods_de_salida_son_los_unicos_destinos_que_nunca_commitean_vacios(t
         PRODUCTOR_LEGACY: set(),
         "pandora": set(),
         "bodyslide": set(),
+        # PR-2b2: una raíz confirmada lleva al menos el `<Grupo>.esp` de la corrida.
+        "synthesis": {mo2 / "mods" / SYNTHESIS_MANAGED_MOD_NAME},
     }
     for productor in productores:
         assert set(productor.destinos_nunca_vacios) <= set(productor.destinos)
