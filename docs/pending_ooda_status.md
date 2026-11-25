@@ -645,6 +645,21 @@ declaran**. Se verificó leyendo el parser de cada herramienta, no informes:
   contrato y ancla AST de la delegación) y `tests/test_bodyslide_segundo_plano.py` (gestor, tool y censo
   de constructores productivos del registry). Pendiente de 2c-2b: broker USVFS dormido, `worker_exit` →
   `TERMINAL` y liberación de `LANZADO` por el operador. Brief §13.6.
+- **BodySlide PR 2c-2b (2026-11-25, cierre PARCIAL de PR 2 — broker USVFS dormido y salida del
+  operador):** el spawn del runner pasa a un lanzador inyectable (`bodyslide_lanzador`): el lanzador
+  reporta, el runner decide, y solo una excepción con veto de rollback (`TerminalidadDesconocidaError`)
+  deja el journal en `LANZADO` sin restaurar (`HOLD_TERMINALITY_UNKNOWN`). `tool_id="bodyslide"` con
+  payload cerrado (sin argv), destino canónico, `-q` verificado exigido también en el worker, re-hash del
+  exe por un handle retenido (`exe_retenido`, D7 mitad del worker) y `expected_plugins` (C2).
+  `brokered_bodyslide.py` dormido: barrera en `False` y sin call site productivo. Salida del operador
+  (decisión del propietario): `registrar_terminalidad_por_operador` y `--mode bodyslide-recovery`
+  (`status`, `release-quarantine`, `confirm-terminal`, con evidencia y log CRITICAL). Anclas:
+  `tests/test_bodyslide_lanzador.py` (tabla de terminalidad), `tests/test_brokered_bodyslide.py` (tabla del
+  broker, payload, worker, resolvedor y censo de call sites), `tests/test_exe_retenido.py`,
+  `tests/test_bodyslide_terminalidad_operador.py` y `tests/test_bodyslide_operador.py`; censos de
+  `tool_id`, handlers, `VfsJob.create` e importadores del journal actualizados. Pendiente de 2d y del rig:
+  registro de binarios atestiguados (D7), censo de procesos (D8), staging con handles (D2/D9), scratch
+  como overwrite forzado (D3, hipótesis hasta C4) y publicación al mod de salida. Brief §13.6.
 
 Causa raíz común: ningún smoke con binario real, y tests que **muestreaban** un
 flag en vez de enumerar el vector. El ancla `test_contrato_argumentos_cli.py`

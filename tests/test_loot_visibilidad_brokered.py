@@ -310,6 +310,8 @@ _CONSTRUCTORES = {
     ("local/mo2/brokered_dyndolod.py", "_verificar_handoff_mo2", "health"),
     ("local/mo2/brokered_loot.py", "sort", "loot_sort"),
     ("local/mo2/brokered_synthesis.py", "run_pipeline", "synthesis"),
+    # PR 2c-2b: BodySlide brokered (dormido); lleva expected_plugins como todo job mutante.
+    ("local/mo2/brokered_bodyslide.py", "lanzar", "bodyslide"),
 }
 _SIN_EVIDENCIA_DE_VISIBILIDAD = frozenset({"health"})
 

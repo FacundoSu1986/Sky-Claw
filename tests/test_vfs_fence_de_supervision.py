@@ -716,7 +716,7 @@ async def test_toda_herramienta_del_broker_espera_la_misma_confirmacion(tmp_path
 
 def test_la_familia_de_herramientas_no_cambio_sin_revisar_el_fence() -> None:
     # Arrange / Act / Assert: igualdad literal (enumerar, no muestrear).
-    assert frozenset({"health", "loot_sort", "texgen", "dyndolod", "synthesis"}) == ALLOWED_VFS_TOOL_IDS
+    assert frozenset({"health", "loot_sort", "texgen", "dyndolod", "synthesis", "bodyslide"}) == ALLOWED_VFS_TOOL_IDS
 
 
 # ---------------------------------------------------------------------------
