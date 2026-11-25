@@ -26,7 +26,7 @@ from sky_claw.local.loot.cli import LOOTConfig, LOOTRunner
 from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
 from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
 
-from .bodyslide_tools import iniciar_run_bodyslide
+from .bodyslide_tools import bodyslide_status, iniciar_run_bodyslide
 from .db_tools import install_mod, search_mod
 from .descriptor import ToolDescriptor
 from .external_tools import setup_tools
@@ -647,7 +647,8 @@ class AsyncToolRegistry:
             name="run_bodyslide",
             description=(
                 "Execute BodySlide in batch mode for a preset group as a background job and return "
-                "immediately with a job id; the operator is notified on this channel when it finishes."
+                "immediately with a job id; the operator is notified on their channel when it finishes. "
+                "Check the state and the result with bodyslide_status."
             ),
             params_model=BodySlideBatchParams,
             # Codex #213 P1: serialize on the shared bodyslide-meshes lock (like
@@ -664,6 +665,17 @@ class AsyncToolRegistry:
                 lock_manager=self._lock_manager,
                 snapshot_manager=self._snapshot_manager,
             ),
+        )
+        # Review Codex #1024: el aviso de fin viaja por notify_operator, que sin Telegram no entrega
+        # nada; el resultado tiene que poder consultarse (mismo cierre que lods_status).
+        self._tools["bodyslide_status"] = ToolDescriptor(
+            name="bodyslide_status",
+            description=(
+                "Report the state of the current or last BodySlide background job and, once it ended, its "
+                "result (read-only)."
+            ),
+            params_model=None,
+            fn=lambda: bodyslide_status(self._bodyslide_jobs),
         )
         # FASE 6: Direct runner tools
         self._tools["generate_bashed_patch"] = ToolDescriptor(

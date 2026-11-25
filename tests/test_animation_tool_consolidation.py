@@ -158,6 +158,8 @@ TOOLS_CON_LAMBDA_EN_EL_REGISTRY: set[str] = {
     "admitir_plugin_nativo",
     "analyze_esp_conflicts",
     "auditar_plugin_nativo",
+    # PR 2c-2a (review Codex #1024): estado y resultado del trabajo de BodySlide en segundo plano.
+    "bodyslide_status",
     "check_load_order",
     "close_game",
     "detect_conflicts",

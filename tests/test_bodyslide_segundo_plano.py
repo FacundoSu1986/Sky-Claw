@@ -27,6 +27,7 @@ import pytest
 from sky_claw.app.agent.tools import AsyncToolRegistry
 from sky_claw.app.agent.tools.bodyslide_tools import (
     GestorDeTrabajosDeBodySlide,
+    bodyslide_status,
     iniciar_run_bodyslide,
 )
 from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
@@ -392,3 +393,66 @@ def test_todo_registry_productivo_recibe_el_gestor_y_su_cierre_esta_registrado()
         and llamada.args[0].value.id == "bodyslide_jobs"
     ]
     assert len(cierres) == 1, "el cierre del gestor de BodySlide no está registrado en el cleanup"
+
+
+# ---------------------------------------------------------------------------
+# Review Codex #1024 (P2): el resultado es consultable, no solo un aviso
+# ---------------------------------------------------------------------------
+#
+# ``notify_operator`` solo entrega por Telegram: desde ``/api/chat`` sin ese canal,
+# el aviso de fin se descartaba y el resultado de la corrida —incluido el de una
+# config que quedó en HOLD— no le llegaba a nadie. Mismo cierre que la etapa 9
+# (``lods_status``): una tool de solo lectura con el trabajo en curso o el último.
+
+
+async def test_estado_sin_trabajos_lo_dice_sin_fallar() -> None:
+    gestor = GestorDeTrabajosDeBodySlide(notificar=_Avisos())
+
+    estado = json.loads(await bodyslide_status(gestor))
+
+    assert estado["success"] is True
+    assert estado["trabajo"] is None
+
+
+async def test_estado_sin_gestor_falla_cerrada() -> None:
+    estado = json.loads(await bodyslide_status(None))
+
+    assert estado["success"] is False
+    assert estado["message"]
+
+
+async def test_estado_muestra_la_corrida_viva() -> None:
+    gestor = GestorDeTrabajosDeBodySlide(notificar=_Avisos())
+    ejecutar, entro, soltar, _ = _ejecutar_bloqueado()
+    respuesta = gestor.iniciar(ejecutar, parametros={"group": "CBBE"})
+    await asyncio.wait_for(entro.wait(), timeout=5)
+
+    estado = json.loads(await bodyslide_status(gestor))
+
+    assert estado["trabajo"]["trabajo_id"] == respuesta["trabajo_id"]
+    assert estado["trabajo"]["estado"] == "en_curso"
+    assert "resultado" not in estado["trabajo"]
+    soltar.set()
+    await _terminar(gestor)
+
+
+async def test_estado_devuelve_el_resultado_de_un_fallo_sin_canal_de_avisos() -> None:
+    """Sin ``notificar`` (sin Telegram) el resultado sigue siendo recuperable."""
+    gestor = GestorDeTrabajosDeBodySlide(notificar=None)
+    resultado = {"success": False, "message": "CAPABILITY_UNKNOWN: -q sin verificar", "return_code": -1}
+    gestor.iniciar(AsyncMock(return_value=json.dumps(resultado)), parametros={"group": "CBBE"})
+    await _terminar(gestor)
+
+    estado = json.loads(await bodyslide_status(gestor))
+
+    assert estado["trabajo"]["estado"] == "fallido"
+    assert estado["trabajo"]["resultado"] == resultado
+    assert estado["trabajo"]["parametros"] == {"group": "CBBE"}
+
+
+def test_el_registry_expone_el_estado_y_run_bodyslide_lo_menciona(tmp_path: pathlib.Path) -> None:
+    reg = _registry(tmp_path, None, GestorDeTrabajosDeBodySlide(notificar=_Avisos()))
+
+    assert "bodyslide_status" in reg.tools
+    assert reg.tools["bodyslide_status"].params_model is None
+    assert "bodyslide_status" in reg.tools["run_bodyslide"].description

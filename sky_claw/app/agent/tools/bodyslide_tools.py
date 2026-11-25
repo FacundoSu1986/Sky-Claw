@@ -65,6 +65,19 @@ class TrabajoDeBodySlide:
     resultado: dict[str, Any] | None = None
     tarea: asyncio.Task[None] | None = field(default=None, repr=False)
 
+    def resumen(self) -> dict[str, Any]:
+        """Estado serializable para ``bodyslide_status`` (sin la task)."""
+        datos: dict[str, Any] = {
+            "trabajo_id": self.id,
+            "estado": self.estado,
+            "parametros": dict(self.parametros),
+            "iniciado_en": self.iniciado_en,
+            "duracion_segundos": round((self.terminado_en or time.time()) - self.iniciado_en, 1),
+        }
+        if self.resultado is not None:
+            datos["resultado"] = dict(self.resultado)
+        return datos
+
 
 def _detalle_de_fallo(resultado: dict[str, Any]) -> str:
     detalle = resultado.get("message") or resultado.get("error") or "error sin detalle"
@@ -147,8 +160,8 @@ class GestorDeTrabajosDeBodySlide:
             "estado": trabajo.estado,
             "trabajo_id": trabajo.id,
             "instrucciones": (
-                "BodySlide corre en segundo plano: Sky-Claw le avisa al operador por este canal cuando termina. "
-                "No vuelvas a lanzarlo mientras tanto."
+                "BodySlide corre en segundo plano: Sky-Claw le avisa al operador por su canal cuando termina, y "
+                "bodyslide_status devuelve el estado y el resultado. No vuelvas a lanzarlo mientras tanto."
             ),
         }
 
@@ -209,6 +222,23 @@ class GestorDeTrabajosDeBodySlide:
             await self._registrar_cancelacion(self._actual)
 
 
+async def bodyslide_status(gestor: GestorDeTrabajosDeBodySlide | None) -> str:
+    """Tool ``bodyslide_status``: la corrida en curso o la última, con su resultado (solo lectura).
+
+    Review Codex #1024: el aviso de fin viaja por ``notify_operator``, que sin Telegram no
+    entrega nada. Desde ``/api/chat`` el resultado se perdía, incluido el de una config que
+    quedó en HOLD. Mismo cierre que ``lods_status`` en la etapa 9: el resultado se consulta.
+    """
+    if gestor is None:
+        return json.dumps({"success": False, "message": MOTIVO_SIN_GESTOR}, ensure_ascii=False)
+    trabajo = gestor.actual
+    return json.dumps(
+        {"success": True, "message": "", "trabajo": None if trabajo is None else trabajo.resumen()},
+        ensure_ascii=False,
+        default=str,
+    )
+
+
 async def iniciar_run_bodyslide(
     gestor: GestorDeTrabajosDeBodySlide | None,
     runner: Any,
@@ -249,5 +279,6 @@ __all__ = [
     "MOTIVO_SIN_GESTOR",
     "GestorDeTrabajosDeBodySlide",
     "TrabajoDeBodySlide",
+    "bodyslide_status",
     "iniciar_run_bodyslide",
 ]
