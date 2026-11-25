@@ -3243,3 +3243,98 @@ async def test_f1_el_runner_escribe_el_fence_antes_del_spawn(
     await _correr(_runner(config, mo2))
 
     assert visto == [True], "el fence se escribe antes del spawn"
+
+
+def test_p1_candidato_legible_y_otro_ilegible_es_incompleto(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1 (anexo): encontrar UN candidato legible no demuestra nada si otro es ilegible."""
+    import sky_claw.local.tools.grass_cache_runner as gcr_mod
+
+    class _ProcLegible:
+        pid = 5001
+
+        def name(self) -> str:
+            return "SkyrimSE.exe"
+
+        def create_time(self) -> float:
+            return time.time()
+
+        def exe(self) -> str:
+            return str(config.game_path / "SkyrimSE.exe")
+
+    class _ProcIlegible:
+        pid = 5002
+
+        def name(self) -> str:
+            raise psutil_real.AccessDenied(5002)
+
+        def create_time(self) -> float:
+            return time.time()
+
+        def exe(self) -> str | None:
+            return None
+
+    class _MundoMixto(_MundoProcesos):
+        def process_iter(self, attrs: Any = None) -> Any:
+            return iter([_ProcLegible(), _ProcIlegible()])
+
+    monkeypatch.setattr(gcr_mod, "psutil", _MundoMixto())
+    runner = _runner(config, mo2)
+    runner._spawn_solicitado[0] = True
+    runner._epoch_del_intento[0] = 0.0
+
+    estado, encontrado = runner._buscar_proceso_del_intento(0)
+
+    assert (estado, encontrado) == ("incompleto", None), "la incertidumbre no se resuelve con el legible"
+
+
+def test_p1_multiples_legibles_es_encontrado(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1 (anexo): varios candidatos legibles ⇒ se adopta uno (sin incertidumbre)."""
+    import sky_claw.local.tools.grass_cache_runner as gcr_mod
+
+    class _Proc:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def name(self) -> str:
+            return "SkyrimSE.exe"
+
+        def create_time(self) -> float:
+            return time.time()
+
+        def exe(self) -> str:
+            return str(config.game_path / "SkyrimSE.exe")
+
+    class _MundoDos(_MundoProcesos):
+        def process_iter(self, attrs: Any = None) -> Any:
+            return iter([_Proc(6001), _Proc(6002)])
+
+    monkeypatch.setattr(gcr_mod, "psutil", _MundoDos())
+    runner = _runner(config, mo2)
+    runner._spawn_solicitado[0] = True
+    runner._epoch_del_intento[0] = 0.0
+
+    estado, encontrado = runner._buscar_proceso_del_intento(0)
+
+    assert estado == "encontrado"
+    assert encontrado is not None and encontrado.pid == 6001
+
+
+def test_b5_watchdog_ve_un_cache_parcial_solo_de_dgid_y_fail(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """B5 (anexo): el watchdog usa el cierre común: `.dgid`/`.fail` cuentan como artefactos."""
+    grass = config.overwrite_grass_dir
+    grass.mkdir(parents=True, exist_ok=True)
+    (grass / "Tamrielx0000y0000.dgid").write_bytes(b"d")
+    (grass / "Tamrielx0001y0000.fail").write_bytes(b"1\n")
+    runner = _runner(config, mo2)
+
+    cgid, dgid, fail, tamano = runner._muestra_de_progreso_sync()
+
+    assert (cgid, dgid, fail) == (0, 1, 1)
+    assert (dgid + fail) > 0, "un caché parcial de .dgid/.fail no puede parecer vacío al watchdog"
+    assert tamano >= 0

@@ -1193,28 +1193,44 @@ class GrassCacheRunner:
             self._ultimo_avance_mono = time.monotonic()
             self._progreso_observado = True
 
+    def _artefactos_reconocidos_sync(self) -> tuple[int, int, int]:
+        """Cuenta artefactos reconocidos (`.cgid`, `.dgid`, `.fail`) que son archivos regulares.
+
+        **Cierre común** del watchdog y de la evidencia de egreso (B5 del anexo): los dos caminos
+        tienen que ver el mismo universo. Un directorio o enlace con nombre de artefacto no es caché,
+        y un caché parcial compuesto sólo por `.dgid`/`.fail` sí cuenta como artefacto.
+        """
+        cgid = dgid = fail = 0
+        with contextlib.suppress(FileNotFoundError, NotADirectoryError, OSError):
+            for archivo in self._config.overwrite_grass_dir.iterdir():
+                sufijo = archivo.suffix.lower()
+                if sufijo not in EXTENSIONES_CACHE:
+                    continue
+                try:
+                    if not stat.S_ISREG(archivo.stat().st_mode):
+                        continue
+                except OSError:
+                    continue
+                if sufijo == ".cgid":
+                    cgid += 1
+                elif sufijo == ".dgid":
+                    dgid += 1
+                else:
+                    fail += 1
+        return cgid, dgid, fail
+
     def _muestra_de_progreso_sync(self) -> tuple[int, int, int, int]:
         """(nombres `.cgid`, nombres `.dgid`, nombres `.fail`, tamaño del flag).
 
         ``iterdir`` aparece acá porque el censo de ``tests/test_borrado_recursivo.py`` ya declara a
         este módulo (sólo lee; no borra ni copia árboles).
         """
-        cgid = dgid = fail = 0
-        with contextlib.suppress(FileNotFoundError, NotADirectoryError):
-            for archivo in self._config.overwrite_grass_dir.iterdir():
-                sufijo = archivo.suffix.lower()
-                if sufijo == ".cgid":
-                    cgid += 1
-                elif sufijo == ".dgid":
-                    dgid += 1
-                elif sufijo == ".fail":
-                    fail += 1
+        cgid, dgid, fail = self._artefactos_reconocidos_sync()
         try:
-            tamano = self._flag_path.stat().st_size
+            tamano = int(self._flag_path.stat().st_size)
         except OSError:
-            tamano = -1
-        self._leer_avance_del_flag(tamano)
-        return (cgid, dgid, fail, tamano)
+            tamano = 0
+        return cgid, dgid, fail, tamano
 
     def _leer_avance_del_flag(self, tamano: int) -> None:
         """Lee SÓLO los bytes nuevos del flag y guarda los worldspaces que NGIO declaró.
@@ -1796,10 +1812,19 @@ class GrassCacheRunner:
         except psutil.Error:
             logger.warning("No se pudo inspeccionar el sistema para verificar el lanzamiento.", exc_info=True)
             return ("incompleto", None)
+        if incompleta:
+            # P1 (anexo): un candidato legible NO convierte en demostrada una búsqueda incompleta:
+            # puede haber OTRO proceso relevante que no se pudo inspeccionar. Con incertidumbre no
+            # se libera el fence, ni se certifica, ni se relanza, ni se hace teardown destructivo.
+            logger.warning(
+                "Búsqueda de procesos del intento %s incompleta (%d candidato(s) legible(s)): se "
+                "mantiene la terminalidad indeterminada.",
+                intento,
+                len(encontrados),
+            )
+            return ("incompleto", None)
         if encontrados:
             return ("encontrado", encontrados[0])
-        if incompleta:
-            return ("incompleto", None)
         # B2: una búsqueda vacía no demuestra ausencia si el lanzador sigue vivo (aún puede crear
         # procesos). Sin esa prueba, `incompleto` => indeterminado.
         mo2_pid = self._mo2_pid_del_intento.get(intento)
