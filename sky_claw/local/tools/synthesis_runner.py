@@ -45,6 +45,17 @@ _MAX_TES4_MASTERS = 254
 #: Tope combinado de stdout/stderr capturados desde Synthesis CLI (ADR 0018/0019).
 _DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 
+
+def es_output_de_grupo(nombre: str, grupo: str) -> bool:
+    """``True`` si *nombre* es la salida de *grupo*: ``<Grupo>.esp`` o un split ``<Grupo>_N.esp`` (N ≥ 2).
+
+    Sin distinguir mayúsculas (el filesystem de Windows tampoco lo hace). Es la misma forma que
+    el runner reconoce al descubrir sus propios outputs.
+    """
+    patron = rf"^{re.escape(grupo)}(?:_([2-9]|[1-9][0-9]+))?\.esp$"
+    return re.fullmatch(patron, nombre, re.IGNORECASE) is not None
+
+
 #: Lista blanca mínima de variables OS heredables por Synthesis CLI sin filtrar secretos
 #: (API keys, tokens de Telegram, credenciales) hacia patchers comunitarios.
 #: ``USERNAME`` es obligatoria: bajo MO2, usvfs 0.5.6.1 hace ``std::string(getenv("USERNAME"))``

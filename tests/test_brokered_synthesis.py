@@ -603,9 +603,8 @@ async def test_rerun_brokered_excluye_outputs_propios_de_expected_plugins_sin_de
         "*Skyrim.esm\n*MiModVirtual.esp\n*Synthesis.esp\n*Synthesis_2.esp\n",
         encoding="utf-8",
     )
-    overwrite_dir = rutas["mo2"] / "overwrite"
-    overwrite_dir.mkdir(exist_ok=True)
-    prev_esp = overwrite_dir / "Synthesis.esp"
+    # PR-2b1: el destino brokered es la raíz administrada, no el overwrite.
+    prev_esp = rutas["output"] / "Synthesis.esp"
     prev_esp.write_bytes(_construir_tes4(["Skyrim.esm", "MiModVirtual.esp"]))
 
     monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
@@ -688,10 +687,9 @@ async def test_synthesis_service_respeta_rollback_veto_ante_timeout_y_teardown_e
         base = tmp_path / subdir
         base.mkdir()
         rutas = _escenario_mo2(base)
-        overwrite_dir = rutas["mo2"] / "overwrite"
-        overwrite_dir.mkdir(exist_ok=True)
-        target_dir = rutas["output"] if pass_output_override else overwrite_dir
-        split_parcial = target_dir / "Synthesis_2.esp"
+        # PR-2b1: con o sin override (clon del sandbox) el split cae en la salida de la corrida; sin
+        # override es la raíz administrada, que el escenario ubica en rutas["output"].
+        split_parcial = rutas["output"] / "Synthesis_2.esp"
 
         lock_mgr = DistributedLockManager(base / "locks.db", default_ttl=5.0, max_retries=1)
         await lock_mgr.initialize()
@@ -1104,9 +1102,8 @@ async def test_synthesis_service_hace_rollback_normal_ante_timeout_limpio_sin_ve
     """P2-1: un VfsJobTimeoutError limpio (teardown confirmado, sin veto) limpia salidas y marca rolled_back."""
     monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
     rutas = _escenario_mo2(tmp_path)
-    overwrite_dir = rutas["mo2"] / "overwrite"
-    overwrite_dir.mkdir(exist_ok=True)
-    split_parcial = overwrite_dir / "Synthesis_2.esp"
+    # PR-2b1: la salida brokered es la raíz administrada.
+    split_parcial = rutas["output"] / "Synthesis_2.esp"
 
     lock_mgr = DistributedLockManager(tmp_path / "locks_clean_to.db", default_ttl=5.0, max_retries=1)
     await lock_mgr.initialize()
@@ -1700,8 +1697,8 @@ async def test_la_fase1_es_el_ultimo_paso_y_una_salida_temprana_no_la_corre(
     """Salidas previas sin snapshot ni sandbox cortan ANTES de preparar shims: no queda carpeta huérfana."""
     monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
     rutas = _escenario_mo2(tmp_path)
-    (rutas["mo2"] / "overwrite").mkdir(exist_ok=True)
-    (rutas["mo2"] / "overwrite" / "Synthesis.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
+    # PR-2b1: la salida previa vive en la raíz administrada (destino brokered).
+    (rutas["output"] / "Synthesis.esp").write_bytes(_construir_tes4(["Skyrim.esm"]))
     preparador = _PreparadorFalso(rutas["mo2"] / "fase1")
     broker = MagicMock(submit=AsyncMock())
     out = await _servicio_brokered(rutas, broker, preparador).execute_pipeline(

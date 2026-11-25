@@ -7077,7 +7077,9 @@ def test_el_service_no_declara_el_legacy_como_fuente_ni_target() -> None:
     for nodo in ast.walk(arbol):
         if isinstance(nodo, ast.ImportFrom) and nodo.module == "sky_claw.local.tools.output_targets":
             importados_de_output_targets.update(alias.name for alias in nodo.names)
-    assert importados_de_output_targets == {"derivar_layout_de_dyndolod"}
+    # PR-2b1: ``carpetas_de_salida_de_synthesis`` es del lado de la LECTURA (los destinos de
+    # Synthesis que el guard de etapas previas escanea), no un destino ni una fuente de DynDOLOD.
+    assert importados_de_output_targets == {"derivar_layout_de_dyndolod", "carpetas_de_salida_de_synthesis"}
     nombres = {nodo.id for nodo in ast.walk(arbol) if isinstance(nodo, ast.Name)}
     assert "dyndolod_legacy_recovery_target" not in nombres
 
