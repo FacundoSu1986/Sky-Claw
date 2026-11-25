@@ -36,6 +36,7 @@ import pathlib
 import time
 from dataclasses import dataclass
 
+from sky_claw.app.db.rollback_veto import mark_unknown_terminality
 from sky_claw.app.security.links import exigir_contencion_fisica, iter_archivos_propios
 from sky_claw.local.tools._dir_rollback import mutar_hasta_terminal
 from sky_claw.local.tools._process import run_capture
@@ -68,6 +69,12 @@ from sky_claw.local.tools.bodyslide_journal import (
     cuarentena_activa,
     identidad_actual,
     iniciar_transaccion,
+)
+from sky_claw.local.tools.bodyslide_lanzador import (
+    LanzadorDeBodySlide,
+    PedidoDeLanzamiento,
+    SalidaDelLanzamiento,
+    TerminalidadDesconocidaError,
 )
 from sky_claw.local.tools.output_targets import bodyslide_output_root, bodyslide_output_target
 
@@ -151,6 +158,28 @@ class BodySlideConfig:
     #: Plazo de RESPUESTA de la siembra (C3, ``bodyslide_config_io_timeout_seconds`` del brief).
     #: Al vencer: cuarentena persistente y ``CONFIG_IO_HUNG``; el hilo no se suelta.
     plazo_de_siembra_segundos: float = 30.0
+    #: Spawn inyectable (PR 2c-2b). ``None`` ⇒ :class:`LanzadorStandalone` (``run_capture`` con
+    #: Job, el comportamiento de 2c-1). El backend brokered inyecta el suyo; la tabla de
+    #: terminalidad es la misma para los dos (``bodyslide_lanzador``).
+    lanzador: LanzadorDeBodySlide | None = None
+
+
+class LanzadorStandalone:
+    """Spawn directo con ``run_capture(require_job=True)``.
+
+    En Windows el árbol queda en un Job ``KILL_ON_JOB_CLOSE`` que ``run_capture`` cierra en
+    TODA salida: retorno, timeout o error demuestran terminalidad (mata, cosecha y cierra el
+    Job). Por eso este lanzador nunca lanza :class:`TerminalidadDesconocidaError`.
+    """
+
+    async def lanzar(self, pedido: PedidoDeLanzamiento) -> SalidaDelLanzamiento:
+        stdout, stderr, return_code = await run_capture(
+            list(pedido.argv),
+            timeout=pedido.timeout,
+            cwd=str(pedido.cwd),
+            require_job=True,
+        )
+        return SalidaDelLanzamiento(stdout=stdout, stderr=stderr, return_code=return_code)
 
 
 @dataclass
@@ -726,20 +755,42 @@ class BodySlideRunner:
                 raise
             lanzado = True
 
-            # 4c) Spawn — evidencia + veredicto. ``require_job=True`` (cierre #1003):
-            #     en Windows el árbol queda en un Job KILL_ON_JOB_CLOSE que
-            #     ``run_capture`` cierra en TODA salida. Retorno, timeout o error de
-            #     ``run_capture`` (mata, cosecha y cierra el Job) demuestran
-            #     terminalidad; una cancelación no (el reap puede quedar a medias).
+            # 4c) Spawn por el lanzador (PR 2c-2b) — el lanzador reporta, el runner decide.
+            #     Retorno, timeout o error ⇒ terminal. ``TerminalidadDesconocidaError`` ⇒ el
+            #     proceso pudo seguir vivo: HOLD sin restaurar. Una cancelación tampoco prueba
+            #     terminalidad (el reap puede quedar a medias). Tabla congelada en
+            #     ``tests/test_bodyslide_lanzador.py``.
+            lanzador = self.config.lanzador if self.config.lanzador is not None else LanzadorStandalone()
+            pedido = PedidoDeLanzamiento(
+                argv=tuple(args),
+                exe=self.config.bodyslide_exe,
+                cwd=self.config.game_path,
+                timeout=self.config.timeout_seconds,
+                group=group,
+                target=output_path,
+                preset=preset,
+                preset_verified=preset_verified,
+                build_morphs=build_morphs,
+                quiet_verified=self.config.quiet_verified,
+            )
             try:
-                stdout, stderr, return_code = await run_capture(
-                    args,
-                    timeout=self.config.timeout_seconds,
-                    cwd=str(self.config.game_path),
-                    require_job=True,
-                )
-            except asyncio.CancelledError:
+                salida = await lanzador.lanzar(pedido)
+            except asyncio.CancelledError as cancelacion:
+                # Hermano del review Codex #1025: con el spawn pedido, la cancelación no prueba
+                # terminalidad. El journal queda en LANZADO (cierre de abajo) y el veto viaja con
+                # la excepción: DirectoryRollback y SnapshotTransactionLock del servicio no
+                # restauran la salida bajo un proceso que puede seguir escribiendo.
+                mark_unknown_terminality(cancelacion)
                 raise
+            except TerminalidadDesconocidaError as exc:
+                message = (
+                    f"BodySlide se lanzó y no hay prueba de que haya terminado ({exc}). La config NO se "
+                    "restaura: el journal queda en LANZADO hasta que el operador confirme la terminalidad "
+                    "(--mode bodyslide-recovery --bodyslide-recovery-action confirm-terminal)."
+                )
+                logger.error("BodySlide: %s", message)
+                resultado = resultado_de_fallo("HOLD_TERMINALITY_UNKNOWN", message)
+                return resultado
             except TimeoutError as exc:
                 terminal = True
                 logger.error("BodySlide execution timed out.")
@@ -749,6 +800,7 @@ class BodySlideRunner:
                 logger.error(f"BodySlide execution failed: {e}")
                 raise BodySlideExecutionError(f"Failed to execute BodySlide: {e}") from e
             terminal = True
+            stdout, stderr, return_code = salida.stdout, salida.stderr, salida.return_code
 
             nuevos_nif, nuevos_tri = await asyncio.to_thread(_contar_archivos_nuevos, destino, previos)
             log = await asyncio.to_thread(_atribuir_log_a_corrida, self.config.bodyslide_exe, pre_snapshot_log)
