@@ -25,10 +25,12 @@ PREVENCIÓN:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 import os
 import pathlib
+import shutil
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -44,8 +46,9 @@ from sky_claw.app.db.locks import (
     SnapshotTransactionLock,
 )
 from sky_claw.app.db.rollback_veto import exception_forbids_rollback
-from sky_claw.app.security.links import is_link
+from sky_claw.app.security.links import link_kind_or_raise_with_retry
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
+from sky_claw.local.tools._dir_rollback import DirectoryRollback, mutar_hasta_terminal
 from sky_claw.local.tools.output_targets import SYNTHESIS_MANAGED_MOD_NAME, synthesis_output_target
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline
 from sky_claw.local.tools.synthesis_runner import (
@@ -101,20 +104,61 @@ def _evaluar_recuperacion_rollback(
     mutation_started: bool,
     target_files: list[pathlib.Path],
     output_override: pathlib.Path | None,
+    dir_rollback: DirectoryRollback | None = None,
 ) -> tuple[bool, bool, bool]:
-    """Evalúa ``(rollback_vetoed, rolled_back, journal_recovery_proven)`` fail-closed."""
+    """Evalúa ``(rollback_vetoed, rolled_back, journal_recovery_proven)`` fail-closed.
+
+    Con la raíz administrada (``dir_rollback``, PR-2b2) la única prueba de restauración es el
+    move-aside: ``rollback_completed`` sólo vuelve a ``True`` tras restaurar el backup (o borrar el
+    parcial del primer run). Una salida limpia lo deja en ``False``, así que una finalización
+    fallida después del run nunca se reporta como revertida.
+    """
     rollback_vetoed = exception_forbids_rollback(exc)
-    snapshot_restored = not rollback_vetoed and bool(tx_lock and tx_lock.rollback_completed)
-    rolled_back = (not rollback_vetoed) and (
-        (snapshot_restored and outputs_cleanup_completed)
-        or (mutation_started and not target_files and outputs_cleanup_completed and output_override is None)
-    )
+    if dir_rollback is not None:
+        rolled_back = (not rollback_vetoed) and dir_rollback.rollback_completed
+    else:
+        snapshot_restored = not rollback_vetoed and bool(tx_lock and tx_lock.rollback_completed)
+        rolled_back = (not rollback_vetoed) and (
+            (snapshot_restored and outputs_cleanup_completed)
+            or (mutation_started and not target_files and outputs_cleanup_completed and output_override is None)
+        )
     journal_recovery_proven = (not rollback_vetoed) and (
         not mutation_started
         or output_override is not None  # el clon aislado aún no se promueve
         or rolled_back
     )
     return rollback_vetoed, rolled_back, journal_recovery_proven
+
+
+def _sembrar_raiz_administrada(raiz: pathlib.Path, backup: pathlib.Path | None, grupos: tuple[str, ...]) -> None:
+    """Recrea la raíz administrada apartada con todo lo que NO es salida de *grupos* (PR-2b2).
+
+    ``DirectoryRollback`` exige que la herramienta regenere el target completo, y el ADR 0019 §2.3
+    exige preservar las salidas de los grupos no seleccionados. Las dos cosas encajan así: la raíz
+    nueva arranca con una COPIA de lo ajeno a esta corrida (el backup queda intacto para restaurar)
+    y sin ninguna salida de los grupos que el CLI va a escribir —frescura del §2.5.5—. Un enlace en
+    cualquier nivel falla cerrado: copiarlo podría arrastrar contenido de fuera de la raíz. La
+    inspección usa la primitiva que PROPAGA el ``OSError`` (con reintento): ``is_link`` devuelve
+    ``False`` cuando no pudo mirar, y "indeterminado" no puede pasar como "no es un enlace"
+    (review CodeRabbit, #1023).
+    """
+    raiz.mkdir(exist_ok=False)
+    if backup is None:
+        return
+    for entrada in sorted(backup.iterdir()):
+        if any(es_output_de_grupo(entrada.name, grupo) for grupo in grupos):
+            continue
+        if link_kind_or_raise_with_retry(entrada) is not None:
+            raise SynthesisExecutionError(f"La raíz administrada de Synthesis contiene un enlace: {entrada}")
+        if entrada.is_dir():
+            for carpeta, subcarpetas, archivos in os.walk(entrada):
+                for nombre in (*subcarpetas, *archivos):
+                    hijo = pathlib.Path(carpeta) / nombre
+                    if link_kind_or_raise_with_retry(hijo) is not None:
+                        raise SynthesisExecutionError(f"La raíz administrada de Synthesis contiene un enlace: {hijo}")
+            shutil.copytree(entrada, raiz / entrada.name)
+        else:
+            shutil.copy2(entrada, raiz / entrada.name)
 
 
 class SynthesisPipelineService:
@@ -667,7 +711,8 @@ class SynthesisPipelineService:
             )
         overwrite = mo2 / "overwrite"
         try:
-            if is_link(overwrite):
+            # Fail-closed también acá: una inspección indeterminada es rojo, no "no es un enlace".
+            if link_kind_or_raise_with_retry(overwrite) is not None:
                 raise OSError("overwrite es un enlace")
             entradas = [e.name for e in overwrite.iterdir()]
         except FileNotFoundError:
@@ -923,7 +968,9 @@ class SynthesisPipelineService:
                 raise SynthesisExecutionError("The active MO2 plugins.txt changed before transaction setup")
         except (SynthesisExecutionError, SynthesisValidationError) as exc:
             return _attach_preflight(self._error_dict(str(exc)), preflight_report)
-        if output_files_before and not create_snapshot and self._output_path is None:
+        # PR-2b2: la raíz administrada se protege con move-aside, no con el snapshot copy-based.
+        promocion_administrada = self._salida_administrada and self._output_path is None
+        if output_files_before and not create_snapshot and self._output_path is None and not promocion_administrada:
             return _attach_preflight(
                 self._error_dict("Existing Synthesis outputs require a snapshot or an isolated sandbox before rerun"),
                 preflight_report,
@@ -980,7 +1027,7 @@ class SynthesisPipelineService:
         # Order: lock → snapshot → begin_transaction → execute → commit/abort.
         # El runner puede generar un conjunto split (base + _2 + _3 …), así que
         # el snapshot cubre todos los outputs existentes de los grupos elegidos.
-        target_files = list(output_files_before) if create_snapshot else []
+        target_files = list(output_files_before) if create_snapshot and not promocion_administrada else []
 
         result: SynthesisResult
         rolled_back = False
@@ -998,6 +1045,8 @@ class SynthesisPipelineService:
         # PR-3j: con terminalidad desconocida (veto de rollback) el worker podría seguir ejecutando los
         # shims de esta corrida: se conservan. En cualquier otro desenlace se liberan al final.
         conservar_shims = False
+        # PR-2b2: move-aside de la raíz administrada (sólo brokered sin sandbox).
+        dir_rollback: DirectoryRollback | None = None
 
         try:
             async with SnapshotTransactionLock(
@@ -1047,57 +1096,94 @@ class SynthesisPipelineService:
 
                 try:
                     mutation_started = True
-                    # Una salida previa puede ser idéntica byte a byte tras el
-                    # rerun. Retirar el conjunto completo de cada grupo hace que
-                    # la atribución por presencia sea honesta y evita splits stale.
-                    # Solo se hace con snapshot o dentro del clon descartable.
-                    if output_files_before and (create_snapshot or self._output_path is not None):
-                        for output_file in output_files_before:
-                            output_file.unlink()
+                    async with contextlib.AsyncExitStack() as pila_de_salida:
+                        if promocion_administrada:
+                            # PR-2b2: el move-aside es la primera mutación (después del manifiesto).
+                            # Un fallo devuelve la raíz con un rename O(1); el veto de terminalidad
+                            # desconocida y la lease perdida dejan backup y parcial para recovery.
+                            # La lease se lee en el momento de restaurar, no al construir.
+                            def _conserva_la_lease(lock: SnapshotTransactionLock | None = tx_lock) -> bool:
+                                # Sin lock no hay exclusividad que probar: no restaurar (fail-closed).
+                                return lock is not None and not lock.lease_lost
 
-                    # El mapa solo existe en brokered; standalone no recibe el kwarg (contrato de siempre).
-                    extra_run: dict[str, Any] = (
-                        {"cli_executables": cli_executables} if cli_executables is not None else {}
-                    )
-                    result = await runner.run_pipeline(
-                        patcher_ids,
-                        expected_settings_fingerprint=settings_fingerprint,
-                        expected_load_order_fingerprint=load_order_fingerprint,
-                        **extra_run,
-                    )
-                    if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
-                        raise SynthesisExecutionError(
-                            "Synthesis PipelineSettings.json changed while Synthesis was running"
+                            dir_rollback = DirectoryRollback(
+                                runner._config.output_path, should_rollback=_conserva_la_lease
+                            )
+                            await pila_de_salida.enter_async_context(dir_rollback)
+                            # `mutar_hasta_terminal`, no `to_thread`: cancelar el await soltaría al
+                            # caller con el hilo todavía copiando, y el move-aside restauraría (y el
+                            # lock se liberaría) bajo una copia en curso (review Codex P1, #1023).
+                            await mutar_hasta_terminal(
+                                _sembrar_raiz_administrada,
+                                runner._config.output_path,
+                                dir_rollback.backup,
+                                settings_profile.group_names,
+                            )
+                        elif output_files_before and (create_snapshot or self._output_path is not None):
+                            # Una salida previa puede ser idéntica byte a byte tras el
+                            # rerun. Retirar el conjunto completo de cada grupo hace que
+                            # la atribución por presencia sea honesta y evita splits stale.
+                            # Solo se hace con snapshot o dentro del clon descartable.
+                            for output_file in output_files_before:
+                                output_file.unlink()
+
+                        # El mapa solo existe en brokered; standalone no recibe el kwarg (contrato de siempre).
+                        extra_run: dict[str, Any] = (
+                            {"cli_executables": cli_executables} if cli_executables is not None else {}
                         )
-                    if await asyncio.to_thread(runner.load_order_fingerprint) != load_order_fingerprint:
-                        raise SynthesisExecutionError("The active MO2 plugins.txt changed while Synthesis was running")
+                        result = await runner.run_pipeline(
+                            patcher_ids,
+                            expected_settings_fingerprint=settings_fingerprint,
+                            expected_load_order_fingerprint=load_order_fingerprint,
+                            **extra_run,
+                        )
+                        if await asyncio.to_thread(runner.settings_fingerprint) != settings_fingerprint:
+                            raise SynthesisExecutionError(
+                                "Synthesis PipelineSettings.json changed while Synthesis was running"
+                            )
+                        if await asyncio.to_thread(runner.load_order_fingerprint) != load_order_fingerprint:
+                            raise SynthesisExecutionError(
+                                "The active MO2 plugins.txt changed while Synthesis was running"
+                            )
 
-                    # Validar todos los ESP producidos (base y splits) dentro del
-                    # lock; un solo miembro corrupto aborta el conjunto completo.
-                    result_outputs = result.output_esps or ((result.output_esp,) if result.output_esp else ())
-                    if result.success and not result_outputs:
-                        raise SynthesisValidationError("Synthesis returned success without an output ESP")
-                    if result.success:
-                        for output_file in result_outputs:
-                            if not await runner.validate_synthesis_esp(output_file):
-                                raise SynthesisValidationError(
-                                    "ESP validation failed: corrupted or invalid",
-                                    esp_path=output_file,
+                        # Validar todos los ESP producidos (base y splits) dentro del
+                        # lock; un solo miembro corrupto aborta el conjunto completo.
+                        result_outputs = result.output_esps or ((result.output_esp,) if result.output_esp else ())
+                        if result.success and not result_outputs:
+                            raise SynthesisValidationError("Synthesis returned success without an output ESP")
+                        if result.success:
+                            for output_file in result_outputs:
+                                if not await runner.validate_synthesis_esp(output_file):
+                                    raise SynthesisValidationError(
+                                        "ESP validation failed: corrupted or invalid",
+                                        esp_path=output_file,
+                                    )
+
+                        # Pipeline failure → raise para activar rollback.
+                        if not result.success:
+                            raise SynthesisExecutionError(
+                                "; ".join(result.errors) if result.errors else "Pipeline failed",
+                                return_code=result.return_code,
+                                stderr=result.stderr,
+                            )
+
+                        if promocion_administrada:
+                            # Carrera del preflight (triage de #1022): un <Grupo>.esp que apareció en
+                            # overwrite durante la corrida taparía la salida nueva. Se vuelve a mirar
+                            # ANTES de confirmar; en rojo, el move-aside devuelve la raíz previa.
+                            sombra = await asyncio.to_thread(
+                                self._build_overwrite_shadow_check, settings_profile.group_names
+                            )
+                            if sombra is not None and sombra.status.value != "green":
+                                raise SynthesisExecutionError(
+                                    f"Salida administrada no confirmada: {sombra.summary} {', '.join(sombra.details)}"
                                 )
-
-                    # Pipeline failure → raise para activar rollback.
-                    if not result.success:
-                        raise SynthesisExecutionError(
-                            "; ".join(result.errors) if result.errors else "Pipeline failed",
-                            return_code=result.return_code,
-                            stderr=result.stderr,
-                        )
                 except BaseException as exc:
                     # SnapshotTransactionLock cubre archivos que existían antes;
                     # retirar también los nuevos _2/_3 es la mitad restante del
                     # rollback transaccional. Si la terminalidad del worker quedó
                     # desconocida (rollback veto), prohibido borrar salidas en curso.
-                    if not exception_forbids_rollback(exc) and self._output_path is None:
+                    if not exception_forbids_rollback(exc) and self._output_path is None and not promocion_administrada:
                         outputs_cleanup_completed = self._cleanup_synthesis_outputs(
                             runner, settings_profile.group_names
                         )
@@ -1114,6 +1200,14 @@ class SynthesisPipelineService:
             # (pending) y quedaría stale. El cierre post-vuelo del informe con las
             # rutas reales pertenece al promotion flow (ExecuteSynthesisPipeline-
             # Strategy / SandboxPromotionFlow) — follow-up documentado (review #309).
+            if dir_rollback is not None and not dir_rollback.finalization_completed:
+                # El run confirmó, pero el backup no se pudo descartar (o la identidad final no se
+                # confirmó): la salida nueva está aplicada y el estado previo sigue en disco. No es
+                # un rollback; la TX queda pendiente para recovery (espejo de Pandora).
+                raise SynthesisExecutionError(
+                    "Synthesis generó la salida administrada, pero no pudo finalizar el move-aside "
+                    f"({dir_rollback.backup}); la transacción queda pendiente."
+                )
             if tx_id is not None:
                 await self._journal.commit_transaction(tx_id)
 
@@ -1148,6 +1242,7 @@ class SynthesisPipelineService:
                 mutation_started=mutation_started,
                 target_files=target_files,
                 output_override=self._output_path,
+                dir_rollback=dir_rollback,
             )
             conservar_shims = rollback_vetoed
             if tx_id is not None and journal_recovery_proven:
@@ -1202,6 +1297,7 @@ class SynthesisPipelineService:
                 mutation_started=mutation_started,
                 target_files=target_files,
                 output_override=self._output_path,
+                dir_rollback=dir_rollback,
             )
             conservar_shims = rollback_vetoed
             if tx_id is not None and journal_recovery_proven:

@@ -54,6 +54,7 @@ from sky_claw.local.tools.dyndolod_runner import DynDOLODRunner
 from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination
 from sky_claw.local.tools.output_targets import (
     BODYSLIDE_MESHES_RESOURCE_ID,
+    SYNTHESIS_MANAGED_MOD_NAME,
     bodyslide_output_root,
     derivar_layout_de_dyndolod,
     dyndolod_legacy_recovery_target,
@@ -111,6 +112,8 @@ VENTANA_DE_GRACIA_SEGUNDOS: float = 24 * 60 * 60
 
 #: Lock del ritual que produce clones bajo ``.skyclaw_sandbox/``. El único que
 #: corre sandboxeado hoy es Synthesis ("corre SIEMPRE en sandbox", tool_dispatcher).
+#: Es el ``RESOURCE_ID`` del servicio de Synthesis, y por eso también el lock del
+#: productor ``synthesis`` de la raíz administrada (anclado por igualdad en los tests).
 LOCK_DEL_SANDBOX = "Synthesis.esp"
 
 #: Nombres de productor que el cableado de producción construye
@@ -126,7 +129,13 @@ LOCK_DEL_SANDBOX = "Synthesis.esp"
 #: el barrido histórico no puede confundirse con la familia mutante.
 PRODUCTOR_DYNDOLOD: Final[str] = "dyndolod"
 PRODUCTOR_LEGACY: Final[str] = "dyndolod-legacy-recovery"
-PRODUCTORES_CABLEADOS: frozenset[str] = frozenset({PRODUCTOR_DYNDOLOD, PRODUCTOR_LEGACY, "pandora", "bodyslide"})
+#: ``synthesis`` (PR-2b2, ADR 0019 §2.3): la raíz administrada ``<mods>/Sky-Claw Synthesis Output``
+#: que el backend brokered regenera con move-aside, bajo el MISMO lock del servicio
+#: (``SynthesisPipelineService.RESOURCE_ID``), que es también el del clon del sandbox.
+PRODUCTOR_SYNTHESIS: Final[str] = "synthesis"
+PRODUCTORES_CABLEADOS: frozenset[str] = frozenset(
+    {PRODUCTOR_DYNDOLOD, PRODUCTOR_LEGACY, "pandora", "bodyslide", PRODUCTOR_SYNTHESIS}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -383,6 +392,21 @@ def construir_productores_de_move_aside(
     # ya existen, en vez de declararse — sin el riesgo de "autoridad sobre
     # siblings ajenos" que correría hacerlo sobre un padre COMPARTIDO como
     # `mods/` o `game/`.
+    # Synthesis brokered (PR-2b2) aparta su raíz administrada, que cuelga del MISMO mods_dir que
+    # resolvió DynDOLOD arriba. Destino exacto, nunca el padre `mods/` (compartido con el usuario).
+    # Una raíz confirmada lleva al menos un `<Grupo>.esp`: vacía junto a su backup sólo puede ser
+    # una corrida interrumpida antes de regenerar.
+    if mods is not None:
+        raiz_synthesis = mods / SYNTHESIS_MANAGED_MOD_NAME
+        productores.append(
+            ProductorDeMoveAside(
+                nombre=PRODUCTOR_SYNTHESIS,
+                lock_resource_id=LOCK_DEL_SANDBOX,
+                destinos=(raiz_synthesis,),
+                destinos_nunca_vacios=(raiz_synthesis,),
+            )
+        )
+
     raiz_bodyslide = bodyslide_output_root(game=game)
     if raiz_bodyslide is not None:
         productores.append(

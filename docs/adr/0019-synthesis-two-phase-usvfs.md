@@ -547,6 +547,36 @@ x64 instalado):
   - **Sigue dormido bajo el HOLD.** Faltan PR-2b2 (staging vacío + promoción con
     `DirectoryRollback` y productor del reconciliador) y PR-2b3 (dispatcher sin clon en brokered,
     cableado productivo y diff de activación en solo lectura).
+- **PR-2b2 (promoción de la raíz administrada con `DirectoryRollback`):** en brokered sin sandbox, la
+  raíz `<mods>/Sky-Claw Synthesis Output` deja de protegerse con el snapshot copy-based y pasa a un
+  move-aside O(1).
+  - **Mecanismo:** dentro del lock y después del manifiesto, `DirectoryRollback` aparta la raíz y
+    `_sembrar_raiz_administrada` la recrea con una **copia** de todo lo que no es salida de un grupo
+    seleccionado. Las salidas de los grupos no seleccionados (y cualquier otro archivo) se preservan,
+    y las de esta corrida arrancan ausentes, que es la frescura del §2.5.5. El CLI escribe ahí.
+  - **Desenlaces:**
+    - Un fallo restaura la raíz byte a byte y la TX queda `rolled_back`.
+    - La terminalidad desconocida (`exception_forbids_rollback`) o la lease perdida conservan
+      backup y parcial; la TX queda pendiente.
+    - Un éxito descarta el backup. Si el descarte no se confirma (`finalization_completed=False`),
+      la TX queda pendiente en vez de reportarse como revertida.
+    - Un enlace en la raíz apartada falla cerrado.
+  - **Sombra (carrera del preflight, triage de #1022):** `synthesis_overwrite_shadow` se repite
+    después de la corrida y antes de confirmar. En rojo aborta, y el move-aside devuelve la raíz
+    previa sin tocar el archivo del operador.
+  - **Reconciliador:** productor `synthesis` (`PRODUCTORES_CABLEADOS`) con destino exacto
+    `<mods>/Sky-Claw Synthesis Output` (también en `destinos_nunca_vacios`) bajo el lock
+    `Synthesis.esp`, el `RESOURCE_ID` del servicio. Las anclas `USUARIOS_DEL_MOVE_ASIDE` y
+    `MECANISMO_DE_ROLLBACK` (`"snapshot+directorio"`) lo enumeran.
+  - **Desvío del texto original del §2.3, declarado:** no hay un staging separado fuera de la raíz.
+    La raíz apartada **es** el staging vacío para los grupos de la corrida, y la promoción es la
+    confirmación del move-aside. Así se reusa el mecanismo O(1) ya anclado (y su reconciliador) en
+    vez de agregar una copia staging → raíz.
+  - **Límites:**
+    - Durante la corrida la raíz contiene salida parcial. Es inocuo porque el mod no se activa hasta
+      PR-5.
+    - La persistencia de FormIDs (`--PersistencePath`) no se promueve en este corte.
+    - Sigue dormido bajo el HOLD.
 - **No verificado aún:**
   - **Pendiente de rig:** S3 (auto-split con más de 254 masters) y S4 completo (5/5 ciclos y la
     cancelación en la Fase 2, C6b), ambos sobre `.NET 10 SDK` x64 en el rig Windows con MO2 portable
