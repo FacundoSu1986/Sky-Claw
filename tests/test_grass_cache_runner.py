@@ -3130,10 +3130,10 @@ async def test_b5_directorio_con_nombre_de_artefacto_no_es_cache(
     assert conteo.archivos == 0
 
 
-async def test_b3_archivar_false_preserva_diagnostico_y_declara_perdida(
+async def test_b3_archivar_false_declara_perdida_sin_copia_predecible(
     config: GrassCacheConfig, tmp_path: pathlib.Path
 ) -> None:
-    """B3: sin archivado para reanudación, los bytes se preservan como diagnóstico y la pérdida se declara."""
+    """B3+F4: sin archivado se declara la pérdida; no se escribe una copia de diagnóstico predecible."""
     from sky_claw.local.tools.grass_cache_safety import neutralizar_flag
 
     flag = config.game_path / "PrecacheGrass.txt"
@@ -3151,8 +3151,95 @@ async def test_b3_archivar_false_preserva_diagnostico_y_declara_perdida(
     assert resultado.borrado is True
     assert resultado.progreso_perdido is True, "omitir el archivado ES perder la reanudación"
     assert not flag.exists()
-    diagnosticos = list((estado / "diagnostico").glob("progreso_*.txt"))
-    assert len(diagnosticos) == 1
-    assert diagnosticos[0].read_bytes() == b"cell_Tamriel_0_0\n"
-    # No queda habilitado para reanudar: no hay manifiesto.
-    assert not list(estado.glob("*/manifiesto*.json")) and not list(estado.glob("**/manifiesto*.json"))
+    assert not (estado / "diagnostico").exists(), "F4: no se escribe una copia en destino predecible"
+    assert any("NO se conserva como evidencia reanudable" in e for e in resultado.errores)
+
+
+def _fence_de(tmp_path: pathlib.Path, config: GrassCacheConfig) -> pathlib.Path:
+    from sky_claw.local.tools.grass_cache_fence import ruta_fence
+
+    return ruta_fence(
+        raiz_estado=tmp_path / "estado_fence",
+        game_path=config.game_path,
+        overwrite_grass_dir=config.overwrite_grass_dir,
+    )
+
+
+def test_f1_marcador_ilegible_bloquea(tmp_path: pathlib.Path, config: GrassCacheConfig) -> None:
+    """F1: un marcador que no se puede interpretar es bloqueo, nunca ausencia."""
+    from sky_claw.local.tools.grass_cache_fence import bloqueo_por_fence
+
+    ruta = _fence_de(tmp_path, config)
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_bytes(b"{no es json")
+
+    bloqueo = bloqueo_por_fence(ruta)
+
+    assert bloqueo is not None
+    assert "ILEGIBLE" in bloqueo
+
+
+def test_f1_marcador_indeterminado_bloquea_y_el_de_proceso_muerto_se_libera(
+    tmp_path: pathlib.Path, config: GrassCacheConfig
+) -> None:
+    """F1: sin PID no se puede afirmar que murió (bloquea); con PID muerto se libera."""
+    from sky_claw.local.tools.grass_cache_fence import FenceProceso, bloqueo_por_fence, escribir_fence
+
+    ruta = _fence_de(tmp_path, config)
+    escribir_fence(
+        ruta,
+        FenceProceso(
+            run_id="r1",
+            intento=0,
+            lanzamiento="solicitado_sin_atribucion",
+            pid=None,
+            create_time=None,
+            modo="new",
+            game_path=str(config.game_path),
+            overwrite_grass_dir=str(config.overwrite_grass_dir),
+            creado="2026-11-25T00:00:00",
+        ),
+    )
+    assert bloqueo_por_fence(ruta) is not None, "pid=None no demuestra ausencia"
+
+    escribir_fence(
+        ruta,
+        FenceProceso(
+            run_id="r2",
+            intento=0,
+            lanzamiento="atribuido",
+            pid=999_999,
+            create_time=1.0,
+            modo="new",
+            game_path=str(config.game_path),
+            overwrite_grass_dir=str(config.overwrite_grass_dir),
+            creado="2026-11-25T00:00:00",
+        ),
+    )
+
+    assert bloqueo_por_fence(ruta) is None
+    assert not ruta.exists(), "el marcador obsoleto se borra al demostrarse terminado"
+
+
+async def test_f1_el_runner_escribe_el_fence_antes_del_spawn(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, tmp_path: pathlib.Path
+) -> None:
+    """F1: el marcador existe ANTES de pedir el spawn (sobrevive a un crash de Sky-Claw)."""
+    estado = tmp_path / "estado_fence_run"
+    config = dataclasses.replace(config, backup_root=estado)
+    from sky_claw.local.tools.grass_cache_fence import ruta_fence
+
+    ruta = ruta_fence(raiz_estado=estado, game_path=config.game_path, overwrite_grass_dir=config.overwrite_grass_dir)
+    visto: list[bool] = []
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        visto.append(ruta.exists())
+        mundo.alta_juego(100, 1100, vidas=1)
+        (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    await _correr(_runner(config, mo2))
+
+    assert visto == [True], "el fence se escribe antes del spawn"

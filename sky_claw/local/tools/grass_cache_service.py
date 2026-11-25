@@ -59,6 +59,7 @@ from sky_claw.app.db.locks import (
     liberar_lease_definitiva,
 )
 from sky_claw.config import SystemPaths
+from sky_claw.local.tools.grass_cache_fence import bloqueo_por_fence, ruta_fence
 from sky_claw.local.tools.grass_cache_runner import (
     _PRECACHE_FLAG,  # fuente de verdad del nombre del flag (evita duplicar el string mágico)
     GrassCacheConfig,
@@ -412,6 +413,21 @@ class GrassCacheService:
         except (GrassCacheServiceError, RuntimeError) as exc:
             return self._error(str(exc), inicio)
 
+        # F1: el fence se consulta ANTES de cualquier mutación del ritual. Un marcador ilegible o de
+        # un proceso vivo/indeterminado bloquea; uno de un proceso ya terminado se considera obsoleto.
+        if config.backup_root is not None:
+            bloqueo = await asyncio.to_thread(
+                bloqueo_por_fence,
+                ruta_fence(
+                    raiz_estado=config.backup_root,
+                    game_path=config.game_path,
+                    overwrite_grass_dir=config.overwrite_grass_dir,
+                ),
+            )
+            if bloqueo is not None:
+                logger.warning("Ritual de grass bloqueado por el fence: %s", bloqueo, extra={"pipeline_stage": 8})
+                return self._error(bloqueo, inicio)
+
         await self._publish(
             "pipeline.grass_cache.started",
             {"worldspaces": params.worldspaces, "conflicting_mods": params.conflicting_mods},
@@ -473,9 +489,13 @@ class GrassCacheService:
                     )
                 runner: GrassCacheRunner | None = None
                 terminalidad_sin_probar: str | None = None
+                # F2: cada ejecución sólo limpia recursos cuya PROPIEDAD estableció. Un fallo de
+                # setup (p. ej. el clon ya existe, creado por otro ritual) no autoriza destruirlo.
+                clone_creado = False
                 try:
                     # -- Fase B: preparación aislada (solo el clon se muta) --
                     await pm.create_clone_profile()
+                    clone_creado = True
                     await pm.build_config_mod(params.worldspaces)
                     if params.conflicting_mods:
                         await pm.disable_conflicting_mods(params.conflicting_mods)
@@ -504,6 +524,14 @@ class GrassCacheService:
                             "teardown del clon/mod OMITIDO: terminalidad del juego NO demostrada "
                             f"({sin_verificar}); el perfil temporal y su configuración se "
                             "conservan porque un proceso vivo puede estar usándolos"
+                        ]
+                    elif not clone_creado:
+                        # F2: el clon es de OTRA ejecución (setup falló antes de crearlo, o ya
+                        # existía). No se destruye.
+                        teardown_failures = [
+                            *teardown_failures,
+                            "teardown del clon OMITIDO: esta ejecución no creó el clon (propiedad "
+                            "de otra corrida); no se destruyen recursos ajenos",
                         ]
                     else:
                         teardown_failures = await self._teardown_best_effort()

@@ -44,6 +44,7 @@ import re
 import shutil  # import de módulo completo: los tests mockean shutil.disk_usage
 import stat
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar
 
@@ -52,6 +53,12 @@ import psutil  # import de módulo completo: los tests reemplazan el objeto ente
 from sky_claw.app.security.links import path_present
 from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.local.mo2.vfs import GameLaunchTimeoutError, MO2Controller
+from sky_claw.local.tools.grass_cache_fence import (
+    FenceProceso,
+    borrar_fence,
+    escribir_fence,
+    ruta_fence,
+)
 from sky_claw.local.tools.grass_cache_safety import (
     EXTENSIONES_CACHE,
     MODOS_GRASS_CACHE,
@@ -477,6 +484,15 @@ class GrassCacheRunner:
         self._fallos_ilegibles: frozenset[str] = frozenset()
         #: PID de MO2 por intento: si el lanzador sigue vivo, una búsqueda vacía no es ausencia (B2).
         self._mo2_pid_del_intento: dict[int, int] = {}
+        #: Identidad de la corrida y ruta del fence durable (F1).
+        self._run_id = uuid.uuid4().hex
+        self._ruta_fence: pathlib.Path | None = None
+        if self._config.backup_root is not None:
+            self._ruta_fence = ruta_fence(
+                raiz_estado=self._config.backup_root,
+                game_path=self._config.game_path,
+                overwrite_grass_dir=self._config.overwrite_grass_dir,
+            )
         #: Worldspaces que NGIO DECLARÓ terminados (líneas `ws_` del flag): evidencia, no requisito.
         self._ws_declarados: set[str] = set()
         #: Offset de lectura incremental del flag y última muestra del watchdog.
@@ -540,6 +556,10 @@ class GrassCacheRunner:
         # RD-11: el veredicto NO puede quedar cerrado antes de neutralizar el flag. Se RE-EVALÚA la
         # misma evidencia con el resultado real de la limpieza; el provisional nunca se publica.
         resultado = self._veredicto_final(resultado, limpio=limpio)
+        # F1: el fence se borra SÓLO cuando la terminalidad quedó demostrada. Si quedó viva o
+        # indeterminada, el marcador sobrevive (también a un reinicio de Sky-Claw).
+        if self._ruta_fence is not None and self._terminalidad in ("terminado", "sin_proceso"):
+            borrar_fence(self._ruta_fence)
         if self._neutralizacion is not None and self._terminalidad not in ("terminado", "sin_proceso"):
             # H2/H5: el archivado del progreso se omitió a propósito (caché posiblemente en curso).
             # Aplica también a los caminos sin evidencia de egreso (timeout, cancelación, cortes).
@@ -828,6 +848,26 @@ class GrassCacheRunner:
                     )
                 self._spawn_solicitado[intento] = True
                 self._epoch_del_intento[intento] = time.time() - _CREATE_TIME_EPSILON
+                # F1: el marcador se escribe ANTES de pedir el spawn. Si Sky-Claw muere entre acá y
+                # el kill, el próximo arranque encuentra incertidumbre en vez de silencio.
+                if self._ruta_fence is not None:
+                    try:
+                        escribir_fence(
+                            self._ruta_fence,
+                            FenceProceso(
+                                run_id=self._run_id,
+                                intento=intento,
+                                lanzamiento="solicitado",
+                                pid=self._pid_del_intento(intento),
+                                create_time=self._create_time_del_intento(intento),
+                                modo=self._config.mode,
+                                game_path=str(self._config.game_path),
+                                overwrite_grass_dir=str(self._config.overwrite_grass_dir),
+                                creado=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001 — no poder escribir el fence no cancela el ritual
+                        logger.warning("No se pudo escribir el fence del precache.", exc_info=True)
                 try:
                     info: dict[str, Any] = await self._mo2.launch_game(self._config.profile)
                     mo2_pid: int | None = int(info["pid"])
@@ -1763,13 +1803,24 @@ class GrassCacheRunner:
         # B2: una búsqueda vacía no demuestra ausencia si el lanzador sigue vivo (aún puede crear
         # procesos). Sin esa prueba, `incompleto` => indeterminado.
         mo2_pid = self._mo2_pid_del_intento.get(intento)
-        if mo2_pid is not None:
-            try:
-                if psutil.pid_exists(mo2_pid):
-                    return ("incompleto", None)
-            except psutil.Error:
+        if mo2_pid is None:
+            # F3: si `launch_game` timeouteó o falló sin devolver PID, NO se sabe si el lanzador
+            # llegó a crearse. Eso no demuestra ausencia.
+            return ("incompleto", None)
+        try:
+            if psutil.pid_exists(mo2_pid):
                 return ("incompleto", None)
+        except psutil.Error:
+            return ("incompleto", None)
         return ("ausente", None)
+
+    def _pid_del_intento(self, intento: int) -> int | None:
+        atribuido = self._atribuciones.get(intento)
+        return atribuido.pid if atribuido is not None else None
+
+    def _create_time_del_intento(self, intento: int) -> float | None:
+        atribuido = self._atribuciones.get(intento)
+        return atribuido.create_time if atribuido is not None else None
 
     async def _cerrar_y_verificar(self, game_pid: _GamePid | None, cancel: asyncio.Event) -> None:
         """ÚNICO cierre de una salida terminal: pide el kill y DEMUESTRA (o declara) terminalidad.

@@ -1216,30 +1216,6 @@ class NeutralizacionFlag:
         return self.borrado and not self.progreso_perdido and not self.alternativo_residual
 
 
-def _guardar_progreso_de_diagnostico(
-    raiz_estado: pathlib.Path | None, progreso: bytes, *, perfil: str = ""
-) -> pathlib.Path | None:
-    """Copia los bytes del flag a un directorio de DIAGNÓSTICO, sin manifiesto (B3).
-
-    Deliberadamente **no** queda habilitado para reanudar: `recuperar_progreso` exige un manifiesto
-    con la huella del caché, y este archivo vive fuera de esa estructura. Es evidencia para el
-    operador, no un atajo de recuperación. Best-effort: si no se puede escribir, se devuelve None y
-    el llamador declara la pérdida sin la copia.
-    """
-    if raiz_estado is None:
-        return None
-    try:
-        destino = raiz_estado / "diagnostico"
-        destino.mkdir(parents=True, exist_ok=True)
-        sello = hashlib.sha256(progreso).hexdigest()[:16]
-        archivo = destino / f"progreso_{perfil or 'sin_perfil'}_{sello}.txt"
-        archivo.write_bytes(progreso)
-        return archivo
-    except OSError:
-        logger.warning("No se pudo preservar el progreso como diagnóstico.", exc_info=True)
-        return None
-
-
 def neutralizar_flag(
     *,
     flag_path: pathlib.Path,
@@ -1299,14 +1275,13 @@ def neutralizar_flag(
 
     if presente and progreso is not None:
         if not archivar:
-            # H2/H5 + B3: no se archiva una foto de un caché que puede seguir escribiéndose, pero el
-            # progreso NO se descarta en silencio: se conservan sus bytes como evidencia de
-            # DIAGNÓSTICO (directorio aparte, sin manifiesto) y se declara la pérdida de reanudación.
-            diagnostico = _guardar_progreso_de_diagnostico(raiz_estado, progreso, perfil=perfil)
-            extra = f" (bytes preservados en {diagnostico} como diagnóstico NO reanudable)" if diagnostico else ""
+            # H2/H5 + B3 + F4: no se archiva una foto de un caché que puede seguir escribiéndose. La
+            # copia opcional de diagnóstico se retiró (F4: destino predecible sin los controles
+            # físicos de P0); se conserva el reporte EXPLÍCITO de pérdida de reanudación.
             errores.append(
                 "Archivado del progreso OMITIDO para reanudación: la terminalidad del juego no está "
-                "demostrada y el caché puede seguir escribiéndose" + extra + ". El flag igual se borra."
+                "demostrada y el caché puede seguir escribiéndose. El progreso NO se conserva como "
+                "evidencia reanudable; el flag igual se borra."
             )
         elif raiz_estado is None:
             errores.append(

@@ -1693,3 +1693,50 @@ async def test_h2_terminalidad_demostrada_hace_teardown_normal(tmp_path: pathlib
     await service.generate(_PAYLOAD)
 
     colab["profile_manager"].teardown.assert_awaited_once_with()
+
+
+async def test_f2_dos_rituales_con_proceso_remanente_no_destruyen_el_clon_ajeno(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F2/F1: el segundo ritual se bloquea por el fence y NO destruye el clon del primero.
+
+    Reproduce el defecto confirmado: un segundo ritual encontraba el clon preservado, fallaba en
+    `create_clone_profile()` y ejecutaba el teardown desde el `finally` aunque nunca lo había creado.
+    """
+    import os
+
+    import psutil
+
+    from sky_claw.local.tools.grass_cache_fence import FenceProceso, escribir_fence, ruta_fence
+
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal)
+    # Estado del primer ritual: el clon quedó en disco y un proceso vive (fence persistente).
+    estado = pathlib.Path(tmp_path) / "estado_f1"
+    grass = tmp_path / "mo2" / "overwrite" / "Grass"
+    ruta = ruta_fence(raiz_estado=estado, game_path=tmp_path / "game", overwrite_grass_dir=grass)
+    escribir_fence(
+        ruta,
+        FenceProceso(
+            run_id="primera-corrida",
+            intento=1,
+            lanzamiento="atribuido",
+            pid=os.getpid(),  # proceso REAL y vivo (el propio test)
+            create_time=psutil.Process().create_time(),
+            modo="new",
+            game_path=str(tmp_path / "game"),
+            overwrite_grass_dir=str(grass),
+            creado="2026-11-25T00:00:00",
+        ),
+    )
+    # El runner escribe el fence bajo SU `backup_root`; el servicio debe consultar el MISMO path.
+    # El servicio deriva la raíz de estado de _raiz_de_estado; se fija a la del primer ritual.
+    monkeypatch.setattr(type(service), "_raiz_de_estado", staticmethod(lambda: estado))
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is False
+    assert "fence" in resultado["message"].lower() or "previo" in resultado["message"].lower()
+    colab["profile_manager"].create_clone_profile.assert_not_awaited()
+    colab["profile_manager"].teardown.assert_not_awaited()
+    assert ruta.exists(), "el marcador del primer ritual se conserva"
