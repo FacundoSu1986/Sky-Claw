@@ -19,6 +19,7 @@ import pydantic
 from pydantic import field_validator
 
 from sky_claw.config import SystemPaths
+from sky_claw.local.tools.bodyslide_headless import validar_nombre_de_grupo
 from sky_claw.local.tools.xedit_bridge_client import PATRON_PLUGIN
 
 from .xedit_policy import XEditAgentScriptName
@@ -489,7 +490,13 @@ class BodySlideBatchParams(pydantic.BaseModel):
         """
         if v in {".", ".."}:
             raise ValueError("group must not be a bare '.' or '..' path segment")
-        return v
+        # PR 2c-2a: el schema rechaza exactamente lo que rechaza el contrato. Las
+        # reglas Win32 del grupo (punto o espacio final, espacios alrededor,
+        # dispositivos reservados con y sin extensión) tienen UNA implementación,
+        # la del contrato: copiarlas acá reabriría la divergencia por la que el
+        # servicio rechazaba dentro del lock lo que el schema había aceptado.
+        # ``HeadlessContractError`` es un ``ValueError``: pydantic lo reporta.
+        return validar_nombre_de_grupo(v)
 
 
 class UninstallModParams(pydantic.BaseModel):
