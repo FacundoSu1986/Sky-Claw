@@ -648,6 +648,24 @@ que ese evento no puede probar la terminalidad de **esta** corrida. Opciones:
 - **(b)** Schema v2 del journal con `vfs_job_id`, y el broker notifica el `worker_exit` tardío al
   journal. Es automático, pero cambia un schema cerrado y acopla el broker con BodySlide.
 
+#### Implementación de 2c-2b (notas que el contrato no fijaba)
+
+- **Lanzador inyectable.** El backend brokered no es un runner paralelo: es un lanzador que se inyecta
+  en el `BodySlideRunner` (`bodyslide_lanzador.py`), así journal, siembra, restauración y veredicto
+  siguen siendo una sola implementación. La tabla de terminalidad (retorno, timeout, error,
+  terminalidad desconocida, cancelación) se congela en `tests/test_bodyslide_lanzador.py`.
+- **Veto del broker como única fuente.** El lanzador brokered no enumera excepciones del broker: toda
+  excepción con `exception_forbids_rollback` es `TerminalidadDesconocidaError`. Un timeout sin veto es
+  terminal.
+- **`-q` en el worker.** `construir_argv` no rechaza una capacidad sin verificar: omite `-q` y deja el
+  rechazo a quien lo llama. El runner ya lo rechazaba; el handler del worker también lo hace.
+- **`expected_plugins` (C2).** El job de BodySlide lleva la lista como todo job mutante. BodySlide no lee
+  plugins, pero la prueba detecta un VFS que no proyecta los mods, y BodySlide lee sus slider sets del
+  `Data` virtual.
+- **Exe retenido en POSIX.** La compartición obligatoria es de Windows. En POSIX el helper verifica hash,
+  tipo, `O_NOFOLLOW` y un solo enlace duro, pero no impide un reemplazo concurrente (declarado en
+  `exe_retenido.py`).
+
 #### Superficie del operador (decisión del propietario, 2026-11-25)
 
 `liberar_cuarentena` (2c-1) no tenía llamador, y `registrar_terminalidad_por_operador` (opción (a))
