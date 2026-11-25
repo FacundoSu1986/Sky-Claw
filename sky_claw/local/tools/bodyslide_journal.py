@@ -753,6 +753,29 @@ def _transicionar(
     return nuevo
 
 
+def _archivos_con_lo_observado(documento: DocumentoDeJournal, exe_dir: pathlib.Path) -> tuple[ArchivoDelJournal, ...]:
+    """Lo que la corrida dejó en cada archivo al volverse terminal: es lo que después se restaura.
+
+    Una sola implementación para los dos caminos que registran ``TERMINAL``: el runner
+    (``marcar_terminal``) y el operador (``registrar_terminalidad_por_operador``).
+    """
+    archivos = []
+    for archivo in documento.archivos:
+        # Review CodeRabbit #1021: el proceso YA terminó; un archivo que no se puede
+        # clasificar (enlace, no regular) no puede borrar esa evidencia. Queda sin
+        # contenido esperado, así que nunca se restaura sobre él.
+        try:
+            observado: str | None = _huella_actual(exe_dir / archivo.nombre)
+        except (ModificacionConcurrenteError, OSError):
+            observado = None
+        if observado is None or observado == archivo.huella_original:
+            esperados: tuple[str, ...] = ()
+        else:
+            esperados = (observado,)
+        archivos.append(dataclasses.replace(archivo, esperados_sha256=esperados))
+    return tuple(archivos)
+
+
 def _cerrar(ruta: pathlib.Path, exe_dir: pathlib.Path) -> None:
     """Retira el journal ya RESTAURADO, sus temporales propios y los temporales propios de la config."""
     _retirar(ruta)
@@ -935,23 +958,12 @@ class TransaccionDeConfig:
     def marcar_terminal(self) -> None:
         """Registra la terminalidad y lo que la corrida dejó en cada archivo (lo que luego se restaura)."""
         self._exigir(_E.TERMINAL)
-        archivos = []
-        for archivo in self._documento.archivos:
-            # Review CodeRabbit #1021: el proceso YA terminó; un archivo que no se puede
-            # clasificar (enlace, no regular) no puede borrar esa evidencia. Queda sin
-            # contenido esperado, así que nunca se restaura sobre él.
-            try:
-                observado: str | None = _huella_actual(self._exe_dir / archivo.nombre)
-            except (ModificacionConcurrenteError, OSError):
-                # Enlace, no regular o ilegible: el proceso ya terminó igual (review CodeRabbit #1021).
-                observado = None
-            if observado is None or observado == archivo.huella_original:
-                esperados: tuple[str, ...] = ()
-            else:
-                esperados = (observado,)
-            archivos.append(dataclasses.replace(archivo, esperados_sha256=esperados))
         self._documento = _transicionar(
-            self._almacen, self._ruta, self._documento, _E.TERMINAL, archivos=tuple(archivos)
+            self._almacen,
+            self._ruta,
+            self._documento,
+            _E.TERMINAL,
+            archivos=_archivos_con_lo_observado(self._documento, self._exe_dir),
         )
 
     def restaurar(self) -> InformeDeRecuperacion:
@@ -1073,6 +1085,10 @@ def _retirar_cuarentena(almacen: AlmacenDeJournal, *, solo_de: str | None = None
     except FileNotFoundError:
         return False
     return True
+
+
+class TerminalidadNoRegistrableError(JournalError):
+    """El operador pidió registrar la terminalidad y falta otra prueba: el journal queda intacto."""
 
 
 class SiembraColgadaError(JournalError):
@@ -1229,7 +1245,7 @@ def liberar_cuarentena(almacen: AlmacenDeJournal, *, evidencia: str) -> bool:
         raise ValueError("liberar la cuarentena exige evidencia del operador")
     retirada = _retirar_cuarentena(almacen)
     if retirada:
-        logger.warning("BodySlide: cuarentena de bodyslide-meshes liberada por el operador: %s", evidencia.strip())
+        logger.critical("BodySlide: cuarentena de bodyslide-meshes liberada por el operador: %s", evidencia.strip())
     return retirada
 
 
@@ -1307,6 +1323,60 @@ def recuperar_journal(
     if informe.veredicto in {Veredicto.RESTAURADO, Veredicto.SIN_CAMBIOS}:
         logger.info("BodySlide: journal '%s' recuperado (%s).", ruta.name, informe.veredicto.value)
     return informe
+
+
+def registrar_terminalidad_por_operador(
+    ruta: pathlib.Path,
+    *,
+    almacen: AlmacenDeJournal,
+    identidad_actual: IdentidadDeEjecucion | None,
+    exe_dir: pathlib.Path,
+    evidencia: str,
+    vivacidad: Callable[[int, float], OwnerLiveness] = _check_process_liveness,
+) -> DocumentoDeJournal:
+    """Opción (a) del brief §13.6: el operador lleva un ``LANZADO`` a ``TERMINAL`` con evidencia escrita.
+
+    Es la salida de un teardown fallido del broker: ningún camino automático prueba que el
+    proceso terminó. La evidencia del operador sustituye a la terminalidad, **nunca** a las
+    demás pruebas: journal íntegro, misma máquina e instancia, carpeta física idéntica y un
+    dueño que no esté vivo (el operador cierra Sky-Claw antes, como con ``vfs-quarantine``).
+    No restaura: lo hace el reconciliador en el próximo arranque, con sus propias pruebas.
+
+    Raises:
+        ValueError: sin evidencia escrita.
+        FileNotFoundError: no hay journal.
+        JournalCorruptoError: el journal no es legible o válido.
+        TerminalidadNoRegistrableError: falta cualquier otra prueba; el journal no se toca.
+    """
+    if not evidencia.strip():
+        raise ValueError("registrar la terminalidad exige evidencia del operador")
+    documento = almacen.leer(ruta)
+    if (
+        identidad_actual is None
+        or not identidad_actual.maquina
+        or (documento.maquina, documento.instancia) != (identidad_actual.maquina, identidad_actual.instancia)
+    ):
+        raise TerminalidadNoRegistrableError("la máquina o la instancia no son las del journal, o son desconocidas")
+    if documento.estado is not _E.LANZADO:
+        raise TerminalidadNoRegistrableError(
+            f"el journal está en {documento.estado.value}; el operador solo registra la terminalidad de LANZADO"
+        )
+    if vivacidad(documento.duenio_pid, documento.duenio_creado) is OwnerLiveness.ALIVE:
+        raise TerminalidadNoRegistrableError(
+            f"el dueño de la corrida (pid {documento.duenio_pid}) sigue vivo: cerrá Sky-Claw antes de registrar"
+        )
+    motivo = _ruta_confiable(documento, exe_dir)
+    if motivo is not None:
+        raise TerminalidadNoRegistrableError(motivo)
+    nuevo = _transicionar(
+        almacen, ruta, documento, _E.TERMINAL, archivos=_archivos_con_lo_observado(documento, exe_dir)
+    )
+    logger.critical(
+        "BodySlide: el operador registró la terminalidad de la corrida %s (LANZADO → TERMINAL): %s",
+        documento.run_id,
+        evidencia.strip(),
+    )
+    return nuevo
 
 
 def recuperar_todos(

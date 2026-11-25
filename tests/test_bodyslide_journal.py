@@ -1139,6 +1139,10 @@ def test_los_call_sites_productivos_del_journal_estan_congelados() -> None:
     assert _llamadores_en_produccion("reconcile_bodyslide_config_journals") == {"sky_claw/app_context.py"}
     assert _llamadores_en_produccion("iniciar_transaccion") == {"sky_claw/local/tools/bodyslide_runner.py"}
     assert _llamadores_en_produccion("recuperar_todos") == {"sky_claw/local/tools/rollback_reconciler.py"}
+    # PR 2c-2b (opción (a)): solo el operador registra la terminalidad de un LANZADO, y solo desde su superficie.
+    assert _llamadores_en_produccion("registrar_terminalidad_por_operador") == {
+        "sky_claw/local/tools/bodyslide_operador.py"
+    }
 
 
 def test_los_importadores_del_journal_estan_congelados() -> None:
@@ -1148,9 +1152,14 @@ def test_los_importadores_del_journal_estan_congelados() -> None:
         if relativo == "sky_claw/local/tools/bodyslide_journal.py":
             continue
         for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8"))):
+            # PR 2c-2b: también ``from sky_claw.local.tools import bodyslide_journal as bj``. Sin esa
+            # forma el censo no veía al módulo del operador, que importa el journal así.
             if (
                 isinstance(nodo, ast.ImportFrom)
-                and (nodo.module or "").endswith("bodyslide_journal")
+                and (
+                    (nodo.module or "").endswith("bodyslide_journal")
+                    or any(a.name == "bodyslide_journal" for a in nodo.names)
+                )
                 or isinstance(nodo, ast.Import)
                 and any(a.name.endswith("bodyslide_journal") for a in nodo.names)
             ):
@@ -1159,6 +1168,9 @@ def test_los_importadores_del_journal_estan_congelados() -> None:
         "sky_claw/local/tools/rollback_reconciler.py",
         "sky_claw/local/tools/bodyslide_runner.py",
         "sky_claw/app_context.py",
+        # PR 2c-2b: la superficie del operador (``--mode bodyslide-recovery``).
+        "sky_claw/local/tools/bodyslide_operador.py",
+        "sky_claw/__main__.py",
     }
 
 

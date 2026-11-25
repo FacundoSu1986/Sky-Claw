@@ -648,5 +648,25 @@ que ese evento no puede probar la terminalidad de **esta** corrida. Opciones:
 - **(b)** Schema v2 del journal con `vfs_job_id`, y el broker notifica el `worker_exit` tardío al
   journal. Es automático, pero cambia un schema cerrado y acopla el broker con BodySlide.
 
+#### Superficie del operador (decisión del propietario, 2026-11-25)
+
+`liberar_cuarentena` (2c-1) no tenía llamador, y `registrar_terminalidad_por_operador` (opción (a))
+tampoco lo habría tenido: un `LANZADO` en HOLD solo se liberaba editando archivos de estado a mano.
+El propietario eligió sumar a 2c-2b el modo `--mode bodyslide-recovery`, hermano de
+`--mode vfs-quarantine`, despachado antes de `AppContext`:
+
+- `--bodyslide-recovery-action status` (por defecto): journals y cuarentena, sin escribir nada;
+- `release-quarantine` y `confirm-terminal`: exigen `--bodyslide-evidence` y quedan en el log como
+  CRITICAL;
+- la carpeta de BodySlide sale de `--bodyslide-exe` (por defecto, `bodyslide_exe` de la config).
+
+`confirm-terminal` exige además journal íntegro, misma máquina e instancia, carpeta física idéntica y
+un dueño que no esté vivo. Ninguna acción restaura la config: lo hace el reconciliador en el próximo
+arranque. La lógica vive en `sky_claw/local/tools/bodyslide_operador.py` (mypy estricto).
+
+**Límite:** el marcador de cuarentena no guarda el pid del proceso que lo escribió, así que
+`release-quarantine` no puede comprobar que Sky-Claw esté cerrado. El procedimiento lo exige (el hilo
+colgado muere con el proceso) y la evidencia del operador lo declara.
+
 No se encontró defecto P0/P1 en `main`; producción sigue apagada (`quiet_verified=False`, barrera en
 `False`).
