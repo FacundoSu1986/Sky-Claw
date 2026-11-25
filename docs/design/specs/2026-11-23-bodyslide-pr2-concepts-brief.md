@@ -566,12 +566,12 @@ cuarentena expresa el abandono sin competir con la transición del hilo.
 corrida falla cerrada antes de mutar. Una cancelación durante `iniciar_transaccion` deja un journal
 `PREPARADO` sin mutación: bloquea la instancia hasta el próximo arranque, que lo cierra sin cambios.
 
-### 13.6 PR 2c-2 — propuesta de contrato (PENDIENTE DE APROBACIÓN)
+### 13.6 PR 2c-2 — contrato aprobado
 
-Estado: `PROPUESTA / SIN IMPLEMENTAR`. 2c-1 se mergeó en #1021 (`0c23c24`). §13.5 le asigna a 2c-2:
+Estado: `APROBADO` por el propietario el 2026-11-25: corte en 2c-2a y 2c-2b, y opción (a) para el
+`worker_exit` tardío. 2c-1 se mergeó en #1021 (`0c23c24`). §13.5 le asigna a 2c-2:
 broker USVFS con `worker_exit` como evidencia de terminalidad para `LANZADO`, paridad de
-`_SAFE_NAME_PATTERN` y trabajo en segundo plano. Hasta que el propietario apruebe esta sección no se
-escribe código.
+`_SAFE_NAME_PATTERN` y trabajo en segundo plano.
 
 **Corte propuesto.** Las tres piezas no comparten superficie ni riesgo. Dos cambian el comportamiento
 visible de la tool y no dependen del broker; la tercera agrega un `tool_id` al protocolo firmado. Se
@@ -636,7 +636,7 @@ propone partir 2c-2 en dos PRs secuenciales, cada uno con su revisión adversari
    backend brokered usa el destino legacy `<game>/BodySlide_Output/<grupo>`, que está fuera del `Data`
    virtual, y sigue dormido.
 
-#### Decisión abierta para el propietario
+#### Decisión del propietario: opción (a)
 
 **`worker_exit` tardío.** Si el teardown falla, el broker libera su cuarentena VFS cuando llega un
 `worker_exit` tardío (`_liberar_cuarentena_por_worker_exit`). El journal v1 no guarda el `job_id`, así
@@ -648,5 +648,5 @@ que ese evento no puede probar la terminalidad de **esta** corrida. Opciones:
 - **(b)** Schema v2 del journal con `vfs_job_id`, y el broker notifica el `worker_exit` tardío al
   journal. Es automático, pero cambia un schema cerrado y acopla el broker con BodySlide.
 
-**Semáforo de la propuesta:** 🟡 AMARILLO, espera aprobación. No se encontró defecto P0/P1 en `main`;
-producción sigue apagada (`quiet_verified=False`, barrera en `False`).
+No se encontró defecto P0/P1 en `main`; producción sigue apagada (`quiet_verified=False`, barrera en
+`False`).

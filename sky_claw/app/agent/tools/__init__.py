@@ -26,6 +26,7 @@ from sky_claw.local.loot.cli import LOOTConfig, LOOTRunner
 from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
 from sky_claw.local.tools.pandora_runner import PandoraConfig, PandoraRunner
 
+from .bodyslide_tools import iniciar_run_bodyslide
 from .db_tools import install_mod, search_mod
 from .descriptor import ToolDescriptor
 from .external_tools import setup_tools
@@ -152,8 +153,14 @@ class AsyncToolRegistry:
         # decisión humana y copian hasta 900 s, más que el round del router). Lo arma el
         # AppContext con el aviso del guard y su cleanup; None = la admisión falla cerrada.
         admisiones_nativas: Any | None = None,
+        # PR 2c-2a (R-8): gestor de las corridas de BodySlide en segundo plano. El round del
+        # router cancela a los 120 s, y desde 2c-1 cancelar con el proceso lanzado deja la
+        # config en HOLD. Lo arma el AppContext con el aviso del guard y su cleanup;
+        # None = run_bodyslide falla cerrada.
+        bodyslide_jobs: Any | None = None,
     ) -> None:
         self._registry = registry
+        self._bodyslide_jobs = bodyslide_jobs
         self._lod_jobs = lod_jobs
         self._admisiones_nativas = admisiones_nativas
         self._mo2 = mo2
@@ -638,17 +645,22 @@ class AsyncToolRegistry:
         )
         self._tools["run_bodyslide"] = ToolDescriptor(
             name="run_bodyslide",
-            description="Execute BodySlide in batch mode for a preset group.",
+            description=(
+                "Execute BodySlide in batch mode for a preset group as a background job and return "
+                "immediately with a job id; the operator is notified on this channel when it finishes."
+            ),
             params_model=BodySlideBatchParams,
             # Codex #213 P1: serialize on the shared bodyslide-meshes lock (like
             # run_loot_sort / run_pandora) so the agent path participates in the
             # cross-process lock instead of building meshes unsynchronized.
-            fn=lambda group="CBBE", output_path="meshes", preset=None, build_morphs=True: run_bodyslide_batch(
+            # PR 2c-2a: la corrida vive en el gestor, fuera del round del router.
+            fn=lambda group="CBBE", output_path="meshes", preset=None, build_morphs=True: iniciar_run_bodyslide(
+                self._bodyslide_jobs,
                 self._resolve_bodyslide_runner(),
-                group,
-                output_path,
-                preset,
-                build_morphs,
+                group=group,
+                output_path=output_path,
+                preset=preset,
+                build_morphs=build_morphs,
                 lock_manager=self._lock_manager,
                 snapshot_manager=self._snapshot_manager,
             ),

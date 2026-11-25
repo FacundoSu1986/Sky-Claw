@@ -11,6 +11,7 @@ mutable-ref plumbing.
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import json
 import pathlib
@@ -21,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sky_claw.app.agent.tools import AsyncToolRegistry
+from sky_claw.app.agent.tools.bodyslide_tools import GestorDeTrabajosDeBodySlide
 from sky_claw.app.db.locks import DistributedLockManager
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager
 from sky_claw.local.tools.bodyslide_runner import BodySlideConfig, BodySlideRunner
@@ -50,6 +52,7 @@ def _make_registry(
     path_validator: object | None = None,
     lock_manager: object | None = None,
     snapshot_manager: object | None = None,
+    bodyslide_jobs: object | None = None,
 ) -> AsyncToolRegistry:
     mo2 = MagicMock()
     mo2.root = tmp_path
@@ -64,7 +67,18 @@ def _make_registry(
         path_validator=path_validator,
         lock_manager=lock_manager,
         snapshot_manager=snapshot_manager,
+        bodyslide_jobs=bodyslide_jobs,
     )
+
+
+async def _resultado_del_trabajo(gestor: GestorDeTrabajosDeBodySlide, respuesta: str) -> dict[str, object]:
+    """PR 2c-2a: ``run_bodyslide`` responde con un ``trabajo_id``; el resultado es el del trabajo."""
+    assert json.loads(respuesta)["success"] is True
+    trabajo = gestor.actual
+    assert trabajo is not None and trabajo.tarea is not None
+    await asyncio.wait_for(trabajo.tarea, timeout=5)
+    assert trabajo.resultado is not None
+    return trabajo.resultado
 
 
 def _runner_result(**overrides: object) -> MagicMock:
@@ -552,11 +566,13 @@ async def test_run_bodyslide_tool_forwards_group_and_output(tmp_path: pathlib.Pa
     injected = MagicMock(spec=BodySlideRunner)
     injected.config = BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=game)
     injected.run_batch = AsyncMock(return_value=_runner_result())
+    gestor = GestorDeTrabajosDeBodySlide()
     reg = _make_registry(
         tmp_path=tmp_path,
         bodyslide_runner=injected,
         lock_manager=MagicMock(),
         snapshot_manager=MagicMock(),
+        bodyslide_jobs=gestor,
     )
 
     transaction = MagicMock()
@@ -567,7 +583,9 @@ async def test_run_bodyslide_tool_forwards_group_and_output(tmp_path: pathlib.Pa
         "sky_claw.app.db.locks.SnapshotTransactionLock",
         return_value=transaction,
     ):
-        result = json.loads(await reg.tools["run_bodyslide"].fn(group="3BA", output_path="out"))
+        result = await _resultado_del_trabajo(
+            gestor, await reg.tools["run_bodyslide"].fn(group="3BA", output_path="out")
+        )
 
     esperado = bodyslide_output_target(game=game, group="3BA")
     assert result["success"] is True
@@ -588,11 +606,13 @@ async def test_run_bodyslide_execute_despacha_preset_y_morphs(tmp_path: pathlib.
     injected = MagicMock(spec=BodySlideRunner)
     injected.config = BodySlideConfig(bodyslide_exe=tmp_path / "BodySlide.exe", game_path=game)
     injected.run_batch = AsyncMock(return_value=_runner_result())
+    gestor = GestorDeTrabajosDeBodySlide()
     reg = _make_registry(
         tmp_path=tmp_path,
         bodyslide_runner=injected,
         lock_manager=MagicMock(),
         snapshot_manager=MagicMock(),
+        bodyslide_jobs=gestor,
     )
 
     transaction = MagicMock()
@@ -603,8 +623,9 @@ async def test_run_bodyslide_execute_despacha_preset_y_morphs(tmp_path: pathlib.
         "sky_claw.app.db.locks.SnapshotTransactionLock",
         return_value=transaction,
     ):
-        result = json.loads(
-            await reg.execute("run_bodyslide", {"group": "3BA", "preset": "Zeroed Sliders", "build_morphs": False})
+        result = await _resultado_del_trabajo(
+            gestor,
+            await reg.execute("run_bodyslide", {"group": "3BA", "preset": "Zeroed Sliders", "build_morphs": False}),
         )
 
     esperado = bodyslide_output_target(game=game, group="3BA")
