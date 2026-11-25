@@ -13,6 +13,7 @@ exacto: lo que se verifica es el disco que deja, no una excepción de Python.
 from __future__ import annotations
 
 import ast
+import asyncio
 import base64
 import hashlib
 import json
@@ -1013,6 +1014,12 @@ asyncio.run(main())
 """
 
 
+async def _inicializar_base_de_locks(db: pathlib.Path) -> None:
+    manager = DistributedLockManager(db, default_ttl=30.0)
+    await manager.initialize()
+    await manager.close()
+
+
 def test_dos_procesos_recuperan_a_la_vez_sin_doble_escritura(
     tmp_path: pathlib.Path, almacen: AlmacenDeJournal, exe_dir: pathlib.Path
 ) -> None:
@@ -1021,6 +1028,13 @@ def test_dos_procesos_recuperan_a_la_vez_sin_doble_escritura(
     guion = tmp_path / "recuperar.py"
     guion.write_text(_GUION_DE_RECUPERACION.format(raiz=str(RAIZ), maquina=MAQUINA), encoding="utf-8")
     db = tmp_path / "locks.db"
+    # La base de locks ya existe en WAL antes de que compitan, como en un arranque real con
+    # estado previo. Si los dos hijos la convirtieran a la vez, el perdedor recibiría
+    # SQLITE_BUSY sin esperar: SQLite saltea el busy handler en la promoción de lock (ver
+    # ``DatabaseLifecycleManager._enter_wal_mode``). Esa carrera es de
+    # ``DistributedLockManager`` standalone, no de la reconciliación que mide este test, y
+    # tumbó ``main`` en Windows (run 45677510174).
+    asyncio.run(_inicializar_base_de_locks(db))
     arranque = time.time() + 3.0
     salidas = [tmp_path / f"recuperacion_{i}.json" for i in (1, 2)]
     procesos = [
@@ -1031,8 +1045,15 @@ def test_dos_procesos_recuperan_a_la_vez_sin_doble_escritura(
         )
         for s in salidas
     ]
-    for proceso in procesos:
-        _, error = proceso.communicate(timeout=180)
+    try:
+        errores = [proceso.communicate(timeout=180)[1] for proceso in procesos]
+    finally:
+        # Un hijo que sobrevive al test lo hace fallar al SIGUIENTE (ResourceWarning de Popen).
+        for proceso in procesos:
+            if proceso.poll() is None:
+                proceso.kill()
+                proceso.communicate()
+    for proceso, error in zip(procesos, errores, strict=True):
         assert proceso.returncode == 0, error.decode(errors="replace")
     # Act / Assert: exactamente una restauración; el otro se omitió o ya no encontró journal.
     resultados = [json.loads(s.read_text(encoding="utf-8")) for s in salidas]
@@ -1130,28 +1151,48 @@ def _llamadores_en_produccion(nombre: str) -> set[str]:
     return encontrados
 
 
-def test_2b_no_activa_la_recuperacion_ni_el_journal_en_produccion() -> None:
-    """PR 2b deja el mecanismo dormido: ningún camino productivo lo invoca todavía (2c lo cablea)."""
-    assert _llamadores_en_produccion("reconcile_bodyslide_config_journals") == set()
-    assert _llamadores_en_produccion("iniciar_transaccion") == set()
+def test_los_call_sites_productivos_del_journal_estan_congelados() -> None:
+    """PR 2c-1 cableó el journal: el runner abre la transacción y el arranque corre el consumidor.
+
+    Un camino nuevo que abra transacciones o recupere journals rompe esto hasta que se
+    decida (y se pruebe) su participación. La producción sigue apagada por la barrera.
+    """
+    assert _llamadores_en_produccion("reconcile_bodyslide_config_journals") == {"sky_claw/app_context.py"}
+    assert _llamadores_en_produccion("iniciar_transaccion") == {"sky_claw/local/tools/bodyslide_runner.py"}
     assert _llamadores_en_produccion("recuperar_todos") == {"sky_claw/local/tools/rollback_reconciler.py"}
+    # PR 2c-2b (opción (a)): solo el operador registra la terminalidad de un LANZADO, y solo desde su superficie.
+    assert _llamadores_en_produccion("registrar_terminalidad_por_operador") == {
+        "sky_claw/local/tools/bodyslide_operador.py"
+    }
 
 
-def test_solo_el_reconciliador_importa_el_journal() -> None:
+def test_los_importadores_del_journal_estan_congelados() -> None:
     importadores: set[str] = set()
     for archivo in sorted((RAIZ / "sky_claw").rglob("*.py")):
         relativo = archivo.relative_to(RAIZ).as_posix()
         if relativo == "sky_claw/local/tools/bodyslide_journal.py":
             continue
         for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8"))):
+            # PR 2c-2b: también ``from sky_claw.local.tools import bodyslide_journal as bj``. Sin esa
+            # forma el censo no veía al módulo del operador, que importa el journal así.
             if (
                 isinstance(nodo, ast.ImportFrom)
-                and (nodo.module or "").endswith("bodyslide_journal")
+                and (
+                    (nodo.module or "").endswith("bodyslide_journal")
+                    or any(a.name == "bodyslide_journal" for a in nodo.names)
+                )
                 or isinstance(nodo, ast.Import)
                 and any(a.name.endswith("bodyslide_journal") for a in nodo.names)
             ):
                 importadores.add(relativo)
-    assert importadores == {"sky_claw/local/tools/rollback_reconciler.py"}
+    assert importadores == {
+        "sky_claw/local/tools/rollback_reconciler.py",
+        "sky_claw/local/tools/bodyslide_runner.py",
+        "sky_claw/app_context.py",
+        # PR 2c-2b: la superficie del operador (``--mode bodyslide-recovery``).
+        "sky_claw/local/tools/bodyslide_operador.py",
+        "sky_claw/__main__.py",
+    }
 
 
 def test_la_barrera_productiva_sigue_en_false() -> None:

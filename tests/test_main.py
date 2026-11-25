@@ -35,6 +35,7 @@ _MODOS_Y_SU_POSICIONAL: dict[str, bool] = {
     "install-vfs-bridge": False,
     "vfs-health": False,
     "vfs-quarantine": False,
+    "bodyslide-recovery": False,
 }
 
 # ------------------------------------------------------------------
@@ -98,7 +99,17 @@ class TestParseArgs:
 
     @pytest.mark.parametrize(
         "modo_posicional",
-        ["cli", "telegram", "oneshot", "gui", "security", "install-vfs-bridge", "vfs-health", "vfs-quarantine"],
+        [
+            "cli",
+            "telegram",
+            "oneshot",
+            "gui",
+            "security",
+            "install-vfs-bridge",
+            "vfs-health",
+            "vfs-quarantine",
+            "bodyslide-recovery",
+        ],
     )
     def test_rechaza_modo_pasado_como_argumento_posicional_sin_flag_mode(self, modo_posicional: str) -> None:
         """Pasar p. ej. ``python -m sky_claw vfs-health`` sin ``--mode`` no debe caer en silencio al REPL."""
@@ -660,6 +671,7 @@ _MODOS_Y_SI_SU_FALLO_ABRE_EL_DIALOGO: dict[str, bool] = {
     "install-vfs-bridge": False,
     "vfs-health": False,
     "vfs-quarantine": False,
+    "bodyslide-recovery": False,
 }
 
 

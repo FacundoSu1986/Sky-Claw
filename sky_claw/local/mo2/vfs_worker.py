@@ -37,6 +37,7 @@ from sky_claw.local.mo2.vfs_arranque import abortar_por_identidad, nombre_de_log
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, verify_vfs_attestation
 from sky_claw.local.mo2.vfs_contracts import (
     ALLOWED_VFS_SESSION_TOOL_IDS,
+    BODYSLIDE_EXECUTABLE_NAMES,
     SYNTHESIS_CLI_EXECUTABLE_NAMES,
     VFS_PROTOCOL_VERSION,
     VFS_TOOL_EXECUTABLE_NAMES,
@@ -852,6 +853,170 @@ async def _synthesis_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     )
 
 
+#: Payload CERRADO de ``tool_id="bodyslide"`` (PR 2c-2b): igualdad exacta de claves. El argv NO
+#: viaja: el worker lo reconstruye con ``construir_argv`` y estos campos, así un argv armado nunca
+#: cruza el IPC. El worker no siembra ni restaura: el journal es del daemon (D1, ADR 0007).
+BODYSLIDE_PAYLOAD_KEYS: frozenset[str] = frozenset(
+    {
+        "bodyslide_exe",
+        "exe_sha256",
+        "group",
+        "target",
+        "preset",
+        "preset_verified",
+        "build_morphs",
+        "quiet_verified",
+        # C2: la lista completa de plugins habilitados que el gate genérico verifica en el Data
+        # virtual ANTES del handler. BodySlide no lee plugins, pero la prueba detecta un VFS que no
+        # proyecta los mods, y BodySlide lee sus slider sets del Data virtual.
+        "expected_plugins",
+    }
+)
+
+#: Desenlaces tipados de un fallo del worker de BodySlide que el lanzador brokered traduce.
+BODYSLIDE_FAILURE_KINDS: frozenset[str] = frozenset({"args_invalid", "exe_mismatch", "timeout", "execution_error"})
+
+
+def _bodyslide_failure_execution(*, kind: str, message: str, outputs: tuple[pathlib.Path, ...]) -> VfsToolExecution:
+    if kind not in BODYSLIDE_FAILURE_KINDS:
+        raise ValueError(f"desenlace de BodySlide desconocido: {kind}")
+    return VfsToolExecution(
+        success=False,
+        message=message,
+        exit_code=None,
+        stdout="",
+        stderr="",
+        outputs=outputs,
+        tool_result={"bodyslide_failure_kind": kind},
+    )
+
+
+def _payload_bool_estricto(payload: Mapping[str, JsonValue], field_name: str) -> bool:
+    valor = payload.get(field_name)
+    if not isinstance(valor, bool):
+        raise ValueError(f"payload.{field_name} debe ser booleano")
+    return valor
+
+
+async def _bodyslide_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
+    """Valida el contrato cerrado de ``tool_id='bodyslide'`` y ejecuta BodySlide bajo USVFS (PR 2c-2b).
+
+    Propiedades:
+
+    - *el argv no cruza el IPC*: se reconstruye con ``construir_argv`` y los campos del payload;
+    - *el destino es el canónico del grupo*: ``target`` es el único ``mutation_targets`` y es
+      exactamente ``bodyslide_output_target(game, group)`` del juego que ve el worker;
+    - *lo que se ejecuta es lo que se hasheó*: el exe se re-hashea por un handle que se retiene
+      mientras corre (``retener_exe_verificado``, D7 mitad del worker);
+    - *el spawn es el del runner*: ``LanzadorStandalone`` (``run_capture`` con Job anidado), la
+      misma pieza que usa el camino standalone.
+    """
+    from sky_claw.local.tools.bodyslide_headless import (
+        HeadlessContractError,
+        construir_argv,
+        exigir_destino_canonico,
+    )
+    from sky_claw.local.tools.bodyslide_lanzador import PedidoDeLanzamiento
+    from sky_claw.local.tools.bodyslide_runner import LanzadorStandalone
+    from sky_claw.local.tools.exe_retenido import ExeNoCoincideError, retener_exe_verificado
+    from sky_claw.local.tools.output_targets import bodyslide_output_root, bodyslide_output_target
+
+    if manifest.job.tool_id != "bodyslide":
+        raise ValueError("handler BodySlide recibió otro tool_id")
+    payload = manifest.job.payload
+    if set(payload) != BODYSLIDE_PAYLOAD_KEYS:
+        faltan = sorted(BODYSLIDE_PAYLOAD_KEYS - set(payload))
+        sobran = sorted(set(payload) - BODYSLIDE_PAYLOAD_KEYS)
+        raise ValueError(f"payload de bodyslide fuera de contrato (faltan {faltan}, sobran {sobran})")
+    # Review CodeRabbit #1025: el gate genérico de visibilidad trata un null como "sin lista" y no
+    # verifica nada. En el contrato cerrado de BodySlide la lista es obligatoria y bien formada.
+    raw_expected_plugins = payload["expected_plugins"]
+    if not isinstance(raw_expected_plugins, list) or any(
+        not isinstance(item, str) or not item for item in raw_expected_plugins
+    ):
+        raise ValueError("payload.expected_plugins debe ser una lista de nombres de plugin no vacíos")
+
+    exe = _validar_ruta_worker_sin_enlaces(
+        pathlib.Path(_payload_string(payload, "bodyslide_exe")), field="bodyslide_exe"
+    )
+    if exe.name.casefold() not in BODYSLIDE_EXECUTABLE_NAMES:
+        raise ValueError(f"ejecutable incompatible con bodyslide: {exe.name}")
+    exe_sha256 = _payload_string(payload, "exe_sha256")
+    group = _payload_string(payload, "group")
+    target_crudo = pathlib.Path(_payload_string(payload, "target"))
+    raw_preset = payload.get("preset")
+    if raw_preset is not None and (not isinstance(raw_preset, str) or not raw_preset):
+        raise ValueError("payload.preset debe ser null o un string no vacío")
+    preset_verified = _payload_bool_estricto(payload, "preset_verified")
+    build_morphs = _payload_bool_estricto(payload, "build_morphs")
+    quiet_verified = _payload_bool_estricto(payload, "quiet_verified")
+
+    declarados = tuple(path.resolve() for path in manifest.job.mutation_targets)
+    if not target_crudo.is_absolute() or len(declarados) != 1 or target_crudo.resolve() != declarados[0]:
+        raise ValueError("payload.target debe coincidir con un único mutation_targets declarado")
+    game_path = manifest.virtual_data_dir.parent.resolve()
+    raiz = bodyslide_output_root(game=game_path)
+    canonico = bodyslide_output_target(game=game_path, group=group)
+    try:
+        # ``construir_argv`` no rechaza una capacidad sin verificar: omite ``-q`` y deja el rechazo al
+        # caller. El runner lo rechaza (CAPABILITY_UNKNOWN); el worker es el otro caller y también.
+        # Sin ``-q`` BodySlide abre diálogos bajo USVFS, sin nadie que los cierre.
+        if not quiet_verified:
+            raise HeadlessContractError("la capacidad -q no está verificada: no se lanza el build autónomo")
+        if raiz is None or canonico is None:
+            raise HeadlessContractError("el juego del worker no tiene raíz de salida de BodySlide")
+        exigir_destino_canonico(str(target_crudo), str(canonico))
+        argv = construir_argv(
+            str(exe),
+            group,
+            str(target_crudo),
+            preset=raw_preset,
+            preset_verified=preset_verified,
+            build_morphs=build_morphs,
+            quiet_verified=quiet_verified,
+            stage_root=str(raiz),
+        )
+    except HeadlessContractError as exc:
+        return _bodyslide_failure_execution(kind="args_invalid", message=str(exc), outputs=())
+
+    pedido = PedidoDeLanzamiento(
+        argv=tuple(argv),
+        exe=exe,
+        cwd=game_path,
+        timeout=max(1.0, float(manifest.job.timeout_seconds)),
+        group=group,
+        target=str(target_crudo),
+        preset=raw_preset,
+        preset_verified=preset_verified,
+        build_morphs=build_morphs,
+        quiet_verified=quiet_verified,
+    )
+    try:
+        with retener_exe_verificado(exe, exe_sha256) as sha_observado:
+            salida = await LanzadorStandalone().lanzar(pedido)
+    except ExeNoCoincideError as exc:
+        return _bodyslide_failure_execution(kind="exe_mismatch", message=str(exc), outputs=())
+    except TimeoutError:
+        return _bodyslide_failure_execution(
+            kind="timeout",
+            message=f"BodySlide no terminó en {pedido.timeout:.0f}s",
+            outputs=manifest.job.mutation_targets,
+        )
+    except OSError as exc:
+        return _bodyslide_failure_execution(
+            kind="execution_error", message=str(exc), outputs=manifest.job.mutation_targets
+        )
+    return VfsToolExecution(
+        success=True,
+        message="",
+        exit_code=salida.return_code,
+        stdout=salida.stdout.decode(errors="replace"),
+        stderr=salida.stderr.decode(errors="replace"),
+        outputs=manifest.job.mutation_targets,
+        tool_result={"return_code": salida.return_code, "exe_sha256": sha_observado},
+    )
+
+
 async def _loot_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
     payload = manifest.job.payload
     # ``expected_plugins`` (C2) lo consume el gate genérico de visibilidad ANTES
@@ -1297,6 +1462,7 @@ def _default_handlers() -> dict[str, VfsToolHandler]:
         "health": _health_handler,
         "loot_sort": _loot_handler,
         "synthesis": _synthesis_handler,
+        "bodyslide": _bodyslide_handler,
     }
 
 

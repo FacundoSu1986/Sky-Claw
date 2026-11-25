@@ -1104,7 +1104,8 @@ class TestDownloadModSchema:
         # NP-A0h: diagnosticar_parallax_perfil (diagnóstico del perfil de MO2 para parallax nativo): 22 -> 23.
         # NP-A0k: evaluar_parallax_elegibilidad (elegibilidad de las salidas del generador nativo de parallax): 23 -> 24.
         # ADR 0018: auditar_plugin_nativo + admitir_plugin_nativo (xEdit Bridge): 24 -> 26.
-        assert len(tool_registry.tools) == 26
+        # PR 2c-2a: bodyslide_status (estado del trabajo de BodySlide en segundo plano): 26 -> 27.
+        assert len(tool_registry.tools) == 27
 
 
 # ---------------------------------------------------------------------------

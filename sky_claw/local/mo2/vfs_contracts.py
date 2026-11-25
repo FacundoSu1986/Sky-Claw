@@ -21,7 +21,7 @@ VFS_MANIFEST_PROTOCOL_VERSION = 2
 # Identificadores de herramienta cerrados. Añadir otro exige un handler
 # específico, una familia de ejecutable y pruebas adversariales: el broker no
 # es una puerta para ejecutar procesos arbitrarios.
-ALLOWED_VFS_TOOL_IDS = frozenset({"health", "loot_sort", "texgen", "dyndolod", "synthesis"})
+ALLOWED_VFS_TOOL_IDS = frozenset({"health", "loot_sort", "texgen", "dyndolod", "synthesis", "bodyslide"})
 ALLOWED_VFS_SESSION_TOOL_IDS = frozenset({"texgen", "dyndolod"})
 VFS_TOOL_EXECUTABLE_NAMES = {
     "texgen": "texgenx64.exe",
@@ -29,6 +29,10 @@ VFS_TOOL_EXECUTABLE_NAMES = {
 }
 #: Ejecutable CLI admitido para ``tool_id="synthesis"`` (nunca ``Synthesis.exe`` WPF GUI).
 SYNTHESIS_CLI_EXECUTABLE_NAMES: frozenset[str] = frozenset({"synthesis.bethesda.cli.exe"})
+#: Ejecutables admitidos para ``tool_id="bodyslide"`` (PR 2c-2b), en minúscula: el instalador
+#: de BodySlide and Outfit Studio trae ``BodySlide x64.exe`` y builds viejos ``BodySlide.exe``.
+#: Outfit Studio no: su build headless no es el contrato.
+BODYSLIDE_EXECUTABLE_NAMES: frozenset[str] = frozenset({"bodyslide x64.exe", "bodyslide.exe"})
 ALLOWED_ROLLBACK_STATES = frozenset({"not_started", "not_required", "pending", "completed", "failed"})
 
 JsonScalar: TypeAlias = str | int | float | bool | None

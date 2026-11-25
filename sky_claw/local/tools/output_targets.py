@@ -85,6 +85,12 @@ PANDORA_OUTPUT_DIR = "Pandora_Output"
 #: ``overwrite`` en disco.
 SYNTHESIS_MOD_NAME = "Synthesis Output"
 
+#: Raíz administrada de Synthesis bajo ``mods/`` (ADR 0019 §2.3, PR-2b): el destino
+#: del backend brokered. Nunca cae en ``overwrite`` —carpeta compartida y mutable de
+#: MO2—, y lleva el namespace en el nombre para no chocar con el ``Synthesis Output``
+#: que el usuario pudo haber creado a mano para la GUI upstream.
+SYNTHESIS_MANAGED_MOD_NAME = "Sky-Claw Synthesis Output"
+
 #: Directorio administrado por Sky-Claw para la salida de BodySlide (U-04).
 #: Sustituye al ``output_path`` que antes elegía el LLM como ruta física
 #: literal: ese valor podía resolver bajo ``Data/meshes``, un árbol compartido
@@ -329,6 +335,7 @@ def synthesis_output_target(
     mo2: pathlib.Path | None,
     override: pathlib.Path | None,
     mods_dir: pathlib.Path | Callable[[], pathlib.Path | None] | None = None,
+    administrada: bool = False,
 ) -> pathlib.Path | None:
     """Destino de Synthesis: el override del sandbox manda; si no, el de siempre.
 
@@ -349,18 +356,53 @@ def synthesis_output_target(
     ``[Settings] mod_directory`` puede redefinir los mods fuera del árbol de
     datos; valores no-``Path`` (mocks) y ``None`` conservan el default
     histórico.
+
+    ``administrada=True`` es el destino del backend brokered (ADR 0019 §2.3):
+    ``<mods>/Sky-Claw Synthesis Output`` aunque exista ``overwrite``. El override
+    del sandbox sigue mandando. Una sola función para los dos destinos a
+    propósito: el runner y el preflight la llaman con el mismo flag, y dos
+    resolvers separados volverían a ser el par de copias que U-01 parte 2 unificó.
     """
     if override is not None:
         return override
     if mo2 is None:
         return None
-    overwrite = mo2 / "overwrite"
-    if overwrite.exists():
-        return overwrite
+    if not administrada:
+        overwrite = mo2 / "overwrite"
+        if overwrite.exists():
+            return overwrite
     if callable(mods_dir):
         mods_dir = mods_dir()
     base_mods = mods_dir if isinstance(mods_dir, pathlib.Path) else mo2 / "mods"
-    return base_mods / SYNTHESIS_MOD_NAME
+    return base_mods / (SYNTHESIS_MANAGED_MOD_NAME if administrada else SYNTHESIS_MOD_NAME)
+
+
+def carpetas_de_salida_de_synthesis(
+    *, data_root: pathlib.Path | None, mods_dir: pathlib.Path | None
+) -> tuple[pathlib.Path, ...]:
+    """Toda carpeta donde una corrida de Synthesis pudo dejar su salida (lado de la LECTURA).
+
+    Es el conjunto de destinos de :func:`synthesis_output_target` en todas sus ramas: el
+    ``overwrite``, el ``Synthesis Output`` histórico y la raíz administrada del backend
+    brokered. La consume el guard de etapas previas de los LODs para descubrir los splits
+    ``<Grupo>_N.esp`` que la etapa 9 exige habilitados: un destino que el resolver pueda
+    devolver y esta lista no mire es un split que nadie exige (falso verde). El ancla
+    ``test_las_carpetas_de_salida_cubren_todo_destino_posible`` recorre las ramas del
+    resolver y exige igualdad con este conjunto.
+
+    Sin ``mods_dir`` resuelto se usa ``<data_root>/mods``, el MISMO fallback que aplica el
+    resolver: si la lista lo omitiera, los destinos de esa rama quedarían sin escanear.
+    """
+    carpetas: list[pathlib.Path] = []
+    if isinstance(data_root, pathlib.Path):
+        carpetas.append(data_root / "overwrite")
+    base_mods = mods_dir if isinstance(mods_dir, pathlib.Path) else None
+    if base_mods is None and isinstance(data_root, pathlib.Path):
+        base_mods = data_root / "mods"
+    if base_mods is not None:
+        carpetas.append(base_mods / SYNTHESIS_MOD_NAME)
+        carpetas.append(base_mods / SYNTHESIS_MANAGED_MOD_NAME)
+    return tuple(carpetas)
 
 
 def bodyslide_output_root(*, game: pathlib.Path | None) -> pathlib.Path | None:

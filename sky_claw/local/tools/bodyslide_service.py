@@ -26,6 +26,7 @@ import pathlib
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from sky_claw.app.db.rollback_veto import mark_unknown_terminality
 from sky_claw.app.security.sanitize import sanitize_for_prompt
 from sky_claw.local.tools.output_targets import BODYSLIDE_MESHES_RESOURCE_ID
 
@@ -79,21 +80,19 @@ class EstadoBodySlide(enum.StrEnum):
     PUBLISHED = "PUBLISHED"
 
 
-#: Estados de 2b–2d: existen en el vocabulario para que el contrato no cambie de
-#: forma en cada PR, pero un :class:`ResultadoDelServicio` no puede llevarlos en
-#: 2a y un runner que los reporte no se acepta.
+#: Estados de 2c-2/2d: existen en el vocabulario para que el contrato no cambie de
+#: forma en cada PR, pero un :class:`ResultadoDelServicio` no puede llevarlos todavía
+#: y un runner que los reporte no se acepta. PR 2c-1 liberó los cuatro que el runner
+#: emite con el journal: PRECONDITION_FAILED, CONFIG_IO_HUNG, CONCURRENT_MODIFICATION y
+#: RESTORE_FAILED. PR 2c-2b liberó HOLD_TERMINALITY_UNKNOWN: lo emite el runner cuando el
+#: lanzador no puede probar que el proceso terminó.
 ESTADOS_RESERVADOS: frozenset[EstadoBodySlide] = frozenset(
     {
-        EstadoBodySlide.PRECONDITION_FAILED,
-        EstadoBodySlide.CONFIG_IO_HUNG,
         EstadoBodySlide.WRITE_OUTSIDE_STAGING,
         EstadoBodySlide.STAGING_TAMPERED,
-        EstadoBodySlide.CONCURRENT_MODIFICATION,
         EstadoBodySlide.TIMEOUT,
         EstadoBodySlide.CANCELLED,
-        EstadoBodySlide.HOLD_TERMINALITY_UNKNOWN,
         EstadoBodySlide.HOLD_LEASE_LOST,
-        EstadoBodySlide.RESTORE_FAILED,
         EstadoBodySlide.OUTPUT_MOD_NOT_READY,
         EstadoBodySlide.OUTPUT_MOD_NOT_OWNED,
         EstadoBodySlide.CONFLICT_BETWEEN_GROUPS,
@@ -345,7 +344,13 @@ class BodySlidePipelineService:
                     # U-04: el puente fallo→excepción. Sin esto, un fallo sale limpio
                     # del stack, DirectoryRollback DESCARTA el backup y el árbol
                     # parcial queda en disco.
-                    raise _BodySlideRunFallidoError(result)
+                    fallo = _BodySlideRunFallidoError(result)
+                    if getattr(result, "estado", None) == EstadoBodySlide.HOLD_TERMINALITY_UNKNOWN:
+                        # Review Codex #1025: sin terminalidad probada BodySlide puede seguir
+                        # escribiendo en el destino. El veto llega a DirectoryRollback y a
+                        # SnapshotTransactionLock: ni se borra el parcial ni se descarta el backup.
+                        mark_unknown_terminality(fallo)
+                    raise fallo
         except LockAcquisitionError as exc:
             return _fallo(
                 EstadoBodySlide.LOCK_UNAVAILABLE,

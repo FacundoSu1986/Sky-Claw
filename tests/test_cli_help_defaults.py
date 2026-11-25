@@ -37,6 +37,7 @@ _PATRON_DEFAULT_DECLARADO = re.compile(r"\(default: ([^)]*)\)")
 #: Argumentos que hoy declaran su default en el help (por ``dest``).
 DESTS_CON_DEFAULT_DECLARADO = frozenset(
     {
+        "bodyslide_recovery_action",
         "mode",
         "provider",
         "vfs_profile",

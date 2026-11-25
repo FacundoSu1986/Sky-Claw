@@ -85,16 +85,11 @@ ESTADOS_ESPERADOS: frozenset[str] = frozenset(
 
 RESERVADOS_ESPERADOS: frozenset[str] = frozenset(
     {
-        "PRECONDITION_FAILED",
-        "CONFIG_IO_HUNG",
         "WRITE_OUTSIDE_STAGING",
         "STAGING_TAMPERED",
-        "CONCURRENT_MODIFICATION",
         "TIMEOUT",
         "CANCELLED",
-        "HOLD_TERMINALITY_UNKNOWN",
         "HOLD_LEASE_LOST",
-        "RESTORE_FAILED",
         "OUTPUT_MOD_NOT_READY",
         "OUTPUT_MOD_NOT_OWNED",
         "CONFLICT_BETWEEN_GROUPS",
@@ -243,7 +238,13 @@ def test_nadie_reasigna_la_barrera_productiva() -> None:
 #: Hoy hay UNA superficie viva (la tool del agente). PR 4 agrega la GUI y tiene
 #: que aparecer acá, construyendo el MISMO servicio.
 SUPERFICIES_QUE_CONSTRUYEN_EL_SERVICIO: set[str] = {"sky_claw/app/agent/tools/system_tools.py"}
-MODULOS_QUE_IMPORTAN_EL_SERVICIO: set[str] = {"sky_claw/app/agent/tools/system_tools.py"}
+MODULOS_QUE_IMPORTAN_EL_SERVICIO: set[str] = {
+    "sky_claw/app/agent/tools/system_tools.py",
+    # PR 2c-2b: el resolvedor del lanzador brokered lee la barrera
+    # ``_CONTENCION_BODYSLIDE_VERIFICADA`` del servicio (una sola barrera para toda la tool).
+    # No construye el servicio: el censo de constructores no cambia.
+    "sky_claw/local/mo2/brokered_bodyslide.py",
+}
 
 
 def _censo_del_servicio() -> tuple[set[str], set[str]]:
@@ -499,3 +500,73 @@ async def test_la_tool_devuelve_el_payload_del_servicio(
     del_servicio = await _ejecutar(runner_b, lock_manager, snapshot_manager)
     # Assert
     assert de_la_tool == json.loads(json.dumps(del_servicio.payload))
+
+
+# ---------------------------------------------------------------------------
+# Review Codex #1025 (P2): HOLD_TERMINALITY_UNKNOWN veta el rollback de la salida
+# ---------------------------------------------------------------------------
+#
+# Con terminalidad desconocida, BodySlide puede seguir escribiendo en el destino. El
+# journal deja la config en HOLD, pero el servicio convertía el resultado en un
+# ``_BodySlideRunFallidoError`` SIN veto: ``DirectoryRollback`` borraba el parcial y
+# restauraba el backup bajo un proceso posiblemente vivo. Propiedad: *sin terminalidad
+# probada no se restaura nada, ni la config ni la salida*.
+
+
+def _runner_que_escribe(tmp_path: pathlib.Path, estado: str) -> MagicMock:
+    destino = bodyslide_output_target(game=tmp_path / "game", group="CBBE")
+    assert destino is not None
+
+    async def _run_batch(*_a: Any, **_k: Any) -> SimpleNamespace:
+        destino.mkdir(parents=True, exist_ok=True)
+        (destino / "parcial.nif").write_bytes(b"a medio escribir")
+        return SimpleNamespace(
+            success=False, return_code=-1, stdout="", stderr="", duration_seconds=1.0, message="x", estado=estado
+        )
+
+    runner = MagicMock()
+    runner.config = SimpleNamespace(game_path=tmp_path / "game")
+    runner.run_batch = AsyncMock(side_effect=_run_batch)
+    return runner
+
+
+def _con_salida_previa(tmp_path: pathlib.Path) -> pathlib.Path:
+    previo = bodyslide_output_target(game=tmp_path / "game", group="CBBE")
+    assert previo is not None
+    previo.mkdir(parents=True)
+    (previo / "viejo.nif").write_bytes(b"viejo")
+    return previo
+
+
+async def test_con_terminalidad_desconocida_no_se_toca_la_salida_ni_el_backup(
+    tmp_path: pathlib.Path, lock_manager: Any, snapshot_manager: Any
+) -> None:
+    # Arrange
+    previo = _con_salida_previa(tmp_path)
+    runner = _runner_que_escribe(tmp_path, "HOLD_TERMINALITY_UNKNOWN")
+
+    # Act
+    resultado = await _ejecutar(runner, lock_manager, snapshot_manager)
+
+    # Assert: el parcial sigue (el proceso puede estar escribiendo) y el backup no se descartó.
+    assert resultado.estado is EstadoBodySlide.HOLD_TERMINALITY_UNKNOWN
+    assert resultado.success is False
+    assert (previo / "parcial.nif").read_bytes() == b"a medio escribir"
+    backups = [p for p in previo.parent.iterdir() if p.name.startswith("CBBE.rollback-")]
+    assert len(backups) == 1
+    assert (backups[0] / "viejo.nif").read_bytes() == b"viejo"
+
+
+async def test_un_fallo_con_terminalidad_probada_sigue_restaurando(
+    tmp_path: pathlib.Path, lock_manager: Any, snapshot_manager: Any
+) -> None:
+    """Contracara: el veto es solo para la terminalidad desconocida."""
+    previo = _con_salida_previa(tmp_path)
+    runner = _runner_que_escribe(tmp_path, "FAILURE")
+
+    resultado = await _ejecutar(runner, lock_manager, snapshot_manager)
+
+    assert resultado.estado is EstadoBodySlide.FAILURE
+    assert not (previo / "parcial.nif").exists()
+    assert (previo / "viejo.nif").read_bytes() == b"viejo"
+    assert sorted(p.name for p in previo.parent.iterdir()) == ["CBBE"]
