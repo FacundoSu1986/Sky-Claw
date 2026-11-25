@@ -15,6 +15,7 @@ from sky_claw.local.tools.grass_cache_verdict import (
     CacheObservado,
     EvidenciaVeredicto,
     evaluar_veredicto,
+    invalidar_certificacion,
 )
 
 
@@ -317,6 +318,9 @@ def test_vocabulario_de_razones_congelado() -> None:
         "fallos_de_celda_atribuibles",
         "fallos_de_celda_historicos",
         "worldspaces_sin_artefactos",
+        "fallos_de_celda_no_evaluables",
+        "baseline_ilegible",
+        "operacion_invalidada",
         "outcome_no_completado",
         "sin_certificacion",
         "cancelado",
@@ -364,3 +368,61 @@ def test_no_se_publica_certificacion_sin_alcance() -> None:
 def test_completitud_global_nunca_se_certifica_en_p1() -> None:
     assert evaluar_veredicto(_ev()).completitud_global == "no_verificada"
     assert evaluar_veredicto(_ev(modo="resume", progreso_observado=True)).completitud_global == "no_verificada"
+
+
+# ---------------------------------------------------------------------------
+# Revisión independiente: H1 (defensa en la política), H4 y H6
+# ---------------------------------------------------------------------------
+
+
+def test_h1_fail_contado_pero_no_inventariado_no_certifica() -> None:
+    """H1: si el inventario cuenta `.fail` que no se pudieron evaluar, no hay certificación.
+
+    Es la defensa en profundidad de la política: aunque el runner pierda el detalle, el conteo del
+    inventario delata que hay un `.fail` sobreviviente no evaluable.
+    """
+    v = evaluar_veredicto(_ev(inventario_final=_cache(fail_count=1), fallos_finales={}))
+
+    assert v.verdict == "completed_unverified"
+    assert v.certificado is False
+    assert "fallos_de_celda_no_evaluables" in v.razones
+    assert v.integridad_observable == "con_fallos_conocidos"
+
+
+def test_h1_fail_no_evaluable_no_atribuye_de_mas() -> None:
+    """El `.fail` ilegible no se cuenta como histórico ni como atribuible: es no evaluable."""
+    v = evaluar_veredicto(_ev(inventario_final=_cache(fail_count=2), fallos_finales={"a.fail": b"1\n"}))
+
+    assert "fallos_de_celda_no_evaluables" in v.razones
+    assert "fallos_de_celda_atribuibles" in v.razones  # el que sí se pudo leer es nuevo
+
+
+def test_h4_baseline_ilegible_no_certifica() -> None:
+    """H4: sin baseline verificable no se puede afirmar procedencia."""
+    v = evaluar_veredicto(_ev(baseline_ilegible=True))
+
+    assert v.verdict == "unknown"
+    assert v.certificado is False
+    assert v.exito_operacional is False
+    assert "baseline_ilegible" in v.razones
+
+
+def test_h6_invalidar_certificacion_degrada_y_agrega_razon() -> None:
+    """H6: la validez de la OPERACIÓN puede invalidar una certificación del runner."""
+    veredicto = evaluar_veredicto(_ev())
+    assert veredicto.certificado is True
+
+    final = invalidar_certificacion(veredicto, razon="operacion_invalidada")
+
+    assert final.verdict == "completed_unverified"
+    assert final.certificado is False
+    assert final.alcance_certificado == "ninguno"
+    assert final.razones == ("operacion_invalidada",)
+    # La evidencia observada NO se falsea: el trabajo de la corrida sigue demostrado.
+    assert final.trabajo_de_la_corrida == "demostrado"
+
+
+def test_h6_invalidar_no_mejora_un_veredicto_ya_no_certificado() -> None:
+    base = evaluar_veredicto(_ev(limpieza_limpia=False))
+
+    assert invalidar_certificacion(base, razon="operacion_invalidada") == base

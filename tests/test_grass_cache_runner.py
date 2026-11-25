@@ -221,6 +221,9 @@ def config(entorno: tuple[pathlib.Path, pathlib.Path]) -> GrassCacheConfig:
         poll_interval_s=0.01,
         spawn_poll_interval_s=0.01,
         heartbeat_interval_s=60.0,
+        # Presupuesto de terminalidad en escala de test: el default de producción (10 s) no cabe en
+        # tests con `max_runtime_s` de décimas. Los casos que necesitan esperar lo suben explícito.
+        terminality_wait_s=0.2,
         # La cobertura USVFS no está demostrada: hasta P2, TODO run que escriba
         # el flag vacío necesita el reconocimiento explícito. Los tests que
         # verifican el HOLD lo apagan a propósito.
@@ -2641,3 +2644,307 @@ async def test_p1_terminalidad_espera_y_no_degrada_un_run_bueno(
 
     assert resultado.verdict == "completed_verified"
     assert resultado.evidencia["terminalidad"] == "terminado"
+
+
+# ---------------------------------------------------------------------------
+# Revisión independiente (ronda consolidada): H1, H2/H5, H3, H4, H7
+# ---------------------------------------------------------------------------
+
+
+class _RelojFalso:
+    """Reloj controlado para el watchdog: `time.monotonic()` lo maneja el test."""
+
+    def __init__(self, ahora: float = 0.0) -> None:
+        self.ahora = ahora
+
+    def monotonic(self) -> float:
+        return self.ahora
+
+    def time(self) -> float:
+        return 1_700_000_000.0 + self.ahora
+
+
+def test_h1_inventario_cuenta_los_fail_no_evaluables(config: GrassCacheConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """H1 (unitario): el inventario de egreso NO convierte un `.fail` ilegible en «no hay fallos».
+
+    Sin esta aserción la defensa de conteo de la política enmascara la supresión en el runner: el
+    veredicto sale bien por el conteo, pero la evidencia miente sobre cuántos fallos se evaluaron.
+    """
+    grass = config.overwrite_grass_dir
+    _escribir_cgid(grass, "Tamrielx0000y0000.cgid")
+    (grass / "Tamrielx0001y0000.fail").write_bytes(b"1\n")
+    original = pathlib.Path.read_bytes
+
+    def _read_bytes_falla(self: pathlib.Path) -> bytes:
+        if self.suffix.lower() == ".fail":
+            raise PermissionError(13, "acceso denegado", str(self))
+        return original(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _read_bytes_falla)
+    runner = _runner(config, AsyncMock())
+
+    inventario, fallos, _ws, _heredados, _nuevos, no_evaluables = runner._inventario_de_egreso_sync()
+
+    assert inventario.fail_count == 1, "el `.fail` existe y se cuenta"
+    assert fallos == {}, "no se inventa contenido que no se pudo leer"
+    assert no_evaluables == 1, "el fallo de lectura se declara como NO EVALUABLE, no como ausencia"
+
+
+async def test_h1_fail_ilegible_no_certifica(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H1: un `.fail` que existe pero no se puede leer NO puede desaparecer del inventario."""
+    config = dataclasses.replace(config, mode="rebuild", rebuild_approval="REBUILD", ack_usvfs_no_verificado=True)
+    config = dataclasses.replace(config, backup_root=config.overwrite_grass_dir.parent / "estado")
+    grass = config.overwrite_grass_dir
+
+    def _al_chequear(pid: int) -> None:
+        if pid not in mundo.vivos or mundo.vidas.get(pid) == 0:
+            (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(grass, "Tamrielx0000y0000.cgid")
+        (grass / "Tamrielx0001y0000.fail").write_bytes(b"2\n")
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    original = pathlib.Path.read_bytes
+
+    def _read_bytes_falla(self: pathlib.Path) -> bytes:
+        if self.suffix.lower() == ".fail":
+            raise PermissionError(13, "acceso denegado", str(self))
+        return original(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _read_bytes_falla)
+    mo2.launch_game.side_effect = _launch
+    mundo.al_chequear_pid = _al_chequear
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.certificado is False, "un .fail ilegible no puede certificar el caché"
+    assert resultado.verdict != "completed_verified"
+    assert "fallos_de_celda_no_evaluables" in resultado.verdict_razones
+    assert resultado.evidencia["fallos_de_celda_no_evaluables"] >= 1
+
+
+async def test_h3_progreso_durante_la_gracia_se_registra(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """H3: la gracia suspende la DECISIÓN de stall, no el registro de progreso."""
+    config = dataclasses.replace(
+        config,
+        max_runtime_s=0.6,
+        poll_interval_s=0.01,
+        progress_poll_interval_s=0.02,
+        stall_progress_s=0.4,
+        stall_grace_s=60.0,  # toda la corrida cae dentro de la gracia
+    )
+    llamada = itertools.count()
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    def _avanzar(pid: int) -> None:
+        if pid != 1100:
+            return
+        n = next(llamada)
+        if n < 6:
+            _escribir_cgid(config.overwrite_grass_dir, f"celda_{n}.cgid")
+
+    mo2.launch_game.side_effect = _launch
+    mundo.al_chequear_pid = _avanzar
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "timeout", "la gracia impide cortar por stall"
+    assert resultado.evidencia["progreso_observado"] is True
+
+
+async def test_h2_cancelacion_con_juego_no_verificable_es_unknown(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H2/H5: cancelar y pedir el kill no prueba que el proceso murió."""
+    config = dataclasses.replace(config, terminality_wait_s=0.05)
+    cancel = asyncio.Event()
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100)
+        cancel.set()
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_clasificar_terminalidad", lambda self, gp: "vivo")
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_kill_game_tree_sync", lambda *a, **k: None)
+
+    resultado = await _correr(_runner(config, mo2), cancel)
+
+    assert resultado.outcome == "cancelled"
+    assert resultado.verdict == "unknown"
+    assert resultado.certificado is False
+    assert "terminalidad_no_verificada" in resultado.verdict_razones
+
+
+async def test_h2_disco_lleno_con_juego_no_verificable_es_unknown(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H2/H5: el corte por disco tambien tiene que verificar terminalidad."""
+    config = dataclasses.replace(config, terminality_wait_s=0.05)
+    llamadas = itertools.count()
+
+    monkeypatch.setattr(
+        "sky_claw.local.tools.grass_cache_runner.shutil.disk_usage",
+        lambda _p: _USO_DISCO(total=100 * _GIB, used=100 * _GIB, free=(100 * _GIB if next(llamadas) == 0 else 0)),
+    )
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_clasificar_terminalidad", lambda self, gp: "vivo")
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_kill_game_tree_sync", lambda *a, **k: None)
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "disk_full"
+    assert resultado.verdict == "unknown"
+    assert "terminalidad_no_verificada" in resultado.verdict_razones
+
+
+async def test_h2_spawn_fallido_no_es_unknown(config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos) -> None:
+    """H2/H5: si el lanzamiento no se efectivizó (nunca hubo proceso), es failed, no unknown."""
+    config = dataclasses.replace(config, spawn_window_s=0.05)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        # MO2 "lanza" pero el juego no aparece en la ventana de spawn.
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "spawn_failed"
+    assert resultado.verdict == "failed"
+    assert resultado.evidencia["terminalidad"] == "terminado"
+
+
+# ---------------------------------------------------------------------------
+# H7: watchdog determinista (reloj controlado)
+# ---------------------------------------------------------------------------
+
+
+async def test_h7_no_corta_antes_del_umbral_desde_el_ultimo_avance(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reloj = _RelojFalso()
+    config = dataclasses.replace(config, stall_progress_s=600.0, stall_grace_s=0.0, progress_poll_interval_s=1.0)
+    muestras = iter([(1, 0, 0, 10), (1, 0, 0, 10), (1, 0, 0, 10)])
+    monkeypatch.setattr(gcr_mod, "time", reloj)
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_muestra_de_progreso_sync", lambda self: next(muestras))
+    runner = _runner(config, mo2)
+    pid = gcr_mod._GamePid(pid=1100, create_time=None)
+
+    # t=0 baseline; t=300 sin avance; t=599 sin avance → NO corta.
+    for ahora in (0.0, 300.0, 599.0):
+        reloj.ahora = ahora
+        assert await runner._vigilar_progreso(pid, asyncio.Event(), 0, t_spawn_mono=0.0) is None
+
+
+async def test_h7_avance_reinicia_el_presupuesto(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reloj = _RelojFalso()
+    config = dataclasses.replace(config, stall_progress_s=600.0, stall_grace_s=0.0, progress_poll_interval_s=1.0)
+    muestras = iter([(1, 0, 0, 10), (1, 0, 0, 10), (2, 0, 0, 20), (2, 0, 0, 20)])
+    monkeypatch.setattr(gcr_mod, "time", reloj)
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_muestra_de_progreso_sync", lambda self: next(muestras))
+    runner = _runner(config, mo2)
+    pid = gcr_mod._GamePid(pid=1100, create_time=None)
+
+    cortes = []
+    for ahora in (0.0, 500.0, 700.0, 1200.0):
+        reloj.ahora = ahora
+        cortes.append(await runner._vigilar_progreso(pid, asyncio.Event(), 0, t_spawn_mono=0.0))
+
+    # t=500 sin avance; t=700 HAY avance → el presupuesto arranca de nuevo; t=1200 son 500 s → no corta.
+    assert all(corte is None for corte in cortes)
+
+
+async def test_h7_corta_despues_del_umbral_sin_avance(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reloj = _RelojFalso()
+    config = dataclasses.replace(config, stall_progress_s=600.0, stall_grace_s=0.0, progress_poll_interval_s=1.0)
+    muestras = iter([(1, 0, 0, 10)] * 3)
+    monkeypatch.setattr(gcr_mod, "time", reloj)
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_muestra_de_progreso_sync", lambda self: next(muestras))
+    runner = _runner(config, mo2)
+    pid = gcr_mod._GamePid(pid=1100, create_time=None)
+
+    reloj.ahora = 0.0
+    assert await runner._vigilar_progreso(pid, asyncio.Event(), 0, t_spawn_mono=0.0) is None
+    reloj.ahora = 601.0
+    corte = await runner._vigilar_progreso(pid, asyncio.Event(), 0, t_spawn_mono=0.0)
+
+    assert corte is not None
+    assert corte.outcome == "stalled"
+    assert corte.evidencia["progreso_detenido_s"] >= 600.0
+
+
+async def test_h4_baseline_ilegible_aborta_antes_del_spawn(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H4: si no se puede inventariar el estado inicial, no se lanza y no se certifica.
+
+    P0 ya falla cerrado cuando `overwrite/Grass` es ilegible de entrada (`inventariar_cache` levanta
+    `cache_ilegible`). El hueco era la captura de baseline del runner, que absorbía el error y lo
+    convertía en «caché vacío»: todo lo heredado pasaba a contar como nuevo.
+    """
+
+    def _baseline_falla(self: Any) -> Any:
+        raise PermissionError(13, "acceso denegado", str(self._config.overwrite_grass_dir))
+
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_capturar_baseline_sync", _baseline_falla)
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert mo2.launch_game.await_count == 0, "sin baseline verificable no se lanza el juego"
+    assert resultado.certificado is False
+    assert resultado.success is False
+    assert resultado.verdict == "unknown"
+    assert "baseline_ilegible" in resultado.verdict_razones
+    # Se aborta antes del punto sin retorno: el flag no se escribió.
+    assert not (config.game_path / "PrecacheGrass.txt").exists()
+
+
+def test_h4_capturar_baseline_no_silencia_un_error_de_listado(
+    config: GrassCacheConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H4 (unitario): un error de listado NO puede degradar a baseline vacío."""
+
+    def _iterdir_falla(self: pathlib.Path) -> Any:
+        raise PermissionError(13, "acceso denegado", str(self))
+
+    monkeypatch.setattr(pathlib.Path, "iterdir", _iterdir_falla)
+    runner = _runner(config, AsyncMock())
+
+    with pytest.raises(PermissionError):
+        runner._capturar_baseline_sync()
+
+
+async def test_h2_corte_por_progreso_perdido_con_juego_no_verificable_es_unknown(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H2/H5: el corte de contrato también tiene que verificar terminalidad."""
+    config = dataclasses.replace(config, terminality_wait_s=0.05)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "celda_0.cgid")
+        (config.game_path / "PrecacheGrass.txt").write_bytes(b"")  # flag sin progreso
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_clasificar_terminalidad", lambda self, gp: "vivo")
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_kill_game_tree_sync", lambda *a, **k: None)
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "flag_sin_progreso"
+    assert resultado.verdict == "unknown"
+    assert "terminalidad_no_verificada" in resultado.verdict_razones

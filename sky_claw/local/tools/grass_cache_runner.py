@@ -454,8 +454,11 @@ class GrassCacheRunner:
         self._progreso_observado = False
         #: Segundos sin avance observable en el corte por stall (None si no aplica).
         self._progreso_detenido_s: float | None = None
-        #: Tri-estado de terminalidad del proceso del juego (RD-10).
+        #: Tri-estado de terminalidad del proceso del juego (RD-10 / H2).
         self._terminalidad: Terminalidad = "terminado"
+        #: Último proceso ATRIBUIDO: aunque el caller pierda el handle, la terminalidad se verifica
+        #: sobre él (H2/H5). ``None`` = el lanzamiento nunca se efectivizó.
+        self._ultimo_atribuido: _GamePid | None = None
         #: Worldspaces que NGIO DECLARÓ terminados (líneas `ws_` del flag): evidencia, no requisito.
         self._ws_declarados: set[str] = set()
         #: Offset de lectura incremental del flag y última muestra del watchdog.
@@ -656,6 +659,38 @@ class GrassCacheRunner:
                     (0, 0),
                 )
             self._backup_dir = ruta_de_respaldo(plan)
+            # Baseline de PROCEDENCIA (P1/H4): qué archivos ya estaban ANTES del primer spawn. Se
+            # captura antes de aplicar el plan porque escribir el flag es el punto sin retorno: si el
+            # inventario inicial no se puede verificar, no se toca el disco ni se lanza nada.
+            try:
+                self._baseline_entradas, self._fallos_previos = await esperar_terminar(
+                    asyncio.to_thread(self._capturar_baseline_sync),
+                    descripcion="baseline_cache",
+                )
+            except OSError:
+                logger.warning(
+                    "No se pudo inventariar el caché antes de arrancar: el run se detiene sin lanzar.",
+                    exc_info=True,
+                )
+                evidencia = EvidenciaVeredicto(
+                    outcome="cache_cambio_despues_del_plan",
+                    modo=self._config.mode,
+                    terminalidad="terminado",
+                    limpieza_limpia=None,
+                    evidencia_ilegible=True,
+                    baseline_ilegible=True,
+                )
+                self._evidencia = evidencia
+                veredicto = evaluar_veredicto(evidencia)
+                return self._resultado(
+                    "cache_cambio_despues_del_plan",
+                    "No se pudo verificar el inventario inicial del caché de grass (baseline "
+                    "ilegible): sin procedencia demostrable no se lanza el juego ni se escribe el flag.",
+                    crash_count,
+                    (0, 0),
+                    veredicto=veredicto,
+                    evidencia={**self._evidencia_a_dict(evidencia), **veredicto.a_dict()},
+                )
             # El try cubre DESDE la escritura del flag: una cancelación dura
             # durante el snapshot inicial o el primer progress (que propaga
             # CancelledError) también debe limpiar el flag en el finally.
@@ -677,12 +712,6 @@ class GrassCacheRunner:
             # conservado como evidencia de reanudación— queda bajo custodia de
             # este run, que es quien lo archiva y lo neutraliza al salir.
             flag_apropiado = True
-            # Baseline de PROCEDENCIA (P1): qué archivos ya estaban antes del primer spawn. Se
-            # captura acá porque el plan ya está aplicado y todavía no se lanzó nada.
-            self._baseline_entradas, self._fallos_previos = await esperar_terminar(
-                asyncio.to_thread(self._capturar_baseline_sync),
-                descripcion="baseline_cache",
-            )
             # Baseline del stall detector: el estado del cache ANTES del primer
             # lanzamiento — un primer ciclo sin .cgid nuevos ya cuenta como racha.
             last_snapshot = await self._snapshot_cache()
@@ -693,7 +722,7 @@ class GrassCacheRunner:
                 if time.monotonic() - self._start_mono >= self._config.max_runtime_s:
                     # Deadline global también entre relanzamientos: acota el
                     # overshoot a un relaunch_delay (auditoría #287).
-                    await self._matar_todo(game_pid)
+                    await self._cerrar_y_verificar(game_pid, cancel)
                     return self._resultado(
                         "timeout",
                         f"Deadline global de {self._config.max_runtime_s:.0f}s alcanzado; "
@@ -719,14 +748,14 @@ class GrassCacheRunner:
                 # ausencia del flag alternativo siempre).
                 corte = await self._autorizar_lanzamiento(intento=intento, plan=plan)
                 if corte is not None:
-                    await self._matar_todo(game_pid)
+                    await self._cerrar_y_verificar(game_pid, cancel)
                     return self._resultado(corte.outcome, corte.motivo, crash_count, await self._snapshot_cache())
                 # Invariante 6: la inspección hace E/S (hilo) y el callback
                 # `launching` ya corrió. Entre el veredicto y el spawn se vuelven
                 # a mirar cancelación y deadline: un juego que nadie va a mirar —
                 # o un run fuera de plazo— no se lanza.
                 if cancel.is_set():
-                    await self._matar_todo(game_pid)
+                    await self._cerrar_y_verificar(game_pid, cancel)
                     return self._resultado(
                         "cancelled",
                         "Cancelado durante la autorización del lanzamiento.",
@@ -734,7 +763,7 @@ class GrassCacheRunner:
                         await self._snapshot_cache(),
                     )
                 if time.monotonic() - self._start_mono >= self._config.max_runtime_s:
-                    await self._matar_todo(game_pid)
+                    await self._cerrar_y_verificar(game_pid, cancel)
                     return self._resultado(
                         "timeout",
                         f"Deadline global de {self._config.max_runtime_s:.0f}s alcanzado durante la "
@@ -762,7 +791,9 @@ class GrassCacheRunner:
                 if mo2_pid is not None:
                     while time.monotonic() - t_spawn_mono < self._config.spawn_window_s:
                         if cancel.is_set():
-                            await self._matar_todo(await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch))
+                            await self._cerrar_y_verificar(
+                                await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch), cancel
+                            )
                             return self._resultado(
                                 "cancelled", "Cancelado durante el arranque.", crash_count, await self._snapshot_cache()
                             )
@@ -770,7 +801,9 @@ class GrassCacheRunner:
                             # El deadline es GLOBAL: sin este check, ciclos de
                             # no-spawn repetidos lo excederían por hasta
                             # stall_threshold * spawn_window_s.
-                            await self._matar_todo(await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch))
+                            await self._cerrar_y_verificar(
+                                await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch), cancel
+                            )
                             return self._resultado(
                                 "timeout",
                                 f"Deadline global de {self._config.max_runtime_s:.0f}s alcanzado "
@@ -791,7 +824,9 @@ class GrassCacheRunner:
                         # La muerte de MO2 acá NO es fallo: el juego pudo
                         # reparentarse; el fallback por nombre lo sigue buscando.
                         if await self._sleep_or_cancel(cancel, self._config.spawn_poll_interval_s):
-                            await self._matar_todo(await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch))
+                            await self._cerrar_y_verificar(
+                                await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch), cancel
+                            )
                             return self._resultado(
                                 "cancelled", "Cancelado durante el arranque.", crash_count, await self._snapshot_cache()
                             )
@@ -807,7 +842,7 @@ class GrassCacheRunner:
 
                 if game_pid is None:
                     # Ventana agotada sin juego localizado.
-                    await self._matar_todo(None)
+                    await self._cerrar_y_verificar(None, cancel)
                     if not game_ever_seen:
                         # Ciclo 0: entorno roto (Steam sin login, SKSE mal
                         # instalado) — reintentar quema la ventana en vano (D7).
@@ -843,7 +878,7 @@ class GrassCacheRunner:
                     # juego en modo normal (falso "vivo eterno" hasta timeout).
                     return await self._salida_exito(crash_count, game_pid, cancel)
                 if stall_streak >= self._config.stall_threshold:
-                    await self._matar_todo(game_pid)
+                    await self._cerrar_y_verificar(game_pid, cancel)
                     return self._resultado(
                         "stalled",
                         f"{stall_streak} relanzamientos consecutivos sin ningún .cgid nuevo: "
@@ -854,11 +889,11 @@ class GrassCacheRunner:
                 # Árbol MO2 residual fuera ANTES de pisar el slot _launched_pid.
                 await self._mo2.close_game()
                 if await self._sleep_or_cancel(cancel, self._config.relaunch_delay_s):
-                    await self._matar_todo(game_pid)
+                    await self._cerrar_y_verificar(game_pid, cancel)
                     return self._resultado("cancelled", "Cancelado entre relanzamientos.", crash_count, snap)
                 await self._emit_progress("relaunching", crash_count)
 
-            await self._matar_todo(game_pid)
+            await self._cerrar_y_verificar(game_pid, cancel)
             return self._resultado(
                 "max_restarts",
                 f"Presupuesto de {self._config.max_restarts} relanzamientos agotado sin completar.",
@@ -868,8 +903,23 @@ class GrassCacheRunner:
         except BaseException:
             # Cancelación dura o bug: jamás dejar huérfanos. Best-effort para
             # no enmascarar la excepción original.
+            #
+            # H2/H5: acá NO se puede esperar. Un `await` en este camino re-lanzaría la cancelación y
+            # enmascararía la excepción original, así que el cierre es SÍNCRONO: kill directo del
+            # último proceso atribuido y UNA clasificación de terminalidad. Si no se puede afirmar,
+            # queda `indeterminado` y se registra.
+            objetivo = game_pid if game_pid is not None else self._ultimo_atribuido
+            if objetivo is not None:
+                with contextlib.suppress(Exception):
+                    self._kill_game_tree_sync(objetivo.pid, objetivo.create_time)
             with contextlib.suppress(Exception):
-                await self._matar_todo(game_pid)
+                self._terminalidad = "terminado" if objetivo is None else self._clasificar_terminalidad(objetivo)
+            if self._terminalidad != "terminado":
+                logger.warning(
+                    "Run abortado con terminalidad %s del PID %s: el caché pudo seguir escribiéndose.",
+                    self._terminalidad,
+                    objetivo.pid if objetivo is not None else None,
+                )
             raise
         finally:
             # Antes de borrar el flag se archiva el progreso: neutralizar el flag
@@ -932,7 +982,7 @@ class GrassCacheRunner:
         self._ultimo_avance_mono = t_spawn_mono
         while True:
             if cancel.is_set():
-                await self._matar_todo(game_pid)
+                await self._cerrar_y_verificar(game_pid, cancel)
                 return self._resultado(
                     "cancelled",
                     "Cancelado; el cache parcial se conserva.",
@@ -942,7 +992,7 @@ class GrassCacheRunner:
             if not await self._flag_exists():
                 return await self._salida_exito(crash_count, game_pid, cancel)
             if time.monotonic() - self._start_mono >= self._config.max_runtime_s:
-                await self._matar_todo(game_pid)
+                await self._cerrar_y_verificar(game_pid, cancel)
                 self._terminalidad = await self._verificar_terminalidad(game_pid, cancel)
                 return self._resultado(
                     "timeout",
@@ -951,7 +1001,7 @@ class GrassCacheRunner:
                     await self._snapshot_cache(),
                 )
             if await self._free_disk_bytes() < self._config.min_free_bytes:
-                await self._matar_todo(game_pid)
+                await self._cerrar_y_verificar(game_pid, cancel)
                 return self._resultado(
                     "disk_full",
                     "Espacio en disco por debajo del umbral; liberar espacio y reanudar.",
@@ -985,11 +1035,12 @@ class GrassCacheRunner:
         if ahora < self._proximo_probe_mono:
             return None
         self._proximo_probe_mono = ahora + self._config.progress_poll_interval_s
-        # Arranque lento: no se juzga nada durante la gracia desde el spawn de ESTE ciclo.
-        if ahora - t_spawn_mono < self._config.stall_grace_s:
-            await self._muestrear_progreso(linea_base=True)
-            return None
+        # La gracia suspende la DECISIÓN de stall, no el registro de progreso (H3): una corrida que
+        # sólo avanza durante los primeros minutos (RESUME sin `.cgid` nuevos) tiene que dejar
+        # evidencia de avance.
         await self._muestrear_progreso(linea_base=self._muestra_previa is None)
+        if ahora - t_spawn_mono < self._config.stall_grace_s:
+            return None
         if self._ultimo_avance_mono is None:
             return None
         detenido = ahora - self._ultimo_avance_mono
@@ -1089,8 +1140,7 @@ class GrassCacheRunner:
         `.fail` por contenido, worldspaces con artefactos, progreso observado y terminalidad) y la
         decide ``grass_cache_verdict.evaluar_veredicto``: una sola política.
         """
-        await self._matar_todo(game_pid)
-        self._terminalidad = await self._verificar_terminalidad(game_pid, cancel)
+        await self._cerrar_y_verificar(game_pid, cancel)
         snap = await self._snapshot_cache()
         await self._emit_progress("finished", crash_count)
         evidencia = await esperar_terminar(
@@ -1305,7 +1355,10 @@ class GrassCacheRunner:
         return int(uso.free)
 
     async def _find_game_pid(self, mo2_pid: int, min_create_epoch: float) -> _GamePid | None:
-        return await asyncio.to_thread(self._scan_for_game_sync, mo2_pid, min_create_epoch)
+        pid = await asyncio.to_thread(self._scan_for_game_sync, mo2_pid, min_create_epoch)
+        if pid is not None:
+            self._ultimo_atribuido = pid
+        return pid
 
     def _scan_for_game_sync(self, mo2_pid: int, min_create_epoch: float) -> _GamePid | None:
         """UNA pasada de búsqueda del juego (el caller polea).
@@ -1528,23 +1581,38 @@ class GrassCacheRunner:
     # ------------------------------------------------------------------
 
     async def _verificar_terminalidad(self, game_pid: _GamePid | None, cancel: asyncio.Event) -> Terminalidad:
-        """Tri-estado, con espera ACOTADA y re-verificada (RD-10).
+        """Tri-estado, con espera ACOTADA y re-verificada (RD-10 / H2).
 
         Sin esta espera, la latencia normal de muerte de ``SkyrimSE.exe`` convertiría en ``unknown``
         cualquier run bueno. La espera no puede colgar el run: es acotada, la corta la cancelación y
         no retiene workers.
+
+        ``game_pid=None`` **no** significa «terminado»: si hubo un proceso atribuido antes, se
+        verifica ÉSE. Sólo cuando ningún lanzamiento se efectivizó (nunca hubo proceso) no hay nada
+        cuya muerte haya que demostrar.
         """
-        if game_pid is None:
+        objetivo = game_pid if game_pid is not None else self._ultimo_atribuido
+        if objetivo is None:
             return "terminado"
         limite = time.monotonic() + self._config.terminality_wait_s
         while True:
-            estado = await asyncio.to_thread(self._clasificar_terminalidad, game_pid)
+            estado = await asyncio.to_thread(self._clasificar_terminalidad, objetivo)
             if estado != "vivo":
                 return estado
             if time.monotonic() >= limite:
                 return "vivo"
             if await self._sleep_or_cancel(cancel, _ESPERA_TERMINALIDAD_S):
                 return "vivo"
+
+    async def _cerrar_y_verificar(self, game_pid: _GamePid | None, cancel: asyncio.Event) -> None:
+        """ÚNICO cierre de una salida terminal: pide el kill y DEMUESTRA (o declara) terminalidad.
+
+        Una solicitud de kill NO es prueba de terminación (H2/H5). Todo camino que termina el
+        ritual —cancelación, disco, deadline, stall, spawn fallido, agotamiento de reintentos,
+        cortes de contrato— pasa por acá antes de construir el resultado.
+        """
+        await self._matar_todo(game_pid)
+        self._terminalidad = await self._verificar_terminalidad(game_pid, cancel)
 
     def _clasificar_terminalidad(self, game_pid: _GamePid) -> Terminalidad:
         """``terminado`` / ``vivo`` / ``indeterminado`` sin matar ni tocar a nadie.
@@ -1581,34 +1649,39 @@ class GrassCacheRunner:
 
         Es la medida de «esto ya estaba»: un archivo final que coincide con una entrada del baseline
         no lo produjo esta corrida. La atribución de `.fail` usa **contenido**, nunca la fecha.
+
+        **Fail-closed (H4).** Cualquier error de listado, `stat` o lectura **propaga**: degradarlo a
+        «caché vacío» convertiría todo lo heredado en «nuevo» y produciría un falso `completed_verified`.
         """
         entradas: set[tuple[str, int]] = set()
         fallos: dict[str, bytes] = {}
         try:
             candidatos = list(self._config.overwrite_grass_dir.iterdir())
         except (FileNotFoundError, NotADirectoryError):
-            return frozenset(), {}
-        except OSError:
+            # Caché INEXISTENTE: es un estado legítimo (primer run), no un error de lectura. Sólo
+            # esta forma de ausencia se degrada a baseline vacío; cualquier otro OSError propaga.
             return frozenset(), {}
         for archivo in candidatos:
             sufijo = archivo.suffix.lower()
             if sufijo not in EXTENSIONES_CACHE:
                 continue
-            try:
-                info = archivo.stat()
-            except OSError:
-                continue
+            info = archivo.stat()
             entradas.add((archivo.name, int(info.st_size)))
             if sufijo == ".fail":
-                with contextlib.suppress(OSError):
-                    fallos[archivo.name] = archivo.read_bytes()[:_TOPE_FALLO_BYTES]
+                fallos[archivo.name] = archivo.read_bytes()[:_TOPE_FALLO_BYTES]
         return frozenset(entradas), fallos
 
     def _inventario_de_egreso_sync(
         self,
-    ) -> tuple[CacheObservado, dict[str, bytes], tuple[str, ...], int, int]:
-        """Una sola pasada al salir: conteos, `.fail` por contenido y worldspaces con artefactos."""
+    ) -> tuple[CacheObservado, dict[str, bytes], tuple[str, ...], int, int, int]:
+        """Una sola pasada al salir: conteos, `.fail` por contenido y worldspaces con artefactos.
+
+        Un `.fail` que existe pero no se puede leer **no desaparece** (H1): se cuenta en
+        ``fallos_no_evaluables`` y la política no certifica. Un fallo de `stat` o de listado
+        invalida la evidencia entera (el caller lo declara ilegible).
+        """
         cgid = cgid_bytes = dgid = fail = 0
+        no_evaluables = 0
         entradas: set[tuple[str, int]] = set()
         fallos: dict[str, bytes] = {}
         worldspaces: set[str] = set()
@@ -1629,8 +1702,12 @@ class GrassCacheRunner:
                 dgid += 1
             else:
                 fail += 1
-                with contextlib.suppress(OSError):
+                try:
                     fallos[archivo.name] = archivo.read_bytes()[:_TOPE_FALLO_BYTES]
+                except OSError:
+                    # No se transforma un fallo de lectura en ausencia de fallo (H1).
+                    no_evaluables += 1
+                    logger.warning("No se pudo leer %s: queda como fallo NO EVALUABLE.", archivo)
             worldspace = self._worldspace_de_archivo(archivo.name)
             if worldspace is not None:
                 worldspaces.add(worldspace)
@@ -1643,7 +1720,7 @@ class GrassCacheRunner:
         )
         heredados = len(entradas & self._baseline_entradas)
         nuevos = len(entradas - self._baseline_entradas)
-        return inventario, fallos, tuple(sorted(worldspaces)), heredados, nuevos
+        return inventario, fallos, tuple(sorted(worldspaces)), heredados, nuevos, no_evaluables
 
     @staticmethod
     def _worldspace_de_archivo(nombre: str) -> str | None:
@@ -1655,7 +1732,7 @@ class GrassCacheRunner:
     def _reunir_evidencia_de_egreso(self) -> EvidenciaVeredicto:
         """Foto completa para la política. Un fallo de lectura se declara, no se disfraza."""
         try:
-            inventario, fallos, worldspaces, heredados, nuevos = self._inventario_de_egreso_sync()
+            inventario, fallos, worldspaces, heredados, nuevos, no_evaluables = self._inventario_de_egreso_sync()
         except OSError:
             logger.warning("No se pudo leer el caché al salir: el veredicto queda sin evidencia.", exc_info=True)
             return EvidenciaVeredicto(
@@ -1679,6 +1756,7 @@ class GrassCacheRunner:
             worldspaces_con_artefactos=worldspaces,
             worldspaces_declarados_por_ngio=tuple(sorted(self._ws_declarados)),
             progreso_observado=self._progreso_observado,
+            fallos_no_evaluables=no_evaluables,
         )
 
     def _evidencia_a_dict(self, evidencia: EvidenciaVeredicto) -> dict[str, Any]:
@@ -1704,6 +1782,16 @@ class GrassCacheRunner:
             "fallos_de_celda_total": len(evidencia.fallos_finales),
             "fallos_de_celda_atribuibles": atribuibles,
             "fallos_de_celda_historicos": len(evidencia.fallos_finales) - atribuibles,
+            # H1: `.fail` que existen y no se pudieron leer. Nunca se reportan como «ninguno».
+            "fallos_de_celda_no_evaluables": max(
+                evidencia.fallos_no_evaluables,
+                max(
+                    0,
+                    (evidencia.inventario_final.fail_count if evidencia.inventario_final else 0)
+                    - len(evidencia.fallos_finales),
+                ),
+            ),
+            "baseline_ilegible": evidencia.baseline_ilegible,
             "progreso_observado": evidencia.progreso_observado,
             "progreso_detenido_s": self._progreso_detenido_s,
             "terminalidad": evidencia.terminalidad,

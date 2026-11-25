@@ -1554,3 +1554,104 @@ async def test_p1_el_evento_completed_lleva_el_veredicto(tmp_path: pathlib.Path)
     assert payloads[-1]["verdict"] == "completed_unverified"
     assert payloads[-1]["certificado"] is False
     assert payloads[-1]["alcance_certificado"] == "trabajo_de_la_corrida"
+
+
+# ---------------------------------------------------------------------------
+# Revisión independiente: H6 — el servicio reconcilia la certificación
+# ---------------------------------------------------------------------------
+
+
+class _LockQuePierdeLaLease:
+    """Async CM que simula perder la exclusividad al salir (después del runner)."""
+
+    def __init__(self) -> None:
+        self.rollback_completed = False
+
+    async def __aenter__(self) -> _LockQuePierdeLaLease:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        raise RuntimeError("lease perdido al liberar el lock")
+
+
+async def test_h6_perdida_de_lease_invalida_la_certificacion(tmp_path: pathlib.Path) -> None:
+    """H6: si la operación pierde exclusividad DESPUÉS del runner, no se publica certificación."""
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        evidencia={"worldspaces_solicitados": ["Tamriel"]},
+    )
+    service, colab = _servicio(
+        tmp_path,
+        journal=journal,
+        runner_result=runner_result,
+        lock_tx=_LockQuePierdeLaLease(),
+        lock_txs={"load-order": _lock_tx_fake()},
+    )
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is False
+    assert resultado["certificado"] is False
+    assert resultado["verdict"] == "completed_unverified"
+    assert "operacion_invalidada" in resultado["verdict_razones"]
+    assert resultado["alcance_certificado"] == "ninguno"
+    # El journal registra el veredicto RECONCILIADO, no el del runner.
+    entradas = _entradas_de_veredicto(journal)
+    assert len(entradas) == 1
+    assert entradas[0]["metadata"]["certificado"] is False
+    assert "operacion_invalidada" in entradas[0]["metadata"]["razones"]
+    # El evento tampoco publica certificación.
+    payloads = [
+        llamada.args[0].payload
+        for llamada in colab["event_bus"].publish.await_args_list
+        if getattr(llamada.args[0], "topic", None) == "pipeline.grass_cache.completed"
+    ]
+    assert payloads and payloads[-1]["certificado"] is False
+
+
+async def test_h6_limpieza_incompleta_invalida_la_certificacion(tmp_path: pathlib.Path) -> None:
+    """H6: un flag residual invalida la certificación aunque el runner haya certificado."""
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        flag_residual=True,
+        limpieza_errores=("unlink falló",),
+        evidencia={"worldspaces_solicitados": ["Tamriel"]},
+    )
+    service, _ = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is False
+    assert resultado["certificado"] is False
+    assert resultado["verdict"] == "completed_unverified"
+    assert "limpieza_incompleta" in resultado["verdict_razones"]
+    entradas = _entradas_de_veredicto(journal)
+    assert entradas[0]["metadata"]["certificado"] is False
+
+
+async def test_h6_certificacion_valida_se_mantiene(tmp_path: pathlib.Path) -> None:
+    """Contraprueba: sin invalidación, la certificación sobrevive intacta."""
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        evidencia={"worldspaces_solicitados": ["Tamriel"]},
+    )
+    service, _ = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is True
+    assert resultado["certificado"] is True
+    assert resultado["verdict"] == "completed_verified"
+    assert _entradas_de_veredicto(journal)[0]["metadata"]["certificado"] is True
