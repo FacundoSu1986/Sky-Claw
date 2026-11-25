@@ -89,7 +89,6 @@ RESERVADOS_ESPERADOS: frozenset[str] = frozenset(
         "STAGING_TAMPERED",
         "TIMEOUT",
         "CANCELLED",
-        "HOLD_TERMINALITY_UNKNOWN",
         "HOLD_LEASE_LOST",
         "OUTPUT_MOD_NOT_READY",
         "OUTPUT_MOD_NOT_OWNED",

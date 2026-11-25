@@ -83,14 +83,14 @@ class EstadoBodySlide(enum.StrEnum):
 #: forma en cada PR, pero un :class:`ResultadoDelServicio` no puede llevarlos todavía
 #: y un runner que los reporte no se acepta. PR 2c-1 liberó los cuatro que el runner
 #: emite con el journal: PRECONDITION_FAILED, CONFIG_IO_HUNG, CONCURRENT_MODIFICATION y
-#: RESTORE_FAILED.
+#: RESTORE_FAILED. PR 2c-2b liberó HOLD_TERMINALITY_UNKNOWN: lo emite el runner cuando el
+#: lanzador no puede probar que el proceso terminó.
 ESTADOS_RESERVADOS: frozenset[EstadoBodySlide] = frozenset(
     {
         EstadoBodySlide.WRITE_OUTSIDE_STAGING,
         EstadoBodySlide.STAGING_TAMPERED,
         EstadoBodySlide.TIMEOUT,
         EstadoBodySlide.CANCELLED,
-        EstadoBodySlide.HOLD_TERMINALITY_UNKNOWN,
         EstadoBodySlide.HOLD_LEASE_LOST,
         EstadoBodySlide.OUTPUT_MOD_NOT_READY,
         EstadoBodySlide.OUTPUT_MOD_NOT_OWNED,
