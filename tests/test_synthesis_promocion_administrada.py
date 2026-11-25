@@ -277,3 +277,48 @@ async def test_una_finalizacion_fallida_deja_la_tx_pendiente(
     assert len(_residuos(rutas["output"])) == 1
     journal.commit_transaction.assert_not_awaited()
     journal.mark_transaction_rolled_back.assert_not_awaited()
+
+
+async def test_una_cancelacion_durante_la_siembra_espera_al_hilo_antes_de_restaurar(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelar un ``to_thread`` suelta al caller pero no detiene el hilo (review Codex P1, #1023).
+
+    Si la siembra sigue copiando mientras el move-aside restaura y el lock se libera, la copia tardía
+    escribe sobre la raíz restaurada (Codex reprodujo un ESP preservado truncado a 0 bytes). El caller
+    tiene que quedar retenido hasta que el hilo sea terminal; recién entonces se restaura.
+    """
+    import asyncio
+    import threading
+
+    from sky_claw.local.tools import synthesis_service as modulo
+
+    rutas = _escenario_mo2(tmp_path)
+    previos = _sembrar_raiz_previa(rutas)
+    empezo = threading.Event()
+    liberar = threading.Event()
+    sembrar_real = modulo._sembrar_raiz_administrada
+
+    def _siembra_lenta(*args: Any) -> None:
+        empezo.set()
+        assert liberar.wait(10), "el test no liberó la siembra"
+        sembrar_real(*args)
+
+    monkeypatch.setattr(modulo, "_sembrar_raiz_administrada", _siembra_lenta)
+
+    async def _cli(_args: list[str], **_kw: Any) -> tuple[bytes, bytes, int]:
+        raise AssertionError("el CLI no debería correr: la corrida se canceló durante la siembra")
+
+    corrida = asyncio.ensure_future(_correr(tmp_path, rutas, _BrokerConCli(rutas, _cli)))
+    assert await asyncio.to_thread(empezo.wait, 10)
+    corrida.cancel()
+    await asyncio.sleep(0.2)
+    # Retenido: el hilo de la siembra todavía no terminó, así que nada se restauró ni se liberó.
+    assert not corrida.done()
+    liberar.set()
+    with pytest.raises(asyncio.CancelledError):
+        await corrida
+
+    raiz = rutas["output"]
+    assert {p.name: p.read_bytes() for p in raiz.iterdir()} == previos
+    assert _residuos(raiz) == []

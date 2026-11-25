@@ -48,7 +48,7 @@ from sky_claw.app.db.locks import (
 from sky_claw.app.db.rollback_veto import exception_forbids_rollback
 from sky_claw.app.security.links import is_link
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
-from sky_claw.local.tools._dir_rollback import DirectoryRollback
+from sky_claw.local.tools._dir_rollback import DirectoryRollback, mutar_hasta_terminal
 from sky_claw.local.tools.output_targets import SYNTHESIS_MANAGED_MOD_NAME, synthesis_output_target
 from sky_claw.local.tools.patcher_pipeline import PatcherPipeline
 from sky_claw.local.tools.synthesis_runner import (
@@ -1106,7 +1106,10 @@ class SynthesisPipelineService:
                                 runner._config.output_path, should_rollback=_conserva_la_lease
                             )
                             await pila_de_salida.enter_async_context(dir_rollback)
-                            await asyncio.to_thread(
+                            # `mutar_hasta_terminal`, no `to_thread`: cancelar el await soltaría al
+                            # caller con el hilo todavía copiando, y el move-aside restauraría (y el
+                            # lock se liberaría) bajo una copia en curso (review Codex P1, #1023).
+                            await mutar_hasta_terminal(
                                 _sembrar_raiz_administrada,
                                 runner._config.output_path,
                                 dir_rollback.backup,
