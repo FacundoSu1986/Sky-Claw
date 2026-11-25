@@ -526,7 +526,10 @@ x64 instalado):
     exista, respeta el `mod_directory` declarado y el override del sandbox sigue mandando. El runner
     brokered y el sondeo de permisos del preflight lo resuelven con el mismo flag
     (`_salida_administrada`, derivado del dominio de visibilidad). Standalone no cambia: sigue en
-    `overwrite` o en el clon.
+    `overwrite` (o en `<mods>/Synthesis Output` si no hay `overwrite`) o en el clon del sandbox.
+    El sondeo de permisos de un destino que todavía no existe sube al ancestro existente más
+    cercano, porque `WritePermissionsChecker` saltea rutas inexistentes y la primera corrida daba
+    verde sin sondear.
   - **Timeout:** `SynthesisPipelineService(run_timeout_seconds=900)` es el plazo de la corrida en los
     dos backends y reemplaza los 300 s rígidos de standalone. Solo acepta enteros positivos (`bool`
     no). La Fase 1 conserva el suyo (`PreparadorFase1.timeout_s`, 600 s).
@@ -539,7 +542,8 @@ x64 instalado):
     que no veía los splits de la raíz administrada y no los exigía habilitados. Ahora usa
     `output_targets.carpetas_de_salida_de_synthesis`, y el ancla
     `test_las_carpetas_de_salida_cubren_todo_destino_posible` exige igualdad con todas las ramas de
-    `synthesis_output_target`.
+    `synthesis_output_target`, con `mods_dir` declarado y sin resolver; sin resolver, las dos
+    funciones usan el mismo fallback `<datos>/mods`.
   - **Sigue dormido bajo el HOLD.** Faltan PR-2b2 (staging vacío + promoción con
     `DirectoryRollback` y productor del reconciliador) y PR-2b3 (dispatcher sin clon en brokered,
     cableado productivo y diff de activación en solo lectura).

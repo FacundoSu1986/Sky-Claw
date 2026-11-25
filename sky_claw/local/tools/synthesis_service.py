@@ -469,7 +469,11 @@ class SynthesisPipelineService:
 
         def _permissions():
             # Re-probe por llamada (freshness): un cambio de permisos entre corridas se ve.
-            return WritePermissionsChecker(targets=[output_dir]).check()
+            # WritePermissionsChecker saltea rutas inexistentes, y en la primera corrida el
+            # destino todavía no existe (la raíz administrada, o mods/Synthesis Output): se
+            # sondea el ancestro existente más cercano, donde la corrida va a crear la carpeta.
+            sonda = next((p for p in (output_dir, *output_dir.parents) if p.exists()), None)
+            return WritePermissionsChecker(targets=[] if sonda is None else [sonda]).check()
 
         overwrite_check = build_overwrite_sensor(mo2 / "overwrite")
         masters_check, limits_check = self._build_modlist_checks(game, mo2, mods_dir)
@@ -892,7 +896,11 @@ class SynthesisPipelineService:
             preflight_report = self._append_preflight_check(preflight_report, shadow_check)
         if preflight_report.blocks_mutations:
             red = "; ".join(c.summary for c in preflight_report.checks if c.status.value == "red")
-            logger.warning("Synthesis (stage 7) bloqueado por preflight en rojo: %s", red)
+            logger.warning(
+                "Synthesis (stage 7) bloqueado por preflight en rojo: %s",
+                red,
+                extra={"pipeline_stage": self.PIPELINE_STAGE, "tx_id": None},
+            )
             blocked = self._error_dict(f"Preflight en rojo, Synthesis cancelado: {red}")
             blocked["reason"] = "PreflightBlocked"
             blocked["preflight"] = preflight_report.to_dict()

@@ -179,17 +179,18 @@ def test_las_carpetas_de_salida_cubren_todo_destino_posible(tmp_path: pathlib.Pa
         synthesis_output_target,
     )
 
-    mo2 = tmp_path / "mo2"
-    mods = tmp_path / "mods_declarado"
-    destinos: set[pathlib.Path] = set()
-    for con_overwrite in (False, True):
-        if con_overwrite:
-            (mo2 / "overwrite").mkdir(parents=True)
-        for administrada in (False, True):
-            destino = synthesis_output_target(mo2=mo2, override=None, mods_dir=mods, administrada=administrada)
-            assert destino is not None
-            destinos.add(destino)
-    assert set(carpetas_de_salida_de_synthesis(data_root=mo2, mods_dir=mods)) == destinos
+    # Las dos ramas del mods_dir: declarado, y sin resolver (el resolver cae a <datos>/mods).
+    for nombre, mods in (("declarado", tmp_path / "mods_declarado"), ("sin_resolver", None)):
+        mo2 = tmp_path / nombre / "mo2"
+        destinos: set[pathlib.Path] = set()
+        for con_overwrite in (False, True):
+            if con_overwrite:
+                (mo2 / "overwrite").mkdir(parents=True)
+            for administrada in (False, True):
+                destino = synthesis_output_target(mo2=mo2, override=None, mods_dir=mods, administrada=administrada)
+                assert destino is not None
+                destinos.add(destino)
+        assert set(carpetas_de_salida_de_synthesis(data_root=mo2, mods_dir=mods)) == destinos, nombre
 
 
 def test_dyndolod_descubre_los_splits_de_la_raiz_administrada(
@@ -227,3 +228,46 @@ def test_dyndolod_descubre_los_splits_de_la_raiz_administrada(
         carpetas_de_salida=capturado["carpetas_de_salida"],
     )
     assert "Synthesis_2.esp" in plugins
+
+
+# ---------------------------------------------------------------------------
+# Sondeo de permisos sobre un destino que todavía no existe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("backend", ["standalone", "brokered"])
+def test_el_sondeo_de_permisos_sube_al_ancestro_existente_si_el_destino_no_existe(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    """``WritePermissionsChecker`` saltea rutas inexistentes: pasarle un destino que la corrida
+    todavía no creó era un verde sin sondeo. Se sondea el ancestro existente más cercano, que
+    es donde la corrida va a tener que crear la carpeta. Los dos backends (standalone sin
+    ``overwrite`` cae en ``mods/Synthesis Output``; brokered en la raíz administrada)."""
+    from unittest.mock import patch
+
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
+    rutas = _escenario_mo2(tmp_path)
+    rutas["output"].rmdir()  # la raíz administrada todavía no existe (primera corrida)
+    svc = _servicio(rutas, backend)
+    checker = MagicMock()
+    with patch("sky_claw.local.validators.write_permissions.WritePermissionsChecker", checker):
+        preflight = svc._ensure_preflight()
+        assert preflight is not None
+        preflight._permissions_check()  # type: ignore[misc]
+    assert checker.call_args.kwargs["targets"] == [rutas["mods"]]
+
+
+def test_el_sondeo_de_permisos_usa_el_destino_si_existe(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import patch
+
+    monkeypatch.setattr(brokered_synthesis, "_CONTENCION_SYNTHESIS_VERIFICADA", True)
+    rutas = _escenario_mo2(tmp_path)
+    svc = _servicio(rutas, "brokered")
+    checker = MagicMock()
+    with patch("sky_claw.local.validators.write_permissions.WritePermissionsChecker", checker):
+        preflight = svc._ensure_preflight()
+        assert preflight is not None
+        preflight._permissions_check()  # type: ignore[misc]
+    assert checker.call_args.kwargs["targets"] == [rutas["output"]]

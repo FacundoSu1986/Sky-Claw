@@ -1567,6 +1567,9 @@ class TestAnclaConstructoresManualesDeMods:
         ("sky_claw/local/validators/vfs_health.py", "VfsHealthChecker.check"): 1,
         # Objetivo de salida de la síntesis (raíz MO2 cruda).
         ("sky_claw/local/tools/output_targets.py", "synthesis_output_target"): 1,
+        # Lado de la LECTURA del mismo resolver (PR-2b1): replica su fallback `<datos>/mods`
+        # cuando el MODS_DIR no resolvió, o esa rama quedaría sin escanear en el guard de LODs.
+        ("sky_claw/local/tools/output_targets.py", "carpetas_de_salida_de_synthesis"): 1,
         # Reconciliador de `move_aside`: productores sobre la raíz MO2 cruda.
         ("sky_claw/local/tools/rollback_reconciler.py", "construir_productores_de_move_aside"): 1,
         # Effective Runtime Oracle (P7-A5): resuelve el default MO2

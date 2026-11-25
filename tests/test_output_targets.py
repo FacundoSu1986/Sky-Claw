@@ -710,6 +710,9 @@ def test_synthesis_resuelve_la_salida_en_un_solo_lugar(tmp_path: pathlib.Path) -
     esperado_a = synthesis_output_target(mo2=mo2_sin, override=None)
     assert esperado_a == mo2_sin / "mods" / "Synthesis Output"
     assert svc._ensure_synthesis_runner()._config.output_path == esperado_a
+    # El sondeo de un destino inexistente sube al ancestro (PR-2b1, lo cubre
+    # test_synthesis_salida_administrada): acá se ancla el destino ya creado.
+    esperado_a.mkdir(parents=True)
     assert _target_de_permisos(svc) == esperado_a
 
     # Rama B: con overwrite en disco → el overwrite (ruta EXPLÍCITA en el
@@ -792,6 +795,7 @@ def test_synthesis_brokered_runner_y_preflight_comparten_la_raiz_administrada(
     )
     esperado = mo2 / "mods" / SYNTHESIS_MANAGED_MOD_NAME
     assert svc._ensure_synthesis_runner()._config.output_path == esperado
+    esperado.mkdir(parents=True)  # destino ya creado; el inexistente tiene su propio test
     assert _target_de_permisos(svc) == esperado
 
 

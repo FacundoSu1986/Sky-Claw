@@ -389,13 +389,19 @@ def carpetas_de_salida_de_synthesis(
     devolver y esta lista no mire es un split que nadie exige (falso verde). El ancla
     ``test_las_carpetas_de_salida_cubren_todo_destino_posible`` recorre las ramas del
     resolver y exige igualdad con este conjunto.
+
+    Sin ``mods_dir`` resuelto se usa ``<data_root>/mods``, el MISMO fallback que aplica el
+    resolver: si la lista lo omitiera, los destinos de esa rama quedarían sin escanear.
     """
     carpetas: list[pathlib.Path] = []
     if isinstance(data_root, pathlib.Path):
         carpetas.append(data_root / "overwrite")
-    if isinstance(mods_dir, pathlib.Path):
-        carpetas.append(mods_dir / SYNTHESIS_MOD_NAME)
-        carpetas.append(mods_dir / SYNTHESIS_MANAGED_MOD_NAME)
+    base_mods = mods_dir if isinstance(mods_dir, pathlib.Path) else None
+    if base_mods is None and isinstance(data_root, pathlib.Path):
+        base_mods = data_root / "mods"
+    if base_mods is not None:
+        carpetas.append(base_mods / SYNTHESIS_MOD_NAME)
+        carpetas.append(base_mods / SYNTHESIS_MANAGED_MOD_NAME)
     return tuple(carpetas)
 
 
