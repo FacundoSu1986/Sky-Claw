@@ -64,7 +64,11 @@ from typing import Any
 
 import aiosqlite
 
-from sky_claw.app.core.db_lifecycle import DatabaseLifecycleShuttingDownError
+from sky_claw.app.core.db_lifecycle import (
+    BUSY_TIMEOUT_POR_DEFECTO_MS,
+    DatabaseLifecycleShuttingDownError,
+    convertir_a_wal,
+)
 from sky_claw.app.db.rollback_veto import exception_forbids_rollback
 from sky_claw.app.db.snapshot_manager import FileSnapshotManager, SnapshotInfo
 
@@ -350,8 +354,7 @@ class DistributedLockManager:
                 # conexión sin schema y sin dueño.
                 conn = await aiosqlite.connect(self._db_path)
                 try:
-                    await conn.execute("PRAGMA journal_mode=WAL")
-                    await conn.execute("PRAGMA busy_timeout=5000")
+                    await convertir_a_wal(conn, busy_timeout_ms=BUSY_TIMEOUT_POR_DEFECTO_MS)
                     await conn.executescript(_LOCKS_SCHEMA_SQL)
                 except BaseException:
                     with contextlib.suppress(Exception):

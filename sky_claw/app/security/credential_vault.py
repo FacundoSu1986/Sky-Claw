@@ -13,6 +13,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+from sky_claw.app.core.db_lifecycle import BUSY_TIMEOUT_POR_DEFECTO_MS, convertir_a_wal
 from sky_claw.app.core.errors import SecurityViolationError, VaultStorageError
 from sky_claw.app.security.file_permissions import restrict_to_owner
 
@@ -60,7 +61,7 @@ class _SQLitePool:
         # conexiones sensibles con las generales (ver db_lifecycle.py).
         conn = await aiosqlite.connect(self._db_path)
         try:
-            await conn.execute("PRAGMA journal_mode=WAL;")
+            await convertir_a_wal(conn, busy_timeout_ms=BUSY_TIMEOUT_POR_DEFECTO_MS)
             await conn.execute("PRAGMA synchronous=NORMAL;")
         except BaseException:
             # Ensure the raw connection is closed on any error (including

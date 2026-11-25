@@ -49,6 +49,9 @@ SHUTDOWN_CHECKPOINT_TIMEOUT_SECONDS = 10
 # entre intento e intento.
 _CONVERSION_WAL_RETRY_SLEEP_S = 0.005
 
+#: Ventana de espera de las aperturas standalone: el default de ``sqlite3.connect`` y del config.
+BUSY_TIMEOUT_POR_DEFECTO_MS = 5000
+
 # Familia de contención de locks REINTENTABLE, decisión código por código.
 # Corrupción, malformed DB, I/O y permisos NUNCA se reintentan. La lista es
 # EXPLÍCITA: aceptar la familia completa por máscara ``& 0xFF`` trae
@@ -118,6 +121,91 @@ def _es_contencion_de_bloqueo(error: sqlite3.OperationalError) -> bool:
 # ---------------------------------------------------------------------------
 
 
+async def convertir_a_wal(conn: aiosqlite.Connection, *, busy_timeout_ms: int) -> None:
+    """Convierte la DB a WAL con reintento acotado por ``busy_timeout_ms``.
+
+    Es la ÚNICA ejecución del pragma de conversión en ``sky_claw/``: el lifecycle y toda
+    apertura standalone (locks, journal, registros, DLQ, vault, historial del router) pasan
+    por acá. Lo ancla ``tests/test_conversion_wal_standalone.py`` por AST y con SQLite real.
+
+    Por qué el reintento existe (demostrado con SQLite real, no asumido):
+    ``PRAGMA journal_mode=WAL`` sobre un archivo que NO está en WAL promueve
+    el lock de SHARED a EXCLUSIVE. Cuando DOS conexiones corren la conversión
+    a la vez —dos ``DatabaseLifecycleManager`` independientes sobre el mismo
+    archivo, cuyos locks Python por path son por-instancia y no se arbitran
+    entre sí— SQLite devuelve SQLITE_BUSY al perdedor INMEDIATAMENTE, sin
+    invocar el busy handler: es la evitación de deadlock documentada para la
+    promoción de locks ("if SQLite determines that invoking the busy handler
+    could result in a deadlock... it will go ahead and return SQLITE_BUSY").
+    Ningún ``busy_timeout`` salva ese caso porque el handler no llega a
+    correr. Ese era el fallo de CI (run 33223088993, windows-latest/py3.11):
+    ``_init_single`` → ``_apply_pragmas`` → ``journal_mode=WAL`` →
+    "database is locked" en el primer intento, envuelto en
+    ``JournalConnectionError`` por el ``open()`` del journal.
+
+    Contrato: mientras el lock incompatible se libere DENTRO de la ventana
+    configurada, la conversión progresa; si el holder lo retiene más allá,
+    falla de forma limitada y diagnosticable con el MISMO error, sin esperar
+    infinitamente. Reintentar la MISMA sentencia sobre la misma conexión es
+    seguro: el pragma fallido no abre transacción ni deja estado. Sólo se
+    reintenta la familia BUSY/LOCKED (``_es_contencion_de_bloqueo``, con la
+    decisión código por código documentada ahí); BUSY_SNAPSHOT, BUSY_TIMEOUT
+    y códigos no listados propagan al primer intento.
+
+    Deadline único: el total NO puede exceder ``busy_timeout_ms``. Cada
+    intento ajusta su propio ``PRAGMA busy_timeout`` al RESTANTE de la
+    ventana, no reusa el valor configurado completo — sin esto, dos
+    intentos podrían sumar hasta 2× el budget. La restauración del
+    ``busy_timeout`` configurado se hace siempre al final (éxito o
+    falla): una conexión que se publique con ``busy_timeout=0``
+    dejaría sin protección al siguiente caller.
+
+    Alcance de la propiedad, enunciado sin overclaim: la carrera
+    REPRODUCIDA (dos conversiones DELETE→WAL superpuestas, o un writer en
+    RESERVED durante la promoción) corresponde a la conversión misma. En
+    los estados observados con el archivo ya en WAL —writer o reader en
+    vuelo— el pragma devolvió 'wal' sin esperar. NO se afirma que el
+    pragma jamás pueda devolver BUSY por otra vía interna (p. ej. durante
+    WAL recovery de otra conexión): si lo hiciera, este reintento acotado
+    lo cubre igual, porque el criterio es el CÓDIGO del error (familia
+    BUSY/LOCKED explícitamente listada) y no el origen del conflicto.
+    """
+    ventana_s = busy_timeout_ms / 1000.0
+    inicio = time.monotonic()
+    ultimo_error: sqlite3.OperationalError | None = None
+    while True:
+        # Cada intento lleva su propio ``busy_timeout`` capado al
+        # RESTANTE de la ventana. El execute corre SIEMPRE (incluso con
+        # ``busy_timeout_ms=0``, donde restante es ~0 y ``restante_ms=1``
+        # = fail-fast): la ventana cero significa "un intento, sin
+        # esperar", NO "no intentar".
+        restante = ventana_s - (time.monotonic() - inicio)
+        restante_ms = max(1, int(restante * 1000))
+        await conn.execute(f"PRAGMA busy_timeout={restante_ms}")
+        try:
+            await conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError as error:
+            if not _es_contencion_de_bloqueo(error):
+                raise
+            ultimo_error = error
+            # Deadline agotado: re-lanzar el ÚLTIMO error real que
+            # SQLite devolvió, nunca un ``OperationalError`` sintético.
+            if ventana_s - (time.monotonic() - inicio) <= 0:
+                raise ultimo_error from None
+            # Ceder el scheduler para que la cancelación pueda
+            # entrar. El sleep es chico para no contaminar el
+            # budget; el ``busy_timeout`` por intento ya hace el
+            # trabajo de esperar al lock.
+            await asyncio.sleep(min(_CONVERSION_WAL_RETRY_SLEEP_S, restante))
+        else:
+            break
+    # Restauración obligatoria: la conexión que sobrevive al
+    # ``convertir_a_wal`` debe volver a tener el ``busy_timeout``
+    # configurado, no el cap por intento. Sin esto, una conexión
+    # que se publique arrastraría un busy_timeout arbitrario.
+    await conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+
+
 class DatabaseLifecycleConfig(BaseModel):
     """Immutable configuration for DatabaseLifecycleManager."""
 
@@ -128,7 +216,7 @@ class DatabaseLifecycleConfig(BaseModel):
     wal_critical_threshold_bytes: int = WAL_CRITICAL_THRESHOLD_BYTES
     enable_auto_checkpoint: bool = True
     enable_signal_handlers: bool = True
-    busy_timeout_ms: int = 5000
+    busy_timeout_ms: int = BUSY_TIMEOUT_POR_DEFECTO_MS
     synchronous_mode: str = "NORMAL"
 
 
@@ -654,84 +742,8 @@ class DatabaseLifecycleManager:
         return False
 
     async def _enter_wal_mode(self, conn: aiosqlite.Connection, path_str: str) -> None:
-        """Convierte la DB a WAL con reintento acotado por ``busy_timeout_ms``.
-
-        Por qué el reintento existe (demostrado con SQLite real, no asumido):
-        ``PRAGMA journal_mode=WAL`` sobre un archivo que NO está en WAL promueve
-        el lock de SHARED a EXCLUSIVE. Cuando DOS conexiones corren la conversión
-        a la vez —dos ``DatabaseLifecycleManager`` independientes sobre el mismo
-        archivo, cuyos locks Python por path son por-instancia y no se arbitran
-        entre sí— SQLite devuelve SQLITE_BUSY al perdedor INMEDIATAMENTE, sin
-        invocar el busy handler: es la evitación de deadlock documentada para la
-        promoción de locks ("if SQLite determines that invoking the busy handler
-        could result in a deadlock... it will go ahead and return SQLITE_BUSY").
-        Ningún ``busy_timeout`` salva ese caso porque el handler no llega a
-        correr. Ese era el fallo de CI (run 33223088993, windows-latest/py3.11):
-        ``_init_single`` → ``_apply_pragmas`` → ``journal_mode=WAL`` →
-        "database is locked" en el primer intento, envuelto en
-        ``JournalConnectionError`` por el ``open()`` del journal.
-
-        Contrato: mientras el lock incompatible se libere DENTRO de la ventana
-        configurada, la conversión progresa; si el holder lo retiene más allá,
-        falla de forma limitada y diagnosticable con el MISMO error, sin esperar
-        infinitamente. Reintentar la MISMA sentencia sobre la misma conexión es
-        seguro: el pragma fallido no abre transacción ni deja estado. Sólo se
-        reintenta la familia BUSY/LOCKED (``_es_contencion_de_bloqueo``, con la
-        decisión código por código documentada ahí); BUSY_SNAPSHOT, BUSY_TIMEOUT
-        y códigos no listados propagan al primer intento.
-
-        Deadline único: el total NO puede exceder ``busy_timeout_ms``. Cada
-        intento ajusta su propio ``PRAGMA busy_timeout`` al RESTANTE de la
-        ventana, no reusa el valor configurado completo — sin esto, dos
-        intentos podrían sumar hasta 2× el budget. La restauración del
-        ``busy_timeout`` configurado se hace siempre al final (éxito o
-        falla): una conexión que se publique con ``busy_timeout=0``
-        dejaría sin protección al siguiente caller.
-
-        Alcance de la propiedad, enunciado sin overclaim: la carrera
-        REPRODUCIDA (dos conversiones DELETE→WAL superpuestas, o un writer en
-        RESERVED durante la promoción) corresponde a la conversión misma. En
-        los estados observados con el archivo ya en WAL —writer o reader en
-        vuelo— el pragma devolvió 'wal' sin esperar. NO se afirma que el
-        pragma jamás pueda devolver BUSY por otra vía interna (p. ej. durante
-        WAL recovery de otra conexión): si lo hiciera, este reintento acotado
-        lo cubre igual, porque el criterio es el CÓDIGO del error (familia
-        BUSY/LOCKED explícitamente listada) y no el origen del conflicto.
-        """
-        ventana_s = self._config.busy_timeout_ms / 1000.0
-        inicio = time.monotonic()
-        ultimo_error: sqlite3.OperationalError | None = None
-        while True:
-            # Cada intento lleva su propio ``busy_timeout`` capado al
-            # RESTANTE de la ventana. El execute corre SIEMPRE (incluso con
-            # ``busy_timeout_ms=0``, donde restante es ~0 y ``restante_ms=1``
-            # = fail-fast): la ventana cero significa "un intento, sin
-            # esperar", NO "no intentar".
-            restante = ventana_s - (time.monotonic() - inicio)
-            restante_ms = max(1, int(restante * 1000))
-            await conn.execute(f"PRAGMA busy_timeout={restante_ms}")
-            try:
-                await conn.execute("PRAGMA journal_mode=WAL")
-            except sqlite3.OperationalError as error:
-                if not _es_contencion_de_bloqueo(error):
-                    raise
-                ultimo_error = error
-                # Deadline agotado: re-lanzar el ÚLTIMO error real que
-                # SQLite devolvió, nunca un ``OperationalError`` sintético.
-                if ventana_s - (time.monotonic() - inicio) <= 0:
-                    raise ultimo_error from None
-                # Ceder el scheduler para que la cancelación pueda
-                # entrar. El sleep es chico para no contaminar el
-                # budget; el ``busy_timeout`` por intento ya hace el
-                # trabajo de esperar al lock.
-                await asyncio.sleep(min(_CONVERSION_WAL_RETRY_SLEEP_S, restante))
-            else:
-                break
-        # Restauración obligatoria: la conexión que sobrevive al
-        # ``_enter_wal_mode`` debe volver a tener el ``busy_timeout``
-        # configurado, no el cap por intento. Sin esto, una conexión
-        # que se publique arrastraría un busy_timeout arbitrario.
-        await conn.execute(f"PRAGMA busy_timeout={self._config.busy_timeout_ms}")
+        """Convierte a WAL con el reintento compartido, en la ventana del config (ver ``convertir_a_wal``)."""
+        await convertir_a_wal(conn, busy_timeout_ms=self._config.busy_timeout_ms)
 
     async def _apply_pragmas(self, conn: aiosqlite.Connection, path_str: str) -> None:
         """Apply hardened SQLite pragmas to a connection.

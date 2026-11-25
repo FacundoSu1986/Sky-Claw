@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
+from sky_claw.app.core.db_lifecycle import BUSY_TIMEOUT_POR_DEFECTO_MS, convertir_a_wal
 from sky_claw.config import DB_PATH
 
 if TYPE_CHECKING:
@@ -86,7 +87,7 @@ class ModRegistry:
             conn = await aiosqlite.connect(self._db_path)
             conn.row_factory = aiosqlite.Row
             try:
-                await conn.execute("PRAGMA journal_mode=WAL")
+                await convertir_a_wal(conn, busy_timeout_ms=BUSY_TIMEOUT_POR_DEFECTO_MS)
                 await conn.execute("PRAGMA foreign_keys=ON")
                 async with conn.execute("PRAGMA quick_check") as cur:
                     row = await cur.fetchone()

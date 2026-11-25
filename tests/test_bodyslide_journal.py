@@ -13,7 +13,6 @@ exacto: lo que se verifica es el disco que deja, no una excepción de Python.
 from __future__ import annotations
 
 import ast
-import asyncio
 import base64
 import hashlib
 import json
@@ -1014,12 +1013,6 @@ asyncio.run(main())
 """
 
 
-async def _inicializar_base_de_locks(db: pathlib.Path) -> None:
-    manager = DistributedLockManager(db, default_ttl=30.0)
-    await manager.initialize()
-    await manager.close()
-
-
 def test_dos_procesos_recuperan_a_la_vez_sin_doble_escritura(
     tmp_path: pathlib.Path, almacen: AlmacenDeJournal, exe_dir: pathlib.Path
 ) -> None:
@@ -1028,13 +1021,9 @@ def test_dos_procesos_recuperan_a_la_vez_sin_doble_escritura(
     guion = tmp_path / "recuperar.py"
     guion.write_text(_GUION_DE_RECUPERACION.format(raiz=str(RAIZ), maquina=MAQUINA), encoding="utf-8")
     db = tmp_path / "locks.db"
-    # La base de locks ya existe en WAL antes de que compitan, como en un arranque real con
-    # estado previo. Si los dos hijos la convirtieran a la vez, el perdedor recibiría
-    # SQLITE_BUSY sin esperar: SQLite saltea el busy handler en la promoción de lock (ver
-    # ``DatabaseLifecycleManager._enter_wal_mode``). Esa carrera es de
-    # ``DistributedLockManager`` standalone, no de la reconciliación que mide este test, y
-    # tumbó ``main`` en Windows (run 45677510174).
-    asyncio.run(_inicializar_base_de_locks(db))
+    # Los dos hijos crean y convierten a WAL la MISMA base de locks a la vez: la carrera que
+    # tumbó main en Windows (run 45677510174) hasta que toda apertura pasó por
+    # ``convertir_a_wal`` (ver tests/test_conversion_wal_standalone.py).
     arranque = time.time() + 3.0
     salidas = [tmp_path / f"recuperacion_{i}.json" for i in (1, 2)]
     procesos = [

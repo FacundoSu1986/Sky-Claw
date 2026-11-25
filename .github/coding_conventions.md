@@ -59,6 +59,11 @@ Si dos reglas colisionan, obedecé este orden:
 - Solo consultas parametrizadas — **prohibido** f-strings o `.format()` en SQL.
 - Pragmas al abrir (los pone el lifecycle): `journal_mode=WAL`, `foreign_keys=ON`,
   `busy_timeout=5000`, `synchronous=NORMAL`.
+- La conversión a WAL **solo** se hace con `convertir_a_wal`
+  (`sky_claw/app/core/db_lifecycle.py`), también en una apertura standalone: dos procesos
+  convirtiendo la misma base a la vez reciben SQLITE_BUSY sin pasar por el busy handler, y
+  solo el reintento acotado lo resuelve. Un `PRAGMA journal_mode=WAL` pelado rompe
+  `tests/test_conversion_wal_standalone.py`.
 
 ### 2.3 Agentes LLM
 

@@ -23,8 +23,10 @@ from typing import Any
 import aiosqlite
 
 from sky_claw.app.core.db_lifecycle import (
+    BUSY_TIMEOUT_POR_DEFECTO_MS,
     DatabaseConnectionQuarantinedError,
     DatabaseLifecycleShuttingDownError,
+    convertir_a_wal,
 )
 from sky_claw.app.db.handoffs import (
     _INSERT_HANDOFF_SQL,
@@ -924,9 +926,8 @@ class OperationJournal:
                     # omit close(), causing observed CI 20-minute timeouts.
                     self._owns_conn = True
                     conn = await aiosqlite.connect(self._db_path)
-                    await conn.execute("PRAGMA journal_mode=WAL")
+                    await convertir_a_wal(conn, busy_timeout_ms=BUSY_TIMEOUT_POR_DEFECTO_MS)
                     await conn.execute("PRAGMA foreign_keys=ON")
-                    await conn.execute("PRAGMA busy_timeout=5000")
                     await conn.execute("PRAGMA synchronous=NORMAL")
                     schema_boundary = contextlib.nullcontext(conn)
 
