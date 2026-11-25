@@ -327,3 +327,85 @@ Baseline: **355 passed** (`verdict` + `runner` + `service`).
 - **Pendientes para P3**: los requisitos del autoinstalador (credenciales de Nexus por el mecanismo
   del producto) y la **separación física del rig de pruebas** quedan registrados como pendientes de
   P3; no se implementan acá.
+
+## 13. Cierre B1–B5 (revalidación sobre `83dce194`)
+
+Dictamen: **BLOCKED**. Se corrigieron B1–B4 y los defectos confirmados del inventario parcial (B5).
+No se rediseñó P1; sin fases nuevas ni autoinstalador.
+
+### B1 — cancelación dura por intento
+
+El camino `except BaseException` usa **la atribución del intento actual** (`_atribuciones[intento]`),
+nunca `_ultimo_atribuido`. Si ese intento pidió spawn y no atribuyó, el estado es
+`lanzamiento="solicitado_sin_atribucion"` + `terminalidad="indeterminado"`: no se puede afirmar
+ausencia porque el `launch_game` podía estar en curso. El kill y la clasificación siguen siendo
+**síncronos** (sin `await`) para preservar la excepción original. Test discriminante:
+`test_b1_excepcion_usa_el_intento_actual_y_no_un_pid_anterior` (intento 0 atribuido y muerto, intento 1
+explota ⇒ `indeterminado`).
+
+### B2 — ausencia demostrada
+
+`_buscar_proceso_del_intento` distingue **encontrado / ausente / incompleto**:
+
+- `AccessDenied` al leer el nombre de un candidato, o al leer `create_time`/`exe` de un
+  `SkyrimSE.exe` relevante ⇒ **incompleto** (no ausencia).
+- fallo al iterar el sistema ⇒ **fallo/incompleto**.
+- búsqueda vacía **pero el lanzador (MO2) todavía vivo** ⇒ **incompleto**: aún puede crear procesos.
+- Sólo `ausente` habilita `sin_proceso`; `incompleto` deja `indeterminado` y por lo tanto **prohíbe
+  relanzar, archivar estable y teardown**.
+
+### B3 — P0 preservado
+
+`neutralizar_flag(archivar=False)` ya **no** borra progreso sin declararlo:
+
+- Los bytes del flag se conservan en `<raiz_estado>/diagnostico/progreso_<perfil>_<sha16>.txt`,
+  **sin manifiesto**, así que `recuperar_progreso` no los usa para reanudar.
+- `progreso_perdido=True` (antes `False`): omitir el archivado **es** perder la reanudación.
+- Sin `raiz_estado` la pérdida se declara igual, sin copia.
+- Test: `test_b3_archivar_false_preserva_diagnostico_y_declara_perdida` (copia byte a byte, flag
+  borrado, sin manifiesto).
+
+### B4 — `.fail` ilegible ≠ `.fail` borrado
+
+La evidencia lleva `fallos_ilegibles: frozenset[str]` (nombres presentes cuyo contenido no se pudo
+leer). `borrados` excluye esos nombres: un `.fail` ilegible **no** aporta evidencia de avance, así que
+no puede sostener `success` operacional ni el commit del journal por sí solo. Test:
+`test_b4_fail_ilegible_no_cuenta_como_borrado`.
+
+### B5 — inventario parcial
+
+- **Conteo ilegible ≠ vacío**: `_conteo_rapido_sync` ahora propaga `OSError`; el cierre marca
+  `_conteo_ilegible` y la evidencia ligera publica `evidencia_ilegible=True`.
+- **Directorios y enlaces** no cuentan como artefactos: se exige archivo regular (`stat.S_ISREG`) en
+  el conteo rápido y en el inventario de egreso.
+- **Totales de `.fail` coherentes**: `fallos_de_celda_total` sale del inventario (`fail_count`), no
+  del diccionario de los legibles.
+- **Éxito operacional anidado**: al invalidar la certificación, la evidencia serializada baja
+  `exito_operacional=False` (no contradice al `success` final).
+
+### Mutantes de la ronda (5/5 muertos)
+
+Baseline **364 passed**. M_B1 (PID anterior en excepción), M_B2 (candidato ilegible como ausencia),
+M_B3 (no declarar pérdida), M_B4 (ilegible como borrado), M_B5 (directorio como artefacto) — todos
+muertos con tests discriminantes.
+
+### Fence entre rituales independientes — bloqueo concreto (escalado)
+
+**Qué falta:** el lock `grass-cache` serializa los rituales, pero se libera al terminar el run. Si la
+terminalidad quedó `vivo`/`indeterminado`, **nada impide** que otro ritual (u otra instancia)
+arranque y escriba el mismo `overwrite/Grass` mientras el proceso anterior sigue vivo. No existe hoy
+una marca durable de «ritual con proceso remanente».
+
+**Propuesta acotada (no implementada, requiere decisión del propietario):** al cerrar con terminalidad
+no demostrada, escribir un marcador en `SystemPaths.runtime_state_dir()/grass_cache/` con
+`{pid, create_time, terminalidad, run_id}`; `GrassCacheService.generate` y el barrido de arranque lo
+consultan y **se niegan** mientras el PID siga vivo con la misma identidad; el operador lo libera con
+un comando explícito (`--mode grass-fence`) o cuando el proceso ya no exista. No retiene el lock, no
+introduce un supervisor nuevo y no amplía el presupuesto de relanzamientos. Sin esa decisión, el
+riesgo queda declarado.
+
+### Threads
+
+Los 25 threads abiertos se respondieron agrupados por familia con la evidencia de esta ronda
+(terminalidad, evidencia parcial, documentación/logging). Los duplicados comparten respuesta; cada
+thread tiene su referencia al test que lo cubre.

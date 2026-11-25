@@ -3056,3 +3056,103 @@ async def test_hc_cache_parcial_de_dgid_y_fail_no_es_vacio(
     assert resultado.evidencia["inventario_final"]["archivos"] == 2
     assert resultado.evidencia["inventario_final"]["dgid_count"] == 1
     assert resultado.evidencia["inventario_final"]["fail_count"] == 1
+
+
+async def test_b1_excepcion_usa_el_intento_actual_y_no_un_pid_anterior(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """B1: si el intento actual no atribuyó, un PID del intento anterior NO prueba su terminalidad."""
+    config = dataclasses.replace(config, max_restarts=2, relaunch_delay_s=0.01, terminality_wait_s=0.05)
+    llamadas = itertools.count()
+    runner = _runner(config, mo2)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        n = next(llamadas)
+        if n == 0:
+            _juego_escribe_cgid(config, "celda_0.cgid")
+            mundo.alta_juego(100, 1100, vidas=1)
+            return {"pid": 100, "status": "launched", "profile": profile}
+        raise RuntimeError("el lanzamiento explotó")
+
+    mo2.launch_game.side_effect = _launch
+
+    with pytest.raises(RuntimeError, match="explotó"):
+        await _correr(runner)
+
+    # El intento 1 pidió spawn y no atribuyó: el PID del intento 0 (muerto) no prueba nada.
+    assert runner.terminalidad == "indeterminado"
+    assert runner.lanzamiento == "solicitado_sin_atribucion"
+
+
+async def test_b2_candidato_ilegible_no_es_ausencia(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B2: AccessDenied sobre un candidato relevante deja la evidencia INCOMPLETA."""
+
+    class _ProcIlegible:
+        pid = 4242
+
+        def name(self) -> str:
+            raise psutil_real.AccessDenied(4242)
+
+        def create_time(self) -> float:
+            return time.time()
+
+        def exe(self) -> str | None:
+            return None
+
+    class _MundoIlegible(_MundoProcesos):
+        def process_iter(self, attrs: Any = None) -> Any:
+            return iter([_ProcIlegible()])
+
+    ilegible = _MundoIlegible()
+    monkeypatch.setattr(gcr_mod, "psutil", ilegible)
+    runner = _runner(config, mo2)
+    runner._spawn_solicitado[0] = True
+    runner._epoch_del_intento[0] = 0.0
+
+    estado, encontrado = runner._buscar_proceso_del_intento(0)
+
+    assert (estado, encontrado) == ("incompleto", None)
+
+
+async def test_b5_directorio_con_nombre_de_artefacto_no_es_cache(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """B5: un directorio con nombre `.cgid` no cuenta como artefacto."""
+    grass = config.overwrite_grass_dir
+    (grass / "Tamrielx0000y0000.cgid").mkdir(parents=True)
+    runner = _runner(config, mo2)
+
+    conteo = runner._conteo_rapido_sync()
+
+    assert conteo.cgid_count == 0
+    assert conteo.archivos == 0
+
+
+async def test_b3_archivar_false_preserva_diagnostico_y_declara_perdida(
+    config: GrassCacheConfig, tmp_path: pathlib.Path
+) -> None:
+    """B3: sin archivado para reanudación, los bytes se preservan como diagnóstico y la pérdida se declara."""
+    from sky_claw.local.tools.grass_cache_safety import neutralizar_flag
+
+    flag = config.game_path / "PrecacheGrass.txt"
+    flag.write_bytes(b"cell_Tamriel_0_0\n")
+    estado = tmp_path / "estado_b3"
+
+    resultado = neutralizar_flag(
+        flag_path=flag,
+        grass_dir=config.overwrite_grass_dir,
+        raiz_estado=estado,
+        perfil="Default",
+        archivar=False,
+    )
+
+    assert resultado.borrado is True
+    assert resultado.progreso_perdido is True, "omitir el archivado ES perder la reanudación"
+    assert not flag.exists()
+    diagnosticos = list((estado / "diagnostico").glob("progreso_*.txt"))
+    assert len(diagnosticos) == 1
+    assert diagnosticos[0].read_bytes() == b"cell_Tamriel_0_0\n"
+    # No queda habilitado para reanudar: no hay manifiesto.
+    assert not list(estado.glob("*/manifiesto*.json")) and not list(estado.glob("**/manifiesto*.json"))

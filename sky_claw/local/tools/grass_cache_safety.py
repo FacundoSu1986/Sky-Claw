@@ -1216,6 +1216,30 @@ class NeutralizacionFlag:
         return self.borrado and not self.progreso_perdido and not self.alternativo_residual
 
 
+def _guardar_progreso_de_diagnostico(
+    raiz_estado: pathlib.Path | None, progreso: bytes, *, perfil: str = ""
+) -> pathlib.Path | None:
+    """Copia los bytes del flag a un directorio de DIAGNÓSTICO, sin manifiesto (B3).
+
+    Deliberadamente **no** queda habilitado para reanudar: `recuperar_progreso` exige un manifiesto
+    con la huella del caché, y este archivo vive fuera de esa estructura. Es evidencia para el
+    operador, no un atajo de recuperación. Best-effort: si no se puede escribir, se devuelve None y
+    el llamador declara la pérdida sin la copia.
+    """
+    if raiz_estado is None:
+        return None
+    try:
+        destino = raiz_estado / "diagnostico"
+        destino.mkdir(parents=True, exist_ok=True)
+        sello = hashlib.sha256(progreso).hexdigest()[:16]
+        archivo = destino / f"progreso_{perfil or 'sin_perfil'}_{sello}.txt"
+        archivo.write_bytes(progreso)
+        return archivo
+    except OSError:
+        logger.warning("No se pudo preservar el progreso como diagnóstico.", exc_info=True)
+        return None
+
+
 def neutralizar_flag(
     *,
     flag_path: pathlib.Path,
@@ -1275,10 +1299,14 @@ def neutralizar_flag(
 
     if presente and progreso is not None:
         if not archivar:
-            # H2/H5: no se archiva una foto de un caché que puede seguir escribiéndose.
+            # H2/H5 + B3: no se archiva una foto de un caché que puede seguir escribiéndose, pero el
+            # progreso NO se descarta en silencio: se conservan sus bytes como evidencia de
+            # DIAGNÓSTICO (directorio aparte, sin manifiesto) y se declara la pérdida de reanudación.
+            diagnostico = _guardar_progreso_de_diagnostico(raiz_estado, progreso, perfil=perfil)
+            extra = f" (bytes preservados en {diagnostico} como diagnóstico NO reanudable)" if diagnostico else ""
             errores.append(
-                "Archivado del progreso OMITIDO: la terminalidad del juego no está demostrada y el "
-                "caché puede seguir escribiéndose. El flag igual se borra."
+                "Archivado del progreso OMITIDO para reanudación: la terminalidad del juego no está "
+                "demostrada y el caché puede seguir escribiéndose" + extra + ". El flag igual se borra."
             )
         elif raiz_estado is None:
             errores.append(
@@ -1318,7 +1346,9 @@ def neutralizar_flag(
     if not borrado and not any("No se pudo eliminar" in e for e in errores):
         errores.append(f"{flag_path} sigue presente después del borrado")
 
-    progreso_perdido = bool(archivar and borrado and progreso is not None and not archivado)
+    # B3: omitir el archivado también ES una pérdida de reanudación y se declara (antes quedaba en
+    # `progreso_perdido=False`, que afirmaba que no se perdió nada).
+    progreso_perdido = bool(borrado and progreso is not None and not archivado)
     if progreso_perdido:
         errores.append("Se borró el flag sin archivar su progreso: la evidencia de reanudación de este caché se perdió")
     return NeutralizacionFlag(

@@ -867,6 +867,9 @@ class GrassCacheService:
             evidencia["certificado"] = final.certificado
             evidencia["verdict_razones"] = list(final.razones)
             evidencia["alcance_certificado"] = final.alcance_certificado
+            # B5: el eje anidado no puede seguir afirmando éxito operacional cuando el `success`
+            # final es False por invalidación de la operación.
+            evidencia["exito_operacional"] = False
         logger.warning(
             "Certificación invalidada por la operación (%s): %s → %s",
             razon,

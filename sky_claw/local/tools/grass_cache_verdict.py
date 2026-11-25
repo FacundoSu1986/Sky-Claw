@@ -167,6 +167,8 @@ class EvidenciaVeredicto:
     worldspaces_declarados_por_ngio: tuple[str, ...] = ()
     progreso_observado: bool = False
     evidencia_ilegible: bool = False
+    #: Nombres de `.fail` que EXISTEN pero no se pudieron leer (B4). No son «borrados».
+    fallos_ilegibles: frozenset[str] = frozenset()
     #: El inventario inicial no se pudo verificar: la procedencia no es demostrable (H4).
     baseline_ilegible: bool = False
     #: `.fail` que existen pero no se pudieron leer: ni ausentes ni evaluables (H1).
@@ -217,7 +219,10 @@ def _fallos_atribuibles(ev: EvidenciaVeredicto) -> tuple[int, int, int]:
             atribuibles += 1
         else:
             historicos += 1
-    borrados = sum(1 for nombre in ev.fallos_previos if nombre not in ev.fallos_finales)
+    # B4: un `.fail` ilegible sigue EXISTIENDO: no cuenta como avance ni como celda completada.
+    borrados = sum(
+        1 for nombre in ev.fallos_previos if nombre not in ev.fallos_finales and nombre not in ev.fallos_ilegibles
+    )
     return atribuibles, historicos, borrados
 
 

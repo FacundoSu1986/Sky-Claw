@@ -42,6 +42,7 @@ import logging
 import pathlib
 import re
 import shutil  # import de módulo completo: los tests mockean shutil.disk_usage
+import stat
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar
@@ -470,6 +471,12 @@ class GrassCacheRunner:
         self._lanzamiento: EstadoLanzamiento = "no_intentado"
         #: Conteo barato de TODOS los artefactos al cerrar (H-C: `.dgid`/`.fail` también son caché).
         self._conteo_artefactos: CacheObservado | None = None
+        #: El conteo al cerrar no se pudo leer: la evidencia de salidas parciales es incompleta.
+        self._conteo_ilegible = False
+        #: `.fail` presentes pero ilegibles en el inventario de egreso (B4).
+        self._fallos_ilegibles: frozenset[str] = frozenset()
+        #: PID de MO2 por intento: si el lanzador sigue vivo, una búsqueda vacía no es ausencia (B2).
+        self._mo2_pid_del_intento: dict[int, int] = {}
         #: Worldspaces que NGIO DECLARÓ terminados (líneas `ws_` del flag): evidencia, no requisito.
         self._ws_declarados: set[str] = set()
         #: Offset de lectura incremental del flag y última muestra del watchdog.
@@ -834,6 +841,8 @@ class GrassCacheRunner:
                     mo2_pid = None
                 t_spawn_mono = time.monotonic()
                 min_create_epoch = time.time() - _CREATE_TIME_EPSILON  # wall-clock para psutil
+                if mo2_pid is not None:
+                    self._mo2_pid_del_intento[self._intento_actual] = mo2_pid
 
                 # ---- Ventana de spawn: localizar SkyrimSE.exe (D1) ----
                 exito_temprano = False
@@ -961,12 +970,22 @@ class GrassCacheRunner:
             # enmascararía la excepción original, así que el cierre es SÍNCRONO: kill directo del
             # último proceso atribuido y UNA clasificación de terminalidad. Si no se puede afirmar,
             # queda `indeterminado` y se registra.
-            objetivo = game_pid if game_pid is not None else self._ultimo_atribuido
+            # B1: identidad del intento ACTUAL, nunca un PID de otro intento.
+            intento = self._intento_actual
+            objetivo = game_pid if game_pid is not None else self._atribuciones.get(intento)
             if objetivo is not None:
                 with contextlib.suppress(Exception):
                     self._kill_game_tree_sync(objetivo.pid, objetivo.create_time)
             with contextlib.suppress(Exception):
-                self._terminalidad = "sin_proceso" if objetivo is None else self._clasificar_terminalidad(objetivo)
+                if objetivo is not None:
+                    self._terminalidad = self._clasificar_terminalidad(objetivo)
+                else:
+                    # B1/B2: sin atribución del intento actual NO se puede afirmar ausencia: el
+                    # lanzamiento pudo estar en curso. `indeterminado` es lo único honesto.
+                    self._lanzamiento = (
+                        "solicitado_sin_atribucion" if self._spawn_solicitado.get(intento, False) else "no_intentado"
+                    )
+                    self._terminalidad = "indeterminado" if self._lanzamiento != "no_intentado" else "sin_proceso"
             if self._terminalidad != "terminado":
                 logger.warning(
                     "Run abortado con terminalidad %s del PID %s: el caché pudo seguir escribiéndose.",
@@ -1701,30 +1720,55 @@ class GrassCacheRunner:
         nombres = {nombre.lower() for nombre in self._config.game_exe_names}
         game_dir = self._config.game_path.resolve()
         encontrados: list[_GamePid] = []
+        incompleta = False
         try:
             for proc in psutil.process_iter(["name", "create_time", "exe"]):
                 try:
-                    if proc.name().lower() not in nombres:
-                        continue
+                    nombre = proc.name().lower()
+                except psutil.AccessDenied:
+                    # B2: un candidato que no se puede identificar NO es ausencia.
+                    incompleta = True
+                    continue
+                except psutil.Error:
+                    incompleta = True
+                    continue
+                if nombre not in nombres:
+                    continue
+                # Es un SkyrimSE.exe: si no se puede leer su identidad, la evidencia es incompleta.
+                try:
                     creado = proc.create_time()
-                    if creado < minimo:
-                        continue  # de un intento anterior: no cuenta para éste
                     exe = proc.exe()
                 except psutil.Error:
+                    incompleta = True
                     continue
+                if creado < minimo:
+                    continue  # de un intento anterior: no cuenta para éste
                 if not exe:
+                    incompleta = True
                     continue
                 try:
                     if pathlib.Path(exe).resolve().parent != game_dir:
                         continue
                 except OSError:
+                    incompleta = True
                     continue
                 encontrados.append(_GamePid(pid=int(proc.pid), create_time=creado))
         except psutil.Error:
             logger.warning("No se pudo inspeccionar el sistema para verificar el lanzamiento.", exc_info=True)
-            return ("fallo", None)
+            return ("incompleto", None)
         if encontrados:
             return ("encontrado", encontrados[0])
+        if incompleta:
+            return ("incompleto", None)
+        # B2: una búsqueda vacía no demuestra ausencia si el lanzador sigue vivo (aún puede crear
+        # procesos). Sin esa prueba, `incompleto` => indeterminado.
+        mo2_pid = self._mo2_pid_del_intento.get(intento)
+        if mo2_pid is not None:
+            try:
+                if psutil.pid_exists(mo2_pid):
+                    return ("incompleto", None)
+            except psutil.Error:
+                return ("incompleto", None)
         return ("ausente", None)
 
     async def _cerrar_y_verificar(self, game_pid: _GamePid | None, cancel: asyncio.Event) -> None:
@@ -1736,7 +1780,13 @@ class GrassCacheRunner:
         """
         await self._matar_todo(game_pid if game_pid is not None else self._atribuciones.get(self._intento_actual))
         self._terminalidad = await self._verificar_terminalidad(game_pid, cancel)
-        self._conteo_artefactos = await asyncio.to_thread(self._conteo_rapido_sync)
+        try:
+            self._conteo_artefactos = await asyncio.to_thread(self._conteo_rapido_sync)
+        except OSError:
+            # B5: un inventario ilegible NO es un caché vacío.
+            self._conteo_artefactos = None
+            self._conteo_ilegible = True
+            logger.warning("No se pudo contar el caché al cerrar: la evidencia queda incompleta.", exc_info=True)
 
     def _conteo_rapido_sync(self) -> CacheObservado:
         """Conteo barato de TODOS los artefactos reconocidos, para la evidencia de salidas parciales.
@@ -1750,17 +1800,19 @@ class GrassCacheRunner:
             candidatos = list(self._config.overwrite_grass_dir.iterdir())
         except (FileNotFoundError, NotADirectoryError):
             return CacheObservado()
-        except OSError:
-            return CacheObservado()
         for archivo in candidatos:
             sufijo = archivo.suffix.lower()
+            if sufijo not in EXTENSIONES_CACHE:
+                continue
+            info = archivo.stat()  # si falla, el cierre marca la evidencia como ilegible
+            if not stat.S_ISREG(info.st_mode):
+                continue  # B5: directorios y enlaces no son artefactos
             if sufijo == ".cgid":
                 cgid += 1
-                with contextlib.suppress(OSError):
-                    cgid_bytes += int(archivo.stat().st_size)
+                cgid_bytes += int(info.st_size)
             elif sufijo == ".dgid":
                 dgid += 1
-            elif sufijo == ".fail":
+            else:
                 fail += 1
         return CacheObservado(
             cgid_count=cgid,
@@ -1841,6 +1893,7 @@ class GrassCacheRunner:
         entradas: set[tuple[str, int]] = set()
         fallos: dict[str, bytes] = {}
         worldspaces: set[str] = set()
+        ilegibles: set[str] = set()
         try:
             candidatos = list(self._config.overwrite_grass_dir.iterdir())
         except (FileNotFoundError, NotADirectoryError):
@@ -1849,7 +1902,9 @@ class GrassCacheRunner:
             sufijo = archivo.suffix.lower()
             if sufijo not in EXTENSIONES_CACHE:
                 continue
-            info = archivo.stat()  # si falla, el caller declara evidencia ilegible
+            info = archivo.stat()
+            if not stat.S_ISREG(info.st_mode):
+                continue  # B5: un directorio o enlace con nombre de artefacto no es caché
             entradas.add((archivo.name, int(info.st_size)))
             if sufijo == ".cgid":
                 cgid += 1
@@ -1861,8 +1916,9 @@ class GrassCacheRunner:
                 try:
                     fallos[archivo.name] = archivo.read_bytes()[:_TOPE_FALLO_BYTES]
                 except OSError:
-                    # No se transforma un fallo de lectura en ausencia de fallo (H1).
+                    # No se transforma un fallo de lectura en ausencia de fallo (H1/B4).
                     no_evaluables += 1
+                    ilegibles.add(archivo.name)
                     logger.warning("No se pudo leer %s: queda como fallo NO EVALUABLE.", archivo)
             worldspace = self._worldspace_de_archivo(archivo.name)
             if worldspace is not None:
@@ -1876,6 +1932,7 @@ class GrassCacheRunner:
         )
         heredados = len(entradas & self._baseline_entradas)
         nuevos = len(entradas - self._baseline_entradas)
+        self._fallos_ilegibles = frozenset(ilegibles)
         return inventario, fallos, tuple(sorted(worldspaces)), heredados, nuevos, no_evaluables
 
     @staticmethod
@@ -1913,6 +1970,7 @@ class GrassCacheRunner:
             worldspaces_declarados_por_ngio=tuple(sorted(self._ws_declarados)),
             progreso_observado=self._progreso_observado,
             fallos_no_evaluables=no_evaluables,
+            fallos_ilegibles=self._fallos_ilegibles,
             lanzamiento=self._lanzamiento,
         )
 
@@ -1936,7 +1994,9 @@ class GrassCacheRunner:
             "inventario_final": evidencia.inventario_final.a_dict() if evidencia.inventario_final else None,
             "archivos_heredados": evidencia.archivos_heredados,
             "archivos_nuevos": evidencia.archivos_nuevos,
-            "fallos_de_celda_total": len(evidencia.fallos_finales),
+            "fallos_de_celda_total": (
+                evidencia.inventario_final.fail_count if evidencia.inventario_final else len(evidencia.fallos_finales)
+            ),
             "fallos_de_celda_atribuibles": atribuibles,
             "fallos_de_celda_historicos": len(evidencia.fallos_finales) - atribuibles,
             # H1: `.fail` que existen y no se pudieron leer. Nunca se reportan como «ninguno».
@@ -2022,6 +2082,7 @@ class GrassCacheRunner:
             inventario_final=conteo,
             progreso_observado=self._progreso_observado,
             worldspaces_solicitados=tuple(self._config.worldspaces),
+            evidencia_ilegible=self._conteo_ilegible,
             lanzamiento=self._lanzamiento,
         )
 

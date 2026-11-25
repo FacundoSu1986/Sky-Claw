@@ -426,3 +426,22 @@ def test_h6_invalidar_no_mejora_un_veredicto_ya_no_certificado() -> None:
     base = evaluar_veredicto(_ev(limpieza_limpia=False))
 
     assert invalidar_certificacion(base, razon="operacion_invalidada") == base
+
+
+def test_b4_fail_ilegible_no_cuenta_como_borrado() -> None:
+    """B4: un `.fail` ilegible NO es un `.fail` eliminado: no aporta evidencia de avance."""
+    ev = _ev(
+        modo="resume",
+        archivos_heredados=10,
+        archivos_nuevos=0,
+        progreso_observado=False,
+        fallos_previos={"a.fail": b"1\n"},
+        fallos_finales={},
+        fallos_ilegibles=frozenset({"a.fail"}),
+    )
+
+    v = evaluar_veredicto(ev)
+
+    assert v.exito_operacional is False, "sin avance real no hay éxito operacional"
+    assert v.verdict == "completed_unverified"
+    assert "sin_evidencia_de_esta_corrida" in v.razones
