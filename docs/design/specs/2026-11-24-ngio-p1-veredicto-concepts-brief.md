@@ -486,10 +486,23 @@ antes de devolver o de propagar la excepción. Una limpieza incompleta **jamás*
 
 `cache_ilegible`, `terminalidad_no_verificada`, `cache_vacio`, `limpieza_incompleta`,
 `archivos_heredados_sin_procedencia`, `sin_evidencia_de_esta_corrida`,
-`fallos_de_celda_atribuibles`, `fallos_de_celda_historicos`, `worldspaces_sin_artefactos`,
-`outcome_no_completado:<outcome>`, `sin_certificacion:<outcome>`, `cancelado`.
+`fallos_de_celda_atribuibles`, `fallos_de_celda_historicos`, `fallos_de_celda_no_evaluables`,
+`baseline_ilegible`, `operacion_invalidada`, `worldspaces_sin_artefactos`, `outcome_no_completado`,
+`sin_certificacion`, `cancelado`.
 
 Se congela por igualdad literal en un test: una razón nueva rompe el ancla hasta que se declara.
+
+**Añadidas por la revisión independiente** (ronda consolidada, ver §11 del audit de P1):
+
+- `fallos_de_celda_no_evaluables` (H1): hay `.fail` sobrevivientes que no se pudieron leer. No se
+  transforman en «no hay fallos» ni se les inventa contenido; **prohíben certificar**. La política
+  tiene defensa en profundidad contra la discrepancia `fail_count` vs fallos inventariados.
+- `baseline_ilegible` (H4): el inventario inicial no se pudo verificar. Sin procedencia demostrable
+  el run **aborta antes de escribir el flag** y el veredicto es `unknown`. Un `FileNotFoundError` del
+  directorio SÍ es «caché inexistente» (vacío legítimo), no ilegible.
+- `operacion_invalidada` (H6): la certificación del runner se degrada cuando la **operación** quedó
+  invalidada después (lease perdido, error posterior). La evidencia observada no se falsea; el
+  journal y el evento usan el veredicto reconciliado.
 
 ### 4.7 RESUELTA (D1 del propietario): semántica de `success`
 
