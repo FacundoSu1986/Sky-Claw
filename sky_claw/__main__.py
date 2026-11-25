@@ -252,7 +252,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--bodyslide-exe",
         type=pathlib.Path,
         default=pathlib.Path(config.bodyslide_exe) if config.bodyslide_exe else None,
-        help="bodyslide-recovery: BodySlide executable of the installation to recover (default: bodyslide_exe)",
+        help="bodyslide-recovery: BodySlide executable of the installation to recover; when omitted, bodyslide_exe from the config",
     )
     parser.add_argument(
         "--db-path",

@@ -24,7 +24,7 @@ ancla `tests/test_cli_help_defaults.py`.
 
 | Opción | Valores o default | Uso |
 |---|---|---|
-| `--mode` | `cli`, `telegram`, `oneshot`, `gui`, `security`, `install-vfs-bridge`, `vfs-health`, `vfs-quarantine` | Selecciona el modo |
+| `--mode` | `cli`, `telegram`, `oneshot`, `gui`, `security`, `install-vfs-bridge`, `vfs-health`, `vfs-quarantine`, `bodyslide-recovery` | Selecciona el modo |
 | `--provider` | `anthropic`, `deepseek`, `openai`, `ollama`; default: config o `deepseek` | Proveedor LLM |
 | `--mo2-root` | config o `C:\MO2Portable` | Instancia portable |
 | `--skyrim-path` | config o vacío | Instalación; obligatoria para `vfs-health` |
@@ -33,6 +33,9 @@ ancla `tests/test_cli_help_defaults.py`.
 | `--vfs-timeout` | `30.0` segundos | Timeout del worker VFS |
 | `--vfs-quarantine-action` | `status` (default) o `release` | Solo `vfs-quarantine`: informar o liberar la cuarentena |
 | `--vfs-evidence` | vacío | Solo `vfs-quarantine release`: qué verificaste; es obligatoria y queda en el log como `CRITICAL` |
+| `--bodyslide-recovery-action` | `status` (default), `release-quarantine` o `confirm-terminal` | Solo `bodyslide-recovery`: ver el estado, liberar la cuarentena del recurso o confirmar que una corrida lanzada terminó |
+| `--bodyslide-evidence` | vacío | Solo `bodyslide-recovery release-quarantine` y `confirm-terminal`: qué verificaste; es obligatoria y queda en el log como `CRITICAL` |
+| `--bodyslide-exe` | config (`bodyslide_exe`) o vacío | Solo `bodyslide-recovery`: el ejecutable de la instalación de BodySlide |
 | `--db-path` | `mod_registry.db` | Registry principal |
 | `--loot-exe` | config o `loot.exe` | LOOT CLI |
 | `--webhook-host` | `127.0.0.1` | Parámetro conservado para modo Telegram |
@@ -71,3 +74,17 @@ instancias en cuarentena que encuentre bajo `vfs_bridge`. `release` exige `--vfs
 broker vivo dueño del lock (hay que cerrar Sky-Claw antes) y limpia las tres formas persistidas de la
 cuarentena —marcador, lock envenenado y lock huérfano—, porque borrar solo el marcador haría que el próximo
 arranque reclame el lock huérfano y vuelva a aislar la instancia. Un rechazo (sin evidencia, dueño vivo o error de disco) no es un fallo del proceso: sale con código `1` y el motivo en el log, sin traceback, y la instancia sigue aislada. Ancla: `tests/test_vfs_quarantine.py`.
+
+`bodyslide-recovery` tampoco arranca el daemon: arrancarlo tomaría el recurso `bodyslide-meshes` que el operador
+está liberando. Cerrá Sky-Claw antes. Tres acciones:
+
+- `status` muestra los journals de BodySlide y si el recurso está en cuarentena, sin escribir nada.
+- `release-quarantine` retira la cuarentena del recurso (la escribe una siembra que se colgó).
+- `confirm-terminal` lleva el journal `LANZADO` de la instalación de `--bodyslide-exe` a `TERMINAL`: es la
+  salida cuando el broker no pudo probar que BodySlide terminó. Exige además la misma máquina, la misma
+  carpeta física y que el dueño de la corrida no esté vivo.
+
+Las dos últimas exigen `--bodyslide-evidence`. Ninguna restaura la configuración de BodySlide: la restaura
+el próximo arranque, si los archivos siguen siendo los que dejó la corrida. Un rechazo sale con código `1`
+y el motivo en el log, sin cambiar nada. Anclas: `tests/test_bodyslide_operador.py` y
+`tests/test_bodyslide_terminalidad_operador.py`.

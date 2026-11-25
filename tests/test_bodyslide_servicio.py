@@ -238,7 +238,13 @@ def test_nadie_reasigna_la_barrera_productiva() -> None:
 #: Hoy hay UNA superficie viva (la tool del agente). PR 4 agrega la GUI y tiene
 #: que aparecer acá, construyendo el MISMO servicio.
 SUPERFICIES_QUE_CONSTRUYEN_EL_SERVICIO: set[str] = {"sky_claw/app/agent/tools/system_tools.py"}
-MODULOS_QUE_IMPORTAN_EL_SERVICIO: set[str] = {"sky_claw/app/agent/tools/system_tools.py"}
+MODULOS_QUE_IMPORTAN_EL_SERVICIO: set[str] = {
+    "sky_claw/app/agent/tools/system_tools.py",
+    # PR 2c-2b: el resolvedor del lanzador brokered lee la barrera
+    # ``_CONTENCION_BODYSLIDE_VERIFICADA`` del servicio (una sola barrera para toda la tool).
+    # No construye el servicio: el censo de constructores no cambia.
+    "sky_claw/local/mo2/brokered_bodyslide.py",
+}
 
 
 def _censo_del_servicio() -> tuple[set[str], set[str]]:
