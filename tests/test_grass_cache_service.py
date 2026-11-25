@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from sky_claw.app.db.journal import OperationStatus, TransactionStatus
-from sky_claw.app.db.journal_contracts import is_teardown_incomplete
+from sky_claw.app.db.journal_contracts import GRASS_VERDICT_KIND, is_teardown_incomplete
 from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.local.mo2.grass_profile import GrassProfileError
 from sky_claw.local.tools.grass_cache_runner import GrassCacheRunResult
@@ -635,6 +635,15 @@ def _entradas_de_teardown(journal: AsyncMock) -> list[dict[str, Any]]:
     ]
 
 
+def _entradas_de_veredicto(journal: AsyncMock) -> list[dict[str, Any]]:
+    """Llamadas a ``begin_operation`` que registran el veredicto del precache (P1)."""
+    return [
+        llamada.kwargs
+        for llamada in journal.begin_operation.await_args_list
+        if llamada.kwargs.get("metadata", {}).get("kind") == GRASS_VERDICT_KIND
+    ]
+
+
 async def test_teardown_fallido_commitea_pero_deja_constancia_en_el_journal(tmp_path: pathlib.Path) -> None:
     """U-09: el cache SÍ se generó, así que la TX se commitea — pero el journal
     tiene que registrar que el cleanup quedó a medias.
@@ -663,7 +672,11 @@ async def test_teardown_fallido_commitea_pero_deja_constancia_en_el_journal(tmp_
     assert len(entradas) == 1, "falta la entrada de teardown incompleto en el journal"
     assert entradas[0]["transaction_id"] == 77
     assert entradas[0]["metadata"]["paths"] == [str(trabado)]
-    journal.fail_operation.assert_awaited_once()
+    # P1: la TX ahora registra DOS operaciones fallidas distintas — el teardown incompleto (U-09) y
+    # el veredicto no certificado —, así que el conteo global ya no es 1. Cada una se identifica por
+    # su `kind` (el filtro es el mismo mecanismo que usa el predicado de lectura).
+    assert len(_entradas_de_veredicto(journal)) == 1, "falta la operación del veredicto"
+    assert journal.fail_operation.await_count == 2
 
 
 async def test_teardown_limpio_no_ensucia_el_journal(tmp_path: pathlib.Path) -> None:
@@ -1416,3 +1429,128 @@ async def test_dos_perfiles_de_origen_no_se_prestan_el_progreso(tmp_path: pathli
             perfil=config_b.perfil_de_progreso,
         )
     assert excinfo.value.codigo == "progreso_de_otra_instalacion"
+
+
+# ---------------------------------------------------------------------------
+# P1 · propagación del veredicto (C5): servicio, journal y evento
+# ---------------------------------------------------------------------------
+
+
+async def test_p1_el_resultado_propaga_veredicto_alcance_y_evidencia(tmp_path: pathlib.Path) -> None:
+    """C5: el veredicto llega al dict sin pérdida. `success` NO es certificación (D1)."""
+    evidencia = {
+        "worldspaces_solicitados": ["Tamriel"],
+        "archivos_heredados": 12,
+        "archivos_nuevos": 0,
+        "terminalidad": "terminado",
+        "completitud_de_celdas": "no_verificada",
+    }
+    runner_result = _resultado_runner(
+        success=False,
+        verdict="completed_unverified",
+        certificado=False,
+        verdict_razones=("archivos_heredados_sin_procedencia",),
+        alcance_certificado="ninguno",
+        evidencia=evidencia,
+        limpieza_errores=("unlink falló",),
+    )
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["verdict"] == "completed_unverified"
+    assert resultado["certificado"] is False
+    assert resultado["success"] is False
+    assert resultado["verdict_razones"] == ["archivos_heredados_sin_procedencia"]
+    assert resultado["alcance_certificado"] == "ninguno"
+    assert resultado["evidencia"] == evidencia
+    # `limpieza_errores` se perdería en la capa de servicio; P1 la propaga.
+    assert resultado["limpieza_errores"] == ["unlink falló"]
+
+
+async def test_p1_success_true_con_certificado_false_no_se_reinterpreta(tmp_path: pathlib.Path) -> None:
+    """El servicio NO re-deriva: propaga lo que decidió la política (una sola fuente)."""
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_unverified",
+        certificado=False,
+        verdict_razones=("fallos_de_celda_atribuibles",),
+    )
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is True
+    assert resultado["certificado"] is False
+    assert resultado["verdict"] == "completed_unverified"
+
+
+async def test_p1_journal_registra_el_veredicto_certificado(tmp_path: pathlib.Path) -> None:
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        evidencia={"worldspaces_solicitados": ["Tamriel"], "overwrite_grass_dir": "/x/Grass"},
+    )
+    service, _ = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    await service.generate(_PAYLOAD)
+
+    entradas = _entradas_de_veredicto(journal)
+    assert len(entradas) == 1
+    metadata = entradas[0]["metadata"]
+    assert metadata["kind"] == GRASS_VERDICT_KIND
+    assert metadata["verdict"] == "completed_verified"
+    assert metadata["certificado"] is True
+    assert metadata["worldspaces"] == ["Tamriel"]
+    # La metadata del veredicto NO siembra evidencia de artefactos (oráculo de recovery).
+    assert "files_touched" not in metadata
+    journal.complete_operation.assert_awaited_once_with(5)
+    journal.fail_operation.assert_not_awaited()
+
+
+async def test_p1_journal_registra_el_veredicto_no_certificado(tmp_path: pathlib.Path) -> None:
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_unverified",
+        certificado=False,
+        verdict_razones=("fallos_de_celda_historicos",),
+        alcance_certificado="ninguno",
+        evidencia={"worldspaces_solicitados": ["Tamriel"]},
+    )
+    service, _ = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    entradas = _entradas_de_veredicto(journal)
+    assert len(entradas) == 1
+    assert entradas[0]["metadata"]["certificado"] is False
+    assert entradas[0]["metadata"]["razones"] == ["fallos_de_celda_historicos"]
+    journal.fail_operation.assert_awaited_once()
+    # La TX se commitea igual: el producto existe aunque no se certifique.
+    journal.commit_transaction.assert_awaited_once_with(77)
+    assert resultado["certificado"] is False
+
+
+async def test_p1_el_evento_completed_lleva_el_veredicto(tmp_path: pathlib.Path) -> None:
+    runner_result = _resultado_runner(
+        verdict="completed_unverified",
+        certificado=False,
+        alcance_certificado="trabajo_de_la_corrida",
+    )
+    service, colab = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+    bus = colab["event_bus"]
+
+    await service.generate(_PAYLOAD)
+
+    payloads = [
+        llamada.args[0].payload
+        for llamada in bus.publish.await_args_list
+        if getattr(llamada.args[0], "topic", None) == "pipeline.grass_cache.completed"
+    ]
+    assert payloads, "no se publicó pipeline.grass_cache.completed"
+    assert payloads[-1]["verdict"] == "completed_unverified"
+    assert payloads[-1]["certificado"] is False
+    assert payloads[-1]["alcance_certificado"] == "trabajo_de_la_corrida"

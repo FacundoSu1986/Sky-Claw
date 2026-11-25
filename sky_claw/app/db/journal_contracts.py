@@ -36,6 +36,25 @@ TX_STATUS_COMMITTED = TransactionStatus.COMMITTED.value
 #: revertida mentiría sobre un cache que sí existe.
 TEARDOWN_INCOMPLETE_KIND = "teardown_incomplete"
 
+#: Discriminador de la operación que registra el VEREDICTO del precache de grass (P1).
+#: Una TX commiteada puede afirmar «el ritual produjo un caché» y a la vez «ese caché NO se pudo
+#: certificar»; como ``transactions`` no tiene metadata, ese estado se expresa con una operación
+#: dentro de la TX (mismo mecanismo que ``TEARDOWN_INCOMPLETE_KIND``). La metadata NO lleva
+#: ``files_touched``: sembrar evidencia de artefactos falsa rompería el oráculo de recovery.
+GRASS_VERDICT_KIND = "grass_cache_verdict"
+
+
+def is_grass_verdict_unverified(metadata: Mapping[str, Any] | None) -> bool:
+    """True si *metadata* es un veredicto de grass que NO certificó el caché.
+
+    El veredicto viaja igual (para auditar), pero sólo este predicado distingue «TX commiteada con
+    caché certificado» de «TX commiteada con caché presente y no certificado» sin abrir el resto de
+    la metadata.
+    """
+    if not isinstance(metadata, Mapping):
+        return False
+    return metadata.get("kind") == GRASS_VERDICT_KIND and metadata.get("certificado") is False
+
 
 def is_flight_report_committed(metadata: Mapping[str, Any] | None) -> bool:
     """True si *metadata* es la de un ``FlightReport`` de una TX commiteada.

@@ -46,7 +46,11 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sky_claw.app.db.journal import OperationStatus, OperationType, TransactionStatus
-from sky_claw.app.db.journal_contracts import TEARDOWN_INCOMPLETE_KIND, is_flight_report_committed
+from sky_claw.app.db.journal_contracts import (
+    GRASS_VERDICT_KIND,
+    TEARDOWN_INCOMPLETE_KIND,
+    is_flight_report_committed,
+)
 from sky_claw.app.db.locks import (
     LockAcquisitionError,
     LockReleaseError,
@@ -537,6 +541,7 @@ class GrassCacheService:
             # DENTRO del try: una cancelación acá tampoco puede dejar la TX
             # pendiente (antes escapaba sin ningún intento de cierre).
             await self._journalizar_teardown_incompleto(journal_tx, teardown_failures)
+            await self._journalizar_veredicto(journal_tx, run_result)
             await self._journal_close(journal_tx, exito=exito)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             # Auditoría hostil (V-1): este cierre corre DESPUÉS de soltar los
@@ -564,6 +569,11 @@ class GrassCacheService:
                 "success": resultado["success"],
                 "outcome": resultado.get("outcome"),
                 "duration_seconds": resultado["duration_seconds"],
+                # P1: el evento lleva el veredicto. Un suscriptor que necesite certificación NO
+                # puede inferirla de `success` (D1 del propietario).
+                "verdict": resultado.get("verdict"),
+                "certificado": resultado.get("certificado"),
+                "alcance_certificado": resultado.get("alcance_certificado"),
             },
         )
         return resultado
@@ -626,6 +636,9 @@ class GrassCacheService:
                 # progreso se ata al perfil de ORIGEN para que dos perfiles de la
                 # misma instalación no se presten progreso.
                 progress_profile=pm.source_profile,
+                # P1 (F-12/C1): los worldspaces pedidos son parte de la identidad de la corrida y
+                # requisito de certificación (un worldspace pedido sin artefactos no certifica).
+                worldspaces=tuple(params.worldspaces),
                 **overrides,
             )
         except ValueError as exc:
@@ -730,6 +743,53 @@ class GrassCacheService:
                 exc_info=True,
             )
 
+    async def _journalizar_veredicto(self, journal_tx: int | None, run_result: GrassCacheRunResult | None) -> None:
+        """Registra el VEREDICTO del run dentro de la TX (P1).
+
+        Una TX commiteada puede afirmar «el ritual produjo un caché» y a la vez «ese caché NO se
+        pudo certificar». ``transactions`` no tiene metadata, así que el estado mixto se expresa con
+        una operación —el mismo mecanismo que U-09—: ``complete_operation`` cuando certifica y
+        ``fail_operation`` con las razones cuando no. La metadata **no** lleva ``files_touched``:
+        sembrar evidencia de artefactos falsearía el oráculo de recovery.
+
+        Best-effort, como el resto del cierre: el journal nunca enmascara el resultado del ritual.
+        """
+        if self._journal is None or journal_tx is None or run_result is None:
+            return
+        evidencia = run_result.evidencia or {}
+        worldspaces = evidencia.get("worldspaces_solicitados") or []
+        metadata: dict[str, Any] = {
+            "kind": GRASS_VERDICT_KIND,
+            "verdict": run_result.verdict,
+            "certificado": run_result.certificado,
+            "razones": list(run_result.verdict_razones),
+            "alcance_certificado": run_result.alcance_certificado,
+            "mode": run_result.mode,
+            "worldspaces": list(worldspaces) if isinstance(worldspaces, list) else [],
+        }
+        try:
+            entry_id = await self._journal.begin_operation(
+                agent_id=self.AGENT_ID,
+                # No hay un OperationType «verificar»: el veredicto describe la MUTACIÓN del caché
+                # que esta corrida produjo (o no produjo). El discriminador real es `kind`.
+                operation_type=OperationType.FILE_MODIFY,
+                target_path=str(evidencia.get("overwrite_grass_dir") or "overwrite/Grass"),
+                transaction_id=journal_tx,
+                metadata=metadata,
+            )
+            if run_result.certificado:
+                await self._journal.complete_operation(entry_id)
+            else:
+                razones = "; ".join(run_result.verdict_razones) or "sin evidencia suficiente"
+                await self._journal.fail_operation(entry_id, error=f"caché no certificado: {razones}")
+        except Exception:  # noqa: BLE001 — best-effort: perder el veredicto no puede tumbar el run
+            logger.warning(
+                "No se pudo journalizar el veredicto del ritual de grass (tx=%s, verdict=%s)",
+                journal_tx,
+                run_result.verdict,
+                exc_info=True,
+            )
+
     async def _journal_rollback_si_sigue_pendiente(self, journal_tx: int | None) -> None:
         """Reintento de cierre tras una cancelación en la ventana post-lock.
 
@@ -788,6 +848,15 @@ class GrassCacheService:
             "flag_residual": run_result.flag_residual,
             "progreso_perdido": run_result.progreso_perdido,
             "flag_alternativo_residual": run_result.flag_alternativo_residual,
+            "limpieza_errores": list(run_result.limpieza_errores),
+            # P1: el veredicto viaja SIEMPRE. `success` no es certificación (D1 del propietario):
+            # un consumidor que necesite una generación certificada mira `certificado`/`verdict`/
+            # `alcance_certificado`, no `success`.
+            "verdict": run_result.verdict,
+            "certificado": run_result.certificado,
+            "verdict_razones": list(run_result.verdict_razones),
+            "alcance_certificado": run_result.alcance_certificado,
+            "evidencia": run_result.evidencia,
             "duration_seconds": duracion,
         }
 
