@@ -2806,6 +2806,22 @@ async def test_h2_disco_lleno_con_juego_no_verificable_es_unknown(
     assert "terminalidad_no_verificada" in resultado.verdict_razones
 
 
+async def test_h2_sin_intento_de_spawn_no_declara_terminado(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """H2/H5: «no lancé» no es «el proceso terminó»: son estados distintos y se distinguen."""
+    cancel = asyncio.Event()
+    cancel.set()
+
+    resultado = await _correr(_runner(config, mo2), cancel)
+
+    assert resultado.outcome == "cancelled"
+    assert resultado.evidencia["lanzamiento"] == "no_intentado"
+    assert resultado.evidencia["terminalidad"] == "sin_proceso"
+    assert resultado.evidencia["terminalidad_verificada"] is True
+    mo2.launch_game.assert_not_awaited()
+
+
 async def test_h2_spawn_fallido_no_es_unknown(config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos) -> None:
     """H2/H5: si el lanzamiento no se efectivizó (nunca hubo proceso), es failed, no unknown."""
     config = dataclasses.replace(config, spawn_window_s=0.05)
@@ -2820,7 +2836,10 @@ async def test_h2_spawn_fallido_no_es_unknown(config: GrassCacheConfig, mo2: Asy
 
     assert resultado.outcome == "spawn_failed"
     assert resultado.verdict == "failed"
-    assert resultado.evidencia["terminalidad"] == "terminado"
+    # H2/H5: la ausencia se DEMOSTRÓ (búsqueda exhaustiva sin proceso nacido en la ventana del
+    # intento), así que el estado es `sin_proceso`, no «terminado por no haberlo encontrado».
+    assert resultado.evidencia["terminalidad"] == "sin_proceso"
+    assert resultado.evidencia["lanzamiento"] == "rechazado"
 
 
 # ---------------------------------------------------------------------------
@@ -2948,3 +2967,92 @@ async def test_h2_corte_por_progreso_perdido_con_juego_no_verificable_es_unknown
     assert resultado.outcome == "flag_sin_progreso"
     assert resultado.verdict == "unknown"
     assert "terminalidad_no_verificada" in resultado.verdict_razones
+
+
+async def test_h2_no_relanza_si_el_intento_anterior_no_tiene_terminalidad(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H2/H5: con estado previo vivo o indeterminado NO se autoriza otro lanzamiento."""
+    config = dataclasses.replace(config, terminality_wait_s=0.05, max_restarts=2, relaunch_delay_s=0.01)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        # El juego nace, escribe su celda y muere: el ciclo pide un relanzamiento.
+        _juego_escribe_cgid(config, "celda_0.cgid")
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    # El proceso queda vivo tras el crash: el PRIMER cierre ya no puede demostrar muerte.
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_clasificar_terminalidad", lambda self, gp: "vivo")
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_kill_game_tree_sync", lambda *a, **k: None)
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome in {"terminalidad_indeterminada", "flag_sin_progreso"}
+    if resultado.outcome == "terminalidad_indeterminada":
+        assert mo2.launch_game.await_count == 1, "no puede haber un segundo lanzamiento"
+    assert resultado.verdict == "unknown"
+    assert resultado.certificado is False
+
+
+async def test_h2_terminalidad_no_verificada_no_archiva_el_progreso(
+    config: GrassCacheConfig,
+    mo2: AsyncMock,
+    mundo: _MundoProcesos,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """H2/H5: un caché que puede seguir escribiéndose NO se archiva como evidencia estable."""
+    estado = tmp_path / "estado_h2"
+    config = dataclasses.replace(config, terminality_wait_s=0.05, backup_root=estado)
+    archivos: list[str] = []
+
+    def _archivar_registra(*args: Any, **kwargs: Any) -> None:
+        archivos.append("archivado")
+
+    import sky_claw.local.tools.grass_cache_safety as gcs_mod
+
+    monkeypatch.setattr(gcs_mod, "archivar_progreso", _archivar_registra)
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_clasificar_terminalidad", lambda self, gp: "vivo")
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_kill_game_tree_sync", lambda *a, **k: None)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "Tamrielx0000y0000.cgid")
+        with (config.game_path / "PrecacheGrass.txt").open("ab") as fh:
+            fh.write(b"cell_Tamriel_0_0\n")
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.verdict == "unknown"
+    assert archivos == [], "no se archiva progreso de un caché que puede estar en curso"
+    assert resultado.evidencia.get("archivado_omitido") is True
+    # El flag SÍ se neutraliza: dejarlo mete al juego del usuario en modo precache.
+    assert not (config.game_path / "PrecacheGrass.txt").exists()
+
+
+async def test_hc_cache_parcial_de_dgid_y_fail_no_es_vacio(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """H-C: un caché parcial compuesto por `.dgid`/`.fail` no puede reportarse como vacío."""
+    config = dataclasses.replace(config, max_runtime_s=0.5)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        (config.overwrite_grass_dir).mkdir(parents=True, exist_ok=True)
+        (config.overwrite_grass_dir / "Tamrielx0000y0000.dgid").write_bytes(b"dgid")
+        (config.overwrite_grass_dir / "Tamrielx0001y0000.fail").write_bytes(b"1\n")
+        mundo.alta_juego(100, 1100)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "timeout"
+    assert resultado.verdict == "partial", "hay artefactos conservados: no es un caché vacío"
+    assert resultado.evidencia["inventario_final"]["archivos"] == 2
+    assert resultado.evidencia["inventario_final"]["dgid_count"] == 1
+    assert resultado.evidencia["inventario_final"]["fail_count"] == 1

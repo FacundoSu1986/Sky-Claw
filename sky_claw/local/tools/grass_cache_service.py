@@ -471,6 +471,8 @@ class GrassCacheService:
                     journal_tx = await self._journal.begin_transaction(
                         "Grass precache (NGIO, Stage 8)", agent_id=self.AGENT_ID
                     )
+                runner: GrassCacheRunner | None = None
+                terminalidad_sin_probar: str | None = None
                 try:
                     # -- Fase B: preparación aislada (solo el clon se muta) --
                     await pm.create_clone_profile()
@@ -480,6 +482,9 @@ class GrassCacheService:
                     # -- Fase C: crash-loop --
                     runner = self._runner_factory(config, mo2, on_progress=self._make_progress_publisher())
                     run_result = await runner.run()
+                    # H2/H5: si no se demostró que el juego terminó, el teardown NO destruye el
+                    # clon/mod: un proceso vivo puede seguir usándolos. Se preserva y se reporta.
+                    terminalidad_sin_probar = self._terminalidad_no_verificada(run_result)
                 finally:
                     # -- Fase D: restaurar el entorno SIEMPRE que ESTA invocación
                     # haya empezado el setup, y DENTRO del lock: con el lock ya
@@ -488,7 +493,20 @@ class GrassCacheService:
                     # overwrite/Grass — jamás se borra (parcial reanuda; completo
                     # es el producto). Los fallos de limpieza se exponen en el
                     # resultado en vez de tragarse (§1.6).
-                    teardown_failures = await self._teardown_best_effort()
+                    sin_verificar = terminalidad_sin_probar
+                    if sin_verificar is None and runner is not None:
+                        # Camino de excepción: el resultado no se construyó, pero el runner sí
+                        # clasificó la terminalidad antes de propagar.
+                        propia = runner.terminalidad
+                        sin_verificar = str(propia) if propia in ("vivo", "indeterminado") else None
+                    if sin_verificar is not None:
+                        teardown_failures = [
+                            "teardown del clon/mod OMITIDO: terminalidad del juego NO demostrada "
+                            f"({sin_verificar}); el perfil temporal y su configuración se "
+                            "conservan porque un proceso vivo puede estar usándolos"
+                        ]
+                    else:
+                        teardown_failures = await self._teardown_best_effort()
         except LockAcquisitionError as exc:
             # Sin lock no somos dueños de NINGÚN estado: ni Fase B ni teardown.
             return self._error(f"No se pudo tomar el lock del ritual de grass: {exc}", inicio)
@@ -755,6 +773,17 @@ class GrassCacheService:
                 exc_info=True,
             )
 
+    @staticmethod
+    def _terminalidad_no_verificada(run_result: GrassCacheRunResult | None) -> str | None:
+        """Terminalidad observada cuando NO permite afirmar que el juego terminó (H2/H5)."""
+        if run_result is None:
+            return None
+        evidencia = run_result.evidencia or {}
+        terminalidad = evidencia.get("terminalidad") if isinstance(evidencia, dict) else None
+        # Sólo los estados explícitamente no verificables bloquean el teardown; cualquier otro
+        # valor (incluido el de un doble de test sin evidencia) no lo bloquea.
+        return str(terminalidad) if terminalidad in ("vivo", "indeterminado") else None
+
     async def _journalizar_veredicto(self, journal_tx: int | None, resultado: dict[str, Any] | None) -> None:
         """Registra el VEREDICTO ya reconciliado dentro de la TX (P1 / H6).
 
@@ -808,6 +837,7 @@ class GrassCacheService:
                 journal_tx,
                 metadata["verdict"],
                 exc_info=True,
+                extra={"pipeline_stage": 8},
             )
 
     @staticmethod
@@ -842,6 +872,7 @@ class GrassCacheService:
             razon,
             veredicto.verdict,
             final.verdict,
+            extra={"pipeline_stage": 8},
         )
 
     async def _journal_rollback_si_sigue_pendiente(self, journal_tx: int | None) -> None:

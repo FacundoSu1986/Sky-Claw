@@ -46,6 +46,7 @@ GrassCacheOutcome = Literal[
     "flag_sin_progreso",
     "flag_alternativo_presente",
     "cache_cambio_despues_del_plan",
+    "terminalidad_indeterminada",
 ]
 
 #: Cuánto se puede certificar del caché que quedó.
@@ -61,8 +62,14 @@ GrassCacheVerdict = Literal[
 #: Qué parte del caché cubre la certificación (D2 del propietario, RD-12).
 AlcanceCertificado = Literal["corrida_completa", "trabajo_de_la_corrida", "ninguno"]
 
-#: Tri-estado de la terminalidad del proceso del juego.
-Terminalidad = Literal["terminado", "vivo", "indeterminado"]
+#: Tri-estado de la terminalidad del proceso del juego, más el caso «no hay proceso».
+#: ``sin_proceso`` NO es «no lo encontré»: es «no hay proceso que pueda estar vivo» — o el spawn no
+#: se intentó, o se demostró su ausencia. Cualquier otro valor impide certificar.
+Terminalidad = Literal["sin_proceso", "terminado", "vivo", "indeterminado"]
+
+#: Qué pasó con el lanzamiento del intento actual (H2/H5). Se publica como evidencia para poder
+#: distinguir «no lancé» de «lancé y no sé qué pasó», que antes se colapsaban en «terminado».
+EstadoLanzamiento = Literal["no_intentado", "rechazado", "solicitado_sin_atribucion", "atribuido"]
 
 TrabajoDeLaCorrida = Literal["demostrado", "no_demostrado"]
 IntegridadObservable = Literal["sin_fallos_conocidos", "con_fallos_conocidos", "no_evaluada"]
@@ -89,7 +96,13 @@ CODIGOS_DE_RAZON: Final[tuple[str, ...]] = (
 
 _TERMINACIONES_PARCIALES: Final[frozenset[str]] = frozenset({"stalled", "timeout", "max_restarts", "disk_full"})
 _CORTES_DE_CONTRATO: Final[frozenset[str]] = frozenset(
-    {"spawn_failed", "flag_sin_progreso", "flag_alternativo_presente", "cache_cambio_despues_del_plan"}
+    {
+        "spawn_failed",
+        "flag_sin_progreso",
+        "flag_alternativo_presente",
+        "cache_cambio_despues_del_plan",
+        "terminalidad_indeterminada",
+    }
 )
 
 
@@ -158,6 +171,8 @@ class EvidenciaVeredicto:
     baseline_ilegible: bool = False
     #: `.fail` que existen pero no se pudieron leer: ni ausentes ni evaluables (H1).
     fallos_no_evaluables: int = 0
+    #: Estado del lanzamiento del intento que se está evaluando (H2/H5).
+    lanzamiento: EstadoLanzamiento = "no_intentado"
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,8 +277,9 @@ def evaluar_veredicto(ev: EvidenciaVeredicto) -> VeredictoCache:
         return _veredicto("unknown", ("cache_ilegible",))
 
     # 2. Si no se puede probar que el proceso terminó, tampoco se puede certificar el caché: pudo
-    #    seguir escribiéndose después de la última lectura.
-    if ev.terminalidad != "terminado":
+    #    seguir escribiéndose después de la última lectura. `sin_proceso` es el ÚNICO estado que no
+    #    exige prueba de muerte: o no se lanzó, o se demostró que no hay proceso vivo.
+    if ev.terminalidad not in ("terminado", "sin_proceso"):
         return _veredicto("unknown", ("terminalidad_no_verificada",))
 
     # Defensa en profundidad (H1): si el inventario cuenta `.fail` que la evidencia no trae, hay
@@ -393,6 +409,7 @@ __all__ = [
     "GrassCacheVerdict",
     "IntegridadObservable",
     "Terminalidad",
+    "EstadoLanzamiento",
     "TrabajoDeLaCorrida",
     "VeredictoCache",
     "evaluar_veredicto",

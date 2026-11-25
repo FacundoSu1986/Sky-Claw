@@ -1655,3 +1655,41 @@ async def test_h6_certificacion_valida_se_mantiene(tmp_path: pathlib.Path) -> No
     assert resultado["certificado"] is True
     assert resultado["verdict"] == "completed_verified"
     assert _entradas_de_veredicto(journal)[0]["metadata"]["certificado"] is True
+
+
+async def test_h2_terminalidad_no_verificada_omite_el_teardown(tmp_path: pathlib.Path) -> None:
+    """H2/H5: con el juego posiblemente vivo NO se destruye el clon/mod (se preserva y se reporta)."""
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=False,
+        verdict="unknown",
+        certificado=False,
+        verdict_razones=("terminalidad_no_verificada",),
+        evidencia={"terminalidad": "vivo", "lanzamiento": "atribuido"},
+    )
+    service, colab = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    colab["profile_manager"].teardown.assert_not_awaited()
+    assert any("teardown del clon/mod OMITIDO" in fallo for fallo in resultado["teardown_failures"])
+    assert resultado["certificado"] is False
+    journal.commit_transaction.assert_not_awaited()
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+async def test_h2_terminalidad_demostrada_hace_teardown_normal(tmp_path: pathlib.Path) -> None:
+    """Contraprueba: con terminalidad demostrada el teardown sigue ocurriendo."""
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        evidencia={"terminalidad": "terminado", "lanzamiento": "atribuido"},
+    )
+    service, colab = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    await service.generate(_PAYLOAD)
+
+    colab["profile_manager"].teardown.assert_awaited_once_with()

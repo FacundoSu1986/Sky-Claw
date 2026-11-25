@@ -75,6 +75,7 @@ from sky_claw.local.tools.grass_cache_safety import (
 from sky_claw.local.tools.grass_cache_verdict import (
     AlcanceCertificado,
     CacheObservado,
+    EstadoLanzamiento,
     EvidenciaVeredicto,
     GrassCacheOutcome,
     GrassCacheVerdict,
@@ -455,10 +456,20 @@ class GrassCacheRunner:
         #: Segundos sin avance observable en el corte por stall (None si no aplica).
         self._progreso_detenido_s: float | None = None
         #: Tri-estado de terminalidad del proceso del juego (RD-10 / H2).
-        self._terminalidad: Terminalidad = "terminado"
-        #: Último proceso ATRIBUIDO: aunque el caller pierda el handle, la terminalidad se verifica
-        #: sobre él (H2/H5). ``None`` = el lanzamiento nunca se efectivizó.
+        # H2/H5: ANTES de cualquier spawn el estado correcto es "sin_proceso", no "terminado".
+        self._terminalidad: Terminalidad = "sin_proceso"
+        #: Último proceso ATRIBUIDO (sólo para el cierre síncrono del camino de excepción).
         self._ultimo_atribuido: _GamePid | None = None
+        #: Atribución POR INTENTO: un PID de un intento anterior no prueba nada sobre el actual.
+        self._atribuciones: dict[int, _GamePid] = {}
+        #: ¿Se pidió el spawn en este intento? y ¿desde qué epoch wall-clock buscarlo?
+        self._spawn_solicitado: dict[int, bool] = {}
+        self._epoch_del_intento: dict[int, float] = {}
+        self._intento_actual = 0
+        #: Qué pasó con el lanzamiento del intento actual (H2/H5).
+        self._lanzamiento: EstadoLanzamiento = "no_intentado"
+        #: Conteo barato de TODOS los artefactos al cerrar (H-C: `.dgid`/`.fail` también son caché).
+        self._conteo_artefactos: CacheObservado | None = None
         #: Worldspaces que NGIO DECLARÓ terminados (líneas `ws_` del flag): evidencia, no requisito.
         self._ws_declarados: set[str] = set()
         #: Offset de lectura incremental del flag y última muestra del watchdog.
@@ -471,6 +482,20 @@ class GrassCacheRunner:
     def neutralizacion(self) -> NeutralizacionFlag | None:
         """Resultado de archivar/borrar el flag, o ``None`` si no se adoptó."""
         return self._neutralizacion
+
+    @property
+    def terminalidad(self) -> Terminalidad:
+        """Última terminalidad observada del proceso del juego (H2/H5).
+
+        El servicio la consulta también cuando el run propaga una excepción (cancelación dura): sin
+        esto, un teardown destruiría el perfil temporal que un proceso vivo pueda estar usando.
+        """
+        return self._terminalidad
+
+    @property
+    def lanzamiento(self) -> EstadoLanzamiento:
+        """Estado del último lanzamiento intentado (``no_intentado``/``rechazado``/…)."""
+        return self._lanzamiento
 
     # ------------------------------------------------------------------
     # API pública
@@ -508,6 +533,10 @@ class GrassCacheRunner:
         # RD-11: el veredicto NO puede quedar cerrado antes de neutralizar el flag. Se RE-EVALÚA la
         # misma evidencia con el resultado real de la limpieza; el provisional nunca se publica.
         resultado = self._veredicto_final(resultado, limpio=limpio)
+        if self._neutralizacion is not None and self._terminalidad not in ("terminado", "sin_proceso"):
+            # H2/H5: el archivado del progreso se omitió a propósito (caché posiblemente en curso).
+            # Aplica también a los caminos sin evidencia de egreso (timeout, cancelación, cortes).
+            resultado = dataclasses.replace(resultado, evidencia={**resultado.evidencia, "archivado_omitido": True})
         if limpieza is not None and not limpieza.limpio:
             self._avisar_limpieza_incompleta()
             # Una limpieza incompleta no es éxito, ni aunque el outcome haya
@@ -539,6 +568,10 @@ class GrassCacheRunner:
         evidencia = dataclasses.replace(self._evidencia, limpieza_limpia=limpio)
         self._evidencia = evidencia
         veredicto = evaluar_veredicto(evidencia)
+        evidencia_dict = {**resultado.evidencia, **veredicto.a_dict()}
+        if self._neutralizacion is not None and self._terminalidad not in ("terminado", "sin_proceso"):
+            # H2/H5: el archivado del progreso se omitió a propósito (caché posiblemente en curso).
+            evidencia_dict["archivado_omitido"] = True
         return dataclasses.replace(
             resultado,
             success=veredicto.exito_operacional,
@@ -546,7 +579,7 @@ class GrassCacheRunner:
             certificado=veredicto.certificado,
             verdict_razones=veredicto.razones,
             alcance_certificado=veredicto.alcance_certificado,
-            evidencia={**resultado.evidencia, **veredicto.a_dict()},
+            evidencia=evidencia_dict,
             message=self._mensaje_de_veredicto(veredicto),
         )
 
@@ -719,6 +752,7 @@ class GrassCacheRunner:
 
             # ``intento`` = lanzamientos ya hechos: el 0 es el autorizado por el plan.
             for intento in range(self._config.max_restarts + 1):
+                self._intento_actual = intento
                 if time.monotonic() - self._start_mono >= self._config.max_runtime_s:
                     # Deadline global también entre relanzamientos: acota el
                     # overshoot a un relaunch_delay (auditoría #287).
@@ -772,6 +806,21 @@ class GrassCacheRunner:
                         await self._snapshot_cache(),
                     )
                 game_pid = None
+                # H2/H5: la atribución es POR INTENTO y ningún lanzamiento nuevo se autoriza si el
+                # estado del intento anterior es vivo o indeterminado. Un `launch_game` sobre un
+                # proceso potencialmente vivo duplica el crash-loop y puede escribir el caché con
+                # dos juegos a la vez.
+                if intento > 0 and self._terminalidad not in ("terminado", "sin_proceso"):
+                    return self._resultado(
+                        "terminalidad_indeterminada",
+                        "No se relanza: el intento anterior no tiene terminalidad demostrada "
+                        f"({self._lanzamiento}/{self._terminalidad}). El caché y el proceso quedan "
+                        "como están; verificar a mano antes de reintentar.",
+                        crash_count,
+                        await self._snapshot_cache(),
+                    )
+                self._spawn_solicitado[intento] = True
+                self._epoch_del_intento[intento] = time.time() - _CREATE_TIME_EPSILON
                 try:
                     info: dict[str, Any] = await self._mo2.launch_game(self._config.profile)
                     mo2_pid: int | None = int(info["pid"])
@@ -860,6 +909,10 @@ class GrassCacheRunner:
                     salida = await self._vigilar(game_pid, cancel, crash_count, t_spawn_mono=t_spawn_mono)
                     if salida is not None:
                         return salida
+                    # H2/H5: el ciclo terminó por muerte OBSERVADA, pero antes de decidir un
+                    # relanzamiento se registra la terminalidad del intento que acaba de cerrar:
+                    # el guard de la próxima iteración no puede basarse en una suposición.
+                    self._terminalidad = await self._verificar_terminalidad(game_pid, cancel)
                     crash_count += 1
 
                 # ---- Post-crash ----
@@ -913,7 +966,7 @@ class GrassCacheRunner:
                 with contextlib.suppress(Exception):
                     self._kill_game_tree_sync(objetivo.pid, objetivo.create_time)
             with contextlib.suppress(Exception):
-                self._terminalidad = "terminado" if objetivo is None else self._clasificar_terminalidad(objetivo)
+                self._terminalidad = "sin_proceso" if objetivo is None else self._clasificar_terminalidad(objetivo)
             if self._terminalidad != "terminado":
                 logger.warning(
                     "Run abortado con terminalidad %s del PID %s: el caché pudo seguir escribiéndose.",
@@ -1358,6 +1411,7 @@ class GrassCacheRunner:
         pid = await asyncio.to_thread(self._scan_for_game_sync, mo2_pid, min_create_epoch)
         if pid is not None:
             self._ultimo_atribuido = pid
+            self._atribuciones[self._intento_actual] = pid
         return pid
 
     def _scan_for_game_sync(self, mo2_pid: int, min_create_epoch: float) -> _GamePid | None:
@@ -1538,6 +1592,9 @@ class GrassCacheRunner:
                 grass_dir=self._config.overwrite_grass_dir,
                 raiz_estado=self._config.backup_root,
                 perfil=self._config.perfil_de_progreso,
+                # H2/H5: si la terminalidad no está demostrada, el caché puede seguir escribiéndose
+                # y NO se archiva esa foto como evidencia de reanudación. El flag igual se borra.
+                archivar=self._terminalidad in ("terminado", "sin_proceso"),
             )
             # Se registra ACÁ, no en el llamador: si la cancelación llega
             # mientras el hilo neutraliza, `esperar_terminar` espera a que
@@ -1581,19 +1638,48 @@ class GrassCacheRunner:
     # ------------------------------------------------------------------
 
     async def _verificar_terminalidad(self, game_pid: _GamePid | None, cancel: asyncio.Event) -> Terminalidad:
-        """Tri-estado, con espera ACOTADA y re-verificada (RD-10 / H2).
+        """Terminalidad del INTENTO ACTUAL, sin colapsar «no hay proceso» en «terminado» (H2/H5).
 
-        Sin esta espera, la latencia normal de muerte de ``SkyrimSE.exe`` convertiría en ``unknown``
-        cualquier run bueno. La espera no puede colgar el run: es acotada, la corta la cancelación y
-        no retiene workers.
+        Seis estados observables, vía ``terminalidad`` + ``lanzamiento``:
 
-        ``game_pid=None`` **no** significa «terminado»: si hubo un proceso atribuido antes, se
-        verifica ÉSE. Sólo cuando ningún lanzamiento se efectivizó (nunca hubo proceso) no hay nada
-        cuya muerte haya que demostrar.
+        | situación                                   | ``lanzamiento``            | ``terminalidad`` |
+        |---------------------------------------------|----------------------------|------------------|
+        | spawn no intentado                          | ``no_intentado``           | ``sin_proceso``  |
+        | spawn rechazado / ausencia DEMOSTRADA       | ``rechazado``              | ``sin_proceso``  |
+        | spawn solicitado con atribución desconocida | ``solicitado_sin_atribucion`` | ``indeterminado`` |
+        | proceso atribuido y muerto                  | ``atribuido``              | ``terminado``    |
+        | proceso atribuido vivo                      | ``atribuido``              | ``vivo``         |
+        | no se puede clasificar                      | ``atribuido``              | ``indeterminado`` |
+
+        **Un PID de un intento anterior NO prueba la terminalidad del actual**: la atribución es por
+        intento. Si el actual no atribuyó, se busca EXHAUSTIVAMENTE un proceso nacido en su ventana;
+        encontrarlo lo adopta, no encontrarlo (con la búsqueda funcionando) demuestra ausencia, y una
+        búsqueda que falla deja ``indeterminado`` — nunca ``sin_proceso``.
         """
-        objetivo = game_pid if game_pid is not None else self._ultimo_atribuido
+        intento = self._intento_actual
+        objetivo = game_pid if game_pid is not None else self._atribuciones.get(intento)
+        if objetivo is None and game_pid is not None:
+            self._atribuciones[intento] = game_pid
+            objetivo = game_pid
         if objetivo is None:
-            return "terminado"
+            if not self._spawn_solicitado.get(intento, False):
+                self._lanzamiento = "no_intentado"
+                return "sin_proceso"
+            resultado, encontrado = await asyncio.to_thread(self._buscar_proceso_del_intento, intento)
+            if resultado == "encontrado" and encontrado is not None:
+                self._atribuciones[intento] = encontrado
+                self._lanzamiento = "atribuido"
+                return await self._esperar_muerte(encontrado, cancel)
+            if resultado == "ausente":
+                self._lanzamiento = "rechazado"
+                return "sin_proceso"
+            self._lanzamiento = "solicitado_sin_atribucion"
+            return "indeterminado"
+        self._lanzamiento = "atribuido"
+        return await self._esperar_muerte(objetivo, cancel)
+
+    async def _esperar_muerte(self, objetivo: _GamePid, cancel: asyncio.Event) -> Terminalidad:
+        """Espera ACOTADA a que el proceso atribuido muera (RD-10). La corta la cancelación."""
         limite = time.monotonic() + self._config.terminality_wait_s
         while True:
             estado = await asyncio.to_thread(self._clasificar_terminalidad, objetivo)
@@ -1604,6 +1690,43 @@ class GrassCacheRunner:
             if await self._sleep_or_cancel(cancel, _ESPERA_TERMINALIDAD_S):
                 return "vivo"
 
+    def _buscar_proceso_del_intento(self, intento: int) -> tuple[str, _GamePid | None]:
+        """Busca un proceso del juego nacido en la ventana del intento.
+
+        Devuelve ``("encontrado", pid)``, ``("ausente", None)`` cuando la búsqueda corrió completa y
+        no hay ninguno, o ``("fallo", None)`` cuando no se pudo inspeccionar el sistema: eso es
+        ``indeterminado``, jamás una ausencia.
+        """
+        minimo = self._epoch_del_intento.get(intento, 0.0)
+        nombres = {nombre.lower() for nombre in self._config.game_exe_names}
+        game_dir = self._config.game_path.resolve()
+        encontrados: list[_GamePid] = []
+        try:
+            for proc in psutil.process_iter(["name", "create_time", "exe"]):
+                try:
+                    if proc.name().lower() not in nombres:
+                        continue
+                    creado = proc.create_time()
+                    if creado < minimo:
+                        continue  # de un intento anterior: no cuenta para éste
+                    exe = proc.exe()
+                except psutil.Error:
+                    continue
+                if not exe:
+                    continue
+                try:
+                    if pathlib.Path(exe).resolve().parent != game_dir:
+                        continue
+                except OSError:
+                    continue
+                encontrados.append(_GamePid(pid=int(proc.pid), create_time=creado))
+        except psutil.Error:
+            logger.warning("No se pudo inspeccionar el sistema para verificar el lanzamiento.", exc_info=True)
+            return ("fallo", None)
+        if encontrados:
+            return ("encontrado", encontrados[0])
+        return ("ausente", None)
+
     async def _cerrar_y_verificar(self, game_pid: _GamePid | None, cancel: asyncio.Event) -> None:
         """ÚNICO cierre de una salida terminal: pide el kill y DEMUESTRA (o declara) terminalidad.
 
@@ -1611,8 +1734,41 @@ class GrassCacheRunner:
         ritual —cancelación, disco, deadline, stall, spawn fallido, agotamiento de reintentos,
         cortes de contrato— pasa por acá antes de construir el resultado.
         """
-        await self._matar_todo(game_pid)
+        await self._matar_todo(game_pid if game_pid is not None else self._atribuciones.get(self._intento_actual))
         self._terminalidad = await self._verificar_terminalidad(game_pid, cancel)
+        self._conteo_artefactos = await asyncio.to_thread(self._conteo_rapido_sync)
+
+    def _conteo_rapido_sync(self) -> CacheObservado:
+        """Conteo barato de TODOS los artefactos reconocidos, para la evidencia de salidas parciales.
+
+        ``_snapshot_cache`` cuenta sólo ``.cgid``; un caché parcial compuesto por ``.dgid``/``.fail``
+        no es «vacío» (H-C). Sólo se hace `stat` de los `.cgid` (hace falta el tamaño para decidir el
+        fallo de zero-bounds); el resto es conteo de nombres.
+        """
+        cgid = cgid_bytes = dgid = fail = 0
+        try:
+            candidatos = list(self._config.overwrite_grass_dir.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            return CacheObservado()
+        except OSError:
+            return CacheObservado()
+        for archivo in candidatos:
+            sufijo = archivo.suffix.lower()
+            if sufijo == ".cgid":
+                cgid += 1
+                with contextlib.suppress(OSError):
+                    cgid_bytes += int(archivo.stat().st_size)
+            elif sufijo == ".dgid":
+                dgid += 1
+            elif sufijo == ".fail":
+                fail += 1
+        return CacheObservado(
+            cgid_count=cgid,
+            cgid_bytes=cgid_bytes,
+            dgid_count=dgid,
+            fail_count=fail,
+            archivos=cgid + dgid + fail,
+        )
 
     def _clasificar_terminalidad(self, game_pid: _GamePid) -> Terminalidad:
         """``terminado`` / ``vivo`` / ``indeterminado`` sin matar ni tocar a nadie.
@@ -1757,6 +1913,7 @@ class GrassCacheRunner:
             worldspaces_declarados_por_ngio=tuple(sorted(self._ws_declarados)),
             progreso_observado=self._progreso_observado,
             fallos_no_evaluables=no_evaluables,
+            lanzamiento=self._lanzamiento,
         )
 
     def _evidencia_a_dict(self, evidencia: EvidenciaVeredicto) -> dict[str, Any]:
@@ -1793,6 +1950,9 @@ class GrassCacheRunner:
             ),
             "baseline_ilegible": evidencia.baseline_ilegible,
             "progreso_observado": evidencia.progreso_observado,
+            # H2/H5: «no lancé», «lancé y no sé qué pasó» y «lancé y murió» no se confunden.
+            "lanzamiento": evidencia.lanzamiento,
+            "terminalidad_verificada": evidencia.terminalidad in ("terminado", "sin_proceso"),
             "progreso_detenido_s": self._progreso_detenido_s,
             "terminalidad": evidencia.terminalidad,
             "cobertura_usvfs": "no_verificada",
@@ -1843,15 +2003,26 @@ class GrassCacheRunner:
         )
 
     def _evidencia_ligera(self, outcome: GrassCacheOutcome, snap: tuple[int, int]) -> EvidenciaVeredicto:
-        """Evidencia mínima para los caminos que no pasan por ``_salida_exito``."""
+        """Evidencia mínima para los caminos que no pasan por ``_salida_exito``.
+
+        H-C: usa el conteo de TODOS los artefactos (``.cgid`` + ``.dgid`` + ``.fail``) cuando el
+        cierre lo tomó. ``snap`` sólo cuenta ``.cgid``: un caché parcial compuesto por ``.dgid`` o
+        ``.fail`` no es «vacío» y no puede reportarse como tal.
+        """
+        conteo = self._conteo_artefactos or CacheObservado(
+            cgid_count=snap[0],
+            cgid_bytes=snap[1],
+            archivos=snap[0],
+        )
         return EvidenciaVeredicto(
             outcome=outcome,
             modo=self._config.mode,
             terminalidad=self._terminalidad,
             limpieza_limpia=None,
-            inventario_final=CacheObservado(cgid_count=snap[0], cgid_bytes=snap[1], archivos=snap[0]),
+            inventario_final=conteo,
             progreso_observado=self._progreso_observado,
             worldspaces_solicitados=tuple(self._config.worldspaces),
+            lanzamiento=self._lanzamiento,
         )
 
 

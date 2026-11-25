@@ -243,3 +243,87 @@ Baseline del subconjunto (`verdict` + `runner` + `service`): **349 passed**.
 4. **`main` rojo ajeno a P1.** El gate `Main en verde` falló por `tests/test_bodyslide_journal.py`
    (`database is locked`, run 45677510174, material de #1024). Se documentó en el PR; al repararse
    `main`, el gate pasó.
+
+## 12. Revalidación de la ronda consolidada — terminalidad y evidencia parcial
+
+Dictamen: **BLOCKED** sobre `f160f36b`. Se corrigió **sólo** la familia pendiente (terminalidad y
+evidencia parcial) más los ajustes documentales. H1, H3, H4, H6 y H7 no se refactorizaron.
+
+### 12.1 Terminalidad: seis estados, no una equivalencia
+
+`_verificar_terminalidad` ya no colapsa «no lo encontré» en «terminado». El estado se compone de dos
+campos publicados en la evidencia (`terminalidad` + `lanzamiento`):
+
+| situación | `lanzamiento` | `terminalidad` |
+|---|---|---|
+| spawn no intentado | `no_intentado` | `sin_proceso` |
+| spawn rechazado / **ausencia demostrada** | `rechazado` | `sin_proceso` |
+| spawn solicitado con atribución desconocida | `solicitado_sin_atribucion` | `indeterminado` |
+| proceso atribuido y muerto | `atribuido` | `terminado` |
+| proceso atribuido vivo | `atribuido` | `vivo` |
+| no se puede clasificar | `atribuido` | `indeterminado` |
+
+- La atribución es **por intento** (`_atribuciones[intento]`): un PID del intento anterior **no**
+  prueba la terminalidad del actual.
+- Si el intento no atribuyó, se busca exhaustivamente un proceso del juego **nacido en su ventana**;
+  encontrarlo lo adopta, no encontrarlo (con la búsqueda corriendo completa) demuestra ausencia, y una
+  búsqueda que falla deja `indeterminado`.
+- El estado inicial del runner es `sin_proceso`/`no_intentado` (antes era `terminado`).
+- **Antes de cada relanzamiento** se registra la terminalidad del intento que cerró; si es `vivo` o
+  `indeterminado`, el siguiente lanzamiento **no se autoriza** y el run corta con el outcome nuevo
+  `terminalidad_indeterminada`.
+
+### 12.2 Contrato conjunto de neutralización y teardown
+
+| Situación | Flag | Archivado de progreso | Teardown del clon/mod |
+|---|---|---|---|
+| terminalidad `terminado`/`sin_proceso` | se neutraliza | sí | sí |
+| terminalidad `vivo`/`indeterminado` | se neutraliza (evitar modo precache) | **no** (`archivar=False`, `archivado_omitido=True`) | **no** (se preserva perfil y configuración) |
+
+`neutralizar_flag` ganó un parámetro **aditivo** `archivar=True` (default: comportamiento P0 intacto).
+No se declara `progreso_perdido` cuando se omite a propósito: se perdió nada, se decidió no archivar
+una foto de un caché que puede seguir escribiéndose. El servicio consulta la terminalidad del
+resultado **y** la del runner cuando el run propaga una excepción, para no destruir recursos que un
+proceso vivo pueda estar usando.
+
+**Escalado declarado (no se inventa mecanismo):** no existe hoy un fence que impida que OTRO ritual
+arranque mientras un proceso del ritual anterior siga vivo — el lock serializa, pero se libera al
+terminar el run. Se registra como riesgo heredado para P2/P3 junto con los requisitos del rig
+(§12.5). Tampoco se retienen locks después del run: eso bloquearía el pipeline indefinidamente.
+
+### 12.3 Evidencia parcial (H-C)
+
+`_evidencia_ligera` usaba `snap[0]`, que cuenta **sólo** `.cgid`: un caché parcial compuesto por
+`.dgid`/`.fail` se reportaba como vacío. Ahora el cierre terminal toma un conteo barato de los tres
+artefactos reconocidos (`_conteo_rapido_sync`: nombres para `.dgid`/`.fail`, `stat` sólo para `.cgid`)
+y la evidencia parcial lo usa.
+
+### 12.4 Mutantes de la ronda (6/6 muertos)
+
+Baseline: **355 passed** (`verdict` + `runner` + `service`).
+
+| Mutante | Resultado |
+|---|---|
+| M_A · «no hay proceso» tratado como «terminado» | **MUERTO** (test que distingue `sin_proceso` de `terminado`) |
+| M_B · teardown siempre | **MUERTO** |
+| M_C · evidencia parcial sólo con `.cgid` | **MUERTO** |
+| M_D · sin guard de relanzamiento | **MUERTO** |
+| M_E · archivar siempre | **MUERTO** |
+| M_F · sin verificar terminalidad antes de relanzar | **MUERTO** |
+
+> M_A sobrevivía en la primera corrida porque `sin_proceso` y `terminado` no cambiaban ningún
+> veredicto: se agregó la aserción que distingue los estados en la evidencia.
+
+### 12.5 Documentación y pendientes
+
+- **No se afirma que NGIO ejecutó `End()`**: la desaparición del flag es la señal que el runner
+  observa; que eso corresponda a `End()` es lo que dice la **fuente** de 1.0.13, no algo observado en
+  un rig. Las referencias del brief y de este audit se leen como presunción, no como ejecución
+  verificada.
+- **Matriz del journal**: la operación registra el veredicto **reconciliado** (certificado ⇒
+  `complete_operation`; no certificado ⇒ `fail_operation` con razones), alineado con la semántica de
+  `success` aprobada: `success` puede ser `True` con `certificado=False`.
+- **Logging estructurado**: las advertencias nuevas del servicio llevan `extra={"pipeline_stage": 8}`.
+- **Pendientes para P3**: los requisitos del autoinstalador (credenciales de Nexus por el mecanismo
+  del producto) y la **separación física del rig de pruebas** quedan registrados como pendientes de
+  P3; no se implementan acá.
