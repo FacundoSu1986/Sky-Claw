@@ -26,6 +26,7 @@ import pathlib
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from sky_claw.app.db.rollback_veto import mark_unknown_terminality
 from sky_claw.app.security.sanitize import sanitize_for_prompt
 from sky_claw.local.tools.output_targets import BODYSLIDE_MESHES_RESOURCE_ID
 
@@ -343,7 +344,13 @@ class BodySlidePipelineService:
                     # U-04: el puente fallo→excepción. Sin esto, un fallo sale limpio
                     # del stack, DirectoryRollback DESCARTA el backup y el árbol
                     # parcial queda en disco.
-                    raise _BodySlideRunFallidoError(result)
+                    fallo = _BodySlideRunFallidoError(result)
+                    if getattr(result, "estado", None) == EstadoBodySlide.HOLD_TERMINALITY_UNKNOWN:
+                        # Review Codex #1025: sin terminalidad probada BodySlide puede seguir
+                        # escribiendo en el destino. El veto llega a DirectoryRollback y a
+                        # SnapshotTransactionLock: ni se borra el parcial ni se descarta el backup.
+                        mark_unknown_terminality(fallo)
+                    raise fallo
         except LockAcquisitionError as exc:
             return _fallo(
                 EstadoBodySlide.LOCK_UNAVAILABLE,

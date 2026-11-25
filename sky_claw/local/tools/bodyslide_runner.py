@@ -36,6 +36,7 @@ import pathlib
 import time
 from dataclasses import dataclass
 
+from sky_claw.app.db.rollback_veto import mark_unknown_terminality
 from sky_claw.app.security.links import exigir_contencion_fisica, iter_archivos_propios
 from sky_claw.local.tools._dir_rollback import mutar_hasta_terminal
 from sky_claw.local.tools._process import run_capture
@@ -774,7 +775,12 @@ class BodySlideRunner:
             )
             try:
                 salida = await lanzador.lanzar(pedido)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as cancelacion:
+                # Hermano del review Codex #1025: con el spawn pedido, la cancelación no prueba
+                # terminalidad. El journal queda en LANZADO (cierre de abajo) y el veto viaja con
+                # la excepción: DirectoryRollback y SnapshotTransactionLock del servicio no
+                # restauran la salida bajo un proceso que puede seguir escribiendo.
+                mark_unknown_terminality(cancelacion)
                 raise
             except TerminalidadDesconocidaError as exc:
                 message = (

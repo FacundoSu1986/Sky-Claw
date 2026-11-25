@@ -200,3 +200,44 @@ def test_el_modulo_del_contrato_no_lanza_procesos() -> None:
     assert "run_capture" not in fuente
     assert "subprocess" not in fuente
     assert bodyslide_lanzador.__name__.endswith("bodyslide_lanzador")
+
+
+async def test_la_cancelacion_con_el_proceso_lanzado_lleva_el_veto_de_rollback(tmp_path: pathlib.Path) -> None:
+    """Hermano del review Codex #1025: la cancelación tampoco prueba terminalidad.
+
+    El journal ya quedaba en ``LANZADO``, pero la ``CancelledError`` atravesaba el
+    ``DirectoryRollback`` del servicio sin veto y restauraba la salida bajo un proceso
+    posiblemente vivo. La cancelación que sale del spawn lleva el veto.
+    """
+    from sky_claw.app.db.rollback_veto import exception_forbids_rollback
+
+    destino = _destino(tmp_path)
+    exe = tmp_path / "BodySlide" / "BodySlide.exe"
+    runner = _runner(tmp_path, _Lanzador("cancelacion", destino, exe))
+
+    with pytest.raises(asyncio.CancelledError) as info:
+        await runner.run_batch("CBBE", str(destino), manifest=_MANIFIESTO, preset="Zeroed", preset_verified=True)
+
+    assert exception_forbids_rollback(info.value)
+
+
+async def test_una_cancelacion_antes_del_spawn_no_lleva_veto(tmp_path: pathlib.Path) -> None:
+    """Contracara: si el spawn nunca se pidió, la terminalidad está probada y la salida se puede restaurar."""
+    from sky_claw.app.db.rollback_veto import exception_forbids_rollback
+
+    destino = _destino(tmp_path)
+    exe = tmp_path / "BodySlide" / "BodySlide.exe"
+    runner = _runner(tmp_path, _Lanzador("retorno", destino, exe))
+
+    async def _siembra_cancelada(self: Any) -> None:
+        raise asyncio.CancelledError
+
+    from unittest.mock import patch
+
+    with (
+        patch("sky_claw.local.tools.bodyslide_journal.SiembraConPlazo.ejecutar", _siembra_cancelada),
+        pytest.raises(asyncio.CancelledError) as info,
+    ):
+        await runner.run_batch("CBBE", str(destino), manifest=_MANIFIESTO, preset="Zeroed", preset_verified=True)
+
+    assert not exception_forbids_rollback(info.value)
