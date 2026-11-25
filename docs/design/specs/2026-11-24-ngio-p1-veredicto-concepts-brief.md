@@ -658,6 +658,8 @@ del flag con diagnóstico `unknown` antes que un flag residual.
 | `pyproject.toml` | agregar `grass_cache_verdict` a la lista estricta de mypy | bajo |
 | `tests/test_grass_cache_runner.py` | watchdog (7 casos), procedencia, `.fail`, terminalidad, cancelación — **aditivo** | medio |
 | `tests/test_grass_cache_service.py` | propagación, journal, evento, no-reinterpretación — **aditivo** | bajo |
+| `tests/bdd/support/grass_cache_harness.py` | el doble del BDD modela un run **certificado** (`verdict`/`certificado`/`alcance`): con D1, `success`/`message` son consecuencia de la evidencia y no una constante del mock | bajo — **actualización de consumidor justificada** |
+| `tests/test_grass_cache_runner.py` (test existente) | `test_flag_borrado_justo_antes_del_crash_no_relanza` afirmaba `success is True` sobre un REBUILD con caché heredado sin tocar: **ese assert era el falso éxito de F-02**. Ahora afirma `completed_unverified` con `archivos_heredados_sin_procedencia` | bajo — **único test que cambia de contrato** |
 | `CHANGELOG.md` | entrada `### Added` bajo `[Unreleased]` | bajo |
 | `docs/pending_ooda_status.md` | **sólo si** el owner confirma que P1 cierra un ítem del backlog (hoy no hay fila de grass P1; la fila 336 es «smokes reales» bloqueada por rig) | bajo |
 | `tests/test_borrado_recursivo.py` | **condicional:** sólo si el censo de «quien mide árboles» se dispara. Mitigación de diseño: la pasada `scandir` vive en `grass_cache_runner.py`, **ya declarado** (`tests/test_borrado_recursivo.py:313`), y el módulo de veredicto es puro. | bajo |
