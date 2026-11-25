@@ -409,3 +409,40 @@ riesgo queda declarado.
 Los 25 threads abiertos se respondieron agrupados por familia con la evidencia de esta ronda
 (terminalidad, evidencia parcial, documentación/logging). Los duplicados comparten respuesta; cada
 thread tiene su referencia al test que lo cubre.
+
+## 14. Anexo de la ronda del fence (P1/P2/B5/F4)
+
+### 14.1 P1 — candidatos mixtos de terminalidad
+
+`_buscar_proceso_del_intento` **no** convierte una búsqueda incompleta en demostrada por encontrar
+otro candidato legible: si algún candidato relevante no se pudo inspeccionar, el resultado es
+`("incompleto", None)` **aunque haya encontrado procesos**. Con incertidumbre no se libera el fence,
+no se certifica, no se relanza y no se hace teardown destructivo. Tests:
+`test_p1_candidato_legible_y_otro_ilegible_es_incompleto`, `test_p1_multiples_legibles_es_encontrado`
+(y los de B2 para muerte de un candidato mientras otro vive y ausencia demostrada de todos).
+
+### 14.2 B5 completo — el watchdog usa el cierre común
+
+`_muestra_de_progreso_sync` y `_conteo_rapido_sync` comparten `_artefactos_reconocidos_sync`
+(archivos regulares `.cgid`/`.dgid`/`.fail`). Un caché parcial compuesto **sólo** por `.dgid`/`.fail`
+no puede parecer vacío al watchdog. Test:
+`test_b5_watchdog_ve_un_cache_parcial_solo_de_dgid_y_fail`.
+
+### 14.3 P2 — ejes del veredicto: diferido con justificación
+
+`_invalidar_certificacion()` reconstruye un `VeredictoCache` con `trabajo_de_la_corrida="demostrado"` e
+`integridad_observable="no_evaluada"` hardcodeados, pero **sólo publica los cuatro campos de
+certificación** (`verdict`, `certificado`, `razones`, `alcance_certificado`) y, desde B5,
+`exito_operacional=False` en la evidencia. No hay hoy inconsistencia observable: los ejes de trabajo e
+integridad del resultado **no** son sobrescritos. Corregirlo exigiría tipar el veredicto completo a
+través del resultado del runner (cambio de contrato) sin defecto demostrado, así que se **difiere**
+(amarillo, decisión del propietario si quiere tiparlo en P2).
+
+### 14.4 F4 — el diff real de `grass_cache_safety.py`
+
+La afirmación de que el archivo quedó «byte a byte idéntico a main» es **falsa**. El diff real contra
+`origin/main` es: (a) parámetro **opcional** `archivar: bool = True` en `neutralizar_flag`, con el
+camino por defecto idéntico a P0; (b) `progreso_perdido` ahora **también** es `True` cuando se omite el
+archivado a propósito (antes afirmaba que no se había perdido nada); (c) el mensaje de omisión. No hay
+escritura de diagnóstico: la copia opcional se **eliminó** por F4 (destino predecible sin los controles
+físicos de P0), y las protecciones de P0 sobre el resto del archivo no cambian.
