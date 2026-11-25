@@ -40,10 +40,11 @@ import contextlib
 import dataclasses
 import logging
 import pathlib
+import re
 import shutil  # import de módulo completo: los tests mockean shutil.disk_usage
 import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar
 
 import psutil  # import de módulo completo: los tests reemplazan el objeto entero
 
@@ -51,6 +52,7 @@ from sky_claw.app.security.links import path_present
 from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.local.mo2.vfs import GameLaunchTimeoutError, MO2Controller
 from sky_claw.local.tools.grass_cache_safety import (
+    EXTENSIONES_CACHE,
     MODOS_GRASS_CACHE,
     PRECACHE_FLAG,
     EstadoAplicacion,
@@ -69,6 +71,16 @@ from sky_claw.local.tools.grass_cache_safety import (
     ruta_de_respaldo,
     ruta_del_flag_alternativo,
     verificar_respaldo_para_borrado,
+)
+from sky_claw.local.tools.grass_cache_verdict import (
+    AlcanceCertificado,
+    CacheObservado,
+    EvidenciaVeredicto,
+    GrassCacheOutcome,
+    GrassCacheVerdict,
+    Terminalidad,
+    VeredictoCache,
+    evaluar_veredicto,
 )
 
 if TYPE_CHECKING:
@@ -89,19 +101,38 @@ _PRECACHE_FLAG = PRECACHE_FLAG
 #: Margen (s) restado al wall-clock del lanzamiento para el filtro por
 #: create_time (granularidad del reloj en Windows).
 _CREATE_TIME_EPSILON = 1.0
+#: Tope de bytes que el watchdog lee del flag por muestra (lectura incremental, en hilo).
+_TOPE_LECTURA_FLAG = 1 << 20
+#: Tope de bytes que se leen de un `.fail` (su contenido es un contador: `<n>\n`).
+_TOPE_FALLO_BYTES = 64
+#: Espera entre reintentos de la verificación de terminalidad (RD-10).
+_ESPERA_TERMINALIDAD_S = 0.2
+#: ``<WorldspaceEditorID>x<XXXX>y<YYYY>.cgid`` — el artefacto es POR CELDA, no por worldspace:
+#: contar `.cgid` y compararlos con worldspaces esperados no es una comparación válida (1.0.13,
+#: ``GidFileCache.cpp``: ``"Grass\\\\%sx%04dy%04d.cgid"``).
+_WS_DE_ARTEFACTO = re.compile(r"^(?P<ws>.+)x-?\d+y-?\d+$", re.IGNORECASE)
+#: Texto operatorio por razón del vocabulario cerrado (``grass_cache_verdict``).
+_RAZONES_LEGIBLES: Final[dict[str, str]] = {
+    "cache_ilegible": "no se pudo leer el caché al salir",
+    "terminalidad_no_verificada": "no se pudo demostrar que SkyrimSE.exe terminó",
+    "cache_vacio": "el caché quedó vacío (posible fallo silencioso por bounds nulos)",
+    "limpieza_incompleta": "la limpieza del flag de precache no fue completa",
+    "archivos_heredados_sin_procedencia": (
+        "el caché presente ya estaba antes de esta corrida: no hay evidencia de regeneración"
+    ),
+    "sin_evidencia_de_esta_corrida": "no hay evidencia de avance de esta corrida sobre ese caché",
+    "fallos_de_celda_atribuibles": "hay celdas que fallaron en esta corrida (archivos .fail)",
+    "fallos_de_celda_historicos": "quedan celdas sin completar de intentos anteriores (archivos .fail)",
+    "worldspaces_sin_artefactos": "hay worldspaces solicitados sin ningún artefacto",
+    "outcome_no_completado": "el ritual no llegó a completarse",
+    "sin_certificacion": "sin evidencia suficiente para certificar",
+    "cancelado": "cancelado por el operador",
+}
 
-GrassCacheOutcome = Literal[
-    "completed",
-    "stalled",
-    "disk_full",
-    "timeout",
-    "cancelled",
-    "max_restarts",
-    "spawn_failed",
-    "flag_sin_progreso",
-    "flag_alternativo_presente",
-    "cache_cambio_despues_del_plan",
-]
+#: Cómo terminó el ritual. La definición vive en ``grass_cache_verdict`` (la política pura que
+#: decide el veredicto la necesita y no puede depender de este módulo: sería un ciclo). Se re-exporta
+#: porque el servicio y los tests la importan de acá desde PR-5.
+#: ``GrassCacheOutcome`` se importa arriba.
 GrassCachePhase = Literal["launching", "scanning", "crashed", "relaunching", "finished"]
 
 
@@ -185,6 +216,21 @@ class GrassCacheConfig:
     backup_root: pathlib.Path | None = None
     ack_usvfs_no_verificado: bool = False
     progress_profile: str = ""
+    #: Worldspaces que el payload pidió precachear (Fase A). Viaja al resultado como identidad de
+    #: la corrida y como requisito de certificación: un worldspace pedido sin NINGÚN artefacto no
+    #: permite certificar (F-12/C1). Vacío = no se pidió filtro explícito.
+    worldspaces: tuple[str, ...] = ()
+    #: Cada cuánto se muestrea el progreso durante la vigilancia (barato: nombres, no `stat`).
+    progress_poll_interval_s: float = 30.0
+    #: Sin NINGÚN cambio observable en el caché ni en el flag durante este tiempo, con el proceso
+    #: vivo, el run se corta como ``stalled``. NGIO usa 60 s para su propio freeze-check: 600 s es
+    #: 10× más conservador y evita competir con él.
+    stall_progress_s: float = 600.0
+    #: Gracia desde el spawn del ciclo antes de empezar a medir: cargar el mundo puede tardar.
+    stall_grace_s: float = 1200.0
+    #: Cuánto esperar, después de matar, para poder DEMOSTRAR que el proceso terminó. Sin esto, la
+    #: latencia normal de muerte degradaría a ``unknown`` un run perfecto (RD-10).
+    terminality_wait_s: float = 10.0
 
     @property
     def perfil_de_progreso(self) -> str:
@@ -218,6 +264,21 @@ class GrassCacheConfig:
                 raise ValueError(f"{campo} debe ser > 0")
         if not self.game_exe_names:
             raise ValueError("game_exe_names no puede estar vacío")
+        if self.terminality_wait_s < 0:
+            raise ValueError("terminality_wait_s no puede ser negativo")
+        if self.stall_progress_s <= 0:
+            raise ValueError("stall_progress_s debe ser > 0")
+        if self.stall_grace_s < 0:
+            raise ValueError("stall_grace_s no puede ser negativo")
+        if self.progress_poll_interval_s <= 0:
+            raise ValueError("progress_poll_interval_s debe ser > 0")
+        if self.progress_poll_interval_s > self.stall_progress_s:
+            raise ValueError(
+                "progress_poll_interval_s no puede superar stall_progress_s: "
+                "el watchdog no detectaría el stall antes de que venza el deadline"
+            )
+        for ws in self.worldspaces:
+            assert_safe_component(ws, field="worldspaces")
         if not any((self.game_path / nombre).is_file() for nombre in self.game_exe_names):
             # Sin este guard, un game_path equivocado (p.ej. la raíz de MO2)
             # recibe el flag donde NGIO jamás lo ve: el juego corre en modo
@@ -270,6 +331,16 @@ class GrassCacheRunResult:
     flag_alternativo_residual: bool = False
     #: Errores concretos de la limpieza (archivado/borrado del flag).
     limpieza_errores: tuple[str, ...] = ()
+    #: Veredicto de la política (P1): qué se puede afirmar del caché que quedó.
+    verdict: GrassCacheVerdict = "unknown"
+    #: True SÓLO si ``verdict == "completed_verified"`` (D1: ``success`` no es certificación).
+    certificado: bool = False
+    #: Por qué NO se certificó (vocabulario cerrado de ``grass_cache_verdict``).
+    verdict_razones: tuple[str, ...] = ()
+    #: Alcance de la certificación (D2): corrida completa / trabajo de la corrida / ninguno.
+    alcance_certificado: AlcanceCertificado = "ninguno"
+    #: Evidencia observada, serializable (identidad, inventarios, `.fail`, progreso, terminalidad).
+    evidencia: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,6 +443,26 @@ class GrassCacheRunner:
         self._neutralizacion: NeutralizacionFlag | None = None
         #: True si el fallo de limpieza ya se logueó al neutralizar: `run()` no lo repite.
         self._limpieza_logueada = False
+        # -- P1: evidencia y watchdog (ver `grass_cache_verdict`) --
+        #: Evidencia de egreso; `run()` la RE-EVALÚA con el resultado real de la limpieza (RD-11).
+        self._evidencia: EvidenciaVeredicto | None = None
+        #: (nombre, tamaño) del caché ANTES del primer lanzamiento: procedencia de lo heredado.
+        self._baseline_entradas: frozenset[tuple[str, int]] = frozenset()
+        #: nombre → contenido de cada `.fail` del baseline (atribución por contenido, no por fecha).
+        self._fallos_previos: dict[str, bytes] = {}
+        #: El watchdog observó avanzar algún indicador durante la corrida.
+        self._progreso_observado = False
+        #: Segundos sin avance observable en el corte por stall (None si no aplica).
+        self._progreso_detenido_s: float | None = None
+        #: Tri-estado de terminalidad del proceso del juego (RD-10).
+        self._terminalidad: Terminalidad = "terminado"
+        #: Worldspaces que NGIO DECLARÓ terminados (líneas `ws_` del flag): evidencia, no requisito.
+        self._ws_declarados: set[str] = set()
+        #: Offset de lectura incremental del flag y última muestra del watchdog.
+        self._flag_offset = 0
+        self._muestra_previa: tuple[int, int, int, int] | None = None
+        self._ultimo_avance_mono: float | None = None
+        self._proximo_probe_mono = 0.0
 
     @property
     def neutralizacion(self) -> NeutralizacionFlag | None:
@@ -410,6 +501,10 @@ class GrassCacheRunner:
             self._avisar_limpieza_incompleta()
             raise
         limpieza = self._neutralizacion
+        limpio = limpieza is None or limpieza.limpio
+        # RD-11: el veredicto NO puede quedar cerrado antes de neutralizar el flag. Se RE-EVALÚA la
+        # misma evidencia con el resultado real de la limpieza; el provisional nunca se publica.
+        resultado = self._veredicto_final(resultado, limpio=limpio)
         if limpieza is not None and not limpieza.limpio:
             self._avisar_limpieza_incompleta()
             # Una limpieza incompleta no es éxito, ni aunque el outcome haya
@@ -427,6 +522,42 @@ class GrassCacheRunner:
                 limpieza_errores=limpieza.errores,
             )
         return resultado
+
+    def _veredicto_final(self, resultado: GrassCacheRunResult, *, limpio: bool) -> GrassCacheRunResult:
+        """Cierra el veredicto con el resultado REAL de la neutralización (RD-11).
+
+        El veredicto provisional se calculó al salir del ritual, cuando todavía no se sabía si el
+        flag quedó limpio. Se re-evalúa la MISMA evidencia con ``limpieza_limpia`` real (una sola
+        política, un solo lugar que decide) y se publica recién ahora. Los caminos que no dejan
+        evidencia de egreso (timeout, cancelación, cortes de contrato) conservan su veredicto.
+        """
+        if self._evidencia is None:
+            return resultado
+        evidencia = dataclasses.replace(self._evidencia, limpieza_limpia=limpio)
+        self._evidencia = evidencia
+        veredicto = evaluar_veredicto(evidencia)
+        return dataclasses.replace(
+            resultado,
+            success=veredicto.exito_operacional,
+            verdict=veredicto.verdict,
+            certificado=veredicto.certificado,
+            verdict_razones=veredicto.razones,
+            alcance_certificado=veredicto.alcance_certificado,
+            evidencia={**resultado.evidencia, **veredicto.a_dict()},
+            message=self._mensaje_de_veredicto(veredicto),
+        )
+
+    @staticmethod
+    def _mensaje_de_veredicto(veredicto: VeredictoCache) -> str:
+        """Mensaje operatorio. Un resultado no certificado NUNCA recomienda rebuild (D1)."""
+        if veredicto.certificado:
+            return ""
+        razones = "; ".join(_RAZONES_LEGIBLES.get(razon, razon) for razon in veredicto.razones)
+        return (
+            "El precache terminó, pero NO se pudo certificar el caché: "
+            f"{razones or 'sin evidencia suficiente'}. El caché se conserva y la evidencia queda en "
+            "el campo `evidencia` del resultado; no se declara una generación válida."
+        )
 
     def _avisar_limpieza_incompleta(self) -> None:
         """Publica el fallo de limpieza del ``finally`` — también al propagar.
@@ -546,6 +677,12 @@ class GrassCacheRunner:
             # conservado como evidencia de reanudación— queda bajo custodia de
             # este run, que es quien lo archiva y lo neutraliza al salir.
             flag_apropiado = True
+            # Baseline de PROCEDENCIA (P1): qué archivos ya estaban antes del primer spawn. Se
+            # captura acá porque el plan ya está aplicado y todavía no se lanzó nada.
+            self._baseline_entradas, self._fallos_previos = await esperar_terminar(
+                asyncio.to_thread(self._capturar_baseline_sync),
+                descripcion="baseline_cache",
+            )
             # Baseline del stall detector: el estado del cache ANTES del primer
             # lanzamiento — un primer ciclo sin .cgid nuevos ya cuenta como racha.
             last_snapshot = await self._snapshot_cache()
@@ -663,7 +800,9 @@ class GrassCacheRunner:
                     # borrarse ANTES de localizar al juego — sin esta búsqueda
                     # final, un juego reparentado quedaría vivo en modo normal.
                     return await self._salida_exito(
-                        crash_count, await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch)
+                        crash_count,
+                        await self._ultima_atribucion(game_pid, mo2_pid, min_create_epoch),
+                        cancel,
                     )
 
                 if game_pid is None:
@@ -683,7 +822,7 @@ class GrassCacheRunner:
                     crash_count += 1
                 else:
                     # ---- Vigilancia mientras el juego vive (D7) ----
-                    salida = await self._vigilar(game_pid, cancel, crash_count)
+                    salida = await self._vigilar(game_pid, cancel, crash_count, t_spawn_mono=t_spawn_mono)
                     if salida is not None:
                         return salida
                     crash_count += 1
@@ -702,7 +841,7 @@ class GrassCacheRunner:
                     # resume casi terminado muere sin escribir nada y NO debe
                     # reportarse como stalled. Un relanzamiento acá abriría el
                     # juego en modo normal (falso "vivo eterno" hasta timeout).
-                    return await self._salida_exito(crash_count, game_pid)
+                    return await self._salida_exito(crash_count, game_pid, cancel)
                 if stall_streak >= self._config.stall_threshold:
                     await self._matar_todo(game_pid)
                     return self._resultado(
@@ -777,9 +916,20 @@ class GrassCacheRunner:
     # Fases internas
     # ------------------------------------------------------------------
 
-    async def _vigilar(self, game_pid: _GamePid, cancel: asyncio.Event, crash_count: int) -> GrassCacheRunResult | None:
-        """Poll de la vida del juego. ``None`` = crash (el caller relanza)."""
+    async def _vigilar(
+        self, game_pid: _GamePid, cancel: asyncio.Event, crash_count: int, *, t_spawn_mono: float
+    ) -> GrassCacheRunResult | None:
+        """Poll de la vida del juego y de su PROGRESO. ``None`` = crash (el caller relanza).
+
+        El watchdog de progreso (F-05) cubre el caso que el deadline global no cubre: un
+        ``SkyrimSE.exe`` **vivo pero congelado**. NGIO detecta sus propios freezes a los 60 s, pero
+        reacciona con ``RE::DebugMessageBox`` ANTES de abortar: si nadie cierra el diálogo, el
+        proceso queda vivo con PID válido y el ritual quema hasta 12 h. Acá se mide progreso
+        observable —conteo de nombres `.cgid`/`.dgid`/`.fail` y tamaño del flag de NGIO— y se corta
+        de forma acotada: una sola pasada de kill, sin relanzar y conservando el caché parcial.
+        """
         last_heartbeat = time.monotonic()
+        self._ultimo_avance_mono = t_spawn_mono
         while True:
             if cancel.is_set():
                 await self._matar_todo(game_pid)
@@ -790,9 +940,10 @@ class GrassCacheRunner:
                     await self._snapshot_cache(),
                 )
             if not await self._flag_exists():
-                return await self._salida_exito(crash_count, game_pid)
+                return await self._salida_exito(crash_count, game_pid, cancel)
             if time.monotonic() - self._start_mono >= self._config.max_runtime_s:
                 await self._matar_todo(game_pid)
+                self._terminalidad = await self._verificar_terminalidad(game_pid, cancel)
                 return self._resultado(
                     "timeout",
                     f"Deadline global de {self._config.max_runtime_s:.0f}s alcanzado; el cache parcial se conserva.",
@@ -809,6 +960,9 @@ class GrassCacheRunner:
                 )
             if not await self._pid_alive(game_pid.pid):
                 return None  # crash: murió con el flag presente
+            corte = await self._vigilar_progreso(game_pid, cancel, crash_count, t_spawn_mono=t_spawn_mono)
+            if corte is not None:
+                return corte
             if time.monotonic() - last_heartbeat >= self._config.heartbeat_interval_s:
                 await self._emit_progress("scanning", crash_count)
                 last_heartbeat = time.monotonic()
@@ -816,30 +970,143 @@ class GrassCacheRunner:
             # del próximo ciclo (el sleep despierta al instante con el event).
             await self._sleep_or_cancel(cancel, self._config.poll_interval_s)
 
-    async def _salida_exito(self, crash_count: int, game_pid: _GamePid | None) -> GrassCacheRunResult:
-        """Fin multi-criterio: flag ausente + postcheck fail-closed de .cgid.
+    async def _vigilar_progreso(
+        self, game_pid: _GamePid, cancel: asyncio.Event, crash_count: int, *, t_spawn_mono: float
+    ) -> GrassCacheRunResult | None:
+        """Muestrea progreso y devuelve un corte si el proceso vivo dejó de avanzar.
 
-        El éxito exige count > 0 **y** bytes > 0: el fallo silencioso de
-        zero-bounds documentado en el SOP también se manifiesta como archivos
-        ``.cgid`` de cero bytes — un cache "presente pero vacío" no es éxito.
+        ``None`` = sigue avanzando (o todavía no se puede juzgar). Las muestras son baratas —
+        nombres de archivo, sin ``stat`` por archivo— y corren en un hilo: el event loop sigue libre
+        para renovar los leases ``grass-cache``/``load-order`` (F2 de P0).
+        """
+        if self._config.stall_progress_s <= 0:
+            return None
+        ahora = time.monotonic()
+        if ahora < self._proximo_probe_mono:
+            return None
+        self._proximo_probe_mono = ahora + self._config.progress_poll_interval_s
+        # Arranque lento: no se juzga nada durante la gracia desde el spawn de ESTE ciclo.
+        if ahora - t_spawn_mono < self._config.stall_grace_s:
+            await self._muestrear_progreso(linea_base=True)
+            return None
+        await self._muestrear_progreso(linea_base=self._muestra_previa is None)
+        if self._ultimo_avance_mono is None:
+            return None
+        detenido = ahora - self._ultimo_avance_mono
+        if detenido < self._config.stall_progress_s:
+            return None
+        self._progreso_detenido_s = round(detenido, 3)
+        logger.warning(
+            "Progreso detenido %.0fs con SkyrimSE.exe PID=%s vivo (última muestra: %s). "
+            "Se corta el run como stalled: el caché parcial se conserva.",
+            detenido,
+            game_pid.pid,
+            self._muestra_previa,
+        )
+        await self._matar_todo(game_pid)
+        self._terminalidad = await self._verificar_terminalidad(game_pid, cancel)
+        await self._emit_progress("finished", crash_count)
+        return self._resultado(
+            "stalled",
+            f"Sin progreso observable durante {detenido:.0f}s con el proceso vivo: el juego se "
+            "congeló (freeze o diálogo modal de NGIO). Se mató el proceso; el caché parcial se "
+            "conserva y NO se relanza.",
+            crash_count,
+            await self._snapshot_cache(),
+        )
+
+    async def _muestrear_progreso(self, *, linea_base: bool) -> None:
+        """Actualiza el latido de progreso. Un fallo de lectura NUNCA aborta el run."""
+        try:
+            muestra = await asyncio.to_thread(self._muestra_de_progreso_sync)
+        except OSError:
+            return
+        if linea_base or self._muestra_previa is None:
+            self._muestra_previa = muestra
+            self._ultimo_avance_mono = time.monotonic()
+            return
+        if muestra != self._muestra_previa:
+            self._muestra_previa = muestra
+            self._ultimo_avance_mono = time.monotonic()
+            self._progreso_observado = True
+
+    def _muestra_de_progreso_sync(self) -> tuple[int, int, int, int]:
+        """(nombres `.cgid`, nombres `.dgid`, nombres `.fail`, tamaño del flag).
+
+        ``iterdir`` aparece acá porque el censo de ``tests/test_borrado_recursivo.py`` ya declara a
+        este módulo (sólo lee; no borra ni copia árboles).
+        """
+        cgid = dgid = fail = 0
+        with contextlib.suppress(FileNotFoundError, NotADirectoryError):
+            for archivo in self._config.overwrite_grass_dir.iterdir():
+                sufijo = archivo.suffix.lower()
+                if sufijo == ".cgid":
+                    cgid += 1
+                elif sufijo == ".dgid":
+                    dgid += 1
+                elif sufijo == ".fail":
+                    fail += 1
+        try:
+            tamano = self._flag_path.stat().st_size
+        except OSError:
+            tamano = -1
+        self._leer_avance_del_flag(tamano)
+        return (cgid, dgid, fail, tamano)
+
+    def _leer_avance_del_flag(self, tamano: int) -> None:
+        """Lee SÓLO los bytes nuevos del flag y guarda los worldspaces que NGIO declaró.
+
+        NGIO appendea una línea por celda y una por worldspace terminado (``ws_<EditorID>``), pero
+        **sin** ``flush`` por línea: lo que se ve acá es un límite inferior del avance real. Por eso
+        es evidencia y nunca requisito. La lectura incremental y el tope por muestra mantienen el
+        costo acotado (decenas de miles de celdas ⇒ archivo de MB, no de GB).
+        """
+        if tamano <= 0 or tamano <= self._flag_offset:
+            if tamano < self._flag_offset:
+                self._flag_offset = 0  # el flag se reescribió: releer desde el principio
+            return
+        tope = min(tamano, self._flag_offset + _TOPE_LECTURA_FLAG)
+        try:
+            with self._flag_path.open("rb") as fh:
+                fh.seek(self._flag_offset)
+                crudo = fh.read(tope - self._flag_offset)
+        except OSError:
+            return
+        self._flag_offset = tope
+        for linea in crudo.splitlines():
+            texto = linea.strip()
+            if texto.startswith(b"ws_"):
+                with contextlib.suppress(UnicodeDecodeError):
+                    self._ws_declarados.add(texto[3:].decode("utf-8"))
+
+    async def _salida_exito(
+        self, crash_count: int, game_pid: _GamePid | None, cancel: asyncio.Event
+    ) -> GrassCacheRunResult:
+        """Fin del ritual: el flag desapareció. **Terminación NO es certificación** (F-02).
+
+        Antes bastaba «flag ausente + algún `.cgid` + bytes > 0», y eso convertía un caché
+        PREEXISTENTE en salida nueva. Ahora se reúne la evidencia (procedencia contra el baseline,
+        `.fail` por contenido, worldspaces con artefactos, progreso observado y terminalidad) y la
+        decide ``grass_cache_verdict.evaluar_veredicto``: una sola política.
         """
         await self._matar_todo(game_pid)
+        self._terminalidad = await self._verificar_terminalidad(game_pid, cancel)
         snap = await self._snapshot_cache()
         await self._emit_progress("finished", crash_count)
-        if snap[0] > 0 and snap[1] > 0:
-            return self._resultado(
-                "completed",
-                "",
-                crash_count,
-                snap,
-                success=True,
-            )
+        evidencia = await esperar_terminar(
+            asyncio.to_thread(self._reunir_evidencia_de_egreso),
+            descripcion="evidencia_egreso",
+        )
+        self._evidencia = evidencia
+        veredicto = evaluar_veredicto(evidencia)
         return self._resultado(
             "completed",
-            "El precache terminó pero el cache quedó vacío (sin .cgid o todos de 0 bytes) — "
-            "revisar records GRAS con bounds nulos (fallo silencioso de NGIO).",
+            "",
             crash_count,
             snap,
+            success=veredicto.exito_operacional,
+            veredicto=veredicto,
+            evidencia={**self._evidencia_a_dict(evidencia), **veredicto.a_dict()},
         )
 
     async def _ultima_atribucion(
@@ -1256,6 +1523,194 @@ class GrassCacheRunner:
 
         return await esperar_terminar(_archivar_y_registrar(), descripcion="neutralizar_flag")
 
+    # ------------------------------------------------------------------
+    # P1: evidencia de egreso, terminalidad y veredicto
+    # ------------------------------------------------------------------
+
+    async def _verificar_terminalidad(self, game_pid: _GamePid | None, cancel: asyncio.Event) -> Terminalidad:
+        """Tri-estado, con espera ACOTADA y re-verificada (RD-10).
+
+        Sin esta espera, la latencia normal de muerte de ``SkyrimSE.exe`` convertiría en ``unknown``
+        cualquier run bueno. La espera no puede colgar el run: es acotada, la corta la cancelación y
+        no retiene workers.
+        """
+        if game_pid is None:
+            return "terminado"
+        limite = time.monotonic() + self._config.terminality_wait_s
+        while True:
+            estado = await asyncio.to_thread(self._clasificar_terminalidad, game_pid)
+            if estado != "vivo":
+                return estado
+            if time.monotonic() >= limite:
+                return "vivo"
+            if await self._sleep_or_cancel(cancel, _ESPERA_TERMINALIDAD_S):
+                return "vivo"
+
+    def _clasificar_terminalidad(self, game_pid: _GamePid) -> Terminalidad:
+        """``terminado`` / ``vivo`` / ``indeterminado`` sin matar ni tocar a nadie.
+
+        ``terminado`` cubre dos casos: el proceso ya no existe, o el PID ahora es OTRO proceso (el
+        SO lo recicló). ``indeterminado`` es fail-closed: no poder leer nombre/exe/create_time no
+        autoriza a afirmar que terminó.
+        """
+        try:
+            root = psutil.Process(game_pid.pid)
+        except psutil.NoSuchProcess:
+            return "terminado"
+        except psutil.Error:
+            return "indeterminado"
+        try:
+            if root.name().lower() not in {nombre.lower() for nombre in self._config.game_exe_names}:
+                return "terminado"
+            if game_pid.create_time is not None and root.create_time() != game_pid.create_time:
+                return "terminado"  # otro SkyrimSE.exe: el PID se recicló
+            exe = root.exe()
+        except psutil.Error:
+            return "indeterminado"
+        if not exe:
+            return "indeterminado"
+        try:
+            if pathlib.Path(exe).resolve().parent != self._config.game_path.resolve():
+                return "terminado"
+        except OSError:
+            return "indeterminado"
+        return "vivo"
+
+    def _capturar_baseline_sync(self) -> tuple[frozenset[tuple[str, int]], dict[str, bytes]]:
+        """(nombre, tamaño) y contadores `.fail` del caché ANTES del primer lanzamiento.
+
+        Es la medida de «esto ya estaba»: un archivo final que coincide con una entrada del baseline
+        no lo produjo esta corrida. La atribución de `.fail` usa **contenido**, nunca la fecha.
+        """
+        entradas: set[tuple[str, int]] = set()
+        fallos: dict[str, bytes] = {}
+        try:
+            candidatos = list(self._config.overwrite_grass_dir.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            return frozenset(), {}
+        except OSError:
+            return frozenset(), {}
+        for archivo in candidatos:
+            sufijo = archivo.suffix.lower()
+            if sufijo not in EXTENSIONES_CACHE:
+                continue
+            try:
+                info = archivo.stat()
+            except OSError:
+                continue
+            entradas.add((archivo.name, int(info.st_size)))
+            if sufijo == ".fail":
+                with contextlib.suppress(OSError):
+                    fallos[archivo.name] = archivo.read_bytes()[:_TOPE_FALLO_BYTES]
+        return frozenset(entradas), fallos
+
+    def _inventario_de_egreso_sync(
+        self,
+    ) -> tuple[CacheObservado, dict[str, bytes], tuple[str, ...], int, int]:
+        """Una sola pasada al salir: conteos, `.fail` por contenido y worldspaces con artefactos."""
+        cgid = cgid_bytes = dgid = fail = 0
+        entradas: set[tuple[str, int]] = set()
+        fallos: dict[str, bytes] = {}
+        worldspaces: set[str] = set()
+        try:
+            candidatos = list(self._config.overwrite_grass_dir.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            candidatos = []
+        for archivo in candidatos:
+            sufijo = archivo.suffix.lower()
+            if sufijo not in EXTENSIONES_CACHE:
+                continue
+            info = archivo.stat()  # si falla, el caller declara evidencia ilegible
+            entradas.add((archivo.name, int(info.st_size)))
+            if sufijo == ".cgid":
+                cgid += 1
+                cgid_bytes += int(info.st_size)
+            elif sufijo == ".dgid":
+                dgid += 1
+            else:
+                fail += 1
+                with contextlib.suppress(OSError):
+                    fallos[archivo.name] = archivo.read_bytes()[:_TOPE_FALLO_BYTES]
+            worldspace = self._worldspace_de_archivo(archivo.name)
+            if worldspace is not None:
+                worldspaces.add(worldspace)
+        inventario = CacheObservado(
+            cgid_count=cgid,
+            cgid_bytes=cgid_bytes,
+            dgid_count=dgid,
+            fail_count=fail,
+            archivos=len(entradas),
+        )
+        heredados = len(entradas & self._baseline_entradas)
+        nuevos = len(entradas - self._baseline_entradas)
+        return inventario, fallos, tuple(sorted(worldspaces)), heredados, nuevos
+
+    @staticmethod
+    def _worldspace_de_archivo(nombre: str) -> str | None:
+        """``Tamrielx0007y-003.cgid`` → ``Tamriel``. ``None`` si no sigue el patrón de NGIO."""
+        tallo = nombre.rsplit(".", 1)[0]
+        coincidencia = _WS_DE_ARTEFACTO.match(tallo)
+        return coincidencia.group("ws") if coincidencia is not None else None
+
+    def _reunir_evidencia_de_egreso(self) -> EvidenciaVeredicto:
+        """Foto completa para la política. Un fallo de lectura se declara, no se disfraza."""
+        try:
+            inventario, fallos, worldspaces, heredados, nuevos = self._inventario_de_egreso_sync()
+        except OSError:
+            logger.warning("No se pudo leer el caché al salir: el veredicto queda sin evidencia.", exc_info=True)
+            return EvidenciaVeredicto(
+                outcome="completed",
+                modo=self._config.mode,
+                terminalidad=self._terminalidad,
+                limpieza_limpia=None,
+                evidencia_ilegible=True,
+            )
+        return EvidenciaVeredicto(
+            outcome="completed",
+            modo=self._config.mode,
+            terminalidad=self._terminalidad,
+            limpieza_limpia=None,  # el `finally` todavía no neutralizó el flag (RD-11)
+            inventario_final=inventario,
+            archivos_heredados=heredados,
+            archivos_nuevos=nuevos,
+            fallos_finales=fallos,
+            fallos_previos=dict(self._fallos_previos),
+            worldspaces_solicitados=tuple(self._config.worldspaces),
+            worldspaces_con_artefactos=worldspaces,
+            worldspaces_declarados_por_ngio=tuple(sorted(self._ws_declarados)),
+            progreso_observado=self._progreso_observado,
+        )
+
+    def _evidencia_a_dict(self, evidencia: EvidenciaVeredicto) -> dict[str, Any]:
+        """Evidencia serializable: identidad de la corrida + lo observado (F-12/C1)."""
+        atribuibles = sum(
+            1
+            for nombre, contenido in evidencia.fallos_finales.items()
+            if evidencia.fallos_previos.get(nombre) != contenido
+        )
+        return {
+            "mode": self._config.mode,
+            "perfil_de_lanzamiento": self._config.profile,
+            "perfil_de_origen": self._config.perfil_de_progreso,
+            "game_path": str(self._config.game_path),
+            "overwrite_grass_dir": str(self._config.overwrite_grass_dir),
+            "backup_dir": self._backup_dir,
+            "worldspaces_solicitados": list(evidencia.worldspaces_solicitados),
+            "worldspaces_con_artefactos": list(evidencia.worldspaces_con_artefactos),
+            "worldspaces_declarados_por_ngio": list(evidencia.worldspaces_declarados_por_ngio),
+            "inventario_final": evidencia.inventario_final.a_dict() if evidencia.inventario_final else None,
+            "archivos_heredados": evidencia.archivos_heredados,
+            "archivos_nuevos": evidencia.archivos_nuevos,
+            "fallos_de_celda_total": len(evidencia.fallos_finales),
+            "fallos_de_celda_atribuibles": atribuibles,
+            "fallos_de_celda_historicos": len(evidencia.fallos_finales) - atribuibles,
+            "progreso_observado": evidencia.progreso_observado,
+            "progreso_detenido_s": self._progreso_detenido_s,
+            "terminalidad": evidencia.terminalidad,
+            "cobertura_usvfs": "no_verificada",
+            "completitud_de_celdas": "no_verificada",
+        }
+
     def _resultado(
         self,
         outcome: GrassCacheOutcome,
@@ -1263,10 +1718,25 @@ class GrassCacheRunner:
         crash_count: int,
         snap: tuple[int, int],
         *,
-        success: bool = False,
+        success: bool | None = None,
+        veredicto: VeredictoCache | None = None,
+        evidencia: dict[str, Any] | None = None,
     ) -> GrassCacheRunResult:
+        """Construye el resultado. El veredicto NUNCA se inventa acá: sale de la política.
+
+        Los caminos que no reúnen evidencia completa (timeout, cancelación, cortes de contrato)
+        igual pasan por la política, con la evidencia mínima que tienen. ``success`` sale de
+        ``exito_operacional`` (D1): sin evidencia de finalización legítima no hay éxito.
+        """
+        if veredicto is None:
+            ligera = self._evidencia_ligera(outcome, snap)
+            veredicto = evaluar_veredicto(ligera)
+            if evidencia is None:
+                # La evidencia viaja SIEMPRE (F-12), también en los cortes: progreso, terminalidad
+                # e identidad son lo que explica el desenlace.
+                evidencia = self._evidencia_a_dict(ligera)
         return GrassCacheRunResult(
-            success=success,
+            success=veredicto.exito_operacional if success is None else success,
             message=message,
             outcome=outcome,
             crash_count=crash_count,
@@ -1277,6 +1747,23 @@ class GrassCacheRunner:
             stalled=outcome == "stalled",
             mode=self._config.mode,
             backup_dir=self._backup_dir,
+            verdict=veredicto.verdict,
+            certificado=veredicto.certificado,
+            verdict_razones=veredicto.razones,
+            alcance_certificado=veredicto.alcance_certificado,
+            evidencia={**(evidencia or {}), **veredicto.a_dict()},
+        )
+
+    def _evidencia_ligera(self, outcome: GrassCacheOutcome, snap: tuple[int, int]) -> EvidenciaVeredicto:
+        """Evidencia mínima para los caminos que no pasan por ``_salida_exito``."""
+        return EvidenciaVeredicto(
+            outcome=outcome,
+            modo=self._config.mode,
+            terminalidad=self._terminalidad,
+            limpieza_limpia=None,
+            inventario_final=CacheObservado(cgid_count=snap[0], cgid_bytes=snap[1], archivos=snap[0]),
+            progreso_observado=self._progreso_observado,
+            worldspaces_solicitados=tuple(self._config.worldspaces),
         )
 
 

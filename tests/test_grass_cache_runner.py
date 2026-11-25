@@ -684,7 +684,13 @@ async def test_flag_borrado_justo_antes_del_crash_no_relanza(
     resultado = await _correr(_runner(config, mo2))
 
     assert resultado.outcome == "completed"
-    assert resultado.success is True
+    # P1 (D1 del propietario): el caché de partida ya estaba y la corrida no escribió NADA, así que
+    # el flag ausente no alcanza para declarar éxito. Antes este assert decía `success is True`: era
+    # el falso éxito de F-02 congelado en un test.
+    assert resultado.success is False
+    assert resultado.verdict == "completed_unverified"
+    assert "archivos_heredados_sin_procedencia" in resultado.verdict_razones
+    assert resultado.certificado is False
     assert resultado.crash_count == 1
     assert mo2.launch_game.await_count == 1, "el flag ausente post-crash no debe relanzar"
 
@@ -2345,3 +2351,293 @@ async def test_un_flag_alternativo_residual_invalida_la_limpieza_completa(
     assert "ALTERNATIVO" in resultado.message
     assert resultado.cgid_count == 1
     assert (config.game_path / "PrecacheGrass.txt.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# P1 · veredicto por evidencia (F-02/F-12) y watchdog de progreso (F-05)
+# ---------------------------------------------------------------------------
+
+
+async def test_p1_rebuild_sin_regeneracion_no_declara_exito(
+    config_rebuild: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """F-02: el caché ya estaba y la corrida no escribió nada; el flag ausente no certifica."""
+    config = config_rebuild
+    _escribir_cgid(config.overwrite_grass_dir, "Tamrielx0000y0000.cgid")
+
+    def _al_chequear(pid: int) -> None:
+        if pid not in mundo.vivos or mundo.vidas.get(pid) == 0:
+            (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    mundo.al_chequear_pid = _al_chequear
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "completed"
+    assert resultado.verdict == "completed_unverified"
+    assert resultado.certificado is False
+    assert resultado.success is False
+    assert resultado.alcance_certificado == "ninguno"
+    assert "archivos_heredados_sin_procedencia" in resultado.verdict_razones
+    assert resultado.evidencia["archivos_heredados"] == 1
+    assert resultado.evidencia["archivos_nuevos"] == 0
+    assert resultado.evidencia["completitud_de_celdas"] == "no_verificada"
+
+
+async def test_p1_fail_nuevo_de_la_corrida_impide_certificar(
+    config_rebuild: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """C4: un `.fail` que escribe ESTA corrida es una celda que no completó."""
+    config = config_rebuild
+
+    def _al_chequear(pid: int) -> None:
+        if pid not in mundo.vivos or mundo.vidas.get(pid) == 0:
+            (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "Tamrielx0002y0000.cgid")
+        (config.overwrite_grass_dir / "Tamrielx0003y0000.fail").write_bytes(b"1\n")
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    mundo.al_chequear_pid = _al_chequear
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.verdict == "completed_unverified"
+    assert resultado.certificado is False
+    # El trabajo ocurrió (la corrida escribió un .cgid): eso sostiene el éxito operacional...
+    assert resultado.success is True
+    # ...pero el fallo de celda impide certificar.
+    assert "fallos_de_celda_atribuibles" in resultado.verdict_razones
+    assert resultado.evidencia["fallos_de_celda_atribuibles"] == 1
+
+
+async def test_p1_fail_historico_no_se_atribuye_pero_tampoco_certifica(
+    config_rebuild: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """C4: un `.fail` con el MISMO contador no es de esta corrida, pero el caché tiene un hueco."""
+    config = config_rebuild
+    grass = config.overwrite_grass_dir
+    _escribir_cgid(grass, "Tamrielx0000y0000.cgid")
+    (grass / "Tamrielx0001y0000.fail").write_bytes(b"2\n")
+
+    def _al_chequear(pid: int) -> None:
+        if pid not in mundo.vivos or mundo.vidas.get(pid) == 0:
+            (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    mundo.al_chequear_pid = _al_chequear
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.verdict == "completed_unverified"
+    assert resultado.evidencia["fallos_de_celda_historicos"] == 1
+    assert resultado.evidencia["fallos_de_celda_atribuibles"] == 0
+    assert (grass / "Tamrielx0001y0000.fail").read_bytes() == b"2\n"
+
+
+async def test_p1_new_certifica_con_evidencia_y_alcance_de_corrida_completa(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """Contraprueba: con evidencia completa el veredicto SÍ certifica (no es un «no» permanente)."""
+    config = dataclasses.replace(config, worldspaces=("Tamriel", "DLC2SolstheimWorld"))
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "Tamrielx0000y0000.cgid")
+        _escribir_cgid(config.overwrite_grass_dir, "DLC2SolstheimWorldx0000y0000.cgid")
+        (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.verdict == "completed_verified"
+    assert resultado.certificado is True
+    assert resultado.success is True
+    assert resultado.alcance_certificado == "corrida_completa"
+    assert resultado.verdict_razones == ()
+    assert resultado.evidencia["worldspaces_solicitados"] == ["Tamriel", "DLC2SolstheimWorld"]
+    assert resultado.evidencia["worldspaces_con_artefactos"] == ["DLC2SolstheimWorld", "Tamriel"]
+    assert resultado.evidencia["cobertura_usvfs"] == "no_verificada"
+    assert resultado.evidencia["completitud_de_celdas"] == "no_verificada"
+
+
+async def test_p1_worldspace_pedido_sin_artefactos_no_certifica(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    config = dataclasses.replace(config, worldspaces=("Tamriel", "DLC2SolstheimWorld"))
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "Tamrielx0000y0000.cgid")
+        (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.verdict == "completed_unverified"
+    assert "worldspaces_sin_artefactos" in resultado.verdict_razones
+
+
+async def test_p1_limpieza_incompleta_degrada_el_veredicto_en_run(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RD-11: el veredicto se cierra DESPUÉS de neutralizar; el provisional no se publica."""
+    config = dataclasses.replace(config, mode="new")
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "Tamrielx0000y0000.cgid")
+        (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    def _neutralizar_falla(**_kwargs: Any) -> NeutralizacionFlag:
+        return NeutralizacionFlag(borrado=False, archivado=False, errores=("disco bloqueado",))
+
+    monkeypatch.setattr(gcr_mod, "neutralizar_flag", _neutralizar_falla)
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.verdict == "completed_unverified"
+    assert resultado.certificado is False
+    assert resultado.success is False
+    assert "limpieza_incompleta" in resultado.verdict_razones
+    assert resultado.flag_residual is True
+
+
+async def test_p1_watchdog_corta_un_pid_vivo_sin_progreso_antes_del_deadline(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """F-05: el freeze con PID vivo se detecta por progreso, no por el deadline de 12 h."""
+    config = dataclasses.replace(
+        config,
+        max_runtime_s=5.0,
+        poll_interval_s=0.01,
+        progress_poll_interval_s=0.05,
+        stall_progress_s=0.2,
+        stall_grace_s=0.0,
+    )
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "stalled"
+    assert resultado.stalled is True
+    assert resultado.certificado is False
+    assert resultado.elapsed_s < config.max_runtime_s, "el watchdog tiene que cortar antes del deadline"
+    assert resultado.evidencia["progreso_detenido_s"] is not None
+    assert mo2.launch_game.await_count == 1, "un freeze no se relanza"
+
+
+async def test_p1_watchdog_no_corta_si_hay_progreso_legitimo(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    config = dataclasses.replace(
+        config,
+        max_runtime_s=0.6,
+        poll_interval_s=0.01,
+        progress_poll_interval_s=0.05,
+        stall_progress_s=0.2,
+        stall_grace_s=0.0,
+    )
+    llamada = itertools.count()
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    def _avanzar(pid: int) -> None:
+        if pid != 1100:
+            return
+        n = next(llamada)
+        if n < 8:
+            _escribir_cgid(config.overwrite_grass_dir, f"celda_{n}.cgid")
+
+    mo2.launch_game.side_effect = _launch
+    mundo.al_chequear_pid = _avanzar
+
+    resultado = await _correr(_runner(config, mo2))
+
+    # El progreso observado NO se reporta como stall: el run llega al deadline o termina.
+    assert resultado.outcome != "stalled" or resultado.evidencia["progreso_observado"] is True
+
+
+async def test_p1_gracia_de_arranque_lento_no_corta_antes_de_tiempo(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    config = dataclasses.replace(
+        config,
+        max_runtime_s=0.4,
+        poll_interval_s=0.01,
+        progress_poll_interval_s=0.05,
+        stall_progress_s=0.1,
+        stall_grace_s=60.0,  # nunca se sale de la gracia en este test
+    )
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "timeout"
+    assert resultado.stalled is False
+
+
+async def test_p1_terminalidad_no_verificable_declara_unknown(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R14: si no se puede demostrar que el proceso terminó, no se certifica nada."""
+    config = dataclasses.replace(config, terminality_wait_s=0.05)
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "Tamrielx0000y0000.cgid")
+        (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+        mundo.alta_juego(100, 1100)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_clasificar_terminalidad", lambda self, gp: "vivo")
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_kill_game_tree_sync", lambda *a, **k: None)
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.verdict == "unknown"
+    assert resultado.certificado is False
+    assert resultado.success is False
+    assert "terminalidad_no_verificada" in resultado.verdict_razones
+    assert resultado.evidencia["terminalidad"] == "vivo"
+
+
+async def test_p1_terminalidad_espera_y_no_degrada_un_run_bueno(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RD-10: la muerte real del proceso tarda; la espera acotada evita un `unknown` por latencia."""
+    config = dataclasses.replace(config, terminality_wait_s=1.0)
+    estados = iter(["vivo", "vivo", "terminado"])
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        _escribir_cgid(config.overwrite_grass_dir, "Tamrielx0000y0000.cgid")
+        (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+        mundo.alta_juego(100, 1100, vidas=1)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    monkeypatch.setattr(gcr_mod.GrassCacheRunner, "_clasificar_terminalidad", lambda self, gp: next(estados))
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.verdict == "completed_verified"
+    assert resultado.evidencia["terminalidad"] == "terminado"
