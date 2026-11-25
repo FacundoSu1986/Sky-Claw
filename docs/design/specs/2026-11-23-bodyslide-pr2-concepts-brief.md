@@ -679,7 +679,7 @@ El propietario eligió sumar a 2c-2b el modo `--mode bodyslide-recovery`, herman
 - la carpeta de BodySlide sale de `--bodyslide-exe` (por defecto, `bodyslide_exe` de la config).
 
 `confirm-terminal` exige además journal íntegro, misma máquina e instancia, carpeta física idéntica y
-un dueño que no esté vivo. Ninguna acción restaura la config: lo hace el reconciliador en el próximo
+un dueño confirmado muerto. Ninguna acción restaura la config: lo hace el reconciliador en el próximo
 arranque. La lógica vive en `sky_claw/local/tools/bodyslide_operador.py` (mypy estricto).
 
 **Límite:** el marcador de cuarentena no guarda el pid del proceso que lo escribió, así que

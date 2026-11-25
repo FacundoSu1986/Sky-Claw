@@ -1339,7 +1339,7 @@ def registrar_terminalidad_por_operador(
     Es la salida de un teardown fallido del broker: ningún camino automático prueba que el
     proceso terminó. La evidencia del operador sustituye a la terminalidad, **nunca** a las
     demás pruebas: journal íntegro, misma máquina e instancia, carpeta física idéntica y un
-    dueño que no esté vivo (el operador cierra Sky-Claw antes, como con ``vfs-quarantine``).
+    dueño confirmado muerto (el operador cierra Sky-Claw antes, como con ``vfs-quarantine``).
     No restaura: lo hace el reconciliador en el próximo arranque, con sus propias pruebas.
 
     Raises:
@@ -1361,9 +1361,17 @@ def registrar_terminalidad_por_operador(
         raise TerminalidadNoRegistrableError(
             f"el journal está en {documento.estado.value}; el operador solo registra la terminalidad de LANZADO"
         )
-    if vivacidad(documento.duenio_pid, documento.duenio_creado) is OwnerLiveness.ALIVE:
+    # Review CodeRabbit #1025: la evidencia del operador sustituye a la terminalidad de BodySlide, no a la
+    # del dueño. Se exige DEAD, como ``recuperar_journal``; INDETERMINATE (p. ej. AccessDenied) no alcanza.
+    vida = vivacidad(documento.duenio_pid, documento.duenio_creado)
+    if vida is OwnerLiveness.ALIVE:
         raise TerminalidadNoRegistrableError(
             f"el dueño de la corrida (pid {documento.duenio_pid}) sigue vivo: cerrá Sky-Claw antes de registrar"
+        )
+    if vida is not OwnerLiveness.DEAD:
+        raise TerminalidadNoRegistrableError(
+            f"no se pudo confirmar que el dueño de la corrida (pid {documento.duenio_pid}) terminó "
+            f"({vida.value}): cerrá Sky-Claw y volvé a intentar"
         )
     motivo = _ruta_confiable(documento, exe_dir)
     if motivo is not None:

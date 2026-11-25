@@ -8,7 +8,7 @@ la restauración la hace el reconciliador en el próximo arranque, con sus propi
 
 Propiedad: *la evidencia del operador sustituye a la terminalidad, nunca a las demás
 pruebas*. Por eso la operación exige journal íntegro, misma máquina e instancia, carpeta
-física idéntica, dueño que no esté vivo y estado exactamente ``LANZADO``.
+física idéntica, dueño confirmado muerto y estado exactamente ``LANZADO``.
 """
 
 from __future__ import annotations
@@ -241,15 +241,18 @@ def test_con_el_duenio_vivo_no_se_registra(almacen: AlmacenDeJournal, exe_dir: p
     assert tx.ruta.read_bytes() == antes
 
 
-def test_con_vivacidad_indeterminada_la_evidencia_del_operador_alcanza(
+def test_con_vivacidad_indeterminada_no_se_registra(
     almacen: AlmacenDeJournal, exe_dir: pathlib.Path, duenio_muerto: IdentidadDeProceso
 ) -> None:
-    """Indeterminada es justo lo que la evidencia del operador resuelve; solo un dueño VIVO frena."""
+    """Review CodeRabbit #1025: la evidencia del operador sustituye a la terminalidad de BodySlide, no a la
+    del dueño. ``recuperar_journal`` exige ``DEAD``; con ``INDETERMINATE`` el registro no se hace."""
     tx = _lanzado(almacen, exe_dir, duenio_muerto)
+    antes = tx.ruta.read_bytes()
 
-    documento = _registrar(tx, almacen, exe_dir, vivacidad=lambda _pid, _creado: OwnerLiveness.INDETERMINATE)
+    with pytest.raises(TerminalidadNoRegistrableError, match="confirmar"):
+        _registrar(tx, almacen, exe_dir, vivacidad=lambda _pid, _creado: OwnerLiveness.INDETERMINATE)
 
-    assert documento.estado is EstadoDelJournal.TERMINAL
+    assert tx.ruta.read_bytes() == antes
 
 
 @pytest.mark.parametrize(

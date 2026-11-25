@@ -82,7 +82,7 @@ está liberando. Cerrá Sky-Claw antes. Tres acciones:
 - `release-quarantine` retira la cuarentena del recurso (la escribe una siembra que se colgó).
 - `confirm-terminal` lleva el journal `LANZADO` de la instalación de `--bodyslide-exe` a `TERMINAL`: es la
   salida cuando el broker no pudo probar que BodySlide terminó. Exige además la misma máquina, la misma
-  carpeta física y que el dueño de la corrida no esté vivo.
+  carpeta física y que el dueño de la corrida esté confirmado muerto.
 
 Las dos últimas exigen `--bodyslide-evidence`. Ninguna restaura la configuración de BodySlide: la restaura
 el próximo arranque, si los archivos siguen siendo los que dejó la corrida. Un rechazo sale con código `1`

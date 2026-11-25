@@ -21,7 +21,6 @@ from unittest.mock import patch
 import pytest
 
 from sky_claw.app.db.rollback_veto import mark_unknown_terminality
-from sky_claw.local.mo2 import brokered_bodyslide
 from sky_claw.local.mo2.brokered_bodyslide import (
     BrokeredBodySlideLanzador,
     VfsRequiredBodySlideLanzador,
@@ -249,6 +248,11 @@ async def test_cada_campo_faltante_se_rechaza(tmp_path: pathlib.Path, faltante: 
         ("quiet_verified", None),
         ("preset", ""),
         ("preset", 3),
+        # Review CodeRabbit #1025: un null saltearía el gate de visibilidad (lo trata como lista vacía).
+        ("expected_plugins", None),
+        ("expected_plugins", "Skyrim.esm"),
+        ("expected_plugins", ["Skyrim.esm", ""]),
+        ("expected_plugins", ["Skyrim.esm", 3]),
     ],
 )
 async def test_tipos_invalidos_se_rechazan(tmp_path: pathlib.Path, campo: str, valor: Any) -> None:
@@ -329,28 +333,24 @@ async def test_un_exe_con_otro_hash_no_se_ejecuta(tmp_path: pathlib.Path) -> Non
 
 async def test_el_exe_queda_retenido_mientras_corre(tmp_path: pathlib.Path) -> None:
     rutas = _escenario(tmp_path)
-    retenido: list[bool] = []
+    eventos: list[str] = []
 
     class _Espia(_RunCaptureFalso):
         async def __call__(self, argv: list[str], **kwargs: Any) -> tuple[bytes, bytes, int]:
-            retenido.append(True)
+            eventos.append("spawn")
             return await super().__call__(argv, **kwargs)
-
-    entradas: list[str] = []
-    original = brokered_bodyslide  # el handler importa el helper en cada llamada
 
     with (
         patch("sky_claw.local.tools.bodyslide_runner.run_capture", _Espia()),
         patch(
             "sky_claw.local.tools.exe_retenido.retener_exe_verificado",
-            _contexto_que_registra(entradas),
+            _contexto_que_registra(eventos),
         ),
     ):
         await _bodyslide_handler(_manifiesto(rutas, _payload(rutas)))
 
-    assert original is brokered_bodyslide
-    assert entradas == ["entra", "sale"]
-    assert retenido == [True]
+    # Un solo registro ordenado (review CodeRabbit #1025): el spawn ocurre DENTRO de la retención.
+    assert eventos == ["entra", "spawn", "sale"]
 
 
 def _contexto_que_registra(entradas: list[str]):  # type: ignore[no-untyped-def]

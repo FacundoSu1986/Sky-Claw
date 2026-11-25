@@ -928,6 +928,13 @@ async def _bodyslide_handler(manifest: VfsWorkerManifest) -> VfsToolExecution:
         faltan = sorted(BODYSLIDE_PAYLOAD_KEYS - set(payload))
         sobran = sorted(set(payload) - BODYSLIDE_PAYLOAD_KEYS)
         raise ValueError(f"payload de bodyslide fuera de contrato (faltan {faltan}, sobran {sobran})")
+    # Review CodeRabbit #1025: el gate genérico de visibilidad trata un null como "sin lista" y no
+    # verifica nada. En el contrato cerrado de BodySlide la lista es obligatoria y bien formada.
+    raw_expected_plugins = payload["expected_plugins"]
+    if not isinstance(raw_expected_plugins, list) or any(
+        not isinstance(item, str) or not item for item in raw_expected_plugins
+    ):
+        raise ValueError("payload.expected_plugins debe ser una lista de nombres de plugin no vacíos")
 
     exe = _validar_ruta_worker_sin_enlaces(
         pathlib.Path(_payload_string(payload, "bodyslide_exe")), field="bodyslide_exe"
