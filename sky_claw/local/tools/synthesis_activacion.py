@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from sky_claw.local.mo2.ganadores import _coincidencias_de_mod
 from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
 from sky_claw.local.tools.output_targets import SYNTHESIS_MANAGED_MOD_NAME
 
@@ -69,20 +70,18 @@ def _estado_del_mod(modlist_path: pathlib.Path) -> str:
     """Estado de ``+Sky-Claw Synthesis Output``.
 
     "Habilitado" sale de ``read_enabled_mods``, la primitiva canónica del perfil: una línea malformada
-    o un mod duplicado fallan cerrado ahí, no se ignoran acá. Solo se distingue además
-    ``deshabilitado`` (``-Nombre``) de ``ausente``.
+    o un mod duplicado fallan cerrado ahí, no se ignoran acá. La identidad del mod se resuelve con
+    ``_coincidencias_de_mod`` (``lower()``, la de NTFS; nunca ``casefold()``), igual que el resto de
+    los consumidores del modlist. Solo se distingue además ``deshabilitado`` (``-Nombre``) de ``ausente``.
     """
-    objetivo = SYNTHESIS_MANAGED_MOD_NAME.casefold()
     try:
         habilitados = read_enabled_mods(modlist_path)
     except VfsAttestationError as exc:
         raise DiffDeActivacionError(str(exc)) from exc
-    if any(mod.casefold() == objetivo for mod in habilitados):
+    if _coincidencias_de_mod(habilitados, SYNTHESIS_MANAGED_MOD_NAME):
         return "habilitado"
-    deshabilitado = any(
-        linea.startswith("-") and linea[1:].strip().casefold() == objetivo for linea in _lineas(modlist_path)
-    )
-    return "deshabilitado" if deshabilitado else "ausente"
+    deshabilitados = [linea[1:].strip() for linea in _lineas(modlist_path) if linea.startswith("-")]
+    return "deshabilitado" if _coincidencias_de_mod(deshabilitados, SYNTHESIS_MANAGED_MOD_NAME) else "ausente"
 
 
 def _grupos(salidas: Sequence[str]) -> dict[str, list[tuple[int, str]]]:
@@ -91,13 +90,13 @@ def _grupos(salidas: Sequence[str]) -> dict[str, list[tuple[int, str]]]:
     ``<X>_<N>.esp`` es split de ``X`` solo si ``N >= 2`` y ``<X>.esp`` también es salida de la corrida;
     si no, es la salida propia de un grupo cuyo nombre termina en número.
     """
-    stems = {pathlib.PurePath(s).stem.casefold(): pathlib.PurePath(s).stem for s in salidas}
+    stems = {pathlib.PurePath(s).stem.lower(): pathlib.PurePath(s).stem for s in salidas}
     grupos: dict[str, list[tuple[int, str]]] = {}
     for nombre in salidas:
         stem = pathlib.PurePath(nombre).stem
         coincidencia = _SPLIT.fullmatch(stem)
-        if coincidencia and int(coincidencia["n"]) >= 2 and coincidencia["grupo"].casefold() in stems:
-            base = stems[coincidencia["grupo"].casefold()]
+        if coincidencia and int(coincidencia["n"]) >= 2 and coincidencia["grupo"].lower() in stems:
+            base = stems[coincidencia["grupo"].lower()]
             grupos.setdefault(base, []).append((int(coincidencia["n"]), nombre))
         else:
             grupos.setdefault(stem, []).append((1, nombre))
@@ -119,18 +118,18 @@ def calcular_diff_de_activacion(*, perfil: pathlib.Path, salidas: Sequence[str])
     for indice, linea in enumerate(plugins):
         activo = linea.startswith("*")
         nombre = linea[1:].strip() if activo else linea
-        clave = nombre.casefold()
+        clave = nombre.lower()
         orden.setdefault(clave, indice)
         if activo:
             activos.add(clave)
 
-    nombres = sorted(dict.fromkeys(pathlib.PurePath(s).name for s in salidas), key=str.casefold)
-    ausentes = tuple(n for n in nombres if n.casefold() not in orden)
-    inactivos = tuple(n for n in nombres if n.casefold() in orden and n.casefold() not in activos)
+    nombres = sorted(dict.fromkeys(pathlib.PurePath(s).name for s in salidas), key=str.lower)
+    ausentes = tuple(n for n in nombres if n.lower() not in orden)
+    inactivos = tuple(n for n in nombres if n.lower() in orden and n.lower() not in activos)
 
     no_contiguos: list[str] = []
     for base, miembros in _grupos(nombres).items():
-        posiciones = [orden.get(nombre.casefold()) for _, nombre in sorted(miembros)]
+        posiciones = [orden.get(nombre.lower()) for _, nombre in sorted(miembros)]
         indices = [i for i in posiciones if i is not None]
         if len(indices) != len(posiciones):
             continue  # ya informado como ausente; la contigüidad se evalúa con el grupo completo
@@ -139,7 +138,7 @@ def calcular_diff_de_activacion(*, perfil: pathlib.Path, salidas: Sequence[str])
 
     primer_lod = min((i for clave, i in orden.items() if clave in _PLUGINS_DE_LOD), default=None)
     despues_de_lod = tuple(
-        n for n in nombres if primer_lod is not None and n.casefold() in orden and orden[n.casefold()] > primer_lod
+        n for n in nombres if primer_lod is not None and n.lower() in orden and orden[n.lower()] > primer_lod
     )
 
     cambios: list[str] = []
