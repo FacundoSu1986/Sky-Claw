@@ -27,6 +27,7 @@ import pytest
 from sky_claw.app.agent.tools import AsyncToolRegistry
 from sky_claw.app.agent.tools.bodyslide_tools import (
     GestorDeTrabajosDeBodySlide,
+    TrabajoDeBodySlide,
     bodyslide_status,
     iniciar_run_bodyslide,
 )
@@ -456,3 +457,101 @@ def test_el_registry_expone_el_estado_y_run_bodyslide_lo_menciona(tmp_path: path
     assert "bodyslide_status" in reg.tools
     assert reg.tools["bodyslide_status"].params_model is None
     assert "bodyslide_status" in reg.tools["run_bodyslide"].description
+
+
+# ---------------------------------------------------------------------------
+# Review CodeRabbit #1024: el apagado cierra la admisión y no se traga cancelaciones
+# ---------------------------------------------------------------------------
+
+
+async def test_durante_el_apagado_no_se_admite_una_corrida_nueva() -> None:
+    """Una tool despachada mientras ``cerrar`` espera no puede lanzar una corrida que escape a la cancelación.
+
+    Esa corrida no estaría en la foto de pendientes y sobreviviría al cierre del lock manager y del journal.
+    """
+    # Arrange: una corrida viva que tarda en morir, para que ``cerrar`` quede esperando.
+    gestor = GestorDeTrabajosDeBodySlide(notificar=_Avisos())
+    entro = asyncio.Event()
+    liberar_cancelacion = asyncio.Event()
+
+    async def _lenta_al_cancelar() -> str:
+        entro.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await liberar_cancelacion.wait()
+            raise
+        return "{}"
+
+    gestor.iniciar(_lenta_al_cancelar, parametros={"group": "CBBE"})
+    await asyncio.wait_for(entro.wait(), timeout=5)
+    cierre = asyncio.create_task(gestor.cerrar())
+    await asyncio.sleep(0)
+    segunda = AsyncMock(return_value=json.dumps({"success": True, "message": ""}))
+
+    # Act: la admisión llega con el apagado en curso.
+    respuesta = gestor.iniciar(segunda, parametros={"group": "3BA"})
+    liberar_cancelacion.set()
+    await asyncio.wait_for(cierre, timeout=5)
+
+    # Assert
+    assert respuesta["success"] is False
+    assert "cerrando" in respuesta["message"]
+    segunda.assert_not_called()
+    assert gestor.actual is not None and gestor.actual.parametros == {"group": "CBBE"}
+
+
+async def test_despues_del_apagado_tampoco_se_admite() -> None:
+    gestor = GestorDeTrabajosDeBodySlide(notificar=_Avisos())
+    await gestor.cerrar()
+    ejecutar = AsyncMock(return_value=json.dumps({"success": True, "message": ""}))
+
+    respuesta = gestor.iniciar(ejecutar, parametros={})
+
+    assert respuesta["success"] is False
+    ejecutar.assert_not_called()
+    assert gestor.actual is None
+
+
+async def test_cancelar_a_quien_registra_la_cancelacion_durante_el_aviso_se_propaga() -> None:
+    """El aviso de cancelación es acotado, pero no puede tragarse la cancelación de quien lo espera.
+
+    Es el camino de ``cerrar`` con una task que no llegó a arrancar: ``cerrar`` registra la cancelación
+    y espera el aviso. Se ejercita la pieza directamente porque, como task, ``cerrar`` deja que la corrida
+    dé su primer paso y el aviso salga por el handler de la corrida.
+    """
+    # Arrange
+    aviso_en_curso = asyncio.Event()
+
+    async def _aviso_colgado(_mensaje: str) -> None:
+        aviso_en_curso.set()
+        await asyncio.Event().wait()
+
+    gestor = GestorDeTrabajosDeBodySlide(notificar=_aviso_colgado)
+    trabajo = TrabajoDeBodySlide(id="bodyslide-x", parametros={"group": "CBBE"}, iniciado_en=0.0)
+    registro = asyncio.create_task(gestor._registrar_cancelacion(trabajo))
+    await asyncio.wait_for(aviso_en_curso.wait(), timeout=5)
+
+    # Act
+    registro.cancel()
+
+    # Assert: la cancelación llega al caller y el trabajo igual quedó cancelado.
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(registro, timeout=5)
+    assert trabajo.estado == "cancelado"
+
+
+async def test_un_aviso_de_cancelacion_colgado_esta_acotado() -> None:
+    """Sin cancelar a quien cierra, un aviso colgado no retiene el apagado más allá del plazo."""
+
+    async def _aviso_colgado(_mensaje: str) -> None:
+        await asyncio.Event().wait()
+
+    gestor = GestorDeTrabajosDeBodySlide(notificar=_aviso_colgado)
+    ejecutar, _entro, _soltar, _ = _ejecutar_bloqueado()
+    gestor.iniciar(ejecutar, parametros={"group": "CBBE"})
+
+    with patch("sky_claw.app.agent.tools.bodyslide_tools.PLAZO_DEL_AVISO_DE_CANCELACION_S", 0.05):
+        await asyncio.wait_for(gestor.cerrar(), timeout=5)
+
+    assert gestor.actual is not None and gestor.actual.estado == "cancelado"

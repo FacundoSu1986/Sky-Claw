@@ -123,6 +123,10 @@ class GestorDeTrabajosDeBodySlide:
         # Toda tarea sin terminar, no solo la actual: una corrida queda en estado terminal ANTES de que
         # termine su aviso de fin, y si entra otra en esa ventana, la anterior no puede quedar huérfana.
         self._tareas: set[asyncio.Task[None]] = set()
+        # Review CodeRabbit #1024: ``cerrar`` cierra la admisión ANTES de la foto de pendientes. Sin esto, una
+        # tool despachada mientras ``cerrar`` espera lanzaría una corrida fuera de la foto: no se cancelaría y
+        # sobreviviría al cierre del lock manager y del journal, que ocurre después de este cleanup.
+        self._cerrado = False
 
     @property
     def actual(self) -> TrabajoDeBodySlide | None:
@@ -137,6 +141,11 @@ class GestorDeTrabajosDeBodySlide:
 
     def iniciar(self, ejecutar: Callable[[], Awaitable[str]], *, parametros: dict[str, Any]) -> dict[str, Any]:
         """Lanza la corrida y responde YA. Sin ``await`` entre el chequeo y la ocupación: no hay carrera."""
+        if self._cerrado:
+            return {
+                "success": False,
+                "message": "Sky-Claw se está cerrando: no se lanzó BodySlide",
+            }
         vivo = self.en_curso()
         if vivo is not None:
             return {
@@ -188,7 +197,9 @@ class GestorDeTrabajosDeBodySlide:
             return
         trabajo.estado = "cancelado"
         trabajo.terminado_en = time.time()
-        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+        # Solo el plazo se absorbe: una cancelación de quien espera el aviso (``cerrar`` cancelado, o la corrida
+        # cancelada otra vez) se propaga. Review CodeRabbit #1024.
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(self._avisar(_aviso_de_fin(trabajo)), timeout=PLAZO_DEL_AVISO_DE_CANCELACION_S)
 
     async def _avisar(self, mensaje: str) -> None:
@@ -203,7 +214,8 @@ class GestorDeTrabajosDeBodySlide:
             logger.warning("no se pudo avisar al operador del fin de la corrida de BodySlide", exc_info=True)
 
     async def cerrar(self) -> None:
-        """Shutdown: cancela TODA tarea sin terminar (la corrida viva y avisos pendientes) y las espera."""
+        """Shutdown: cierra la admisión, cancela TODA tarea sin terminar (la corrida viva y avisos) y las espera."""
+        self._cerrado = True
         pendientes = [tarea for tarea in self._tareas if not tarea.done()]
         for tarea in pendientes:
             tarea.cancel()
