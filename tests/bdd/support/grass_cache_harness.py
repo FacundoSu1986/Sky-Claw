@@ -37,6 +37,9 @@ SUPERFICIE_DISPATCHER_DEPENDENCIES = frozenset(
         "scan_asset_conflicts",
         "scan_asset_conflicts_json",
         "scraper",
+        # PR-2b3 (ADR 0019): selector del backend de Synthesis; lo usa solo ``ExecuteSynthesisPipelineStrategy`` para
+        # decidir el clon. Grass Cache no lo toca: el doble lo deja en su default (``standalone``).
+        "synthesis_backend",
         "synthesis_flow_provider",
         "synthesis_service_factory",
         "wrye_bash_pipeline",
