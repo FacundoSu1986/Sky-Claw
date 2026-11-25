@@ -46,7 +46,7 @@ from sky_claw.app.db.locks import (
     SnapshotTransactionLock,
 )
 from sky_claw.app.db.rollback_veto import exception_forbids_rollback
-from sky_claw.app.security.links import is_link
+from sky_claw.app.security.links import link_kind_or_raise_with_retry
 from sky_claw.app.security.path_validator import PathViolationError, assert_safe_component
 from sky_claw.local.tools._dir_rollback import DirectoryRollback, mutar_hasta_terminal
 from sky_claw.local.tools.output_targets import SYNTHESIS_MANAGED_MOD_NAME, synthesis_output_target
@@ -137,7 +137,10 @@ def _sembrar_raiz_administrada(raiz: pathlib.Path, backup: pathlib.Path | None, 
     exige preservar las salidas de los grupos no seleccionados. Las dos cosas encajan así: la raíz
     nueva arranca con una COPIA de lo ajeno a esta corrida (el backup queda intacto para restaurar)
     y sin ninguna salida de los grupos que el CLI va a escribir —frescura del §2.5.5—. Un enlace en
-    cualquier nivel falla cerrado: copiarlo podría arrastrar contenido de fuera de la raíz.
+    cualquier nivel falla cerrado: copiarlo podría arrastrar contenido de fuera de la raíz. La
+    inspección usa la primitiva que PROPAGA el ``OSError`` (con reintento): ``is_link`` devuelve
+    ``False`` cuando no pudo mirar, y "indeterminado" no puede pasar como "no es un enlace"
+    (review CodeRabbit, #1023).
     """
     raiz.mkdir(exist_ok=False)
     if backup is None:
@@ -145,13 +148,13 @@ def _sembrar_raiz_administrada(raiz: pathlib.Path, backup: pathlib.Path | None, 
     for entrada in sorted(backup.iterdir()):
         if any(es_output_de_grupo(entrada.name, grupo) for grupo in grupos):
             continue
-        if is_link(entrada):
+        if link_kind_or_raise_with_retry(entrada) is not None:
             raise SynthesisExecutionError(f"La raíz administrada de Synthesis contiene un enlace: {entrada}")
         if entrada.is_dir():
             for carpeta, subcarpetas, archivos in os.walk(entrada):
                 for nombre in (*subcarpetas, *archivos):
                     hijo = pathlib.Path(carpeta) / nombre
-                    if is_link(hijo):
+                    if link_kind_or_raise_with_retry(hijo) is not None:
                         raise SynthesisExecutionError(f"La raíz administrada de Synthesis contiene un enlace: {hijo}")
             shutil.copytree(entrada, raiz / entrada.name)
         else:
@@ -708,7 +711,8 @@ class SynthesisPipelineService:
             )
         overwrite = mo2 / "overwrite"
         try:
-            if is_link(overwrite):
+            # Fail-closed también acá: una inspección indeterminada es rojo, no "no es un enlace".
+            if link_kind_or_raise_with_retry(overwrite) is not None:
                 raise OSError("overwrite es un enlace")
             entradas = [e.name for e in overwrite.iterdir()]
         except FileNotFoundError:

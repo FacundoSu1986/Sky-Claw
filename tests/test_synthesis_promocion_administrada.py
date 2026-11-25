@@ -322,3 +322,40 @@ async def test_una_cancelacion_durante_la_siembra_espera_al_hilo_antes_de_restau
     raiz = rutas["output"]
     assert {p.name: p.read_bytes() for p in raiz.iterdir()} == previos
     assert _residuos(raiz) == []
+
+
+async def test_una_inspeccion_de_enlace_indeterminada_falla_cerrado_y_restaura(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``is_link`` devuelve ``False`` si no pudo inspeccionar (review CodeRabbit, #1023): un bloqueo
+    transitorio pasaba como "no es enlace" y la copia podía seguir un junction. La siembra usa la
+    primitiva que propaga el ``OSError``: indeterminado ⇒ no se copia, la corrida falla y se restaura."""
+    from sky_claw.local.tools import synthesis_service as modulo
+
+    rutas = _escenario_mo2(tmp_path)
+    previos = _sembrar_raiz_previa(rutas)
+    inspeccionar_real = modulo.link_kind_or_raise_with_retry
+
+    def _inspeccion_bloqueada(ruta: pathlib.Path) -> str | None:
+        if ruta.name == "OtroGrupo.esp":
+            raise PermissionError(5, "Acceso denegado (AV/indexer)", str(ruta))
+        return inspeccionar_real(ruta)
+
+    monkeypatch.setattr(modulo, "link_kind_or_raise_with_retry", _inspeccion_bloqueada)
+
+    corridas_del_cli: list[int] = []
+
+    async def _cli(_args: list[str], **_kw: Any) -> tuple[bytes, bytes, int]:
+        # Un CLI que SÍ terminaría bien: si la corrida falla, la causa es la siembra fail-closed.
+        corridas_del_cli.append(1)
+        (rutas["output"] / "Synthesis.esp").write_bytes(_ESP_VALIDO)
+        return _SALIDA_OK, b"", 0
+
+    out, journal, _ = await _correr(tmp_path, rutas, _BrokerConCli(rutas, _cli))
+
+    assert out["success"] is False
+    assert corridas_del_cli == []
+    raiz = rutas["output"]
+    assert {p.name: p.read_bytes() for p in raiz.iterdir()} == previos
+    assert _residuos(raiz) == []
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(21)
