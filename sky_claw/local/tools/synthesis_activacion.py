@@ -18,12 +18,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from sky_claw.local.mo2.vfs_attestation import VfsAttestationError, read_enabled_mods
 from sky_claw.local.tools.output_targets import SYNTHESIS_MANAGED_MOD_NAME
 
 #: Plugins de LOD que deben cargar DESPUÉS de las salidas de Synthesis (ADR 0019 §2.3).
 _PLUGINS_DE_LOD: frozenset[str] = frozenset({"dyndolod.esm", "dyndolod.esp", "occlusion.esp"})
 
 _SPLIT = re.compile(r"(?P<grupo>.+)_(?P<n>[0-9]+)", re.IGNORECASE)
+
+
+class DiffDeActivacionError(RuntimeError):
+    """El perfil no se pudo leer o es ambiguo: el diff no se puede afirmar (falla cerrado)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,17 +57,32 @@ class DiffDeActivacion:
 
 
 def _lineas(archivo: pathlib.Path) -> list[str]:
-    """Líneas útiles (sin vacías ni comentarios ``#``). Un archivo ausente lanza ``FileNotFoundError``."""
-    texto = archivo.read_text(encoding="utf-8-sig")
+    """Líneas útiles (sin vacías ni comentarios ``#``)."""
+    try:
+        texto = archivo.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        raise DiffDeActivacionError(f"no se pudo leer {archivo.name} del perfil: {exc}") from exc
     return [linea.strip() for linea in texto.splitlines() if linea.strip() and not linea.strip().startswith("#")]
 
 
-def _estado_del_mod(modlist: list[str]) -> str:
+def _estado_del_mod(modlist_path: pathlib.Path) -> str:
+    """Estado de ``+Sky-Claw Synthesis Output``.
+
+    "Habilitado" sale de ``read_enabled_mods``, la primitiva canónica del perfil: una línea malformada
+    o un mod duplicado fallan cerrado ahí, no se ignoran acá. Solo se distingue además
+    ``deshabilitado`` (``-Nombre``) de ``ausente``.
+    """
     objetivo = SYNTHESIS_MANAGED_MOD_NAME.casefold()
-    for linea in modlist:
-        if linea[:1] in {"+", "-"} and linea[1:].strip().casefold() == objetivo:
-            return "habilitado" if linea[0] == "+" else "deshabilitado"
-    return "ausente"
+    try:
+        habilitados = read_enabled_mods(modlist_path)
+    except VfsAttestationError as exc:
+        raise DiffDeActivacionError(str(exc)) from exc
+    if any(mod.casefold() == objetivo for mod in habilitados):
+        return "habilitado"
+    deshabilitado = any(
+        linea.startswith("-") and linea[1:].strip().casefold() == objetivo for linea in _lineas(modlist_path)
+    )
+    return "deshabilitado" if deshabilitado else "ausente"
 
 
 def _grupos(salidas: Sequence[str]) -> dict[str, list[tuple[int, str]]]:
@@ -85,8 +105,13 @@ def _grupos(salidas: Sequence[str]) -> dict[str, list[tuple[int, str]]]:
 
 
 def calcular_diff_de_activacion(*, perfil: pathlib.Path, salidas: Sequence[str]) -> DiffDeActivacion:
-    """Compara el perfil de MO2 con las *salidas* (nombres de plugin) de la corrida, sin tocar nada."""
-    modlist = _lineas(perfil / "modlist.txt")
+    """Compara el perfil de MO2 con las *salidas* (nombres de plugin) de la corrida, sin tocar nada.
+
+    Raises:
+        DiffDeActivacionError: ``modlist.txt`` o ``plugins.txt`` ilegibles, o un ``modlist.txt``
+            malformado o ambiguo.
+    """
+    estado = _estado_del_mod(perfil / "modlist.txt")
     plugins = _lineas(perfil / "plugins.txt")
 
     orden: dict[str, int] = {}
@@ -117,7 +142,6 @@ def calcular_diff_de_activacion(*, perfil: pathlib.Path, salidas: Sequence[str])
         n for n in nombres if primer_lod is not None and n.casefold() in orden and orden[n.casefold()] > primer_lod
     )
 
-    estado = _estado_del_mod(modlist)
     cambios: list[str] = []
     if estado != "habilitado":
         cambios.append(f"Habilitar '+{SYNTHESIS_MANAGED_MOD_NAME}' en modlist.txt (hoy: {estado}).")
@@ -136,4 +160,4 @@ def calcular_diff_de_activacion(*, perfil: pathlib.Path, salidas: Sequence[str])
     )
 
 
-__all__ = ["DiffDeActivacion", "calcular_diff_de_activacion"]
+__all__ = ["DiffDeActivacion", "DiffDeActivacionError", "calcular_diff_de_activacion"]

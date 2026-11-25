@@ -14,7 +14,7 @@ import pathlib
 import pytest
 
 from sky_claw.local.tools.output_targets import SYNTHESIS_MANAGED_MOD_NAME
-from sky_claw.local.tools.synthesis_activacion import calcular_diff_de_activacion
+from sky_claw.local.tools.synthesis_activacion import DiffDeActivacionError, calcular_diff_de_activacion
 
 _MODULO = pathlib.Path(__file__).resolve().parents[1] / "sky_claw" / "local" / "tools" / "synthesis_activacion.py"
 
@@ -125,7 +125,23 @@ def test_sin_archivo_del_perfil_falla_cerrado(tmp_path: pathlib.Path, faltante: 
     perfil = _perfil(tmp_path, modlist=_MODLIST_OK, plugins=_PLUGINS_OK)
     (perfil / faltante).unlink()
 
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(DiffDeActivacionError, match=faltante.split(".")[0]):
+        calcular_diff_de_activacion(perfil=perfil, salidas=["Synthesis.esp"])
+
+
+@pytest.mark.parametrize(
+    "modlist",
+    [
+        # La misma semántica que la primitiva canónica (`read_enabled_mods`): una línea inválida o el mod
+        # duplicado bajo su identidad canónica no se ignoran; el estado no se puede afirmar.
+        f"+{SYNTHESIS_MANAGED_MOD_NAME}\nlinea sin prefijo\n",
+        f"+{SYNTHESIS_MANAGED_MOD_NAME}\n+{SYNTHESIS_MANAGED_MOD_NAME.lower()}\n",
+    ],
+)
+def test_modlist_malformado_o_ambiguo_falla_cerrado(tmp_path: pathlib.Path, modlist: str) -> None:
+    perfil = _perfil(tmp_path, modlist=modlist, plugins=_PLUGINS_OK)
+
+    with pytest.raises(DiffDeActivacionError):
         calcular_diff_de_activacion(perfil=perfil, salidas=["Synthesis.esp"])
 
 
