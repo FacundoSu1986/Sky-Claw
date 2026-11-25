@@ -682,6 +682,14 @@ El propietario eligió sumar a 2c-2b el modo `--mode bodyslide-recovery`, herman
 un dueño confirmado muerto. Ninguna acción restaura la config: lo hace el reconciliador en el próximo
 arranque. La lógica vive en `sky_claw/local/tools/bodyslide_operador.py` (mypy estricto).
 
+**Qué se restaura después de `confirm-terminal`** (decisión del propietario, 2026-11-25, review
+CodeRabbit #1025): entre el cuelgue y la confirmación pueden pasar horas, así que lo que hay en disco no
+prueba que lo haya escrito la corrida. `Config.xml` solo es restaurable si conserva el hash de la siembra;
+si alguien lo editó, la restauración es `CONCURRENT_MODIFICATION` y no escribe ningún archivo.
+`BodySlide.xml` y `BuildSelection.xml`, estado propio de BodySlide, adoptan lo observado: una edición
+manual de esos dos entre el cuelgue y la confirmación se pierde (riesgo aceptado). El runner no cambia:
+registra `TERMINAL` apenas termina el proceso.
+
 **Límite:** el marcador de cuarentena no guarda el pid del proceso que lo escribió, así que
 `release-quarantine` no puede comprobar que Sky-Claw esté cerrado. El procedimiento lo exige (el hilo
 colgado muere con el proceso) y la evidencia del operador lo declara.

@@ -85,6 +85,8 @@ está liberando. Cerrá Sky-Claw antes. Tres acciones:
   carpeta física y que el dueño de la corrida esté confirmado muerto.
 
 Las dos últimas exigen `--bodyslide-evidence`. Ninguna restaura la configuración de BodySlide: la restaura
-el próximo arranque, si los archivos siguen siendo los que dejó la corrida. Un rechazo sale con código `1`
+el próximo arranque, si los archivos siguen siendo los que dejó la corrida. Después de `confirm-terminal`,
+`Config.xml` solo se restaura si sigue igual a lo que sembró Sky-Claw: si alguien lo editó, no se toca
+ningún archivo. `BodySlide.xml` y `BuildSelection.xml` se restauran desde lo que tengan al confirmar. Un rechazo sale con código `1`
 y el motivo en el log, sin cambiar nada. Anclas: `tests/test_bodyslide_operador.py` y
 `tests/test_bodyslide_terminalidad_operador.py`.

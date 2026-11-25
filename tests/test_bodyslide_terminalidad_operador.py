@@ -323,3 +323,54 @@ def test_sin_journal_lo_dice(almacen: AlmacenDeJournal, exe_dir: pathlib.Path) -
         registrar_terminalidad_por_operador(
             ruta, almacen=almacen, identidad_actual=_identidad(exe_dir), exe_dir=exe_dir, evidencia=EVIDENCIA
         )
+
+
+# ---------------------------------------------------------------------------
+# Review CodeRabbit #1025 (decisión del propietario): Config.xml solo si sigue sembrado
+# ---------------------------------------------------------------------------
+#
+# Entre el cuelgue y la confirmación pueden pasar horas. Si el operador adoptara lo que hay
+# en disco, una edición posterior quedaría como "lo que dejó la corrida" y el reconciliador
+# la pisaría. Decisión del propietario (2026-11-25): Config.xml (lo que sembró Sky-Claw) solo
+# es restaurable si conserva el hash de la siembra; BodySlide.xml y BuildSelection.xml (estado
+# propio de BodySlide) adoptan lo observado.
+
+CONFIG_EDITADO = b"<Config><TargetGame>4</TargetGame><GameDataPath>D:/otro/Data</GameDataPath></Config>"
+
+
+def test_confirmar_conserva_el_hash_de_la_siembra_de_config(
+    almacen: AlmacenDeJournal, exe_dir: pathlib.Path, duenio_muerto: IdentidadDeProceso
+) -> None:
+    tx = _lanzado(almacen, exe_dir, duenio_muerto)
+
+    _registrar(tx, almacen, exe_dir)
+
+    por_nombre = {archivo["nombre"]: archivo for archivo in _en_disco(tx.ruta)["archivos"]}
+    assert por_nombre["Config.xml"]["esperados_sha256"] == [_sha(SEMBRADO)]
+    assert por_nombre["BodySlide.xml"]["esperados_sha256"] == [_sha(APP_DE_LA_CORRIDA)]
+
+
+def test_config_editado_despues_del_cuelgue_no_se_pisa(
+    almacen: AlmacenDeJournal, exe_dir: pathlib.Path, duenio_muerto: IdentidadDeProceso
+) -> None:
+    # Arrange: alguien editó Config.xml después de que se perdió el rastro de la corrida.
+    tx = _lanzado(almacen, exe_dir, duenio_muerto)
+    (exe_dir / "Config.xml").write_bytes(CONFIG_EDITADO)
+
+    # Act: el operador confirma y el reconciliador intenta recuperar.
+    _registrar(tx, almacen, exe_dir)
+    informe = recuperar_journal(tx.ruta, almacen=almacen, identidad_actual=_identidad(exe_dir), exe_dir=exe_dir)
+
+    # Assert: modificación concurrente; no se escribe NINGÚN archivo y el journal queda.
+    assert informe.veredicto is Veredicto.CONCURRENT_MODIFICATION
+    assert (exe_dir / "Config.xml").read_bytes() == CONFIG_EDITADO
+    assert (exe_dir / "BodySlide.xml").read_bytes() == APP_DE_LA_CORRIDA
+    assert tx.ruta.exists()
+
+
+def test_el_runner_sigue_adoptando_lo_observado_al_terminar() -> None:
+    """El camino del runner registra TERMINAL apenas termina el proceso: ahí lo observado es de la corrida."""
+    import inspect
+
+    fuente = inspect.getsource(bj.TransaccionDeConfig.marcar_terminal)
+    assert "conservar_sembrado" not in fuente

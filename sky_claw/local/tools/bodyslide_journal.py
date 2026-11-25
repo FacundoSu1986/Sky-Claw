@@ -753,14 +753,25 @@ def _transicionar(
     return nuevo
 
 
-def _archivos_con_lo_observado(documento: DocumentoDeJournal, exe_dir: pathlib.Path) -> tuple[ArchivoDelJournal, ...]:
+def _archivos_con_lo_observado(
+    documento: DocumentoDeJournal, exe_dir: pathlib.Path, *, conservar_sembrado: bool = False
+) -> tuple[ArchivoDelJournal, ...]:
     """Lo que la corrida dejó en cada archivo al volverse terminal: es lo que después se restaura.
 
     Una sola implementación para los dos caminos que registran ``TERMINAL``: el runner
     (``marcar_terminal``) y el operador (``registrar_terminalidad_por_operador``).
+
+    ``conservar_sembrado`` (camino del operador, decisión del propietario 2026-11-25, review
+    CodeRabbit #1025): entre el cuelgue y la confirmación pueden pasar horas, así que lo que hay en
+    disco no prueba que lo haya escrito la corrida. ``Config.xml`` conserva el hash de la siembra
+    como único esperado: si alguien lo editó, la restauración lo ve como modificación concurrente y
+    no escribe nada. Los demás archivos son estado propio de BodySlide y adoptan lo observado.
     """
     archivos = []
     for archivo in documento.archivos:
+        if conservar_sembrado and archivo.nombre == ARCHIVO_SEMBRADO:
+            archivos.append(archivo)
+            continue
         # Review CodeRabbit #1021: el proceso YA terminó; un archivo que no se puede
         # clasificar (enlace, no regular) no puede borrar esa evidencia. Queda sin
         # contenido esperado, así que nunca se restaura sobre él.
@@ -1377,7 +1388,11 @@ def registrar_terminalidad_por_operador(
     if motivo is not None:
         raise TerminalidadNoRegistrableError(motivo)
     nuevo = _transicionar(
-        almacen, ruta, documento, _E.TERMINAL, archivos=_archivos_con_lo_observado(documento, exe_dir)
+        almacen,
+        ruta,
+        documento,
+        _E.TERMINAL,
+        archivos=_archivos_con_lo_observado(documento, exe_dir, conservar_sembrado=True),
     )
     logger.critical(
         "BodySlide: el operador registró la terminalidad de la corrida %s (LANZADO → TERMINAL): %s",
