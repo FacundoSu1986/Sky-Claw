@@ -68,6 +68,10 @@ _LO_CONSTRUYEN_POR_ENCARGO: dict[str, str] = {
 #:
 #: ``"snapshot"``    — ``target_files`` reales en el ``SnapshotTransactionLock``.
 #: ``"directorio"``  — move-aside O(1) de ``DirectoryRollback``.
+#: ``"snapshot+directorio"`` — los dos, por camino: el servicio elige según adónde escribe
+#:                     (Synthesis: snapshot en standalone/sandbox, move-aside de la raíz
+#:                     administrada en brokered, PR-2b2). Cuenta como ``"directorio"`` para
+#:                     el ancla del move-aside: si lo declara, tiene que construirlo.
 #: ``"papelera"``    — move-aside POR RUTA del protocolo de salida gestionada (ADR
 #:                     0014, NP-O0b): cada ruta se publica entera o su original
 #:                     vuelve; la que falla queda nombrada en el resultado (no hay
@@ -82,7 +86,7 @@ _LO_CONSTRUYEN_POR_ENCARGO: dict[str, str] = {
 #: así que no hay salida propia que revertir. La familia se detecta por ese constructor:
 #: si el servicio volviera a mutar, reaparecería acá y el guard de completitud lo exige.
 MECANISMO_DE_ROLLBACK: dict[str, str] = {
-    "sky_claw/local/tools/synthesis_service.py": "snapshot",
+    "sky_claw/local/tools/synthesis_service.py": "snapshot+directorio",
     "sky_claw/local/tools/xedit_service.py": "snapshot",
     "sky_claw/local/tools/loot_service.py": "snapshot",
     "sky_claw/local/tools/dyndolod_service.py": "directorio",
@@ -141,7 +145,7 @@ def test_quien_dice_revertir_por_directorio_usa_el_move_aside() -> None:
     construir un ``DirectoryRollback`` de verdad, y quien lo construye tiene que
     estar clasificado así. Sin esto, un servicio podría quedar etiquetado como
     protegido sin tener el mecanismo."""
-    declarados = {m for m, mecanismo in MECANISMO_DE_ROLLBACK.items() if mecanismo == "directorio"}
+    declarados = {m for m, mecanismo in MECANISMO_DE_ROLLBACK.items() if "directorio" in mecanismo.split("+")}
     reales = (
         {
             ruta.relative_to(_PAQUETE.parent).as_posix()
