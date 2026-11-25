@@ -582,5 +582,5 @@ async def test_dispatch_sin_interseccion_no_se_ve_afectado(tmp_path: pathlib.Pat
 def test_pr_586b_registra_solo_los_dos_tool_ids_gui_cerrados() -> None:
     """TexGen/DynDOLOD son handlers de sesión específicos; synthesis se suma al mapa plano."""
     assert set(_default_session_handlers()) == {"texgen", "dyndolod"}
-    assert set(_default_handlers()) == {"health", "loot_sort", "synthesis"}
-    assert {"health", "loot_sort", "texgen", "dyndolod", "synthesis"} == ALLOWED_VFS_TOOL_IDS
+    assert set(_default_handlers()) == {"health", "loot_sort", "synthesis", "bodyslide"}
+    assert {"health", "loot_sort", "texgen", "dyndolod", "synthesis", "bodyslide"} == ALLOWED_VFS_TOOL_IDS
