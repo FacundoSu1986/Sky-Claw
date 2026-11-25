@@ -42,28 +42,55 @@ Este registro es un **subordinado** del journal, no un segundo FSM:
   su lugar y la clasificación del journal queda para ``journal.reconciliar_journal``,
   que es su dueño. El resultado declara ``requiere_dueno=True``.
 
-Alcance de la garantía y taxonomía de recuperación (P7-A5 PR 2)
-----------------------------------------------------------------
-1. Rollback en proceso con autoría conocida:
+Alcance de la garantía y taxonomía de recuperación (P7-A5 PR 2, P7-F Incremento 1)
+-----------------------------------------------------------------------------------
+La regla de autoría es UNA para las tres superficies persistidas: *una superficie
+se restaura sólo si su contenido actual es idéntico, byte a byte, a la huella de
+lo que el ESCRITOR de esta transición publicó*. La forma del contenido (TOML
+equivalente, mismos IDs de Generation/Clone) nunca prueba autoría: un comentario,
+un reformateo o un ``updated_at_ns`` ajeno tienen la misma forma.
+
+- INI: los bytes leídos por el handle ``FILE_SHARE_NONE`` antes de liberarlo
+  (``bytes_tras_escritura_ini``), más la previsión determinista del escritor.
+- ``config``: la huella que devuelve ``persistir_campo`` (sha256 del temporal
+  propio antes del ``os.replace``) Y, además, que esos bytes difieran del previo
+  sólo en ``skyrim_path``. La segunda condición existe por el merge-on-save: un
+  campo que otro escritor guardó ANTES de nuestra escritura viaja dentro de
+  nuestros bytes, y restaurar el previo lo borraría aunque la huella coincida.
+- ``active.json``: la huella que el CAS avisa con ``al_publicar``.
+
+1. Rollback en proceso con autoría acreditada:
    Ocurre en el mismo proceso del binder al interceptar un fallo antes de FINALIZE.
-   Cuenta con evidencia viva de autoría (``ini_escritura_intentada`` y huella
-   ``bytes_tras_escritura_ini`` bajo exclusión OS). Si los bytes actuales coinciden
-   con lo escrito bajo exclusión, restaura atómicamente el estado original desde el
-   snapshot durable. Si difieren (modificación externa concurrente), rechaza la
-   autoría, no sobrescribe el archivo en disco y preserva evidencia forense.
+   Primero se CLASIFICAN todas las superficies mutadas sin escribir nada; si alguna
+   no es atribuible, no se restaura ninguna (restaurar sólo una parte dejaría el
+   INI, la config y el Desired apuntando a runtimes distintos). Si todas lo son,
+   se restauran en orden, re-verificando cada una justo antes de escribirla; una
+   anomalía a mitad de camino (un fallo, o una escritura ajena posterior a la
+   clasificación) detiene las escrituras restantes y queda declarada. Es una
+   decisión de conjunto sobre escrituras INDEPENDIENTES, no una transacción
+   atómica: un fallo a mitad deja una restauración parcial, verificada y
+   reportada como tal.
 
 2. Recuperación en frío sin autoría demostrable:
-   Ocurre en un proceso nuevo tras reinicio o corte abrupto. Al carecer de contexto
-   en memoria (``escritura_intentada is None``), opera fail-closed: cualquier
-   contenido divergente del snapshot se clasifica como ``escritura_ajena = True``,
-   no se sobrescribe en disco, se preserva copia en ``recovery_evidence/<tid>/``
-   y se emite ``requiere_dueno = True``.
+   Ocurre en un proceso nuevo tras reinicio o corte abrupto. No hay huellas en
+   memoria, así que NINGUNA superficie divergente del snapshot es atribuible: se
+   clasifica como ``escritura_ajena = True``, no se sobrescribe, se preserva copia
+   en ``recovery_evidence/<tid>/`` y se emite ``requiere_dueno = True``. Esto vale
+   igual para las tres superficies; antes, config y active.json se atribuían por
+   forma y la recuperación dejaba el INI en el Clone con config/Desired de vuelta
+   en el previo (estado partido, campaña P7-F).
 
 3. Intervención explícita del propietario:
    Las divergencias no atribuibles o estados pendientes no se resuelven a ciegas.
-   El operador audita la evidencia forense y decide si fuerza la restauración
-   del baseline (``escritura_intentada=True``) o adopta el estado en disco
-   mediante ``journal.reconciliar_journal()``.
+   La evidencia y el snapshot quedan; la palanca productiva del dueño para salir
+   del ``PENDING`` es materia del Incremento 2 de P7-F (hoy no existe).
+
+Exclusión real (no se declara más): el ``participant_lock`` coordina a los
+participantes de Sky-Claw; la restauración de ``config.toml`` además toma el lock
+por archivo de ``Config.save()`` (``sky_claw.config.lock_de_archivo_config``).
+Ninguno excluye a un proceso que no participa ni a un editor humano: entre la
+re-verificación y el ``os.replace`` queda una ventana de microsegundos frente a
+ellos.
 
 4. Garantías de corte eléctrico no establecidas:
    ``POWER_LOSS_GUARANTEE = NOT_CLAIMED``. La recuperación está demostrada frente
@@ -226,10 +253,10 @@ class RegistroRecuperacion:
     fase: FaseRecuperacion
     created_at_ns: int
     updated_at_ns: int
-    #: Identidad del Desired que la transición pretendía escribir. Permite
-    #: distinguir, tras un reinicio, «active.json lo escribimos nosotros» de
-    #: «lo escribió un tercero que ganó la carrera del CAS»: restaurar en el
-    #: segundo caso pisaría una escritura ajena.
+    #: Identidad del Desired que la transición pretendía escribir. Se conserva en
+    #: el registro (esquema sin cambios) como dato de diagnóstico; ya NO es
+    #: prueba de autoría: dos ``active.json`` con los mismos IDs y otro
+    #: ``updated_at_ns`` son escrituras distintas (P7-F Incremento 1).
     desired_previsto_generation: str | None = None
     desired_previsto_clone: str | None = None
     plan_ejecutables_mutaciones: tuple[dict[str, object], ...] | None = None
@@ -240,12 +267,23 @@ class RegistroRecuperacion:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class VerificacionSuperficie:
-    """Resultado por superficie. ``escritura_ajena`` no es un fallo: es una decisión."""
+    """Resultado por superficie. ``escritura_ajena`` no es un fallo: es una decisión.
+
+    ``ok`` dice que no hubo error; NO dice que la superficie haya vuelto a su
+    estado previo. ``restaurada`` es la única que lo afirma: bytes previos (o la
+    ausencia previa) escritos y verificados por readback. Preservar algo ajeno,
+    encontrarlo ya en su estado previo o no tocarlo por la decisión de conjunto
+    son ``ok=True`` con ``restaurada=False``. ``requiere_dueno`` marca las que
+    quedaron SIN volver a su estado previo por decisión (preservadas, o no
+    restauradas por la decisión de conjunto o por una restauración detenida).
+    """
 
     kind: str
     ok: bool
     detail: str
     escritura_ajena: bool = False
+    restaurada: bool = False
+    requiere_dueno: bool = False
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -689,18 +727,6 @@ def huella(datos: bytes) -> str:
     return _sha256(datos)
 
 
-def _identidad_de_bytes(crudos: bytes) -> tuple[str | None, str | None]:
-    try:
-        payload = json.loads(crudos.decode("utf-8", "surrogateescape"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return (None, None)
-    if not isinstance(payload, dict):
-        return (None, None)
-    generacion = payload.get("desired_generation_id", payload.get("desired_active_generation"))
-    clon = payload.get("desired_clone_id")
-    return (generacion if isinstance(generacion, str) else None, clon if isinstance(clon, str) else None)
-
-
 def _config_difiere_solo_en_skyrim_path(previos: bytes, actuales: bytes, esperado: str) -> bool:
     """¿El config actual es el previo con SÓLO ``skyrim_path`` cambiado al objetivo?
 
@@ -829,12 +855,22 @@ def _coincide_con_lo_escrito(
     *,
     escritura_intentada: bool | None = None,
     bytes_tras_escritura_ini: bytes | None = None,
+    huellas_posteriores: Mapping[str, str] | None = None,
 ) -> bool:
     """¿Estos bytes son los que ESTA transición escribió?
 
-    Cada superficie tiene su discriminador, y el del INI es el más fuerte: el
-    escritor es determinista, así que se recalcula lo que habría escrito con
-    ``prever_bytes`` sobre los bytes previos. Un byte distinto ⇒ no es nuestro.
+    ``config`` y ``active.json`` se atribuyen SÓLO por la huella que su escritor
+    publicó (``huellas_posteriores``): sin huella —la recuperación en frío, o un
+    escritor que no la informó— no hay autoría. Antes se atribuían por forma
+    (TOML equivalente, mismos IDs) y eso entregaba a la transición comentarios,
+    reformateos y ``updated_at_ns`` ajenos (P7-F). En ``config`` se exige además
+    que lo publicado difiera del previo sólo en ``skyrim_path``: por el
+    merge-on-save, un campo que otro escritor guardó antes de nuestra escritura
+    viaja dentro de nuestros bytes y restaurar el previo lo borraría.
+
+    El del INI es el más fuerte: el escritor es determinista, así que se
+    recalcula lo que habría escrito con ``prever_bytes`` sobre los bytes previos,
+    y se lo cruza con lo leído bajo la exclusión. Un byte distinto ⇒ no es nuestro.
 
     Para el INI se acepta además un PREFIJO rasgado de esa misma previsión: la
     escritura por handle no es atómica, y una muerte a mitad deja un estado que
@@ -848,12 +884,12 @@ def _coincide_con_lo_escrito(
     atribuir: un prefijo deja de ser prueba y el estado es de un tercero.
     """
     esperado = registro.expected_effective_path
+    huella = None if huellas_posteriores is None else huellas_posteriores.get(superficie.kind)
     if superficie.kind == _KIND_ACTIVE:
-        return _identidad_de_bytes(actuales) == (
-            registro.desired_previsto_generation,
-            registro.desired_previsto_clone,
-        )
+        return huella is not None and _sha256(actuales) == huella
     if superficie.kind == _KIND_CONFIG:
+        if huella is None or _sha256(actuales) != huella:
+            return False
         previos = superficie.bytes_previos()
         if previos is None:
             return False
@@ -917,12 +953,17 @@ def _escrita_por_tercero(
     *,
     escritura_intentada: bool | None = None,
     bytes_tras_escritura_ini: bytes | None = None,
+    huellas_posteriores: Mapping[str, str] | None = None,
 ) -> tuple[bool, str]:
     r"""¿La superficie actual NO es ni el snapshot ni lo que escribió la transición?
 
-    ``escritura_intentada`` viene en ``False`` por defecto y eso es deliberado: la
-    recuperación en PROCESO NUEVO no puede probar que la transición llegara a
-    escribir. La fase ``INI_ESCRITO`` se marca ANTES de escribir, así que no es
+    Es de SÓLO LECTURA: la usan tanto la clasificación previa de
+    ``restaurar_registro_locked`` como la re-verificación de
+    ``_restaurar_persistida`` justo antes de escribir.
+
+    ``escritura_intentada`` y ``huellas_posteriores`` vienen vacíos por defecto y
+    eso es deliberado: la recuperación en PROCESO NUEVO no puede probar que la
+    transición llegara a escribir. La fase ``INI_ESCRITO`` se marca ANTES de escribir, así que no es
     evidencia de autoría, y tampoco descarta que un tercero haya modificado el
     archivo entre el crash y la recuperación —una ventana que puede ser de horas—.
     Sin esa prueba, un estado intermedio ambiguo se conserva como evidencia y
@@ -957,6 +998,7 @@ def _escrita_por_tercero(
         actuales,
         escritura_intentada=escritura_intentada,
         bytes_tras_escritura_ini=bytes_tras_escritura_ini,
+        huellas_posteriores=huellas_posteriores,
     ):
         return (False, "")
     return (
@@ -1042,6 +1084,78 @@ def _preservar_evidencia(
     return destino, ""
 
 
+def _veredicto_ajena(
+    kind: str,
+    registro: RegistroRecuperacion,
+    ruta: pathlib.Path,
+    raiz_evidencia: pathlib.Path | None,
+    motivo: str,
+) -> VerificacionSuperficie:
+    """La autoría no se pudo establecer: NO se restaura y se conserva lo que hay.
+
+    Restaurar pisaría una escritura legítima de otro; descartar lo nuevo sin
+    copia también. Se guarda una copia de los bytes actuales para que el
+    propietario pueda decidir, y el veredicto lo dice explícitamente. Recibe el
+    ``kind`` y no la ``SuperficieCapturada`` por la misma razón que
+    ``_preservar_evidencia``: no es un escritor de la superficie.
+    """
+    evidencia, diagnostico = _preservar_evidencia(raiz_evidencia, registro, kind, ruta)
+    if evidencia is None:
+        detalle = f"{motivo}. Evidencia NO preservada: {diagnostico}"
+    else:
+        detalle = f"{motivo}. Evidencia conservada en {evidencia}"
+    return VerificacionSuperficie(
+        kind=kind,
+        ok=True,
+        detail=f"{detalle}. Requiere intervención del propietario: no se restaura automáticamente",
+        escritura_ajena=True,
+        requiere_dueno=True,
+    )
+
+
+def _esta_en_estado_previo(superficie: SuperficieCapturada) -> bool:
+    """¿La superficie ya está EXACTAMENTE como en el snapshot? Sólo lectura.
+
+    «Estaba» incluye la ausencia: si no existía en el snapshot y sigue sin
+    existir, también está en su estado previo. Un error de lectura NO cuenta como
+    estado previo (no se afirma lo que no se pudo comprobar).
+    """
+    if superficie.path is None:
+        return False
+    ruta = pathlib.Path(superficie.path)
+    try:
+        if not ruta.exists():
+            return not superficie.existed
+        if not superficie.existed:
+            return False
+        return _sha256(ruta.read_bytes()) == superficie.sha256
+    except OSError:
+        return False
+
+
+def _coordinacion_de_escritores(kind: str, ruta: pathlib.Path) -> contextlib.AbstractContextManager[object]:
+    """El lock que comparten los escritores de ESTA superficie dentro del proceso.
+
+    - ``config.toml``: ``Config.save()`` (GUI, agente, ``AppContext``) serializa
+      con un lock por archivo que NO es el ``participant_lock``. Sin tomarlo, un
+      ``save()`` concurrente podía leer antes de la restauración y publicar
+      después (resucitando lo restaurado) o publicar entre la re-verificación y
+      el reemplazo (y perderse).
+    - ``active.json``: todos sus escritores de Sky-Claw toman el
+      ``participant_lock``, que el llamador ya sostiene.
+    - INI: dentro del proceso sólo lo escribe el binder.
+
+    Orden de adquisición: ``participant_lock`` (afuera) → lock del archivo de
+    config (adentro). ``Config.save()`` nunca toma el ``participant_lock``, así
+    que no hay ciclo. Ninguno de los dos excluye a otro proceso.
+    """
+    if kind == _KIND_CONFIG:
+        from sky_claw.config import lock_de_archivo_config
+
+        return lock_de_archivo_config(ruta)
+    return contextlib.nullcontext()
+
+
 def _restaurar_persistida(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
@@ -1049,76 +1163,76 @@ def _restaurar_persistida(
     raiz_evidencia: pathlib.Path | None = None,
     escritura_intentada: bool | None = None,
     bytes_tras_escritura_ini: bytes | None = None,
+    huellas_posteriores: Mapping[str, str] | None = None,
 ) -> VerificacionSuperficie:
-    """Devuelve la superficie a sus bytes previos y VERIFICA el resultado."""
+    """Devuelve la superficie a sus bytes previos y VERIFICA el resultado.
+
+    La autoría se RE-VERIFICA acá, justo antes de escribir, aunque el llamador ya
+    haya clasificado: entre la clasificación y esta escritura un tercero puede
+    haber escrito. En ``config`` la re-verificación, el reemplazo y el readback
+    ocurren bajo el lock del archivo (ver ``_coordinacion_de_escritores``).
+    """
     if superficie.path is None:
         return VerificacionSuperficie(kind=superficie.kind, ok=False, detail="la superficie no declara ruta")
     ruta = pathlib.Path(superficie.path)
     previos = superficie.bytes_previos()
 
-    ajena, motivo = _escrita_por_tercero(
-        superficie,
-        registro,
-        escritura_intentada=escritura_intentada,
-        bytes_tras_escritura_ini=bytes_tras_escritura_ini,
-    )
-    if ajena:
-        # La autoría no se pudo establecer: NO se restaura (pisaría una escritura
-        # legítima de otro), pero tampoco se descarta. Se guarda una copia de los
-        # bytes actuales para que el propietario pueda decidir, y el veredicto lo
-        # dice explícitamente.
-        evidencia, diagnostico = _preservar_evidencia(raiz_evidencia, registro, superficie.kind, ruta)
-        if evidencia is None:
-            detalle = f"{motivo}. Evidencia NO preservada: {diagnostico}"
-        else:
-            detalle = f"{motivo}. Evidencia conservada en {evidencia}"
-        return VerificacionSuperficie(
-            kind=superficie.kind,
-            ok=True,
-            detail=f"{detalle}. Requiere intervención del propietario: no se restaura automáticamente",
-            escritura_ajena=True,
+    with _coordinacion_de_escritores(superficie.kind, ruta):
+        ajena, motivo = _escrita_por_tercero(
+            superficie,
+            registro,
+            escritura_intentada=escritura_intentada,
+            bytes_tras_escritura_ini=bytes_tras_escritura_ini,
+            huellas_posteriores=huellas_posteriores,
         )
+        if ajena:
+            return _veredicto_ajena(superficie.kind, registro, ruta, raiz_evidencia, motivo)
 
-    # Saltar lo que ya está en su estado previo: si la mutación original nunca
-    # llegó a aplicarse (una violación de compartición, por ejemplo), reescribir
-    # los bytes idénticos puede fallar de nuevo por el mismo bloqueo y reportar
-    # un fallo CRÍTICO por una superficie que nunca cambió (CodeRabbit sobre
-    # #843).
-    if previos is not None:
+        # Saltar lo que ya está en su estado previo: si la mutación original nunca
+        # llegó a aplicarse (una violación de compartición, por ejemplo), reescribir
+        # los bytes idénticos puede fallar de nuevo por el mismo bloqueo y reportar
+        # un fallo CRÍTICO por una superficie que nunca cambió (CodeRabbit sobre
+        # #843).
+        if previos is not None:
+            try:
+                if _sha256(ruta.read_bytes()) == superficie.sha256:
+                    return VerificacionSuperficie(
+                        kind=superficie.kind,
+                        ok=True,
+                        detail=f"{ruta}: ya está en su estado previo: no se reescribe",
+                    )
+            except OSError as exc:
+                return VerificacionSuperficie(
+                    kind=superficie.kind, ok=False, detail=f"{ruta}: no se pudo leer antes de restaurar: {exc}"
+                )
+
         try:
-            if _sha256(ruta.read_bytes()) == superficie.sha256:
+            if previos is None:
+                if ruta.exists():
+                    ruta.unlink()
+                if ruta.exists():
+                    return VerificacionSuperficie(
+                        kind=superficie.kind, ok=False, detail=f"{ruta}: no existía antes y sigue existiendo"
+                    )
                 return VerificacionSuperficie(
                     kind=superficie.kind,
                     ok=True,
-                    detail=f"{ruta}: ya está en su estado previo: no se reescribe",
+                    detail=f"{ruta}: ausencia restaurada (no existía antes)",
+                    restaurada=True,
                 )
-        except OSError as exc:
-            return VerificacionSuperficie(
-                kind=superficie.kind, ok=False, detail=f"{ruta}: no se pudo leer antes de restaurar: {exc}"
-            )
-
-    try:
-        if previos is None:
-            if ruta.exists():
-                ruta.unlink()
-            if ruta.exists():
-                return VerificacionSuperficie(
-                    kind=superficie.kind, ok=False, detail=f"{ruta}: no existía antes y sigue existiendo"
-                )
-            return VerificacionSuperficie(
-                kind=superficie.kind, ok=True, detail=f"{ruta}: ausencia restaurada (no existía antes)"
-            )
-        _escribir_bytes_atomico(ruta, previos)
-        actuales = ruta.read_bytes()
-    except (OSError, RecuperacionError) as exc:
-        return VerificacionSuperficie(kind=superficie.kind, ok=False, detail=f"{ruta}: fallo al restaurar: {exc}")
+            _escribir_bytes_atomico(ruta, previos)
+            actuales = ruta.read_bytes()
+        except (OSError, RecuperacionError) as exc:
+            return VerificacionSuperficie(kind=superficie.kind, ok=False, detail=f"{ruta}: fallo al restaurar: {exc}")
     if _sha256(actuales) != superficie.sha256:
         return VerificacionSuperficie(
             kind=superficie.kind,
             ok=False,
             detail=f"{ruta}: el readback no coincide con el digest previo ({_sha256(actuales)} != {superficie.sha256})",
         )
-    return VerificacionSuperficie(kind=superficie.kind, ok=True, detail=f"{ruta}: bytes previos restaurados")
+    return VerificacionSuperficie(
+        kind=superficie.kind, ok=True, detail=f"{ruta}: bytes previos restaurados", restaurada=True
+    )
 
 
 def _restaurar_environ(
@@ -1138,12 +1252,16 @@ def _restaurar_environ(
             return VerificacionSuperficie(
                 kind=superficie.kind, ok=False, detail="SKYRIM_PATH no existía antes y sigue presente"
             )
-        return VerificacionSuperficie(kind=superficie.kind, ok=True, detail="SKYRIM_PATH: ausencia restaurada")
+        return VerificacionSuperficie(
+            kind=superficie.kind, ok=True, detail="SKYRIM_PATH: ausencia restaurada", restaurada=True
+        )
     valor = previos.decode("utf-8", "surrogatepass")
     environ["SKYRIM_PATH"] = valor
     if environ.get("SKYRIM_PATH") != valor:
         return VerificacionSuperficie(kind=superficie.kind, ok=False, detail="SKYRIM_PATH no quedó con el valor previo")
-    return VerificacionSuperficie(kind=superficie.kind, ok=True, detail="SKYRIM_PATH: valor previo restaurado")
+    return VerificacionSuperficie(
+        kind=superficie.kind, ok=True, detail="SKYRIM_PATH: valor previo restaurado", restaurada=True
+    )
 
 
 def restaurar_registro_locked(
@@ -1155,49 +1273,130 @@ def restaurar_registro_locked(
     solo_superficies: frozenset[str] | None = None,
     escritura_intentada: bool | None = None,
     bytes_tras_escritura_ini: bytes | None = None,
+    huellas_posteriores: Mapping[str, str] | None = None,
 ) -> tuple[VerificacionSuperficie, ...]:
     """Restaura las superficies capturadas y devuelve la verificación de cada una.
 
     ``solo_superficies`` distingue las dos formas de saber qué se mutó:
 
     - **en proceso**: el binder sabe qué llamadas completaron y pasa ese
-      conjunto exacto;
+      conjunto exacto, junto con la evidencia de autoría de cada escritor
+      (``escritura_intentada``/``bytes_tras_escritura_ini`` del INI y
+      ``huellas_posteriores`` de config y active.json);
     - **tras un reinicio**: sólo queda la fase del registro, que se marca ANTES
-      de cada mutación. El llamador pasa ``None`` y se restaura todo lo que la
-      fase alcanzó, que puede incluir una superficie que el crash no llegó a
-      mutar. Restaurarla escribe los MISMOS bytes que ya estaban: idempotente.
+      de cada mutación. El llamador pasa ``None`` y no hay evidencia de autoría:
+      nada divergente del snapshot se sobrescribe.
 
     Una superficie fuera del conjunto NO se toca y se declara como tal: no
     restaurar lo que no escribimos es la mitad de «no pisar a un tercero».
+
+    Dos fases, y NO es una transacción atómica:
+
+    1. **Clasificar** todas las superficies persistidas sin escribir nada. Si
+       alguna no es atribuible a esta transición, no se restaura ninguna —ni la
+       derivada—: las que sí lo eran quedan como están, declaradas. Restaurar
+       sólo una parte dejaría el INI, la config y el Desired apuntando a runtimes
+       distintos.
+    2. **Restaurar** en orden, re-verificando cada una justo antes de escribirla.
+       Si una falla, o aparece una escritura ajena posterior a la clasificación,
+       se DETIENEN las escrituras restantes: lo ya restaurado queda restaurado y
+       verificado, el resto queda como estaba, y todo se declara.
 
     No lanza por una superficie individual: devuelve el detalle para que el
     llamador decida. ``exigir_restauracion_completa`` es la puerta que convierte
     «alguna falló» en error.
     """
     alcanzadas = _superficies_alcanzadas_por_fase(registro.fase) if solo_superficies is None else solo_superficies
+
+    def _no_mutada(kind: str) -> VerificacionSuperficie:
+        return VerificacionSuperficie(kind=kind, ok=True, detail="no mutada por esta transición: no se toca")
+
+    # Fase 1 — clasificar TODO antes de escribir nada.
+    ajenas: dict[str, tuple[pathlib.Path, str]] = {}
+    en_estado_previo: set[str] = set()
+    for superficie in registro.superficies:
+        if superficie.kind not in alcanzadas or superficie.kind == _KIND_ENVIRON or superficie.path is None:
+            continue
+        if _esta_en_estado_previo(superficie):
+            en_estado_previo.add(superficie.kind)
+            continue
+        es_ajena, motivo = _escrita_por_tercero(
+            superficie,
+            registro,
+            escritura_intentada=escritura_intentada,
+            bytes_tras_escritura_ini=bytes_tras_escritura_ini,
+            huellas_posteriores=huellas_posteriores,
+        )
+        if es_ajena:
+            ajenas[superficie.kind] = (pathlib.Path(superficie.path), motivo)
+
     verificaciones: list[VerificacionSuperficie] = []
+    if ajenas:
+        no_atribuibles = sorted(ajenas)
+        for superficie in registro.superficies:
+            if superficie.kind not in alcanzadas:
+                verificaciones.append(_no_mutada(superficie.kind))
+            elif superficie.kind in ajenas:
+                ruta, motivo = ajenas[superficie.kind]
+                verificaciones.append(_veredicto_ajena(superficie.kind, registro, ruta, root, motivo))
+            elif superficie.kind in en_estado_previo:
+                # Ya está como en el snapshot (p. ej. el INI que un rollback
+                # interrumpido alcanzó a restaurar): no queda nada pendiente con
+                # ella, aunque la decisión de conjunto no restaure las demás.
+                verificaciones.append(
+                    VerificacionSuperficie(
+                        kind=superficie.kind,
+                        ok=True,
+                        detail=f"{superficie.path}: ya está en su estado previo: no se toca",
+                    )
+                )
+            else:
+                verificaciones.append(
+                    VerificacionSuperficie(
+                        kind=superficie.kind,
+                        ok=True,
+                        detail=(
+                            f"no se restaura: {no_atribuibles} no es atribuible a esta transición y la decisión "
+                            "es de conjunto (restaurar sólo una parte dejaría las superficies apuntando a "
+                            "runtimes distintos). Queda como está, para el propietario"
+                        ),
+                        requiere_dueno=True,
+                    )
+                )
+        return tuple(verificaciones)
+
+    # Fase 2 — restaurar en orden; una anomalía detiene las escrituras restantes.
+    detenida: str | None = None
     for superficie in registro.superficies:
         if superficie.kind not in alcanzadas:
+            verificaciones.append(_no_mutada(superficie.kind))
+            continue
+        if detenida is not None:
             verificaciones.append(
                 VerificacionSuperficie(
                     kind=superficie.kind,
                     ok=True,
-                    detail="no mutada por esta transición: no se toca",
+                    detail=f"no se restaura: la restauración se detuvo ({detenida}). Queda para el propietario",
+                    requiere_dueno=True,
                 )
             )
             continue
         if superficie.kind == _KIND_ENVIRON:
-            verificaciones.append(_restaurar_environ(superficie, environ))
-            continue
-        verificaciones.append(
-            _restaurar_persistida(
+            verificacion = _restaurar_environ(superficie, environ)
+        else:
+            verificacion = _restaurar_persistida(
                 superficie,
                 registro,
                 raiz_evidencia=root,
                 escritura_intentada=escritura_intentada,
                 bytes_tras_escritura_ini=bytes_tras_escritura_ini,
+                huellas_posteriores=huellas_posteriores,
             )
-        )
+        verificaciones.append(verificacion)
+        if not verificacion.ok:
+            detenida = f"falló la restauración de {superficie.kind}"
+        elif verificacion.escritura_ajena:
+            detenida = f"{superficie.kind} cambió después de clasificarla: escritura ajena"
     return tuple(verificaciones)
 
 
@@ -1263,7 +1462,10 @@ def recuperar_transicion_interrumpida(
     3. El journal no está PENDING para esa transición → ``REGISTRO_NO_LIGADO``:
        no se toca nada y se pide al dueño.
     4. El journal está PENDING con la MISMA ``journal_revision`` y el mismo
-       ``transition_id`` → se restauran las superficies y se verifica cada una.
+       ``transition_id`` → se clasifican las superficies. Como este proceso no
+       tiene evidencia de autoría (huellas en memoria), una superficie que
+       difiere del snapshot NO se sobrescribe: se preserva con evidencia y la
+       decisión es del dueño. Sólo se «restaura» lo que no requiere escribir.
        El journal NO se escribe: queda ``PENDING`` y lo clasifica su dueño.
     """
     ruta = pathlib.Path(os.path.abspath(os.fspath(root)))
@@ -1342,6 +1544,7 @@ def recuperar_transicion_interrumpida(
         # transición no escribió y que no se restauró. Presentarlo como
         # RESTAURADO a secas sería afirmar una integralidad que no hubo.
         ajenas = [v.kind for v in verificaciones if v.escritura_ajena]
+        restauradas = [v.kind for v in verificaciones if v.restaurada]
         estado = (
             EstadoRecuperacion.RESTAURACION_INCOMPLETA_REQUIERE_DUENO
             if ajenas
@@ -1349,9 +1552,10 @@ def recuperar_transicion_interrumpida(
         )
         if ajenas:
             motivo = (
-                f"superficies restauradas desde la fase {registro.fase.value}, PERO {ajenas} conserva una "
-                f"escritura ajena que NO se sobrescribe: la recuperación no fue integral y la decisión es del "
-                f"dueño (el journal sigue {journal.state.value})"
+                f"fase {registro.fase.value}: {ajenas} difiere del snapshot y su autoría no se puede acreditar "
+                f"desde un proceso nuevo, así que NO se sobrescribe (evidencia conservada); restauradas: "
+                f"{restauradas or 'ninguna'}. La recuperación no fue integral y la decisión es del dueño "
+                f"(el journal sigue {journal.state.value})"
             )
         else:
             motivo = (
