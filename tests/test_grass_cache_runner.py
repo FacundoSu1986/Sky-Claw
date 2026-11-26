@@ -228,6 +228,8 @@ def config(entorno: tuple[pathlib.Path, pathlib.Path]) -> GrassCacheConfig:
         # el flag vacío necesita el reconocimiento explícito. Los tests que
         # verifican el HOLD lo apagan a propósito.
         ack_usvfs_no_verificado=True,
+        # F1: el fence es obligatorio; toda config de test tiene raíz de estado.
+        backup_root=game.parent / "estado_fence",
     )
 
 
@@ -1146,7 +1148,9 @@ async def test_rebuild_sin_raiz_de_respaldo_no_destruye(config: GrassCacheConfig
     # respaldo no se habilita una operación destructiva.
     _escribir_cgid(config.overwrite_grass_dir, "previo.cgid", datos=b"prec")
     # El ack de USVFS ya está dado: lo que falta es dónde dejar el respaldo.
-    cfg = dataclasses.replace(config, mode="rebuild", rebuild_approval="REBUILD", ack_usvfs_no_verificado=True)
+    cfg = dataclasses.replace(
+        config, mode="rebuild", rebuild_approval="REBUILD", ack_usvfs_no_verificado=True, backup_root=None
+    )
 
     with pytest.raises(GrassCacheSafetyError) as excinfo:
         await _correr(_runner(cfg, mo2))

@@ -459,6 +459,26 @@ class GrassCacheService:
         teardown_failures: list[str] = []
         try:
             async with tx, lo_tx:
+                # F1 (contrato): el chequeo previo a los locks es sólo una optimización. La
+                # revalidación DENTRO de grass-cache + load-order es la que manda: entre el primer
+                # chequeo y la adquisición, otro ritual pudo dejar su marcador.
+                if config.backup_root is not None:
+                    bloqueo_bajo_locks = await asyncio.to_thread(
+                        bloqueo_por_fence,
+                        ruta_fence(
+                            raiz_estado=config.backup_root,
+                            game_path=config.game_path,
+                            overwrite_grass_dir=config.overwrite_grass_dir,
+                        ),
+                    )
+                    if bloqueo_bajo_locks is not None:
+                        logger.warning(
+                            "Ritual de grass bloqueado por el fence bajo locks: %s",
+                            bloqueo_bajo_locks,
+                            extra={"pipeline_stage": 8},
+                        )
+                        return self._error(bloqueo_bajo_locks, inicio)
+
                 # P0 SAFE CACHE (F-01): el guard de arranque corre ANTES de
                 # clonar el perfil. Es la MISMA función que usa el runner
                 # (``preparar_arranque``), así no hay dos políticas que puedan

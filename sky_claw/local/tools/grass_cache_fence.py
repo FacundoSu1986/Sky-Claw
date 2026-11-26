@@ -172,8 +172,10 @@ def bloqueo_por_fence(ruta: pathlib.Path) -> str | None:
     return (
         f"Hay un ritual de grass previo SIN terminalidad demostrada (run_id={fence.run_id}, "
         f"intento={fence.intento}, lanzamiento={fence.lanzamiento}, pid={fence.pid}, "
-        f"estado={estado}). No se inicia otro ritual sobre el mismo caché: cerrá el juego y, si el "
-        f"proceso ya no existe, borrá el marcador {ruta}."
+        f"estado={estado}). No se inicia otro ritual sobre el mismo caché: cerrá el juego y verificá "
+        f"que no quede ningún SkyrimSE.exe del precache NI recursos del ritual anterior en uso antes "
+        f"de liberar el marcador {ruta}. Un marcador ilegible o con estado indeterminado no se borra "
+        f"a ciegas."
     )
 
 

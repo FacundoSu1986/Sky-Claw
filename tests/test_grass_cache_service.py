@@ -1740,3 +1740,35 @@ async def test_f2_dos_rituales_con_proceso_remanente_no_destruyen_el_clon_ajeno(
     colab["profile_manager"].create_clone_profile.assert_not_awaited()
     colab["profile_manager"].teardown.assert_not_awaited()
     assert ruta.exists(), "el marcador del primer ritual se conserva"
+
+
+async def test_f1_revalidacion_bajo_locks_bloquea_al_segundo_ritual(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F1 (contrato): el segundo ritual supera el chequeo previo y el fence aparece bajo los locks.
+
+    Determinista: la primera consulta (antes de los locks) ve el camino libre; la segunda (ya con
+    grass-cache + load-order tomados) encuentra un marcador activo. El servicio NO debe mutar nada.
+    """
+    import sky_claw.local.tools.grass_cache_service as gcs
+
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal)
+    llamadas = {"n": 0}
+
+    def _fence_aparece_entre_chequeos(*args: object, **kwargs: object) -> str | None:
+        llamadas["n"] += 1
+        if llamadas["n"] == 1:
+            return None  # el chequeo previo pasa
+        return "Hay un ritual de grass previo SIN terminalidad demostrada (run_id=otro)"
+
+    monkeypatch.setattr(gcs, "bloqueo_por_fence", _fence_aparece_entre_chequeos)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert llamadas["n"] >= 2, "el fence se consulta también bajo los locks"
+    assert resultado["success"] is False
+    assert "previo SIN terminalidad" in resultado["message"]
+    colab["profile_manager"].create_clone_profile.assert_not_awaited()
+    colab["profile_manager"].teardown.assert_not_awaited()
+    journal.commit_transaction.assert_not_awaited()

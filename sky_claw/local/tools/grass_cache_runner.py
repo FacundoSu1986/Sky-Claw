@@ -850,24 +850,41 @@ class GrassCacheRunner:
                 self._epoch_del_intento[intento] = time.time() - _CREATE_TIME_EPSILON
                 # F1: el marcador se escribe ANTES de pedir el spawn. Si Sky-Claw muere entre acá y
                 # el kill, el próximo arranque encuentra incertidumbre en vez de silencio.
-                if self._ruta_fence is not None:
-                    try:
-                        escribir_fence(
-                            self._ruta_fence,
-                            FenceProceso(
-                                run_id=self._run_id,
-                                intento=intento,
-                                lanzamiento="solicitado",
-                                pid=self._pid_del_intento(intento),
-                                create_time=self._create_time_del_intento(intento),
-                                modo=self._config.mode,
-                                game_path=str(self._config.game_path),
-                                overwrite_grass_dir=str(self._config.overwrite_grass_dir),
-                                creado=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                            ),
-                        )
-                    except Exception:  # noqa: BLE001 — no poder escribir el fence no cancela el ritual
-                        logger.warning("No se pudo escribir el fence del precache.", exc_info=True)
+                # F1 (contrato): el fence es OBLIGATORIO y fail-closed. Sin marcador persistido y
+                # verificado no se lanza Skyrim: un ritual sin fence podría dejar un proceso vivo que
+                # otro ritual no vería.
+                if self._ruta_fence is None:
+                    return self._resultado(
+                        "spawn_failed",
+                        "No se lanza: la configuración no permite persistir el fence de terminalidad "
+                        "(falta la raíz de estado). Un ritual sin fence no puede garantizar el cierre.",
+                        crash_count,
+                        await self._snapshot_cache(),
+                    )
+                try:
+                    escribir_fence(
+                        self._ruta_fence,
+                        FenceProceso(
+                            run_id=self._run_id,
+                            intento=intento,
+                            lanzamiento="solicitado",
+                            pid=self._pid_del_intento(intento),
+                            create_time=self._create_time_del_intento(intento),
+                            modo=self._config.mode,
+                            game_path=str(self._config.game_path),
+                            overwrite_grass_dir=str(self._config.overwrite_grass_dir),
+                            creado=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 — fail-closed: sin fence no se lanza
+                    logger.error("No se pudo persistir el fence del precache: no se lanza.", exc_info=True)
+                    return self._resultado(
+                        "spawn_failed",
+                        "No se lanza: no se pudo persistir y verificar el fence de terminalidad. "
+                        "El ritual no puede garantizar que un proceso vivo quede bloqueado.",
+                        crash_count,
+                        await self._snapshot_cache(),
+                    )
                 try:
                     info: dict[str, Any] = await self._mo2.launch_game(self._config.profile)
                     mo2_pid: int | None = int(info["pid"])
@@ -1487,7 +1504,39 @@ class GrassCacheRunner:
         if pid is not None:
             self._ultimo_atribuido = pid
             self._atribuciones[self._intento_actual] = pid
+            self._actualizar_fence_con_identidad(pid)
         return pid
+
+    def _actualizar_fence_con_identidad(self, pid: _GamePid) -> None:
+        """Reescribe el marcador con el PID/create_time atribuidos (F1, identidad atómica).
+
+        Preserva ``run_id`` e ``intento``. Un fallo de actualización **no** borra el marcador
+        conservador anterior (el que dice «lanzamiento solicitado, sin identidad»): perderlo sería
+        abrir el pipeline con un proceso que sí existe.
+        """
+        if self._ruta_fence is None:
+            return
+        try:
+            escribir_fence(
+                self._ruta_fence,
+                FenceProceso(
+                    run_id=self._run_id,
+                    intento=self._intento_actual,
+                    lanzamiento="atribuido",
+                    pid=pid.pid,
+                    create_time=pid.create_time,
+                    modo=self._config.mode,
+                    game_path=str(self._config.game_path),
+                    overwrite_grass_dir=str(self._config.overwrite_grass_dir),
+                    creado=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                ),
+            )
+        except Exception:  # noqa: BLE001 — se conserva el marcador anterior (más conservador)
+            logger.warning(
+                "No se pudo actualizar el fence con la identidad del proceso; se conserva el "
+                "marcador conservador anterior.",
+                exc_info=True,
+            )
 
     def _scan_for_game_sync(self, mo2_pid: int, min_create_epoch: float) -> _GamePid | None:
         """UNA pasada de búsqueda del juego (el caller polea).
