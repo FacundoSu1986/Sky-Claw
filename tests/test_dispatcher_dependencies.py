@@ -37,6 +37,7 @@ _CAMPOS_DEPENDENCIAS = [
     "raices_mo2_provider",
     "xedit_bridge_service",
     "aprobar_sin_etapas_previas",
+    "synthesis_backend",
 ]
 
 _TOOLS = [
@@ -273,6 +274,11 @@ def test_synthesis_lazy_conserva_sandbox_y_factory() -> None:
         event_bus=event_bus,
         pipeline_config_path=pipeline_config_path,
         output_path=pathlib.Path("/clone/overwrite"),
+        # PR-2b3: el backend llega cerrado a la factory; sin pedirlo, standalone.
+        synthesis_backend="standalone",
+        vfs_broker=None,
+        instance_id=None,
+        preparador_fase1=None,
     )
 
 
