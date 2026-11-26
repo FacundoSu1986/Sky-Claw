@@ -83,12 +83,14 @@ from enum import StrEnum
 from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime import state as state_module
 from sky_claw.local.frozen_runtime.errors import (
+    AbortoCorruptoError,
     ApprovalCarreraNormalError,
     ApprovalCasError,
     ApprovalConsentimientoError,
     ApprovalCorruptError,
     ApprovalHitolNoDisponibleError,
     ApprovalIdentityError,
+    ApprovalJournalBlockedError,
     ApprovalLedgerRetrocedidoError,
     ApprovalMaxIssuedError,
     ApprovalMintingDefectError,
@@ -97,21 +99,27 @@ from sky_claw.local.frozen_runtime.errors import (
     ApprovalStoreNoInicializadoError,
     InvalidGenerationIdError,
     JournalCorruptError,
+    JournalIdentityError,
+    JournalSchemaError,
+    JournalStoreNoInicializadoError,
 )
 from sky_claw.local.frozen_runtime.generation_id import validar_generation_id
 from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace, exigir_namespace_escribible
 from sky_claw.local.frozen_runtime.journal import (
     CAMPOS_DEL_SCOPE_LIGADOS,
     AprobacionConsumida,
+    JournalDisposition,
     PropuestaTransicion,
     ProyeccionScope,
     SourceActivation,
+    cargar_journal_transicion,
     digest_canonico,
     exigir_proyeccion_ligada,
     leer_json_de_control,
     proyectar_propuesta,
     validar_propuesta_transicion,
 )
+from sky_claw.local.frozen_runtime.pending_abort_store import abortos_incompletos
 from sky_claw.local.frozen_runtime.root_lock import FrozenRuntimeRootLockHandle, participant_lock
 from sky_claw.local.frozen_runtime.storage import (
     admitir_directorio_storage,
@@ -2571,6 +2579,67 @@ def _crear_tombstone(
     return ruta
 
 
+def _exigir_journal_compatible_en_consumo(
+    ruta: pathlib.Path,
+    *,
+    approval_id: str,
+    approval_seq: int,
+    approval_scope_digest: str,
+    transition_id: str,
+    con_evidencia_terminal_previa: bool,
+) -> None:
+    """Guard bajo ``participant_lock`` contra consumo sobre ``PENDING`` incompatible o aborto en curso (D1/D4).
+
+    - Journal corrupto/ilegible ⇒ ``ApprovalJournalBlockedError``.
+    - Aborto incompleto en ``state/aborted_transitions/`` ⇒ ``ApprovalJournalBlockedError`` (si es consumo nuevo).
+    - Journal ``PENDING_*``: sólo se admite si ``con_evidencia_terminal_previa=True`` (reintento
+      idempotente de una aprobación ya quemada) **y** el ``PENDING`` liga exactamente
+      ``(transition_id, approval_id, approval_seq, approval_scope_digest)``. Una coincidencia
+      aislada de ``transition_id`` jamás basta.
+    """
+    try:
+        snapshot_journal = cargar_journal_transicion(ruta)
+    except (JournalCorruptError, JournalSchemaError, JournalIdentityError, JournalStoreNoInicializadoError) as exc:
+        raise ApprovalJournalBlockedError(
+            f"el journal transicional no es legible ({exc}): NO se consume la aprobación (fail-closed)"
+        ) from exc
+
+    if snapshot_journal.disposition in (
+        JournalDisposition.PENDING_PROMOTION,
+        JournalDisposition.PENDING_ROLLBACK,
+    ):
+        doc_j = snapshot_journal.journal
+        pendiente_tid = None if doc_j is None else doc_j.transition_id
+        vinculo_exacto = (
+            doc_j is not None
+            and doc_j.transition_id == transition_id
+            and doc_j.consumed_approval_id == approval_id
+            and doc_j.consumed_approval_seq == approval_seq
+            and doc_j.consumed_scope_digest == approval_scope_digest
+        )
+        if not (con_evidencia_terminal_previa and vinculo_exacto):
+            raise ApprovalJournalBlockedError(
+                f"existe un journal {snapshot_journal.disposition.value} vigente para la transición "
+                f"{pendiente_tid!r} (vinculo_exacto={vinculo_exacto}, "
+                f"evidencia_terminal_previa={con_evidencia_terminal_previa}): "
+                "NO se consume una aprobación incompatible mientras el PENDING impide publicar la transición"
+            )
+
+    if not con_evidencia_terminal_previa:
+        try:
+            incompletos = abortos_incompletos(ruta)
+        except AbortoCorruptoError as exc:
+            raise ApprovalJournalBlockedError(
+                f"el store de abortos no es legible ({exc}): NO se consume la aprobación (fail-closed)"
+            ) from exc
+        if incompletos:
+            ids_inc = sorted(r.transition_id for r in incompletos)
+            raise ApprovalJournalBlockedError(
+                f"existe(n) aborto(s) incompleto(s) en curso ({ids_inc}): NO se consume una aprobación nueva "
+                "hasta completar la reconciliación pendiente (D4)"
+            )
+
+
 def consumir_aprobacion(
     root: pathlib.Path,
     *,
@@ -2704,6 +2773,14 @@ def consumir_aprobacion(
                     f"el ledger declara CONSUMED la aprobación {approval_seq} sin evidencia terminal "
                     "coherente: FAIL_CLOSED (write-ahead violado)"
                 )
+            _exigir_journal_compatible_en_consumo(
+                ruta,
+                approval_id=approval_id,
+                approval_seq=approval_seq,
+                approval_scope_digest=approval_scope_digest,
+                transition_id=transition_id,
+                con_evidencia_terminal_previa=True,
+            )
             return ResultadoConsumo(
                 approval_id=approval_id,
                 approval_seq=approval_seq,
@@ -2726,6 +2803,14 @@ def consumir_aprobacion(
             transition_id=transition_id,
         )
         if previo is not None:
+            _exigir_journal_compatible_en_consumo(
+                ruta,
+                approval_id=approval_id,
+                approval_seq=approval_seq,
+                approval_scope_digest=approval_scope_digest,
+                transition_id=transition_id,
+                con_evidencia_terminal_previa=True,
+            )
             # Reintento idempotente: el tombstone ya existe con el MISMO contenido.
             reconciliado = _reconciliar_hacia_adelante(handle, ruta)
             return ResultadoConsumo(
@@ -2737,6 +2822,14 @@ def consumir_aprobacion(
                 terminal_path=approvals_state_dir(ruta) / _nombre_tombstone(approval_seq, approval_id),
                 cache_reconciled=reconciliado is not None and reconciliado.state is ApprovalLifecycle.CONSUMED,
             )
+        _exigir_journal_compatible_en_consumo(
+            ruta,
+            approval_id=approval_id,
+            approval_seq=approval_seq,
+            approval_scope_digest=approval_scope_digest,
+            transition_id=transition_id,
+            con_evidencia_terminal_previa=False,
+        )
         tombstone = ApprovalTombstone(
             schema_version=TERMINAL_TOMBSTONE_SCHEMA_VERSION,
             approval_id=approval_id,

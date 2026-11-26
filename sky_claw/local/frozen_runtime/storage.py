@@ -194,6 +194,43 @@ def asegurar_directorio_abandonos(root: pathlib.Path) -> pathlib.Path:
     return directorio
 
 
+def aborted_transitions_state_dir(root: pathlib.Path) -> pathlib.Path:
+    """Store durable de abortos autorizados de transiciones en ``PENDING`` (P7-F Inc. 2, §48)."""
+    return state_dir(root) / "aborted_transitions"
+
+
+def aborted_transition_record_path(root: pathlib.Path, transition_id: str) -> pathlib.Path:
+    """Ruta al registro JSON de aborto autorizado de una transición ``PENDING``.
+
+    Falla cerrado si ``transition_id`` no es un UUID v4 canónico.
+    """
+    if not isinstance(transition_id, str) or _PATRON_TRANSITION_ID.fullmatch(transition_id) is None:
+        raise FrozenRuntimeStorageError(
+            f"transition_id inválido para el registro de aborto (se exige UUID v4 canónico): {transition_id!r}"
+        )
+    return aborted_transitions_state_dir(root) / f"{transition_id}.json"
+
+
+def asegurar_directorio_abortos(root: pathlib.Path) -> pathlib.Path:
+    """Admite fail-closed y crea ``state/aborted_transitions/`` (hermano de ``asegurar_directorio_abandonos``)."""
+    directorio = aborted_transitions_state_dir(root)
+    try:
+        exigir_contencion_fisica(pathlib.Path(root), state_dir(root), exigir_existencia=True)
+    except ContencionFisicaVioladaError as exc:
+        raise FrozenRuntimeStorageError(f"el namespace de estado no cuelga físicamente de '{root}': {exc}") from exc
+    exigir_namespace_escribible(state_dir(root))
+    admision = admitir_directorio_storage(directorio)
+    if not admision.success:
+        raise FrozenRuntimeStorageError(f"el store de abortos fue rechazado: {admision.message}")
+    if not directorio.exists():
+        try:
+            directorio.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise FrozenRuntimeStorageError(f"no se pudo crear el store de abortos '{directorio}': {exc}") from exc
+    exigir_namespace_escribible(directorio)
+    return directorio
+
+
 def generation_dir(root: pathlib.Path, generation_id: str) -> pathlib.Path:
     return versions_dir(root) / generation_id
 
@@ -410,6 +447,7 @@ def _initialize_frozen_runtime_storage_locked(
         approvals_state_dir(ruta),
         recovery_state_dir(ruta),
         abandoned_transitions_state_dir(ruta),
+        aborted_transitions_state_dir(ruta),
     )
     creados: list[pathlib.Path] = []
     try:

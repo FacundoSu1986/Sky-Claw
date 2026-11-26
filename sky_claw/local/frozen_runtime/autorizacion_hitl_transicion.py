@@ -162,6 +162,21 @@ from sky_claw.local.frozen_runtime.owner_consent import (
     _exigir_identidad_verificada,
     emitir_aprobacion_autorizada,
 )
+from sky_claw.local.frozen_runtime.pending_abort_store import (
+    ConfirmacionSuperficie,
+    EstadoAbortoPendiente,
+    EstadoSuperficieConfirmada,
+    ModoAbortoPendiente,
+    RegistroAbortoPendiente,
+    abortos_incompletos,
+    cargar_abortos,
+    exigir_store_abortos_coherente,
+    registro_de_aborto,
+)
+from sky_claw.local.frozen_runtime.pending_reconciliation import (
+    ContextoVerificacionIp0,
+    abortar_transicion_pendiente,
+)
 from sky_claw.local.frozen_runtime.provisioning import verificar_runtime_setup
 from sky_claw.local.frozen_runtime.root_lock import canonical_root_key, participant_lock
 from sky_claw.local.frozen_runtime.runtime_clone_binder import (
@@ -1070,6 +1085,25 @@ def abandonar_transicion_consumida(
                 f"la transición {t_id!r} ya está FINALIZED: no se puede abandonar una transición finalizada con éxito"
             )
 
+        # 5b. Abortos post-PENDING (D4/D5): rechazar si hay abortos incompletos o si ya fue abortada
+        try:
+            incompletos_ab = abortos_incompletos(storage_path)
+            aborto_existente = registro_de_aborto(storage_path, t_id)
+        except (FrozenRuntimeError, OSError) as exc:
+            raise AbandonoTransicionInvalidoError(
+                f"error al consultar el store de abortos ({exc}): fail-closed"
+            ) from exc
+        if incompletos_ab:
+            ids_inc = sorted(r.transition_id for r in incompletos_ab)
+            raise AbandonoTransicionInvalidoError(
+                f"no se puede abandonar: existen abortos incompletos en curso ({ids_inc}). "
+                "Completá primero la reconciliación pendiente (D4)"
+            )
+        if aborto_existente is not None:
+            raise AbandonoTransicionInvalidoError(
+                f"la transición {t_id!r} ya fue resuelta por aborto autorizado: no corresponde abandonarla"
+            )
+
         # 6. Persistir el registro atómico (directorio admitido fail-closed antes de escribir)
         storage.asegurar_directorio_abandonos(storage_path)
         payload: dict[str, object] = {
@@ -1193,6 +1227,36 @@ def diagnosticar_estado_durable(storage_root: pathlib.Path) -> DiagnosticoDurabl
             motivo=f"los registros de abandono no son legibles o están corruptos ({exc}): fail-closed",
         )
 
+    try:
+        abortos = exigir_store_abortos_coherente(
+            storages,
+            journal_disposition_value=disposition.value,
+            last_finalized_transition_id=None if journal is None else journal.last_finalized_transition_id,
+        )
+    except (FrozenRuntimeError, OSError) as exc:
+        return DiagnosticoDurable(
+            estado=EstadoDurable.REQUIERE_DUENO,
+            journal_disposition=disposition,
+            transicion_en_curso=en_curso,
+            transicion_reanudable=None,
+            registros_recuperacion=registros,
+            motivo=f"los registros de aborto no son legibles o el store es incoherente ({exc}): fail-closed",
+        )
+
+    incompletos_aborto = sorted(tid for tid, reg in abortos.items() if reg.estado is not EstadoAbortoPendiente.COMPLETO)
+    if incompletos_aborto:
+        return DiagnosticoDurable(
+            estado=EstadoDurable.REQUIERE_DUENO,
+            journal_disposition=disposition,
+            transicion_en_curso=incompletos_aborto[0],
+            transicion_reanudable=None,
+            registros_recuperacion=registros,
+            motivo=(
+                f"hay aborto(s) de PENDING incompleto(s) en curso ({incompletos_aborto}): "
+                "reintentá abortar_transicion_pendiente para completar la reconciliación (D4)"
+            ),
+        )
+
     reanudables: list[ApprovalTombstone] = []
     for t in consumidos:
         t_id = t.consumed_by_transition_id
@@ -1204,6 +1268,15 @@ def diagnosticar_estado_durable(storage_root: pathlib.Path) -> DiagnosticoDurabl
                 abandono.approval_id == t.approval_id
                 and abandono.approval_seq == int(t.approval_seq)
                 and abandono.scope_digest == t.approval_scope_digest
+            ):
+                continue
+        if t_id in abortos:
+            aborto = abortos[t_id]
+            if (
+                aborto.estado is EstadoAbortoPendiente.COMPLETO
+                and aborto.approval_id == t.approval_id
+                and aborto.approval_seq == int(t.approval_seq)
+                and aborto.scope_digest == t.approval_scope_digest
             ):
                 continue
         reanudables.append(t)
@@ -1767,6 +1840,45 @@ class SesionTransicionGoldenMaster:
             clock_ns=self._clock_ns,
         )
 
+    def abortar_pendiente(
+        self,
+        *,
+        transition_id: str,
+        identidad: IdentidadPropietario,
+        motivo: str,
+        confirmaciones: Mapping[str, ConfirmacionSuperficie] | None = None,
+        usar_contexto_ip0: bool = False,
+        timeout: float = 30.0,
+    ) -> RegistroAbortoPendiente:
+        """Aborta de forma autorizada un ``PENDING`` sobre el storage de la sesión (ADR 0012 §48)."""
+        ctx_ip0: ContextoVerificacionIp0 | None = None
+        if usar_contexto_ip0:
+            if self._config_path is None:
+                raise EvidenciaTransicionError("IP-0 requiere config_path configurado en la sesión")
+            ctx_ip0 = ContextoVerificacionIp0(
+                mo2_instance_dir=self._mo2_instance_dir,
+                clone_id=self._clone_id,
+                config_path=self._config_path,
+                transition_policy=self._transition_policy,
+                managed_source_root=self._managed_source_root,
+                outgoing_manual_runtime_root=self._outgoing_manual_runtime_root,
+                stock_source_root=self._stock_source_root,
+                approved_stock_reference_digest=self._approved_stock_reference_digest,
+                approved_stock_reference_digest_file=self._approved_stock_reference_digest_file,
+                environ=self._environ,
+            )
+        return abortar_transicion_pendiente(
+            self._storage_root,
+            transition_id=transition_id,
+            identidad=identidad,
+            motivo=motivo,
+            confirmaciones=confirmaciones,
+            contexto_ip0=ctx_ip0,
+            probes=self._probes,
+            timeout=timeout,
+            clock_ns=self._clock_ns,
+        )
+
 
 __all__ = [
     "CANDIDATE_OBJECT",
@@ -1778,13 +1890,19 @@ __all__ = [
     "AbandonoCorruptoError",
     "AbandonoTransicionInvalidoError",
     "AutorizacionTransicionError",
+    "ConfirmacionSuperficie",
+    "ContextoVerificacionIp0",
     "DiagnosticoDurable",
     "EscenarioTransicion",
+    "EstadoAbortoPendiente",
     "EstadoDurable",
+    "EstadoSuperficieConfirmada",
     "EvidenciaTransicion",
     "EvidenciaTransicionError",
+    "ModoAbortoPendiente",
     "OrigenTransicion",
     "RegistroAbandonoTransicion",
+    "RegistroAbortoPendiente",
     "ReanudacionNoDisponibleError",
     "ReanudacionRequiereDuenoError",
     "ResultadoTransicion",
@@ -1794,6 +1912,8 @@ __all__ = [
     "TransicionEnCursoError",
     "TransicionYaActivaError",
     "abandonar_transicion_consumida",
+    "abortar_transicion_pendiente",
+    "cargar_abortos",
     "cargar_registro_abandono",
     "derivar_evidencia_transicion",
     "diagnosticar_estado_durable",
