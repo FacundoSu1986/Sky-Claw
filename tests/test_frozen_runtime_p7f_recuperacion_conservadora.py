@@ -176,6 +176,41 @@ def test_el_cas_avisa_la_huella_publicada_antes_del_readback(tmp_path: pathlib.P
     assert recibidas[0] != _sha(active.read_bytes()), "la huella avisada incluye la escritura del tercero"
     assert despues.sha256 == _sha(active.read_bytes()), "el valor devuelto es lo releído, no lo publicado"
 
+    # Además: si el readback posterior a os.replace falla, al_publicar ya recibió
+    # la huella exacta publicada antes de producirse la excepción (mata M5).
+    esperado_fallo = state_module.observar_estado_previo(active)
+    observar_real = state_module.observar_estado_previo
+    publicada: list[str] = []
+    recibidas_fallo: list[str] = []
+
+    def _escribir_y_registrar(path: pathlib.Path, payload_arg: dict[str, object]) -> str:
+        huella = escribir_real(path, payload_arg)
+        publicada.append(huella)
+        return huella
+
+    def _observar_con_fallo_post_publicacion(path: pathlib.Path) -> state_module.EstadoPrevioObservado:
+        if publicada:
+            raise OSError("fallo de lectura simulado en readback")
+        return observar_real(path)
+
+    payload_fallo: dict[str, object] = {
+        "schema_version": 2,
+        "desired_generation_id": _GEN,
+        "desired_clone_id": "clone-2",
+        "updated_at_ns": 8,
+    }
+    with (
+        patch.object(state_module, "write_json_atomic", side_effect=_escribir_y_registrar),
+        patch.object(state_module, "observar_estado_previo", side_effect=_observar_con_fallo_post_publicacion),
+        pytest.raises(OSError, match="fallo de lectura simulado en readback"),
+    ):
+        state_module.escribir_estado_activo_cas(
+            active, payload_fallo, esperado=esperado_fallo, al_publicar=recibidas_fallo.append
+        )
+
+    assert len(publicada) == 1
+    assert recibidas_fallo == publicada, "al_publicar no recibió la huella publicada antes del fallo de readback"
+
 
 # ---------------------------------------------------------------------------
 # 2. Ancla enumerante: cada superficie persistida tiene su receta
