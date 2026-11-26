@@ -65,6 +65,18 @@ def _normalizar_backend(valor: object) -> str | None:
     return None
 
 
+def dominio_de_visibilidad_del_backend(valor: object) -> str:
+    """Dominio de visibilidad de datos que implica el selector ``synthesis_backend`` (PR-2b3).
+
+    Fuente ÚNICA de la decisión: el servicio la usa para elegir entre la salida física y la raíz
+    administrada, y la strategy del dispatcher para decidir si clona el overwrite. Solo
+    ``standalone`` (normalizado) es ``physical``; cualquier otro valor, válido o no, es
+    ``virtual_usvfs``, así que un selector inválido nunca degrada a la ruta física y lo frena el guard
+    fail-closed del servicio.
+    """
+    return "physical" if _normalizar_backend(valor) == SYNTHESIS_BACKEND_STANDALONE else "virtual_usvfs"
+
+
 def _validar_ruta_sin_enlaces(path: pathlib.Path, *, field: str) -> pathlib.Path:
     """Rechaza traversal y symlinks/junctions en ruta y ancestros SIN pre-resolver."""
     if ".." in path.parts:

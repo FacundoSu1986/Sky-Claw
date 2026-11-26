@@ -234,13 +234,10 @@ class SynthesisPipelineService:
             domain = getattr(synthesis_runner, "data_visibility_domain", None)
             self._data_visibility_domain = "virtual_usvfs" if domain == "virtual_usvfs" else "physical"
         else:
-            from sky_claw.local.mo2.brokered_synthesis import SYNTHESIS_BACKEND_STANDALONE, _normalizar_backend
+            # PR-2b3: misma función que usa la strategy del dispatcher para decidir el clon.
+            from sky_claw.local.mo2.brokered_synthesis import dominio_de_visibilidad_del_backend
 
-            self._data_visibility_domain = (
-                "physical"
-                if _normalizar_backend(synthesis_backend) == SYNTHESIS_BACKEND_STANDALONE
-                else "virtual_usvfs"
-            )
+            self._data_visibility_domain = dominio_de_visibilidad_del_backend(synthesis_backend)
 
         # Lazy init — paths may not be available at construction time
         self._synthesis_runner: Any = synthesis_runner

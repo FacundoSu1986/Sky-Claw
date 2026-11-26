@@ -573,6 +573,8 @@ CENSO_DE_LECTORES = {
     "sky_claw/local/native_parallax/diagnostico_perfil.py": 1,
     # #997: la guía de la etapa 9 lista las capas de Data donde buscar el DLL de DynDOLOD DLL NG.
     "sky_claw/local/tools/dyndolod_guia.py": 1,
+    # PR-2b3 (ADR 0019 §2.3): diff de activación de Synthesis, solo lectura.
+    "sky_claw/local/tools/synthesis_activacion.py": 1,
     "sky_claw/local/tools/wrye_bash_service.py": 1,
     "sky_claw/local/validators/etapas_previas_lods.py": 1,
 }
@@ -589,6 +591,8 @@ CLASIFICACION_DE_CONSUMIDORES = {
     # #997: enumera capas (Data, overwrite, mods habilitados) para buscar un archivo; no resuelve identidad de mods.
     "sky_claw/local/tools/dyndolod_guia.py": "enumera_capas",
     "sky_claw/local/tools/output_targets.py": "enumera_capas",
+    # PR-2b3: "¿está habilitado `Sky-Claw Synthesis Output`?" se contesta con la primitiva canónica.
+    "sky_claw/local/tools/synthesis_activacion.py": "resuelve_indice",
     "sky_claw/local/tools/wrye_bash_service.py": "delega_a_bashed_patch_en_overlay",
     "sky_claw/local/validators/etapas_previas_lods.py": "enumera_capas",
 }
@@ -718,6 +722,7 @@ def test_los_resolutores_de_identidad_estan_enumerados() -> None:
         "sky_claw/local/mo2/mod_effectivity.py",
         "sky_claw/local/mo2/vfs_attestation.py",
         "sky_claw/local/mo2/brokered_dyndolod.py",
+        "sky_claw/local/tools/synthesis_activacion.py",
     }
 
 
