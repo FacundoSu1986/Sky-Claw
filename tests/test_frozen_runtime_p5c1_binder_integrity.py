@@ -604,8 +604,8 @@ def test_post_verify_comprueba_el_desired_recien_escrito(tmp_path: pathlib.Path)
     rig = _montar_rig(tmp_path)
     real_cas = binder._escribir_estado_activo_cas_locked
 
-    def _cas_que_no_persiste(path, payload, *, esperado):  # type: ignore[no-untyped-def]
-        real_cas(path, payload, esperado=esperado)
+    def _cas_que_no_persiste(path, payload, *, esperado, **kwargs):  # type: ignore[no-untyped-def]
+        real_cas(path, payload, esperado=esperado, **kwargs)  # reenvía ``al_publicar``
         # Un tercero revierte el Desired justo después del CAS.
         from sky_claw.local.frozen_runtime.state import write_json_atomic
 
@@ -1006,22 +1006,24 @@ def test_reinicio_tras_cada_frontera_mutante_recupera_las_superficies(tmp_path: 
 
     assert resultado.estado is recovery.EstadoRecuperacion.RESTAURACION_INCOMPLETA_REQUIERE_DUENO
     assert resultado.requiere_dueno is True
-    # La recuperación en proceso nuevo no atribuye escrituras completas del INI
-    # (tri-estado #851). Las demás superficies (config, active) usan su
-    # discriminador propio sin tri-estado. Lo que importa es que el estado sea
-    # INCOMPLETA y que al menos UNA superficie quede sin restaurar.
+    # La recuperación en proceso nuevo no tiene evidencia de autoría para NINGUNA
+    # superficie (P7-F Incremento 1): todo lo que difiere del snapshot se
+    # preserva, y como la decisión es de conjunto no se restaura nada.
     ajenas = [v.kind for v in resultado.verificaciones if v.escritura_ajena]
     assert ajenas, f"se esperaba al menos una superficie no atribuida, hay {ajenas}"
-    # Verificar que el INI —que SIEMPRE se muta— NO se restauró, porque es la
-    # superficie que tiene tri-estado y la recuperación en proceso nuevo no
-    # puede probar autoría.
+    assert not any(v.restaurada for v in resultado.verificaciones), "se restauró algo sin evidencia de autoría"
+    # El INI —que SIEMPRE se muta— no se restauró.
     assert _sha(ini) != manifiesto["sha_ini"], "el INI se restauró sin evidencia de autoría"
-    # El entorno se restaura según la fase alcanzada (no usa tri-estado).
-    # En ini/config murió antes de escribir el entorno; en entorno/active sí.
-    if frontera in ("entorno", "active"):
-        assert entorno_nuevo.get("SKYRIM_PATH") == manifiesto["managed_src"]
-    else:
-        assert "SKYRIM_PATH" not in entorno_nuevo
+    # Y tampoco config ni active: antes volvían al previo y dejaban el INI en el
+    # Clone (estado partido). Esta aserción faltaba y por eso el test aceptaba
+    # ese estado.
+    if frontera != "ini":
+        assert _sha(config) != manifiesto["sha_config"], "config volvió al previo con el INI en el Clone"
+    if frontera == "active":
+        assert _sha(active) != manifiesto["sha_active"], "active.json volvió al previo con el INI en el Clone"
+    # La superficie derivada sigue a su fuente: si config no se restaura, el
+    # entorno tampoco.
+    assert "SKYRIM_PATH" not in entorno_nuevo
     # El journal NO se reescribe: la clasificación es de su dueño.
     assert (
         cargar_journal_transicion(pathlib.Path(manifiesto["storage"])).disposition
@@ -1331,8 +1333,12 @@ def test_el_cas_marca_active_antes_del_readback(tmp_path: pathlib.Path) -> None:
     active_antes = rig.active_bytes()
     real_cas = binder._escribir_estado_activo_cas_locked
 
-    def _cas_que_falla_al_releer(path, payload, *, esperado):  # type: ignore[no-untyped-def]
-        real_cas(path, payload, esperado=esperado)
+    def _cas_que_falla_al_releer(path, payload, *, esperado, **kwargs):  # type: ignore[no-untyped-def]
+        # El doble reenvía ``al_publicar``: el CAS real avisa la huella publicada
+        # ANTES del readback, y es lo que le permite al rollback atribuirse el
+        # active.json aunque el readback falle (como el doble del INI reenvía
+        # ``al_escribir``).
+        real_cas(path, payload, esperado=esperado, **kwargs)
         raise OSError("readback transitorio")
 
     with (

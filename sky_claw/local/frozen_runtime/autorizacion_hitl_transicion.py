@@ -1598,10 +1598,11 @@ class SesionTransicionGoldenMaster:
         ``transition_id`` es el mismo y ``consumir_aprobacion`` es idempotente
         para él.
 
-        Con un ``PENDING`` publicado el burn-first ya gastó la aprobación: las
-        superficies se restauran desde el snapshot durable, el journal queda
-        ``PENDING`` y **la decisión es del dueño**. Inventar una reanudación ahí
-        sería re-emitir una aprobación que el propietario ya gastó.
+        Con un ``PENDING`` publicado el burn-first ya gastó la aprobación: la
+        recuperación conserva (con evidencia) toda superficie cuya autoría no
+        puede acreditar, el journal queda ``PENDING`` y **la decisión es del
+        dueño**. Inventar una reanudación ahí sería re-emitir una aprobación que
+        el propietario ya gastó.
         """
         diagnostico = diagnosticar_estado_durable(self._storage_root)
         historial = derivar_historial_finalizados(self._storage_root)
@@ -1617,17 +1618,19 @@ class SesionTransicionGoldenMaster:
             )
 
         if diagnostico.estado is EstadoDurable.PENDIENTE_RECUPERABLE:
-            # SÓLO diagnóstico. ``recuperar_transicion_interrumpida`` reescribe superficies y
-            # retira registros: es una operación con efectos y no puede viajar escondida dentro
+            # SÓLO diagnóstico. ``recuperar_transicion_interrumpida`` escribe evidencia y puede
+            # retirar registros: es una operación con efectos y no puede viajar escondida dentro
             # de un método que después lanza una excepción (el operador no sabría qué cambió).
             # La recuperación es un paso EXPLÍCITO del dueño; acá no se escribe ni un byte.
             raise ReanudacionRequiereDuenoError(
                 "la transición dejó un PENDING publicado: el burn-first gastó la aprobación, no se "
                 "re-emite y esta reanudación es de SÓLO DIAGNÓSTICO (no restaura nada). La "
                 "recuperación de superficies es un paso explícito del dueño: "
-                "binder_recovery.recuperar_transicion_interrumpida(root, transition_id=...) restaura "
-                "desde el snapshot durable, journal.reconciliar_journal(root) clasifica el journal, y "
-                "después se autoriza una transición NUEVA"
+                "binder_recovery.recuperar_transicion_interrumpida(root, transition_id=...) clasifica las "
+                "superficies y, desde un proceso nuevo, NO sobrescribe ninguna que difiera del snapshot "
+                "(conserva evidencia); journal.reconciliar_journal(root) clasifica el journal. Mientras el "
+                "PENDING siga publicado no se puede autorizar otra transición: hoy no hay salida productiva "
+                "del PENDING (P7-F, Incremento 2)"
             )
         if diagnostico.estado is EstadoDurable.REQUIERE_DUENO:
             raise ReanudacionRequiereDuenoError(diagnostico.motivo)
