@@ -189,8 +189,11 @@ def test_ningun_caller_de_produccion_usa_el_camino_headless() -> None:
         for funcion, _attr, _linea in visitante.hallados:
             medido.append((relativo, funcion, "execute_pipeline"))
 
+    # PR-2b3 (ADR 0019): Synthesis suma su ruta sin clon (brokered, raíz administrada). Sigue siendo el
+    # servicio de Synthesis, no el de Wrye Bash.
     assert sorted(medido) == [
-        ("sky_claw/app/orchestrator/tool_strategies/execute_synthesis.py", "execute.ritual", "execute_pipeline")
+        ("sky_claw/app/orchestrator/tool_strategies/execute_synthesis.py", "_ejecutar_sin_clon", "execute_pipeline"),
+        ("sky_claw/app/orchestrator/tool_strategies/execute_synthesis.py", "execute.ritual", "execute_pipeline"),
     ], f"call sites de execute_pipeline en producción: {sorted(medido)}"
 
 

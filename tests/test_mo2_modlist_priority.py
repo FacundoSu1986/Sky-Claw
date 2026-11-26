@@ -383,6 +383,10 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         # testigo durable de la etapa 6. Detecta que el archivo CAMBIÓ, pero no parsea ni interpreta la prioridad
         # (no usa `read_enabled_mods`); por eso es Family C y no A. Es solo lectura.
         "sky_claw/local/tools/wrye_bash_asistida.py",
+        # PR-2b3 (ADR 0019 §2.3): diff de activación de Synthesis en SOLO LECTURA. Usa `read_enabled_mods` sólo
+        # para saber si `+Sky-Claw Synthesis Output` está habilitado (más `-Nombre` para distinguir deshabilitado
+        # de ausente); no interpreta la prioridad. Ninguna primitiva de escritura (ancla en test_synthesis_activacion).
+        "sky_claw/local/tools/synthesis_activacion.py",
     },
     # Family D: Documentación, payloads o referencias estáticas de nombre
     "FAMILY_D_DOC_OR_REFERENCE": {
@@ -392,6 +396,8 @@ KNOWN_MODLIST_CENSUS: dict[str, set[str]] = {
         "sky_claw/app/orchestrator/asset_conflict_scan.py",
         "sky_claw/app/orchestrator/plugin_limit_guard.py",
         "sky_claw/app/orchestrator/sync_engine.py",
+        # PR-2b3: solo nombra `modlist.txt` en docstrings; el diff lo lee `synthesis_activacion`.
+        "sky_claw/app/orchestrator/tool_strategies/execute_synthesis.py",
         "sky_claw/local/tools_installer.py",
         "sky_claw/local/local_config.py",
         "sky_claw/local/mo2/mod_effectivity.py",

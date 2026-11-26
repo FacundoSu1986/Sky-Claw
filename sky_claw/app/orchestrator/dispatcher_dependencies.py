@@ -20,11 +20,13 @@ if TYPE_CHECKING:
     from sky_claw.app.security.hitl import HITLGuard
     from sky_claw.app.security.path_validator import PathValidator
     from sky_claw.local.assets import AssetConflictReport
+    from sky_claw.local.mo2.brokered_synthesis import VfsBrokerProtocol
     from sky_claw.local.tools.dyndolod_service import DynDOLODPipelineService
     from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination, WorkspaceResuelto
     from sky_claw.local.tools.grass_cache_service import GrassCacheService
     from sky_claw.local.tools.loot_service import LootSortingService
     from sky_claw.local.tools.pandora_service import PandoraPipelineService
+    from sky_claw.local.tools.synthesis_fase1 import PreparadorFase1Protocol
     from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
     from sky_claw.local.tools.wrye_bash_service import WryeBashPipelineService
     from sky_claw.local.tools.xedit_bridge_service import XEditBridgeService
@@ -56,7 +58,7 @@ class OrchestrationDispatcherDependencies:
     scraper: ScraperAgent
     loot_service: LootSortingService
     synthesis_flow_provider: Callable[[], SandboxPromotionFlow]
-    synthesis_service_factory: Callable[[pathlib.Path, OperationJournal], SynthesisPipelineService]
+    synthesis_service_factory: Callable[[pathlib.Path | None, OperationJournal], SynthesisPipelineService]
     real_journal_provider: Callable[[], OperationJournal]
     xedit_service: XEditPipelineService
     dyndolod_service: DynDOLODPipelineService
@@ -74,6 +76,9 @@ class OrchestrationDispatcherDependencies:
     #: D-3: el canal por el que el operador de la GUI confirma lanzar la etapa 9 en modo ASISTIDO sin las etapas
     #: previas. ``None`` = no hay a quién preguntarle: la corrida asistida con etapas faltantes se corta.
     aprobar_sin_etapas_previas: AprobadorDeEtapasPrevias | None = None
+    #: PR-2b3 (ADR 0019): el MISMO selector que recibe la factory; la strategy lo usa para decidir si
+    #: clona el overwrite. ``standalone`` por defecto; ``brokered`` sigue bloqueado por el HOLD.
+    synthesis_backend: str = "standalone"
 
 
 def build_preview_chain_service_provider(
@@ -157,11 +162,20 @@ def build_synthesis_service_factory(
     path_resolver: PathResolutionService,
     event_bus: CoreEventBus,
     pipeline_config_path: pathlib.Path,
-) -> Callable[[pathlib.Path, OperationJournal], SynthesisPipelineService]:
-    """Cierra infraestructura compartida y crea un servicio por sandbox."""
+    synthesis_backend: str = "standalone",
+    vfs_broker: VfsBrokerProtocol | None = None,
+    instance_id: str | None = None,
+    preparador_fase1: PreparadorFase1Protocol | None = None,
+) -> Callable[[pathlib.Path | None, OperationJournal], SynthesisPipelineService]:
+    """Cierra infraestructura compartida y crea un servicio por corrida.
+
+    ``output_path`` es la copia del overwrite del sandbox (standalone) o ``None`` (PR-2b3: brokered,
+    raíz administrada con move-aside). El backend llega cerrado acá, igual que al servicio base de la
+    composición (censo ``test_todo_constructor_de_produccion_recibe_el_backend_completo``).
+    """
 
     def create(
-        output_path: pathlib.Path,
+        output_path: pathlib.Path | None,
         journal: OperationJournal,
     ) -> SynthesisPipelineService:
         from sky_claw.local.tools.synthesis_service import SynthesisPipelineService
@@ -174,6 +188,10 @@ def build_synthesis_service_factory(
             event_bus=event_bus,
             pipeline_config_path=pipeline_config_path,
             output_path=output_path,
+            synthesis_backend=synthesis_backend,
+            vfs_broker=vfs_broker,
+            instance_id=instance_id,
+            preparador_fase1=preparador_fase1,
         )
 
     return create

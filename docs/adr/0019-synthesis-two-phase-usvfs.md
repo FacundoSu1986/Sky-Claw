@@ -577,6 +577,45 @@ x64 instalado):
       PR-5.
     - La persistencia de FormIDs (`--PersistencePath`) no se promueve en este corte.
     - Sigue dormido bajo el HOLD.
+- **PR-2b3 (dispatcher sin clon en brokered, cableado productivo y diff de activación en solo
+  lectura):** último corte de PR-2b.
+  - **Una sola decisión:** `brokered_synthesis.dominio_de_visibilidad_del_backend` decide el dominio.
+    Solo `standalone` (normalizado) es `physical`; cualquier otro valor es `virtual_usvfs`. La usan el
+    servicio (raíz administrada) y `ExecuteSynthesisPipelineStrategy.corre_sin_clon`. Si discreparan,
+    un backend correría sin el clon y sin el move-aside. El ancla
+    `test_strategy_y_servicio_deciden_con_la_misma_funcion` enumera los selectores, válidos e
+    inválidos.
+  - **Dispatcher sin clon:** en `virtual_usvfs` la strategy no construye `SandboxPromotionFlow`. Corre
+    el servicio con `output_path=None` contra el journal real, y el servicio resuelve su TX y el
+    move-aside (PR-2b2). La strategy cierra el FlightReport de esa TX sin traducir rutas de clon, y en
+    éxito adjunta `activacion`. Standalone no cambia: clon del overwrite + HITL post-run.
+  - **Cableado productivo:** `build_orchestration_composition` recibe `synthesis_backend`
+    (`standalone` por defecto), `synthesis_vfs_broker`, `synthesis_instance_id` y
+    `synthesis_preparador_fase1`. Los mismos valores llegan al servicio base, a la factory por corrida
+    (`build_synthesis_service_factory`) y a la strategy (`OrchestrationDispatcherDependencies.synthesis_backend`).
+    Censo AST `test_todo_constructor_de_produccion_recibe_el_backend_completo`: todo
+    `SynthesisPipelineService(...)` de `sky_claw/` pasa los cuatro kwargs, y el conjunto de sitios se
+    congela por igualdad.
+  - **Diff de activación en solo lectura** (`synthesis_activacion.calcular_diff_de_activacion`): lee
+    `modlist.txt` y `plugins.txt` del perfil e informa:
+    - el estado de `+Sky-Claw Synthesis Output` (habilitado, deshabilitado o ausente);
+    - las salidas ausentes o inactivas;
+    - los grupos cuyos splits no están adyacentes y ordenados;
+    - las salidas que cargan después de `DynDOLOD.esm/esp` u `Occlusion.esp`.
+
+    `aplicado` es siempre `False`. Un perfil ilegible o un nombre de perfil inseguro devuelve
+    `disponible=False` sin convertir el éxito en fallo. El ancla
+    `test_el_modulo_no_contiene_primitivas_de_escritura` congela que el módulo no escriba.
+  - **HOLD intacto:** con `brokered` cableado de punta a punta, el servicio real falla cerrado antes
+    del journal, sin clon ni fallback (`test_brokered_con_el_hold_real_falla_cerrado_sin_clon`).
+  - **Desvíos declarados:**
+    - **El `PreparadorFase1` se inyecta en la composición, no se construye con rutas reales.**
+      Necesita `dotnet`, `git` y la caché, que salen de la config y de
+      `setup_tools(tool="synthesis")` (PR-4).
+    - **Quién alimenta el backend desde la config es PR-4.** `SupervisorAgent`, el bootloader y
+      `AppContext` no cambian, así que la producción sigue en `standalone`.
+  - **Límites:** la HITL post-run sobre el diff no aplica en brokered, porque la salida no se activa
+    hasta PR-5 y la HITL de egress sigue en la Fase 1. Sigue dormido bajo el HOLD.
 - **No verificado aún:**
   - **Pendiente de rig:** S3 (auto-split con más de 254 masters) y S4 completo (5/5 ciclos y la
     cancelación en la Fase 2, C6b), ambos sobre `.NET 10 SDK` x64 en el rig Windows con MO2 portable
