@@ -663,7 +663,11 @@ def _reconciliar_analysis_toc(
     analysis_toc: Mapping[str, Any] | None,
     entradas: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Contrasta ``Analysis`` TOC de PyInstaller contra las entradas efectivamente empaquetadas (F02/F11)."""
+    """Contrasta ``Analysis`` TOC de PyInstaller contra las entradas efectivamente empaquetadas (F02/F11/F14).
+
+    No descarta silenciosamente secciones ni entradas malformadas: cualquier estructura inválida
+    devuelve ``status='MALFORMED'`` para fallo cerrado.
+    """
     if analysis_toc is None:
         return {
             "provided": False,
@@ -671,24 +675,57 @@ def _reconciliar_analysis_toc(
             "declared_count": 0,
             "matched_count": 0,
             "missing_from_exe": [],
+            "malformed_entries": [],
+        }
+
+    if not isinstance(analysis_toc, Mapping):
+        return {
+            "provided": True,
+            "status": "MALFORMED",
+            "declared_count": 0,
+            "matched_count": 0,
+            "missing_from_exe": [],
+            "malformed_entries": ["analysis_toc debe ser un objeto JSON (Mapping)"],
         }
 
     nombres_en_exe = {str(e.get("name", "")).replace("\\", "/").casefold() for e in entradas}
     declarados: list[str] = []
+    malformed: list[str] = []
     for seccion in ("pure", "binaries", "datas"):
-        items = analysis_toc.get(seccion, [])
-        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        if seccion not in analysis_toc or analysis_toc[seccion] is None:
             continue
-        for item in items:
+        items = analysis_toc[seccion]
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+            malformed.append(f"Sección '{seccion}' debe ser una lista/tupla, recibido {type(items).__name__}")
+            continue
+        for idx, item in enumerate(items):
             if isinstance(item, str):
                 dest = item
-            elif isinstance(item, Sequence) and len(item) >= 1:
-                dest = str(item[0])
+            elif (
+                isinstance(item, Sequence)
+                and not isinstance(item, (str, bytes))
+                and len(item) >= 1
+                and isinstance(item[0], str)
+            ):
+                dest = item[0]
             else:
+                malformed.append(f"Entrada malformada en '{seccion}[{idx}]': {item!r}")
                 continue
-            dest_norm = dest.replace("\\", "/").lstrip("./")
-            if dest_norm:
-                declarados.append(dest_norm)
+            dest_limpio = dest.strip()
+            if not dest_limpio or ".." in re.split(r"[/\\]", dest_limpio) or dest_limpio.startswith(("/", "\\")):
+                malformed.append(f"Destino inválido en '{seccion}[{idx}]': {dest!r}")
+                continue
+            declarados.append(dest_limpio.replace("\\", "/").lstrip("./"))
+
+    if malformed:
+        return {
+            "provided": True,
+            "status": "MALFORMED",
+            "declared_count": len(set(declarados)),
+            "matched_count": 0,
+            "missing_from_exe": [],
+            "malformed_entries": malformed,
+        }
 
     unicos = sorted(set(declarados))
     if not unicos:
@@ -698,6 +735,7 @@ def _reconciliar_analysis_toc(
             "declared_count": 0,
             "matched_count": 0,
             "missing_from_exe": [],
+            "malformed_entries": [],
         }
 
     faltantes: list[str] = []
@@ -714,6 +752,7 @@ def _reconciliar_analysis_toc(
         "declared_count": len(unicos),
         "matched_count": coincidentes,
         "missing_from_exe": faltantes,
+        "malformed_entries": [],
     }
 
 
@@ -1303,6 +1342,8 @@ def reconciliar(
         blockers.append(f"mo2_integration_boundary_pending_legal={len(set(mo2_bridge_files))}")
     if hash_mismatches:
         blockers.append(f"hash_mismatches={len(hash_mismatches)}")
+    if analysis_toc_rec["status"] == "MALFORMED":
+        blockers.append(f"analysis_toc_malformed={len(analysis_toc_rec['malformed_entries'])}")
     if analysis_toc_rec["status"] == "EMPTY_TOC":
         blockers.append("analysis_toc_empty=1")
     if analysis_toc_rec["missing_from_exe"]:
@@ -1328,7 +1369,7 @@ def reconciliar(
         len(inventory_schema_errors) == 0
         and len(environment_mismatch) == 0
         and len(hash_mismatches) == 0
-        and analysis_toc_rec["status"] not in {"EMPTY_TOC", "DISCREPANCY"}
+        and analysis_toc_rec["status"] not in {"MALFORMED", "EMPTY_TOC", "DISCREPANCY"}
         and len(unidentified) == 0
         and len(opaque_containers) == 0
         and len(ambiguous) == 0
@@ -1342,6 +1383,7 @@ def reconciliar(
     reporte: dict[str, Any] = {
         "schema_version": 3,
         "exe": exe_info,
+        "trust_model": inventario.get("trust_model", {}),
         "gate_passed": gate_passed,
         "structural_inventory_complete": structural_complete,
         "provenance_reconciliation_verified": provenance_verified,

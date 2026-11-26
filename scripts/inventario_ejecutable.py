@@ -271,17 +271,35 @@ def _formatear_pyvers_cookie(pyvers: int) -> str:
 
 
 def _extraer_version_pe_cpython(datos_dll: bytes) -> str:
-    """Extrae la versión exacta ``major.minor.micro`` desde ``VS_FIXEDFILEINFO`` de ``python3XX.dll`` (F12).
+    """Extrae la versión exacta ``major.minor.micro`` desde el directorio de recursos PE real via ``pefile`` (F15).
 
-    En CPython Windows (``PC/python_ver_rc.h``), ``dwFileVersionLS >> 16`` codifica
-    ``PY_MICRO_VERSION * 1000 + PY_RELEASE_LEVEL * 10 + PY_RELEASE_SERIAL`` (p. ej. ``9150`` → micro ``9``).
-    Devuelve ``""`` si el binario no contiene una estructura ``VS_FIXEDFILEINFO`` válida.
+    No busca firmas crudas con ``bytes.find()`` para evitar falsos positivos fuera del directorio
+    de recursos PE. Si ``pefile`` no está disponible, el binario no es un PE válido o carece de
+    ``VS_FIXEDFILEINFO`` real, devuelve ``""`` (fail-closed → ``NOASSERTION`` en reconciliación).
     """
-    firma = b"\xbd\x04\xef\xfe"  # 0xFEEF04BD en little-endian
-    idx = datos_dll.find(firma)
-    if idx == -1 or idx + 16 > len(datos_dll):
+    try:
+        import pefile
+    except ImportError:
         return ""
-    _sig, _struc_ver, ms, ls = struct.unpack_from("<IIII", datos_dll, idx)
+
+    pe: Any = None
+    try:
+        pe = pefile.PE(data=datos_dll, fast_load=True)
+        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"]])
+        fixed_list = getattr(pe, "VS_FIXEDFILEINFO", None)
+        if not fixed_list:
+            return ""
+        fi = fixed_list[0]
+        if int(getattr(fi, "Signature", 0)) != 0xFEEF04BD:
+            return ""
+        ms = int(fi.FileVersionMS)
+        ls = int(fi.FileVersionLS)
+    except Exception:  # noqa: BLE001 — pefile puede lanzar PEFormatError/struct.error sobre binarios no-PE
+        return ""
+    finally:
+        if pe is not None:
+            pe.close()
+
     major = ms >> 16
     minor = ms & 0xFFFF
     field3 = ls >> 16
@@ -446,8 +464,10 @@ def _parsear_pyz_seguro(
         )
 
     try:
-        # Formato binario PYZ TOC de PyInstaller está serializado con marshal;
-        # validado previamente contra max_pyz_toc_bytes y solo inspeccionado pasivamente.
+        # F18 (modelo de confianza): el TOC PYZ de PyInstaller usa formato marshal por especificación;
+        # la cota max_pyz_toc_bytes mitiga agotamiento de memoria, pero marshal.loads NO es seguro
+        # frente a binarios arbitrarios no confiables. Esta herramienta está certificada solo para
+        # builds propios controlados y exige aislamiento de SO para artefactos no confiables.
         toc_obj = marshal.loads(pyz_bytes[toc_offset:])  # nosec B302
     except (ValueError, EOFError, TypeError) as exc:
         raise InventarioError(f"TOC marshal corrupto en PYZ '{nombre_pyz}': {exc}") from exc
@@ -524,14 +544,21 @@ def _clasificar_entrada_base(nombre_norm: str, typecode: str, contenedor: str) -
             EstadoDerechosRedistribucion.TERCERO_CON_LICENCIA_VERIFICADA.value,
         )
 
+    # F16: las clasificaciones por prefijo/nombre exigen contenedor autorizado (nunca un ZIP anidado arbitrario)
+    es_carchive = contenedor == "CArchive"
+    es_pyz = contenedor.startswith("PYZ:")
+    es_zip_anidado = contenedor.startswith("ZIP:")
+
     # SBOM-07: Casos con revisión jurídica pendiente (nunca presumir propiedad exclusiva)
-    if bajo in _ACTIVOS_IA_PENDIENTES:
+    if es_carchive and bajo in _ACTIVOS_IA_PENDIENTES:
         return (
             CategoriaComponente.FIRST_PARTY_ASSET.value,
             OrigenTecnico.IA_DECLARADA_O_C2PA.value,
             EstadoDerechosRedistribucion.PENDIENTE_REVISION_JURIDICA.value,
         )
-    if nombre_norm in _MODULOS_ADAPTACION_UPSTREAM_PENDIENTES or bajo.endswith("auto_parallax_regla.py"):
+    if (es_carchive or es_pyz) and (
+        nombre_norm in _MODULOS_ADAPTACION_UPSTREAM_PENDIENTES or bajo.endswith("auto_parallax_regla.py")
+    ):
         return (
             CategoriaComponente.FIRST_PARTY_CODE.value,
             OrigenTecnico.ADAPTACION_UPSTREAM_GPL.value,
@@ -539,7 +566,7 @@ def _clasificar_entrada_base(nombre_norm: str, typecode: str, contenedor: str) -
         )
 
     # F09: Plugin skyclaw_bridge (frontera in-process con Mod Organizer 2, revisión jurídica pendiente)
-    if (
+    if (es_carchive or es_pyz) and (
         bajo.startswith("sky_claw/local/mo2/plugin_bundle/skyclaw_bridge/")
         or bajo == "sky_claw/local/mo2/plugin_bundle/skyclaw_bridge"
         or bajo.startswith("sky_claw.local.mo2.plugin_bundle.skyclaw_bridge")
@@ -550,16 +577,16 @@ def _clasificar_entrada_base(nombre_norm: str, typecode: str, contenedor: str) -
             EstadoDerechosRedistribucion.PENDIENTE_REVISION_JURIDICA.value,
         )
 
-    # Fuentes tipográficas SIL OFL-1.1 propias de la GUI
-    if bajo.startswith("sky_claw/app/gui/assets/fonts/") and ext in {".woff", ".woff2", ".ttf", ".otf"}:
+    # Fuentes tipográficas SIL OFL-1.1 propias de la GUI (solo en CArchive)
+    if es_carchive and bajo.startswith("sky_claw/app/gui/assets/fonts/") and ext in {".woff", ".woff2", ".ttf", ".otf"}:
         return (
             CategoriaComponente.THIRD_PARTY_FONT.value,
             OrigenTecnico.GOOGLE_FONTS_OFL.value,
             EstadoDerechosRedistribucion.TERCERO_CON_LICENCIA_VERIFICADA.value,
         )
 
-    # Código propio y datas propios de sky_claw
-    if (
+    # Código propio y datas propios de sky_claw (solo en CArchive o PYZ principal; nunca en ZIP anidado, F16)
+    if (es_carchive or es_pyz) and (
         bajo == "sky_claw"
         or bajo.startswith(("sky_claw/", "sky_claw."))
         or (typecode == PKG_ITEM_PYSOURCE and bajo in {"__main__", "sky_claw/__main__"})
@@ -576,49 +603,50 @@ def _clasificar_entrada_base(nombre_norm: str, typecode: str, contenedor: str) -
             EstadoDerechosRedistribucion.PROPIO_MIT.value,
         )
 
-    # DLLs de sistema de Windows (SBOM-04 / GPLv3 §1 System Libraries)
-    if base in _DLLS_SISTEMA_WINDOWS_EXACTAS or base.startswith(_DLLS_SISTEMA_WINDOWS_PREFIJOS):
+    # DLLs de sistema de Windows (solo en CArchive)
+    if es_carchive and (base in _DLLS_SISTEMA_WINDOWS_EXACTAS or base.startswith(_DLLS_SISTEMA_WINDOWS_PREFIJOS)):
         return (
             CategoriaComponente.WINDOWS_SYSTEM_DLL.value,
             OrigenTecnico.WINDOWS_OS_RUNTIME.value,
             EstadoDerechosRedistribucion.SYSTEM_LIBRARY_REVISAR.value,
         )
 
-    # F03: Bibliotecas nativas de terceros embebidas por CPython Windows (NO agrupar bajo PSF-2.0)
-    if base in _DLLS_OPENSSL:
+    # F03: Bibliotecas nativas de terceros embebidas por CPython Windows (solo en CArchive)
+    if es_carchive and base in _DLLS_OPENSSL:
         return (
             CategoriaComponente.THIRD_PARTY_NATIVE.value,
             OrigenTecnico.OPENSSL_EMBEDDED.value,
             EstadoDerechosRedistribucion.NO_VERIFICADO.value,
         )
-    if base in _DLLS_SQLITE:
+    if es_carchive and base in _DLLS_SQLITE:
         return (
             CategoriaComponente.THIRD_PARTY_NATIVE.value,
             OrigenTecnico.SQLITE_EMBEDDED.value,
             EstadoDerechosRedistribucion.NO_VERIFICADO.value,
         )
-    if base in _DLLS_LIBFFI:
+    if es_carchive and base in _DLLS_LIBFFI:
         return (
             CategoriaComponente.THIRD_PARTY_NATIVE.value,
             OrigenTecnico.LIBFFI_EMBEDDED.value,
             EstadoDerechosRedistribucion.NO_VERIFICADO.value,
         )
-    if base in _DLLS_TCL_TK or bajo.startswith(("_tcl_data/", "_tk_data/")):
+    if es_carchive and (base in _DLLS_TCL_TK or bajo.startswith(("_tcl_data/", "_tk_data/"))):
         return (
             CategoriaComponente.THIRD_PARTY_NATIVE.value,
             OrigenTecnico.TCL_TK_EMBEDDED.value,
             EstadoDerechosRedistribucion.NO_VERIFICADO.value,
         )
 
-    # CPython runtime / stdlib embebido (verificado contra sys.stdlib_module_names oficial)
+    # CPython runtime / stdlib embebido (verificado contra sys.stdlib_module_names oficial; en base_library.zip exige módulo stdlib, F16)
     stem_base = Path(nombre_norm).stem
     raiz_mod = nombre_norm.split(".")[0]
+    raiz_ruta = nombre_norm.split("/")[0]
+    raiz_zip_mod = Path(raiz_ruta).stem if "/" not in nombre_norm else raiz_ruta
     if (
-        contenedor == "ZIP:base_library.zip"
-        or base == "python3.dll"
-        or re.fullmatch(r"python3\d+\.dll", base)
-        or (ext == ".pyd" and "/" not in nombre_norm and stem_base in sys.stdlib_module_names)
-        or (contenedor.startswith("PYZ:") and raiz_mod in sys.stdlib_module_names)
+        (contenedor == "ZIP:base_library.zip" and raiz_zip_mod in sys.stdlib_module_names)
+        or (es_carchive and (base == "python3.dll" or bool(re.fullmatch(r"python3\d+\.dll", base))))
+        or (es_carchive and ext == ".pyd" and "/" not in nombre_norm and stem_base in sys.stdlib_module_names)
+        or (es_pyz and raiz_mod in sys.stdlib_module_names)
     ):
         return (
             CategoriaComponente.THIRD_PARTY_NATIVE.value
@@ -628,14 +656,26 @@ def _clasificar_entrada_base(nombre_norm: str, typecode: str, contenedor: str) -
             EstadoDerechosRedistribucion.TERCERO_CON_LICENCIA_VERIFICADA.value,
         )
 
-    # Recursos vendorizados dentro de nicegui/static o elementos frontend (F03)
-    if bajo.startswith("nicegui/") and ext in {".js", ".css", ".woff", ".woff2", ".ttf", ".svg", ".map", ".html"}:
+    # Recursos vendorizados dentro de nicegui/static o elementos frontend (solo en CArchive, F03/F16)
+    if (
+        es_carchive
+        and bajo.startswith("nicegui/")
+        and ext in {".js", ".css", ".woff", ".woff2", ".ttf", ".svg", ".map", ".html"}
+    ):
         cat = (
             CategoriaComponente.THIRD_PARTY_FONT.value
             if ext in {".woff", ".woff2", ".ttf"}
             else CategoriaComponente.THIRD_PARTY_VENDORED.value
         )
         return (cat, OrigenTecnico.PYPI_DISTRIBUCION.value, EstadoDerechosRedistribucion.NO_VERIFICADO.value)
+
+    # Cualquier miembro no stdlib dentro de un ZIP anidado permanece UNIDENTIFIED para fallo cerrado (F16)
+    if es_zip_anidado:
+        return (
+            CategoriaComponente.UNIDENTIFIED.value,
+            OrigenTecnico.DESCONOCIDO.value,
+            EstadoDerechosRedistribucion.NO_VERIFICADO.value,
+        )
 
     # Binarios nativos (.pyd/.dll) o módulos PYZ pendientes de atribución por reconciliador
     if ext in {".pyd", ".dll", ".so"} or typecode == PKG_ITEM_BINARY:
@@ -737,13 +777,35 @@ def _inspeccionar_zip_recursivo(
                 )
 
 
+def _crear_copia_aislada_verificada(exe: Path) -> tuple[Path, str, int]:
+    """Copia ``exe`` en streaming a un snapshot temporal aislado y re-verifica el origen en un descriptor fresco (F17)."""
+    resumen = hashlib.sha256()
+    total = 0
+    fd, tmp_name = tempfile.mkstemp(prefix="skyclaw_inv_snap_", suffix=".bin")
+    snap_path = Path(tmp_name)
+    try:
+        with exe.open("rb") as src, os.fdopen(fd, "wb") as dst:
+            while bloque := src.read(_TAMANO_BLOQUE):
+                resumen.update(bloque)
+                dst.write(bloque)
+                total += len(bloque)
+        sha_copia = resumen.hexdigest()
+        sha_origen_post, bytes_origen_post = sha256_archivo(exe)
+        if sha_origen_post != sha_copia or bytes_origen_post != total:
+            raise InventarioError("El ejecutable cambió durante la captura de copia aislada (detección anti-TOCTOU)")
+        return snap_path, sha_copia, total
+    except Exception:
+        snap_path.unlink(missing_ok=True)
+        raise
+
+
 def inventariar_ejecutable(
     exe: Path,
     *,
     registro_sha256: Path | None = None,
     limites: LimitesDeExtraccion | None = None,
 ) -> dict[str, Any]:
-    """Extrae el inventario recursivo, determinista y fail-closed de ``exe`` usando un único descriptor."""
+    """Extrae el inventario recursivo, determinista y fail-closed sobre una copia aislada verificada de ``exe`` (F17)."""
     lim = limites or LimitesDeExtraccion()
     if not exe.is_file():
         raise InventarioError(f"El ejecutable no existe o no es un archivo regular: {exe}")
@@ -754,128 +816,127 @@ def inventariar_ejecutable(
     total_extraido = [0]
     python_version_binary = ""
 
+    snap_path, exe_sha256, exe_bytes = _crear_copia_aislada_verificada(exe)
     try:
-        fp_ctx = exe.open("rb")
-    except OSError as exc:
-        raise InventarioError(f"No se pudo abrir el ejecutable {exe}: {exc}") from exc
-
-    with fp_ctx as fp:
-        exe_sha256, exe_bytes = _sha256_fp(fp)
         if registro_sha256 is not None:
             _validar_registro_sha256(registro_sha256, exe_sha256, exe_bytes)
 
-        start_offset, end_offset, pyvers_cookie, pylib_name, toc_crudo = _prevalidar_carchive_crudo(fp, exe_bytes)
+        with snap_path.open("rb") as fp:
+            start_offset, end_offset, pyvers_cookie, pylib_name, toc_crudo = _prevalidar_carchive_crudo(fp, exe_bytes)
 
-        fp.seek(0, os.SEEK_SET)
-        bootloader_bytes = fp.read(start_offset)
-        if len(bootloader_bytes) != start_offset:
-            raise InventarioError("Lectura truncada del segmento bootloader")
-        bootloader_sha256 = _sha256_bytes(bootloader_bytes)
+            fp.seek(0, os.SEEK_SET)
+            bootloader_bytes = fp.read(start_offset)
+            if len(bootloader_bytes) != start_offset:
+                raise InventarioError("Lectura truncada del segmento bootloader")
+            bootloader_sha256 = _sha256_bytes(bootloader_bytes)
 
-        for nombre, entry_off, data_len, uncomp_len, comp_flag, typecode in toc_crudo:
-            if typecode == PKG_ITEM_RUNTIME_OPTION:
-                opciones_runtime.append(nombre)
-                continue
+            for nombre, entry_off, data_len, uncomp_len, comp_flag, typecode in toc_crudo:
+                if typecode == PKG_ITEM_RUNTIME_OPTION:
+                    opciones_runtime.append(nombre)
+                    continue
 
-            _verificar_tope_entradas(entradas, lim)
-            if uncomp_len > lim.max_entry_bytes:
-                raise InventarioError(
-                    f"Límite de descompresión excedido en '{nombre}': declarado={uncomp_len} max={lim.max_entry_bytes}"
-                )
-
-            fp.seek(start_offset + entry_off, os.SEEK_SET)
-            packed_raw = fp.read(data_len)
-            if len(packed_raw) != data_len:
-                raise InventarioError(f"Entrada truncada en CArchive: '{nombre}'")
-            packed_sha = _sha256_bytes(packed_raw)
-
-            extracted_raw = _descomprimir_acotado(packed_raw, lim.max_entry_bytes, nombre) if comp_flag else packed_raw
-            if uncomp_len > 0 and len(extracted_raw) != uncomp_len:
-                raise InventarioError(
-                    f"Tamaño descomprimido declarado ({uncomp_len}) distinto del extraído ({len(extracted_raw)}) en '{nombre}'"
-                )
-
-            total_extraido[0] += len(extracted_raw)
-            if total_extraido[0] > lim.max_total_bytes:
-                raise InventarioError(f"Límite total de descompresión ({lim.max_total_bytes} B) excedido en '{nombre}'")
-
-            norm = _normalizar_ruta(nombre)
-            ext = Path(norm).suffix.casefold()
-            if not python_version_binary and re.fullmatch(r"python3\d+\.dll", Path(norm).name.casefold()):
-                python_version_binary = _extraer_version_pe_cpython(extracted_raw)
-            cat, orig, der = _clasificar_entrada_base(norm, typecode, "CArchive")
-            if cat == CategoriaComponente.OPAQUE_CONTAINER.value:
-                opacos.append({"container": "CArchive", "name": norm, "reason": f"contenedor opaco ({typecode}/{ext})"})
-
-            entradas.append(
-                {
-                    "container": "CArchive",
-                    "name": norm,
-                    "typecode": typecode,
-                    "compressed_bytes": data_len,
-                    "extracted_bytes": len(extracted_raw),
-                    "packed_sha256": packed_sha,
-                    "extracted_sha256": _sha256_bytes(extracted_raw),
-                    "component_category": cat,
-                    "technical_origin": orig,
-                    "redistribution_rights_status": der,
-                }
-            )
-
-            # Inspección recursiva de PYZ embebido (SBOM-01 + SBOM-02 + F06)
-            if typecode == PKG_ITEM_PYZ:
-                if len(extracted_raw) > lim.max_entry_bytes:
-                    raise InventarioError(f"PYZ '{norm}' excede límite de tamaño")
-                pyz_entradas = _parsear_pyz_seguro(extracted_raw, norm, lim)
-                pyz_cont = f"PYZ:{norm}"
-                for mod_nombre, ispkg, mod_pos, mod_len in pyz_entradas:
-                    _verificar_tope_entradas(entradas, lim)
-                    if mod_len > lim.max_entry_bytes:
-                        raise InventarioError(f"Módulo PYZ '{mod_nombre}' excede límite de descompresión")
-                    mod_packed = extracted_raw[mod_pos : mod_pos + mod_len]
-                    if len(mod_packed) != mod_len:
-                        raise InventarioError(f"Módulo PYZ truncado: '{mod_nombre}'")
-                    # En PyInstaller 6, PYZ_ITEM_NSPKG (ispkg == 3) es paquete namespace PEP 420 con mod_len == 0 sin flujo zlib
-                    mod_extracted = (
-                        b""
-                        if (mod_len == 0 and ispkg in (2, 3))
-                        else _descomprimir_acotado(mod_packed, lim.max_entry_bytes, mod_nombre)
-                    )
-                    total_extraido[0] += len(mod_extracted)
-                    if total_extraido[0] > lim.max_total_bytes:
-                        raise InventarioError(f"Límite total de descompresión excedido en PYZ '{mod_nombre}'")
-                    m_cat, m_orig, m_der = _clasificar_entrada_base(mod_nombre, "pyz_module", pyz_cont)
-                    entradas.append(
-                        {
-                            "container": pyz_cont,
-                            "name": mod_nombre,
-                            "typecode": "pyz_pkg" if ispkg else "pyz_mod",
-                            "compressed_bytes": mod_len,
-                            "extracted_bytes": len(mod_extracted),
-                            "packed_sha256": _sha256_bytes(mod_packed),
-                            "extracted_sha256": _sha256_bytes(mod_extracted),
-                            "component_category": m_cat,
-                            "technical_origin": m_orig,
-                            "redistribution_rights_status": m_der,
-                        }
+                _verificar_tope_entradas(entradas, lim)
+                if uncomp_len > lim.max_entry_bytes:
+                    raise InventarioError(
+                        f"Límite de descompresión excedido en '{nombre}': declarado={uncomp_len} max={lim.max_entry_bytes}"
                     )
 
-            # Inspección recursiva de base_library.zip y otros ZIP/WHL/EGG anidados
-            elif ext in _EXTENSIONES_ZIP:
-                _inspeccionar_zip_recursivo(
-                    extracted_raw,
-                    f"ZIP:{norm}",
-                    lim,
-                    profundidad=1,
-                    total_extraido=total_extraido,
-                    entradas_salida=entradas,
-                    opacos_salida=opacos,
+                fp.seek(start_offset + entry_off, os.SEEK_SET)
+                packed_raw = fp.read(data_len)
+                if len(packed_raw) != data_len:
+                    raise InventarioError(f"Entrada truncada en CArchive: '{nombre}'")
+                packed_sha = _sha256_bytes(packed_raw)
+
+                extracted_raw = (
+                    _descomprimir_acotado(packed_raw, lim.max_entry_bytes, nombre) if comp_flag else packed_raw
+                )
+                if uncomp_len > 0 and len(extracted_raw) != uncomp_len:
+                    raise InventarioError(
+                        f"Tamaño descomprimido declarado ({uncomp_len}) distinto del extraído ({len(extracted_raw)}) en '{nombre}'"
+                    )
+
+                total_extraido[0] += len(extracted_raw)
+                if total_extraido[0] > lim.max_total_bytes:
+                    raise InventarioError(
+                        f"Límite total de descompresión ({lim.max_total_bytes} B) excedido en '{nombre}'"
+                    )
+
+                norm = _normalizar_ruta(nombre)
+                ext = Path(norm).suffix.casefold()
+                if not python_version_binary and re.fullmatch(r"python3\d+\.dll", Path(norm).name.casefold()):
+                    python_version_binary = _extraer_version_pe_cpython(extracted_raw)
+                cat, orig, der = _clasificar_entrada_base(norm, typecode, "CArchive")
+                if cat == CategoriaComponente.OPAQUE_CONTAINER.value:
+                    opacos.append(
+                        {"container": "CArchive", "name": norm, "reason": f"contenedor opaco ({typecode}/{ext})"}
+                    )
+
+                entradas.append(
+                    {
+                        "container": "CArchive",
+                        "name": norm,
+                        "typecode": typecode,
+                        "compressed_bytes": data_len,
+                        "extracted_bytes": len(extracted_raw),
+                        "packed_sha256": packed_sha,
+                        "extracted_sha256": _sha256_bytes(extracted_raw),
+                        "component_category": cat,
+                        "technical_origin": orig,
+                        "redistribution_rights_status": der,
+                    }
                 )
 
-        # Verificación anti-TOCTOU: el EXE no debe haber mutado durante el análisis (F06)
-        exe_sha256_final, exe_bytes_final = _sha256_fp(fp)
-        if exe_sha256_final != exe_sha256 or exe_bytes_final != exe_bytes:
-            raise InventarioError("El ejecutable cambió durante la inspección (detección anti-TOCTOU)")
+                # Inspección recursiva de PYZ embebido (SBOM-01 + SBOM-02 + F06 + F18)
+                if typecode == PKG_ITEM_PYZ:
+                    if len(extracted_raw) > lim.max_entry_bytes:
+                        raise InventarioError(f"PYZ '{norm}' excede límite de tamaño")
+                    pyz_entradas = _parsear_pyz_seguro(extracted_raw, norm, lim)
+                    pyz_cont = f"PYZ:{norm}"
+                    for mod_nombre, ispkg, mod_pos, mod_len in pyz_entradas:
+                        _verificar_tope_entradas(entradas, lim)
+                        if mod_len > lim.max_entry_bytes:
+                            raise InventarioError(f"Módulo PYZ '{mod_nombre}' excede límite de descompresión")
+                        mod_packed = extracted_raw[mod_pos : mod_pos + mod_len]
+                        if len(mod_packed) != mod_len:
+                            raise InventarioError(f"Módulo PYZ truncado: '{mod_nombre}'")
+                        # En PyInstaller 6, PYZ_ITEM_NSPKG (ispkg == 3) es paquete namespace PEP 420 con mod_len == 0 sin flujo zlib
+                        mod_extracted = (
+                            b""
+                            if (mod_len == 0 and ispkg in (2, 3))
+                            else _descomprimir_acotado(mod_packed, lim.max_entry_bytes, mod_nombre)
+                        )
+                        total_extraido[0] += len(mod_extracted)
+                        if total_extraido[0] > lim.max_total_bytes:
+                            raise InventarioError(f"Límite total de descompresión excedido en PYZ '{mod_nombre}'")
+                        m_cat, m_orig, m_der = _clasificar_entrada_base(mod_nombre, "pyz_module", pyz_cont)
+                        entradas.append(
+                            {
+                                "container": pyz_cont,
+                                "name": mod_nombre,
+                                "typecode": "pyz_pkg" if ispkg else "pyz_mod",
+                                "compressed_bytes": mod_len,
+                                "extracted_bytes": len(mod_extracted),
+                                "packed_sha256": _sha256_bytes(mod_packed),
+                                "extracted_sha256": _sha256_bytes(mod_extracted),
+                                "component_category": m_cat,
+                                "technical_origin": m_orig,
+                                "redistribution_rights_status": m_der,
+                            }
+                        )
+
+                # Inspección recursiva de base_library.zip y otros ZIP/WHL/EGG anidados
+                elif ext in _EXTENSIONES_ZIP:
+                    _inspeccionar_zip_recursivo(
+                        extracted_raw,
+                        f"ZIP:{norm}",
+                        lim,
+                        profundidad=1,
+                        total_extraido=total_extraido,
+                        entradas_salida=entradas,
+                        opacos_salida=opacos,
+                    )
+    finally:
+        snap_path.unlink(missing_ok=True)
 
     entradas.sort(key=lambda item: (str(item["container"]), str(item["name"]), str(item["typecode"])))
     opacos.sort(key=lambda item: (item["container"], item["name"]))
@@ -883,6 +944,12 @@ def inventariar_ejecutable(
 
     return {
         "schema_version": 1,
+        "trust_model": {
+            "certified_scope": "controlled_first_party_builds_only",
+            "untrusted_exe_policy": "requires_external_os_sandbox_isolation",
+            "pyz_toc_deserializer": "marshal.loads_bounded_by_max_pyz_toc_bytes_not_safe_for_untrusted_input",
+            "analysis_mode": "isolated_snapshot_copy",
+        },
         "exe": {
             "name": exe.name,
             "bytes": exe_bytes,

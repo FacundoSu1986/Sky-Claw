@@ -269,6 +269,7 @@ def test_reconciliacion_limpia_genera_spdx_23_valido_y_distingue_instalados_vs_r
     # Arrange
     exe = _exe_completo_limpio(tmp_path, incluir_mo2_bridge=False)
     inventario = inv.inventariar_ejecutable(exe)
+    inventario["exe"]["python_version_binary"] = "3.11.9"
     entorno = _entorno_limpio()
     lock = {"pydantic": "2.12.5", "orjson": "3.11.8"}  # drift deliberado en orjson (SBOM-08)
 
@@ -1086,6 +1087,7 @@ def test_f10_identidad_cpython_no_usa_sys_version_info_y_bloquea_version_exacta_
     monkeypatch.setattr(rec.sys, "version_info", _FakeVersionInfo())
     exe = _exe_completo_limpio(tmp_path)
     inventario = inv.inventariar_ejecutable(exe)
+    inventario["exe"]["python_version_binary"] = "3.11.9"
 
     # Act 1 — con versión exacta de build vinculada (3.11.9) NO debe tomar 3.12.9 del inspector
     sbom_ok, rep_ok, _ = rec.reconciliar(
@@ -1191,20 +1193,9 @@ def test_f12_no_certifica_patch_cpython_solo_por_build_python_version_sin_eviden
     assert cod_no_probado == 1
     assert any("cpython_version_unverified" in b for b in rep_no_probado["blockers"])
 
-    # Arrange 2 — DLL con VS_FIXEDFILEINFO 3.11.9 real: certifica 3.11.9 y rechaza 3.11.99 por mismatch de patch
-    dll_3119 = _construir_dll_python_con_pe_version(3, 11, 9)
-    pyz_bytes = _construir_pyz_bytes({"sky_claw": (1, b"s"), "pydantic": (1, b"p")})
-    base_lib = _construir_zip_bytes([("json/__init__.pyc", b"j")])
-    exe_con_pe = _construir_carchive_exe(
-        tmp_path / "con_pe.exe",
-        [
-            ("PYZ-00.pyz", pyz_bytes, "z", False),
-            ("base_library.zip", base_lib, "x", False),
-            ("python311.dll", dll_3119, "b", True),
-        ],
-    )
-    inv_con_pe = inv.inventariar_ejecutable(exe_con_pe)
-    assert inv_con_pe["exe"]["python_version_binary"] == "3.11.9"
+    # Arrange 2 — inventario con python_version_binary=3.11.9 verificada: certifica 3.11.9 y rechaza 3.11.99 por mismatch
+    inv_con_pe = dict(inv_sin_pe)
+    inv_con_pe["exe"] = dict(inv_sin_pe["exe"], python_version_binary="3.11.9")
 
     sbom_ok, rep_ok, cod_ok = rec.reconciliar(
         inv_con_pe,
@@ -1282,3 +1273,149 @@ def test_f13_distingue_atribuciones_criptograficas_nominales_y_bytecode_en_cober
         + hv["bytecode_transformed_not_hash_comparable"]
         + len(hv["mismatches"])
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. Pruebas adversariales R3 — Estabilización final (F14–F18)
+# ---------------------------------------------------------------------------
+
+
+def test_f14_rechaza_analysis_toc_malformado_sin_descartar_secciones_o_entradas(tmp_path: Path) -> None:
+    # Arrange — secciones o entradas malformadas NO deben ignorarse silenciosamente
+    exe = _exe_completo_limpio(tmp_path, incluir_mo2_bridge=False)
+    inventario = inv.inventariar_ejecutable(exe)
+
+    toc_seccion_mala: dict[str, Any] = {
+        "pure": "esto-no-es-una-lista",
+        "binaries": [("orjson/orjson.cp311-win_amd64.pyd", "/venv/orjson.pyd", "BINARY")],
+    }
+    toc_entrada_mala: dict[str, Any] = {
+        "pure": [("pydantic", "/venv/pydantic/__init__.py", "PYMODULE"), 12345, ()],
+    }
+
+    # Act
+    _, rep_sec, cod_sec = rec.reconciliar(
+        inventario,
+        _entorno_limpio(),
+        analysis_toc=toc_seccion_mala,
+        creado_en="2026-11-26T18:00:00Z",
+    )
+    _, rep_ent, cod_ent = rec.reconciliar(
+        inventario,
+        _entorno_limpio(),
+        analysis_toc=toc_entrada_mala,
+        creado_en="2026-11-26T18:00:00Z",
+    )
+
+    # Assert
+    assert cod_sec == 1
+    assert rep_sec["analysis_toc_reconciliation"]["status"] == "MALFORMED"
+    assert rep_sec["provenance_reconciliation_verified"] is False
+    assert rep_sec["structural_inventory_complete"] is False
+    assert any(b.startswith("analysis_toc_malformed=") for b in rep_sec["blockers"])
+
+    assert cod_ent == 1
+    assert rep_ent["analysis_toc_reconciliation"]["status"] == "MALFORMED"
+    assert rep_ent["provenance_reconciliation_verified"] is False
+    assert any(b.startswith("analysis_toc_malformed=") for b in rep_ent["blockers"])
+
+
+def test_f15_rechaza_falso_positivo_vs_fixedfileinfo_en_bytes_crudos_no_pe(tmp_path: Path) -> None:
+    # Arrange — bloque sintético que contiene la firma 0xFEEF04BD pero NO es un PE con directorio de recursos real
+    falso_dll = _construir_dll_python_con_pe_version(3, 11, 9)
+    pyz_bytes = _construir_pyz_bytes({"sky_claw": (1, b"s"), "pydantic": (1, b"p")})
+    base_lib = _construir_zip_bytes([("json/__init__.pyc", b"j")])
+    exe = _construir_carchive_exe(
+        tmp_path / "falso_pe.exe",
+        [
+            ("PYZ-00.pyz", pyz_bytes, "z", False),
+            ("base_library.zip", base_lib, "x", False),
+            ("python311.dll", falso_dll, "b", True),
+        ],
+    )
+
+    # Act
+    inventario = inv.inventariar_ejecutable(exe)
+    sbom, reporte, codigo = rec.reconciliar(
+        inventario,
+        _entorno_limpio(),
+        build_python_version="3.11.9",
+        creado_en="2026-11-26T18:00:00Z",
+    )
+
+    # Assert — la firma cruda fuera de recurso PE real NO debe aceptarse como versión verificada
+    assert inventario["exe"]["python_version_binary"] == ""
+    pkg_py = next(p for p in sbom["packages"] if p["name"] == "cpython-runtime")
+    assert pkg_py["versionInfo"] == "NOASSERTION"
+    assert reporte["cpython_version_uncertainty"] is True
+    assert codigo == 1
+
+
+def test_f16_no_clasifica_prefijo_sky_claw_dentro_de_zip_anidado_como_codigo_propio_mit(tmp_path: Path) -> None:
+    # Arrange — un ZIP anidado contiene sky_claw/evil.py; no debe clasificarse como FIRST_PARTY_CODE/PROPIO_MIT
+    pyz_bytes = _construir_pyz_bytes({"sky_claw": (1, b"s")})
+    base_lib_envenenado = _construir_zip_bytes(
+        [
+            ("json/__init__.pyc", b"j"),
+            ("sky_claw/evil.py", b"print('infiltracion')"),
+        ]
+    )
+    zip_tercero = _construir_zip_bytes([("sky_claw/app/gui/assets/fonts/cinzel-fake.woff2", b"fake")])
+    exe = _construir_carchive_exe(
+        tmp_path / "zip_prefijo_falso.exe",
+        [
+            ("PYZ-00.pyz", pyz_bytes, "z", False),
+            ("base_library.zip", base_lib_envenenado, "x", False),
+            ("tercero.zip", zip_tercero, "x", False),
+        ],
+    )
+
+    # Act
+    inventario = inv.inventariar_ejecutable(exe)
+    _, reporte, codigo = rec.reconciliar(inventario, _entorno_limpio(), creado_en="2026-11-26T18:00:00Z")
+
+    # Assert
+    e_evil = next(e for e in inventario["entries"] if e["name"] == "sky_claw/evil.py")
+    assert e_evil["component_category"] == inv.CategoriaComponente.UNIDENTIFIED.value
+    assert e_evil["redistribution_rights_status"] != inv.EstadoDerechosRedistribucion.PROPIO_MIT.value
+
+    e_font_fake = next(
+        e for e in inventario["entries"] if e["name"] == "sky_claw/app/gui/assets/fonts/cinzel-fake.woff2"
+    )
+    assert e_font_fake["component_category"] == inv.CategoriaComponente.UNIDENTIFIED.value
+    assert codigo == 1
+    assert any(u["name"] == "sky_claw/evil.py" for u in reporte["unidentified"])
+
+
+def test_f17_detecta_mutacion_externa_durante_captura_de_copia_aislada(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange — simular que el EXE cambia en disco justo después de crear la copia aislada
+    exe = _exe_completo_limpio(tmp_path, incluir_mo2_bridge=False)
+    sha_original = inv.sha256_archivo
+
+    def _sha_mutado(ruta: Path) -> tuple[str, int]:
+        sha, tam = sha_original(ruta)
+        return ("f" * 64 if sha != "f" * 64 else "e" * 64), tam
+
+    monkeypatch.setattr(inv, "sha256_archivo", _sha_mutado)
+
+    # Act & Assert
+    with pytest.raises(inv.InventarioError, match="TOCTOU|cambió"):
+        inv.inventariar_ejecutable(exe)
+
+
+def test_f18_declara_modelo_de_confianza_explicito_para_marshal_y_copia_aislada(tmp_path: Path) -> None:
+    # Arrange
+    exe = _exe_completo_limpio(tmp_path, incluir_mo2_bridge=False)
+
+    # Act
+    inventario = inv.inventariar_ejecutable(exe)
+    _, reporte, _ = rec.reconciliar(inventario, _entorno_limpio(), creado_en="2026-11-26T18:00:00Z")
+
+    # Assert
+    tm = inventario["trust_model"]
+    assert tm["certified_scope"] == "controlled_first_party_builds_only"
+    assert tm["analysis_mode"] == "isolated_snapshot_copy"
+    assert "not_safe_for_untrusted" in tm["pyz_toc_deserializer"]
+    assert reporte["trust_model"] == tm
