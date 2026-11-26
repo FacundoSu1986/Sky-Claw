@@ -179,6 +179,7 @@ def _exe_completo_limpio(
     *,
     incluir_pendientes_sbom07: bool = False,
     incluir_mo2_bridge: bool = True,
+    incluir_pe_version_cpython: bool = True,
 ) -> Path:
     """Construye un EXE sintético con CArchive + PYZ + base_library.zip + datas de sky_claw.spec."""
     pyz_modulos: dict[str, tuple[int, bytes]] = {
@@ -197,6 +198,9 @@ def _exe_completo_limpio(
             ("json/__init__.pyc", b"stdlib-json"),
         ]
     )
+    python_dll_bytes = (
+        _construir_dll_python_con_pe_version(3, 11, 9) if incluir_pe_version_cpython else b"cpython-dll-sin-pe"
+    )
 
     entradas: list[tuple[str, bytes, str, bool]] = [
         ("struct", b"boot-struct", "m", True),
@@ -204,7 +208,7 @@ def _exe_completo_limpio(
         ("sky_claw/__main__", b"entry-script", "s", True),
         ("PYZ-00.pyz", pyz_bytes, "z", False),
         ("base_library.zip", base_lib_bytes, "x", False),
-        ("python311.dll", b"cpython-dll-bytes", "b", True),
+        ("python311.dll", python_dll_bytes, "b", True),
         ("VCRUNTIME140.dll", b"ms-vcrt-bytes", "b", True),
         ("orjson/orjson.cp311-win_amd64.pyd", b"orjson-pyd", "b", True),
         ("sky_claw/app/gui/styles.css", b"body{}", "x", True),
@@ -1105,3 +1109,176 @@ def test_f10_identidad_cpython_no_usa_sys_version_info_y_bloquea_version_exacta_
     assert rep_inc["cpython_version_uncertainty"] is True
     assert cod_inc == 1
     assert any("cpython_version_unverified" in b for b in rep_inc["blockers"])
+
+
+# ---------------------------------------------------------------------------
+# 5. Pruebas adversariales R2 (F11, F12, F13)
+# ---------------------------------------------------------------------------
+
+
+def _construir_dll_python_con_pe_version(major: int, minor: int, micro: int) -> bytes:
+    """Construye un bloque binario sintético con recurso PE VS_FIXEDFILEINFO estilo CPython Windows."""
+    ms = (major << 16) | minor
+    ls = ((micro * 1000 + 150) << 16) | 1013  # CPython final release encoding
+    fixed_info = struct.pack("<IIII", 0xFEEF04BD, 0x00010000, ms, ls)
+    return b"MZ" + b"\x00" * 64 + fixed_info + b"\x00" * 16
+
+
+def test_f11_distingue_inventario_estructural_de_reconciliacion_de_procedencia_sin_analysis_toc(
+    tmp_path: Path,
+) -> None:
+    # Arrange
+    exe = _exe_completo_limpio(tmp_path, incluir_mo2_bridge=False)
+    inventario = inv.inventariar_ejecutable(exe)
+
+    # Act 1 — sin analysis_toc: inventario estructural OK, pero procedencia NO verificada
+    _, rep_sin_toc, _ = rec.reconciliar(
+        inventario,
+        _entorno_limpio(),
+        creado_en="2026-11-26T18:00:00Z",
+    )
+
+    # Act 2 — con analysis_toc vacío: debe fallar cerrado (EMPTY_TOC)
+    _, rep_toc_vacio, cod_toc_vacio = rec.reconciliar(
+        inventario,
+        _entorno_limpio(),
+        analysis_toc={"pure": [], "binaries": [], "datas": []},
+        creado_en="2026-11-26T18:00:00Z",
+    )
+
+    # Act 3 — con analysis_toc válido coincidente: procedencia verificada
+    _, rep_con_toc, _ = rec.reconciliar(
+        inventario,
+        _entorno_limpio(),
+        analysis_toc={
+            "pure": [("pydantic", "/venv/pydantic/__init__.py", "PYMODULE")],
+            "binaries": [("orjson/orjson.cp311-win_amd64.pyd", "/venv/orjson.pyd", "BINARY")],
+        },
+        creado_en="2026-11-26T18:00:00Z",
+    )
+
+    # Assert
+    assert rep_sin_toc["structural_inventory_complete"] is True
+    assert rep_sin_toc["provenance_reconciliation_verified"] is False
+    assert rep_sin_toc["analysis_toc_reconciliation"]["status"] == "NOT_PROVIDED"
+
+    assert cod_toc_vacio == 1
+    assert rep_toc_vacio["provenance_reconciliation_verified"] is False
+    assert rep_toc_vacio["analysis_toc_reconciliation"]["status"] == "EMPTY_TOC"
+
+    assert rep_con_toc["provenance_reconciliation_verified"] is True
+    assert rep_con_toc["analysis_toc_reconciliation"]["status"] == "VERIFIED"
+
+
+def test_f12_no_certifica_patch_cpython_solo_por_build_python_version_sin_evidencia_en_artefacto(
+    tmp_path: Path,
+) -> None:
+    # Arrange 1 — DLL sin VS_FIXEDFILEINFO: pasar --build-python-version=3.11.99 NO puede certificar patch
+    exe_sin_pe = _exe_completo_limpio(tmp_path, incluir_mo2_bridge=False, incluir_pe_version_cpython=False)
+    inv_sin_pe = inv.inventariar_ejecutable(exe_sin_pe)
+
+    sbom_no_probado, rep_no_probado, cod_no_probado = rec.reconciliar(
+        inv_sin_pe,
+        _entorno_limpio(),
+        build_python_version="3.11.99",
+        creado_en="2026-11-26T18:00:00Z",
+    )
+
+    # Assert 1 — sin evidencia en el artefacto, rechaza certificar 3.11.99
+    pkg_py_no = next(p for p in sbom_no_probado["packages"] if p["name"] == "cpython-runtime")
+    assert pkg_py_no["versionInfo"] == "NOASSERTION"
+    assert rep_no_probado["cpython_version_uncertainty"] is True
+    assert cod_no_probado == 1
+    assert any("cpython_version_unverified" in b for b in rep_no_probado["blockers"])
+
+    # Arrange 2 — DLL con VS_FIXEDFILEINFO 3.11.9 real: certifica 3.11.9 y rechaza 3.11.99 por mismatch de patch
+    dll_3119 = _construir_dll_python_con_pe_version(3, 11, 9)
+    pyz_bytes = _construir_pyz_bytes({"sky_claw": (1, b"s"), "pydantic": (1, b"p")})
+    base_lib = _construir_zip_bytes([("json/__init__.pyc", b"j")])
+    exe_con_pe = _construir_carchive_exe(
+        tmp_path / "con_pe.exe",
+        [
+            ("PYZ-00.pyz", pyz_bytes, "z", False),
+            ("base_library.zip", base_lib, "x", False),
+            ("python311.dll", dll_3119, "b", True),
+        ],
+    )
+    inv_con_pe = inv.inventariar_ejecutable(exe_con_pe)
+    assert inv_con_pe["exe"]["python_version_binary"] == "3.11.9"
+
+    sbom_ok, rep_ok, cod_ok = rec.reconciliar(
+        inv_con_pe,
+        _entorno_limpio(),
+        build_python_version="3.11.9",
+        creado_en="2026-11-26T18:00:00Z",
+    )
+    pkg_py_ok = next(p for p in sbom_ok["packages"] if p["name"] == "cpython-runtime")
+    assert pkg_py_ok["versionInfo"] == "3.11.9"
+    assert rep_ok["cpython_version_uncertainty"] is False
+    assert cod_ok == 0
+
+    _, rep_patch_mal, cod_patch_mal = rec.reconciliar(
+        inv_con_pe,
+        _entorno_limpio(),
+        build_python_version="3.11.99",
+        creado_en="2026-11-26T18:00:00Z",
+    )
+    assert cod_patch_mal == 1
+    assert rep_patch_mal["environment_mismatch"]
+
+
+def test_f13_distingue_atribuciones_criptograficas_nominales_y_bytecode_en_cobertura_record(
+    tmp_path: Path,
+) -> None:
+    # Arrange — 1 binario con SHA-256 RECORD verificado, 1 dato nominal sin hash, y módulos PYZ bytecode
+    orjson_bytes = b"orjson-pyd-exact"
+    orjson_sha = hashlib.sha256(orjson_bytes).hexdigest()
+    pyz_bytes = _construir_pyz_bytes({"sky_claw": (1, b"s"), "pydantic": (1, b"p"), "orjson": (1, b"o")})
+    base_lib = _construir_zip_bytes([("json/__init__.pyc", b"j")])
+    exe = _construir_carchive_exe(
+        tmp_path / "f13.exe",
+        [
+            ("PYZ-00.pyz", pyz_bytes, "z", False),
+            ("base_library.zip", base_lib, "x", False),
+            ("python311.dll", _construir_dll_python_con_pe_version(3, 11, 9), "b", True),
+            ("orjson/orjson.cp311-win_amd64.pyd", orjson_bytes, "b", True),
+            ("pydantic/dato_sin_hash.json", b"{}", "x", True),
+        ],
+    )
+    inventario = inv.inventariar_ejecutable(exe)
+    entorno = _entorno_limpio()
+    entorno[1] = rec.PaqueteEntorno(
+        nombre="orjson",
+        version="3.11.9",
+        licencia_declarada="MPL-2.0 AND (Apache-2.0 OR MIT)",
+        licencia_concluida="MPL-2.0 AND (Apache-2.0 OR MIT)",
+        evidencia="METADATA dist-info",
+        confianza="ALTA",
+        procedencia="PyPI",
+        estado_revision_juridica="VERIFICADO_DOCUMENTAL",
+        archivos_record=("orjson/__init__.py", "orjson/orjson.cp311-win_amd64.pyd"),
+        modulos_top_level=("orjson",),
+        solo_build=False,
+        record_hashes={"orjson/orjson.cp311-win_amd64.pyd": orjson_sha},
+    )
+
+    # Act
+    _, reporte, _ = rec.reconciliar(
+        inventario,
+        entorno,
+        build_python_version="3.11.9",
+        creado_en="2026-11-26T18:00:00Z",
+    )
+
+    # Assert — separación explícita y suma exacta de cobertura RECORD
+    hv = reporte["hash_verification"]
+    assert hv["verified_cryptographic_record_matches"] == 1
+    assert hv["nominal_attributions_without_hash"] == 1
+    assert "pydantic/dato_sin_hash.json" in hv["nominal_entries_sample"]
+    assert hv["bytecode_transformed_not_hash_comparable"] == 2
+    assert hv["total_attributed_entries"] == (
+        hv["verified_cryptographic_record_matches"]
+        + hv["nominal_attributions_without_hash"]
+        + hv["bytecode_transformed_not_hash_comparable"]
+        + len(hv["mismatches"])
+    )

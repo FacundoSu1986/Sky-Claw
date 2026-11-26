@@ -270,6 +270,29 @@ def _formatear_pyvers_cookie(pyvers: int) -> str:
     return ""
 
 
+def _extraer_version_pe_cpython(datos_dll: bytes) -> str:
+    """Extrae la versión exacta ``major.minor.micro`` desde ``VS_FIXEDFILEINFO`` de ``python3XX.dll`` (F12).
+
+    En CPython Windows (``PC/python_ver_rc.h``), ``dwFileVersionLS >> 16`` codifica
+    ``PY_MICRO_VERSION * 1000 + PY_RELEASE_LEVEL * 10 + PY_RELEASE_SERIAL`` (p. ej. ``9150`` → micro ``9``).
+    Devuelve ``""`` si el binario no contiene una estructura ``VS_FIXEDFILEINFO`` válida.
+    """
+    firma = b"\xbd\x04\xef\xfe"  # 0xFEEF04BD en little-endian
+    idx = datos_dll.find(firma)
+    if idx == -1 or idx + 16 > len(datos_dll):
+        return ""
+    _sig, _struc_ver, ms, ls = struct.unpack_from("<IIII", datos_dll, idx)
+    major = ms >> 16
+    minor = ms & 0xFFFF
+    field3 = ls >> 16
+    if major != 3 or minor > 99:
+        return ""
+    micro = field3 // 1000 if field3 >= 1000 else field3
+    if micro > 99:
+        return ""
+    return f"{major}.{minor}.{micro}"
+
+
 def _validar_registro_sha256(registro_ruta: Path, sha_actual: str, bytes_actual: int) -> None:
     try:
         datos = json.loads(registro_ruta.read_text(encoding="utf-8"))
@@ -729,6 +752,7 @@ def inventariar_ejecutable(
     opacos: list[dict[str, str]] = []
     opciones_runtime: list[str] = []
     total_extraido = [0]
+    python_version_binary = ""
 
     try:
         fp_ctx = exe.open("rb")
@@ -777,6 +801,8 @@ def inventariar_ejecutable(
 
             norm = _normalizar_ruta(nombre)
             ext = Path(norm).suffix.casefold()
+            if not python_version_binary and re.fullmatch(r"python3\d+\.dll", Path(norm).name.casefold()):
+                python_version_binary = _extraer_version_pe_cpython(extracted_raw)
             cat, orig, der = _clasificar_entrada_base(norm, typecode, "CArchive")
             if cat == CategoriaComponente.OPAQUE_CONTAINER.value:
                 opacos.append({"container": "CArchive", "name": norm, "reason": f"contenedor opaco ({typecode}/{ext})"})
@@ -862,6 +888,7 @@ def inventariar_ejecutable(
             "bytes": exe_bytes,
             "sha256": exe_sha256,
             "python_version_cookie": pyvers_cookie,
+            "python_version_binary": python_version_binary,
             "python_dll": pylib_name,
         },
         "bootloader": {

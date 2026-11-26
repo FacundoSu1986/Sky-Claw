@@ -663,9 +663,15 @@ def _reconciliar_analysis_toc(
     analysis_toc: Mapping[str, Any] | None,
     entradas: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Contrasta ``Analysis`` TOC de PyInstaller contra las entradas efectivamente empaquetadas (F02)."""
+    """Contrasta ``Analysis`` TOC de PyInstaller contra las entradas efectivamente empaquetadas (F02/F11)."""
     if analysis_toc is None:
-        return {"provided": False, "declared_count": 0, "matched_count": 0, "missing_from_exe": []}
+        return {
+            "provided": False,
+            "status": "NOT_PROVIDED",
+            "declared_count": 0,
+            "matched_count": 0,
+            "missing_from_exe": [],
+        }
 
     nombres_en_exe = {str(e.get("name", "")).replace("\\", "/").casefold() for e in entradas}
     declarados: list[str] = []
@@ -684,9 +690,19 @@ def _reconciliar_analysis_toc(
             if dest_norm:
                 declarados.append(dest_norm)
 
+    unicos = sorted(set(declarados))
+    if not unicos:
+        return {
+            "provided": True,
+            "status": "EMPTY_TOC",
+            "declared_count": 0,
+            "matched_count": 0,
+            "missing_from_exe": [],
+        }
+
     faltantes: list[str] = []
     coincidentes = 0
-    for dest in sorted(set(declarados)):
+    for dest in unicos:
         if dest.casefold() in nombres_en_exe:
             coincidentes += 1
         else:
@@ -694,7 +710,8 @@ def _reconciliar_analysis_toc(
 
     return {
         "provided": True,
-        "declared_count": len(set(declarados)),
+        "status": "DISCREPANCY" if faltantes else "VERIFIED",
+        "declared_count": len(unicos),
         "matched_count": coincidentes,
         "missing_from_exe": faltantes,
     }
@@ -761,6 +778,7 @@ def reconciliar(
     hash_mismatches: list[dict[str, Any]] = []
     hash_verified_binary_count = 0
     bytecode_entries_count = 0
+    nominal_without_hash: list[str] = []
     opaque_containers: list[dict[str, str]] = list(inventario.get("opaque_containers", []))
 
     stdlib_presente = False
@@ -870,7 +888,7 @@ def reconciliar(
                 ambiguous.append({"name": nombre, "container": cont, "candidates": candidatos})
         elif atribuido is not None:
             redistribuidos[atribuido.nombre] = atribuido
-            # F02: distinguir representación bytecode (.pyc/PYZ) vs archivo binario/dato con hash RECORD
+            # F02/F13: distinguir representación bytecode (.pyc/PYZ), verificación criptográfica RECORD y atribución nominal sin hash
             es_bytecode = cont.startswith("PYZ:") or nombre.casefold().endswith(".pyc")
             if es_bytecode:
                 bytecode_entries_count += 1
@@ -890,6 +908,10 @@ def reconciliar(
                                 "exe_extracted_sha256": sha_exe_entry,
                             }
                         )
+                else:
+                    nominal_without_hash.append(nombre)
+            else:
+                nominal_without_hash.append(nombre)
         elif cat != CategoriaComponente.THIRD_PARTY_VENDORED.value and not (
             cat == CategoriaComponente.THIRD_PARTY_FONT.value and nombre.casefold().startswith("nicegui/")
         ):
@@ -902,8 +924,14 @@ def reconciliar(
                 }
             )
 
-    # F02: verificar compatibilidad de entorno Python de build vs EXE analizado
+    # F02/F12: verificar compatibilidad de entorno Python de build vs EXE analizado (cookie + PE binary)
     exe_py_minor = _detectar_version_python_exe(inventario, entradas)
+    exe_info_raw = inventario.get("exe", {})
+    exe_py_binary = (
+        str(exe_info_raw.get("python_version_binary", "")).strip() if isinstance(exe_info_raw, Mapping) else ""
+    )
+    if not re.fullmatch(r"\d+\.\d+\.\d+", exe_py_binary):
+        exe_py_binary = ""
     env_py_ver = _version_entorno_python(paquetes_entorno, build_python_version)
     environment_mismatch: list[str] = []
     if exe_py_minor and env_py_ver:
@@ -912,6 +940,10 @@ def reconciliar(
             environment_mismatch.append(
                 f"CPython del EXE ({exe_py_minor}) no coincide con el entorno de análisis ({env_py_ver})"
             )
+    if exe_py_binary and env_py_ver and re.fullmatch(r"\d+\.\d+\.\d+", env_py_ver) and env_py_ver != exe_py_binary:
+        environment_mismatch.append(
+            f"Versión patch de CPython en binario EXE ({exe_py_binary}) no coincide con entorno declarado ({env_py_ver})"
+        )
 
     # F02: reconciliación real contra analysis_toc si se provee
     analysis_toc_rec = _reconciliar_analysis_toc(analysis_toc, entradas)
@@ -1044,12 +1076,13 @@ def reconciliar(
         }
     )
 
-    # F02/F03/F10: CPython derivado del artefacto + entorno exacto de build (nunca de sys.version_info del inspector)
+    # F02/F03/F10/F12: CPython exacto exige evidencia binaria del artefacto (python_version_binary)
+    # coincidente con la versión exacta del entorno de build (major.minor solo NO certifica patch).
     cpython_version_uncertainty = False
     if stdlib_presente:
-        tiene_patch_exacto = bool(re.fullmatch(r"\d+\.\d+\.\d+", env_py_ver))
-        if exe_py_minor and tiene_patch_exacto and not environment_mismatch:
-            cpython_ver = env_py_ver
+        tiene_patch_entorno = bool(re.fullmatch(r"\d+\.\d+\.\d+", env_py_ver))
+        if exe_py_binary and tiene_patch_entorno and env_py_ver == exe_py_binary and not environment_mismatch:
+            cpython_ver = exe_py_binary
         else:
             cpython_ver = "NOASSERTION"
             cpython_version_uncertainty = True
@@ -1065,6 +1098,7 @@ def reconciliar(
                 "copyrightText": "Copyright (c) Python Software Foundation",
                 "comment": (
                     f"cookie_minor={exe_py_minor or 'NOASSERTION'}; "
+                    f"binary_pe_version={exe_py_binary or 'NOASSERTION'}; "
                     f"version_uncertainty={cpython_version_uncertainty}; "
                     "CPython runtime y stdlib; OpenSSL/SQLite/libffi/Tcl-Tk se reportan como paquetes separados"
                 ),
@@ -1269,6 +1303,8 @@ def reconciliar(
         blockers.append(f"mo2_integration_boundary_pending_legal={len(set(mo2_bridge_files))}")
     if hash_mismatches:
         blockers.append(f"hash_mismatches={len(hash_mismatches)}")
+    if analysis_toc_rec["status"] == "EMPTY_TOC":
+        blockers.append("analysis_toc_empty=1")
     if analysis_toc_rec["missing_from_exe"]:
         blockers.append(f"analysis_toc_missing_from_exe={len(analysis_toc_rec['missing_from_exe'])}")
     if unidentified:
@@ -1288,21 +1324,28 @@ def reconciliar(
 
     gate_passed = len(blockers) == 0
     exit_code = EXIT_OK if gate_passed else EXIT_FAIL_CLOSED
-    technical_complete = (
+    structural_complete = (
         len(inventory_schema_errors) == 0
         and len(environment_mismatch) == 0
         and len(hash_mismatches) == 0
-        and len(analysis_toc_rec["missing_from_exe"]) == 0
+        and analysis_toc_rec["status"] not in {"EMPTY_TOC", "DISCREPANCY"}
         and len(unidentified) == 0
         and len(opaque_containers) == 0
         and len(ambiguous) == 0
     )
+    # F11: distinguir inventario estructural completo de reconciliación de procedencia verificada con Analysis TOC
+    provenance_verified = structural_complete and analysis_toc_rec["status"] == "VERIFIED"
+    total_attributed = (
+        hash_verified_binary_count + bytecode_entries_count + len(nominal_without_hash) + len(hash_mismatches)
+    )
 
     reporte: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "exe": exe_info,
         "gate_passed": gate_passed,
-        "technical_inventory_complete": technical_complete,
+        "structural_inventory_complete": structural_complete,
+        "provenance_reconciliation_verified": provenance_verified,
+        "technical_inventory_complete": structural_complete,
         "legal_certification": False,
         "spdx_validation_scope": "internal_structural_and_semantic_validator_not_full_jsonschema",
         "blockers": blockers,
@@ -1318,7 +1361,12 @@ def reconciliar(
             "files": sorted(set(mo2_bridge_files)),
         },
         "hash_verification": {
+            "total_attributed_entries": total_attributed,
+            "verified_cryptographic_record_matches": hash_verified_binary_count,
             "verified_binary_record_matches": hash_verified_binary_count,
+            "nominal_attributions_without_hash": len(nominal_without_hash),
+            "nominal_entries_sample": sorted(set(nominal_without_hash))[:50],
+            "bytecode_transformed_not_hash_comparable": bytecode_entries_count,
             "bytecode_entries_not_compared_to_source_hash": bytecode_entries_count,
             "mismatches": hash_mismatches,
         },
