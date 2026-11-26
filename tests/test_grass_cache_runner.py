@@ -3183,11 +3183,18 @@ def test_f1_marcador_ilegible_bloquea(tmp_path: pathlib.Path, config: GrassCache
     assert "ILEGIBLE" in bloqueo
 
 
-def test_f1_marcador_indeterminado_bloquea_y_el_de_proceso_muerto_se_libera(
-    tmp_path: pathlib.Path, config: GrassCacheConfig
-) -> None:
-    """F1: sin PID no se puede afirmar que murió (bloquea); con PID muerto se libera."""
-    from sky_claw.local.tools.grass_cache_fence import FenceProceso, bloqueo_por_fence, escribir_fence
+def test_f1_marcador_indeterminado_y_pid_muerto_bloquean(tmp_path: pathlib.Path, config: GrassCacheConfig) -> None:
+    """F1: sin cierre demostrado el marcador bloquea — también con el PID registrado muerto.
+
+    La desaparición del PID registrado NO prueba que hayan terminado todos los procesos del ritual
+    (pudo relanzarse con otra identidad). La consulta es de solo lectura: no borra nada.
+    """
+    from sky_claw.local.tools.grass_cache_fence import (
+        FenceProceso,
+        bloqueo_por_fence,
+        escribir_fence,
+        estado_del_proceso,
+    )
 
     ruta = _fence_de(tmp_path, config)
     escribir_fence(
@@ -3206,23 +3213,107 @@ def test_f1_marcador_indeterminado_bloquea_y_el_de_proceso_muerto_se_libera(
     )
     assert bloqueo_por_fence(ruta) is not None, "pid=None no demuestra ausencia"
 
-    escribir_fence(
-        ruta,
-        FenceProceso(
-            run_id="r2",
-            intento=0,
-            lanzamiento="atribuido",
-            pid=999_999,
-            create_time=1.0,
-            modo="new",
-            game_path=str(config.game_path),
-            overwrite_grass_dir=str(config.overwrite_grass_dir),
-            creado="2026-11-25T00:00:00",
-        ),
+    muerto = FenceProceso(
+        run_id="r2",
+        intento=0,
+        lanzamiento="atribuido",
+        pid=999_999,
+        create_time=1.0,
+        modo="new",
+        game_path=str(config.game_path),
+        overwrite_grass_dir=str(config.overwrite_grass_dir),
+        creado="2026-11-25T00:00:00",
+    )
+    escribir_fence(ruta, muerto)
+    assert estado_del_proceso(muerto) == "terminado"
+
+    assert bloqueo_por_fence(ruta) is not None, "un PID muerto no demuestra cierre integral"
+    assert ruta.exists(), "la consulta es de solo lectura: no libera el marcador"
+
+
+def test_f1_pid_reciclado_bloquea(tmp_path: pathlib.Path, config: GrassCacheConfig) -> None:
+    """F1: un PID reciclado por otro proceso sigue bloqueando (no es prueba de cierre)."""
+    import os
+
+    import psutil
+
+    from sky_claw.local.tools.grass_cache_fence import (
+        FenceProceso,
+        bloqueo_por_fence,
+        escribir_fence,
+        estado_del_proceso,
     )
 
-    assert bloqueo_por_fence(ruta) is None
-    assert not ruta.exists(), "el marcador obsoleto se borra al demostrarse terminado"
+    ruta = _fence_de(tmp_path, config)
+    reciclado = FenceProceso(
+        run_id="r3",
+        intento=0,
+        lanzamiento="atribuido",
+        pid=os.getpid(),
+        create_time=psutil.Process().create_time() - 3600.0,  # identidad distinta
+        modo="new",
+        game_path=str(config.game_path),
+        overwrite_grass_dir=str(config.overwrite_grass_dir),
+        creado="2026-11-25T00:00:00",
+    )
+    escribir_fence(ruta, reciclado)
+
+    assert estado_del_proceso(reciclado) == "terminado"
+    assert bloqueo_por_fence(ruta) is not None
+    assert ruta.exists()
+
+
+def test_f1_liberacion_exige_propiedad_de_la_corrida(tmp_path: pathlib.Path, config: GrassCacheConfig) -> None:
+    """F1: sin coincidencia de run_id y ámbito, un runner no borra el marcador ajeno."""
+    from sky_claw.local.tools.grass_cache_fence import (
+        FenceProceso,
+        escribir_fence,
+        liberar_fence_propio,
+    )
+
+    ruta = _fence_de(tmp_path, config)
+    ajeno = FenceProceso(
+        run_id="otra-corrida",
+        intento=3,
+        lanzamiento="atribuido",
+        pid=999_999,
+        create_time=1.0,
+        modo="new",
+        game_path=str(config.game_path),
+        overwrite_grass_dir=str(config.overwrite_grass_dir),
+        creado="2026-11-25T00:00:00",
+    )
+    escribir_fence(ruta, ajeno)
+
+    liberado = liberar_fence_propio(
+        ruta,
+        ajeno,
+        run_id="esta-corrida",
+        game_path=str(config.game_path),
+        overwrite_grass_dir=str(config.overwrite_grass_dir),
+        terminalidad_integral=True,
+        locks_propios=True,
+        lanzamiento_pendiente=False,
+    )
+
+    assert liberado is False
+    assert ruta.exists(), "el marcador de otra corrida nunca se elimina"
+
+    propio = FenceProceso(**{**ajeno.a_dict(), "run_id": "esta-corrida"})
+    assert (
+        liberar_fence_propio(
+            ruta,
+            propio,
+            run_id="esta-corrida",
+            game_path=str(config.game_path),
+            overwrite_grass_dir=str(config.overwrite_grass_dir),
+            terminalidad_integral=True,
+            locks_propios=True,
+            lanzamiento_pendiente=False,
+        )
+        is True
+    )
+    assert not ruta.exists()
 
 
 async def test_f1_el_runner_escribe_el_fence_antes_del_spawn(
@@ -3342,3 +3433,53 @@ def test_b5_watchdog_ve_un_cache_parcial_solo_de_dgid_y_fail(
     assert (cgid, dgid, fail) == (0, 1, 1)
     assert (dgid + fail) > 0, "un caché parcial de .dgid/.fail no puede parecer vacío al watchdog"
     assert tamano >= 0
+
+
+async def test_f1_escritura_inicial_fallida_no_lanza_ni_toca_marcadores_ajenos(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F1: si el fence no se puede persistir, NO se lanza y no se elimina nada ajeno."""
+    import sky_claw.local.tools.grass_cache_runner as gcr_mod
+
+    runner = _runner(config, mo2)
+    ajeno = runner._ruta_fence
+    assert ajeno is not None
+    ajeno.parent.mkdir(parents=True, exist_ok=True)
+    ajeno.write_bytes(b'{"run_id": "otra-corrida", "intento": 0}')
+
+    def _falla(*args: Any, **kwargs: Any) -> None:
+        raise OSError(28, "sin espacio")
+
+    monkeypatch.setattr(gcr_mod, "escribir_fence", _falla)
+
+    resultado = await _correr(runner)
+
+    assert resultado.outcome == "spawn_failed"
+    assert "fence" in resultado.message.lower()
+    mo2.launch_game.assert_not_awaited()
+    assert ajeno.exists(), "no se borra el marcador ajeno cuando falla la escritura"
+
+
+async def test_f1_la_corrida_libera_su_propio_marcador_con_cierre_demostrado(
+    config: GrassCacheConfig, mo2: AsyncMock, mundo: _MundoProcesos
+) -> None:
+    """F1: con cierre demostrado, la corrida libera SU marcador (run_id coincidente)."""
+    from sky_claw.local.tools.grass_cache_fence import ruta_fence
+
+    ruta = ruta_fence(
+        raiz_estado=config.backup_root,  # type: ignore[arg-type]
+        game_path=config.game_path,
+        overwrite_grass_dir=config.overwrite_grass_dir,
+    )
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100, vidas=1)
+        (config.game_path / "PrecacheGrass.txt").unlink(missing_ok=True)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+
+    resultado = await _correr(_runner(config, mo2))
+
+    assert resultado.outcome == "timeout" or resultado.success is not None
+    assert not ruta.exists(), "el cierre demostrado libera el marcador propio"

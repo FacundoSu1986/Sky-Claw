@@ -54,9 +54,11 @@ from sky_claw.app.security.links import path_present
 from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.local.mo2.vfs import GameLaunchTimeoutError, MO2Controller
 from sky_claw.local.tools.grass_cache_fence import (
+    FenceCorruptoError,
     FenceProceso,
-    borrar_fence,
     escribir_fence,
+    leer_fence,
+    liberar_fence_propio,
     ruta_fence,
 )
 from sky_claw.local.tools.grass_cache_safety import (
@@ -556,10 +558,25 @@ class GrassCacheRunner:
         # RD-11: el veredicto NO puede quedar cerrado antes de neutralizar el flag. Se RE-EVALÚA la
         # misma evidencia con el resultado real de la limpieza; el provisional nunca se publica.
         resultado = self._veredicto_final(resultado, limpio=limpio)
-        # F1: el fence se borra SÓLO cuando la terminalidad quedó demostrada. Si quedó viva o
-        # indeterminada, el marcador sobrevive (también a un reinicio de Sky-Claw).
+        # F1 (contrato definitivo): se libera EXCLUSIVAMENTE el marcador propio y sólo con
+        # terminalidad integral demostrada, propiedad de los locks (los tiene el servicio mientras
+        # corre este runner) y sin lanzamiento pendiente. Nunca el de otra corrida.
         if self._ruta_fence is not None and self._terminalidad in ("terminado", "sin_proceso"):
-            borrar_fence(self._ruta_fence)
+            try:
+                propio = leer_fence(self._ruta_fence)
+            except FenceCorruptoError:
+                propio = None
+            if propio is not None:
+                liberar_fence_propio(
+                    self._ruta_fence,
+                    propio,
+                    run_id=self._run_id,
+                    game_path=str(self._config.game_path),
+                    overwrite_grass_dir=str(self._config.overwrite_grass_dir),
+                    terminalidad_integral=True,
+                    locks_propios=True,
+                    lanzamiento_pendiente=False,
+                )
         if self._neutralizacion is not None and self._terminalidad not in ("terminado", "sin_proceso"):
             # H2/H5: el archivado del progreso se omitió a propósito (caché posiblemente en curso).
             # Aplica también a los caminos sin evidencia de egreso (timeout, cancelación, cortes).

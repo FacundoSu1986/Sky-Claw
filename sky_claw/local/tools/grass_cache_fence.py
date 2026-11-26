@@ -150,33 +150,82 @@ def borrar_fence(ruta: pathlib.Path) -> None:
 def bloqueo_por_fence(ruta: pathlib.Path) -> str | None:
     """Mensaje de bloqueo si el fence impide operar; ``None`` si se puede seguir.
 
+    **Solo lectura.** Esta consulta no borra, no modifica, no renueva ni sobrescribe ningún marcador:
+    la liberación es una decisión aparte, con prueba de propiedad y de terminalidad integral.
+
     - No existe ⇒ se puede seguir.
-    - Ilegible ⇒ **bloqueo** (no ausencia).
-    - Proceso vivo o indeterminado ⇒ **bloqueo**.
-    - Proceso terminado ⇒ el marcador es obsoleto: se borra y se sigue (recuperación segura).
+    - Existe de una corrida anterior ⇒ **bloqueo**, aunque su PID registrado esté muerto o reciclado:
+      la desaparición de ESE PID no demuestra que hayan terminado todos los procesos relevantes del
+      ritual (pudo relanzarse, o quedar un hijo con otra identidad).
+    - Ilegible/corrupto ⇒ **bloqueo** (no ausencia).
+    - Vivo o indeterminado ⇒ **bloqueo**.
     """
     try:
         fence = leer_fence(ruta)
     except FenceCorruptoError as exc:
         return (
             f"Hay un fence ILEGIBLE en {ruta} ({exc}). Un marcador que no se puede interpretar se "
-            "trata como bloqueo: verificá que no quede un SkyrimSE.exe del precache y borrá el "
-            f"archivo a mano ({ruta.name})."
+            "trata como bloqueo. Antes de liberarlo, verificá a mano que no queden procesos "
+            "SkyrimSE.exe del precache, lanzamientos pendientes ni recursos del ritual anterior en "
+            f"uso; recién entonces retirá {ruta.name}."
         )
     if fence is None:
         return None
     estado = estado_del_proceso(fence)
-    if estado == "terminado":
-        borrar_fence(ruta)
-        return None
     return (
-        f"Hay un ritual de grass previo SIN terminalidad demostrada (run_id={fence.run_id}, "
+        f"Hay un ritual de grass previo SIN cierre demostrado (run_id={fence.run_id}, "
         f"intento={fence.intento}, lanzamiento={fence.lanzamiento}, pid={fence.pid}, "
-        f"estado={estado}). No se inicia otro ritual sobre el mismo caché: cerrá el juego y verificá "
-        f"que no quede ningún SkyrimSE.exe del precache NI recursos del ritual anterior en uso antes "
-        f"de liberar el marcador {ruta}. Un marcador ilegible o con estado indeterminado no se borra "
-        f"a ciegas."
+        f"estado_del_pid={estado}). No se inicia otro ritual sobre el mismo caché. Recuperación: "
+        "cerrá el juego, verificá que no quede ningún SkyrimSE.exe del precache, ningún lanzamiento "
+        "pendiente y ningún recurso del ritual anterior en uso (clon/perfil), y recién entonces "
+        f"retirá el marcador {ruta}. La muerte del PID registrado NO alcanza como prueba: el ritual "
+        "pudo relanzar el juego con otra identidad."
     )
+
+
+def puede_liberar_fence(
+    fence: FenceProceso,
+    *,
+    run_id: str,
+    game_path: str,
+    overwrite_grass_dir: str,
+    terminalidad_integral: bool,
+    locks_propios: bool,
+    lanzamiento_pendiente: bool,
+) -> bool:
+    """¿Esta corrida puede borrar ESTE marcador? Todas las condiciones, en conjunto.
+
+    - ``run_id`` del marcador == el de esta corrida (nunca el de otra ejecución).
+    - Ámbito físico protegido idéntico (misma instalación y mismo caché).
+    - Terminalidad **integral** demostrada (no «el PID murió»).
+    - Propiedad vigente de los locks del ritual.
+    - Ningún intento de lanzamiento pendiente.
+    """
+    return (
+        fence.run_id == run_id
+        and fence.game_path == game_path
+        and fence.overwrite_grass_dir == overwrite_grass_dir
+        and terminalidad_integral
+        and locks_propios
+        and not lanzamiento_pendiente
+    )
+
+
+def liberar_fence_propio(ruta: pathlib.Path, fence: FenceProceso, **condiciones: object) -> bool:
+    """Borra el marcador **sólo** si :func:`puede_liberar_fence` lo autoriza.
+
+    Un runner que nunca consiguió crear su fence no tiene ``run_id`` coincidente y por lo tanto no
+    puede borrar uno preexistente. Si no se puede demostrar el cierre seguro, el marcador se conserva.
+    """
+    if not puede_liberar_fence(fence, **condiciones):  # type: ignore[arg-type]
+        logger.warning(
+            "Fence %s conservado: no se demostró propiedad y cierre seguro (run_id=%s).",
+            ruta,
+            getattr(fence, "run_id", "?"),
+        )
+        return False
+    borrar_fence(ruta)
+    return True
 
 
 __all__ = [
