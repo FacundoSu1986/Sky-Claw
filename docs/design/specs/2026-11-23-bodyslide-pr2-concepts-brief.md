@@ -648,5 +648,51 @@ que ese evento no puede probar la terminalidad de **esta** corrida. Opciones:
 - **(b)** Schema v2 del journal con `vfs_job_id`, y el broker notifica el `worker_exit` tardío al
   journal. Es automático, pero cambia un schema cerrado y acopla el broker con BodySlide.
 
+#### Implementación de 2c-2b (notas que el contrato no fijaba)
+
+- **Lanzador inyectable.** El backend brokered no es un runner paralelo: es un lanzador que se inyecta
+  en el `BodySlideRunner` (`bodyslide_lanzador.py`), así journal, siembra, restauración y veredicto
+  siguen siendo una sola implementación. La tabla de terminalidad (retorno, timeout, error,
+  terminalidad desconocida, cancelación) se congela en `tests/test_bodyslide_lanzador.py`.
+- **Veto del broker como única fuente.** El lanzador brokered no enumera excepciones del broker: toda
+  excepción con `exception_forbids_rollback` es `TerminalidadDesconocidaError`. Un timeout sin veto es
+  terminal.
+- **`-q` en el worker.** `construir_argv` no rechaza una capacidad sin verificar: omite `-q` y deja el
+  rechazo a quien lo llama. El runner ya lo rechazaba; el handler del worker también lo hace.
+- **`expected_plugins` (C2).** El job de BodySlide lleva la lista como todo job mutante. BodySlide no lee
+  plugins, pero la prueba detecta un VFS que no proyecta los mods, y BodySlide lee sus slider sets del
+  `Data` virtual.
+- **Exe retenido en POSIX.** La compartición obligatoria es de Windows. En POSIX el helper verifica hash,
+  tipo, `O_NOFOLLOW` y un solo enlace duro, pero no impide un reemplazo concurrente (declarado en
+  `exe_retenido.py`).
+
+#### Superficie del operador (decisión del propietario, 2026-11-25)
+
+`liberar_cuarentena` (2c-1) no tenía llamador, y `registrar_terminalidad_por_operador` (opción (a))
+tampoco lo habría tenido: un `LANZADO` en HOLD solo se liberaba editando archivos de estado a mano.
+El propietario eligió sumar a 2c-2b el modo `--mode bodyslide-recovery`, hermano de
+`--mode vfs-quarantine`, despachado antes de `AppContext`:
+
+- `--bodyslide-recovery-action status` (por defecto): journals y cuarentena, sin escribir nada;
+- `release-quarantine` y `confirm-terminal`: exigen `--bodyslide-evidence` y quedan en el log como
+  CRITICAL;
+- la carpeta de BodySlide sale de `--bodyslide-exe` (por defecto, `bodyslide_exe` de la config).
+
+`confirm-terminal` exige además journal íntegro, misma máquina e instancia, carpeta física idéntica y
+un dueño confirmado muerto. Ninguna acción restaura la config: lo hace el reconciliador en el próximo
+arranque. La lógica vive en `sky_claw/local/tools/bodyslide_operador.py` (mypy estricto).
+
+**Qué se restaura después de `confirm-terminal`** (decisión del propietario, 2026-11-25, review
+CodeRabbit #1025): entre el cuelgue y la confirmación pueden pasar horas, así que lo que hay en disco no
+prueba que lo haya escrito la corrida. `Config.xml` solo es restaurable si conserva el hash de la siembra;
+si alguien lo editó, la restauración es `CONCURRENT_MODIFICATION` y no escribe ningún archivo.
+`BodySlide.xml` y `BuildSelection.xml`, estado propio de BodySlide, adoptan lo observado: una edición
+manual de esos dos entre el cuelgue y la confirmación se pierde (riesgo aceptado). El runner no cambia:
+registra `TERMINAL` apenas termina el proceso.
+
+**Límite:** el marcador de cuarentena no guarda el pid del proceso que lo escribió, así que
+`release-quarantine` no puede comprobar que Sky-Claw esté cerrado. El procedimiento lo exige (el hilo
+colgado muere con el proceso) y la evidencia del operador lo declara.
+
 No se encontró defecto P0/P1 en `main`; producción sigue apagada (`quiet_verified=False`, barrera en
 `False`).

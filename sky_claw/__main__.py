@@ -108,6 +108,7 @@ from sky_claw.app.modes.security_mode import _run_security  # noqa: E402
 from sky_claw.app.modes.telegram_mode import _run_telegram  # noqa: E402
 from sky_claw.app_context import AppContext  # noqa: E402
 from sky_claw.config import Config, SystemPaths  # noqa: E402
+from sky_claw.local.tools.bodyslide_operador import ACCIONES_DEL_OPERADOR  # noqa: E402
 from sky_claw.logging_config import (  # noqa: E402
     install_loop_exception_handler,
     install_missing_std_stream_adapters,
@@ -118,6 +119,7 @@ from sky_claw.logging_config import (  # noqa: E402
 if TYPE_CHECKING:
     # Solo para la anotación: importarlo acá cargaría el broker VFS antes del despacho de los workers.
     from sky_claw.local.mo2.vfs_quarantine import EstadoDeCuarentena
+    from sky_claw.local.tools.bodyslide_operador import InformeDelOperador
 
 logger = logging.getLogger("sky_claw")
 
@@ -174,6 +176,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "install-vfs-bridge",
             "vfs-health",
             "vfs-quarantine",
+            "bodyslide-recovery",
         ],
         default=modo_por_defecto,
         help="Operation mode (default: %(default)s)",
@@ -230,6 +233,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--vfs-evidence",
         default=None,
         help="vfs-quarantine release: what you verified (e.g. no job process is left alive); it is logged as CRITICAL",
+    )
+    parser.add_argument(
+        "--bodyslide-recovery-action",
+        choices=list(ACCIONES_DEL_OPERADOR),
+        default="status",
+        help=(
+            "bodyslide-recovery: show the BodySlide journals and quarantine, release the quarantine, or confirm "
+            "that a launched run is over; the last two need --bodyslide-evidence (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
+        "--bodyslide-evidence",
+        default=None,
+        help="bodyslide-recovery: what you verified (e.g. no BodySlide process is left alive); logged as CRITICAL",
+    )
+    parser.add_argument(
+        "--bodyslide-exe",
+        type=pathlib.Path,
+        default=pathlib.Path(config.bodyslide_exe) if config.bodyslide_exe else None,
+        help="bodyslide-recovery: BodySlide executable of the installation to recover; when omitted, bodyslide_exe from the config",
     )
     parser.add_argument(
         "--db-path",
@@ -514,6 +537,39 @@ async def _run_vfs_quarantine(args: argparse.Namespace) -> EstadoDeCuarentena:
     return estado
 
 
+def _run_bodyslide_recovery(args: argparse.Namespace) -> InformeDelOperador:
+    """PR 2c-2b: salidas manuales del journal de BodySlide, sin arrancar el daemon.
+
+    Despachado ANTES de ``AppContext``, como ``vfs-quarantine``: arrancarlo tomaría el recurso
+    ``bodyslide-meshes`` que el operador está liberando. Ninguna acción restaura la config: lo
+    hace el reconciliador en el próximo arranque, con sus propias pruebas.
+    """
+    from sky_claw.local.tools.bodyslide_journal import AlmacenDeJournal
+    from sky_claw.local.tools.bodyslide_operador import AccionDelOperador, ejecutar_accion_del_operador
+
+    exe = args.bodyslide_exe
+    informe = ejecutar_accion_del_operador(
+        AccionDelOperador(args.bodyslide_recovery_action),
+        almacen=AlmacenDeJournal(),
+        exe_dir=None if exe is None else pathlib.Path(exe).parent,
+        evidencia=args.bodyslide_evidence,
+    )
+    if informe.detalle:
+        logger.info("%s", informe.detalle)
+    logger.info("Recurso bodyslide-meshes %s", "EN CUARENTENA" if informe.cuarentena_activa else "sin cuarentena")
+    if not informe.journals:
+        logger.info("Sin journals de BodySlide pendientes")
+    for visto in informe.journals:
+        logger.warning(
+            "Journal %s: estado=%s, corrida=%s%s",
+            visto.archivo,
+            visto.estado,
+            visto.run_id or "?",
+            " (esta instalación)" if visto.de_esta_instalacion else "",
+        )
+    return informe
+
+
 async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> None:
     """Asynchronous runner for CLI, Telegram, oneshot and security modes.
 
@@ -538,6 +594,17 @@ async def _main(argv_or_args: list[str] | argparse.Namespace | None = None) -> N
             # Rechazo ESPERADO (sin evidencia, dueño vivo, disco que falla): la instancia sigue aislada y el operador
             # necesita el motivo, no un traceback bajo «Fallo no manejado en el proceso principal».
             logger.error("No se liberó la cuarentena: %s", exc)
+            sys.exit(1)
+        return
+    if args.mode == "bodyslide-recovery":
+        from sky_claw.local.tools.bodyslide_operador import AccionDelOperadorRechazadaError
+
+        try:
+            await asyncio.to_thread(_run_bodyslide_recovery, args)
+        except AccionDelOperadorRechazadaError as exc:
+            # Rechazo ESPERADO (sin evidencia, dueño vivo, otra máquina): el estado no cambió y el operador
+            # necesita el motivo, no un traceback.
+            logger.error("BodySlide: no se cambió nada: %s", exc)
             sys.exit(1)
         return
     if args.mode == "oneshot" and not args.command:

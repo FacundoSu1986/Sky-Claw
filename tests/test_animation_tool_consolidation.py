@@ -319,7 +319,13 @@ def test_toda_tool_se_registra_en_una_sola_superficie() -> None:
 #: explícitamente. El censo de IMPORTACIONES va por el path del módulo
 #: (``bodyslide_runner``) y no por el nombre de la clase, así que un alias
 #: (``... import BodySlideRunner as R``) tampoco lo esquiva.
-MODULOS_QUE_IMPORTAN_BODYSLIDE_RUNNER: set[str] = {"sky_claw/app/agent/tools/__init__.py"}
+MODULOS_QUE_IMPORTAN_BODYSLIDE_RUNNER: set[str] = {
+    "sky_claw/app/agent/tools/__init__.py",
+    # PR 2c-2b: el handler del worker VFS reusa ``LanzadorStandalone`` (el mismo spawn del
+    # runner). No es una superficie: solo se llega a él por runner → lanzador brokered → broker.
+    # Ni instancia ni ejecuta ``BodySlideRunner`` (los otros dos censos no cambian).
+    "sky_claw/local/mo2/vfs_worker.py",
+}
 MODULOS_QUE_INSTANCIAN_BODYSLIDE_RUNNER: set[str] = {"sky_claw/app/agent/tools/__init__.py"}
 #: PR 2a: la ejecución vive en el servicio compartido; la tool del agente (y la GUI
 #: de PR 4) lo construyen — ver ``tests/test_bodyslide_servicio.py``.
