@@ -437,6 +437,11 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         # `recovery_evidence/`, dentro del root. Declararla la somete al ancla de
         # call site: si alguien la invocara fuera de la sección crítica, falla.
         ("binder_recovery.py", "_preservar_evidencia"),
+        # P7-F Incremento 1: el veredicto de «escritura ajena» llama a
+        # `_preservar_evidencia`. Lo invocan la decisión de conjunto de
+        # `restaurar_registro_locked` y la re-verificación de
+        # `_restaurar_persistida`, las dos bajo el handle del llamador.
+        ("binder_recovery.py", "_veredicto_ajena"),
         # P5-C1 (`mo2_ini_escritura.py`): la escritura del INI es la mutación más
         # sensible del slice. Corre SIEMPRE bajo el participant lock del binder.
         ("mo2_ini_escritura.py", "actualizar_game_path_en_ini"),

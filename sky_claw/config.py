@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import logging
 import math
 import os
@@ -61,6 +62,23 @@ def _lock_de_config(path: pathlib.Path) -> threading.Lock:
             lock = threading.Lock()
             _LOCKS_DE_CONFIG[clave] = lock
         return lock
+
+
+def lock_de_archivo_config(path: pathlib.Path) -> threading.Lock:
+    """El MISMO lock por archivo que toma :meth:`Config.save`, para un escritor que no es ``save()``.
+
+    Existe para la restauración de ``binder_recovery``: escribe ``config.toml``
+    con los bytes del snapshot (no serializa un ``Config``), y sin este lock un
+    ``save()`` concurrente de la GUI o del agente —mismo proceso— podía leer el
+    archivo antes de la restauración y publicar después, resucitando lo que se
+    restauró o borrando lo que el otro guardó. Coordina participantes del MISMO
+    proceso: no excluye a otro proceso ni a un editor humano.
+
+    Orden de adquisición: quien ya sostiene el ``participant_lock`` del Frozen
+    Runtime puede tomar éste; ``save()`` nunca toma el ``participant_lock``, así
+    que no hay ciclo. NO es reentrante: no llamar ``save()`` sosteniéndolo.
+    """
+    return _lock_de_config(path)
 
 
 def _parse_toml_de_config_a_plano(texto: str) -> dict[str, Any]:
@@ -416,7 +434,7 @@ class Config:
             return self._data[name]
         raise AttributeError(f"'Config' object has no attribute '{name}'")
 
-    def save(self) -> None:
+    def save(self) -> str:
         """Persiste la configuración actual a TOML con merge-on-save (F1).
 
         El modelo viejo —reemplazar el archivo entero con ``_data``— perdía
@@ -443,6 +461,15 @@ class Config:
 
         Todo escritor de Config participa por construcción: el merge vive acá,
         no en un wrapper. Anclas en ``tests/test_local_config_persistencia.py``.
+
+        Returns:
+            El sha256 (hex) de los bytes EXACTOS que publicó el ``os.replace``,
+            leídos del temporal propio ANTES de publicarlo. No es un readback del
+            destino: entre el ``os.replace`` y una relectura cualquier proceso
+            puede escribir, y esa relectura atribuiría bytes ajenos a este
+            ``save()``. La recuperación de Frozen Runtime usa esta huella como
+            prueba de autoría (``binder_recovery``); los demás llamadores pueden
+            ignorarla.
 
         Raises:
             tomllib.TOMLDecodeError | UnicodeDecodeError | OSError: El archivo
@@ -574,6 +601,13 @@ class Config:
             try:
                 with os.fdopen(tmp_fd, "wb") as f:
                     tomli_w.dump(save_data, f)
+                # Huella del temporal PROPIO, antes de publicarlo: es exactamente
+                # lo que el ``os.replace`` va a poner en el destino (renombra este
+                # mismo archivo). Para alterarla, un tercero tendría que abrir
+                # ESTE temporal (nombre aleatorio, visible en un listado del
+                # directorio) entre el cierre y el reemplazo: es la ventana que
+                # queda declarada, no una exclusión.
+                huella_publicada = hashlib.sha256(pathlib.Path(tmp_name).read_bytes()).hexdigest()
                 os.replace(tmp_name, self._config_path)
             except BaseException:
                 with contextlib.suppress(OSError):
@@ -594,6 +628,7 @@ class Config:
         update_logging_redaction_context(
             telegram_chat_id=str(save_data.get("telegram_chat_id") or ""),
         )
+        return huella_publicada
 
     @property
     def as_dict(self) -> dict[str, Any]:

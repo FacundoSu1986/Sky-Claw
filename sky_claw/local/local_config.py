@@ -16,6 +16,7 @@ import asyncio
 import base64
 import contextlib
 import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -197,7 +198,7 @@ def load(path: pathlib.Path = _DEFAULT_PATH) -> LocalConfig:
         return LocalConfig()
 
 
-def save(config: LocalConfig, path: pathlib.Path = _DEFAULT_PATH) -> None:
+def save(config: LocalConfig, path: pathlib.Path = _DEFAULT_PATH) -> str:
     """Persist *config* to *path* as pretty-printed JSON.
 
     Escribe JSON **pase lo que pase**: sólo es correcto sobre el formato legacy
@@ -209,6 +210,11 @@ def save(config: LocalConfig, path: pathlib.Path = _DEFAULT_PATH) -> None:
     destino): un ``write_text`` directo trunca el archivo antes de escribir el
     contenido nuevo, así que un fallo a mitad de camino dejaba 0 bytes donde
     antes había una config completa y válida.
+
+    Devuelve el sha256 (hex) de los bytes EXACTOS publicados, leídos del
+    temporal propio antes del ``os.replace`` (hermano de ``Config.save``: ver
+    su docstring). Un readback del destino no serviría: otro proceso puede
+    escribir entre el reemplazo y la relectura.
     """
     data = asdict(cast("DataclassInstance", config))
     contenido = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
@@ -217,12 +223,14 @@ def save(config: LocalConfig, path: pathlib.Path = _DEFAULT_PATH) -> None:
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
             fh.write(contenido)
+        huella_publicada = hashlib.sha256(pathlib.Path(tmp_name).read_bytes()).hexdigest()
         os.replace(tmp_name, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)
         raise
     logger.info("Local config saved to %s", path)
+    return huella_publicada
 
 
 # ----------------------------------------------------------------------------
@@ -301,7 +309,7 @@ def escribir_campo(config: Any, campo: str, valor: Any) -> None:
         setattr(config, campo, valor)
 
 
-def guardar_config(config: Any, path: pathlib.Path) -> None:
+def guardar_config(config: Any, path: pathlib.Path) -> str | None:
     """Persiste *config* por el mecanismo de su propia clase.
 
     Una dataclass (`LocalConfig`) va por el :func:`save` JSON de este módulo;
@@ -311,20 +319,25 @@ def guardar_config(config: Any, path: pathlib.Path) -> None:
 
     Bloqueante: llamar desde un thread en contexto async.
 
+    Returns:
+        La huella sha256 de los bytes publicados que devuelve el escritor
+        (``save`` JSON y ``Config.save``), o ``None`` si el ``save()`` de esa
+        clase no la informa. ``None`` significa «sin prueba de autoría», no
+        «no se escribió»: quien la usa (``binder_recovery``) preserva.
+
     Raises:
         TypeError: *config* no expone ninguna forma conocida de persistirse.
     """
     if dataclasses.is_dataclass(config) and not isinstance(config, type):
-        save(cast("LocalConfig", config), path)
-        return
+        return save(cast("LocalConfig", config), path)
     guardar = getattr(config, "save", None)
     if callable(guardar):
-        guardar()
-        return
+        huella = guardar()
+        return huella if isinstance(huella, str) else None
     raise TypeError(f"La config {type(config).__name__!r} no sabe persistirse (ni dataclass ni .save()): abortado")
 
 
-def persistir_campo(path: pathlib.Path, campo: str, valor: Any) -> None:
+def persistir_campo(path: pathlib.Path, campo: str, valor: Any) -> str | None:
     """Ciclo leer-modificar-escribir de un solo campo sobre *path*.
 
     Para callers que tienen el path pero no el objeto vivo de config (la GUI).
@@ -333,10 +346,14 @@ def persistir_campo(path: pathlib.Path, campo: str, valor: Any) -> None:
     pisar cambios en memoria que todavía no se guardaron.
 
     Bloqueante: llamar desde un thread en contexto async.
+
+    Devuelve lo mismo que :func:`guardar_config`: la huella de los bytes que
+    ESTE ciclo publicó (o ``None``). Los llamadores que no la necesitan la
+    ignoran; el binder de Frozen Runtime la usa como prueba de autoría.
     """
     config = abrir_config_para_persistir(path)
     escribir_campo(config, campo, valor)
-    guardar_config(config, path)
+    return guardar_config(config, path)
 
 
 # ----------------------------------------------------------------------------

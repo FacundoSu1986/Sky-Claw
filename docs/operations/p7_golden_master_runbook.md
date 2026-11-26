@@ -346,29 +346,44 @@ detenerse y restaurar desde backup, **no** editar el JSON a mano.
 - **Crash/kill testing:** SÓLO en entorno desechable (storage y árboles sintéticos
   en `%TEMP%`/`tmp_path`), nunca sobre instalaciones reales.
 
-### 8.1 Taxonomía de recuperación y rollback del binder (P7-A5 PR 2)
+### 8.1 Taxonomía de recuperación y rollback del binder (P7-A5 PR 2, P7-F Incremento 1)
 
-El subsistema transaccional distingue cuatro cuadrantes operativos rigurosos para la gestión de anomalías:
+**Regla de autoría (única para las tres superficies persistidas).** Una superficie se restaura sólo si
+su contenido actual es idéntico, byte a byte, a la huella de lo que el **escritor** de esta transición
+publicó:
 
-1. **Rollback en proceso con autoría conocida:**
+- INI: los bytes leídos por el handle de exclusión antes de liberarlo (`ini_bytes_tras_escritura`).
+- `config.toml`: la huella que devuelve `persistir_campo` (sha256 del temporal propio antes del
+  `os.replace`), y además esos bytes tienen que diferir del snapshot sólo en `skyrim_path`. Si no, el
+  merge-on-save metió dentro de la escritura un cambio ajeno.
+- `active.json`: la huella que el CAS avisa con `al_publicar` antes de su readback.
+
+La forma del contenido (TOML equivalente, mismos IDs de Generation/Clone) **no** prueba autoría. Un
+readback posterior tampoco: entre el reemplazo y la relectura puede escribir un proceso que no participa
+de ningún lock de Sky-Claw.
+
+1. **Rollback en proceso con autoría acreditada:**
    - Ocurre dentro del ciclo de vida del mismo proceso cuando se intercepta un fallo antes de `FINALIZE` (p. ej. error de preflight bajo lock, fallo en persistencia de config o divergencia de readback tras liberar la exclusión).
-   - El binder conserva en memoria la evidencia de autoría (`ini_escritura_intentada` y la huella `ini_bytes_tras_escritura` leída bajo el handle de exclusión OS).
-   - **Guard fail-closed de evidencia suficiente:** si la transición mutó el INI pero no se pudo obtener `ini_bytes_tras_escritura` bajo exclusión, el binder aborta con `BinderVerificationError` antes de CAS/FINALIZE. La autoría se degrada a desconocida (`ini_escritura_intentada = None`), impidiendo falsos éxitos ante mutaciones ajenas no comprobables.
-   - Si el disco refleja exactamente lo escrito por la transición o un prefijo rasgado propio, restaura atómicamente el estado previo desde el snapshot durable.
-   - Si se detecta mutación externa posterior a la liberación de exclusión, rechaza la autoría, no sobrescribe el archivo en disco y bifurca a preservación forense.
+   - **Guard fail-closed de evidencia suficiente:** si la transición mutó el INI pero no se pudo obtener `ini_bytes_tras_escritura` bajo exclusión, el binder aborta con `BinderVerificationError` antes de CAS/FINALIZE, y en el rollback la autoría del INI se degrada a desconocida por **cualquier** camino (también cuando el escritor falla).
+   - **Decisión de conjunto:** primero se clasifican todas las superficies mutadas sin escribir nada. Si alguna no es atribuible, no se restaura ninguna: restaurar sólo una parte dejaría INI, config y Desired apuntando a runtimes distintos.
+   - Si todas son atribuibles, se restauran en orden. Cada una se re-verifica justo antes de escribirla; la de `config.toml` lo hace bajo el lock por archivo de `Config.save()`.
+   - Una anomalía a mitad de camino (fallo de escritura, o escritura ajena posterior a la clasificación) **detiene** las escrituras restantes y queda declarada. Es una secuencia de escrituras independientes, **no** una transacción atómica.
+   - Si el rollback no deja todo en su estado previo, la excepción original lleva una nota con las superficies sin restaurar y la ruta de la evidencia.
 
 2. **Recuperación en frío sin autoría demostrable:**
    - Ocurre al invocar `recuperar_transicion_interrumpida()` desde un proceso nuevo tras reinicio, crash inesperado o terminación abrupta.
-   - Al carecer de contexto volátil de autoría (`escritura_intentada is None`), el mecanismo opera **fail-closed**.
-   - Cualquier archivo cuyo contenido difiera del snapshot inicial es clasificado como `escritura_ajena = True`.
-   - **No se sobrescribe a ciegas el archivo en disco.** El contenido divergente se preserva en `storage/recovery_evidence/<transition_id>/` y se emite `requiere_dueno = True`.
+   - No hay huellas en memoria, así que **ninguna** superficie que difiera del snapshot es atribuible: se clasifica como `escritura_ajena = True`. Vale igual para INI, config y `active.json`. Antes, config y `active.json` se atribuían por forma, y la recuperación dejaba el INI en el Clone con config y Desired de vuelta en el previo.
+   - **No se sobrescribe el archivo en disco.** El contenido divergente se preserva en `storage/recovery_evidence/<transition_id>/` y se emite `requiere_dueno = True`. La recuperación es repetible: no escribe superficies ni altera la evidencia en pasadas siguientes.
 
 3. **Intervención explícita del propietario:**
    - Ni el binder ni la recuperación automática resuelven escrituras ajenas sin autorización humana.
-   - Ante clasificaciones de `escritura_ajena` o journals en `PENDING_*`, el propietario debe auditar la evidencia forense archivada.
-   - Opciones soberanas del operador:
-     a) Descartar la mutación ajena y forzar restauración del baseline pasando `escritura_intentada=True`.
-     b) Adoptar el estado existente en disco y sincronizar la FSM mediante `journal.reconciliar_journal()`.
+   - Ante clasificaciones de `escritura_ajena` o journals en `PENDING_*`, el propietario debe auditar la evidencia forense archivada y el snapshot del registro (`state/recovery/<transition_id>.json`).
+   - **Limitación vigente:** hoy no existe una palanca productiva del dueño para restaurar el baseline ni para sacar el journal de `PENDING_*`. `recuperar_transicion_interrumpida()` no acepta un "forzar", y `journal.reconciliar_journal()` sólo clasifica, no escribe. El único escritor de `NONE` es `FINALIZE`. Ese camino es el Incremento 2 de P7-F; mientras tanto, no se editan journals a mano.
+
+Exclusión real: el `participant_lock` coordina a los participantes de Sky-Claw, y la restauración de
+`config.toml` toma además el lock por archivo de `Config.save()` (mismo proceso). Ninguno excluye a otro
+proceso ni a un editor humano: entre la re-verificación y el `os.replace` queda una ventana de
+microsegundos frente a ellos.
 
 4. **Garantías de corte eléctrico no establecidas:**
    - `POWER_LOSS_GUARANTEE = NOT_CLAIMED`.

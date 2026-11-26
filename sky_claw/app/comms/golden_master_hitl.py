@@ -248,6 +248,17 @@ def _escape_html(texto: object) -> str:
     return html.escape(str(texto))
 
 
+def _texto_de_error(exc: BaseException) -> str:
+    """``str(exc)`` más sus notas (PEP 678).
+
+    El binder anota en la excepción original un rollback INCOMPLETO (superficies
+    preservadas sin restaurar y dónde quedó la evidencia). ``str(exc)`` no
+    incluye las notas: sin esto, el dueño leía «falló» y suponía «se revirtió».
+    """
+    notas = getattr(exc, "__notes__", None) or []
+    return "\n".join([str(exc), *(str(nota) for nota in notas)])
+
+
 def build_gm_callback_data(action: str, token: str) -> str:
     """Construye ``callback_data`` acotado a 64 bytes UTF-8 para el espacio ``gm:``."""
     if action not in _GM_CALLBACK_ACTIONS:
@@ -1725,7 +1736,7 @@ class CoordinadorTelegramGoldenMaster:
             if not self._cerrado:
                 await self._enviar_seguro(
                     chat_id,
-                    f"❌ La transición Golden Master falló cerrado: {_escape_html(exc)}",
+                    f"❌ La transición Golden Master falló cerrado: {_escape_html(_texto_de_error(exc))}",
                 )
         finally:
             sesion_activa.registro.descartar_todo()
@@ -1764,7 +1775,7 @@ class CoordinadorTelegramGoldenMaster:
                 )
         except (ReanudacionNoDisponibleError, FrozenRuntimeError, AutorizacionTransicionError) as exc:
             if not self._cerrado:
-                await self._enviar_seguro(chat_id, f"❌ No se pudo reanudar: {_escape_html(exc)}")
+                await self._enviar_seguro(chat_id, f"❌ No se pudo reanudar: {_escape_html(_texto_de_error(exc))}")
         finally:
             self._operacion_en_curso = False
 
