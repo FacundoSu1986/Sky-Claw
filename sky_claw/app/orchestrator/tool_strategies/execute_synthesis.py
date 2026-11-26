@@ -246,10 +246,10 @@ class ExecuteSynthesisPipelineStrategy:
         result = await service.execute_pipeline(**filtered)
         await self._emit_flight_report(real_journal, tx_id=journal.ultima_tx, clone=None)
         if isinstance(result, dict) and result.get("success"):
-            result["activacion"] = await self._diff_de_activacion(result)
+            result["activacion"] = await self._diff_de_activacion(result, tx_id=journal.ultima_tx)
         return result
 
-    async def _diff_de_activacion(self, result: dict[str, Any]) -> dict[str, Any]:
+    async def _diff_de_activacion(self, result: dict[str, Any], *, tx_id: int | None) -> dict[str, Any]:
         """Diff de ``modlist.txt``/``plugins.txt`` del perfil, sin mutarlos (ADR 0019 §2.3).
 
         Es informativo: un perfil ilegible o inseguro se reporta como ``disponible=False`` y nunca
@@ -272,7 +272,7 @@ class ExecuteSynthesisPipelineStrategy:
             logger.warning(
                 "Diff de activación de Synthesis no disponible: %s",
                 exc,
-                extra={"pipeline_stage": 7, "tx_id": None},
+                extra={"pipeline_stage": 7, "tx_id": tx_id},
             )
             return {"disponible": False, "motivo": str(exc), "aplicado": False}
         return {"disponible": True, **diff.to_dict()}

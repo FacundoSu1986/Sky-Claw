@@ -353,3 +353,37 @@ def test_todo_constructor_de_la_strategy_recibe_backend_y_dependencias_del_diff(
         for nodo in nodos:
             faltan = _KWARGS_DE_LA_STRATEGY - {kw.arg for kw in nodo.keywords if kw.arg is not None}
             assert not faltan, f"{ruta}: la strategy no recibe {sorted(faltan)}"
+
+
+async def test_el_warning_del_diff_no_disponible_lleva_el_tx_id_de_la_corrida(
+    tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Triage CodeRabbit #1026: todo registro con ``pipeline_stage`` lleva ``tx_id`` si hay TX."""
+    real_journal = MagicMock()
+    real_journal.begin_transaction = AsyncMock(return_value=42)
+
+    def factory(_output_path: pathlib.Path | None, journal: Any) -> Any:
+        service = MagicMock()
+
+        async def execute_pipeline(**_kwargs: Any) -> dict[str, Any]:
+            await journal.begin_transaction(description="synthesis_pipeline", agent_id="synthesis-service")
+            return {"success": True, "message": "", "output_esps": ["X.esp"]}
+
+        service.execute_pipeline = execute_pipeline
+        return service
+
+    strategy = _strategy(
+        "brokered",
+        service_factory=factory,
+        real_journal_provider=lambda: real_journal,
+        raices_mo2_provider=lambda: SimpleNamespace(data_root=tmp_path / "no-existe"),
+    )
+    strategy._emit_flight_report = AsyncMock()  # type: ignore[method-assign]
+
+    with caplog.at_level("WARNING", logger="sky_claw.app.orchestrator.tool_strategies.execute_synthesis"):
+        result = await strategy.execute({})
+
+    assert result["activacion"]["disponible"] is False
+    registros = [r for r in caplog.records if getattr(r, "pipeline_stage", None) == 7]
+    assert registros, "el diff no disponible deja un warning de la etapa 7"
+    assert {getattr(r, "tx_id", "falta") for r in registros} == {42}
