@@ -405,7 +405,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          python scripts/build_controlado.py --prepare-venv .build-venv --profile base --env-out dist/build-evidence/build_env.json
+          $venvDir = Join-Path $env:RUNNER_TEMP 'skyclaw-build-venv'
+          python scripts/build_controlado.py --prepare-venv $venvDir --profile base --env-out dist/build-evidence/build_env.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build executable
         id: build_executable
@@ -419,7 +420,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           Get-ChildItem Env:PIP_* | Remove-Item -ErrorAction SilentlyContinue
           Remove-Item Env:PYTHONPATH, Env:PYTHONHOME, Env:PYTHONSTARTUP -ErrorAction SilentlyContinue
-          $env:PATH = "$PWD\.build-venv\Scripts;$env:PATH"
+          $venvDir = Join-Path $env:RUNNER_TEMP 'skyclaw-build-venv'
+          $env:PATH = "$venvDir\Scripts;$env:PATH"
           pyinstaller sky_claw.spec --clean
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Record SHA-256 of frozen executable
@@ -432,18 +434,20 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          $pyVer = .\.build-venv\Scripts\python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
+          $venvDir = Join-Path $env:RUNNER_TEMP 'skyclaw-build-venv'
+          $venvPy = Join-Path $venvDir 'Scripts\python.exe'
+          $pyVer = & $venvPy -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/build_controlado.py --sanitize-toc dist/build-evidence/analysis_toc.json --validate-venv .build-venv
+          python scripts/build_controlado.py --sanitize-toc dist/build-evidence/analysis_toc.json --validate-venv $venvDir
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\.build-venv\Scripts\python scripts/inventario_ejecutable.py dist/SkyClawApp.exe --out dist/build-evidence/inventory.json --registro-sha256 dist/build-evidence/exe_sha256.json
+          & $venvPy scripts/inventario_ejecutable.py dist/SkyClawApp.exe --out dist/build-evidence/inventory.json --registro-sha256 dist/build-evidence/exe_sha256.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $PSNativeCommandUseErrorActionPreference = $false
-          .\.build-venv\Scripts\python scripts/reconciliar_sbom.py --inventory dist/build-evidence/inventory.json --env-json dist/build-evidence/build_env.json --analysis-toc-json dist/build-evidence/analysis_toc.json --build-python-version $pyVer --lockfile requirements.lock --check-spec-datas --sbom-out dist/build-evidence/sbom.spdx.json --report-out dist/build-evidence/reconciliation_report.json
+          & $venvPy scripts/reconciliar_sbom.py --inventory dist/build-evidence/inventory.json --env-json dist/build-evidence/build_env.json --analysis-toc-json dist/build-evidence/analysis_toc.json --build-python-version $pyVer --lockfile requirements.lock --check-spec-datas --sbom-out dist/build-evidence/sbom.spdx.json --report-out dist/build-evidence/reconciliation_report.json
           $recExit = $LASTEXITCODE
           $PSNativeCommandUseErrorActionPreference = $true
           if ($recExit -ne 0 -and $recExit -ne 1) { exit $recExit }
-          python scripts/build_controlado.py --verify-report dist/build-evidence/reconciliation_report.json --profile base --exe dist/SkyClawApp.exe --exe-sha256-json dist/build-evidence/exe_sha256.json --validate-venv .build-venv --analysis-toc dist/build-evidence/analysis_toc.json --sbom dist/build-evidence/sbom.spdx.json --smoke-outcome "${{ steps.smoke_frozen_executable.outcome }}"
+          python scripts/build_controlado.py --verify-report dist/build-evidence/reconciliation_report.json --profile base --exe dist/SkyClawApp.exe --exe-sha256-json dist/build-evidence/exe_sha256.json --validate-venv $venvDir --analysis-toc dist/build-evidence/analysis_toc.json --sbom dist/build-evidence/sbom.spdx.json --smoke-outcome "${{ steps.smoke_frozen_executable.outcome }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # PR-LIC-03B (B15 — Opción B ampliada): publicación de SkyClawApp.exe vía Actions suspendida
       # temporalmente en TODOS los eventos (pull_request, push, schedule, workflow_dispatch) mientras

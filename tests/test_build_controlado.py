@@ -461,8 +461,11 @@ def test_b16_ci_comparte_preparacion_venv_y_propaga_lastexitcode_en_pwsh() -> No
     install_step = by_name["Install build dependencies (isolated, hash-enforced)"]
     reconcile_step = by_name["Inventory and reconcile frozen executable (PR-LIC-03A/B)"]
 
-    # Assert — CI delega la preparación del venv al mismo orquestador y verifica $LASTEXITCODE
-    assert "--prepare-venv" in str(install_step.get("run", ""))
+    # Assert — CI delega la preparación del venv al mismo orquestador fuera del checkout y verifica $LASTEXITCODE
+    install_run = str(install_step.get("run", ""))
+    assert "--prepare-venv" in install_run
+    assert "RUNNER_TEMP" in install_run
+    assert ".build-venv" not in install_run
     rec_run = str(reconcile_step.get("run", ""))
     assert "$ErrorActionPreference = 'Stop'" in rec_run or '$ErrorActionPreference = "Stop"' in rec_run
     assert "$LASTEXITCODE" in rec_run
