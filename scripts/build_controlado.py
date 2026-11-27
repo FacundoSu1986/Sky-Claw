@@ -46,7 +46,7 @@ EXIT_ERROR = 2
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PIN_EXACTO_RE = re.compile(r"^([A-Za-z0-9_.\-]+)==([^\s;\\]+)")
-_REQ_NO_FIJADO_RE = re.compile(r"^([A-Za-z0-9_.\-]+)\s*(?:[<>!~]=|[<>])")
+_OPERADORES_FLOTANTES: tuple[str, ...] = (">=", "<=", "~=", "!=", ">", "<")
 _HASH_SHA256_RE = re.compile(r"--hash=sha256:([0-9a-fA-F]+)")
 
 #: Herramientas obligatorias del toolchain de build (B09/B12).
@@ -165,7 +165,7 @@ def parsear_lockfile_con_hashes(ruta: Path) -> dict[str, EntradaLock]:
             continue
         m_pin = _PIN_EXACTO_RE.match(bloque)
         if m_pin is None:
-            if _REQ_NO_FIJADO_RE.match(bloque):
+            if any(op in bloque for op in _OPERADORES_FLOTANTES):
                 raise BuildControladoError(f"Dependencia con versión flotante prohibida en {ruta.name}: {bloque[:80]}")
             raise BuildControladoError(f"Entrada no fijada con '==' en {ruta.name}: {bloque[:80]}")
 
@@ -804,10 +804,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Modo CI: evalúa el veredicto técnico independiente (B08/B14) sobre un reconciliation_report.json existente.",
     )
+    parser.add_argument(
+        "--sanitize-toc",
+        type=Path,
+        default=None,
+        help="Modo CI: sanea rutas absolutas/personales in-place en un analysis_toc.json exportado (B13).",
+    )
     args = parser.parse_args(argv)
 
     repo_root = _RAIZ_REPO
     try:
+        if args.sanitize_toc is not None:
+            toc_raw = json.loads(args.sanitize_toc.read_text(encoding="utf-8"))
+            venv_ref = args.validate_venv or (repo_root / ".build-venv")
+            toc_clean = sanear_analysis_toc(toc_raw, repo_root=repo_root, build_venv=venv_ref)
+            _escribir_json_atomico(toc_clean, args.sanitize_toc)
+            print(f"build_controlado: analysis_toc saneado ({args.sanitize_toc})")
+            return EXIT_OK
+
         if args.validate_venv is not None:
             lock_rt = parsear_lockfile_con_hashes(repo_root / _PERFIL_A_LOCK[args.profile])
             lock_b = parsear_lockfile_con_hashes(repo_root / "requirements-build.lock")

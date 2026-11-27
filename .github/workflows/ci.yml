@@ -424,6 +424,7 @@ jobs:
         shell: pwsh
         run: |
           $pyVer = .\.build-venv\Scripts\python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
+          python scripts/build_controlado.py --sanitize-toc dist/build-evidence/analysis_toc.json --validate-venv .build-venv
           .\.build-venv\Scripts\python scripts/inventario_ejecutable.py dist/SkyClawApp.exe --out dist/build-evidence/inventory.json --registro-sha256 dist/build-evidence/exe_sha256.json
           .\.build-venv\Scripts\python scripts/reconciliar_sbom.py --inventory dist/build-evidence/inventory.json --env-json dist/build-evidence/build_env.json --analysis-toc-json dist/build-evidence/analysis_toc.json --build-python-version $pyVer --lockfile requirements.lock --check-spec-datas --sbom-out dist/build-evidence/sbom.spdx.json --report-out dist/build-evidence/reconciliation_report.json
           if ($LASTEXITCODE -eq 2) { exit 2 }
