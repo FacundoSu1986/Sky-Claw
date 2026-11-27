@@ -428,7 +428,13 @@ jobs:
           .\.build-venv\Scripts\python scripts/reconciliar_sbom.py --inventory dist/build-evidence/inventory.json --env-json dist/build-evidence/build_env.json --analysis-toc-json dist/build-evidence/analysis_toc.json --build-python-version $pyVer --lockfile requirements.lock --check-spec-datas --sbom-out dist/build-evidence/sbom.spdx.json --report-out dist/build-evidence/reconciliation_report.json
           if ($LASTEXITCODE -eq 2) { exit 2 }
           python scripts/build_controlado.py --verify-report dist/build-evidence/reconciliation_report.json --profile base
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      # PR-LIC-03B (B15 — Opción B ampliada): publicación de SkyClawApp.exe vía Actions suspendida
+      # temporalmente en TODOS los eventos (pull_request, push, schedule, workflow_dispatch) mientras
+      # permanezcan abiertos los bloqueos jurídicos de distribución. Su reactivación corresponde a
+      # PR-LIC-04 y requiere aprobación explícita del propietario. Ancla: tests/test_release_smoke_wiring.py.
+      - name: Upload frozen executable (suspended until PR-LIC-04)
+        if: ${{ false }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: SkyClawApp-exe
           path: dist/SkyClawApp.exe

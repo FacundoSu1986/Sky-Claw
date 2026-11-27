@@ -367,8 +367,9 @@ def test_b15_ci_usa_locks_con_hashes_sin_ampliar_upload_artifact_y_release_perma
     assert "SKYCLAW_EXPORT_ANALYSIS_TOC" in str(build_steps)
     assert "requirements-build.lock" in texto_sec
 
-    # Assert — B15: no ampliar upload-artifact del job build ni activar release.yml
+    # Assert — B15: publicación del EXE suspendida en todos los eventos hasta PR-LIC-04 y release.yml pausado
     uploads = [s for s in build_steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
     assert len(uploads) == 1
     assert uploads[0]["with"]["path"].strip() == "dist/SkyClawApp.exe"
+    assert uploads[0].get("if") == "${{ false }}"
     assert release["jobs"]["release"]["if"] == "${{ false }}"
