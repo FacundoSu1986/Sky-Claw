@@ -59,7 +59,11 @@ from sky_claw.app.db.locks import (
     liberar_lease_definitiva,
 )
 from sky_claw.config import SystemPaths
-from sky_claw.local.tools.grass_cache_fence import bloqueo_por_fence, ruta_fence
+from sky_claw.local.tools.grass_cache_fence import (
+    FenceScope,
+    bloqueo_por_fence_scope,
+    liberar_fence_scope,
+)
 from sky_claw.local.tools.grass_cache_runner import (
     _PRECACHE_FLAG,  # fuente de verdad del nombre del flag (evita duplicar el string mágico)
     GrassCacheConfig,
@@ -416,14 +420,8 @@ class GrassCacheService:
         # F1: el fence se consulta ANTES de cualquier mutación del ritual. Un marcador ilegible o de
         # un proceso vivo/indeterminado bloquea; uno de un proceso ya terminado se considera obsoleto.
         if config.backup_root is not None:
-            bloqueo = await asyncio.to_thread(
-                bloqueo_por_fence,
-                ruta_fence(
-                    raiz_estado=config.backup_root,
-                    game_path=config.game_path,
-                    overwrite_grass_dir=config.overwrite_grass_dir,
-                ),
-            )
+            scope = FenceScope.desde_config(game_path=config.game_path, overwrite_grass_dir=config.overwrite_grass_dir)
+            bloqueo = await asyncio.to_thread(bloqueo_por_fence_scope, config.backup_root, scope)
             if bloqueo is not None:
                 logger.warning("Ritual de grass bloqueado por el fence: %s", bloqueo, extra={"pipeline_stage": 8})
                 return self._error(bloqueo, inicio)
@@ -459,18 +457,26 @@ class GrassCacheService:
         teardown_failures: list[str] = []
         try:
             async with tx, lo_tx:
+                # I5: la propiedad del lease se comprueba con la primitiva REAL antes de la primera
+                # mutación, no sólo antes del unlink final. Estar dentro del `async with` no prueba
+                # que el lease siga vigente.
+                try:
+                    from sky_claw.app.db.locks import LockLeaseLostError
+
+                    await tx.assert_owned(verify_db=True)
+                    await lo_tx.assert_owned(verify_db=True)
+                except LockLeaseLostError as exc:
+                    logger.error("Lease perdido antes de mutar: %s", exc, extra={"pipeline_stage": 8})
+                    return self._error(f"Lease del ritual perdido antes de mutar: {exc}", inicio)
+
                 # F1 (contrato): el chequeo previo a los locks es sólo una optimización. La
                 # revalidación DENTRO de grass-cache + load-order es la que manda: entre el primer
                 # chequeo y la adquisición, otro ritual pudo dejar su marcador.
                 if config.backup_root is not None:
-                    bloqueo_bajo_locks = await asyncio.to_thread(
-                        bloqueo_por_fence,
-                        ruta_fence(
-                            raiz_estado=config.backup_root,
-                            game_path=config.game_path,
-                            overwrite_grass_dir=config.overwrite_grass_dir,
-                        ),
+                    scope = FenceScope.desde_config(
+                        game_path=config.game_path, overwrite_grass_dir=config.overwrite_grass_dir
                     )
+                    bloqueo_bajo_locks = await asyncio.to_thread(bloqueo_por_fence_scope, config.backup_root, scope)
                     if bloqueo_bajo_locks is not None:
                         logger.warning(
                             "Ritual de grass bloqueado por el fence bajo locks: %s",
@@ -538,7 +544,13 @@ class GrassCacheService:
                         # Camino de excepción: el resultado no se construyó, pero el runner sí
                         # clasificó la terminalidad antes de propagar.
                         propia = runner.terminalidad
-                        sin_verificar = str(propia) if propia in ("vivo", "indeterminado") else None
+                        if propia in ("vivo", "indeterminado"):
+                            sin_verificar = str(propia)
+                        elif runner.terminalidad_integral is False:
+                            # P1/C3: la DECISIÓN la toma la evidencia integral, no un string aislado.
+                            # Un `terminado` sin ausencia integral demostrada (camino de excepción
+                            # dura) NO autoriza destruir el clon/mod: se preservan perfil y config.
+                            sin_verificar = "ausencia_integral_no_demostrada"
                     if sin_verificar is not None:
                         teardown_failures = [
                             "teardown del clon/mod OMITIDO: terminalidad del juego NO demostrada "
@@ -555,6 +567,46 @@ class GrassCacheService:
                         ]
                     else:
                         teardown_failures = await self._teardown_best_effort()
+
+                    # I5/I8: el fence se libera ÚLTIMO, con los leases todavía en mano y verificados
+                    # de nuevo: si la exclusividad ya no se puede garantizar, se conserva. El runner
+                    # sólo aporta evidencia; la autoridad es del servicio.
+                    # P1/C3: sin resultado del runner NO hay evidencia integral de cierre, así que
+                    # NO se intenta siquiera una liberación `autorizado=False`: el fence se conserva.
+                    evidencia_final = (run_result.evidencia or {}) if run_result is not None else {}
+                    run_id_fence = evidencia_final.get("fence_run_id") if run_result is not None else None
+                    integral = evidencia_final.get("terminalidad_integral") is True
+                    autorizado = False
+                    if isinstance(run_id_fence, str) and integral:
+                        try:
+                            from sky_claw.app.db.locks import LockLeaseLostError
+
+                            await tx.assert_owned(verify_db=True)
+                            await lo_tx.assert_owned(verify_db=True)
+                            autorizado = True
+                        except LockLeaseLostError as exc:
+                            logger.error(
+                                "Fence CONSERVADO: lease perdido antes de liberar (%s).",
+                                exc,
+                                extra={"pipeline_stage": 8},
+                            )
+                            teardown_failures = [*teardown_failures, f"fence conservado: lease perdido ({exc})"]
+                    if isinstance(run_id_fence, str) and config.backup_root is not None:
+                        liberacion = await asyncio.to_thread(
+                            liberar_fence_scope,
+                            config.backup_root,
+                            FenceScope.desde_config(
+                                game_path=config.game_path,
+                                overwrite_grass_dir=config.overwrite_grass_dir,
+                            ),
+                            run_id=run_id_fence,
+                            autorizado=autorizado,
+                        )
+                        if not liberacion.ok:
+                            teardown_failures = [
+                                *teardown_failures,
+                                "fence conservado: " + "; ".join((*liberacion.conservados, *liberacion.fallos)),
+                            ]
         except LockAcquisitionError as exc:
             # Sin lock no somos dueños de NINGÚN estado: ni Fase B ni teardown.
             return self._error(f"No se pudo tomar el lock del ritual de grass: {exc}", inicio)

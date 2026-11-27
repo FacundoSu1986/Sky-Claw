@@ -54,12 +54,9 @@ from sky_claw.app.security.links import path_present
 from sky_claw.app.security.path_validator import assert_safe_component
 from sky_claw.local.mo2.vfs import GameLaunchTimeoutError, MO2Controller
 from sky_claw.local.tools.grass_cache_fence import (
-    FenceCorruptoError,
-    FenceProceso,
-    escribir_fence,
-    leer_fence,
-    liberar_fence_propio,
-    ruta_fence,
+    Adquisicion,
+    FenceScope,
+    adquirir_fence,
 )
 from sky_claw.local.tools.grass_cache_safety import (
     EXTENSIONES_CACHE,
@@ -486,15 +483,16 @@ class GrassCacheRunner:
         self._fallos_ilegibles: frozenset[str] = frozenset()
         #: PID de MO2 por intento: si el lanzador sigue vivo, una búsqueda vacía no es ausencia (B2).
         self._mo2_pid_del_intento: dict[int, int] = {}
-        #: Identidad de la corrida y ruta del fence durable (F1).
+        #: Identidad de la corrida y ámbito físico del fence (I1).
         self._run_id = uuid.uuid4().hex
-        self._ruta_fence: pathlib.Path | None = None
-        if self._config.backup_root is not None:
-            self._ruta_fence = ruta_fence(
-                raiz_estado=self._config.backup_root,
-                game_path=self._config.game_path,
-                overwrite_grass_dir=self._config.overwrite_grass_dir,
-            )
+        self._scope = FenceScope.desde_config(
+            game_path=self._config.game_path,
+            overwrite_grass_dir=self._config.overwrite_grass_dir,
+        )
+        #: Adquisición vigente de esta corrida (None = no se intentó o se compensó).
+        self._fence: Adquisicion | None = None
+        #: ¿Se demostró ausencia integral de procesos del intento al cerrar? (I3)
+        self._ausencia_integral = False
         #: Worldspaces que NGIO DECLARÓ terminados (líneas `ws_` del flag): evidencia, no requisito.
         self._ws_declarados: set[str] = set()
         #: Offset de lectura incremental del flag y última muestra del watchdog.
@@ -516,6 +514,21 @@ class GrassCacheRunner:
         esto, un teardown destruiría el perfil temporal que un proceso vivo pueda estar usando.
         """
         return self._terminalidad
+
+    @property
+    def terminalidad_integral(self) -> bool:
+        """¿Se demostró el cierre INTEGRAL del intento? (I3)
+
+        Verdadero sólo si la terminalidad es `terminado`/`sin_proceso` **y** el último re-escaneo
+        demostró ausencia de procesos relevantes. Es la evidencia que el servicio exige para
+        autorizar la liberación del fence.
+        """
+        return self._terminalidad in ("terminado", "sin_proceso") and self._ausencia_integral
+
+    @property
+    def fence_run_id(self) -> str:
+        """Identidad de la corrida para el marcador persistido."""
+        return self._run_id
 
     @property
     def lanzamiento(self) -> EstadoLanzamiento:
@@ -558,25 +571,8 @@ class GrassCacheRunner:
         # RD-11: el veredicto NO puede quedar cerrado antes de neutralizar el flag. Se RE-EVALÚA la
         # misma evidencia con el resultado real de la limpieza; el provisional nunca se publica.
         resultado = self._veredicto_final(resultado, limpio=limpio)
-        # F1 (contrato definitivo): se libera EXCLUSIVAMENTE el marcador propio y sólo con
-        # terminalidad integral demostrada, propiedad de los locks (los tiene el servicio mientras
-        # corre este runner) y sin lanzamiento pendiente. Nunca el de otra corrida.
-        if self._ruta_fence is not None and self._terminalidad in ("terminado", "sin_proceso"):
-            try:
-                propio = leer_fence(self._ruta_fence)
-            except FenceCorruptoError:
-                propio = None
-            if propio is not None:
-                liberar_fence_propio(
-                    self._ruta_fence,
-                    propio,
-                    run_id=self._run_id,
-                    game_path=str(self._config.game_path),
-                    overwrite_grass_dir=str(self._config.overwrite_grass_dir),
-                    terminalidad_integral=True,
-                    locks_propios=True,
-                    lanzamiento_pendiente=False,
-                )
+        # El runner NO libera el fence: la autoridad sobre los leases es del servicio (I5). Publica
+        # la evidencia (run_id + terminalidad integral) y el servicio decide con assert_owned real.
         if self._neutralizacion is not None and self._terminalidad not in ("terminado", "sin_proceso"):
             # H2/H5: el archivado del progreso se omitió a propósito (caché posiblemente en curso).
             # Aplica también a los caminos sin evidencia de egreso (timeout, cancelación, cortes).
@@ -870,7 +866,7 @@ class GrassCacheRunner:
                 # F1 (contrato): el fence es OBLIGATORIO y fail-closed. Sin marcador persistido y
                 # verificado no se lanza Skyrim: un ritual sin fence podría dejar un proceso vivo que
                 # otro ritual no vería.
-                if self._ruta_fence is None:
+                if self._config.backup_root is None:
                     return self._resultado(
                         "spawn_failed",
                         "No se lanza: la configuración no permite persistir el fence de terminalidad "
@@ -878,30 +874,30 @@ class GrassCacheRunner:
                         crash_count,
                         await self._snapshot_cache(),
                     )
-                try:
-                    escribir_fence(
-                        self._ruta_fence,
-                        FenceProceso(
-                            run_id=self._run_id,
-                            intento=intento,
-                            lanzamiento="solicitado",
-                            pid=self._pid_del_intento(intento),
-                            create_time=self._create_time_del_intento(intento),
-                            modo=self._config.mode,
-                            game_path=str(self._config.game_path),
-                            overwrite_grass_dir=str(self._config.overwrite_grass_dir),
-                            creado=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                        ),
-                    )
-                except Exception:  # noqa: BLE001 — fail-closed: sin fence no se lanza
-                    logger.error("No se pudo persistir el fence del precache: no se lanza.", exc_info=True)
+                # I2: adquisición EXCLUSIVA (O_EXCL) de TODOS los recursos del scope, antes del spawn
+                # y sin trabajo intermedio no controlado. Un marcador ajeno o ilegible bloquea.
+                adquisicion = await asyncio.to_thread(
+                    adquirir_fence,
+                    self._config.backup_root,
+                    self._scope,
+                    run_id=self._run_id,
+                    intento=intento,
+                    lanzamiento="solicitado",
+                    pid=self._pid_del_intento(intento),
+                    create_time=self._create_time_del_intento(intento),
+                    modo=self._config.mode,
+                    creado=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                )
+                if not adquisicion.ok:
+                    logger.error("Fence no adquirido: no se lanza. %s", adquisicion.bloqueo)
                     return self._resultado(
                         "spawn_failed",
-                        "No se lanza: no se pudo persistir y verificar el fence de terminalidad. "
-                        "El ritual no puede garantizar que un proceso vivo quede bloqueado.",
+                        "No se lanza: no se pudo garantizar la exclusión de los recursos del ritual. "
+                        + (adquisicion.bloqueo or ""),
                         crash_count,
                         await self._snapshot_cache(),
                     )
+                self._fence = adquisicion
                 try:
                     info: dict[str, Any] = await self._mo2.launch_game(self._config.profile)
                     mo2_pid: int | None = int(info["pid"])
@@ -992,6 +988,12 @@ class GrassCacheRunner:
                     salida = await self._vigilar(game_pid, cancel, crash_count, t_spawn_mono=t_spawn_mono)
                     if salida is not None:
                         return salida
+                    # I8/C3: el cierre del lanzamiento va ANTES de la terminalidad integral, no
+                    # después. close_game() es un PEDIDO de kill; la muerte EFECTIVA se demuestra
+                    # recién con _verificar_terminalidad(), que re-escanea juego, candidatos y
+                    # lanzador. Sin este orden, el lanzador todavía vivo convierte un crash
+                    # demostrado en `indeterminado` y bloquea el relanzamiento.
+                    await self._matar_todo(game_pid)
                     # H2/H5: el ciclo terminó por muerte OBSERVADA, pero antes de decidir un
                     # relanzamiento se registra la terminalidad del intento que acaba de cerrar:
                     # el guard de la próxima iteración no puede basarse en una suposición.
@@ -1022,8 +1024,6 @@ class GrassCacheRunner:
                         crash_count,
                         snap,
                     )
-                # Árbol MO2 residual fuera ANTES de pisar el slot _launched_pid.
-                await self._mo2.close_game()
                 if await self._sleep_or_cancel(cancel, self._config.relaunch_delay_s):
                     await self._cerrar_y_verificar(game_pid, cancel)
                     return self._resultado("cancelled", "Cancelado entre relanzamientos.", crash_count, snap)
@@ -1040,32 +1040,39 @@ class GrassCacheRunner:
             # Cancelación dura o bug: jamás dejar huérfanos. Best-effort para
             # no enmascarar la excepción original.
             #
-            # H2/H5: acá NO se puede esperar. Un `await` en este camino re-lanzaría la cancelación y
-            # enmascararía la excepción original, así que el cierre es SÍNCRONO: kill directo del
-            # último proceso atribuido y UNA clasificación de terminalidad. Si no se puede afirmar,
-            # queda `indeterminado` y se registra.
+            # I3/C3: acá NO se puede esperar NI re-escanear (un `await` re-lanzaría la cancelación
+            # y enmascararía la excepción original). El cierre es SÍNCRONO: kill directo del último
+            # proceso atribuido. Pero la muerte de ESE PID NO demuestra la ausencia integral: pudo
+            # quedar vivo el lanzador MO2, un juego reparentado u otro candidato relevante.
+            # Clasificar `terminado` por un solo PID habilitaría teardown destructivo y archivado
+            # estable sobre recursos potencialmente activos (C3). Salvo que NO se haya pedido
+            # ningún spawn, la terminalidad queda `indeterminado`: se preservan perfil,
+            # configuración y fence, y `_neutralizar_flag_drenado` omite el archivado.
+            # No se introduce un supervisor nuevo ni una espera para "demostrar" terminalidad.
             # B1: identidad del intento ACTUAL, nunca un PID de otro intento.
             intento = self._intento_actual
             objetivo = game_pid if game_pid is not None else self._atribuciones.get(intento)
             if objetivo is not None:
                 with contextlib.suppress(Exception):
                     self._kill_game_tree_sync(objetivo.pid, objetivo.create_time)
-            with contextlib.suppress(Exception):
-                if objetivo is not None:
-                    self._terminalidad = self._clasificar_terminalidad(objetivo)
-                else:
-                    # B1/B2: sin atribución del intento actual NO se puede afirmar ausencia: el
-                    # lanzamiento pudo estar en curso. `indeterminado` es lo único honesto.
-                    self._lanzamiento = (
-                        "solicitado_sin_atribucion" if self._spawn_solicitado.get(intento, False) else "no_intentado"
-                    )
-                    self._terminalidad = "indeterminado" if self._lanzamiento != "no_intentado" else "sin_proceso"
-            if self._terminalidad != "terminado":
-                logger.warning(
-                    "Run abortado con terminalidad %s del PID %s: el caché pudo seguir escribiéndose.",
-                    self._terminalidad,
-                    objetivo.pid if objetivo is not None else None,
-                )
+            self._ausencia_integral = False
+            if objetivo is None and not self._spawn_solicitado.get(intento, False):
+                # Único caso demostrable sin re-escaneo: jamás se pidió un lanzamiento.
+                self._lanzamiento = "no_intentado"
+                self._terminalidad = "sin_proceso"
+                self._ausencia_integral = True
+            else:
+                if objetivo is None:
+                    # B1/B2: sin atribución del intento actual, un PID anterior NO prueba nada.
+                    self._lanzamiento = "solicitado_sin_atribucion"
+                self._terminalidad = "indeterminado"
+            logger.warning(
+                "Run abortado SIN cierre integral demostrado (%s/%s, PID %s): se conservan perfil, "
+                "configuración y fence; no se archiva un caché potencialmente activo.",
+                self._lanzamiento,
+                self._terminalidad,
+                objetivo.pid if objetivo is not None else None,
+            )
             raise
         finally:
             # Antes de borrar el flag se archiva el progreso: neutralizar el flag
@@ -1531,29 +1538,27 @@ class GrassCacheRunner:
         conservador anterior (el que dice «lanzamiento solicitado, sin identidad»): perderlo sería
         abrir el pipeline con un proceso que sí existe.
         """
-        if self._ruta_fence is None:
+        if self._config.backup_root is None or self._fence is None:
             return
-        try:
-            escribir_fence(
-                self._ruta_fence,
-                FenceProceso(
-                    run_id=self._run_id,
-                    intento=self._intento_actual,
-                    lanzamiento="atribuido",
-                    pid=pid.pid,
-                    create_time=pid.create_time,
-                    modo=self._config.mode,
-                    game_path=str(self._config.game_path),
-                    overwrite_grass_dir=str(self._config.overwrite_grass_dir),
-                    creado=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                ),
-            )
-        except Exception:  # noqa: BLE001 — se conserva el marcador anterior (más conservador)
+        actualizada = adquirir_fence(
+            self._config.backup_root,
+            self._scope,
+            run_id=self._run_id,
+            intento=self._intento_actual,
+            lanzamiento="atribuido",
+            pid=pid.pid,
+            create_time=pid.create_time,
+            modo=self._config.mode,
+            creado=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        )
+        if not actualizada.ok:
+            # Se conserva el marcador anterior (más conservador): no se borra nada.
             logger.warning(
-                "No se pudo actualizar el fence con la identidad del proceso; se conserva el "
-                "marcador conservador anterior.",
-                exc_info=True,
+                "No se pudo actualizar el fence con la identidad del proceso; se conserva el marcador anterior. %s",
+                actualizada.bloqueo,
             )
+            return
+        self._fence = actualizada
 
     def _scan_for_game_sync(self, mo2_pid: int, min_create_epoch: float) -> _GamePid | None:
         """UNA pasada de búsqueda del juego (el caller polea).
@@ -1805,19 +1810,39 @@ class GrassCacheRunner:
         if objetivo is None:
             if not self._spawn_solicitado.get(intento, False):
                 self._lanzamiento = "no_intentado"
+                self._ausencia_integral = True
                 return "sin_proceso"
-            resultado, encontrado = await asyncio.to_thread(self._buscar_proceso_del_intento, intento)
+            resultado, encontrado = await asyncio.to_thread(
+                self._buscar_proceso_del_intento, intento, incluir_lanzador=False
+            )
             if resultado == "encontrado" and encontrado is not None:
                 self._atribuciones[intento] = encontrado
                 self._lanzamiento = "atribuido"
                 return await self._esperar_muerte(encontrado, cancel)
             if resultado == "ausente":
                 self._lanzamiento = "rechazado"
+                self._ausencia_integral = True
                 return "sin_proceso"
             self._lanzamiento = "solicitado_sin_atribucion"
             return "indeterminado"
         self._lanzamiento = "atribuido"
-        return await self._esperar_muerte(objetivo, cancel)
+        estado = await self._esperar_muerte(objetivo, cancel)
+        if estado != "terminado":
+            self._ausencia_integral = False
+            return estado
+        # I3: la muerte del PID atribuido NO cierra el intento por sí sola. Se re-escanea: si queda
+        # otro proceso relevante, un candidato ilegible o el lanzador todavía vivo, el intento sigue
+        # indeterminado y el fence se conserva.
+        # NO se excluye el PID ya muerto por su número: el SO puede reciclarlo para un proceso NUEVO
+        # y un filtro por número lo ocultaría, certificando una ausencia falsa (C3, I3).
+        resultado, encontrado = await asyncio.to_thread(self._buscar_proceso_del_intento, intento)
+        if resultado == "ausente":
+            self._ausencia_integral = True
+            return "terminado"
+        self._ausencia_integral = False
+        if encontrado is not None:
+            return "vivo"
+        return "indeterminado"
 
     async def _esperar_muerte(self, objetivo: _GamePid, cancel: asyncio.Event) -> Terminalidad:
         """Espera ACOTADA a que el proceso atribuido muera (RD-10). La corta la cancelación."""
@@ -1831,7 +1856,9 @@ class GrassCacheRunner:
             if await self._sleep_or_cancel(cancel, _ESPERA_TERMINALIDAD_S):
                 return "vivo"
 
-    def _buscar_proceso_del_intento(self, intento: int) -> tuple[str, _GamePid | None]:
+    def _buscar_proceso_del_intento(
+        self, intento: int, *, incluir_lanzador: bool = True
+    ) -> tuple[str, _GamePid | None]:
         """Busca un proceso del juego nacido en la ventana del intento.
 
         Devuelve ``("encontrado", pid)``, ``("ausente", None)`` cuando la búsqueda corrió completa y
@@ -1893,6 +1920,9 @@ class GrassCacheRunner:
             return ("encontrado", encontrados[0])
         # B2: una búsqueda vacía no demuestra ausencia si el lanzador sigue vivo (aún puede crear
         # procesos). Sin esa prueba, `incompleto` => indeterminado.
+        if not incluir_lanzador:
+            # `incompleta` ya se resolvió más arriba: acá la búsqueda corrió completa.
+            return ("ausente", None)
         mo2_pid = self._mo2_pid_del_intento.get(intento)
         if mo2_pid is None:
             # F3: si `launch_game` timeouteó o falló sin devolver PID, NO se sabe si el lanzador
@@ -2155,6 +2185,8 @@ class GrassCacheRunner:
             # H2/H5: «no lancé», «lancé y no sé qué pasó» y «lancé y murió» no se confunden.
             "lanzamiento": evidencia.lanzamiento,
             "terminalidad_verificada": evidencia.terminalidad in ("terminado", "sin_proceso"),
+            "terminalidad_integral": self.terminalidad_integral,
+            "fence_run_id": self._run_id,
             "progreso_detenido_s": self._progreso_detenido_s,
             "terminalidad": evidencia.terminalidad,
             "cobertura_usvfs": "no_verificada",

@@ -28,7 +28,7 @@ from sky_claw.app.db.journal import OperationStatus, TransactionStatus
 from sky_claw.app.db.journal_contracts import GRASS_VERDICT_KIND, is_teardown_incomplete
 from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.local.mo2.grass_profile import GrassProfileError
-from sky_claw.local.tools.grass_cache_runner import GrassCacheRunResult
+from sky_claw.local.tools.grass_cache_runner import GrassCacheRunner, GrassCacheRunResult
 from sky_claw.local.tools.grass_cache_service import (
     GenerateGrassCacheParams,
     GrassCacheService,
@@ -87,6 +87,8 @@ def _lock_tx_fake() -> MagicMock:
     tx = MagicMock()
     tx.__aenter__ = AsyncMock(return_value=tx)
     tx.__aexit__ = AsyncMock(return_value=False)
+    # I5: el servicio comprueba ownership con la primitiva real; el doble debe poder responderla.
+    tx.assert_owned = AsyncMock(return_value=None)
     tx.rollback_completed = False
     return tx
 
@@ -1570,6 +1572,11 @@ class _LockQuePierdeLaLease:
     async def __aenter__(self) -> _LockQuePierdeLaLease:
         return self
 
+    # I5: el servicio ahora verifica ownership con la primitiva REAL antes de mutar. Este doble
+    # pierde la lease al SALIR, no antes: debe responder `assert_owned` como el lock vigente.
+    async def assert_owned(self, *, verify_db: bool = False) -> None:
+        return None
+
     async def __aexit__(self, *_exc: object) -> bool:
         raise RuntimeError("lease perdido al liberar el lock")
 
@@ -1707,28 +1714,27 @@ async def test_f2_dos_rituales_con_proceso_remanente_no_destruyen_el_clon_ajeno(
 
     import psutil
 
-    from sky_claw.local.tools.grass_cache_fence import FenceProceso, escribir_fence, ruta_fence
+    from sky_claw.local.tools.grass_cache_fence import FenceScope, adquirir_fence
 
     journal = _journal_con_loot_completado()
     service, colab = _servicio(tmp_path, journal=journal)
     # Estado del primer ritual: el clon quedó en disco y un proceso vive (fence persistente).
     estado = pathlib.Path(tmp_path) / "estado_f1"
     grass = tmp_path / "mo2" / "overwrite" / "Grass"
-    ruta = ruta_fence(raiz_estado=estado, game_path=tmp_path / "game", overwrite_grass_dir=grass)
-    escribir_fence(
-        ruta,
-        FenceProceso(
-            run_id="primera-corrida",
-            intento=1,
-            lanzamiento="atribuido",
-            pid=os.getpid(),  # proceso REAL y vivo (el propio test)
-            create_time=psutil.Process().create_time(),
-            modo="new",
-            game_path=str(tmp_path / "game"),
-            overwrite_grass_dir=str(grass),
-            creado="2026-11-25T00:00:00",
-        ),
+    scope = FenceScope.desde_config(game_path=tmp_path / "game", overwrite_grass_dir=grass)
+    adquirido = adquirir_fence(
+        estado,
+        scope,
+        run_id="primera-corrida",
+        intento=1,
+        lanzamiento="atribuido",
+        pid=os.getpid(),  # proceso REAL y vivo (el propio test)
+        create_time=psutil.Process().create_time(),
+        modo="new",
+        creado="2026-11-25T00:00:00",
     )
+    assert adquirido.ok, adquirido.bloqueo
+    ruta = adquirido.rutas[0]
     # El runner escribe el fence bajo SU `backup_root`; el servicio debe consultar el MISMO path.
     # El servicio deriva la raíz de estado de _raiz_de_estado; se fija a la del primer ritual.
     monkeypatch.setattr(type(service), "_raiz_de_estado", staticmethod(lambda: estado))
@@ -1762,7 +1768,7 @@ async def test_f1_revalidacion_bajo_locks_bloquea_al_segundo_ritual(
             return None  # el chequeo previo pasa
         return "Hay un ritual de grass previo SIN terminalidad demostrada (run_id=otro)"
 
-    monkeypatch.setattr(gcs, "bloqueo_por_fence", _fence_aparece_entre_chequeos)
+    monkeypatch.setattr(gcs, "bloqueo_por_fence_scope", lambda *a, **k: _fence_aparece_entre_chequeos())
 
     resultado = await service.generate(_PAYLOAD)
 
@@ -1772,3 +1778,171 @@ async def test_f1_revalidacion_bajo_locks_bloquea_al_segundo_ritual(
     colab["profile_manager"].create_clone_profile.assert_not_awaited()
     colab["profile_manager"].teardown.assert_not_awaited()
     journal.commit_transaction.assert_not_awaited()
+
+
+async def test_p1_excepcion_dura_con_proceso_relevante_vivo_preserva_perfil_config_y_fence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1/C3: muerto el PID atribuido pero con el lanzador MO2 VIVO, no hay cierre integral.
+
+    La excepción dura impide re-escanear: el kill sincrónico mata el juego atribuido, pero el
+    lanzador sigue vivo. Certificar ``terminado`` por ese único PID autorizaría teardown
+    destructivo, archivado estable sobre recursos activos y liberación del fence. El contrato
+    exige ``indeterminado`` + perfil, configuración y fence conservados + sin archivado.
+    """
+    import sky_claw.local.tools.grass_cache_runner as gcr
+    import sky_claw.local.tools.grass_cache_service as gcs
+    from sky_claw.local.tools.grass_cache_fence import FenceScope, leer_fence, ruta_de_recurso
+    from tests.test_grass_cache_runner import _MundoProcesos
+
+    estado = tmp_path / "estado"
+    monkeypatch.setattr(gcs.GrassCacheService, "_raiz_de_estado", staticmethod(lambda: estado))
+
+    mundo = _MundoProcesos()
+    mundo.game_dir = tmp_path / "game"
+    monkeypatch.setattr(gcr, "psutil", mundo)
+
+    # Espía del archivado estable: tiene que correrse con archivar=False (o no correrse).
+    real_neutralizar = gcr.neutralizar_flag
+    archivar_flags: list[bool] = []
+
+    def _espiar_neutralizar(**kwargs: Any) -> Any:
+        archivar_flags.append(bool(kwargs.get("archivar")))
+        return real_neutralizar(**kwargs)
+
+    monkeypatch.setattr(gcr, "neutralizar_flag", _espiar_neutralizar)
+
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal)
+
+    mo2 = AsyncMock()
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    # El lanzador queda VIVO: close_game NO mata el árbol MO2 en este escenario.
+    mo2.close_game.return_value = {"status": "closed", "killed_processes": []}
+    service._mo2 = mo2
+
+    runners: list[GrassCacheRunner] = []
+
+    def _fabricar(config: Any, controlador: Any, **kwargs: Any) -> GrassCacheRunner:
+        runner = GrassCacheRunner(config, controlador, **kwargs)
+
+        async def _explotar(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("bug inesperado despues de atribuir")
+
+        monkeypatch.setattr(runner, "_vigilar", _explotar)
+        runners.append(runner)
+        return runner
+
+    service._runner_factory = _fabricar
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is False
+    assert runners, "el servicio tiene que usar el runner REAL"
+    runner = runners[0]
+    assert 1100 not in mundo.vivos, "el PID atribuido murió"
+    assert 100 in mundo.vivos, "el lanzador MO2 sigue vivo: ausencia integral NO demostrada"
+    assert runner.terminalidad == "indeterminado", "la muerte de un PID no certifica el cierre"
+    assert runner.terminalidad_integral is False
+    assert archivar_flags, "la neutralización del flag tiene que haberse ejecutado"
+    assert all(flag is False for flag in archivar_flags), "no se archiva un caché potencialmente activo"
+    colab["profile_manager"].teardown.assert_not_awaited(), "sin cierre integral NO se destruye el clon/mod"
+
+    # El fence se conserva ÍNTEGRO: ningún marcador propio fue liberado.
+    scope = FenceScope.desde_config(
+        game_path=tmp_path / "game",
+        overwrite_grass_dir=tmp_path / "mo2" / "overwrite" / "Grass",
+    )
+    marcadores = [leer_fence(ruta_de_recurso(estado, rid)) for rid, _ in scope.recursos()]
+    assert marcadores and all(m is not None for m in marcadores), "el fence se conserva íntegro"
+    assert all(m.run_id == runner.fence_run_id for m in marcadores if m is not None)
+
+
+async def test_h6_lease_perdida_antes_de_liberar_conserva_el_fence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C2/I5: perder el lease DESPUÉS de neutralizar y ANTES de liberar conserva el fence.
+
+    El runner dejó evidencia integral de cierre, así que el servicio llega a la liberación. Pero la
+    comprobación REAL de ownership falla JUSTO en ese punto: ``autorizado`` queda False y
+    ``liberar_fence_scope`` conserva TODOS los marcadores. Sustituir esa comprobación por ``True``
+    borraría el fence sin exclusividad demostrada.
+    """
+    import sky_claw.local.tools.grass_cache_service as gcs
+    from sky_claw.app.db.locks import LockLeaseLostError
+    from sky_claw.local.tools.grass_cache_fence import (
+        FenceScope,
+        adquirir_fence,
+        leer_fence,
+        ruta_de_recurso,
+    )
+
+    estado = tmp_path / "estado_fence"
+    scope = FenceScope.desde_config(
+        game_path=tmp_path / "game",
+        overwrite_grass_dir=tmp_path / "mo2" / "overwrite" / "Grass",
+    )
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        evidencia={"fence_run_id": "run-x", "terminalidad_integral": True, "terminalidad": "terminado"},
+    )
+    contador = {"n": 0}
+
+    class _LockEspia:
+        def __init__(self) -> None:
+            self.rollback_completed = False
+
+        async def __aenter__(self) -> _LockEspia:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+        async def assert_owned(self, *, verify_db: bool = False) -> None:
+            contador["n"] += 1
+            if contador["n"] >= 3:
+                raise LockLeaseLostError("lease perdido durante la neutralización, antes de liberar")
+
+    service, colab = _servicio(
+        tmp_path,
+        journal=_journal_con_loot_completado(),
+        runner_result=runner_result,
+        lock_tx=_LockEspia(),
+        lock_txs={"load-order": _LockEspia()},
+    )
+    monkeypatch.setattr(gcs.GrassCacheService, "_raiz_de_estado", staticmethod(lambda: estado))
+    monkeypatch.setattr(gcs, "bloqueo_por_fence_scope", lambda *a, **k: None)
+
+    async def _run(*_args: object, **_kwargs: object) -> GrassCacheRunResult:
+        # El fence queda persistido como si el runner lo hubiera adquirido.
+        adquirir_fence(
+            estado,
+            scope,
+            run_id="run-x",
+            intento=0,
+            lanzamiento="atribuido",
+            pid=None,
+            create_time=None,
+            modo="new",
+            creado="2026-11-27T00:00:00",
+        )
+        return runner_result
+
+    colab["runner"].run.side_effect = _run
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert contador["n"] >= 3, "se verificó ownership REAL antes de liberar"
+    assert any("fence conservado: lease perdido" in fallo for fallo in resultado.get("teardown_failures", []))
+    marcadores = [leer_fence(ruta_de_recurso(estado, rid)) for rid, _ in scope.recursos()]
+    assert marcadores and all(m is not None and m.run_id == "run-x" for m in marcadores), (
+        "sin autorización NO se borra ningún marcador"
+    )

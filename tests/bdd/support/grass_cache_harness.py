@@ -94,6 +94,9 @@ def _lock_tx_fake(resource_id: str, entradas: list[str]) -> MagicMock:
 
     tx.__aenter__ = AsyncMock(side_effect=_entrar)
     tx.__aexit__ = AsyncMock(return_value=False)
+    # I5: el servicio verifica ownership con la primitiva REAL antes de mutar. El doble
+    # debe responderla como el lock vigente, no como un atributo cualquiera de MagicMock.
+    tx.assert_owned = AsyncMock(return_value=None)
     tx.rollback_completed = False
     return tx
 
