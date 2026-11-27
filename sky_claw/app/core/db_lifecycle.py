@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import aiosqlite
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger("SkyClaw.DatabaseLifecycle")
 
@@ -51,6 +51,17 @@ _CONVERSION_WAL_RETRY_SLEEP_S = 0.005
 
 #: Ventana de espera de las aperturas standalone: el default de ``sqlite3.connect`` y del config.
 BUSY_TIMEOUT_POR_DEFECTO_MS = 5000
+
+#: Techo representable por la API C de SQLite (``int`` con signo de 32 bits).
+#: Medido en este entorno (SQLite 3.45.1): ``PRAGMA busy_timeout=2147483648``
+#: devuelve 0, es decir SILENCIA el busy handler. Un valor mayor no significa
+#: "esperar más", sino "no esperar": se rechaza en la puerta.
+BUSY_TIMEOUT_MAX_MS = 2_147_483_647
+
+#: Seams privados para reloj/sleep controlados en tests. La firma pública de
+#: ``convertir_a_wal`` no cambia: esto NO es un parámetro inyectable más.
+_monotono = time.monotonic
+_dormir = asyncio.sleep
 
 # Familia de contención de locks REINTENTABLE, decisión código por código.
 # Corrupción, malformed DB, I/O y permisos NUNCA se reintentan. La lista es
@@ -116,6 +127,20 @@ def _es_contencion_de_bloqueo(error: sqlite3.OperationalError) -> bool:
     return mensaje == "database is locked" or mensaje == "database table is locked"
 
 
+def _validar_busy_timeout_ms(busy_timeout_ms: int) -> None:
+    """Dominio único del presupuesto: int estricto, 0 <= ms <= INT32_MAX.
+
+    ``bool`` se rechaza explícitamente: ``True`` es ``1`` en Python y un
+    ``busy_timeout_ms=True`` convertiría la ventana de 5 s en 1 ms sin que
+    ningún llamador lo notara. El techo no es arbitrario: por encima de
+    ``INT_MAX`` SQLite devuelve 0 (ver ``BUSY_TIMEOUT_MAX_MS``).
+    """
+    if isinstance(busy_timeout_ms, bool) or not isinstance(busy_timeout_ms, int):
+        raise TypeError("busy_timeout_ms debe ser un int (bool/float/str no admitidos)")
+    if not 0 <= busy_timeout_ms <= BUSY_TIMEOUT_MAX_MS:
+        raise ValueError(f"busy_timeout_ms fuera de rango: {busy_timeout_ms}")
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -152,13 +177,26 @@ async def convertir_a_wal(conn: aiosqlite.Connection, *, busy_timeout_ms: int) -
     decisión código por código documentada ahí); BUSY_SNAPSHOT, BUSY_TIMEOUT
     y códigos no listados propagan al primer intento.
 
-    Deadline único: el total NO puede exceder ``busy_timeout_ms``. Cada
-    intento ajusta su propio ``PRAGMA busy_timeout`` al RESTANTE de la
-    ventana, no reusa el valor configurado completo — sin esto, dos
-    intentos podrían sumar hasta 2× el budget. La restauración del
-    ``busy_timeout`` configurado se hace siempre al final (éxito o
-    falla): una conexión que se publique con ``busy_timeout=0``
-    dejaría sin protección al siguiente caller.
+    Contrato temporal: deadline ABSOLUTO con reloj monotónico; cada intento
+    ajusta su ``PRAGMA busy_timeout`` al RESTANTE vigente (recalculado tras
+    cada error), y el sleep se capita con ese mismo restante. No se inicia
+    un intento nuevo vencido el deadline. ``busy_timeout_ms=0`` significa un
+    intento fail-fast, no cero intentos. El budget gobierna la CONTENCIÓN;
+    un pequeño sobrepaso por scheduling no se promete evitar.
+
+    Contrato de errores (explícito): éxito → se consumió la fila y SQLite
+    devolvió ``'wal'`` (cualquier otro modo, o ausencia de fila, falla
+    cerrado); contención agotada → se propaga el ÚLTIMO error real de
+    SQLite; error no reintentable o cancelación → se propaga el original;
+    fallo durante la restauración → se registra, NUNCA sustituye al error
+    primario. La restauración al ``busy_timeout`` configurado corre en
+    TODAS las salidas: una conexión publicada con ``busy_timeout=0`` dejaría
+    sin protección al siguiente caller. Si una cancelación adicional
+    interrumpe la restauración, la conexión NO se publica: los llamadores
+    la cierran en su propio camino de error.
+
+    ``busy_timeout_ms`` se valida en la puerta (int estricto, no bool,
+    0..INT32_MAX) y ``DatabaseLifecycleConfig`` usa el MISMO dominio.
 
     Alcance de la propiedad, enunciado sin overclaim: la carrera
     REPRODUCIDA (dos conversiones DELETE→WAL superpuestas, o un writer en
@@ -170,40 +208,55 @@ async def convertir_a_wal(conn: aiosqlite.Connection, *, busy_timeout_ms: int) -
     lo cubre igual, porque el criterio es el CÓDIGO del error (familia
     BUSY/LOCKED explícitamente listada) y no el origen del conflicto.
     """
-    ventana_s = busy_timeout_ms / 1000.0
-    inicio = time.monotonic()
+    _validar_busy_timeout_ms(busy_timeout_ms)
+    deadline = _monotono() + busy_timeout_ms / 1000.0
     ultimo_error: sqlite3.OperationalError | None = None
-    while True:
-        # Cada intento lleva su propio ``busy_timeout`` capado al
-        # RESTANTE de la ventana. El execute corre SIEMPRE (incluso con
-        # ``busy_timeout_ms=0``, donde restante es ~0 y ``restante_ms=1``
-        # = fail-fast): la ventana cero significa "un intento, sin
-        # esperar", NO "no intentar".
-        restante = ventana_s - (time.monotonic() - inicio)
-        restante_ms = max(1, int(restante * 1000))
-        await conn.execute(f"PRAGMA busy_timeout={restante_ms}")
-        try:
-            await conn.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.OperationalError as error:
-            if not _es_contencion_de_bloqueo(error):
-                raise
-            ultimo_error = error
-            # Deadline agotado: re-lanzar el ÚLTIMO error real que
-            # SQLite devolvió, nunca un ``OperationalError`` sintético.
-            if ventana_s - (time.monotonic() - inicio) <= 0:
-                raise ultimo_error from None
-            # Ceder el scheduler para que la cancelación pueda
-            # entrar. El sleep es chico para no contaminar el
-            # budget; el ``busy_timeout`` por intento ya hace el
-            # trabajo de esperar al lock.
-            await asyncio.sleep(min(_CONVERSION_WAL_RETRY_SLEEP_S, restante))
-        else:
-            break
-    # Restauración obligatoria: la conexión que sobrevive al
-    # ``convertir_a_wal`` debe volver a tener el ``busy_timeout``
-    # configurado, no el cap por intento. Sin esto, una conexión
-    # que se publique arrastraría un busy_timeout arbitrario.
-    await conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+    original: BaseException | None = None
+    try:
+        while True:
+            # Deadline ABSOLUTO y monotónico. El primer intento corre siempre
+            # (incluso con budget 0: ``restante_ms=1`` = fail-fast); los
+            # posteriores NO arrancan si el presupuesto ya se agotó.
+            restante = deadline - _monotono()
+            if restante <= 0 and ultimo_error is not None:
+                raise ultimo_error
+            restante_ms = max(1, int(restante * 1000))
+            await conn.execute(f"PRAGMA busy_timeout={restante_ms}")
+            try:
+                # Se CONSUME el resultado y se cierra el cursor: que
+                # ``execute`` no lance NO prueba que SQLite pusiera WAL.
+                async with conn.execute("PRAGMA journal_mode=WAL") as cursor:
+                    fila = await cursor.fetchone()
+            except sqlite3.OperationalError as error:
+                if not _es_contencion_de_bloqueo(error):
+                    raise
+                ultimo_error = error
+                # Recalcular DESPUÉS del error: el ``restante`` de antes del
+                # pragma ya es viejo y dormir con él sobrepasa el presupuesto.
+                restante = deadline - _monotono()
+                if restante <= 0:
+                    raise
+                await _dormir(min(_CONVERSION_WAL_RETRY_SLEEP_S, restante))
+            else:
+                modo = fila[0] if fila else ""
+                if str(modo).lower() != "wal":
+                    raise sqlite3.OperationalError(f"PRAGMA journal_mode=WAL devolvió {modo!r} en lugar de 'wal'")
+                break
+    except BaseException as error:
+        # Atrapa TAMBIÉN CancelledError: la restauración no puede quedar
+        # condicionada a que la salida sea "normal".
+        original = error
+
+    # Restauración en TODAS las salidas. Se observa el resultado: si falla,
+    # se registra pero NUNCA sustituye a la excepción primaria.
+    if original is None:
+        await conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+        return
+    try:
+        await conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+    except BaseException:
+        logger.warning("No se pudo restaurar busy_timeout tras un fallo al convertir a WAL", exc_info=True)
+    raise original
 
 
 class DatabaseLifecycleConfig(BaseModel):
@@ -216,7 +269,7 @@ class DatabaseLifecycleConfig(BaseModel):
     wal_critical_threshold_bytes: int = WAL_CRITICAL_THRESHOLD_BYTES
     enable_auto_checkpoint: bool = True
     enable_signal_handlers: bool = True
-    busy_timeout_ms: int = BUSY_TIMEOUT_POR_DEFECTO_MS
+    busy_timeout_ms: int = Field(default=BUSY_TIMEOUT_POR_DEFECTO_MS, ge=0, le=BUSY_TIMEOUT_MAX_MS)
     synchronous_mode: str = "NORMAL"
 
 
@@ -845,7 +898,7 @@ class DatabaseLifecycleManager:
         results: dict[str, dict[str, Any]] = {}
         for path_str, conn in list(self._connections.items()):
             lock = self.get_write_lock(path_str) if con_boundary else contextlib.nullcontext()
-            async with lock:  # type: ignore[attr-defined]
+            async with lock:
                 if self._connections.get(path_str) is not conn:
                     continue
                 # Dentro del lock, junto al guard de identidad: la cuarentena

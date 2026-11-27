@@ -63,7 +63,15 @@ Si dos reglas colisionan, obedecé este orden:
   (`sky_claw/app/core/db_lifecycle.py`), también en una apertura standalone: dos procesos
   convirtiendo la misma base a la vez reciben SQLITE_BUSY sin pasar por el busy handler, y
   solo el reintento acotado lo resuelve. Un `PRAGMA journal_mode=WAL` pelado rompe
-  `tests/test_conversion_wal_standalone.py`.
+  `tests/test_conversion_wal_standalone.py`. El ancla AST cuenta **call sites** (no módulos)
+  y reconoce `executescript`, keyword `sql=`, constantes y f-strings; cubre `sky_claw/`,
+  `scripts/` y `local_scripts/`. No interpreta SQL dinámico arbitrario: un valor que no se
+  pueda resolver estáticamente debe pasar por el helper.
+- Excepción restringida a la regla de consultas parametrizadas: los valores de `PRAGMA` no
+  se pueden enlazar como parámetros SQL. Si el valor NO es literal, debe validarse contra un
+  dominio cerrado antes de interpolarse (`busy_timeout_ms` usa `_validar_busy_timeout_ms`:
+  int estricto, no bool, 0..INT32_MAX). Esta excepción **no** autoriza interpolación en
+  consultas SQL normales. `synchronous` es un valor TEXTUAL (`NORMAL`, `FULL`…), no un entero.
 
 ### 2.3 Agentes LLM
 
