@@ -401,20 +401,27 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install build dependencies (isolated, hash-enforced)
+        shell: pwsh
         run: |
-          python -m venv .build-venv
-          .\.build-venv\Scripts\python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-build.lock
-          .\.build-venv\Scripts\python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements.lock
-          .\.build-venv\Scripts\python -m pip install --no-deps --no-build-isolation -e .
-          .\.build-venv\Scripts\python -m pip check
-          python scripts/build_controlado.py --validate-venv .build-venv --profile base --env-out dist/build-evidence/build_env.json
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python scripts/build_controlado.py --prepare-venv .build-venv --profile base --env-out dist/build-evidence/build_env.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build executable
         id: build_executable
+        shell: pwsh
         env:
           SKYCLAW_EXPORT_ANALYSIS_TOC: dist/build-evidence/analysis_toc.json
+          PYTHONNOUSERSITE: "1"
+          PIP_CONFIG_FILE: NUL
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          Get-ChildItem Env:PIP_* | Remove-Item -ErrorAction SilentlyContinue
+          Remove-Item Env:PYTHONPATH, Env:PYTHONHOME, Env:PYTHONSTARTUP -ErrorAction SilentlyContinue
           $env:PATH = "$PWD\.build-venv\Scripts;$env:PATH"
           pyinstaller sky_claw.spec --clean
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Record SHA-256 of frozen executable
         run: python scripts/registrar_sha256_ejecutable.py registrar dist/SkyClawApp.exe --json dist/build-evidence/exe_sha256.json
       - name: Smoke-test frozen executable
@@ -423,12 +430,21 @@ jobs:
       - name: Inventory and reconcile frozen executable (PR-LIC-03A/B)
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $pyVer = .\.build-venv\Scripts\python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/build_controlado.py --sanitize-toc dist/build-evidence/analysis_toc.json --validate-venv .build-venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\.build-venv\Scripts\python scripts/inventario_ejecutable.py dist/SkyClawApp.exe --out dist/build-evidence/inventory.json --registro-sha256 dist/build-evidence/exe_sha256.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $PSNativeCommandUseErrorActionPreference = $false
           .\.build-venv\Scripts\python scripts/reconciliar_sbom.py --inventory dist/build-evidence/inventory.json --env-json dist/build-evidence/build_env.json --analysis-toc-json dist/build-evidence/analysis_toc.json --build-python-version $pyVer --lockfile requirements.lock --check-spec-datas --sbom-out dist/build-evidence/sbom.spdx.json --report-out dist/build-evidence/reconciliation_report.json
-          if ($LASTEXITCODE -eq 2) { exit 2 }
-          python scripts/build_controlado.py --verify-report dist/build-evidence/reconciliation_report.json --profile base
+          $recExit = $LASTEXITCODE
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($recExit -ne 0 -and $recExit -ne 1) { exit $recExit }
+          python scripts/build_controlado.py --verify-report dist/build-evidence/reconciliation_report.json --profile base --exe dist/SkyClawApp.exe --exe-sha256-json dist/build-evidence/exe_sha256.json --validate-venv .build-venv --analysis-toc dist/build-evidence/analysis_toc.json --sbom dist/build-evidence/sbom.spdx.json --smoke-outcome "${{ steps.smoke_frozen_executable.outcome }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # PR-LIC-03B (B15 — Opción B ampliada): publicación de SkyClawApp.exe vía Actions suspendida
       # temporalmente en TODOS los eventos (pull_request, push, schedule, workflow_dispatch) mientras
       # permanezcan abiertos los bloqueos jurídicos de distribución. Su reactivación corresponde a

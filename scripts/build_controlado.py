@@ -273,42 +273,100 @@ def _es_reparse_point_o_symlink(ruta: Path) -> bool:
     return bool(attrs & reparse_flag)
 
 
-def validar_directorio_build_seguro(ruta: Path, repo_root: Path) -> Path:
-    """Rechaza destinos peligrosos, preexistentes, symlinks/junctions o rutas de desarrollo/Skyrim/MO2 (B11)."""
-    if not str(ruta).strip():
-        raise BuildControladoError("Ruta de directorio de build vacía")
-
-    # Rechazar symlinks/junctions en la ruta o en cualquier ancestro inmediato
+def _verificar_sin_reparse_en_ancestros(ruta: Path, *, etiqueta: str) -> None:
+    """Rechaza symlinks, junctions y reparse points en ``ruta`` o cualquier ancestro existente (B11/B17)."""
     for candidato in (ruta, *ruta.parents):
         if candidato.exists() and _es_reparse_point_o_symlink(candidato):
-            raise BuildControladoError(f"Ruta de build peligrosa (symlink/junction/reparse point): {candidato}")
+            raise BuildControladoError(f"Ruta de {etiqueta} peligrosa (symlink/junction/reparse point): {candidato}")
         if candidato == candidato.parent:
             break
+
+
+def _validar_ruta_destino_comun(ruta: Path, repo_root: Path, *, etiqueta: str, prohibir_dentro_repo: bool) -> Path:
+    if not str(ruta).strip():
+        raise BuildControladoError(f"Ruta de {etiqueta} vacía")
+
+    _verificar_sin_reparse_en_ancestros(ruta, etiqueta=etiqueta)
 
     resuelta = ruta.resolve()
     repo_resuelto = repo_root.resolve()
 
     if resuelta == resuelta.parent or resuelta == Path.home().resolve():
-        raise BuildControladoError(f"Ruta de build prohibida (raíz del sistema o HOME): {resuelta}")
+        raise BuildControladoError(f"Ruta de {etiqueta} prohibida (raíz del sistema o HOME): {resuelta}")
 
-    if resuelta == repo_resuelto or repo_resuelto in resuelta.parents:
+    if resuelta == repo_resuelto:
+        raise BuildControladoError(f"Ruta de {etiqueta} peligrosa: coincide con la raíz del repositorio ({resuelta})")
+
+    if prohibir_dentro_repo and repo_resuelto in resuelta.parents:
         raise BuildControladoError(
-            f"Ruta de build peligrosa: coincide o vive dentro del checkout del repositorio ({resuelta})"
+            f"Ruta de {etiqueta} peligrosa: vive dentro del checkout del repositorio ({resuelta})"
         )
 
     partes_bajas = {p.casefold() for p in resuelta.parts}
     prohibidas = partes_bajas & _SEGMENTOS_PROHIBIDOS
     if prohibidas:
         raise BuildControladoError(
-            f"Ruta de build prohibida (coincide con desarrollo/Skyrim/MO2/SO: {sorted(prohibidas)}): {resuelta}"
+            f"Ruta de {etiqueta} prohibida (coincide con desarrollo/Skyrim/MO2/SO: {sorted(prohibidas)}): {resuelta}"
         )
 
+    return resuelta
+
+
+def validar_directorio_build_seguro(ruta: Path, repo_root: Path) -> Path:
+    """Rechaza destinos peligrosos, preexistentes, symlinks/junctions o rutas de desarrollo/Skyrim/MO2 (B11/B17)."""
+    resuelta = _validar_ruta_destino_comun(ruta, repo_root, etiqueta="build", prohibir_dentro_repo=True)
     if resuelta.exists():
         raise BuildControladoError(
             f"El directorio de build ya existe ({resuelta}); se exige un directorio nuevo y exclusivo por ejecución"
         )
-
     return resuelta
+
+
+def validar_destinos_build(
+    *,
+    dist_dir: Path,
+    out_dir: Path,
+    build_dir_opcional: Path | None,
+    repo_root: Path,
+) -> tuple[Path, Path, Path | None]:
+    """Valida ``dist_dir``, ``out_dir`` y ``build_dir`` antes de cualquier escritura o limpieza (B17).
+
+    Garantiza que no existan symlinks/junctions, rutas peligrosas, colisiones entre destinos ni
+    sobrescritura/eliminación de evidencias preexistentes ajenas a la ejecución actual.
+    """
+    dist_res = _validar_ruta_destino_comun(dist_dir, repo_root, etiqueta="dist_dir", prohibir_dentro_repo=False)
+    out_res = _validar_ruta_destino_comun(out_dir, repo_root, etiqueta="out_dir", prohibir_dentro_repo=False)
+
+    if dist_res.exists() and not dist_res.is_dir():
+        raise BuildControladoError(f"dist_dir existe pero no es un directorio: {dist_res}")
+    exe_existente = dist_res / "SkyClawApp.exe"
+    if exe_existente.exists() and _es_reparse_point_o_symlink(exe_existente):
+        raise BuildControladoError(f"Destino de ejecutable peligroso (symlink/reparse point): {exe_existente}")
+
+    if out_res.exists():
+        if not out_res.is_dir():
+            raise BuildControladoError(f"out_dir existe pero no es un directorio: {out_res}")
+        if any(out_res.iterdir()):
+            raise BuildControladoError(
+                f"out_dir preexistente no está vacío ({out_res}); se rechaza para no eliminar evidencias "
+                "ajenas a la ejecución actual. Use un directorio nuevo o vacío."
+            )
+
+    if out_res == dist_res or out_res in dist_res.parents:
+        raise BuildControladoError(
+            f"Colisión de destinos: out_dir ({out_res}) no puede coincidir ni contener a dist_dir ({dist_res})"
+        )
+
+    build_res: Path | None = None
+    if build_dir_opcional is not None:
+        build_res = validar_directorio_build_seguro(build_dir_opcional, repo_root)
+        for otro_nombre, otro in (("dist_dir", dist_res), ("out_dir", out_res)):
+            if build_res == otro or build_res in otro.parents or otro in build_res.parents:
+                raise BuildControladoError(
+                    f"Colisión de destinos: build_dir ({build_res}) colisiona con {otro_nombre} ({otro})"
+                )
+
+    return dist_res, out_res, build_res
 
 
 def _sanear_ruta_origen(ruta_str: str, repo_root: Path, build_venv: Path) -> str:
@@ -359,6 +417,79 @@ def sanear_analysis_toc(
     return resultado
 
 
+def validar_spdx_contra_schema_oficial(sbom_path: Path, schema_path: Path | None) -> dict[str, Any]:
+    """Ejecuta validación contra el JSON Schema oficial SPDX 2.3 solo si se provee el schema (B19)."""
+    if schema_path is None:
+        return {
+            "status": "not_executed",
+            "executed": False,
+            "schema_source": None,
+            "errors": [],
+            "reason": "official_spdx_json_schema_not_provided",
+        }
+    if not schema_path.is_file():
+        return {
+            "status": "failed",
+            "executed": False,
+            "schema_source": str(schema_path.name),
+            "errors": [f"Archivo de JSON Schema oficial SPDX inexistente: {schema_path}"],
+            "reason": "official_spdx_json_schema_missing",
+        }
+    if not sbom_path.is_file():
+        return {
+            "status": "failed",
+            "executed": False,
+            "schema_source": str(schema_path.name),
+            "errors": [f"SBOM SPDX inexistente: {sbom_path}"],
+            "reason": "sbom_missing",
+        }
+    try:
+        import jsonschema
+    except ImportError:
+        return {
+            "status": "failed",
+            "executed": False,
+            "schema_source": str(schema_path.name),
+            "errors": ["Paquete 'jsonschema' no disponible para validar el JSON Schema oficial SPDX"],
+            "reason": "jsonschema_not_installed",
+        }
+
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    sbom_data = json.loads(sbom_path.read_text(encoding="utf-8"))
+    validator_cls = jsonschema.validators.validator_for(schema)
+    validator = validator_cls(schema)
+    errores = [
+        f"{list(e.path)}: {e.message}" for e in sorted(validator.iter_errors(sbom_data), key=lambda x: str(x.path))
+    ]
+    return {
+        "status": "passed" if not errores else "failed",
+        "executed": True,
+        "schema_source": schema_path.name,
+        "errors": errores[:50],
+        "reason": None if not errores else "schema_validation_errors",
+    }
+
+
+def _normalizar_validacion_spdx_oficial(spdx_official_validation: Mapping[str, Any] | None) -> dict[str, Any]:
+    if spdx_official_validation is None:
+        return {
+            "status": "not_executed",
+            "executed": False,
+            "schema_source": None,
+            "errors": [],
+            "reason": "official_spdx_json_schema_not_provided",
+        }
+    errores = [str(e) for e in spdx_official_validation.get("errors", [])]
+    status = str(spdx_official_validation.get("status", "not_executed"))
+    return {
+        "status": status,
+        "executed": bool(spdx_official_validation.get("executed", False)),
+        "schema_source": spdx_official_validation.get("schema_source"),
+        "errors": errores,
+        "reason": spdx_official_validation.get("reason"),
+    }
+
+
 def evaluar_veredicto_tecnico(
     reporte: Mapping[str, Any],
     lock_runtime: Mapping[str, EntradaLock],
@@ -366,16 +497,24 @@ def evaluar_veredicto_tecnico(
     *,
     smoke_passed: bool,
     entorno_errores: Sequence[str],
-    spdx_schema_errors: Sequence[str],
+    spdx_internal_errors: Sequence[str] | None = None,
+    spdx_official_validation: Mapping[str, Any] | None = None,
+    source_pre: Mapping[str, Any] | None = None,
+    source_post: Mapping[str, Any] | None = None,
+    allow_dirty: bool = False,
+    extra_technical_blockers: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Evalúa validez técnica independiente preservando bloqueos jurídicos conocidos (B07/B08/B14)."""
+    """Evalúa validez técnica independiente preservando bloqueos jurídicos conocidos (B07/B08/B14/B18/B19)."""
     legal_blockers: list[str] = []
-    technical_blockers: list[str] = []
+    technical_blockers: list[str] = [str(b) for b in extra_technical_blockers]
 
     for b in reporte.get("blockers", []):
         b_str = str(b)
         if b_str.startswith(PREFIJOS_BLOQUEOS_JURIDICOS_CONOCIDOS):
             legal_blockers.append(b_str)
+        elif b_str.startswith("spdx_validation_errors="):
+            # Se contabiliza de forma explícita bajo spdx_internal_validation_errors (B19).
+            continue
         else:
             technical_blockers.append(b_str)
 
@@ -386,12 +525,40 @@ def evaluar_veredicto_tecnico(
     if build_en_exe:
         technical_blockers.append(f"build_deps_redistributed_in_exe={','.join(build_en_exe)}")
 
+    # B19: separar validación SPDX interna (PR-LIC-03A) vs JSON Schema oficial vs no ejecutada
+    internal_errs = (
+        [str(e) for e in reporte.get("spdx_validation_errors", [])]
+        if spdx_internal_errors is None
+        else [str(e) for e in spdx_internal_errors]
+    )
+    official_val = _normalizar_validacion_spdx_oficial(spdx_official_validation)
+    if internal_errs:
+        technical_blockers.append(f"spdx_internal_validation_errors={len(internal_errs)}")
+    if official_val["status"] == "failed" or official_val["errors"]:
+        technical_blockers.append(f"spdx_official_schema_errors={max(1, len(official_val['errors']))}")
+
+    # B18: vincular estado del árbol fuente pre/post build y distinguir local_dev vs certificable
+    source_mutated = False
+    source_dirty = False
+    if source_pre is not None or source_post is not None:
+        if source_pre is None or source_post is None:
+            technical_blockers.append("source_identity_incomplete=1")
+        else:
+            if source_pre != source_post:
+                source_mutated = True
+                technical_blockers.append("source_mutated_during_build=1")
+            if (
+                not source_pre.get("source_tree_clean", False)
+                or not source_post.get("source_tree_clean", False)
+                or source_pre.get("commit") in (None, "", "UNKNOWN")
+            ):
+                source_dirty = True
+                technical_blockers.append("source_tree_dirty=1")
+
     if entorno_errores:
         technical_blockers.append(f"build_env_validation_errors={len(entorno_errores)}")
     if not smoke_passed:
         technical_blockers.append("smoke_frozen_executable_failed=1")
-    if spdx_schema_errors:
-        technical_blockers.append(f"spdx_official_schema_errors={len(spdx_schema_errors)}")
     if not reporte.get("structural_inventory_complete", False):
         technical_blockers.append("structural_inventory_incomplete=1")
     if not reporte.get("provenance_reconciliation_verified", False):
@@ -401,14 +568,35 @@ def evaluar_veredicto_tecnico(
     if reporte.get("lock_drift"):
         technical_blockers.append(f"lock_drift={len(reporte['lock_drift'])}")
 
-    technical_valid = len(technical_blockers) == 0
+    blockers_unicos = sorted(set(technical_blockers))
+    technical_valid = len(blockers_unicos) == 0
+    build_mode = "local_dev" if allow_dirty else "controlled_certifiable"
+    certifiable = technical_valid and not allow_dirty and not source_dirty and not source_mutated
+    local_dev_passed = bool(allow_dirty and not source_mutated and blockers_unicos in ([], ["source_tree_dirty=1"]))
+
     return {
         "technical_build_valid": technical_valid,
+        "certifiable_controlled_build": certifiable,
+        "build_mode": build_mode,
+        "local_dev_build_passed": local_dev_passed,
+        "source_mutated_during_build": source_mutated,
         "legal_gate_passed": bool(reporte.get("gate_passed", False)),
         "legal_certification": False,
-        "technical_blockers": sorted(set(technical_blockers)),
+        "technical_blockers": blockers_unicos,
         "legal_blockers": sorted(set(legal_blockers)),
         "build_deps_redistributed_in_exe": build_en_exe,
+        "spdx_internal_validation": {
+            "executed": True,
+            "passed": len(internal_errs) == 0,
+            "errors": internal_errs,
+            "scope": str(
+                reporte.get(
+                    "spdx_validation_scope",
+                    "internal_structural_and_semantic_validator_not_full_jsonschema",
+                )
+            ),
+        },
+        "spdx_official_schema_validation": official_val,
     }
 
 
@@ -441,6 +629,65 @@ def _ejecutar_cmd(
         detalle = (proc.stderr or proc.stdout or "").strip()[-2000:]
         raise BuildControladoError(f"Fallo en paso '{etiqueta}' (rc={proc.returncode}): {detalle}")
     return proc
+
+
+def _digest_arbol_codigo(raiz: Path) -> str:
+    """Calcula un SHA-256 determinístico de los archivos fuente de ``sky_claw/`` excluyendo cachés (B18)."""
+    resumen = hashlib.sha256()
+    pkg_dir = raiz / "sky_claw"
+    if not pkg_dir.is_dir():
+        return "ABSENT"
+    for ruta in sorted(pkg_dir.rglob("*")):
+        if not ruta.is_file():
+            continue
+        if "__pycache__" in ruta.parts or ruta.suffix.casefold() in {".pyc", ".pyo"}:
+            continue
+        rel = ruta.relative_to(raiz).as_posix()
+        resumen.update(rel.encode("utf-8"))
+        resumen.update(b"\0")
+        resumen.update(_sha256_archivo(ruta)[0].encode("ascii"))
+        resumen.update(b"\n")
+    return resumen.hexdigest()
+
+
+def capturar_identidad_fuente(
+    repo_root: Path,
+    *,
+    lock_runtime_path: Path,
+    lock_build_path: Path,
+) -> dict[str, Any]:
+    """Captura estado git y digests SHA-256 de los inputs efectivos que afectan la compilación (B18)."""
+    try:
+        sha = subprocess.check_output(["git", "-C", str(repo_root), "rev-parse", "HEAD"], text=True).strip()
+        tree = subprocess.check_output(["git", "-C", str(repo_root), "rev-parse", "HEAD^{tree}"], text=True).strip()
+        status = subprocess.check_output(
+            ["git", "-C", str(repo_root), "status", "--porcelain=v1"], text=True
+        ).splitlines()
+        clean = len(status) == 0
+        dirty_count = len(status)
+    except (OSError, subprocess.SubprocessError):
+        sha = "UNKNOWN"
+        tree = "UNKNOWN"
+        clean = False
+        dirty_count = -1
+
+    inputs_sha256: dict[str, str] = {}
+    for etiqueta, ruta in (
+        ("sky_claw.spec", repo_root / "sky_claw.spec"),
+        ("pyproject.toml", repo_root / "pyproject.toml"),
+        (lock_build_path.name, lock_build_path),
+        (lock_runtime_path.name, lock_runtime_path),
+    ):
+        inputs_sha256[etiqueta] = _sha256_archivo(ruta)[0] if ruta.is_file() else "ABSENT"
+    inputs_sha256["sky_claw_tree"] = _digest_arbol_codigo(repo_root)
+
+    return {
+        "commit": sha,
+        "tree": tree,
+        "source_tree_clean": clean,
+        "dirty_entries_count": dirty_count,
+        "inputs_sha256": inputs_sha256,
+    }
 
 
 def _estado_git(repo_root: Path) -> dict[str, Any]:
@@ -488,20 +735,88 @@ def _obtener_mapa_instalados(python_exe: Path, repo_root: Path, env: dict[str, s
     return str(datos["python_version"]), dict(datos["installed"])
 
 
-def _limpiar_evidencia_obsoleta(out_dir: Path) -> None:
-    """Elimina artefactos de corridas anteriores para impedir reutilización tras fallo (B11)."""
-    for nombre in (
-        "build_manifest.json",
-        "analysis_toc.json",
-        "build_env.json",
-        "exe_sha256.json",
-        "inventory.json",
-        "sbom.spdx.json",
-        "reconciliation_report.json",
-    ):
-        p = out_dir / nombre
-        if p.is_file():
-            p.unlink(missing_ok=True)
+def _preparar_venv_controlado(
+    *,
+    build_venv: Path,
+    repo_root: Path,
+    perfil: str,
+    lock_runtime_path: Path,
+    lock_build_path: Path,
+    lock_runtime: Mapping[str, EntradaLock],
+    lock_build: Mapping[str, EntradaLock],
+    py_host: Path,
+) -> tuple[Path, str, dict[str, str], list[dict[str, Any]], dict[str, str]]:
+    """Crea, instala y valida el venv aislado compartido por build local y CI (B01/B02/B09/B16)."""
+    _verificar_sin_reparse_en_ancestros(build_venv, etiqueta="build_venv")
+    _ejecutar_cmd(
+        [str(py_host), "-m", "venv", str(build_venv)],
+        cwd=repo_root,
+        env=_entorno_pip_controlado(build_venv),
+        etiqueta="venv",
+    )
+    env_ctrl = _entorno_pip_controlado(build_venv)
+    py_build = build_venv / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
+
+    _ejecutar_cmd(
+        [
+            str(py_build),
+            "-m",
+            "pip",
+            "install",
+            "--require-hashes",
+            "--no-deps",
+            "--only-binary=:all:",
+            "-r",
+            str(lock_build_path),
+        ],
+        cwd=repo_root,
+        env=env_ctrl,
+        etiqueta="pip_install_build_lock",
+    )
+    _ejecutar_cmd(
+        [
+            str(py_build),
+            "-m",
+            "pip",
+            "install",
+            "--require-hashes",
+            "--no-deps",
+            "--only-binary=:all:",
+            "-r",
+            str(lock_runtime_path),
+        ],
+        cwd=repo_root,
+        env=env_ctrl,
+        etiqueta="pip_install_runtime_lock",
+    )
+    # Nota: se usa `-e .` con `--no-deps --no-build-isolation` porque hatchling 1.33 rechaza
+    # duplicados en `force-include` de pyproject.toml al armar wheel estándar (fuera del write-set).
+    _ejecutar_cmd(
+        [str(py_build), "-m", "pip", "install", "--no-deps", "--no-build-isolation", "-e", "."],
+        cwd=repo_root,
+        env=env_ctrl,
+        etiqueta="pip_install_project_no_isolation",
+    )
+    _ejecutar_cmd([str(py_build), "-m", "pip", "check"], cwd=repo_root, env=env_ctrl, etiqueta="pip_check")
+
+    py_ver_build, mapa_inst = _obtener_mapa_instalados(py_build, repo_root, env_ctrl)
+    errores_entorno = validar_entorno_build(mapa_inst, lock_runtime, lock_build, perfil=perfil)
+    if errores_entorno:
+        raise BuildControladoError("Validación de entorno de build falló: " + "; ".join(errores_entorno))
+
+    _, paquetes_env = _recolectar_entorno_desde_interprete(py_build, repo_root, env_ctrl)
+    return py_build, py_ver_build, mapa_inst, paquetes_env, env_ctrl
+
+
+def _promover_evidencia_staging(staging_dir: Path, out_dir: Path) -> None:
+    """Copia atómicamente los archivos de evidencia generados en staging hacia ``out_dir`` (B17)."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for src in sorted(staging_dir.iterdir()):
+        if not src.is_file():
+            continue
+        tmp_dest = out_dir / f".{src.name}.{os.getpid()}.tmp"
+        shutil.copy2(src, tmp_dest)
+        os.replace(tmp_dest, out_dir / src.name)
 
 
 def ejecutar_build_controlado(
@@ -512,10 +827,17 @@ def ejecutar_build_controlado(
     out_dir: Path,
     build_dir_opcional: Path | None = None,
     python_base: Path | None = None,
+    allow_dirty: bool = False,
+    spdx_schema_path: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
-    """Ejecuta el pipeline completo de build controlado en Windows aislado (B01–B14)."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    _limpiar_evidencia_obsoleta(out_dir)
+    """Ejecuta el pipeline completo de build controlado en Windows aislado (B01–B19)."""
+    # B17: validar TODOS los destinos ANTES de crear directorios, escribir o tocar archivos.
+    dist_res, out_res, build_res = validar_destinos_build(
+        dist_dir=dist_dir,
+        out_dir=out_dir,
+        build_dir_opcional=build_dir_opcional,
+        repo_root=repo_root,
+    )
 
     if perfil not in _PERFIL_A_LOCK:
         raise BuildControladoError(f"Perfil inválido: {perfil!r}. Opciones: {sorted(_PERFIL_A_LOCK)}")
@@ -526,9 +848,14 @@ def ejecutar_build_controlado(
     lock_build = parsear_lockfile_con_hashes(lock_build_path)
     verificar_compatibilidad_locks(lock_runtime, lock_build)
 
+    # B18: capturar identidad del árbol fuente e inputs efectivos ANTES de compilar
+    source_pre = capturar_identidad_fuente(
+        repo_root, lock_runtime_path=lock_runtime_path, lock_build_path=lock_build_path
+    )
+
     creado_por_esta_ejecucion = False
-    if build_dir_opcional is not None:
-        build_root = validar_directorio_build_seguro(build_dir_opcional, repo_root)
+    if build_res is not None:
+        build_root = build_res
         build_root.mkdir(parents=True, exist_ok=False)
         creado_por_esta_ejecucion = True
     else:
@@ -538,71 +865,25 @@ def ejecutar_build_controlado(
     build_venv = build_root / "venv"
     staging_dist = build_root / "dist"
     staging_work = build_root / "work"
+    staging_ev = build_root / "evidence_staging"
+    staging_ev.mkdir(parents=True, exist_ok=True)
     py_host = python_base or Path(sys.executable)
 
     try:
-        # 1. Crear venv exclusivo (B01)
-        _ejecutar_cmd(
-            [str(py_host), "-m", "venv", str(build_venv)], cwd=repo_root, env=os.environ.copy(), etiqueta="venv"
+        # 1–5. Preparar, instalar y validar venv exclusivo mediante función compartida con CI (B01/B02/B05/B09/B16)
+        py_build, py_ver_build, mapa_inst, paquetes_env, env_ctrl = _preparar_venv_controlado(
+            build_venv=build_venv,
+            repo_root=repo_root,
+            perfil=perfil,
+            lock_runtime_path=lock_runtime_path,
+            lock_build_path=lock_build_path,
+            lock_runtime=lock_runtime,
+            lock_build=lock_build,
+            py_host=py_host,
         )
-        env_ctrl = _entorno_pip_controlado(build_venv)
-        py_build = (
-            build_venv / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
-        )
+        errores_entorno: list[str] = []
 
-        # 2. Instalar toolchain de build y runtime con --require-hashes --no-deps --only-binary=:all: (B02/B09)
-        _ejecutar_cmd(
-            [
-                str(py_build),
-                "-m",
-                "pip",
-                "install",
-                "--require-hashes",
-                "--no-deps",
-                "--only-binary=:all:",
-                "-r",
-                str(lock_build_path),
-            ],
-            cwd=repo_root,
-            env=env_ctrl,
-            etiqueta="pip_install_build_lock",
-        )
-        _ejecutar_cmd(
-            [
-                str(py_build),
-                "-m",
-                "pip",
-                "install",
-                "--require-hashes",
-                "--no-deps",
-                "--only-binary=:all:",
-                "-r",
-                str(lock_runtime_path),
-            ],
-            cwd=repo_root,
-            env=env_ctrl,
-            etiqueta="pip_install_runtime_lock",
-        )
-        # 3. Instalar metadatos de sky-claw sin resolución ni build isolation flotante (B02/B09).
-        # Nota: se usa `-e .` con `--no-deps --no-build-isolation` porque hatchling 1.33 rechaza
-        # duplicados en `force-include` de pyproject.toml al armar wheel estándar (fuera del write-set).
-        _ejecutar_cmd(
-            [str(py_build), "-m", "pip", "install", "--no-deps", "--no-build-isolation", "-e", "."],
-            cwd=repo_root,
-            env=env_ctrl,
-            etiqueta="pip_install_project_no_isolation",
-        )
-        # 4. Ejecutar pip check con el intérprete real del venv de build (B09)
-        _ejecutar_cmd([str(py_build), "-m", "pip", "check"], cwd=repo_root, env=env_ctrl, etiqueta="pip_check")
-
-        # 5. Validar entorno instalado (B05/B08/B09)
-        py_ver_build, mapa_inst = _obtener_mapa_instalados(py_build, repo_root, env_ctrl)
-        errores_entorno = validar_entorno_build(mapa_inst, lock_runtime, lock_build, perfil=perfil)
-        if errores_entorno:
-            raise BuildControladoError("Validación de entorno de build falló: " + "; ".join(errores_entorno))
-
-        _, paquetes_env = _recolectar_entorno_desde_interprete(py_build, repo_root, env_ctrl)
-        env_json_path = out_dir / "build_env.json"
+        env_json_path = staging_ev / "build_env.json"
         _escribir_json_atomico({"python_version": py_ver_build, "packages": paquetes_env}, env_json_path)
         env_list_path = build_root / "build_env_list.json"
         env_list_path.write_text(json.dumps(paquetes_env, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -640,11 +921,11 @@ def ejecutar_build_controlado(
             repo_root=repo_root,
             build_venv=build_venv,
         )
-        toc_out_path = out_dir / "analysis_toc.json"
+        toc_out_path = staging_ev / "analysis_toc.json"
         _escribir_json_atomico(toc_saneado, toc_out_path)
 
         # 7. Registrar SHA-256 del EXE en staging
-        reg_sha_path = out_dir / "exe_sha256.json"
+        reg_sha_path = staging_ev / "exe_sha256.json"
         _ejecutar_cmd(
             [
                 str(py_build),
@@ -671,9 +952,9 @@ def ejecutar_build_controlado(
         smoke_passed = smoke_proc.returncode == 0
 
         # 9. PR-LIC-03A: inventario efectivo + reconciliación contra Analysis TOC y build_env reales
-        inv_path = out_dir / "inventory.json"
-        sbom_path = out_dir / "sbom.spdx.json"
-        rep_path = out_dir / "reconciliation_report.json"
+        inv_path = staging_ev / "inventory.json"
+        sbom_path = staging_ev / "sbom.spdx.json"
+        rep_path = staging_ev / "reconciliation_report.json"
         _ejecutar_cmd(
             [
                 str(py_build),
@@ -714,8 +995,16 @@ def ejecutar_build_controlado(
             text=True,
             check=False,
         )
-        if rec_proc.returncode == 2 or not rep_path.is_file() or not sbom_path.is_file():
+        if rec_proc.returncode not in (0, 1) or not rep_path.is_file() or not sbom_path.is_file():
             raise BuildControladoError(f"Error en reconciliar_sbom.py (rc={rec_proc.returncode}): {rec_proc.stderr}")
+
+        # B18: capturar identidad del árbol fuente DESPUÉS de compilar y reconciliar
+        source_post = capturar_identidad_fuente(
+            repo_root, lock_runtime_path=lock_runtime_path, lock_build_path=lock_build_path
+        )
+
+        # B19: validar SPDX oficial solo si se proveyó --spdx-schema (sin confundir con validador interno)
+        spdx_official = validar_spdx_contra_schema_oficial(sbom_path, spdx_schema_path)
 
         reporte = json.loads(rep_path.read_text(encoding="utf-8"))
         veredicto = evaluar_veredicto_tecnico(
@@ -724,26 +1013,45 @@ def ejecutar_build_controlado(
             lock_build,
             smoke_passed=smoke_passed,
             entorno_errores=errores_entorno,
-            spdx_schema_errors=reporte.get("spdx_validation_errors", []),
+            spdx_internal_errors=reporte.get("spdx_validation_errors", []),
+            spdx_official_validation=spdx_official,
+            source_pre=source_pre,
+            source_post=source_post,
+            allow_dirty=allow_dirty,
         )
 
-        # 10. Promover EXE al destino final SOLO si technical_build_valid es True (B11)
+        # 10. Promover EXE al destino final SOLO si technical_build_valid o local_dev_build_passed (B11/B18)
         exe_sha, exe_bytes = _sha256_archivo(exe_staging)
-        exe_final = dist_dir / "SkyClawApp.exe"
+        exe_final = dist_res / "SkyClawApp.exe"
         promoted = False
-        if veredicto["technical_build_valid"]:
-            dist_dir.mkdir(parents=True, exist_ok=True)
-            tmp_dest = dist_dir / f".SkyClawApp.exe.{os.getpid()}.tmp"
+        if veredicto["technical_build_valid"] or veredicto["local_dev_build_passed"]:
+            dist_res.mkdir(parents=True, exist_ok=True)
+            tmp_dest = dist_res / f".SkyClawApp.exe.{os.getpid()}.tmp"
             shutil.copy2(exe_staging, tmp_dest)
             os.replace(tmp_dest, exe_final)
             promoted = True
 
-        git_info = _estado_git(repo_root)
         manifiesto: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "created_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "profile": perfil,
-            "git": git_info,
+            "build_mode": veredicto["build_mode"],
+            "git": {
+                "commit": source_pre["commit"],
+                "tree": source_pre["tree"],
+                "source_tree_clean": bool(
+                    source_pre["source_tree_clean"]
+                    and source_post["source_tree_clean"]
+                    and not veredicto["source_mutated_during_build"]
+                ),
+                "dirty_entries_count": max(source_pre["dirty_entries_count"], source_post["dirty_entries_count"]),
+            },
+            "source_identity": {
+                "pre_build": source_pre,
+                "post_build": source_post,
+                "mutated_during_build": veredicto["source_mutated_during_build"],
+                "certifiable_controlled_build": veredicto["certifiable_controlled_build"],
+            },
             "bootstrap": {
                 "python_version": py_ver_build,
                 "platform": platform.platform(),
@@ -768,13 +1076,115 @@ def ejecutar_build_controlado(
                 "reconciliation_report_json": {"path": rep_path.name, "sha256": _sha256_archivo(rep_path)[0]},
             },
             "smoke_passed": smoke_passed,
+            "spdx_internal_validation": veredicto["spdx_internal_validation"],
+            "spdx_official_schema_validation": veredicto["spdx_official_schema_validation"],
             "verdict": veredicto,
         }
-        _escribir_json_atomico(manifiesto, out_dir / "build_manifest.json")
-        return manifiesto, (EXIT_OK if veredicto["technical_build_valid"] else EXIT_FAIL_CLOSED)
+        _escribir_json_atomico(manifiesto, staging_ev / "build_manifest.json")
+        _promover_evidencia_staging(staging_ev, out_res)
+        ok_exit = veredicto["technical_build_valid"] or veredicto["local_dev_build_passed"]
+        return manifiesto, (EXIT_OK if ok_exit else EXIT_FAIL_CLOSED)
     finally:
         if creado_por_esta_ejecucion and build_root.exists():
             shutil.rmtree(build_root, ignore_errors=True)
+
+
+def _verificar_reporte_ci(
+    *,
+    repo_root: Path,
+    perfil: str,
+    report_path: Path,
+    exe_path: Path | None,
+    exe_sha256_json: Path | None,
+    venv_path: Path | None,
+    analysis_toc_path: Path | None,
+    sbom_path: Path | None,
+    spdx_schema_path: Path | None,
+    smoke_outcome: str | None,
+    allow_dirty: bool,
+) -> tuple[dict[str, Any], int]:
+    """Evalúa el veredicto técnico en modo CI verificando EXE real, venv, smoke y estado fuente (B16/B18/B19)."""
+    lock_runtime_path = repo_root / _PERFIL_A_LOCK[perfil]
+    lock_build_path = repo_root / "requirements-build.lock"
+    lock_rt = parsear_lockfile_con_hashes(lock_runtime_path)
+    lock_b = parsear_lockfile_con_hashes(lock_build_path)
+    verificar_compatibilidad_locks(lock_rt, lock_b)
+
+    if not report_path.is_file():
+        raise BuildControladoError(f"Reporte de reconciliación inexistente: {report_path}")
+    reporte = json.loads(report_path.read_text(encoding="utf-8"))
+
+    extra_blockers: list[str] = []
+
+    # B16: exigir EXE real y comprobar que el reporte pertenezca exactamente a ese ejecutable
+    if exe_path is None or not exe_path.is_file():
+        extra_blockers.append("exe_path_missing_for_report_verification=1")
+    else:
+        exe_sha_real, _ = _sha256_archivo(exe_path)
+        rep_exe = reporte.get("exe", {})
+        rep_sha = str(rep_exe.get("sha256", "")).strip().lower() if isinstance(rep_exe, Mapping) else ""
+        if not rep_sha or rep_sha != exe_sha_real.lower():
+            extra_blockers.append("exe_report_sha256_mismatch=1")
+        if exe_sha256_json is not None:
+            if not exe_sha256_json.is_file():
+                extra_blockers.append("exe_sha256_registry_missing=1")
+            else:
+                reg = json.loads(exe_sha256_json.read_text(encoding="utf-8"))
+                reg_sha = str(reg.get("sha256", "")).strip().lower()
+                if reg_sha != exe_sha_real.lower():
+                    extra_blockers.append("exe_sha256_registry_mismatch=1")
+
+    # B16: exigir validación real del venv de build (nunca asumir entorno_errores=[])
+    entorno_errores: list[str] = []
+    if venv_path is None or not venv_path.is_dir():
+        extra_blockers.append("build_venv_not_verified=1")
+    else:
+        env_ctrl = _entorno_pip_controlado(venv_path)
+        py_v = venv_path / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
+        if not py_v.is_file():
+            extra_blockers.append("build_venv_python_missing=1")
+        else:
+            _, mapa = _obtener_mapa_instalados(py_v, repo_root, env_ctrl)
+            entorno_errores = validar_entorno_build(mapa, lock_rt, lock_b, perfil=perfil)
+
+    # B16: nunca asumir smoke_passed=True por defecto
+    smoke_passed = (smoke_outcome or "").strip().lower() == "success"
+
+    # B13/B16: comprobar que analysis_toc existe y está saneado si se provee
+    if analysis_toc_path is not None:
+        if not analysis_toc_path.is_file():
+            extra_blockers.append("analysis_toc_missing=1")
+        else:
+            toc_txt = analysis_toc_path.read_text(encoding="utf-8")
+            if re.search(r"[A-Za-z]:\\\\Users\\\\|/Users/|/home/", toc_txt):
+                extra_blockers.append("analysis_toc_unsanitized_personal_path=1")
+
+    # B18: capturar identidad real del árbol fuente
+    source_id = capturar_identidad_fuente(
+        repo_root, lock_runtime_path=lock_runtime_path, lock_build_path=lock_build_path
+    )
+
+    # B19: separación explícita de validación SPDX interna vs oficial vs no ejecutada
+    spdx_official = (
+        validar_spdx_contra_schema_oficial(sbom_path, spdx_schema_path)
+        if sbom_path is not None
+        else _normalizar_validacion_spdx_oficial(None)
+    )
+
+    ver = evaluar_veredicto_tecnico(
+        reporte,
+        lock_rt,
+        lock_b,
+        smoke_passed=smoke_passed,
+        entorno_errores=entorno_errores,
+        spdx_internal_errors=reporte.get("spdx_validation_errors", []),
+        spdx_official_validation=spdx_official,
+        source_pre=source_id,
+        source_post=source_id,
+        allow_dirty=allow_dirty,
+        extra_technical_blockers=extra_blockers,
+    )
+    return ver, (EXIT_OK if ver["technical_build_valid"] else EXIT_FAIL_CLOSED)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -790,19 +1200,69 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--build-dir", type=Path, default=None, help="Directorio temporal opcional (debe ser nuevo y seguro)."
     )
     parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Modo local de desarrollo: permite compilar con árbol sucio marcando certifiable_controlled_build=False (B18).",
+    )
+    parser.add_argument(
+        "--spdx-schema",
+        type=Path,
+        default=None,
+        help="Ruta opcional al JSON Schema oficial de SPDX 2.3 para ejecutar validación oficial (B19).",
+    )
+    parser.add_argument(
+        "--prepare-venv",
+        type=Path,
+        default=None,
+        help="Modo CI: crea, instala con hashes y valida el venv aislado usando el mismo contrato que build local (B16).",
+    )
+    parser.add_argument(
         "--validate-venv",
         type=Path,
         default=None,
         help="Modo CI: valida un venv ya instalado contra los locks y exporta --env-out sin reconstruir.",
     )
     parser.add_argument(
-        "--env-out", type=Path, default=None, help="Ruta de salida para lista PaqueteEntorno en modo --validate-venv."
+        "--env-out",
+        type=Path,
+        default=None,
+        help="Ruta de salida para lista PaqueteEntorno en modo --prepare-venv/--validate-venv.",
     )
     parser.add_argument(
         "--verify-report",
         type=Path,
         default=None,
-        help="Modo CI: evalúa el veredicto técnico independiente (B08/B14) sobre un reconciliation_report.json existente.",
+        help="Modo CI: evalúa el veredicto técnico independiente verificando EXE real, venv y smoke (B16/B18/B19).",
+    )
+    parser.add_argument(
+        "--exe",
+        type=Path,
+        default=None,
+        help="Ruta al ejecutable SkyClawApp.exe real a verificar en modo --verify-report (B16).",
+    )
+    parser.add_argument(
+        "--exe-sha256-json",
+        type=Path,
+        default=None,
+        help="Ruta al registro exe_sha256.json para cotejar en modo --verify-report (B16).",
+    )
+    parser.add_argument(
+        "--analysis-toc",
+        type=Path,
+        default=None,
+        help="Ruta al analysis_toc.json saneado para verificar en modo --verify-report (B16).",
+    )
+    parser.add_argument(
+        "--sbom",
+        type=Path,
+        default=None,
+        help="Ruta al sbom.spdx.json para validación oficial opcional con --spdx-schema en --verify-report (B19).",
+    )
+    parser.add_argument(
+        "--smoke-outcome",
+        type=str,
+        default=None,
+        help="Resultado explícito del smoke test ('success' para aprobado) en modo --verify-report (B16).",
     )
     parser.add_argument(
         "--sanitize-toc",
@@ -821,6 +1281,53 @@ def main(argv: Sequence[str] | None = None) -> int:
             _escribir_json_atomico(toc_clean, args.sanitize_toc)
             print(f"build_controlado: analysis_toc saneado ({args.sanitize_toc})")
             return EXIT_OK
+
+        if args.prepare_venv is not None:
+            lock_rt_path = repo_root / _PERFIL_A_LOCK[args.profile]
+            lock_b_path = repo_root / "requirements-build.lock"
+            lock_rt = parsear_lockfile_con_hashes(lock_rt_path)
+            lock_b = parsear_lockfile_con_hashes(lock_b_path)
+            verificar_compatibilidad_locks(lock_rt, lock_b)
+            _, py_ver, mapa, pkgs, _ = _preparar_venv_controlado(
+                build_venv=args.prepare_venv,
+                repo_root=repo_root,
+                perfil=args.profile,
+                lock_runtime_path=lock_rt_path,
+                lock_build_path=lock_b_path,
+                lock_runtime=lock_rt,
+                lock_build=lock_b,
+                py_host=Path(sys.executable),
+            )
+            if args.env_out is not None:
+                _verificar_sin_reparse_en_ancestros(args.env_out, etiqueta="env_out")
+                args.env_out.parent.mkdir(parents=True, exist_ok=True)
+                args.env_out.write_text(json.dumps(pkgs, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            print(
+                f"build_controlado: venv preparado y validado profile={args.profile} python={py_ver} pkgs={len(mapa)}"
+            )
+            return EXIT_OK
+
+        if args.verify_report is not None:
+            ver, rc = _verificar_reporte_ci(
+                repo_root=repo_root,
+                perfil=args.profile,
+                report_path=args.verify_report,
+                exe_path=args.exe,
+                exe_sha256_json=args.exe_sha256_json,
+                venv_path=args.validate_venv,
+                analysis_toc_path=args.analysis_toc,
+                sbom_path=args.sbom,
+                spdx_schema_path=args.spdx_schema,
+                smoke_outcome=args.smoke_outcome,
+                allow_dirty=args.allow_dirty,
+            )
+            print(
+                f"build_controlado: technical_build_valid={ver['technical_build_valid']} "
+                f"certifiable={ver['certifiable_controlled_build']} "
+                f"spdx_official={ver['spdx_official_schema_validation']['status']} "
+                f"technical_blockers={ver['technical_blockers']} legal_blockers={ver['legal_blockers']}"
+            )
+            return rc
 
         if args.validate_venv is not None:
             lock_rt = parsear_lockfile_con_hashes(repo_root / _PERFIL_A_LOCK[args.profile])
@@ -845,34 +1352,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"build_controlado: entorno OK profile={args.profile} python={py_ver} pkgs={len(mapa)}")
             return EXIT_OK
 
-        if args.verify_report is not None:
-            lock_rt = parsear_lockfile_con_hashes(repo_root / _PERFIL_A_LOCK[args.profile])
-            lock_b = parsear_lockfile_con_hashes(repo_root / "requirements-build.lock")
-            reporte = json.loads(args.verify_report.read_text(encoding="utf-8"))
-            ver = evaluar_veredicto_tecnico(
-                reporte,
-                lock_rt,
-                lock_b,
-                smoke_passed=True,
-                entorno_errores=[],
-                spdx_schema_errors=reporte.get("spdx_validation_errors", []),
-            )
-            print(
-                f"build_controlado: technical_build_valid={ver['technical_build_valid']} "
-                f"technical_blockers={ver['technical_blockers']} legal_blockers={ver['legal_blockers']}"
-            )
-            return EXIT_OK if ver["technical_build_valid"] else EXIT_FAIL_CLOSED
-
         manifiesto, codigo = ejecutar_build_controlado(
             repo_root=repo_root,
             perfil=args.profile,
             dist_dir=args.dist_dir,
             out_dir=args.out_dir,
             build_dir_opcional=args.build_dir,
+            allow_dirty=args.allow_dirty,
+            spdx_schema_path=args.spdx_schema,
         )
         ver = manifiesto["verdict"]
         print(
-            f"build_controlado: profile={args.profile} technical_build_valid={ver['technical_build_valid']} "
+            f"build_controlado: profile={args.profile} build_mode={ver['build_mode']} "
+            f"technical_build_valid={ver['technical_build_valid']} "
+            f"certifiable={ver['certifiable_controlled_build']} "
+            f"spdx_official={ver['spdx_official_schema_validation']['status']} "
             f"exe_sha256={manifiesto['artifacts']['exe']['sha256']} legal_blockers={len(ver['legal_blockers'])}"
         )
         return codigo
