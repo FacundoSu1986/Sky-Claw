@@ -1343,3 +1343,267 @@ def test_ronda_adversarial_d4_reconciliar_recuperar_y_actualizar_bloqueados_en_a
     rec_d8 = reconciliar_journal(rig.storage)
     assert rec_d8.veredicto is VeredictoReconciliacion.FAIL_CLOSED
     assert rec_d8.punto_crash == "ABORT_STORE"
+
+
+# ===========================================================================
+# 8. Regresión P1-01 y P1-02 (Codex sobre PR #1032)
+# ===========================================================================
+
+
+def test_p1_01_ip0_crash_tras_rotar_journal_revalida_superficies_antes_de_completo(tmp_path: pathlib.Path) -> None:
+    """P1-01: tras rotar journal a NONE y crashear antes de JOURNAL_NONE, IP-0 DEBE revalidar antes de COMPLETO."""
+    from sky_claw.local.frozen_runtime import pending_reconciliation as pr_mod
+    from sky_claw.local.frozen_runtime.pending_abort_store import abortos_incompletos
+
+    rig, env_rig = _limpiar_rig_hitl(tmp_path)
+    dueno = _identidad_dueno()
+    tid, bytes_antes = _emitir_y_dejar_pending(rig, env_rig, identidad=dueno, dejar_ip0_sin_registro=True)
+    ctx = ContextoVerificacionIp0(
+        mo2_instance_dir=rig.mo2_dir,
+        clone_id=rig.clone_id,
+        config_path=rig.config,
+        managed_source_root=rig.managed_src,
+        environ=env_rig,
+    )
+
+    # Crash justo después de rotar el journal a NONE y antes de persistir JOURNAL_NONE
+    orig_avanzar = pr_mod.avanzar_estado_aborto_locked
+
+    def _crash_antes_jnone(
+        root_p: pathlib.Path, actual: RegistroAbortoPendiente, nuevo: RegistroAbortoPendiente
+    ) -> RegistroAbortoPendiente:
+        if nuevo.estado is EstadoAbortoPendiente.JOURNAL_NONE:
+            raise RuntimeError("crash simulado IP-0 tras rotar journal a NONE y antes de JOURNAL_NONE")
+        return orig_avanzar(root_p, actual, nuevo)
+
+    pr_mod.avanzar_estado_aborto_locked = _crash_antes_jnone  # type: ignore[assignment]
+    try:
+        with pytest.raises(RuntimeError, match="JOURNAL_NONE"):
+            abortar_transicion_pendiente(
+                rig.storage,
+                transition_id=tid,
+                identidad=dueno,
+                motivo="ip0 crash jnone",
+                contexto_ip0=ctx,
+                probes=_probes_rig(rig),
+            )
+    finally:
+        pr_mod.avanzar_estado_aborto_locked = orig_avanzar  # type: ignore[assignment]
+
+    # El journal ya está en NONE, pero el registro de aborto quedó en SUPERFICIES_VERIFICADAS
+    assert cargar_journal_transicion(rig.storage).disposition is JournalDisposition.NONE
+    reg_mid = registro_de_aborto(rig.storage, tid)
+    assert reg_mid is not None and reg_mid.estado is EstadoAbortoPendiente.SUPERFICIES_VERIFICADAS
+
+    # Un tercero modifica modorganizer.ini antes del reintento → DEBE fallar cerrado y NO avanzar a COMPLETO
+    rig.ini.write_bytes(bytes_antes["mo2_ini"] + b"\n; edicion ajena post-rotacion\n")
+    with pytest.raises(AbortoIp0EvidenciaInsuficienteError):
+        abortar_transicion_pendiente(
+            rig.storage,
+            transition_id=tid,
+            identidad=dueno,
+            motivo="ip0 crash jnone",
+            contexto_ip0=ctx,
+            probes=_probes_rig(rig),
+        )
+    # El bloqueo D4 de aborto incompleto sigue activo
+    assert len(abortos_incompletos(rig.storage)) == 1
+    reg_tras_rechazo = registro_de_aborto(rig.storage, tid)
+    assert reg_tras_rechazo is not None and reg_tras_rechazo.estado is EstadoAbortoPendiente.SUPERFICIES_VERIFICADAS
+
+    # Restaurando la superficie a su estado aprobado, el reintento sí completa limpiamente
+    rig.ini.write_bytes(bytes_antes["mo2_ini"])
+    reg_fin = abortar_transicion_pendiente(
+        rig.storage,
+        transition_id=tid,
+        identidad=dueno,
+        motivo="ip0 crash jnone",
+        contexto_ip0=ctx,
+        probes=_probes_rig(rig),
+    )
+    assert reg_fin.estado is EstadoAbortoPendiente.COMPLETO
+    assert len(abortos_incompletos(rig.storage)) == 0
+
+
+def test_p1_01_hermano_reintento_desde_journal_none_tras_retirar_registro_revalida_superficies(
+    tmp_path: pathlib.Path,
+) -> None:
+    """P1-01 hermano: reintentar desde JOURNAL_NONE (incluso tras retirar el registro de recuperación) revalida."""
+    from sky_claw.local.frozen_runtime import pending_reconciliation as pr_mod
+    from sky_claw.local.frozen_runtime.pending_abort_store import abortos_incompletos
+
+    # Caso A: CON_REGISTRO_RECUPERACION — crash después de eliminar el registro de recuperación y antes de COMPLETO
+    rig_a, env_a = _limpiar_rig_hitl(tmp_path / "caso_a")
+    dueno = _identidad_dueno()
+    tid_a, bytes_a = _emitir_y_dejar_pending(rig_a, env_a, identidad=dueno)
+    confs_a = _confirmaciones_desde_disco(rig_a)
+
+    orig_avanzar = pr_mod.avanzar_estado_aborto_locked
+
+    def _crash_antes_completo(
+        root_p: pathlib.Path, actual: RegistroAbortoPendiente, nuevo: RegistroAbortoPendiente
+    ) -> RegistroAbortoPendiente:
+        if nuevo.estado is EstadoAbortoPendiente.COMPLETO:
+            raise RuntimeError("crash simulado tras retirar registro de recuperación y antes de COMPLETO")
+        return orig_avanzar(root_p, actual, nuevo)
+
+    pr_mod.avanzar_estado_aborto_locked = _crash_antes_completo  # type: ignore[assignment]
+    try:
+        with pytest.raises(RuntimeError, match="COMPLETO"):
+            abortar_transicion_pendiente(
+                rig_a.storage,
+                transition_id=tid_a,
+                identidad=dueno,
+                motivo="hermano jnone a",
+                confirmaciones=confs_a,
+                probes=_probes_quiescentes(),
+            )
+    finally:
+        pr_mod.avanzar_estado_aborto_locked = orig_avanzar  # type: ignore[assignment]
+
+    assert recovery.cargar_registro(rig_a.storage, tid_a) is None
+    reg_a_mid = registro_de_aborto(rig_a.storage, tid_a)
+    assert reg_a_mid is not None and reg_a_mid.estado is EstadoAbortoPendiente.JOURNAL_NONE
+
+    # Tercero altera modorganizer.ini antes del reintento → NO se levanta bloqueo D4
+    rig_a.ini.write_bytes(bytes_a["mo2_ini"] + b"\n; cambio ajeno en JOURNAL_NONE\n")
+    with pytest.raises(AbortoSuperficieDivergenteError):
+        abortar_transicion_pendiente(
+            rig_a.storage,
+            transition_id=tid_a,
+            identidad=dueno,
+            motivo="hermano jnone a",
+            confirmaciones=confs_a,
+            probes=_probes_quiescentes(),
+        )
+    assert len(abortos_incompletos(rig_a.storage)) == 1
+    assert registro_de_aborto(rig_a.storage, tid_a).estado is EstadoAbortoPendiente.JOURNAL_NONE  # type: ignore[union-attr]
+
+    # Al restaurar, el reintento sí completa
+    rig_a.ini.write_bytes(bytes_a["mo2_ini"])
+    reg_a_fin = abortar_transicion_pendiente(
+        rig_a.storage,
+        transition_id=tid_a,
+        identidad=dueno,
+        motivo="hermano jnone a",
+        confirmaciones=confs_a,
+        probes=_probes_quiescentes(),
+    )
+    assert reg_a_fin.estado is EstadoAbortoPendiente.COMPLETO
+
+    # Caso B: IP-0 — crash en JOURNAL_NONE antes de COMPLETO + modificación ajena de modorganizer.ini
+    rig_b, env_b = _limpiar_rig_hitl(tmp_path / "caso_b")
+    tid_b, bytes_b = _emitir_y_dejar_pending(rig_b, env_b, identidad=dueno, dejar_ip0_sin_registro=True)
+    ctx_b = ContextoVerificacionIp0(
+        mo2_instance_dir=rig_b.mo2_dir,
+        clone_id=rig_b.clone_id,
+        config_path=rig_b.config,
+        managed_source_root=rig_b.managed_src,
+        environ=env_b,
+    )
+    pr_mod.avanzar_estado_aborto_locked = _crash_antes_completo  # type: ignore[assignment]
+    try:
+        with pytest.raises(RuntimeError, match="COMPLETO"):
+            abortar_transicion_pendiente(
+                rig_b.storage,
+                transition_id=tid_b,
+                identidad=dueno,
+                motivo="hermano jnone b",
+                contexto_ip0=ctx_b,
+                probes=_probes_rig(rig_b),
+            )
+    finally:
+        pr_mod.avanzar_estado_aborto_locked = orig_avanzar  # type: ignore[assignment]
+
+    assert registro_de_aborto(rig_b.storage, tid_b).estado is EstadoAbortoPendiente.JOURNAL_NONE  # type: ignore[union-attr]
+    rig_b.ini.write_bytes(bytes_b["mo2_ini"] + b"\n; cambio ajeno ip0 jnone\n")
+    with pytest.raises(AbortoIp0EvidenciaInsuficienteError):
+        abortar_transicion_pendiente(
+            rig_b.storage,
+            transition_id=tid_b,
+            identidad=dueno,
+            motivo="hermano jnone b",
+            contexto_ip0=ctx_b,
+            probes=_probes_rig(rig_b),
+        )
+    assert len(abortos_incompletos(rig_b.storage)) == 1
+    assert registro_de_aborto(rig_b.storage, tid_b).estado is EstadoAbortoPendiente.JOURNAL_NONE  # type: ignore[union-attr]
+
+
+def test_p1_02_error_lectura_o_existencia_nunca_sobrescribe_ni_elimina_como_autoria(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1-02: OSError al leer o comprobar existencia es UNKNOWN, nunca autoría; preserva disco en ambos caminos."""
+    rig, env_rig = _limpiar_rig_hitl(tmp_path)
+    dueno = _identidad_dueno()
+    tid, _ = _emitir_y_dejar_pending(rig, env_rig, identidad=dueno)
+    registro_rec = recovery.cargar_registro(rig.storage, tid)
+    assert registro_rec is not None
+
+    sup_cfg = next(s for s in registro_rec.superficies if s.kind == "config")
+    sup_ini = next(s for s in registro_rec.superficies if s.kind == "mo2_ini")
+    bytes_ajenos_cfg = b"skyrim_path = 'C:/EscrituraAjenaIlegible'\n"
+    rig.config.write_bytes(bytes_ajenos_cfg)
+    bytes_ajenos_ini = rig.ini.read_bytes() + b"\n; contenido ajeno ini\n"
+    rig.ini.write_bytes(bytes_ajenos_ini)
+
+    orig_read_bytes = pathlib.Path.read_bytes
+    orig_exists = pathlib.Path.exists
+
+    # 1. Error de lectura (PermissionError en read_bytes) durante rollback automático → ok=False, NO sobrescribe
+    def _fallar_read_cfg(self: pathlib.Path) -> bytes:
+        if os.path.normcase(os.path.abspath(os.fspath(self))) == os.path.normcase(
+            os.path.abspath(os.fspath(rig.config))
+        ):
+            raise PermissionError("acceso denegado simulado al leer config.toml")
+        return orig_read_bytes(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _fallar_read_cfg)
+
+    # _escrita_por_tercero no puede clasificar un error de I/O como contenido propio (False, "")
+    es_ajena, motivo_ajena = recovery._escrita_por_tercero(sup_cfg, registro_rec)
+    assert es_ajena is True
+    assert motivo_ajena
+
+    verif_auto = recovery._restaurar_persistida(sup_cfg, registro_rec, raiz_evidencia=rig.storage)
+    assert verif_auto.ok is False
+    assert verif_auto.restaurada is False
+    assert verif_auto.motivo_restauracion is None
+    assert orig_read_bytes(rig.config) == bytes_ajenos_cfg
+
+    # restaurar_registro_locked también debe detenerse con ok=False sin sobrescribir ni borrar nada
+    with participant_lock(rig.storage, timeout=1.0) as handle:
+        verifs = recovery.restaurar_registro_locked(handle, rig.storage, registro_rec, env_rig)
+    verif_cfg_lote = next(v for v in verifs if v.kind == "config")
+    assert verif_cfg_lote.ok is False
+    assert verif_cfg_lote.restaurada is False
+    assert orig_read_bytes(rig.config) == bytes_ajenos_cfg
+
+    # 2. Error de comprobación de existencia (PermissionError en exists) en descarte autorizado (mo2_ini y config)
+    monkeypatch.setattr(pathlib.Path, "read_bytes", orig_read_bytes)
+
+    def _fallar_exists(self: pathlib.Path) -> bool:
+        norm = os.path.normcase(os.path.abspath(os.fspath(self)))
+        if norm in (
+            os.path.normcase(os.path.abspath(os.fspath(rig.ini))),
+            os.path.normcase(os.path.abspath(os.fspath(rig.config))),
+        ):
+            raise PermissionError("acceso denegado simulado en stat/exists")
+        return orig_exists(self)
+
+    monkeypatch.setattr(pathlib.Path, "exists", _fallar_exists)
+
+    confs = {
+        "mo2_ini": ConfirmacionSuperficie(estado=EstadoSuperficieConfirmada.PRESENTE, sha256=_sha(bytes_ajenos_ini)),
+        "config": ConfirmacionSuperficie(estado=EstadoSuperficieConfirmada.PRESENTE, sha256=_sha(bytes_ajenos_cfg)),
+    }
+    verif_ini_auth = recovery._restaurar_persistida(
+        sup_ini, registro_rec, raiz_evidencia=rig.storage, descartes_autorizados=confs
+    )
+    verif_cfg_auth = recovery._restaurar_persistida(
+        sup_cfg, registro_rec, raiz_evidencia=rig.storage, descartes_autorizados=confs
+    )
+    assert verif_ini_auth.ok is False and verif_ini_auth.restaurada is False
+    assert verif_cfg_auth.ok is False and verif_cfg_auth.restaurada is False
+    assert orig_read_bytes(rig.ini) == bytes_ajenos_ini
+    assert orig_read_bytes(rig.config) == bytes_ajenos_cfg

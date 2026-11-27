@@ -959,6 +959,33 @@ def _coincide_con_lo_escrito(
     return False
 
 
+class _EstadoDiscoSuperficie(StrEnum):
+    """Distinción explícita de observación en disco (P1-02): UNKNOWN nunca equivale a autoría."""
+
+    AUSENTE = "AUSENTE"
+    PRESENTE = "PRESENTE"
+    DESCONOCIDO = "DESCONOCIDO"
+
+
+def _inspeccionar_superficie_en_disco(ruta: pathlib.Path) -> tuple[_EstadoDiscoSuperficie, bytes | None, str]:
+    """Inspecciona existencia y bytes de una superficie distinguiendo AUSENTE, PRESENTE y DESCONOCIDO.
+
+    Un error de I/O al comprobar existencia o al leer el contenido produce ``DESCONOCIDO`` con
+    motivo explícito: jamás se confunde con ausencia acreditada ni con contenido atribuible.
+    """
+    try:
+        existe = ruta.exists()
+    except OSError as exc:
+        return (_EstadoDiscoSuperficie.DESCONOCIDO, None, f"{ruta}: no se pudo comprobar existencia ({exc})")
+    if not existe:
+        return (_EstadoDiscoSuperficie.AUSENTE, None, "")
+    try:
+        actuales = ruta.read_bytes()
+    except OSError as exc:
+        return (_EstadoDiscoSuperficie.DESCONOCIDO, None, f"{ruta}: no se pudo leer el contenido actual ({exc})")
+    return (_EstadoDiscoSuperficie.PRESENTE, actuales, "")
+
+
 def _escrita_por_tercero(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
@@ -981,26 +1008,23 @@ def _escrita_por_tercero(
     Sin esa prueba, un estado intermedio ambiguo se conserva como evidencia y
     queda para el propietario (Codex sobre #851).
 
-    Devuelve ``(es_ajena, motivo)``. Restaurar sobre una escritura ajena es
-    exactamente lo que un rollback NO debe hacer: el snapshot es viejo por
-    definición, y el lock de Sky-Claw no cubre a MO2 ni a \`\`Config.save()\`\`
-    desde otra ruta.
+    Un error de I/O al comprobar existencia o leer el archivo produce estado
+    ``DESCONOCIDO`` y jamás se clasifica como contenido propio (P1-02).
     """
     if superficie.path is None:
         return (False, "")
     ruta = pathlib.Path(superficie.path)
-    try:
-        existe = ruta.exists()
-    except OSError:
-        return (False, "")
-    if not existe:
+    estado_disco, actuales, err_disco = _inspeccionar_superficie_en_disco(ruta)
+    if estado_disco is _EstadoDiscoSuperficie.DESCONOCIDO:
+        return (
+            True,
+            f"{err_disco}: estado DESCONOCIDO no equivale a autoría; NO se sobrescribe ni elimina",
+        )
+    if estado_disco is _EstadoDiscoSuperficie.AUSENTE:
         if superficie.existed:
             return (True, f"{ruta}: existía en el snapshot y ahora no existe (lo borró un tercero)")
         return (False, "")
-    try:
-        actuales = ruta.read_bytes()
-    except OSError:
-        return (False, "")
+    assert actuales is not None
     if superficie.existed and _sha256(actuales) == superficie.sha256:
         # Sigue exactamente como en el snapshot: no hay nada que restaurar.
         return (False, "")
@@ -1129,20 +1153,19 @@ def _esta_en_estado_previo(superficie: SuperficieCapturada) -> bool:
     """¿La superficie ya está EXACTAMENTE como en el snapshot? Sólo lectura.
 
     «Estaba» incluye la ausencia: si no existía en el snapshot y sigue sin
-    existir, también está en su estado previo. Un error de lectura NO cuenta como
-    estado previo (no se afirma lo que no se pudo comprobar).
+    existir, también está en su estado previo. Un error de lectura o existencia
+    (``DESCONOCIDO``) NO cuenta como estado previo (no se afirma lo que no se pudo comprobar).
     """
     if superficie.path is None:
         return False
-    ruta = pathlib.Path(superficie.path)
-    try:
-        if not ruta.exists():
-            return not superficie.existed
-        if not superficie.existed:
-            return False
-        return _sha256(ruta.read_bytes()) == superficie.sha256
-    except OSError:
+    estado_disco, actuales, _ = _inspeccionar_superficie_en_disco(pathlib.Path(superficie.path))
+    if estado_disco is _EstadoDiscoSuperficie.DESCONOCIDO:
         return False
+    if estado_disco is _EstadoDiscoSuperficie.AUSENTE:
+        return not superficie.existed
+    if not superficie.existed or actuales is None:
+        return False
+    return _sha256(actuales) == superficie.sha256
 
 
 def _coordinacion_de_escritores(kind: str, ruta: pathlib.Path) -> contextlib.AbstractContextManager[object]:
@@ -1245,8 +1268,23 @@ def _restaurar_persistida(
     confirmacion = None if descartes_autorizados is None else descartes_autorizados.get(superficie.kind)
 
     with _coordinacion_de_escritores(superficie.kind, ruta):
-        # Saltar lo que ya está en su estado previo (incluyendo ausencia previa).
-        if _esta_en_estado_previo(superficie):
+        # P1-02: distinguir explícitamente AUSENTE, PRESENTE y DESCONOCIDO antes de decidir
+        # cualquier escritura o eliminación. Un error de lectura o comprobación de existencia
+        # JAMÁS equivale a autoría ni habilita sobrescribir o borrar.
+        estado_disco, actuales_disco, err_disco = _inspeccionar_superficie_en_disco(ruta)
+        if estado_disco is _EstadoDiscoSuperficie.DESCONOCIDO:
+            return VerificacionSuperficie(
+                kind=superficie.kind,
+                ok=False,
+                detail=f"{err_disco}: estado DESCONOCIDO, NO se sobrescribe ni elimina",
+            )
+        # Saltar lo que ya está en su estado previo (incluyendo ausencia previa acreditada).
+        if (estado_disco is _EstadoDiscoSuperficie.AUSENTE and not superficie.existed) or (
+            estado_disco is _EstadoDiscoSuperficie.PRESENTE
+            and superficie.existed
+            and actuales_disco is not None
+            and _sha256(actuales_disco) == superficie.sha256
+        ):
             return VerificacionSuperficie(
                 kind=superficie.kind,
                 ok=True,
@@ -1263,7 +1301,7 @@ def _restaurar_persistida(
                     raiz_evidencia,
                     f"{ruta}: difiere del snapshot y no cuenta con confirmación explícita del propietario",
                 )
-            if superficie.kind == _KIND_MO2_INI and ruta.exists():
+            if superficie.kind == _KIND_MO2_INI and estado_disco is _EstadoDiscoSuperficie.PRESENTE:
                 from sky_claw.local.frozen_runtime.mo2_ini_exclusion import (
                     Mo2IniExclusionError,
                     adquirir_exclusion_ini,
@@ -1307,13 +1345,7 @@ def _restaurar_persistida(
                         error_huella,
                     )
             else:
-                try:
-                    actuales_disk: bytes | None = ruta.read_bytes() if ruta.exists() else None
-                except OSError as exc:
-                    return VerificacionSuperficie(
-                        kind=superficie.kind, ok=False, detail=f"{ruta}: no se pudo leer antes de restaurar: {exc}"
-                    )
-                coincide, motivo_conf = _confirmacion_coincide_en_disco(ruta, confirmacion, actuales=actuales_disk)
+                coincide, motivo_conf = _confirmacion_coincide_en_disco(ruta, confirmacion, actuales=actuales_disco)
                 if not coincide:
                     return _veredicto_ajena(superficie.kind, registro, ruta, raiz_evidencia, motivo_conf)
             motivo_rest = "AUTORIZACION_DEL_DUENO"
@@ -1441,11 +1473,21 @@ def restaurar_registro_locked(
 
     # Fase 1 — clasificar TODO antes de escribir nada.
     ajenas: dict[str, tuple[pathlib.Path, str]] = {}
+    errores_lectura: dict[str, str] = {}
     en_estado_previo: set[str] = set()
     for superficie in registro.superficies:
         if superficie.kind not in alcanzadas or superficie.kind == _KIND_ENVIRON or superficie.path is None:
             continue
-        if _esta_en_estado_previo(superficie):
+        estado_disco, actuales_disco, err_disco = _inspeccionar_superficie_en_disco(pathlib.Path(superficie.path))
+        if estado_disco is _EstadoDiscoSuperficie.DESCONOCIDO:
+            errores_lectura[superficie.kind] = f"{err_disco}: estado DESCONOCIDO, NO se sobrescribe ni elimina"
+            continue
+        if (estado_disco is _EstadoDiscoSuperficie.AUSENTE and not superficie.existed) or (
+            estado_disco is _EstadoDiscoSuperficie.PRESENTE
+            and superficie.existed
+            and actuales_disco is not None
+            and _sha256(actuales_disco) == superficie.sha256
+        ):
             en_estado_previo.add(superficie.kind)
             continue
         es_ajena, motivo = _escrita_por_tercero(
@@ -1459,6 +1501,41 @@ def restaurar_registro_locked(
             ajenas[superficie.kind] = (pathlib.Path(superficie.path), motivo)
 
     verificaciones: list[VerificacionSuperficie] = []
+    if errores_lectura:
+        ilegibles = sorted(errores_lectura)
+        for superficie in registro.superficies:
+            if superficie.kind not in alcanzadas:
+                verificaciones.append(_no_mutada(superficie.kind))
+            elif superficie.kind in errores_lectura:
+                verificaciones.append(
+                    VerificacionSuperficie(
+                        kind=superficie.kind,
+                        ok=False,
+                        detail=errores_lectura[superficie.kind],
+                        requiere_dueno=True,
+                    )
+                )
+            elif superficie.kind in en_estado_previo:
+                verificaciones.append(
+                    VerificacionSuperficie(
+                        kind=superficie.kind,
+                        ok=True,
+                        detail=f"{superficie.path}: ya está en su estado previo: no se toca",
+                    )
+                )
+            else:
+                verificaciones.append(
+                    VerificacionSuperficie(
+                        kind=superficie.kind,
+                        ok=True,
+                        detail=(
+                            f"no se restaura: {ilegibles} no se pudo leer/comprobar (estado DESCONOCIDO) y la "
+                            "decisión es de conjunto. Queda como está, para el propietario"
+                        ),
+                        requiere_dueno=True,
+                    )
+                )
+        return tuple(verificaciones)
     if ajenas:
         no_atribuibles = sorted(ajenas)
         for superficie in registro.superficies:

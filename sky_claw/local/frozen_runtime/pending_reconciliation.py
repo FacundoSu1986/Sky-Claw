@@ -56,8 +56,8 @@ from sky_claw.local.frozen_runtime.errors import (
 )
 from sky_claw.local.frozen_runtime.journal import (
     JournalDisposition,
+    JournalLoadResult,
     SourceActivation,
-    TransitionJournal,
     _abortar_pendiente_locked,
     auditar_reservas_finalizacion,
     cargar_journal_transicion,
@@ -70,6 +70,7 @@ from sky_claw.local.frozen_runtime.pending_abort_store import (
     PLACEHOLDER_VACIO,
     ConfirmacionSuperficie,
     EstadoAbortoPendiente,
+    EstadoSuperficieConfirmada,
     ModoAbortoPendiente,
     RegistroAbortoPendiente,
     avanzar_estado_aborto_locked,
@@ -246,7 +247,9 @@ def _prevalidar_confirmaciones_contra_disco(
 def _verificar_evidencia_positiva_ip0(
     storage_path: pathlib.Path,
     *,
-    journal: TransitionJournal,
+    source_generation_id: str | None,
+    source_clone_id: str | None,
+    expected_effective_path: str,
     witness: IssuanceWitness,
     contexto_ip0: ContextoVerificacionIp0 | None,
     probes: RuntimeProbes,
@@ -256,7 +259,7 @@ def _verificar_evidencia_positiva_ip0(
     Distingue explícitamente:
     - igualdad byte a byte de ``modorganizer.ini`` (acreditada por ``mo2_ini_sha256`` en ``mo2auth``/``bind``);
     - coherencia del valor parseado ``config.skyrim_path`` (NO igualdad byte a byte de todo ``config.toml``);
-    - coherencia semántica de ``active.json`` contra ``journal.source_activation`` (bootstrap o par gen/clone);
+    - coherencia semántica de ``active.json`` contra ``source_activation`` (bootstrap o par gen/clone);
     - coherencia del Effective Runtime observado en origen (no en destino ni indeterminado).
 
     Ante cualquier falta de evidencia o divergencia: ``AbortoIp0EvidenciaInsuficienteError`` (HOLD sin mutaciones).
@@ -304,17 +307,15 @@ def _verificar_evidencia_positiva_ip0(
             "no se puede acreditar que las superficies sigan en el origen aprobado (HOLD sin mutaciones)"
         )
 
-    # Validar active.json contra journal.source_activation (bootstrap vs historial)
-    fuente = journal.source_activation
-    assert isinstance(fuente, SourceActivation)
+    # Validar active.json contra source_activation (bootstrap vs historial)
     carga_active = load_frozen_runtime_state(active_state_path(storage_path))
     estado_active = carga_active.state
     obs_gen = None if estado_active is None else estado_active.desired_active_generation
     obs_clone = None if estado_active is None else estado_active.desired_clone_id
-    if (obs_gen, obs_clone) != (fuente.generation_id, fuente.clone_id):
+    if (obs_gen, obs_clone) != (source_generation_id, source_clone_id):
         raise AbortoIp0EvidenciaInsuficienteError(
-            f"IP-0: active.json declara ({obs_gen!r}, {obs_clone!r}) y journal.source_activation exige "
-            f"({fuente.generation_id!r}, {fuente.clone_id!r}): HOLD sin mutaciones"
+            f"IP-0: active.json declara ({obs_gen!r}, {obs_clone!r}) y source_activation exige "
+            f"({source_generation_id!r}, {source_clone_id!r}): HOLD sin mutaciones"
         )
 
     # Verificar que el Effective Runtime observado NO esté en el destino ni indeterminado
@@ -323,12 +324,12 @@ def _verificar_evidencia_positiva_ip0(
         raise AbortoIp0EvidenciaInsuficienteError(
             f"IP-0: el gamePath de MO2 es indeterminado ({ini_ev.state.value}): HOLD sin mutaciones"
         )
-    if _norm(ini_ev.path) == _norm(journal.expected_effective_path):
+    if _norm(ini_ev.path) == _norm(expected_effective_path):
         raise AbortoIp0EvidenciaInsuficienteError(
             "IP-0: el gamePath de MO2 ya apunta al destino esperado de la transición: "
             "no corresponde abortar (HOLD sin mutaciones)"
         )
-    if fuente.clone_id is not None and fuente.generation_id is not None:
+    if source_clone_id is not None and source_generation_id is not None:
         desired_origen = desired_runtime_from_storage(storage_path)
         if desired_origen.clone_root is None:
             raise AbortoIp0EvidenciaInsuficienteError(
@@ -337,9 +338,9 @@ def _verificar_evidencia_positiva_ip0(
         eval_origen = assess_effective_runtime(
             mo2_instance_dir=contexto_ip0.mo2_instance_dir,
             desired=DesiredRuntime(
-                clone_id=fuente.clone_id,
+                clone_id=source_clone_id,
                 clone_root=desired_origen.clone_root,
-                generation_id=fuente.generation_id,
+                generation_id=source_generation_id,
             ),
             managed_source_root=contexto_ip0.managed_source_root,
             config_skyrim_path=evidencia_actual.config_skyrim_path,
@@ -368,7 +369,122 @@ def _verificar_evidencia_positiva_ip0(
             "desired_generation_id": obs_gen,
             "desired_clone_id": obs_clone,
         },
+        "ip0_origen": {
+            "expected_effective_path": expected_effective_path,
+            "source_generation_id": source_generation_id,
+            "source_clone_id": source_clone_id,
+        },
     }
+
+
+def _resolver_origen_ip0_durable(
+    reg_actual: RegistroAbortoPendiente,
+    *,
+    journal_snapshot: JournalLoadResult,
+    witness: IssuanceWitness,
+) -> tuple[str | None, str | None, str]:
+    """Obtiene ``(source_generation_id, source_clone_id, expected_effective_path)`` desde evidencia durable.
+
+    Jamás reconstruye autorización por inferencia. Cuando el journal todavía está en ``PENDING_*``,
+    usa los campos del journal. Cuando el journal ya rotó a ``NONE`` (crash entre rotación y
+    ``JOURNAL_NONE`` o ``COMPLETO``), exige ``ip0_origen`` sellado en ``reg_actual.superficies_despues``
+    y lo cruza contra ``witness.scope_payload["source_activation"]``.
+    """
+    if journal_snapshot.journal is not None and journal_snapshot.disposition in (
+        JournalDisposition.PENDING_PROMOTION,
+        JournalDisposition.PENDING_ROLLBACK,
+    ):
+        j = journal_snapshot.journal
+        if not isinstance(j.source_activation, SourceActivation) or not j.expected_effective_path:
+            raise AbortoIp0EvidenciaInsuficienteError(
+                "IP-0: el journal PENDING carece de source_activation o expected_effective_path (HOLD)"
+            )
+        return j.source_activation.generation_id, j.source_activation.clone_id, j.expected_effective_path
+
+    if reg_actual.superficies_despues is None or reg_actual.superficies_verificadas_digest is None:
+        raise AbortoIp0EvidenciaInsuficienteError(
+            "IP-0: el journal ya rotó a NONE y el registro de aborto no conserva superficies_despues "
+            "para revalidar el origen aprobado (HOLD sin avanzar a COMPLETO)"
+        )
+    if digest_canonico(reg_actual.superficies_despues) != reg_actual.superficies_verificadas_digest:
+        raise AbortoCorruptoError("el digest de superficies_despues en el registro de aborto IP-0 no coincide")
+    ip0_origen = reg_actual.superficies_despues.get("ip0_origen")
+    if not isinstance(ip0_origen, Mapping):
+        raise AbortoIp0EvidenciaInsuficienteError(
+            "IP-0: falta evidencia durable 'ip0_origen' en superficies_despues tras rotar el journal a NONE (HOLD)"
+        )
+    expected_path = ip0_origen.get("expected_effective_path")
+    src_gen = ip0_origen.get("source_generation_id")
+    src_clone = ip0_origen.get("source_clone_id")
+    if not isinstance(expected_path, str) or not expected_path.strip():
+        raise AbortoIp0EvidenciaInsuficienteError(
+            "IP-0: 'expected_effective_path' ausente o inválido en evidencia durable 'ip0_origen' (HOLD)"
+        )
+    if (src_gen is not None and not isinstance(src_gen, str)) or (
+        src_clone is not None and not isinstance(src_clone, str)
+    ):
+        raise AbortoIp0EvidenciaInsuficienteError(
+            "IP-0: 'source_generation_id'/'source_clone_id' inválidos en evidencia durable 'ip0_origen' (HOLD)"
+        )
+    src_witness = witness.scope_payload.get("source_activation")
+    if not isinstance(src_witness, Mapping):
+        raise AbortoIp0EvidenciaInsuficienteError(
+            "IP-0: el witness no contiene source_activation verificable para cruzar contra 'ip0_origen' (HOLD)"
+        )
+    if (src_witness.get("generation_id"), src_witness.get("clone_id")) != (src_gen, src_clone):
+        raise AbortoCorruptoError(
+            "IP-0: 'ip0_origen' en el registro de aborto contradice source_activation del witness inmutable"
+        )
+    return src_gen, src_clone, expected_path
+
+
+def _revalidar_superficies_desde_registro_aborto(reg_actual: RegistroAbortoPendiente) -> None:
+    """Revalida superficies contra ``reg_actual.superficies_despues`` cuando el registro de recuperación ya fue retirado.
+
+    Se invoca en el camino hermano que reanuda desde ``JOURNAL_NONE`` después de haber retirado
+    ``state/recovery/<tid>.json`` y antes de persistir ``COMPLETO`` (P1-01). No levanta el bloqueo D4
+    si alguna superficie relevante divergió o es ilegible.
+    """
+    if reg_actual.superficies_despues is None or reg_actual.superficies_verificadas_digest is None:
+        raise AbortoCorruptoError(
+            "el registro de aborto en JOURNAL_NONE carece de superficies_despues selladas para revalidar"
+        )
+    if digest_canonico(reg_actual.superficies_despues) != reg_actual.superficies_verificadas_digest:
+        raise AbortoCorruptoError("el digest de superficies_despues no coincide al revalidar desde JOURNAL_NONE")
+    for kind, esperado in sorted(reg_actual.superficies_despues.items()):
+        ruta_raw = esperado.get("path")
+        estado_esp = esperado.get("estado")
+        sha_esp = esperado.get("sha256")
+        if not isinstance(ruta_raw, str) or not ruta_raw.strip():
+            raise AbortoCorruptoError(f"superficies_despues[{kind!r}] sin ruta válida en JOURNAL_NONE")
+        ruta = pathlib.Path(ruta_raw)
+        with recovery._coordinacion_de_escritores(kind, ruta):
+            estado_disco, actuales, err_disco = recovery._inspeccionar_superficie_en_disco(ruta)
+            if estado_disco is recovery._EstadoDiscoSuperficie.DESCONOCIDO:
+                raise AbortoPendienteInvalidoError(
+                    f"no se pudo revalidar '{kind}' en JOURNAL_NONE ({err_disco}): "
+                    "se mantiene el bloqueo de aborto incompleto (D4)"
+                )
+            if estado_esp == EstadoSuperficieConfirmada.AUSENTE.value:
+                if estado_disco is not recovery._EstadoDiscoSuperficie.AUSENTE:
+                    raise AbortoSuperficieDivergenteError(
+                        f"la superficie '{kind}' ({ruta}) reapareció en disco tras JOURNAL_NONE: "
+                        "se mantiene el bloqueo de aborto incompleto (D4)"
+                    )
+            elif estado_esp == EstadoSuperficieConfirmada.PRESENTE.value:
+                if estado_disco is not recovery._EstadoDiscoSuperficie.PRESENTE or actuales is None:
+                    raise AbortoSuperficieDivergenteError(
+                        f"la superficie '{kind}' ({ruta}) desapareció en disco tras JOURNAL_NONE: "
+                        "se mantiene el bloqueo de aborto incompleto (D4)"
+                    )
+                if recovery.huella(actuales) != sha_esp:
+                    raise AbortoSuperficieDivergenteError(
+                        f"la superficie '{kind}' ({ruta}) divergió en disco tras JOURNAL_NONE "
+                        f"(observado={recovery.huella(actuales)}, esperado={sha_esp}): "
+                        "se mantiene el bloqueo de aborto incompleto (D4)"
+                    )
+            else:
+                raise AbortoCorruptoError(f"estado desconocido {estado_esp!r} en superficies_despues[{kind!r}]")
 
 
 def _digest_archivo_recuperacion(storage_path: pathlib.Path, transition_id: str) -> str:
@@ -542,9 +658,15 @@ def abortar_transicion_pendiente(
             else:
                 # IP-0 sin registro de recuperación (D6)
                 _exigir_quiescencia_para_aborto(observadores, momento="verificación IP-0")
+                if not isinstance(journal.source_activation, SourceActivation) or not journal.expected_effective_path:
+                    raise AbortoIp0EvidenciaInsuficienteError(
+                        "IP-0: el journal PENDING carece de source_activation o expected_effective_path (HOLD)"
+                    )
                 sup_antes = _verificar_evidencia_positiva_ip0(
                     storage_path,
-                    journal=journal,
+                    source_generation_id=journal.source_activation.generation_id,
+                    source_clone_id=journal.source_activation.clone_id,
+                    expected_effective_path=journal.expected_effective_path,
                     witness=witness,
                     contexto_ip0=contexto_ip0,
                     probes=observadores,
@@ -594,6 +716,8 @@ def abortar_transicion_pendiente(
             ):
                 raise AbortoCorruptoError(f"el registro de aborto en curso de {t_id!r} no liga el tombstone CONSUMED")
 
+        estado_inicial_reintento = reg_actual.estado
+
         # 5. Estado INTENCION → restaurar (si corresponde) y avanzar a SUPERFICIES_VERIFICADAS
         if reg_actual.estado is EstadoAbortoPendiente.INTENCION:
             if snapshot_journal.disposition not in (
@@ -640,9 +764,16 @@ def abortar_transicion_pendiente(
                     superficies_rec, raiz_evidencia=storage_path, registro=registro_rec
                 )
             else:
+                src_gen_ip0, src_clone_ip0, expected_path_ip0 = _resolver_origen_ip0_durable(
+                    reg_actual,
+                    journal_snapshot=snapshot_journal,
+                    witness=witness,
+                )
                 sup_despues = _verificar_evidencia_positiva_ip0(
                     storage_path,
-                    journal=journal,
+                    source_generation_id=src_gen_ip0,
+                    source_clone_id=src_clone_ip0,
+                    expected_effective_path=expected_path_ip0,
                     witness=witness,
                     contexto_ip0=contexto_ip0,
                     probes=observadores,
@@ -674,7 +805,7 @@ def abortar_transicion_pendiente(
             )
             reg_actual = avanzar_estado_aborto_locked(storage_path, reg_actual, reg_verif)
 
-        # 6. Estado SUPERFICIES_VERIFICADAS → SIEMPRE revalidar superficies (D2) y rotar a NONE (o reconocer D3)
+        # 6. Estado SUPERFICIES_VERIFICADAS → SIEMPRE revalidar superficies (D2/P1-01) y rotar a NONE (o reconocer D3)
         if reg_actual.estado is EstadoAbortoPendiente.SUPERFICIES_VERIFICADAS:
             _exigir_quiescencia_para_aborto(observadores, momento="revalidación previa a rotación del journal (D2)")
             snapshot_journal = cargar_journal_transicion(storage_path)
@@ -696,17 +827,21 @@ def abortar_transicion_pendiente(
                     registro=registro_rec,
                 )
             else:
-                if snapshot_journal.journal is not None and snapshot_journal.disposition in (
-                    JournalDisposition.PENDING_PROMOTION,
-                    JournalDisposition.PENDING_ROLLBACK,
-                ):
-                    _verificar_evidencia_positiva_ip0(
-                        storage_path,
-                        journal=snapshot_journal.journal,
-                        witness=witness,
-                        contexto_ip0=contexto_ip0,
-                        probes=observadores,
-                    )
+                # P1-01: revalidar IP-0 SIEMPRE, incluso si el journal ya rotó a NONE antes del crash.
+                src_gen_ip0, src_clone_ip0, expected_path_ip0 = _resolver_origen_ip0_durable(
+                    reg_actual,
+                    journal_snapshot=snapshot_journal,
+                    witness=witness,
+                )
+                _verificar_evidencia_positiva_ip0(
+                    storage_path,
+                    source_generation_id=src_gen_ip0,
+                    source_clone_id=src_clone_ip0,
+                    expected_effective_path=expected_path_ip0,
+                    witness=witness,
+                    contexto_ip0=contexto_ip0,
+                    probes=observadores,
+                )
 
             testigo_esperado = historial.latest.transition_id if historial.latest is not None else None
             if (
@@ -750,8 +885,45 @@ def abortar_transicion_pendiente(
             )
             reg_actual = avanzar_estado_aborto_locked(storage_path, reg_actual, reg_jnone)
 
-        # 7. Estado JOURNAL_NONE → retirar registro de recuperación (idempotente, D3) y avanzar a COMPLETO
+        # 7. Estado JOURNAL_NONE → revalidar si es reintento en frío (P1-01), retirar registro (D3) y avanzar a COMPLETO
         if reg_actual.estado is EstadoAbortoPendiente.JOURNAL_NONE:
+            if estado_inicial_reintento is EstadoAbortoPendiente.JOURNAL_NONE:
+                _exigir_quiescencia_para_aborto(
+                    observadores, momento="revalidación previa a completar aborto desde JOURNAL_NONE (P1-01)"
+                )
+                snapshot_journal = cargar_journal_transicion(storage_path)
+                if reg_actual.modo is ModoAbortoPendiente.CON_REGISTRO_RECUPERACION:
+                    try:
+                        registro_rec = recovery.cargar_registro(storage_path, t_id)
+                    except recovery.RecuperacionError as exc:
+                        raise AbortoPendienteInvalidoError(f"registro de recuperación ilegible: {exc}") from exc
+                    if registro_rec is not None:
+                        if _digest_archivo_recuperacion(storage_path, t_id) != reg_actual.recovery_record_digest:
+                            raise AbortoCorruptoError("el registro de recuperación cambió de digest en JOURNAL_NONE")
+                        _verificar_superficies_contra_snapshot(
+                            _superficies_persistidas_del_registro(registro_rec),
+                            raiz_evidencia=storage_path,
+                            registro=registro_rec,
+                        )
+                    else:
+                        # Crash tras eliminar_registro_locked y antes de persistir COMPLETO:
+                        # revalidar contra superficies_despues selladas en el registro durable.
+                        _revalidar_superficies_desde_registro_aborto(reg_actual)
+                else:
+                    src_gen_ip0, src_clone_ip0, expected_path_ip0 = _resolver_origen_ip0_durable(
+                        reg_actual,
+                        journal_snapshot=snapshot_journal,
+                        witness=witness,
+                    )
+                    _verificar_evidencia_positiva_ip0(
+                        storage_path,
+                        source_generation_id=src_gen_ip0,
+                        source_clone_id=src_clone_ip0,
+                        expected_effective_path=expected_path_ip0,
+                        witness=witness,
+                        contexto_ip0=contexto_ip0,
+                        probes=observadores,
+                    )
             if reg_actual.modo is ModoAbortoPendiente.CON_REGISTRO_RECUPERACION:
                 recovery.eliminar_registro_locked(handle, storage_path, t_id)
             ahora = max(int(clock_ns()), reg_actual.actualizado_en_ns)
