@@ -63,6 +63,7 @@ from enum import StrEnum
 from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime import state as state_module
 from sky_claw.local.frozen_runtime.errors import (
+    AbortoCorruptoError,
     InvalidGenerationIdError,
     JournalCasError,
     JournalCorruptError,
@@ -78,6 +79,11 @@ from sky_claw.local.frozen_runtime.errors import (
 )
 from sky_claw.local.frozen_runtime.generation_id import validar_generation_id
 from sky_claw.local.frozen_runtime.independence import descripcion_de_enlace
+from sky_claw.local.frozen_runtime.pending_abort_store import (
+    EstadoAbortoPendiente,
+    cargar_abortos,
+    registro_de_aborto,
+)
 from sky_claw.local.frozen_runtime.root_lock import FrozenRuntimeRootLockHandle
 from sky_claw.local.frozen_runtime.state import load_frozen_runtime_state
 from sky_claw.local.frozen_runtime.storage import (
@@ -1632,6 +1638,123 @@ def _rotar_journal_locked(
     return doc
 
 
+def _abortar_pendiente_locked(
+    handle: FrozenRuntimeRootLockHandle,
+    root: pathlib.Path,
+    *,
+    expected_transition_id: str,
+    expected_journal_revision: int,
+) -> TransitionJournal:
+    """Transición ``PENDING_* → NONE`` por aborto autorizado del propietario (ADR 0012 §48.2, D5).
+
+    NO confía en el llamador: relee y verifica desde disco la evidencia durable del aborto
+    en ``state/aborted_transitions/<transition_id>.json`` exigiendo:
+    - mismo ``root_id``, ``transition_id``, ``journal_revision``, ``approval_id``,
+      ``approval_seq`` y ``scope_digest`` que el ``PENDING`` vigente;
+    - estado ``SUPERFICIES_VERIFICADAS`` con ``superficies_verificadas_digest`` válido;
+    - ausencia de registro ``FINALIZED`` (C7) y de reservas huérfanas (C6).
+
+    No crea ``FinalizedTransitionRecord``, no toca reservas ni tombstones y fija
+    ``last_finalized_transition_id`` según el historial derivado (``None`` en bootstrap sin
+    historial → habilita ``CREATE``; ``historial.latest.transition_id`` con historial →
+    habilita ``START_NEXT``).
+    """
+    handle.assert_owned()
+    _exigir_dirs_store(root)
+    _exigir_uuid_v4(expected_transition_id, campo="expected_transition_id", etiqueta="aborto_pendiente")
+    if (
+        isinstance(expected_journal_revision, bool)
+        or not isinstance(expected_journal_revision, int)
+        or expected_journal_revision < 0
+    ):
+        raise JournalSchemaError("aborto_pendiente: expected_journal_revision debe ser entero >= 0")
+
+    ruta = transition_journal_path(root)
+    vigente = cargar_journal_transicion(root)
+    if vigente.disposition not in (JournalDisposition.PENDING_PROMOTION, JournalDisposition.PENDING_ROLLBACK):
+        raise JournalCasError("no se puede abortar: el journal vigente no tiene un PENDING activo")
+    journal = vigente.journal
+    assert journal is not None
+    if journal.transition_id != expected_transition_id or journal.journal_revision != expected_journal_revision:
+        raise JournalCasError(
+            "CAS desactualizado al abortar el journal: (transition_id, journal_revision) no coinciden "
+            f"(esperado=({expected_transition_id!r}, {expected_journal_revision}), "
+            f"vigente=({journal.transition_id!r}, {journal.journal_revision}))"
+        )
+
+    historial = derivar_historial_finalizados(root)
+    if any(r.transition_id == expected_transition_id for r in historial.registros):
+        raise JournalIdentityError(
+            f"la transición {expected_transition_id!r} ya tiene registro FINALIZED (C7): prohibido abortar"
+        )
+    _exigir_sin_reservas_huerfanas(root, historial)
+
+    try:
+        evidencia_aborto = registro_de_aborto(root, expected_transition_id)
+    except AbortoCorruptoError as exc:
+        raise JournalIdentityError(f"evidencia durable de aborto corrupta o ilegible: {exc}") from exc
+    if evidencia_aborto is None:
+        raise JournalIdentityError(
+            f"no existe evidencia durable de aborto autorizado en state/aborted_transitions/ para "
+            f"{expected_transition_id!r}: prohibido rotar PENDING → NONE sin registro verificado (D5)"
+        )
+    if evidencia_aborto.root_id != _root_id_canonico(root):
+        raise JournalIdentityError("el registro de aborto pertenece a otro storage root (fail-closed)")
+    if evidencia_aborto.journal_revision != journal.journal_revision:
+        raise JournalCasError(
+            f"el registro de aborto liga journal_revision={evidencia_aborto.journal_revision} y el journal "
+            f"vigente está en {journal.journal_revision}"
+        )
+    if (
+        evidencia_aborto.approval_id != journal.consumed_approval_id
+        or evidencia_aborto.approval_seq != journal.consumed_approval_seq
+        or evidencia_aborto.scope_digest != journal.consumed_scope_digest
+    ):
+        raise JournalIdentityError(
+            "el registro de aborto no liga la misma aprobación consumida que el PENDING vigente (fail-closed)"
+        )
+    if (
+        evidencia_aborto.estado is not EstadoAbortoPendiente.SUPERFICIES_VERIFICADAS
+        or not evidencia_aborto.superficies_verificadas_digest
+    ):
+        raise JournalIdentityError(
+            f"el registro de aborto está en estado {evidencia_aborto.estado.value} y se exige "
+            "SUPERFICIES_VERIFICADAS con digest de verificación antes de rotar el journal a NONE (D5)"
+        )
+
+    testigo = historial.latest.transition_id if historial.latest is not None else None
+    doc = TransitionJournal(
+        schema_version=JOURNAL_SCHEMA_VERSION,
+        state=JournalState.NONE,
+        journal_revision=journal.journal_revision + 1,
+        created_at_ns=time.time_ns(),
+        lock_session_id=handle.session_id,
+        last_finalized_transition_id=testigo,
+    )
+    _validar_antes_de_escribir_journal(doc, ruta)
+    state_module.write_json_atomic(ruta, _serializar_journal(doc))
+    return doc
+
+
+def _exigir_sin_abortos_bloqueantes_ni_reuso(root: pathlib.Path, *, transition_id: str) -> None:
+    """D4/D5: impide iniciar una transición si hay abortos incompletos o si ``transition_id`` fue abortado."""
+    try:
+        abortos = cargar_abortos(root)
+    except AbortoCorruptoError as exc:
+        raise JournalIdentityError(f"el store de abortos no es legible ({exc}): fail-closed") from exc
+    incompletos = sorted(tid for tid, reg in abortos.items() if reg.estado is not EstadoAbortoPendiente.COMPLETO)
+    if incompletos:
+        raise JournalCasError(
+            f"existe(n) aborto(s) incompleto(s) en curso ({incompletos}): no se puede iniciar una transición "
+            "nueva hasta completar la reconciliación pendiente (D4)"
+        )
+    if transition_id in abortos:
+        raise JournalCasError(
+            f"el transition_id {transition_id!r} ya fue utilizado por una transición abortada: "
+            "reutilización vetada permanentemente (D5)"
+        )
+
+
 def _construir_doc_pendiente(
     *,
     propuesta: PropuestaTransicion,
@@ -1720,6 +1843,7 @@ def _crear_pendiente_locked(
     # escribir el PENDING. Escribirlo sobre una reserva huérfana ajena produce
     # una transición que no puede finalizar (ver ``_exigir_sin_reservas_huerfanas``).
     _exigir_sin_reservas_huerfanas(root, historial)
+    _exigir_sin_abortos_bloqueantes_ni_reuso(root, transition_id=propuesta.transition_id)
     if any(registro.transition_id == propuesta.transition_id for registro in historial.registros):
         raise JournalCasError("el transition_id ya fue utilizado por una transición finalizada")
     if snapshot.disposition == JournalDisposition.NONE:
@@ -1729,6 +1853,18 @@ def _crear_pendiente_locked(
             raise JournalCasError("hay historial finalizado: esta vía es START_NEXT, no CREATE")
         if journal.last_finalized_transition_id is not None:
             raise JournalCasError("journal NONE con testigo pero store vacío: estado incoherente")
+        # D8: CREATE sobre bootstrap NONE sin testigo exige evidencia durable de un aborto COMPLETO
+        # independientemente de si la aprobación se consumió antes (no depender sólo del guard de approval.py).
+        from sky_claw.local.frozen_runtime.pending_abort_store import exigir_store_abortos_coherente
+
+        try:
+            exigir_store_abortos_coherente(
+                root,
+                journal_disposition_value=snapshot.disposition.value,
+                last_finalized_transition_id=None,
+            )
+        except AbortoCorruptoError as exc:
+            raise JournalIdentityError(f"el store de abortos es incoherente para CREATE (D8): {exc}") from exc
         revision = journal.journal_revision + 1
     else:
         if historial.registros:
@@ -1770,6 +1906,7 @@ def _start_next_locked(
     # REQUIRE_OWNER y no se escribe el PENDING (el resultado de la auditoría ya
     # no se descarta).
     _exigir_sin_reservas_huerfanas(root, historial)
+    _exigir_sin_abortos_bloqueantes_ni_reuso(root, transition_id=propuesta.transition_id)
     latest = historial.latest
     if propuesta.transition_id == latest.transition_id:
         raise JournalCasError("START_NEXT no puede reutilizar el transition_id del predecesor")
@@ -1833,6 +1970,8 @@ def _actualizar_locked(
         raise JournalCasError(
             "CAS desactualizado: (transition_id, journal_revision) no coinciden con el documento vigente"
         )
+    # D4/D5: no actualizar un PENDING si existe un aborto en curso o un registro de aborto para esta transición.
+    _exigir_sin_abortos_bloqueantes_ni_reuso(root, transition_id=expected_transition_id)
     no_permitidos = set(cambios) - _CAMPOS_ACTUALIZABLES
     if no_permitidos:
         raise JournalIdentityError(
@@ -2009,6 +2148,9 @@ def _finalizar_locked(
         return registro_existente
     if snapshot.disposition == JournalDisposition.NONE:
         raise JournalCasError("el testigo apunta a una transición sin registro inmutable")
+    # D4/D5: prohibido producir FINALIZED si existe un aborto incompleto o un registro de aborto para esta
+    # transición (evita split-brain durable entre FINALIZED y state/aborted_transitions/).
+    _exigir_sin_abortos_bloqueantes_ni_reuso(root, transition_id=evidencia_post.transition_id)
     _exigir_evidencia_coherente_con_pending(journal, evidencia_post)
     # Acá el journal vigente ES un PENDING (ya se descartaron ABSENT y NONE):
     # la esquema cerrada del parser garantiza estos campos. Se afirman para
@@ -2336,6 +2478,9 @@ class _EstadoDurable:
     historial: HistorialFinalizado
     auditoria: AuditoriaReservas
     deseado: FrozenRuntimeStateLoadResult
+    abortos_incompletos: tuple[tuple[str, str], ...]
+    store_abortos_existe: bool
+    aborto_completo_presente: bool
     huella: tuple[object, ...]
 
 
@@ -2344,6 +2489,8 @@ def _huella_estado_durable(
     historial: HistorialFinalizado,
     auditoria: AuditoriaReservas,
     deseado: FrozenRuntimeStateLoadResult,
+    abortos_resumen: tuple[tuple[str, str], ...] = (),
+    store_abortos_existe: bool = False,
 ) -> tuple[object, ...]:
     """Huella de TODAS las fuentes que la clasificación consulta.
 
@@ -2364,27 +2511,47 @@ def _huella_estado_durable(
         tuple((reserva.finalization_seq, reserva.transition_id) for reserva in auditoria.reservas),
         getattr(deseado, "found", None),
         None if estado_deseado is None else estado_deseado.desired_active_generation,
+        abortos_resumen,
+        store_abortos_existe,
     )
 
 
 def _observar_estado_durable(root: pathlib.Path) -> _EstadoDurable:
-    """Lectura COHERENTE de journal + historial + reservas + Desired.
+    """Lectura COHERENTE de journal + historial + reservas + Desired + store de abortos.
 
-    Debe correr BAJO el root lock: sin él, las cuatro fuentes se leen en
+    Debe correr BAJO el root lock: sin él, las fuentes se leen en
     instantes distintos y la clasificación mezcla generaciones de estado —una
     transición creada entre dos lecturas es invisible para el snapshot— (F8).
     Propaga los errores tipados del dominio; el caller los clasifica.
     """
+    from sky_claw.local.frozen_runtime.pending_abort_store import (
+        EstadoAbortoPendiente,
+        cargar_abortos,
+    )
+    from sky_claw.local.frozen_runtime.storage import aborted_transitions_state_dir
+
     snapshot = cargar_journal_transicion(root)
     historial = derivar_historial_finalizados(root)
     auditoria = auditar_reservas_finalizacion(root, historial)
     deseado = load_frozen_runtime_state(active_state_path(root))
+    abortos = cargar_abortos(root)
+    store_existe = aborted_transitions_state_dir(root).is_dir()
+    abortos_resumen = tuple(sorted((tid, reg.estado.value) for tid, reg in abortos.items()))
+    incompletos = tuple(
+        sorted(
+            (tid, reg.estado.value) for tid, reg in abortos.items() if reg.estado is not EstadoAbortoPendiente.COMPLETO
+        )
+    )
+    completo_presente = any(reg.estado is EstadoAbortoPendiente.COMPLETO for reg in abortos.values())
     return _EstadoDurable(
         snapshot=snapshot,
         historial=historial,
         auditoria=auditoria,
         deseado=deseado,
-        huella=_huella_estado_durable(snapshot, historial, auditoria, deseado),
+        abortos_incompletos=incompletos,
+        store_abortos_existe=store_existe,
+        aborto_completo_presente=completo_presente,
+        huella=_huella_estado_durable(snapshot, historial, auditoria, deseado, abortos_resumen, store_existe),
     )
 
 
@@ -2411,6 +2578,15 @@ def _clasificar_reconciliacion(
     historial = estado.historial
     auditoria = estado.auditoria
     deseado = estado.deseado
+
+    if estado.abortos_incompletos:
+        return ReconciliacionJournal(
+            veredicto=VeredictoReconciliacion.REQUIRE_OWNER,
+            punto_crash="ABORT_INCOMPLETE",
+            motivo=f"ABORTO_INCOMPLETO_EN_CURSO (D4): {estado.abortos_incompletos}",
+            requiere_dueno=True,
+            registro_finalizado_presente=None,
+        )
 
     if snapshot.disposition == JournalDisposition.ABSENT:
         if historial.registros or auditoria.huerfanas or auditoria.reservas:
@@ -2460,6 +2636,19 @@ def _clasificar_reconciliacion(
                 motivo=f"RESERVA_HUERFANA_SIN_TRANSICION_PENDIENTE: {auditoria.huerfanas}",
                 requiere_dueno=True,
                 registro_finalizado_presente=None,
+            )
+        # D8: un journal NONE sin historial ni testigo sólo es alcanzable tras un aborto de bootstrap.
+        # Si falta el store de abortos o no contiene ningún aborto COMPLETO, no puede devolverse COMPLETE.
+        if (
+            not historial.registros
+            and testigo is None
+            and (not estado.store_abortos_existe or not estado.aborto_completo_presente)
+        ):
+            return _fail_closed(
+                "ABORT_STORE",
+                "STORE_ABORTOS_CORRUPTO_O_INCOHERENTE: el journal está en NONE sin last_finalized_transition_id "
+                "(bootstrap abortado), pero no existe evidencia durable de un aborto COMPLETO en "
+                "state/aborted_transitions/ (D8)",
             )
         return _veredicto_n0_n1(deseado.state, historial, observador_effective)
 
@@ -2574,7 +2763,7 @@ def reconciliar_journal(
     registros y reservas siguen ausentes— y la clasificación no cambia.
     """
     ruta = pathlib.Path(root)
-    from sky_claw.local.frozen_runtime.errors import FrozenRuntimeLockError
+    from sky_claw.local.frozen_runtime.errors import AbortoCorruptoError, FrozenRuntimeLockError
     from sky_claw.local.frozen_runtime.root_lock import participant_lock
 
     # (1) Snapshot durable BAJO el root lock: una observación causalmente coherente.
@@ -2590,6 +2779,8 @@ def reconciliar_journal(
         # el resultado tipado. Se capturan sólo errores de dominio: no un `except
         # Exception` global.
         return _fail_closed(None, f"DESIRED_ILEGIBLE: {exc}")
+    except AbortoCorruptoError as exc:
+        return _fail_closed("ABORT_STORE", f"STORE_ABORTOS_CORRUPTO_O_INCOHERENTE: {exc}")
     except (JournalCorruptError, JournalSchemaError, JournalIdentityError) as exc:
         return _fail_closed("N2", f"JOURNAL_CORRUPTO_O_ILEGIBLE: {exc}")
     except JournalStoreNoInicializadoError as exc:
@@ -2617,6 +2808,7 @@ def reconciliar_journal(
             handle.assert_owned()
             huella_actual = _observar_estado_durable(ruta).huella
     except (
+        AbortoCorruptoError,
         JournalCorruptError,
         JournalSchemaError,
         JournalIdentityError,
