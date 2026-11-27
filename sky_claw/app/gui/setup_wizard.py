@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import itertools
 import json
 import logging
@@ -73,6 +72,55 @@ def validate_credentials(
     if telegram_chatid and not telegram_chatid.replace("@", "").replace("-", "").isdigit():
         return "Chat ID debe ser numérico"
     return None
+
+
+def _search_key_ausente() -> bool:
+    """Confirma que ``search_api_key`` no está en el backend, sin volcar secretos."""
+    try:
+        return keyring.get_password("sky_claw", "search_api_key") is None
+    except keyring.errors.NoKeyringError:
+        logger.warning("Sin backend de keyring: no se puede confirmar la desactivación de search_api_key.")
+    except (keyring.errors.KeyringError, OSError) as exc:
+        logger.warning(
+            "No se pudo leer search_api_key del keyring (%s); no se confirma la desactivación.",
+            type(exc).__name__,
+        )
+    except Exception as exc:  # noqa: BLE001 — backend nativo: se clasifica por clase, sin mensaje
+        logger.error(
+            "Error inesperado del keyring al leer search_api_key (%s); no se confirma la desactivación.",
+            type(exc).__name__,
+        )
+    return False
+
+
+def _desactivar_search_key() -> bool:
+    """Borra ``search_api_key`` y exige verificar la ausencia.
+
+    ``PasswordDeleteError`` no se trata como prueba de ausencia: algunos
+    backends lo usan para errores reales de borrado. Sólo una lectura posterior
+    que devuelva ``None`` habilita el éxito visible del wizard.
+    """
+    try:
+        keyring.delete_password("sky_claw", "search_api_key")
+    except keyring.errors.PasswordDeleteError:
+        # Puede ser ausencia legítima o un fallo del backend: lo decide la lectura.
+        pass
+    except keyring.errors.NoKeyringError:
+        logger.warning("Sin backend de keyring: no se pudo desactivar search_api_key.")
+        return False
+    except (keyring.errors.KeyringError, OSError) as exc:
+        logger.warning(
+            "No se pudo borrar search_api_key del keyring (%s); no se confirma la desactivación.",
+            type(exc).__name__,
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 — se registra la clase, nunca el mensaje
+        logger.error(
+            "Error inesperado del keyring al borrar search_api_key (%s); no se confirma la desactivación.",
+            type(exc).__name__,
+        )
+        return False
+    return _search_key_ausente()
 
 
 # =============================================================================
@@ -415,6 +463,16 @@ class SetupWizardModal:
             return
 
         try:
+            # Un campo vacío en búsqueda es una intención explícita de desactivar.
+            # Se resuelve ANTES de escribir otros secretos para no mutar de más
+            # cuando el backend no permite confirmar el borrado.
+            if not search_key and not _desactivar_search_key():
+                ui.notify(
+                    "No se pudo desactivar la clave de búsqueda; el wizard sigue abierto para reintentar.",
+                    type="negative",
+                )
+                return
+
             key_map = {
                 f"{provider}_api_key": api_key,
                 "nexus_api_key": nexus_key,
@@ -428,15 +486,6 @@ class SetupWizardModal:
                 if v:
                     keyring.set_password("sky_claw", k, v)
 
-            # The Brave search key is optional: an explicitly blank field means
-            # "disable/rotate", so clear any previously stored value instead of
-            # silently keeping the old one (Copilot review). Scoped to this key —
-            # the other fields keep the "blank = leave unchanged" convention.
-            if not search_key:
-                # nothing stored, or no keyring backend — both are fine here
-                with contextlib.suppress(keyring.errors.KeyringError):
-                    keyring.delete_password("sky_claw", "search_api_key")
-
             existing_ws = keyring.get_password("sky_claw", "ws_auth_token")
             if not existing_ws:
                 keyring.set_password("sky_claw", "ws_auth_token", secrets.token_hex(32))
@@ -444,11 +493,56 @@ class SetupWizardModal:
             from sky_claw.config import Config
 
             cfg = Config(self._config_path)
+
+            if not search_key:
+                # Config puede rehidratar un secreto histórico del TOML. La
+                # intención explícita de borrado se registra en el objeto para
+                # que Config.save() no lo reinserte, y se confirma de nuevo
+                # antes de publicar cualquier éxito.
+                cfg._data["search_api_key"] = ""
+                if not _desactivar_search_key():
+                    ui.notify(
+                        "No se pudo desactivar la clave de búsqueda; el wizard sigue abierto para reintentar.",
+                        type="negative",
+                    )
+                    return
+
             cfg._data["llm_provider"] = provider
-            cfg._data["first_run"] = False
             if telegram_chatid:
                 cfg._data["telegram_chat_id"] = telegram_chatid.replace("@", "")
-            cfg.save()
+
+            if not search_key:
+                mensaje_fallo = (
+                    "No se pudo confirmar la desactivación de la clave de búsqueda; "
+                    "el wizard sigue abierto para reintentar."
+                )
+                first_run_previo = cfg._data.get("first_run", True)
+                cfg.save()
+                # ``Config.save`` puede reportar ``PasswordDeleteError`` como
+                # pendiente incluso cuando el secreto ya no existe. La verdad
+                # la da la lectura: sólo ausencia verificada habilita el éxito.
+                if not _search_key_ausente():
+                    ui.notify(mensaje_fallo, type="negative")
+                    return
+
+                # La verificación intermedia no alcanza al save que publica
+                # first_run. Reafirmar la mutación crea una generación nueva:
+                # Config.save() trata el borrado como explícito y no migra un
+                # secreto que otra superficie haya vuelto a dejar en el TOML.
+                cfg._data["search_api_key"] = ""
+                cfg._data["first_run"] = False
+                cfg.save()
+                if not _search_key_ausente():
+                    # Si la última persistencia invalida la comprobación, no se
+                    # publica éxito y se restaura el flag ya escrito en disco.
+                    cfg._data["first_run"] = first_run_previo
+                    cfg._data["search_api_key"] = ""
+                    cfg.save()
+                    ui.notify(mensaje_fallo, type="negative")
+                    return
+            else:
+                cfg._data["first_run"] = False
+                cfg.save()
 
             # Clear localStorage drafts
             await self._clear_drafts()
@@ -473,8 +567,10 @@ class SetupWizardModal:
             await self._on_complete()
 
         except Exception as e:
-            logger.exception("Error guardando configuración:")
-            ui.notify(f"Error guardando configuración: {e}", type="negative")
+            # El mensaje de una excepción del backend puede arrastrar secretos.
+            # Se registra sólo la clase y se muestra un texto fijo.
+            logger.error("Error guardando configuración (%s).", type(e).__name__)
+            ui.notify("No se pudo guardar la configuración; el wizard sigue abierto.", type="negative")
 
     # ── localStorage Draft Autosave ──────────────────────────────────
 
