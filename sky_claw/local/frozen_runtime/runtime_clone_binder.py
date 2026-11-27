@@ -135,6 +135,10 @@ from sky_claw.local.frozen_runtime.mo2_ini_exclusion import (
     Mo2IniExclusionError,
     adquirir_exclusion_ini,
 )
+from sky_claw.local.frozen_runtime.pending_abort_store import (
+    abortos_incompletos,
+    registro_de_aborto,
+)
 from sky_claw.local.frozen_runtime.root_lock import (
     LockDisposition,
     inspect_frozen_runtime_root_lock,
@@ -1126,6 +1130,35 @@ def ejecutar_transicion_binder(
             raise BinderTransicionAbandonadaError(
                 f"la transición {t_id!r} fue abandonada por su dueño (aprobación {abandono.approval_seq} CONSUMED): "
                 "no se reanuda. Hay que presentar una transición NUEVA"
+            )
+
+        # 5.0b — Aborto autorizado (D4/D5/D8), BAJO el lock (hermano de 5.0; cubre también aprobacion_consumida).
+        from sky_claw.local.frozen_runtime.pending_abort_store import exigir_store_abortos_coherente
+
+        try:
+            snap_j_50b = journal_module.cargar_journal_transicion(storage_path)
+            doc_j_50b = snap_j_50b.journal
+            exigir_store_abortos_coherente(
+                storage_path,
+                journal_disposition_value=snap_j_50b.disposition.value,
+                last_finalized_transition_id=None if doc_j_50b is None else doc_j_50b.last_finalized_transition_id,
+            )
+            incompletos_aborto = abortos_incompletos(storage_path)
+            aborto_propio = registro_de_aborto(storage_path, t_id)
+        except (FrozenRuntimeError, OSError) as exc:
+            raise BinderApprovalError(
+                f"no se pudo verificar el store de abortos para {t_id!r} ({exc}): fail-closed"
+            ) from exc
+        if incompletos_aborto:
+            ids_inc = sorted(r.transition_id for r in incompletos_aborto)
+            raise BinderApprovalError(
+                f"existe(n) aborto(s) incompleto(s) en curso ({ids_inc}): no se ejecuta ninguna transición "
+                "hasta completar la reconciliación pendiente (D4)"
+            )
+        if aborto_propio is not None:
+            raise BinderTransicionAbandonadaError(
+                f"la transición {t_id!r} fue abortada por su dueño (aprobación {aborto_propio.approval_seq} CONSUMED): "
+                "no se reanuda ni reutiliza. Hay que presentar una transición NUEVA"
             )
 
         # 5.1 — Revalidación bajo la sección crítica (FIX 6)

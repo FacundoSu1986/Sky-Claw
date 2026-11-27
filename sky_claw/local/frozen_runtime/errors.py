@@ -434,6 +434,44 @@ class ApprovalHitolNoDisponibleError(ApprovalError):
     """
 
 
+class ApprovalJournalBlockedError(ApprovalError):
+    """El estado del journal o de un aborto incompleto impide consumir una aprobación nueva (ADR 0012 §48.6).
+
+    Se levanta bajo ``participant_lock`` ANTES de escribir el tombstone terminal:
+    un ``PENDING_*`` incompatible, un journal corrupto/ilegible o un aborto
+    incompleto bloquean el consumo para no quemar aprobaciones inútilmente.
+    """
+
+
+# ============================================================================
+# Reconciliación / aborto autorizado de PENDING (P7-F Incremento 2, §48)
+# ============================================================================
+
+
+class AbortoPendienteError(FrozenRuntimeError):
+    """Base de errores del aborto autorizado de una transición en ``PENDING``."""
+
+
+class AbortoPendienteInvalidoError(AbortoPendienteError):
+    """La solicitud de aborto viola una precondición durable, de identidad o de estado (fail-closed)."""
+
+
+class AbortoPendienteReservadoError(AbortoPendienteError):
+    """Existe una reserva de secuencia (C6) para la transición: prohibido abortar, debe completarse hacia adelante."""
+
+
+class AbortoSuperficieDivergenteError(AbortoPendienteError):
+    """Una superficie en disco no coincide ni con el snapshot ni con la confirmación exacta del propietario."""
+
+
+class AbortoIp0EvidenciaInsuficienteError(AbortoPendienteError):
+    """En IP-0 (sin registro de recuperación) la evidencia causal positiva es insuficiente: HOLD sin mutaciones."""
+
+
+class AbortoCorruptoError(AbortoPendienteError):
+    """El store o un registro de aborto en ``state/aborted_transitions/`` es ilegible, corrupto o redirigido."""
+
+
 # ============================================================================
 # Consentimiento HITL del propietario (P4-S6)
 # ============================================================================

@@ -116,12 +116,18 @@ from collections.abc import Mapping, MutableMapping
 from enum import StrEnum
 
 from sky_claw.local.frozen_runtime import state as state_module
-from sky_claw.local.frozen_runtime.errors import FrozenRuntimeError
+from sky_claw.local.frozen_runtime.errors import AbortoCorruptoError, FrozenRuntimeError
 from sky_claw.local.frozen_runtime.journal import (
     JournalDisposition,
     JournalState,
     cargar_journal_transicion,
     derivar_historial_finalizados,
+)
+from sky_claw.local.frozen_runtime.pending_abort_store import (
+    ConfirmacionSuperficie,
+    EstadoAbortoPendiente,
+    EstadoSuperficieConfirmada,
+    registro_de_aborto,
 )
 from sky_claw.local.frozen_runtime.root_lock import participant_lock
 from sky_claw.local.frozen_runtime.storage import active_state_path, recovery_state_dir
@@ -206,6 +212,9 @@ class EstadoRecuperacion(StrEnum):
     SIN_REGISTRO = "SIN_REGISTRO"
     #: La transición ya está FINALIZED: el registro era obsoleto y se retiró.
     TRANSICION_YA_FINALIZADA = "TRANSICION_YA_FINALIZADA"
+    #: La transición fue ABORTADA (journal NONE + registro de aborto durable):
+    #: el registro de recuperación era obsoleto y se retiró sin restaurar.
+    TRANSICION_YA_ABORTADA = "TRANSICION_YA_ABORTADA"
     #: El registro existe pero no liga el journal: no se toca nada.
     REGISTRO_NO_LIGADO = "REGISTRO_NO_LIGADO"
     #: Se restauró, pero el journal sigue PENDING: decide el dueño.
@@ -284,6 +293,9 @@ class VerificacionSuperficie:
     escritura_ajena: bool = False
     restaurada: bool = False
     requiere_dueno: bool = False
+    #: Distingue restauración por ``"AUTORIA"`` (huella del escritor, Inc. 1)
+    #: frente a ``"AUTORIZACION_DEL_DUENO"`` (descarte confirmado, Inc. 2).
+    motivo_restauracion: str | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -947,6 +959,38 @@ def _coincide_con_lo_escrito(
     return False
 
 
+class _EstadoDiscoSuperficie(StrEnum):
+    """Distinción explícita de observación en disco (P1-02): UNKNOWN nunca equivale a autoría."""
+
+    AUSENTE = "AUSENTE"
+    PRESENTE = "PRESENTE"
+    DESCONOCIDO = "DESCONOCIDO"
+
+
+def _inspeccionar_superficie_en_disco(ruta: pathlib.Path) -> tuple[_EstadoDiscoSuperficie, bytes | None, str]:
+    """Inspecciona existencia y bytes de una superficie distinguiendo AUSENTE, PRESENTE y DESCONOCIDO.
+
+    Usa ``os.stat`` directamente (en lugar de ``Path.exists()``) para garantizar que un
+    ``PermissionError`` u otro ``OSError`` de acceso jamás se convierta en ``False``
+    (ausencia) en Python 3.14+ (``pyproject.toml`` declara ``>=3.11``).
+    Un error de I/O al comprobar existencia o al leer produce ``DESCONOCIDO`` con motivo
+    explícito: jamás se confunde con ausencia acreditada ni con contenido atribuible.
+    """
+    try:
+        os.stat(ruta)
+    except (FileNotFoundError, NotADirectoryError):
+        return (_EstadoDiscoSuperficie.AUSENTE, None, "")
+    except OSError as exc:
+        return (_EstadoDiscoSuperficie.DESCONOCIDO, None, f"{ruta}: no se pudo comprobar existencia ({exc})")
+    try:
+        actuales = ruta.read_bytes()
+    except FileNotFoundError:
+        return (_EstadoDiscoSuperficie.AUSENTE, None, "")
+    except OSError as exc:
+        return (_EstadoDiscoSuperficie.DESCONOCIDO, None, f"{ruta}: no se pudo leer el contenido actual ({exc})")
+    return (_EstadoDiscoSuperficie.PRESENTE, actuales, "")
+
+
 def _escrita_por_tercero(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
@@ -969,26 +1013,23 @@ def _escrita_por_tercero(
     Sin esa prueba, un estado intermedio ambiguo se conserva como evidencia y
     queda para el propietario (Codex sobre #851).
 
-    Devuelve ``(es_ajena, motivo)``. Restaurar sobre una escritura ajena es
-    exactamente lo que un rollback NO debe hacer: el snapshot es viejo por
-    definición, y el lock de Sky-Claw no cubre a MO2 ni a \`\`Config.save()\`\`
-    desde otra ruta.
+    Un error de I/O al comprobar existencia o leer el archivo produce estado
+    ``DESCONOCIDO`` y jamás se clasifica como contenido propio (P1-02).
     """
     if superficie.path is None:
         return (False, "")
     ruta = pathlib.Path(superficie.path)
-    try:
-        existe = ruta.exists()
-    except OSError:
-        return (False, "")
-    if not existe:
+    estado_disco, actuales, err_disco = _inspeccionar_superficie_en_disco(ruta)
+    if estado_disco is _EstadoDiscoSuperficie.DESCONOCIDO:
+        return (
+            True,
+            f"{err_disco}: estado DESCONOCIDO no equivale a autoría; NO se sobrescribe ni elimina",
+        )
+    if estado_disco is _EstadoDiscoSuperficie.AUSENTE:
         if superficie.existed:
             return (True, f"{ruta}: existía en el snapshot y ahora no existe (lo borró un tercero)")
         return (False, "")
-    try:
-        actuales = ruta.read_bytes()
-    except OSError:
-        return (False, "")
+    assert actuales is not None
     if superficie.existed and _sha256(actuales) == superficie.sha256:
         # Sigue exactamente como en el snapshot: no hay nada que restaurar.
         return (False, "")
@@ -1117,20 +1158,19 @@ def _esta_en_estado_previo(superficie: SuperficieCapturada) -> bool:
     """¿La superficie ya está EXACTAMENTE como en el snapshot? Sólo lectura.
 
     «Estaba» incluye la ausencia: si no existía en el snapshot y sigue sin
-    existir, también está en su estado previo. Un error de lectura NO cuenta como
-    estado previo (no se afirma lo que no se pudo comprobar).
+    existir, también está en su estado previo. Un error de lectura o existencia
+    (``DESCONOCIDO``) NO cuenta como estado previo (no se afirma lo que no se pudo comprobar).
     """
     if superficie.path is None:
         return False
-    ruta = pathlib.Path(superficie.path)
-    try:
-        if not ruta.exists():
-            return not superficie.existed
-        if not superficie.existed:
-            return False
-        return _sha256(ruta.read_bytes()) == superficie.sha256
-    except OSError:
+    estado_disco, actuales, _ = _inspeccionar_superficie_en_disco(pathlib.Path(superficie.path))
+    if estado_disco is _EstadoDiscoSuperficie.DESCONOCIDO:
         return False
+    if estado_disco is _EstadoDiscoSuperficie.AUSENTE:
+        return not superficie.existed
+    if not superficie.existed or actuales is None:
+        return False
+    return _sha256(actuales) == superficie.sha256
 
 
 def _coordinacion_de_escritores(kind: str, ruta: pathlib.Path) -> contextlib.AbstractContextManager[object]:
@@ -1156,6 +1196,49 @@ def _coordinacion_de_escritores(kind: str, ruta: pathlib.Path) -> contextlib.Abs
     return contextlib.nullcontext()
 
 
+def observar_superficie_en_disco(superficie: SuperficieCapturada) -> dict[str, object]:
+    """Observa presencia y SHA-256 actual de una superficie persistida en disco (sólo lectura)."""
+    if superficie.path is None:
+        return {"path": None, "estado": EstadoSuperficieConfirmada.AUSENTE.value, "sha256": None}
+    ruta = pathlib.Path(superficie.path)
+    if not ruta.exists():
+        return {"path": str(ruta), "estado": EstadoSuperficieConfirmada.AUSENTE.value, "sha256": None}
+    datos = ruta.read_bytes()
+    return {
+        "path": str(ruta),
+        "estado": EstadoSuperficieConfirmada.PRESENTE.value,
+        "sha256": _sha256(datos),
+    }
+
+
+def _confirmacion_coincide_en_disco(
+    ruta: pathlib.Path,
+    confirmacion: ConfirmacionSuperficie,
+    *,
+    actuales: bytes | None,
+) -> tuple[bool, str]:
+    """Compara el estado real en disco (presencia/ausencia + sha256) contra la confirmación del dueño."""
+    if actuales is None:
+        if confirmacion.estado is EstadoSuperficieConfirmada.AUSENTE:
+            return (True, "")
+        return (
+            False,
+            f"{ruta}: el propietario confirmó PRESENTE ({confirmacion.sha256}) pero el archivo está AUSENTE",
+        )
+    if confirmacion.estado is EstadoSuperficieConfirmada.AUSENTE:
+        return (
+            False,
+            f"{ruta}: el propietario confirmó AUSENTE pero el archivo está PRESENTE (sha256={_sha256(actuales)})",
+        )
+    sha_actual = _sha256(actuales)
+    if sha_actual != confirmacion.sha256:
+        return (
+            False,
+            f"{ruta}: el contenido actual ({sha_actual}) no coincide con el sha256 autorizado ({confirmacion.sha256})",
+        )
+    return (True, "")
+
+
 def _restaurar_persistida(
     superficie: SuperficieCapturada,
     registro: RegistroRecuperacion,
@@ -1164,47 +1247,124 @@ def _restaurar_persistida(
     escritura_intentada: bool | None = None,
     bytes_tras_escritura_ini: bytes | None = None,
     huellas_posteriores: Mapping[str, str] | None = None,
+    descartes_autorizados: Mapping[str, ConfirmacionSuperficie] | None = None,
 ) -> VerificacionSuperficie:
     """Devuelve la superficie a sus bytes previos y VERIFICA el resultado.
 
-    La autoría se RE-VERIFICA acá, justo antes de escribir, aunque el llamador ya
-    haya clasificado: entre la clasificación y esta escritura un tercero puede
-    haber escrito. En ``config`` la re-verificación, el reemplazo y el readback
-    ocurren bajo el lock del archivo (ver ``_coordinacion_de_escritores``).
+    Admite dos vías estrictamente separadas (ADR 0012 §48.3):
+    - **Autoría** (``huellas_posteriores`` / ``escritura_intentada``): prueba que
+      ESTA transición escribió los bytes actuales (Incremento 1).
+    - **Autorización de descarte del dueño** (``descartes_autorizados``): el
+      propietario acepta descartar un estado exacto (``PRESENTE`` + ``sha256`` o
+      ``AUSENTE``). Nunca se etiqueta como autoría.
+
+    En ``mo2_ini`` bajo ``descartes_autorizados`` (D7), antes del ``os.replace`` se
+    adquiere ``FILE_SHARE_NONE`` (``adquirir_exclusion_ini``) para verificar la huella
+    confirmada, se cierra el handle y se reemplaza atómicamente con
+    ``_escribir_bytes_atomico`` (evitando archivos rasgados ante caída de proceso).
+    Se declara explícitamente que ``FILE_SHARE_NONE`` y ``os.replace`` NO forman
+    exclusión OS continua: queda una ventana de microsegundos frente a terceros no
+    participantes.
     """
     if superficie.path is None:
         return VerificacionSuperficie(kind=superficie.kind, ok=False, detail="la superficie no declara ruta")
     ruta = pathlib.Path(superficie.path)
     previos = superficie.bytes_previos()
+    confirmacion = None if descartes_autorizados is None else descartes_autorizados.get(superficie.kind)
 
     with _coordinacion_de_escritores(superficie.kind, ruta):
-        ajena, motivo = _escrita_por_tercero(
-            superficie,
-            registro,
-            escritura_intentada=escritura_intentada,
-            bytes_tras_escritura_ini=bytes_tras_escritura_ini,
-            huellas_posteriores=huellas_posteriores,
-        )
-        if ajena:
-            return _veredicto_ajena(superficie.kind, registro, ruta, raiz_evidencia, motivo)
+        # P1-02: distinguir explícitamente AUSENTE, PRESENTE y DESCONOCIDO antes de decidir
+        # cualquier escritura o eliminación. Un error de lectura o comprobación de existencia
+        # JAMÁS equivale a autoría ni habilita sobrescribir o borrar.
+        estado_disco, actuales_disco, err_disco = _inspeccionar_superficie_en_disco(ruta)
+        if estado_disco is _EstadoDiscoSuperficie.DESCONOCIDO:
+            return VerificacionSuperficie(
+                kind=superficie.kind,
+                ok=False,
+                detail=f"{err_disco}: estado DESCONOCIDO, NO se sobrescribe ni elimina",
+            )
+        # Saltar lo que ya está en su estado previo (incluyendo ausencia previa acreditada).
+        if (estado_disco is _EstadoDiscoSuperficie.AUSENTE and not superficie.existed) or (
+            estado_disco is _EstadoDiscoSuperficie.PRESENTE
+            and superficie.existed
+            and actuales_disco is not None
+            and _sha256(actuales_disco) == superficie.sha256
+        ):
+            return VerificacionSuperficie(
+                kind=superficie.kind,
+                ok=True,
+                detail=f"{ruta}: ya está en su estado previo: no se reescribe",
+            )
 
-        # Saltar lo que ya está en su estado previo: si la mutación original nunca
-        # llegó a aplicarse (una violación de compartición, por ejemplo), reescribir
-        # los bytes idénticos puede fallar de nuevo por el mismo bloqueo y reportar
-        # un fallo CRÍTICO por una superficie que nunca cambió (CodeRabbit sobre
-        # #843).
-        if previos is not None:
-            try:
-                if _sha256(ruta.read_bytes()) == superficie.sha256:
-                    return VerificacionSuperficie(
-                        kind=superficie.kind,
-                        ok=True,
-                        detail=f"{ruta}: ya está en su estado previo: no se reescribe",
-                    )
-            except OSError as exc:
-                return VerificacionSuperficie(
-                    kind=superficie.kind, ok=False, detail=f"{ruta}: no se pudo leer antes de restaurar: {exc}"
+        if descartes_autorizados is not None:
+            # Vía de descarte autorizado por el propietario (NO autoría).
+            if confirmacion is None:
+                return _veredicto_ajena(
+                    superficie.kind,
+                    registro,
+                    ruta,
+                    raiz_evidencia,
+                    f"{ruta}: difiere del snapshot y no cuenta con confirmación explícita del propietario",
                 )
+            if superficie.kind == _KIND_MO2_INI and estado_disco is _EstadoDiscoSuperficie.PRESENTE:
+                from sky_claw.local.frozen_runtime.mo2_ini_exclusion import (
+                    Mo2IniExclusionError,
+                    adquirir_exclusion_ini,
+                )
+
+                if confirmacion.estado is EstadoSuperficieConfirmada.AUSENTE:
+                    return _veredicto_ajena(
+                        superficie.kind,
+                        registro,
+                        ruta,
+                        raiz_evidencia,
+                        f"{ruta}: el propietario confirmó AUSENTE pero el INI está PRESENTE",
+                    )
+                assert confirmacion.sha256 is not None
+                exclusion = adquirir_exclusion_ini(ruta)
+                error_huella: str | None = None
+                try:
+                    if not exclusion.autoriza:
+                        return VerificacionSuperficie(
+                            kind=superficie.kind,
+                            ok=False,
+                            detail=(
+                                f"{ruta}: no se pudo adquirir exclusión FILE_SHARE_NONE antes de restaurar "
+                                f"({exclusion.estado.value}: {exclusion.diagnostico.motivo})"
+                            ),
+                        )
+                    try:
+                        exclusion.verificar_huella(confirmacion.sha256)
+                    except Mo2IniExclusionError as exc:
+                        error_huella = (
+                            f"{ruta}: el INI bajo FILE_SHARE_NONE no coincide con la huella autorizada ({exc})"
+                        )
+                finally:
+                    exclusion.cerrar()
+                if error_huella is not None:
+                    return _veredicto_ajena(
+                        superficie.kind,
+                        registro,
+                        ruta,
+                        raiz_evidencia,
+                        error_huella,
+                    )
+            else:
+                coincide, motivo_conf = _confirmacion_coincide_en_disco(ruta, confirmacion, actuales=actuales_disco)
+                if not coincide:
+                    return _veredicto_ajena(superficie.kind, registro, ruta, raiz_evidencia, motivo_conf)
+            motivo_rest = "AUTORIZACION_DEL_DUENO"
+        else:
+            ajena, motivo = _escrita_por_tercero(
+                superficie,
+                registro,
+                escritura_intentada=escritura_intentada,
+                bytes_tras_escritura_ini=bytes_tras_escritura_ini,
+                huellas_posteriores=huellas_posteriores,
+            )
+            if ajena:
+                return _veredicto_ajena(superficie.kind, registro, ruta, raiz_evidencia, motivo)
+            motivo_rest = "AUTORIA"
 
         try:
             if previos is None:
@@ -1219,6 +1379,7 @@ def _restaurar_persistida(
                     ok=True,
                     detail=f"{ruta}: ausencia restaurada (no existía antes)",
                     restaurada=True,
+                    motivo_restauracion=motivo_rest,
                 )
             _escribir_bytes_atomico(ruta, previos)
             actuales = ruta.read_bytes()
@@ -1231,7 +1392,11 @@ def _restaurar_persistida(
             detail=f"{ruta}: el readback no coincide con el digest previo ({_sha256(actuales)} != {superficie.sha256})",
         )
     return VerificacionSuperficie(
-        kind=superficie.kind, ok=True, detail=f"{ruta}: bytes previos restaurados", restaurada=True
+        kind=superficie.kind,
+        ok=True,
+        detail=f"{ruta}: bytes previos restaurados ({motivo_rest})",
+        restaurada=True,
+        motivo_restauracion=motivo_rest,
     )
 
 
@@ -1313,11 +1478,21 @@ def restaurar_registro_locked(
 
     # Fase 1 — clasificar TODO antes de escribir nada.
     ajenas: dict[str, tuple[pathlib.Path, str]] = {}
+    errores_lectura: dict[str, str] = {}
     en_estado_previo: set[str] = set()
     for superficie in registro.superficies:
         if superficie.kind not in alcanzadas or superficie.kind == _KIND_ENVIRON or superficie.path is None:
             continue
-        if _esta_en_estado_previo(superficie):
+        estado_disco, actuales_disco, err_disco = _inspeccionar_superficie_en_disco(pathlib.Path(superficie.path))
+        if estado_disco is _EstadoDiscoSuperficie.DESCONOCIDO:
+            errores_lectura[superficie.kind] = f"{err_disco}: estado DESCONOCIDO, NO se sobrescribe ni elimina"
+            continue
+        if (estado_disco is _EstadoDiscoSuperficie.AUSENTE and not superficie.existed) or (
+            estado_disco is _EstadoDiscoSuperficie.PRESENTE
+            and superficie.existed
+            and actuales_disco is not None
+            and _sha256(actuales_disco) == superficie.sha256
+        ):
             en_estado_previo.add(superficie.kind)
             continue
         es_ajena, motivo = _escrita_por_tercero(
@@ -1331,6 +1506,41 @@ def restaurar_registro_locked(
             ajenas[superficie.kind] = (pathlib.Path(superficie.path), motivo)
 
     verificaciones: list[VerificacionSuperficie] = []
+    if errores_lectura:
+        ilegibles = sorted(errores_lectura)
+        for superficie in registro.superficies:
+            if superficie.kind not in alcanzadas:
+                verificaciones.append(_no_mutada(superficie.kind))
+            elif superficie.kind in errores_lectura:
+                verificaciones.append(
+                    VerificacionSuperficie(
+                        kind=superficie.kind,
+                        ok=False,
+                        detail=errores_lectura[superficie.kind],
+                        requiere_dueno=True,
+                    )
+                )
+            elif superficie.kind in en_estado_previo:
+                verificaciones.append(
+                    VerificacionSuperficie(
+                        kind=superficie.kind,
+                        ok=True,
+                        detail=f"{superficie.path}: ya está en su estado previo: no se toca",
+                    )
+                )
+            else:
+                verificaciones.append(
+                    VerificacionSuperficie(
+                        kind=superficie.kind,
+                        ok=True,
+                        detail=(
+                            f"no se restaura: {ilegibles} no se pudo leer/comprobar (estado DESCONOCIDO) y la "
+                            "decisión es de conjunto. Queda como está, para el propietario"
+                        ),
+                        requiere_dueno=True,
+                    )
+                )
+        return tuple(verificaciones)
     if ajenas:
         no_atribuibles = sorted(ajenas)
         for superficie in registro.superficies:
@@ -1517,6 +1727,49 @@ def recuperar_transicion_interrumpida(
 
         snapshot = cargar_journal_transicion(ruta)
         journal = snapshot.journal
+        if snapshot.disposition is JournalDisposition.NONE:
+            try:
+                aborto = registro_de_aborto(ruta, registro.transition_id)
+            except AbortoCorruptoError as exc:
+                return ResultadoRecuperacion(
+                    estado=EstadoRecuperacion.REGISTRO_NO_LIGADO,
+                    transition_id=registro.transition_id,
+                    fase=registro.fase,
+                    verificaciones=(),
+                    journal_state=None if journal is None else journal.state,
+                    requiere_dueno=True,
+                    motivo=f"el store de abortos está corrupto o incompleto (fail-closed): {exc}",
+                )
+            if aborto is not None and aborto.estado is EstadoAbortoPendiente.COMPLETO:
+                eliminar_registro_locked(handle, ruta, registro.transition_id)
+                return ResultadoRecuperacion(
+                    estado=EstadoRecuperacion.TRANSICION_YA_ABORTADA,
+                    transition_id=registro.transition_id,
+                    fase=registro.fase,
+                    verificaciones=(),
+                    journal_state=None if journal is None else journal.state,
+                    requiere_dueno=False,
+                    motivo=(
+                        "la transición fue abortada de forma durable (COMPLETO, journal en NONE): el registro de "
+                        "recuperación era obsoleto y se retiró SIN restaurar superficies"
+                    ),
+                )
+            if aborto is not None and aborto.estado is EstadoAbortoPendiente.JOURNAL_NONE:
+                # CR #7: mientras el aborto siga en JOURNAL_NONE (incompleto, D4), NO eliminar
+                # el registro de recuperación: preservarlo para que el reintento de
+                # abortar_transicion_pendiente pueda revalidar contra el snapshot original.
+                return ResultadoRecuperacion(
+                    estado=EstadoRecuperacion.REGISTRO_NO_LIGADO,
+                    transition_id=registro.transition_id,
+                    fase=registro.fase,
+                    verificaciones=(),
+                    journal_state=None if journal is None else journal.state,
+                    requiere_dueno=True,
+                    motivo=(
+                        "el aborto durable sigue en JOURNAL_NONE (incompleto, D4): se conserva el registro de "
+                        "recuperación y se requiere reintentar abortar_transicion_pendiente hasta COMPLETO"
+                    ),
+                )
         if (
             snapshot.disposition not in (JournalDisposition.PENDING_PROMOTION, JournalDisposition.PENDING_ROLLBACK)
             or journal is None
@@ -1534,6 +1787,37 @@ def recuperar_transicion_interrumpida(
                     f"el registro declara transition_id={registro.transition_id!r} "
                     f"journal_revision={registro.journal_revision} y el journal está "
                     f"{snapshot.disposition.value}: no se restaura sobre evidencia que no liga"
+                ),
+            )
+
+        # D4: si hay un aborto autorizado en curso o store corrupto, NO mutar superficies por fuera
+        # de la máquina de estados durable del aborto.
+        from sky_claw.local.frozen_runtime.pending_abort_store import abortos_incompletos
+
+        try:
+            incompletos = abortos_incompletos(ruta)
+            aborto_propio = registro_de_aborto(ruta, registro.transition_id)
+        except AbortoCorruptoError as exc:
+            return ResultadoRecuperacion(
+                estado=EstadoRecuperacion.REGISTRO_NO_LIGADO,
+                transition_id=registro.transition_id,
+                fase=registro.fase,
+                verificaciones=(),
+                journal_state=journal.state,
+                requiere_dueno=True,
+                motivo=f"el store de abortos está corrupto o con placeholder incompleto (fail-closed, D4): {exc}",
+            )
+        if incompletos or aborto_propio is not None:
+            return ResultadoRecuperacion(
+                estado=EstadoRecuperacion.REGISTRO_NO_LIGADO,
+                transition_id=registro.transition_id,
+                fase=registro.fase,
+                verificaciones=(),
+                journal_state=journal.state,
+                requiere_dueno=True,
+                motivo=(
+                    "existe un aborto autorizado en curso en state/aborted_transitions/ (D4): "
+                    "NO se restauran superficies fuera de abortar_transicion_pendiente"
                 ),
             )
 

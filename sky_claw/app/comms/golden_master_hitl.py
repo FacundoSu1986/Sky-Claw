@@ -54,10 +54,13 @@ from sky_claw.app.security.network_gateway import (
 from sky_claw.local.frozen_runtime import approval as _approval_module
 from sky_claw.local.frozen_runtime.autorizacion_hitl_transicion import (
     AutorizacionTransicionError,
+    ConfirmacionSuperficie,
     DiagnosticoDurable,
+    EstadoSuperficieConfirmada,
     ReanudacionNoDisponibleError,
     ReanudacionRequiereDuenoError,
     RegistroAbandonoTransicion,
+    RegistroAbortoPendiente,
     ResultadoTransicion,
     SesionTransicionGoldenMaster,
     SolicitudTransicion,
@@ -1311,6 +1314,8 @@ class CoordinadorTelegramGoldenMaster:
             return await self._admitir_reanudar(chat_id=chat_id, resto=resto)
         if comando == "/gm_abandonar":
             return await self._admitir_abandonar(chat_id=chat_id, resto=resto, identidad=identidad)
+        if comando == "/gm_abortar_pendiente":
+            return await self._admitir_abortar_pendiente(chat_id=chat_id, resto=resto, identidad=identidad)
 
         await self._enviar_seguro(
             chat_id, f"❌ Comando Golden Master no reconocido: <code>{_escape_html(comando)}</code>."
@@ -1432,6 +1437,71 @@ class CoordinadorTelegramGoldenMaster:
         self._operacion_en_curso = True
         return self._lanzar_tarea(
             self._correr_abandonar(chat_id=chat_id, transition_id=transition_id, motivo=motivo, identidad=identidad)
+        )
+
+    @staticmethod
+    def _parsear_confirmaciones_telegram(espec: str) -> tuple[dict[str, ConfirmacionSuperficie], bool]:
+        """Parsea ``ip0``, ``ninguna`` o ``superficie=<sha256|ausente>,...`` de forma estricta."""
+        limpio = espec.strip()
+        if limpio.lower() == "ip0":
+            return {}, True
+        if limpio.lower() == "ninguna":
+            return {}, False
+        salida: dict[str, ConfirmacionSuperficie] = {}
+        for item in limpio.split(","):
+            par = item.strip()
+            if "=" not in par:
+                raise ValueError(f"confirmación malformada: {par!r} (esperado superficie=<sha256|ausente>)")
+            clave, valor = par.split("=", 1)
+            k = clave.strip()
+            v = valor.strip()
+            if not k or not v:
+                raise ValueError(f"confirmación vacía en {par!r}")
+            if k in salida:
+                raise ValueError(f"superficie duplicada en confirmaciones: {k!r}")
+            if v.lower() == "ausente":
+                salida[k] = ConfirmacionSuperficie(estado=EstadoSuperficieConfirmada.AUSENTE)
+            else:
+                salida[k] = ConfirmacionSuperficie(estado=EstadoSuperficieConfirmada.PRESENTE, sha256=v.lower())
+        return salida, False
+
+    async def _admitir_abortar_pendiente(
+        self,
+        *,
+        chat_id: int,
+        resto: str,
+        identidad: IdentidadPropietario,
+    ) -> asyncio.Task[None] | None:
+        partes = resto.split(maxsplit=2)
+        if len(partes) != 3 or not partes[0].strip() or not partes[1].strip() or not partes[2].strip():
+            await self._enviar_seguro(
+                chat_id,
+                "❌ Uso: <code>/gm_abortar_pendiente &lt;transition_id&gt; "
+                "&lt;ip0|ninguna|superficie=sha256|ausente,...&gt; &lt;motivo&gt;</code>.",
+            )
+            return None
+        if self._esta_ocupado() or self._sesion_activa is not None:
+            await self._enviar_seguro(
+                chat_id,
+                "⛔ No se puede abortar PENDING mientras exista otra operación o solicitud abierta.",
+            )
+            return None
+        transition_id, espec_conf, motivo = partes[0].strip(), partes[1].strip(), partes[2].strip()
+        try:
+            confirmaciones, usar_ip0 = self._parsear_confirmaciones_telegram(espec_conf)
+        except (ValueError, FrozenRuntimeError) as exc:
+            await self._enviar_seguro(chat_id, f"❌ Confirmaciones inválidas: {_escape_html(exc)}")
+            return None
+        self._operacion_en_curso = True
+        return self._lanzar_tarea(
+            self._correr_abortar_pendiente(
+                chat_id=chat_id,
+                transition_id=transition_id,
+                confirmaciones=confirmaciones,
+                usar_ip0=usar_ip0,
+                motivo=motivo,
+                identidad=identidad,
+            )
         )
 
     # ------------------------------------------------------------------
@@ -1823,6 +1893,57 @@ class CoordinadorTelegramGoldenMaster:
         finally:
             self._operacion_en_curso = False
 
+    async def _correr_abortar_pendiente(
+        self,
+        *,
+        chat_id: int,
+        transition_id: str,
+        confirmaciones: Mapping[str, ConfirmacionSuperficie],
+        usar_ip0: bool,
+        motivo: str,
+        identidad: IdentidadPropietario,
+    ) -> None:
+        objetivo = self._objetivo
+        assert objetivo is not None
+        cancelacion_pedida = threading.Event()
+
+        def _trabajo_abortar_pendiente() -> RegistroAbortoPendiente | _ResultadoAbortadoPorCierre:
+            if self._debe_abortar_trabajo(cancelacion_pedida):
+                return _TRABAJO_ABORTADO_POR_CIERRE
+            sesion = SesionTransicionGoldenMaster(**objetivo.to_sesion_kwargs())
+            return sesion.abortar_pendiente(
+                transition_id=transition_id,
+                identidad=identidad,
+                motivo=motivo,
+                confirmaciones=confirmaciones,
+                usar_contexto_ip0=usar_ip0,
+            )
+
+        try:
+            if self._cerrado:
+                return
+            registro = await self._ejecutar_en_worker(
+                _trabajo_abortar_pendiente,
+                cancelacion_event=cancelacion_pedida,
+            )
+            if isinstance(registro, _ResultadoAbortadoPorCierre) or self._cerrado:
+                return
+            await self._enviar_seguro(
+                chat_id,
+                "🛑 Aborto autorizado de PENDING completado.\n"
+                f"<b>Transición:</b> <code>{_escape_html(registro.transition_id)}</code>\n"
+                f"<b>Estado:</b> <code>{_escape_html(registro.estado.value)}</code>\n"
+                f"<b>Modo:</b> <code>{_escape_html(registro.modo.value)}</code>\n"
+                f"<b>Digest:</b> <code>{_escape_html(registro.record_digest)}</code>",
+            )
+        except FrozenRuntimeError as exc:
+            if not self._cerrado:
+                await self._enviar_seguro(
+                    chat_id, f"❌ No se pudo abortar el PENDING: {_escape_html(_texto_de_error(exc))}"
+                )
+        finally:
+            self._operacion_en_curso = False
+
     # ------------------------------------------------------------------
     # Formateadores de salida HTML escapada
     # ------------------------------------------------------------------
@@ -1870,7 +1991,9 @@ class CoordinadorTelegramGoldenMaster:
             "• <code>/gm_aprobar &lt;solicitud_id&gt;</code> / <code>/gm_rechazar &lt;id&gt;</code> / "
             "<code>/gm_cancelar &lt;id&gt;</code> — Decisión por texto.\n"
             "• <code>/gm_reanudar &lt;transition_id&gt;</code> — Reanuda transición consumida pre-PENDING.\n"
-            "• <code>/gm_abandonar &lt;transition_id&gt; &lt;motivo&gt;</code> — Registra abandono durable."
+            "• <code>/gm_abandonar &lt;transition_id&gt; &lt;motivo&gt;</code> — Registra abandono durable.\n"
+            "• <code>/gm_abortar_pendiente &lt;transition_id&gt; &lt;ip0|ninguna|sup=sha|ausente,...&gt; &lt;motivo&gt;</code> — "
+            "Reconcilia y aborta un PENDING con confirmación del dueño."
         )
 
 
