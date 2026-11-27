@@ -22,7 +22,7 @@ import aiosqlite
 import pytest
 
 from sky_claw.app.core.errors import VaultStorageError
-from sky_claw.app.security.credential_vault import CredentialVault
+from sky_claw.app.security.credential_vault import CredentialVault, _SQLitePool
 
 
 async def _wait_for_semaphore_waiter(sem: asyncio.Semaphore) -> None:
@@ -517,3 +517,41 @@ class TestCierreEstrictoDelPool:
         with pytest.raises(ValueError, match="no active connection|[Cc]onnection closed"):
             await creadas[0].execute("SELECT 1")
         assert pool._pool.empty(), "una conexión post-close quedó re-encolada en el pool"
+
+
+# ---------------------------------------------------------------------------
+# WAL-03: el presupuesto de conversión WAL no puede colisionar con el timeout
+# exterior de ``acquire()``. Se deriva del presupuesto del pool, con margen
+# explícito para restaurar/cerrar/propagar (M12).
+# ---------------------------------------------------------------------------
+
+
+def test_el_presupuesto_wal_reserva_margen_para_finalizacion() -> None:
+    import sky_claw.app.security.credential_vault as cv
+
+    pool = _SQLitePool("unused.db", timeout=5.0)
+    assert 0 < pool._wal_timeout_ms < int(pool._timeout * 1000)
+    assert pool._wal_timeout_ms == int(pool._timeout * 1000) - cv._MARGEN_FINALIZACION_WAL_MS
+    assert 0 < cv._MARGEN_FINALIZACION_WAL_MS < 1000
+    # Un timeout personalizado más corto que el margen degrada a fail-fast,
+    # nunca a un presupuesto negativo ni a un timeout global mayor.
+    corto = _SQLitePool("unused.db", timeout=0.05)
+    assert corto._wal_timeout_ms == 0
+
+
+async def test_la_conversion_recibe_el_presupuesto_derivado(tmp_path: Path) -> None:
+    import sky_claw.app.security.credential_vault as cv
+
+    vistos: list[int] = []
+    original = cv.convertir_a_wal
+
+    async def espia(conn, *, busy_timeout_ms: int) -> None:  # type: ignore[no-untyped-def]
+        vistos.append(busy_timeout_ms)
+        await original(conn, busy_timeout_ms=busy_timeout_ms)
+
+    pool = _SQLitePool(str(tmp_path / "wal.db"), timeout=5.0)
+    with patch.object(cv, "convertir_a_wal", espia):
+        async with pool.acquire():
+            pass
+        await pool.close()
+    assert vistos == [pool._wal_timeout_ms]

@@ -24,12 +24,14 @@ import aiosqlite
 import pytest
 from pydantic import ValidationError
 
+import sky_claw.app.core.db_lifecycle as db_lifecycle_mod
 from sky_claw.app.core.db_lifecycle import (
     DatabaseConnectionQuarantinedError,
     DatabaseLifecycleConfig,
     DatabaseLifecycleManager,
     DatabaseShutdownIncompleteError,
     WALHealth,
+    convertir_a_wal,
 )
 
 # ---------------------------------------------------------------------------
@@ -2144,3 +2146,214 @@ async def test_recovery_cierra_conexion_temporal_al_cancelar(
     finally:
         with contextlib.suppress(Exception):
             await manager.shutdown_all()
+
+
+# ---------------------------------------------------------------------------
+# Contrato explícito de ``convertir_a_wal`` (remediación PR #1028)
+#
+# Dobles deterministas: SQLite real se reserva para las recetas de contención
+# en ``test_conversion_wal_standalone.py``. Acá se gobiernan la aritmética del
+# deadline, la restauración y la propagación de errores con reloj controlado.
+# ---------------------------------------------------------------------------
+
+
+class _CursorDeContrato:
+    def __init__(self, fila: tuple[str, ...] | None, error: BaseException | None = None) -> None:
+        self._fila = fila
+        self._error = error
+
+    def __await__(self):
+        async def _esperar() -> _CursorDeContrato:
+            if self._error is not None:
+                raise self._error
+            return self
+
+        return _esperar().__await__()
+
+    async def __aenter__(self) -> _CursorDeContrato:
+        if self._error is not None:
+            raise self._error
+        return self
+
+    async def __aexit__(self, *_args: object) -> bool:
+        return False
+
+    async def fetchone(self) -> tuple[str, ...] | None:
+        return self._fila
+
+
+class _ConexionDeContrato:
+    """Conexión falsa: registra SQL y fallos inyectados, sin tocar SQLite."""
+
+    def __init__(
+        self,
+        *,
+        fila: tuple[str, ...] | None = ("wal",),
+        error_pragma: BaseException | None = None,
+        error_restauracion: BaseException | None = None,
+        falla_timeout_en: int | None = None,
+    ) -> None:
+        self.sql: list[str] = []
+        self.intentos_wal = 0
+        self.timeout_llamadas = 0
+        self._fila = fila
+        self._error_pragma = error_pragma
+        self._error_restauracion = error_restauracion
+        self._falla_timeout_en = falla_timeout_en
+
+    def execute(self, sql: object, *_args: object, **_kwargs: object) -> _CursorDeContrato:
+        sentencia = str(sql)
+        self.sql.append(sentencia)
+        if sentencia.startswith("PRAGMA busy_timeout="):
+            self.timeout_llamadas += 1
+            if self.timeout_llamadas == self._falla_timeout_en:
+                return _CursorDeContrato(None, self._error_restauracion)
+        if sentencia == "PRAGMA journal_mode=WAL":
+            self.intentos_wal += 1
+            if self._error_pragma is not None:
+                error = self._error_pragma
+                self._error_pragma = None
+                return _CursorDeContrato(None, error)
+            return _CursorDeContrato(self._fila)
+        return _CursorDeContrato(None)
+
+
+class _RelojGuiado:
+    def __init__(self, valores: list[float]) -> None:
+        self.valores = valores
+        self.llamadas = 0
+
+    def __call__(self) -> float:
+        valor = self.valores[min(self.llamadas, len(self.valores) - 1)]
+        self.llamadas += 1
+        return valor
+
+
+class _DormirGuiado:
+    def __init__(self) -> None:
+        self.duraciones: list[float] = []
+
+    async def __call__(self, segundos: float) -> None:
+        self.duraciones.append(segundos)
+
+
+def _instalar_reloj(monkeypatch: pytest.MonkeyPatch, valores: list[float]) -> _DormirGuiado:
+    dormir = _DormirGuiado()
+    monkeypatch.setattr(db_lifecycle_mod, "_monotono", _RelojGuiado(valores))
+    monkeypatch.setattr(db_lifecycle_mod, "_dormir", dormir)
+    return dormir
+
+
+def _error_busy() -> sqlite3.OperationalError:
+    error = sqlite3.OperationalError("database is locked")
+    error.__dict__["sqlite_errorcode"] = sqlite3.SQLITE_BUSY
+    error.__dict__["sqlite_errorname"] = "SQLITE_BUSY"
+    return error
+
+
+async def test_convertir_a_wal_restaura_busy_timeout_en_exito(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Éxito: la conexión se publica con el timeout CONFIGURADO, no con el cap por intento."""
+    _instalar_reloj(monkeypatch, [0.0, 0.01])
+    conn = _ConexionDeContrato()
+    await convertir_a_wal(conn, busy_timeout_ms=100)
+    assert conn.intentos_wal == 1
+    assert conn.sql[-1] == "PRAGMA busy_timeout=100"
+
+
+@pytest.mark.parametrize("modo", ["contencion", "no_reintentable", "cancelacion"])
+async def test_convertir_a_wal_restauracion_en_toda_salida_fallida(monkeypatch: pytest.MonkeyPatch, modo: str) -> None:
+    """Timeout agotado, error no reintentable y cancelación restauran y propagan EL original."""
+    if modo == "contencion":
+        original: BaseException = _error_busy()
+        reloj = [0.0, 0.2]
+    elif modo == "no_reintentable":
+        original = sqlite3.OperationalError("disk I/O error")
+        reloj = [0.0, 0.02]
+    else:
+        original = asyncio.CancelledError()
+        reloj = [0.0, 0.02]
+    _instalar_reloj(monkeypatch, reloj)
+    conn = _ConexionDeContrato(error_pragma=original)
+    with pytest.raises(type(original)) as capturado:
+        await convertir_a_wal(conn, busy_timeout_ms=100)
+    assert capturado.value is original
+    assert conn.sql[-1] == "PRAGMA busy_timeout=100"
+
+
+async def test_convertir_a_wal_fallo_de_restauracion_no_oculta_el_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Si la restauración también falla, se propaga la excepción primaria."""
+    original = sqlite3.OperationalError("disk I/O error")
+    _instalar_reloj(monkeypatch, [0.0, 0.02])
+    conn = _ConexionDeContrato(
+        error_pragma=original,
+        error_restauracion=sqlite3.OperationalError("restore fail"),
+        falla_timeout_en=2,
+    )
+    with pytest.raises(sqlite3.OperationalError) as capturado:
+        await convertir_a_wal(conn, busy_timeout_ms=100)
+    assert capturado.value is original
+
+
+async def test_convertir_a_wal_no_reintenta_despues_del_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El presupuesto vencido DURANTE el sleep no habilita un intento extra (M04)."""
+    # El deadline se agota DURANTE el sleep: la comprobación posterior al
+    # error ve restante positivo, así que sólo el guard del loop impide el
+    # segundo intento. (La primera lectura alimenta el deadline.)
+    _instalar_reloj(monkeypatch, [0.0, 0.0, 0.008, 0.011, 0.011])
+    conn = _ConexionDeContrato(error_pragma=_error_busy())
+    with pytest.raises(sqlite3.OperationalError):
+        await convertir_a_wal(conn, busy_timeout_ms=10)
+    assert conn.intentos_wal == 1
+
+
+async def test_convertir_a_wal_sleep_usa_restante_vigente(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El sleep se capita con el restante RECALCULADO, no con el de antes del pragma (M05)."""
+    dormir = _instalar_reloj(monkeypatch, [0.0, 0.099, 0.099, 0.099])
+    conn = _ConexionDeContrato(error_pragma=_error_busy())
+    await convertir_a_wal(conn, busy_timeout_ms=100)
+    assert dormir.duraciones == [pytest.approx(0.001)]
+
+
+@pytest.mark.parametrize("fila", [("delete",), None])
+async def test_convertir_a_wal_falla_cerrado_si_sqlite_no_devuelve_wal(
+    monkeypatch: pytest.MonkeyPatch, fila: tuple[str, ...] | None
+) -> None:
+    """No basta con que ``execute`` no lance: se consume el cursor y se exige 'wal'."""
+    _instalar_reloj(monkeypatch, [0.0, 0.01])
+    conn = _ConexionDeContrato(fila=fila)
+    with pytest.raises(sqlite3.OperationalError):
+        await convertir_a_wal(conn, busy_timeout_ms=100)
+
+
+@pytest.mark.parametrize("valor", [True, False, -1, 1.5, "100", 2**31])
+async def test_convertir_a_wal_rechaza_timeout_invalido(monkeypatch: pytest.MonkeyPatch, valor: object) -> None:
+    """bool/float/str/negativo/fuera de rango se rechazan ANTES de tocar la conexión."""
+    _instalar_reloj(monkeypatch, [0.0])
+    conn = _ConexionDeContrato()
+    with pytest.raises((ValueError, TypeError)):
+        await convertir_a_wal(conn, busy_timeout_ms=valor)  # type: ignore[arg-type]
+    assert conn.sql == []
+
+
+@pytest.mark.parametrize("valor", [True, 1.5, "5", -1, 2**31])
+def test_config_rechaza_busy_timeout_invalido(valor: object) -> None:
+    """El config usa el MISMO dominio que el helper (dominio único, no dos validaciones)."""
+    with pytest.raises(ValidationError):
+        DatabaseLifecycleConfig(busy_timeout_ms=valor)  # type: ignore[arg-type]
+
+
+def test_codigos_de_contencion_congelados() -> None:
+    """Cualquier ampliación a máscara BUSY/LOCKED debe romper esta ancla."""
+    assert (
+        frozenset(
+            {
+                sqlite3.SQLITE_BUSY,
+                sqlite3.SQLITE_BUSY_RECOVERY,
+                sqlite3.SQLITE_LOCKED,
+                sqlite3.SQLITE_LOCKED_SHAREDCACHE,
+            }
+        )
+        == db_lifecycle_mod._CODIGOS_DE_CONTENCION_REINTENTABLES
+    )

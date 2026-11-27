@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import pathlib
+import sqlite3
 import subprocess
 import sys
 import time
@@ -26,7 +27,7 @@ from typing import Any
 import psutil
 import pytest
 
-from sky_claw.app.db.locks import DistributedLockManager
+from sky_claw.app.db.locks import _LOCKS_SCHEMA_SQL, DistributedLockManager
 from sky_claw.local.tools import bodyslide_journal as bj
 from sky_claw.local.tools.bodyslide_journal import (
     CLAVES_DE_ARCHIVO,
@@ -989,16 +990,32 @@ from sky_claw.local.tools.rollback_reconciler import reconcile_bodyslide_config_
 exe_dir = pathlib.Path(sys.argv[1])
 almacen = bj.AlmacenDeJournal(pathlib.Path(sys.argv[2]), endurecer=lambda _p: None)
 salida = pathlib.Path(sys.argv[3])
-arranque = float(sys.argv[4])
-db = pathlib.Path(sys.argv[5])
+listo = pathlib.Path(sys.argv[4])
+go = pathlib.Path(sys.argv[5])
+db = pathlib.Path(sys.argv[6])
+ESPERA_GO_S = 30.0
+
+
+def _senalizar_listo(ruta):
+    ruta.write_text("listo", encoding="utf-8")
+
+
+def _esperar_go(ruta, timeout_s):
+    limite = time.monotonic() + timeout_s
+    while not ruta.exists():
+        if time.monotonic() >= limite:
+            raise TimeoutError(f"GO no apareció: {{ruta}}")
+        time.sleep(0.005)
 
 
 async def main():
     manager = DistributedLockManager(db, default_ttl=30.0, max_retries=1, backoff_base=0.01, backoff_max=0.02)
-    await manager.initialize()
     identidad = bj.IdentidadDeEjecucion(maquina={maquina!r}, instancia=bj.identidad_de_instancia(exe_dir))
-    while time.time() < arranque:
-        time.sleep(0.001)
+    # Barrera READY/GO ANTES de initialize(): lo que se sincroniza es la
+    # conversión a WAL, no la reconciliación posterior.
+    _senalizar_listo(listo)
+    _esperar_go(go, ESPERA_GO_S)
+    await manager.initialize()
     try:
         resultado = await reconcile_bodyslide_config_journals(
             almacen=almacen, exe_dir=exe_dir, identidad_actual=identidad, lock_manager=manager
@@ -1013,6 +1030,26 @@ asyncio.run(main())
 """
 
 
+def test_la_barrera_ready_go_precede_la_conversion_wal_en_el_hijo() -> None:
+    """WAL-02 / M13: la barrera sincroniza la conversión, no la reconciliación.
+
+    El defecto auditado inicializaba el manager —y con él convertía a WAL— antes
+    de esperar el instante de arranque. Una ancla AST sobre el GUION real detecta
+    la reintroducción sin depender de que la carrera natural falle.
+    """
+    guion = _GUION_DE_RECUPERACION.format(raiz="RAIZ", maquina="MAQUINA")
+    ubicaciones: dict[str, int] = {}
+    for nodo in ast.walk(ast.parse(guion)):
+        if not isinstance(nodo, ast.Call):
+            continue
+        nombre = nodo.func.attr if isinstance(nodo.func, ast.Attribute) else getattr(nodo.func, "id", None)
+        if nombre in {"_senalizar_listo", "_esperar_go", "initialize"}:
+            ubicaciones.setdefault(nombre, nodo.lineno)
+    assert set(ubicaciones) == {"_senalizar_listo", "_esperar_go", "initialize"}, ubicaciones
+    assert ubicaciones["_senalizar_listo"] < ubicaciones["initialize"], ubicaciones
+    assert ubicaciones["_esperar_go"] < ubicaciones["initialize"], ubicaciones
+
+
 def test_dos_procesos_recuperan_a_la_vez_sin_doble_escritura(
     tmp_path: pathlib.Path, almacen: AlmacenDeJournal, exe_dir: pathlib.Path
 ) -> None:
@@ -1021,20 +1058,49 @@ def test_dos_procesos_recuperan_a_la_vez_sin_doble_escritura(
     guion = tmp_path / "recuperar.py"
     guion.write_text(_GUION_DE_RECUPERACION.format(raiz=str(RAIZ), maquina=MAQUINA), encoding="utf-8")
     db = tmp_path / "locks.db"
-    # Los dos hijos crean y convierten a WAL la MISMA base de locks a la vez: la carrera que
+    # Se siembra el schema en DELETE para que los hijos compitan SOLO en la
+    # conversión WAL. El DDL concurrente sobre una base recién creada produce
+    # SQLITE_READONLY (medido 5/30 en este entorno), que NO es contención y no
+    # debe entrar en el reintento: es una carrera distinta, fuera de este test.
+    semilla = sqlite3.connect(db)
+    try:
+        semilla.execute("PRAGMA journal_mode=DELETE")
+        semilla.executescript(_LOCKS_SCHEMA_SQL)
+        semilla.commit()
+    finally:
+        semilla.close()
+    # Los dos hijos convierten a WAL la MISMA base a la vez: la carrera que
     # tumbó main en Windows (run 45677510174) hasta que toda apertura pasó por
     # ``convertir_a_wal`` (ver tests/test_conversion_wal_standalone.py).
-    arranque = time.time() + 3.0
+    # READY/GO con señales de archivo: ambos llegan al primer pragma juntos.
+    listos = [tmp_path / f"listo_{i}" for i in (1, 2)]
+    go = tmp_path / "go"
     salidas = [tmp_path / f"recuperacion_{i}.json" for i in (1, 2)]
     procesos = [
         subprocess.Popen(  # noqa: S603 - argv fijo, sin shell
-            [sys.executable, str(guion), str(exe_dir), str(almacen.directorio), str(s), str(arranque), str(db)],
+            [
+                sys.executable,
+                str(guion),
+                str(exe_dir),
+                str(almacen.directorio),
+                str(salida),
+                str(listo),
+                str(go),
+                str(db),
+            ],
             env=_entorno_hijo(),
             stderr=subprocess.PIPE,
         )
-        for s in salidas
+        for salida, listo in zip(salidas, listos, strict=True)
     ]
     try:
+        # Espera ACOTADA a que ambos estén listos; si un hijo muere antes,
+        # el test falla por timeout en vez de sincronizar contra un muerto.
+        limite = time.monotonic() + 30.0
+        while not all(ruta.exists() for ruta in listos):
+            assert time.monotonic() < limite, "un hijo nunca señalizó READY"
+            time.sleep(0.005)
+        go.write_text("go", encoding="utf-8")
         errores = [proceso.communicate(timeout=180)[1] for proceso in procesos]
     finally:
         # Un hijo que sobrevive al test lo hace fallar al SIGUIENTE (ResourceWarning de Popen).
