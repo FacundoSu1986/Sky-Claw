@@ -19,6 +19,19 @@ from sky_claw.app.security.file_permissions import restrict_to_owner
 
 logger = logging.getLogger("SkyClaw.CredentialVault")
 
+#: Margen reservado DENTRO del presupuesto del pool para la finalización de
+#: ``convertir_a_wal`` (restaurar busy_timeout, cerrar la conexión fallida y
+#: propagar). Medido en este entorno sobre 120 iteraciones reales: mediana
+#: 3.75 ms, p99 5.89 ms, máximo 133.6 ms. 250 ms cubre el máximo observado con
+#: ~1.9x de holgura y es el 5% del presupuesto por defecto (5 s): no duplica
+#: el budget WAL ni levanta el timeout público del pool.
+_MARGEN_FINALIZACION_WAL_MS = 250
+
+
+def _presupuesto_wal_ms(timeout_s: float) -> int:
+    """Deriva el presupuesto interno del exterior; nunca lo excede."""
+    return max(0, int(timeout_s * 1000) - _MARGEN_FINALIZACION_WAL_MS)
+
 
 class _SQLitePool:
     """Async-safe SQLite connection pool with Zero-Trust timeouts.
@@ -28,7 +41,12 @@ class _SQLitePool:
     closed. Each connection is born with WAL pragmas applied.
     """
 
-    def __init__(self, db_path: str, max_size: int = 5, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        max_size: int = 5,
+        timeout: float = BUSY_TIMEOUT_POR_DEFECTO_MS / 1000.0,
+    ) -> None:
         if max_size <= 0:
             raise ValueError("pool_size must be a positive integer")
         if timeout <= 0:
@@ -36,6 +54,10 @@ class _SQLitePool:
         self._db_path = db_path
         self._max_size = max_size
         self._timeout = timeout
+        # WAL-03: el reintento acotado debe terminar ANTES del ``wait_for``
+        # exterior para que el error SQLite original gane contra el timeout
+        # del pool. Presupuesto derivado, nunca un valor paralelo.
+        self._wal_timeout_ms = _presupuesto_wal_ms(timeout)
         # BoundedSemaphore (not plain Semaphore) is required so that
         # release() raises ValueError when the counter would exceed max_size.
         # This lets close() and the CancelledError handler detect over-release.
@@ -61,7 +83,7 @@ class _SQLitePool:
         # conexiones sensibles con las generales (ver db_lifecycle.py).
         conn = await aiosqlite.connect(self._db_path)
         try:
-            await convertir_a_wal(conn, busy_timeout_ms=BUSY_TIMEOUT_POR_DEFECTO_MS)
+            await convertir_a_wal(conn, busy_timeout_ms=self._wal_timeout_ms)
             await conn.execute("PRAGMA synchronous=NORMAL;")
         except BaseException:
             # Ensure the raw connection is closed on any error (including
