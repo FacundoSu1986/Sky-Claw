@@ -375,10 +375,11 @@ de ningún lock de Sky-Claw.
    - No hay huellas en memoria, así que **ninguna** superficie que difiera del snapshot es atribuible: se clasifica como `escritura_ajena = True`. Vale igual para INI, config y `active.json`. Antes, config y `active.json` se atribuían por forma, y la recuperación dejaba el INI en el Clone con config y Desired de vuelta en el previo.
    - **No se sobrescribe el archivo en disco.** El contenido divergente se preserva en `storage/recovery_evidence/<transition_id>/` y se emite `requiere_dueno = True`. La recuperación es repetible: no escribe superficies ni altera la evidencia en pasadas siguientes.
 
-3. **Intervención explícita del propietario:**
+3. **Intervención explícita del propietario (P7-F Incremento 2 PR 1, ADR 0012 §48):**
    - Ni el binder ni la recuperación automática resuelven escrituras ajenas sin autorización humana.
-   - Ante clasificaciones de `escritura_ajena` o journals en `PENDING_*`, el propietario debe auditar la evidencia forense archivada y el snapshot del registro (`state/recovery/<transition_id>.json`).
-   - **Limitación vigente:** hoy no existe una palanca productiva del dueño para restaurar el baseline ni para sacar el journal de `PENDING_*`. `recuperar_transicion_interrumpida()` no acepta un "forzar", y `journal.reconciliar_journal()` sólo clasifica, no escribe. El único escritor de `NONE` es `FINALIZE`. Ese camino es el Incremento 2 de P7-F; mientras tanto, no se editan journals a mano.
+   - Ante clasificaciones de `escritura_ajena` o journals en `PENDING_*`, el propietario audita la evidencia forense archivada y el snapshot del registro (`state/recovery/<transition_id>.json`).
+   - **Salida productiva del `PENDING` (sin reserva C6 ni registro `FINALIZED` C7):** `abortar_transicion_pendiente(storage_root, transition_id=..., identidad=..., motivo=..., confirmaciones=...)` (o por Telegram `/gm_abortar_pendiente`) persiste intención durable single-winner en `state/aborted_transitions/<tid>.json`, revalida superficies y quiescencia, restaura únicamente con confirmaciones exactas `PRESENTE(sha256)` / `AUSENTE` (sin etiquetarlo como autoría) y rota `PENDING → NONE` mediante `_abortar_pendiente_locked` sin crear `FINALIZED` artificiales.
+   - **Fronteras C6 y C7:** si existe reserva en `state/finalization-seqs/` (C6) o registro `FINALIZED` (C7), el aborto falla cerrado; la operación separada para completar hacia adelante (`completar_transicion_pendiente`) corresponde al PR 2. Nunca editar journals a mano.
 
 Exclusión real: el `participant_lock` coordina a los participantes de Sky-Claw, y la restauración de
 `config.toml` toma además el lock por archivo de `Config.save()` (mismo proceso). Ninguno excluye a otro
