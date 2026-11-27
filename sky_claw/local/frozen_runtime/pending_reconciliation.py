@@ -200,10 +200,35 @@ def _verificar_superficies_contra_snapshot(
         assert sup.path is not None
         ruta = pathlib.Path(sup.path)
         with recovery._coordinacion_de_escritores(sup.kind, ruta):
-            if not recovery._esta_en_estado_previo(sup):
-                obs = recovery.observar_superficie_en_disco(sup)
+            # CR #12: una única lectura bajo la coordinación de escritores; se verifica y se sella esa misma observación.
+            estado_disco, actuales, err_disco = recovery._inspeccionar_superficie_en_disco(ruta)
+            if estado_disco is recovery._EstadoDiscoSuperficie.DESCONOCIDO:
+                raise AbortoPendienteInvalidoError(
+                    f"no se pudo verificar la superficie '{sup.kind}' ({ruta}) contra el snapshot ({err_disco}): "
+                    "se detiene sin rotar el journal (D2)"
+                )
+            coincide = (estado_disco is recovery._EstadoDiscoSuperficie.AUSENTE and not sup.existed) or (
+                estado_disco is recovery._EstadoDiscoSuperficie.PRESENTE
+                and sup.existed
+                and actuales is not None
+                and recovery.huella(actuales) == sup.sha256
+            )
+            obs: dict[str, object] = {
+                "path": str(ruta),
+                "estado": (
+                    EstadoSuperficieConfirmada.AUSENTE.value
+                    if estado_disco is recovery._EstadoDiscoSuperficie.AUSENTE
+                    else EstadoSuperficieConfirmada.PRESENTE.value
+                ),
+                "sha256": None if actuales is None else recovery.huella(actuales),
+            }
+            if not coincide:
                 evidencia_nota = ""
-                if raiz_evidencia is not None and registro is not None and ruta.exists():
+                if (
+                    raiz_evidencia is not None
+                    and registro is not None
+                    and estado_disco is recovery._EstadoDiscoSuperficie.PRESENTE
+                ):
                     ev_path, ev_diag = recovery._preservar_evidencia(raiz_evidencia, registro, sup.kind, ruta)
                     evidencia_nota = (
                         f" Evidencia conservada en {ev_path}."
@@ -215,7 +240,7 @@ def _verificar_superficies_contra_snapshot(
                     f"(observado={obs}, esperado_existed={sup.existed}, esperado_sha256={sup.sha256}): "
                     f"se preserva y se detiene sin rotar el journal (D2).{evidencia_nota}"
                 )
-            observadas[sup.kind] = recovery.observar_superficie_en_disco(sup)
+            observadas[sup.kind] = obs
     return observadas
 
 
@@ -892,6 +917,20 @@ def abortar_transicion_pendiente(
                     observadores, momento="revalidación previa a completar aborto desde JOURNAL_NONE (P1-01)"
                 )
                 snapshot_journal = cargar_journal_transicion(storage_path)
+                # CR #15: al reanudar desde JOURNAL_NONE, exigir explícitamente que el journal siga en NONE
+                # con la revisión post-rotación (journal_revision + 1) y el testigo esperado.
+                testigo_esperado_jnone = historial.latest.transition_id if historial.latest is not None else None
+                if (
+                    snapshot_journal.disposition is not JournalDisposition.NONE
+                    or snapshot_journal.journal is None
+                    or snapshot_journal.journal.journal_revision != reg_actual.journal_revision + 1
+                    or snapshot_journal.journal.last_finalized_transition_id != testigo_esperado_jnone
+                ):
+                    raise AbortoPendienteInvalidoError(
+                        "el aborto está en JOURNAL_NONE pero el journal en disco no coincide con NONE / "
+                        f"revision={reg_actual.journal_revision + 1} / testigo={testigo_esperado_jnone!r} "
+                        f"(observado: {snapshot_journal.disposition.value}): no se retira el registro ni se avanza a COMPLETO"
+                    )
                 if reg_actual.modo is ModoAbortoPendiente.CON_REGISTRO_RECUPERACION:
                     try:
                         registro_rec = recovery.cargar_registro(storage_path, t_id)

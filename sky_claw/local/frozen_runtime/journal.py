@@ -2467,6 +2467,8 @@ class _EstadoDurable:
     auditoria: AuditoriaReservas
     deseado: FrozenRuntimeStateLoadResult
     abortos_incompletos: tuple[tuple[str, str], ...]
+    store_abortos_existe: bool
+    aborto_completo_presente: bool
     huella: tuple[object, ...]
 
 
@@ -2476,6 +2478,7 @@ def _huella_estado_durable(
     auditoria: AuditoriaReservas,
     deseado: FrozenRuntimeStateLoadResult,
     abortos_resumen: tuple[tuple[str, str], ...] = (),
+    store_abortos_existe: bool = False,
 ) -> tuple[object, ...]:
     """Huella de TODAS las fuentes que la clasificación consulta.
 
@@ -2497,6 +2500,7 @@ def _huella_estado_durable(
         getattr(deseado, "found", None),
         None if estado_deseado is None else estado_deseado.desired_active_generation,
         abortos_resumen,
+        store_abortos_existe,
     )
 
 
@@ -2511,35 +2515,31 @@ def _observar_estado_durable(root: pathlib.Path) -> _EstadoDurable:
     from sky_claw.local.frozen_runtime.pending_abort_store import (
         EstadoAbortoPendiente,
         cargar_abortos,
-        exigir_store_abortos_coherente,
     )
+    from sky_claw.local.frozen_runtime.storage import aborted_transitions_state_dir
 
     snapshot = cargar_journal_transicion(root)
     historial = derivar_historial_finalizados(root)
     auditoria = auditar_reservas_finalizacion(root, historial)
     deseado = load_frozen_runtime_state(active_state_path(root))
-    journal = snapshot.journal
-    if historial.registros:
-        abortos = cargar_abortos(root)
-    else:
-        abortos = exigir_store_abortos_coherente(
-            root,
-            journal_disposition_value=snapshot.disposition.value,
-            last_finalized_transition_id=None if journal is None else journal.last_finalized_transition_id,
-        )
+    abortos = cargar_abortos(root)
+    store_existe = aborted_transitions_state_dir(root).is_dir()
     abortos_resumen = tuple(sorted((tid, reg.estado.value) for tid, reg in abortos.items()))
     incompletos = tuple(
         sorted(
             (tid, reg.estado.value) for tid, reg in abortos.items() if reg.estado is not EstadoAbortoPendiente.COMPLETO
         )
     )
+    completo_presente = any(reg.estado is EstadoAbortoPendiente.COMPLETO for reg in abortos.values())
     return _EstadoDurable(
         snapshot=snapshot,
         historial=historial,
         auditoria=auditoria,
         deseado=deseado,
         abortos_incompletos=incompletos,
-        huella=_huella_estado_durable(snapshot, historial, auditoria, deseado, abortos_resumen),
+        store_abortos_existe=store_existe,
+        aborto_completo_presente=completo_presente,
+        huella=_huella_estado_durable(snapshot, historial, auditoria, deseado, abortos_resumen, store_existe),
     )
 
 
@@ -2624,6 +2624,19 @@ def _clasificar_reconciliacion(
                 motivo=f"RESERVA_HUERFANA_SIN_TRANSICION_PENDIENTE: {auditoria.huerfanas}",
                 requiere_dueno=True,
                 registro_finalizado_presente=None,
+            )
+        # D8: un journal NONE sin historial ni testigo sólo es alcanzable tras un aborto de bootstrap.
+        # Si falta el store de abortos o no contiene ningún aborto COMPLETO, no puede devolverse COMPLETE.
+        if (
+            not historial.registros
+            and testigo is None
+            and (not estado.store_abortos_existe or not estado.aborto_completo_presente)
+        ):
+            return _fail_closed(
+                "ABORT_STORE",
+                "STORE_ABORTOS_CORRUPTO_O_INCOHERENTE: el journal está en NONE sin last_finalized_transition_id "
+                "(bootstrap abortado), pero no existe evidencia durable de un aborto COMPLETO en "
+                "state/aborted_transitions/ (D8)",
             )
         return _veredicto_n0_n1(deseado.state, historial, observador_effective)
 

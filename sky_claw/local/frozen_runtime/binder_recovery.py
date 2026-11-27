@@ -1735,27 +1735,34 @@ def recuperar_transicion_interrumpida(
                     requiere_dueno=True,
                     motivo=f"el store de abortos está corrupto o incompleto (fail-closed): {exc}",
                 )
-            if aborto is not None and aborto.estado in (
-                EstadoAbortoPendiente.JOURNAL_NONE,
-                EstadoAbortoPendiente.COMPLETO,
-            ):
+            if aborto is not None and aborto.estado is EstadoAbortoPendiente.COMPLETO:
                 eliminar_registro_locked(handle, ruta, registro.transition_id)
-                aborto_completo = aborto.estado is EstadoAbortoPendiente.COMPLETO
                 return ResultadoRecuperacion(
                     estado=EstadoRecuperacion.TRANSICION_YA_ABORTADA,
                     transition_id=registro.transition_id,
                     fase=registro.fase,
                     verificaciones=(),
                     journal_state=None if journal is None else journal.state,
-                    requiere_dueno=not aborto_completo,
+                    requiere_dueno=False,
                     motivo=(
-                        "la transición fue abortada de forma durable (journal en NONE): el registro de "
+                        "la transición fue abortada de forma durable (COMPLETO, journal en NONE): el registro de "
                         "recuperación era obsoleto y se retiró SIN restaurar superficies"
-                        if aborto_completo
-                        else (
-                            "el registro de recuperación obsoleto se retiró, pero el aborto durable sigue en "
-                            "JOURNAL_NONE (incompleto, D4): reintentar abortar_transicion_pendiente hasta COMPLETO"
-                        )
+                    ),
+                )
+            if aborto is not None and aborto.estado is EstadoAbortoPendiente.JOURNAL_NONE:
+                # CR #7: mientras el aborto siga en JOURNAL_NONE (incompleto, D4), NO eliminar
+                # el registro de recuperación: preservarlo para que el reintento de
+                # abortar_transicion_pendiente pueda revalidar contra el snapshot original.
+                return ResultadoRecuperacion(
+                    estado=EstadoRecuperacion.REGISTRO_NO_LIGADO,
+                    transition_id=registro.transition_id,
+                    fase=registro.fase,
+                    verificaciones=(),
+                    journal_state=None if journal is None else journal.state,
+                    requiere_dueno=True,
+                    motivo=(
+                        "el aborto durable sigue en JOURNAL_NONE (incompleto, D4): se conserva el registro de "
+                        "recuperación y se requiere reintentar abortar_transicion_pendiente hasta COMPLETO"
                     ),
                 )
         if (

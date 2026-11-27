@@ -398,7 +398,7 @@ def cargar_registro_aborto(
     p = pathlib.Path(ruta)
     _exigir_archivo_sin_enlace(p)
     if not p.is_file():
-        raise AbortoPendienteInvalidoError(f"el archivo de registro de aborto no existe: {p}")
+        raise AbortoCorruptoError(f"el registro de aborto no es un archivo regular legible: {p}")
     try:
         crudo = p.read_bytes()
     except OSError as exc:
@@ -413,7 +413,7 @@ def cargar_registro_aborto(
         raise AbortoCorruptoError(f"el registro de aborto en {p} debe ser un objeto JSON")
 
     version = contenido.get("schema_version")
-    if isinstance(version, bool) or version != SCHEMA_VERSION_ABORTO:
+    if isinstance(version, bool) or not isinstance(version, int) or version != SCHEMA_VERSION_ABORTO:
         raise AbortoCorruptoError(f"versión de schema no soportada en {p}: {version!r}")
 
     campos = frozenset(contenido)
@@ -594,7 +594,7 @@ def cargar_abortos(
     except OSError as exc:
         raise AbortoCorruptoError(f"no se pudo enumerar el store de abortos {dir_abortos}: {exc}") from exc
     for ruta in entradas:
-        if ruta.suffix != ".json":
+        if ruta.suffix.lower() != ".json":
             continue
         if (
             ignorar_placeholder_de is not None

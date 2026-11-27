@@ -339,7 +339,10 @@ def test_ancla_ast_consumidores_abandono_tambien_consultan_abortos() -> None:
         txt = mod.read_text(encoding="utf-8")
         if any(s in txt for s in ("registro_de_abandono", "_cargar_abandonos")):
             consumidores_abandono.add(mod.name)
-        if any(s in txt for s in ("registro_de_aborto", "cargar_abortos", "abortos_incompletos")):
+        if any(
+            s in txt
+            for s in ("registro_de_aborto", "cargar_abortos", "abortos_incompletos", "exigir_store_abortos_coherente")
+        ):
             consumidores_aborto.add(mod.name)
     assert consumidores_abandono == {"autorizacion_hitl_transicion.py", "runtime_clone_binder.py"}
     assert consumidores_abandono.issubset(consumidores_aborto)
@@ -1068,7 +1071,7 @@ def test_d4_d5_autoridad_primitiva_y_veto_permanente_transition_id(tmp_path: pat
         solicitud=sol_nueva, decision=DecisionConsentimiento.APROBAR, identidad=dueno
     )
     assert cons_nueva is not None
-    with pytest.raises((binder.BinderTransicionAbandonadaError, JournalCasError)):
+    with pytest.raises((binder.BinderApprovalError, binder.BinderTransicionAbandonadaError, JournalCasError)):
         sesion_nueva.ejecutar(solicitud=sol_nueva, consentimiento=cons_nueva)
 
 
@@ -1607,3 +1610,196 @@ def test_p1_02_error_lectura_o_existencia_nunca_sobrescribe_ni_elimina_como_auto
     assert verif_cfg_auth.ok is False and verif_cfg_auth.restaurada is False
     assert orig_read_bytes(rig.ini) == bytes_ajenos_ini
     assert orig_read_bytes(rig.config) == bytes_ajenos_cfg
+
+
+# ===========================================================================
+# 9. Regresión CI + 5 defectos confirmados de CodeRabbit (PR #1032)
+# ===========================================================================
+
+
+def test_cr_consumo_nuevo_rechaza_bootstrap_abortado_sin_store_y_reuso_tid_abortado(tmp_path: pathlib.Path) -> None:
+    """CR #2 y #3: consumir_aprobacion rechaza bootstrap abortado con store incoherente y reuso de tid abortado."""
+    rig, env_rig = _limpiar_rig_hitl(tmp_path)
+    dueno = _identidad_dueno()
+    tid, _ = _emitir_y_dejar_pending(rig, env_rig, identidad=dueno)
+    confs = _confirmaciones_desde_disco(rig)
+    reg = abortar_transicion_pendiente(
+        rig.storage,
+        transition_id=tid,
+        identidad=dueno,
+        motivo="cr2 y cr3",
+        confirmaciones=confs,
+        probes=_probes_quiescentes(),
+    )
+    assert reg.estado is EstadoAbortoPendiente.COMPLETO
+
+    # Emitir una nueva aprobación legítima
+    env_rig["SKYRIM_PATH"] = str(rig.managed_src)
+    sesion = _crear_sesion(rig, env_rig)
+    sol = sesion.preparar(identidad=dueno, entregar=lambda _p: None, transition_id=tid)
+    cons = sesion.decidir_y_emitir(solicitud=sol, decision=DecisionConsentimiento.APROBAR, identidad=dueno)
+    assert cons is not None
+
+    # CR #3: intentar consumir la aprobación nueva reutilizando el MISMO transition_id abortado → RECHAZO SIN QUEMAR
+    with pytest.raises(binder.BinderApprovalError, match="abortada"):
+        sesion.ejecutar(solicitud=sol, consentimiento=cons)
+    # La aprobación sigue ISSUED (no quemada)
+    ledger_1 = cargar_ledger_aprobacion(rig.storage).ledger
+    assert ledger_1 is not None and ledger_1.state is ApprovalLifecycle.ISSUED
+
+    # CR #2: sobre otro bootstrap abortado con transition_id fresco, eliminar state/aborted_transitions/ → RECHAZO SIN QUEMAR
+    rig2, env_rig2 = _limpiar_rig_hitl(tmp_path / "cr2")
+    tid2, _ = _emitir_y_dejar_pending(rig2, env_rig2, identidad=dueno)
+    reg2 = abortar_transicion_pendiente(
+        rig2.storage,
+        transition_id=tid2,
+        identidad=dueno,
+        motivo="cr2",
+        confirmaciones=_confirmaciones_desde_disco(rig2),
+        probes=_probes_quiescentes(),
+    )
+    assert reg2.estado is EstadoAbortoPendiente.COMPLETO
+    env_rig2["SKYRIM_PATH"] = str(rig2.managed_src)
+    sesion2 = _crear_sesion(rig2, env_rig2)
+    sol2 = sesion2.preparar(identidad=dueno, entregar=lambda _p: None, transition_id=str(uuid.uuid4()))
+    cons2 = sesion2.decidir_y_emitir(solicitud=sol2, decision=DecisionConsentimiento.APROBAR, identidad=dueno)
+    assert cons2 is not None
+    shutil.rmtree(storage.aborted_transitions_state_dir(rig2.storage))
+    with pytest.raises(binder.BinderApprovalError, match="incoherente"):
+        binder.ejecutar_transicion_binder(
+            storage_root=rig2.storage,
+            mo2_instance_dir=rig2.mo2_dir,
+            target_clone_id=rig2.clone_id,
+            propuesta=sol2.propuesta,
+            consentimiento=cons2,
+            managed_source_root=rig2.managed_src,
+            config_path=rig2.config,
+            environ=env_rig2,
+            probes=_probes_rig(rig2),
+            transition_id=sol2.transicion_id,
+        )
+    ledger_2 = cargar_ledger_aprobacion(rig2.storage).ledger
+    assert ledger_2 is not None and ledger_2.state is ApprovalLifecycle.ISSUED
+
+
+def test_cr_recuperar_no_elimina_registro_recuperacion_en_journal_none(tmp_path: pathlib.Path) -> None:
+    """CR #7: recuperar_transicion_interrumpida NO elimina state/recovery/<tid>.json mientras el aborto esté en JOURNAL_NONE."""
+    from sky_claw.local.frozen_runtime import pending_reconciliation as pr_mod
+
+    rig, env_rig = _limpiar_rig_hitl(tmp_path)
+    dueno = _identidad_dueno()
+    tid, _ = _emitir_y_dejar_pending(rig, env_rig, identidad=dueno)
+    confs = _confirmaciones_desde_disco(rig)
+
+    # Crash justo después de persistir JOURNAL_NONE y ANTES de eliminar el registro de recuperación
+    orig_elim = recovery.eliminar_registro_locked
+
+    def _crash_antes_elim(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("crash simulado en JOURNAL_NONE antes de eliminar registro")
+
+    recovery.eliminar_registro_locked = _crash_antes_elim  # type: ignore[assignment]
+    try:
+        with pytest.raises(RuntimeError, match="JOURNAL_NONE"):
+            abortar_transicion_pendiente(
+                rig.storage,
+                transition_id=tid,
+                identidad=dueno,
+                motivo="cr7",
+                confirmaciones=confs,
+                probes=_probes_quiescentes(),
+            )
+    finally:
+        recovery.eliminar_registro_locked = orig_elim  # type: ignore[assignment]
+
+    assert registro_de_aborto(rig.storage, tid).estado is EstadoAbortoPendiente.JOURNAL_NONE  # type: ignore[union-attr]
+    rec_path = storage.recovery_state_dir(rig.storage) / f"{tid}.json"
+    assert rec_path.is_file()
+
+    # recuperar_transicion_interrumpida NO debe borrar el registro mientras el aborto esté en JOURNAL_NONE
+    res = recovery.recuperar_transicion_interrumpida(rig.storage)
+    assert res.requiere_dueno is True
+    assert rec_path.is_file(), "el registro de recuperación no debe borrarse mientras el aborto sigue en JOURNAL_NONE"
+    _ = pr_mod  # mantiene referencia explícita
+
+
+def test_cr_reintento_journal_none_exige_journal_none_revision_y_testigo(tmp_path: pathlib.Path) -> None:
+    """CR #15: reintentar desde JOURNAL_NONE rechaza si el journal fue restaurado a PENDING o tiene revisión incorrecta."""
+    from sky_claw.local.frozen_runtime import pending_reconciliation as pr_mod
+
+    rig, env_rig = _limpiar_rig_hitl(tmp_path)
+    dueno = _identidad_dueno()
+    tid, _ = _emitir_y_dejar_pending(rig, env_rig, identidad=dueno)
+    journal_pending_bytes = storage.transition_journal_path(rig.storage).read_bytes()
+    confs = _confirmaciones_desde_disco(rig)
+
+    orig_avanzar = pr_mod.avanzar_estado_aborto_locked
+
+    def _crash_antes_completo(
+        root_p: pathlib.Path, actual: RegistroAbortoPendiente, nuevo: RegistroAbortoPendiente
+    ) -> RegistroAbortoPendiente:
+        if nuevo.estado is EstadoAbortoPendiente.COMPLETO:
+            raise RuntimeError("crash antes de COMPLETO")
+        return orig_avanzar(root_p, actual, nuevo)
+
+    pr_mod.avanzar_estado_aborto_locked = _crash_antes_completo  # type: ignore[assignment]
+    try:
+        with pytest.raises(RuntimeError, match="COMPLETO"):
+            abortar_transicion_pendiente(
+                rig.storage,
+                transition_id=tid,
+                identidad=dueno,
+                motivo="cr15",
+                confirmaciones=confs,
+                probes=_probes_quiescentes(),
+            )
+    finally:
+        pr_mod.avanzar_estado_aborto_locked = orig_avanzar  # type: ignore[assignment]
+
+    assert registro_de_aborto(rig.storage, tid).estado is EstadoAbortoPendiente.JOURNAL_NONE  # type: ignore[union-attr]
+
+    # Simular backup que restaura el journal PENDING viejo
+    storage.transition_journal_path(rig.storage).write_bytes(journal_pending_bytes)
+    with pytest.raises(AbortoPendienteInvalidoError, match="JOURNAL_NONE"):
+        abortar_transicion_pendiente(
+            rig.storage,
+            transition_id=tid,
+            identidad=dueno,
+            motivo="cr15",
+            confirmaciones=confs,
+            probes=_probes_quiescentes(),
+        )
+    # Sigue en JOURNAL_NONE (no avanzó a COMPLETO)
+    assert registro_de_aborto(rig.storage, tid).estado is EstadoAbortoPendiente.JOURNAL_NONE  # type: ignore[union-attr]
+
+
+def test_cr_verificar_superficies_sella_la_misma_lectura_que_verifico(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CR #12: _verificar_superficies_contra_snapshot realiza una única lectura por superficie y sella esos bytes."""
+    from sky_claw.local.frozen_runtime import pending_reconciliation as pr_mod
+
+    rig, env_rig = _limpiar_rig_hitl(tmp_path)
+    dueno = _identidad_dueno()
+    tid, _ = _emitir_y_dejar_pending(rig, env_rig, identidad=dueno)
+    registro_rec = recovery.cargar_registro(rig.storage, tid)
+    assert registro_rec is not None
+    sup_cfg = next(s for s in registro_rec.superficies if s.kind == "config")
+    # Restaurar config a su snapshot para que pase la verificación
+    assert sup_cfg.bytes_previos() is not None
+    rig.config.write_bytes(sup_cfg.bytes_previos())  # type: ignore[arg-type]
+
+    lecturas = 0
+    orig_read = pathlib.Path.read_bytes
+
+    def _contar_lecturas(self: pathlib.Path) -> bytes:
+        nonlocal lecturas
+        if os.path.normcase(os.path.abspath(os.fspath(self))) == os.path.normcase(
+            os.path.abspath(os.fspath(rig.config))
+        ):
+            lecturas += 1
+        return orig_read(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _contar_lecturas)
+    obs = pr_mod._verificar_superficies_contra_snapshot((sup_cfg,), raiz_evidencia=rig.storage, registro=registro_rec)
+    assert lecturas == 1, f"esperaba 1 única lectura de config.toml, observadas={lecturas}"
+    assert obs["config"]["sha256"] == sup_cfg.sha256

@@ -119,7 +119,6 @@ from sky_claw.local.frozen_runtime.journal import (
     proyectar_propuesta,
     validar_propuesta_transicion,
 )
-from sky_claw.local.frozen_runtime.pending_abort_store import abortos_incompletos
 from sky_claw.local.frozen_runtime.root_lock import FrozenRuntimeRootLockHandle, participant_lock
 from sky_claw.local.frozen_runtime.storage import (
     admitir_directorio_storage,
@@ -2626,17 +2625,33 @@ def _exigir_journal_compatible_en_consumo(
             )
 
     if not con_evidencia_terminal_previa:
+        from sky_claw.local.frozen_runtime.pending_abort_store import (
+            EstadoAbortoPendiente,
+            exigir_store_abortos_coherente,
+        )
+
+        doc_j_none = snapshot_journal.journal
         try:
-            incompletos = abortos_incompletos(ruta)
+            abortos = exigir_store_abortos_coherente(
+                ruta,
+                journal_disposition_value=snapshot_journal.disposition.value,
+                last_finalized_transition_id=None if doc_j_none is None else doc_j_none.last_finalized_transition_id,
+            )
         except AbortoCorruptoError as exc:
             raise ApprovalJournalBlockedError(
-                f"el store de abortos no es legible ({exc}): NO se consume la aprobación (fail-closed)"
+                f"el store de abortos no es legible o es incoherente ({exc}): NO se consume la aprobación (fail-closed)"
             ) from exc
+        incompletos = [r for r in abortos.values() if r.estado is not EstadoAbortoPendiente.COMPLETO]
         if incompletos:
             ids_inc = sorted(r.transition_id for r in incompletos)
             raise ApprovalJournalBlockedError(
                 f"existe(n) aborto(s) incompleto(s) en curso ({ids_inc}): NO se consume una aprobación nueva "
                 "hasta completar la reconciliación pendiente (D4)"
+            )
+        if transition_id in abortos:
+            raise ApprovalJournalBlockedError(
+                f"el transition_id {transition_id!r} ya pertenece a una transición abortada: "
+                "prohibido consumir una aprobación nueva reutilizando su identificador (D5)"
             )
 
 
