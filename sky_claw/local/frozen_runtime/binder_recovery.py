@@ -970,17 +970,22 @@ class _EstadoDiscoSuperficie(StrEnum):
 def _inspeccionar_superficie_en_disco(ruta: pathlib.Path) -> tuple[_EstadoDiscoSuperficie, bytes | None, str]:
     """Inspecciona existencia y bytes de una superficie distinguiendo AUSENTE, PRESENTE y DESCONOCIDO.
 
-    Un error de I/O al comprobar existencia o al leer el contenido produce ``DESCONOCIDO`` con
-    motivo explícito: jamás se confunde con ausencia acreditada ni con contenido atribuible.
+    Usa ``os.stat`` directamente (en lugar de ``Path.exists()``) para garantizar que un
+    ``PermissionError`` u otro ``OSError`` de acceso jamás se convierta en ``False``
+    (ausencia) en Python 3.14+ (``pyproject.toml`` declara ``>=3.11``).
+    Un error de I/O al comprobar existencia o al leer produce ``DESCONOCIDO`` con motivo
+    explícito: jamás se confunde con ausencia acreditada ni con contenido atribuible.
     """
     try:
-        existe = ruta.exists()
+        os.stat(ruta)
+    except (FileNotFoundError, NotADirectoryError):
+        return (_EstadoDiscoSuperficie.AUSENTE, None, "")
     except OSError as exc:
         return (_EstadoDiscoSuperficie.DESCONOCIDO, None, f"{ruta}: no se pudo comprobar existencia ({exc})")
-    if not existe:
-        return (_EstadoDiscoSuperficie.AUSENTE, None, "")
     try:
         actuales = ruta.read_bytes()
+    except FileNotFoundError:
+        return (_EstadoDiscoSuperficie.AUSENTE, None, "")
     except OSError as exc:
         return (_EstadoDiscoSuperficie.DESCONOCIDO, None, f"{ruta}: no se pudo leer el contenido actual ({exc})")
     return (_EstadoDiscoSuperficie.PRESENTE, actuales, "")

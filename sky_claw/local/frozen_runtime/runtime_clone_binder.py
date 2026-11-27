@@ -1132,8 +1132,17 @@ def ejecutar_transicion_binder(
                 "no se reanuda. Hay que presentar una transición NUEVA"
             )
 
-        # 5.0b — Aborto autorizado (D4/D5), BAJO el lock (hermano de 5.0).
+        # 5.0b — Aborto autorizado (D4/D5/D8), BAJO el lock (hermano de 5.0; cubre también aprobacion_consumida).
+        from sky_claw.local.frozen_runtime.pending_abort_store import exigir_store_abortos_coherente
+
         try:
+            snap_j_50b = journal_module.cargar_journal_transicion(storage_path)
+            doc_j_50b = snap_j_50b.journal
+            exigir_store_abortos_coherente(
+                storage_path,
+                journal_disposition_value=snap_j_50b.disposition.value,
+                last_finalized_transition_id=None if doc_j_50b is None else doc_j_50b.last_finalized_transition_id,
+            )
             incompletos_aborto = abortos_incompletos(storage_path)
             aborto_propio = registro_de_aborto(storage_path, t_id)
         except (FrozenRuntimeError, OSError) as exc:

@@ -192,8 +192,15 @@ def exigir_transition_id_canonico(valor: object) -> str:
 def _exigir_store_admitido(dir_abortos: pathlib.Path) -> bool:
     """``True`` si ``state/aborted_transitions/`` existe y es directorio real; ``False`` si está ausente.
 
-    Un enlace/reparse, archivo en su lugar o ancestro ilegible levantan ``AbortoCorruptoError``.
+    Valida primero la admisión del directorio padre ``root/state`` antes de interpretar un
+    store ausente como vacío: si ``root/state`` está redirigido (symlink/reparse) o es ilegible,
+    falla cerrado con ``AbortoCorruptoError``.
     """
+    admision_padre = storage.admitir_directorio_storage(dir_abortos.parent)
+    if not admision_padre.success:
+        raise AbortoCorruptoError(
+            f"el directorio padre state/ del store de abortos fue rechazado: {admision_padre.message}"
+        )
     admision = storage.admitir_directorio_storage(dir_abortos)
     if not admision.success:
         raise AbortoCorruptoError(f"el store de abortos fue rechazado: {admision.message}")

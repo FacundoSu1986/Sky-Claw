@@ -1551,7 +1551,6 @@ def test_p1_02_error_lectura_o_existencia_nunca_sobrescribe_ni_elimina_como_auto
     rig.ini.write_bytes(bytes_ajenos_ini)
 
     orig_read_bytes = pathlib.Path.read_bytes
-    orig_exists = pathlib.Path.exists
 
     # 1. Error de lectura (PermissionError en read_bytes) durante rollback automático → ok=False, NO sobrescribe
     def _fallar_read_cfg(self: pathlib.Path) -> bytes:
@@ -1582,19 +1581,20 @@ def test_p1_02_error_lectura_o_existencia_nunca_sobrescribe_ni_elimina_como_auto
     assert verif_cfg_lote.restaurada is False
     assert orig_read_bytes(rig.config) == bytes_ajenos_cfg
 
-    # 2. Error de comprobación de existencia (PermissionError en exists) en descarte autorizado (mo2_ini y config)
+    # 2. Error de comprobación de existencia (PermissionError en os.stat) en descarte autorizado (mo2_ini y config)
     monkeypatch.setattr(pathlib.Path, "read_bytes", orig_read_bytes)
+    orig_stat = os.stat
 
-    def _fallar_exists(self: pathlib.Path) -> bool:
-        norm = os.path.normcase(os.path.abspath(os.fspath(self)))
+    def _fallar_stat(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        norm = os.path.normcase(os.path.abspath(os.fspath(path)))  # type: ignore[arg-type]
         if norm in (
             os.path.normcase(os.path.abspath(os.fspath(rig.ini))),
             os.path.normcase(os.path.abspath(os.fspath(rig.config))),
         ):
-            raise PermissionError("acceso denegado simulado en stat/exists")
-        return orig_exists(self)
+            raise PermissionError("acceso denegado simulado en os.stat")
+        return orig_stat(path, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(pathlib.Path, "exists", _fallar_exists)
+    monkeypatch.setattr(os, "stat", _fallar_stat)
 
     confs = {
         "mo2_ini": ConfirmacionSuperficie(estado=EstadoSuperficieConfirmada.PRESENTE, sha256=_sha(bytes_ajenos_ini)),
@@ -1803,3 +1803,149 @@ def test_cr_verificar_superficies_sella_la_misma_lectura_que_verifico(
     obs = pr_mod._verificar_superficies_contra_snapshot((sup_cfg,), raiz_evidencia=rig.storage, registro=registro_rec)
     assert lecturas == 1, f"esperaba 1 única lectura de config.toml, observadas={lecturas}"
     assert obs["config"]["sha256"] == sup_cfg.sha256
+
+
+# ===========================================================================
+# 10. Reconciliación final: D8 en CREATE/binder, os.stat (Py 3.14+), state/ padre y no-regular
+# ===========================================================================
+
+
+def test_d8_create_y_binder_con_aprobacion_consumida_rechazan_store_abortos_ausente(tmp_path: pathlib.Path) -> None:
+    """D8 no depende sólo de approval.py: CREATE y binder con aprobación ya consumida rechazan store ausente."""
+    from sky_claw.local.frozen_runtime.journal import (
+        AprobacionConsumida,
+        PropuestaTransicion,
+        ProyeccionScope,
+        _crear_pendiente_locked,
+    )
+
+    rig, env_rig = _limpiar_rig_hitl(tmp_path)
+    dueno = _identidad_dueno()
+    tid1, _ = _emitir_y_dejar_pending(rig, env_rig, identidad=dueno)
+    j1 = cargar_journal_transicion(rig.storage).journal
+    assert j1 is not None
+    reg = abortar_transicion_pendiente(
+        rig.storage,
+        transition_id=tid1,
+        identidad=dueno,
+        motivo="d8 create",
+        confirmaciones=_confirmaciones_desde_disco(rig),
+        probes=_probes_quiescentes(),
+    )
+    assert reg.estado is EstadoAbortoPendiente.COMPLETO
+
+    # Borrar state/aborted_transitions/ dejando bootstrap NONE sin testigo
+    shutil.rmtree(storage.aborted_transitions_state_dir(rig.storage))
+
+    tid_nuevo = str(uuid.uuid4())
+    assert (
+        j1.operation is not None
+        and j1.source_activation is not None
+        and j1.source_activation_digest is not None
+        and j1.target_generation_id is not None
+        and j1.target_clone_id is not None
+        and j1.target_runtime_setup_id is not None
+        and j1.approval_scope_digest is not None
+        and j1.evidence_digests is not None
+        and j1.expected_effective_path is not None
+    )
+    prop = PropuestaTransicion(
+        transition_id=tid_nuevo,
+        operation=j1.operation,
+        source_activation=j1.source_activation,
+        source_activation_digest=j1.source_activation_digest,
+        target_generation_id=j1.target_generation_id,
+        target_clone_id=j1.target_clone_id,
+        target_runtime_setup_id=j1.target_runtime_setup_id,
+        candidate_id=j1.candidate_id,
+        approval_scope_digest=j1.approval_scope_digest,
+        evidence_digests=j1.evidence_digests,
+        expected_effective_path=j1.expected_effective_path,
+        created_at_ns=j1.created_at_ns + 1,
+    )
+    aprob = AprobacionConsumida(
+        approval_id="00000000-0000-4000-8000-000000000099",
+        approval_seq=99,
+        scope_digest=prop.approval_scope_digest,
+        consumed_by_transition_id=tid_nuevo,
+        proyeccion=ProyeccionScope(
+            operation=j1.operation.value,
+            source_activation_digest=j1.source_activation_digest,
+            target_generation_id=j1.target_generation_id,
+            target_clone_id=j1.target_clone_id,
+            target_runtime_setup_id=j1.target_runtime_setup_id,
+            candidate_id=j1.candidate_id,
+            clone_evidence=j1.evidence_digests.clone_evidence,
+            runtime_setup_evidence=j1.evidence_digests.runtime_setup_evidence,
+            compatibility_evidence_id=j1.evidence_digests.compatibility_evidence,
+            approval_id="00000000-0000-4000-8000-000000000099",
+            approval_seq=99,
+        ),
+    )
+    with (
+        participant_lock(rig.storage, timeout=1.0) as handle,
+        pytest.raises(JournalIdentityError, match="D8"),
+    ):
+        _crear_pendiente_locked(handle, rig.storage, prop, aprob)
+
+
+def test_inspeccionar_superficie_distingue_permission_error_de_ausencia_py314(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_inspeccionar_superficie_en_disco usa os.stat: PermissionError es DESCONOCIDO (nunca AUSENTE), incluso en Py 3.14+."""
+    objetivo = tmp_path / "protegido.ini"
+    objetivo.write_bytes(b"datos")
+
+    orig_stat = os.stat
+
+    def _stat_denegado(path: object, *args: object, **kwargs: object) -> os.stat_result:
+        if os.path.normcase(os.path.abspath(os.fspath(path))) == os.path.normcase(  # type: ignore[arg-type]
+            os.path.abspath(os.fspath(objetivo))
+        ):
+            raise PermissionError("acceso denegado en os.stat")
+        return orig_stat(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "stat", _stat_denegado)
+    # Incluso si Path.exists() devolviera False (comportamiento Python 3.14), os.stat devuelve DESCONOCIDO
+    monkeypatch.setattr(pathlib.Path, "exists", lambda _self: False)
+
+    estado, datos, detalle = recovery._inspeccionar_superficie_en_disco(objetivo)
+    assert estado is recovery._EstadoDiscoSuperficie.DESCONOCIDO
+    assert datos is None
+    assert "no se pudo comprobar existencia" in detalle
+
+
+def test_store_abortos_directorio_no_regular_y_state_padre_rechazado_fallan_cerrado(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Directorio <tid>.json en state/aborted_transitions/ → FAIL_CLOSED; state/ padre rechazado → AbortoCorruptoError."""
+    from sky_claw.local.frozen_runtime.journal import VeredictoReconciliacion, reconciliar_journal
+    from sky_claw.local.frozen_runtime.pending_abort_store import cargar_abortos
+
+    rig, _ = _limpiar_rig_hitl(tmp_path)
+    dir_abortos = storage.aborted_transitions_state_dir(rig.storage)
+    dir_abortos.mkdir(parents=True, exist_ok=True)
+    # 1. Directorio no-regular con nombre <uuid>.json
+    (dir_abortos / f"{uuid.uuid4()}.json").mkdir()
+    rec = reconciliar_journal(rig.storage)
+    assert rec.veredicto is VeredictoReconciliacion.FAIL_CLOSED
+    assert rec.punto_crash == "ABORT_STORE"
+
+    # 2. Admisión fallida en root/state aunque aborted_transitions/ no exista
+    shutil.rmtree(dir_abortos)
+    orig_admitir = storage.admitir_directorio_storage
+
+    def _rechazar_state(ruta: pathlib.Path) -> object:
+        if os.path.normcase(os.path.abspath(os.fspath(ruta))) == os.path.normcase(
+            os.path.abspath(os.fspath(storage.state_dir(rig.storage)))
+        ):
+            return dataclasses.replace(
+                orig_admitir(ruta),
+                state=storage.StorageAdmissionState.REJECTED,
+                message="state redirigido simulado",
+            )
+        return orig_admitir(ruta)
+
+    monkeypatch.setattr(storage, "admitir_directorio_storage", _rechazar_state)
+    with pytest.raises(AbortoCorruptoError, match="state/"):
+        cargar_abortos(rig.storage)

@@ -1853,6 +1853,18 @@ def _crear_pendiente_locked(
             raise JournalCasError("hay historial finalizado: esta vía es START_NEXT, no CREATE")
         if journal.last_finalized_transition_id is not None:
             raise JournalCasError("journal NONE con testigo pero store vacío: estado incoherente")
+        # D8: CREATE sobre bootstrap NONE sin testigo exige evidencia durable de un aborto COMPLETO
+        # independientemente de si la aprobación se consumió antes (no depender sólo del guard de approval.py).
+        from sky_claw.local.frozen_runtime.pending_abort_store import exigir_store_abortos_coherente
+
+        try:
+            exigir_store_abortos_coherente(
+                root,
+                journal_disposition_value=snapshot.disposition.value,
+                last_finalized_transition_id=None,
+            )
+        except AbortoCorruptoError as exc:
+            raise JournalIdentityError(f"el store de abortos es incoherente para CREATE (D8): {exc}") from exc
         revision = journal.journal_revision + 1
     else:
         if historial.registros:
