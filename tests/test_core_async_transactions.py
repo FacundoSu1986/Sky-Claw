@@ -657,15 +657,50 @@ async def test_fallback_lectura_cancelada_observa_close_hasta_terminal(
         async def __aexit__(self, *_args: object) -> None:
             await self.close()
 
-        async def execute(self, sql: str) -> None:
+        class _CursorControlado:
+            """Doble del cursor de aiosqlite: awaitable + context manager + fetchone.
+
+            El helper ``convertir_a_wal`` consume el resultado del pragma para
+            verificar que SQLite devolvió 'wal'; el doble tiene que modelar ese
+            contrato. Las aserciones de cancelación/ownership NO se tocan.
+            """
+
+            def __init__(self, fila: tuple[str, ...] | None = None, al_entrar=None) -> None:
+                self._fila = fila
+                self._al_entrar = al_entrar
+
+            def __await__(self):
+                async def _preparar() -> object:
+                    if self._al_entrar is not None:
+                        await self._al_entrar()
+                    return self
+
+                return _preparar().__await__()
+
+            async def __aenter__(self) -> object:
+                if self._al_entrar is not None:
+                    await self._al_entrar()
+                return self
+
+            async def __aexit__(self, *_args: object) -> bool:
+                return False
+
+            async def fetchone(self) -> tuple[str, ...] | None:
+                return self._fila
+
+        async def _lectura_controlada() -> None:
+            operaciones.append("lectura_iniciada")
+            lectura_iniciada.set()
+            try:
+                await liberar_lectura.wait()
+            except asyncio.CancelledError:
+                operaciones.append("lectura_cancelada")
+                raise
+
+        def execute(self, sql: str) -> object:
             if sql == "SELECT 1":
-                operaciones.append("lectura_iniciada")
-                lectura_iniciada.set()
-                try:
-                    await liberar_lectura.wait()
-                except asyncio.CancelledError:
-                    operaciones.append("lectura_cancelada")
-                    raise
+                return ConexionControlada._CursorControlado(al_entrar=ConexionControlada._lectura_controlada)
+            return ConexionControlada._CursorControlado(fila=("wal",))
 
         async def close(self) -> None:
             operaciones.append("close_iniciado")
