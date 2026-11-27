@@ -78,9 +78,10 @@ echo  SKIP_TESTS is set - test suite omitted.
 echo.
 
 :: ---------------------------------------------------------------------------
-:: [4/4] Controlled isolated build (PR-LIC-03B, B01-B10): uses a dedicated
-:: build venv installed strictly from requirements-build.lock + requirements.lock
-:: (--require-hashes --no-deps --only-binary=:all:), never reusing .venv [dev].
+:: [4/4] Controlled isolated build (PR-LIC-03B, B01-B10): invokes
+:: pyinstaller sky_claw.spec inside an isolated build venv installed strictly
+:: from requirements-build.lock + requirements.lock (--require-hashes),
+:: never reusing .venv [dev].
 :: ---------------------------------------------------------------------------
 echo [4/4] Building SkyClawApp.exe (controlled isolated build)...
 uv run --no-sync python scripts/build_controlado.py --profile base --dist-dir dist --out-dir dist\build-evidence

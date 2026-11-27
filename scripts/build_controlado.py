@@ -46,7 +46,7 @@ EXIT_ERROR = 2
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PIN_EXACTO_RE = re.compile(r"^([A-Za-z0-9_.\-]+)==([^\s;\\]+)")
-_REQ_NO_FIJADO_RE = re.compile(r"^([A-Za-z0-9_.\-]+)\s*(?:>=|<=|~=|>|<|!=)")
+_REQ_NO_FIJADO_RE = re.compile(r"^([A-Za-z0-9_.\-]+)\s*(?:[<>!~]=|[<>])")
 _HASH_SHA256_RE = re.compile(r"--hash=sha256:([0-9a-fA-F]+)")
 
 #: Herramientas obligatorias del toolchain de build (B09/B12).
@@ -413,20 +413,9 @@ def evaluar_veredicto_tecnico(
 
 
 def _entorno_pip_controlado(build_venv: Path) -> dict[str, str]:
-    """Construye un entorno aislado para ``pip`` y PyInstaller sin herencia de índices o rutas locales (B09)."""
-    vars_prohibidas = (
-        "PIP_CONFIG_FILE",
-        "PIP_EXTRA_INDEX_URL",
-        "PIP_INDEX_URL",
-        "PIP_FIND_LINKS",
-        "PIP_TRUSTED_HOST",
-        "PIP_REQUIRE_HASHES",
-        "PYTHONPATH",
-        "PYTHONHOME",
-        "PYTHONSTARTUP",
-        "VIRTUAL_ENV",
-    )
-    env = {k: v for k, v in os.environ.items() if k.upper() not in vars_prohibidas}
+    """Construye un entorno aislado para ``pip`` y PyInstaller eliminando cualquier ``PIP_*`` heredada (B09)."""
+    vars_prohibidas = frozenset({"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV"})
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PIP_") and k.upper() not in vars_prohibidas}
     scripts_dir = build_venv / ("Scripts" if os.name == "nt" else "bin")
     env["PATH"] = str(scripts_dir) + os.pathsep + env.get("PATH", "")
     env["VIRTUAL_ENV"] = str(build_venv)
@@ -525,6 +514,9 @@ def ejecutar_build_controlado(
     python_base: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Ejecuta el pipeline completo de build controlado en Windows aislado (B01–B14)."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _limpiar_evidencia_obsoleta(out_dir)
+
     if perfil not in _PERFIL_A_LOCK:
         raise BuildControladoError(f"Perfil inválido: {perfil!r}. Opciones: {sorted(_PERFIL_A_LOCK)}")
 
@@ -533,9 +525,6 @@ def ejecutar_build_controlado(
     lock_runtime = parsear_lockfile_con_hashes(lock_runtime_path)
     lock_build = parsear_lockfile_con_hashes(lock_build_path)
     verificar_compatibilidad_locks(lock_runtime, lock_build)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    _limpiar_evidencia_obsoleta(out_dir)
 
     creado_por_esta_ejecucion = False
     if build_dir_opcional is not None:
