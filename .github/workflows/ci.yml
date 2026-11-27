@@ -322,6 +322,13 @@ jobs:
           .\.lock-venv-np\Scripts\python -m pip install --require-hashes -r requirements-native-parallax.lock
       - name: Pip-audit native-parallax extra (SCA — strict)
         run: pip-audit --strict --skip-editable -r requirements-native-parallax.lock
+      # PR-LIC-03B (B09): el toolchain de build se fija con hashes y se audita en CI igual que runtime.
+      - name: Verify build toolchain lockfile install (hash enforced)
+        run: |
+          python -m venv .lock-venv-build
+          .\.lock-venv-build\Scripts\python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-build.lock
+      - name: Pip-audit build toolchain (SCA — strict)
+        run: pip-audit --strict --skip-editable -r requirements-build.lock
       # P0.5 — Node gateway supply-chain audit
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -393,18 +400,34 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - name: Install build dependencies
+      - name: Install build dependencies (isolated, hash-enforced)
         run: |
-          pip install pyinstaller
-          pip install -e .
+          python -m venv .build-venv
+          .\.build-venv\Scripts\python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-build.lock
+          .\.build-venv\Scripts\python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements.lock
+          .\.build-venv\Scripts\python -m pip install --no-deps --no-build-isolation -e .
+          .\.build-venv\Scripts\python -m pip check
+          python scripts/build_controlado.py --validate-venv .build-venv --profile base --env-out dist/build-evidence/build_env.json
       - name: Build executable
         id: build_executable
-        run: pyinstaller sky_claw.spec --clean
+        env:
+          SKYCLAW_EXPORT_ANALYSIS_TOC: dist/build-evidence/analysis_toc.json
+        run: |
+          $env:PATH = "$PWD\.build-venv\Scripts;$env:PATH"
+          pyinstaller sky_claw.spec --clean
       - name: Record SHA-256 of frozen executable
-        run: python scripts/registrar_sha256_ejecutable.py registrar dist/SkyClawApp.exe
+        run: python scripts/registrar_sha256_ejecutable.py registrar dist/SkyClawApp.exe --json dist/build-evidence/exe_sha256.json
       - name: Smoke-test frozen executable
         id: smoke_frozen_executable
         run: python scripts/smoke_frozen_executable.py dist/SkyClawApp.exe
+      - name: Inventory and reconcile frozen executable (PR-LIC-03A/B)
+        shell: pwsh
+        run: |
+          $pyVer = .\.build-venv\Scripts\python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
+          .\.build-venv\Scripts\python scripts/inventario_ejecutable.py dist/SkyClawApp.exe --out dist/build-evidence/inventory.json --registro-sha256 dist/build-evidence/exe_sha256.json
+          .\.build-venv\Scripts\python scripts/reconciliar_sbom.py --inventory dist/build-evidence/inventory.json --env-json dist/build-evidence/build_env.json --analysis-toc-json dist/build-evidence/analysis_toc.json --build-python-version $pyVer --lockfile requirements.lock --check-spec-datas --sbom-out dist/build-evidence/sbom.spdx.json --report-out dist/build-evidence/reconciliation_report.json
+          if ($LASTEXITCODE -eq 2) { exit 2 }
+          python scripts/build_controlado.py --verify-report dist/build-evidence/reconciliation_report.json --profile base
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: SkyClawApp-exe
