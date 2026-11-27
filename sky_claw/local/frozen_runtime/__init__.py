@@ -147,6 +147,11 @@ from sky_claw.local.frozen_runtime.errors import (
     ProvisioningBlockedError,
     ProvisioningError,
     ProvisioningSpaceError,
+    RecuperacionAdelanteAutoridadError,
+    RecuperacionAdelanteBloqueadaError,
+    RecuperacionAdelanteCasError,
+    RecuperacionAdelanteError,
+    RecuperacionAdelantePostError,
     RuntimeCloneAdmissionError,
     RuntimeCloneCollisionError,
     RuntimeCloneCorruptError,
@@ -263,7 +268,10 @@ from sky_claw.local.frozen_runtime.pending_abort_store import (
 )
 from sky_claw.local.frozen_runtime.pending_reconciliation import (
     ContextoVerificacionIp0,
+    FronteraRecuperacionAdelante,
+    ResultadoRecuperacionAdelante,
     abortar_transicion_pendiente,
+    completar_transicion_pendiente,
 )
 from sky_claw.local.frozen_runtime.provider_signals import evaluate_provider_observation
 from sky_claw.local.frozen_runtime.provisioning import (
@@ -601,11 +609,19 @@ __all__ = [
     "ContextoVerificacionIp0",
     "EstadoAbortoPendiente",
     "EstadoSuperficieConfirmada",
+    "FronteraRecuperacionAdelante",
     "ModoAbortoPendiente",
+    "RecuperacionAdelanteAutoridadError",
+    "RecuperacionAdelanteBloqueadaError",
+    "RecuperacionAdelanteCasError",
+    "RecuperacionAdelanteError",
+    "RecuperacionAdelantePostError",
     "RegistroAbortoPendiente",
+    "ResultadoRecuperacionAdelante",
     "abortar_transicion_pendiente",
     "abortos_incompletos",
     "cargar_abortos",
+    "completar_transicion_pendiente",
     "registro_de_aborto",
     "ProvisioningError",
     "ProvisioningBlockedError",

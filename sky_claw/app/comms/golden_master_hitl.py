@@ -61,6 +61,7 @@ from sky_claw.local.frozen_runtime.autorizacion_hitl_transicion import (
     ReanudacionRequiereDuenoError,
     RegistroAbandonoTransicion,
     RegistroAbortoPendiente,
+    ResultadoRecuperacionAdelante,
     ResultadoTransicion,
     SesionTransicionGoldenMaster,
     SolicitudTransicion,
@@ -1316,6 +1317,8 @@ class CoordinadorTelegramGoldenMaster:
             return await self._admitir_abandonar(chat_id=chat_id, resto=resto, identidad=identidad)
         if comando == "/gm_abortar_pendiente":
             return await self._admitir_abortar_pendiente(chat_id=chat_id, resto=resto, identidad=identidad)
+        if comando == "/gm_completar_pendiente":
+            return await self._admitir_completar_pendiente(chat_id=chat_id, resto=resto)
 
         await self._enviar_seguro(
             chat_id, f"❌ Comando Golden Master no reconocido: <code>{_escape_html(comando)}</code>."
@@ -1501,6 +1504,33 @@ class CoordinadorTelegramGoldenMaster:
                 usar_ip0=usar_ip0,
                 motivo=motivo,
                 identidad=identidad,
+            )
+        )
+
+    async def _admitir_completar_pendiente(
+        self,
+        *,
+        chat_id: int,
+        resto: str,
+    ) -> asyncio.Task[None] | None:
+        partes = resto.split()
+        if len(partes) != 1 or not partes[0].strip():
+            await self._enviar_seguro(
+                chat_id,
+                "❌ Uso: <code>/gm_completar_pendiente &lt;transition_id&gt;</code>.",
+            )
+            return None
+        if self._esta_ocupado() or self._sesion_activa is not None:
+            await self._enviar_seguro(
+                chat_id,
+                "⛔ No se puede completar PENDING mientras exista otra operación o solicitud abierta.",
+            )
+            return None
+        self._operacion_en_curso = True
+        return self._lanzar_tarea(
+            self._correr_completar_pendiente(
+                chat_id=chat_id,
+                transition_id=partes[0].strip(),
             )
         )
 
@@ -1944,6 +1974,47 @@ class CoordinadorTelegramGoldenMaster:
         finally:
             self._operacion_en_curso = False
 
+    async def _correr_completar_pendiente(
+        self,
+        *,
+        chat_id: int,
+        transition_id: str,
+    ) -> None:
+        objetivo = self._objetivo
+        assert objetivo is not None
+        cancelacion_pedida = threading.Event()
+
+        def _trabajo_completar_pendiente() -> ResultadoRecuperacionAdelante | _ResultadoAbortadoPorCierre:
+            if self._debe_abortar_trabajo(cancelacion_pedida):
+                return _TRABAJO_ABORTADO_POR_CIERRE
+            sesion = SesionTransicionGoldenMaster(**objetivo.to_sesion_kwargs())
+            return sesion.completar_pendiente(transition_id=transition_id)
+
+        try:
+            if self._cerrado:
+                return
+            resultado = await self._ejecutar_en_worker(
+                _trabajo_completar_pendiente,
+                cancelacion_event=cancelacion_pedida,
+            )
+            if isinstance(resultado, _ResultadoAbortadoPorCierre) or self._cerrado:
+                return
+            await self._enviar_seguro(
+                chat_id,
+                "✅ Recuperación hacia adelante completada.\n"
+                f"<b>Transición:</b> <code>{_escape_html(resultado.transition_id)}</code>\n"
+                f"<b>Frontera:</b> <code>{_escape_html(resultado.frontera.value)}</code>\n"
+                f"<b>Finalization seq:</b> <code>{resultado.finalization_seq}</code>\n"
+                f"<b>Idempotente (ya estaba completada):</b> <code>{resultado.ya_estaba_completada}</code>",
+            )
+        except FrozenRuntimeError as exc:
+            if not self._cerrado:
+                await self._enviar_seguro(
+                    chat_id, f"❌ No se pudo completar el PENDING hacia adelante: {_escape_html(_texto_de_error(exc))}"
+                )
+        finally:
+            self._operacion_en_curso = False
+
     # ------------------------------------------------------------------
     # Formateadores de salida HTML escapada
     # ------------------------------------------------------------------
@@ -1993,7 +2064,9 @@ class CoordinadorTelegramGoldenMaster:
             "• <code>/gm_reanudar &lt;transition_id&gt;</code> — Reanuda transición consumida pre-PENDING.\n"
             "• <code>/gm_abandonar &lt;transition_id&gt; &lt;motivo&gt;</code> — Registra abandono durable.\n"
             "• <code>/gm_abortar_pendiente &lt;transition_id&gt; &lt;ip0|ninguna|sup=sha|ausente,...&gt; &lt;motivo&gt;</code> — "
-            "Reconcilia y aborta un PENDING con confirmación del dueño."
+            "Reconcilia y aborta un PENDING con confirmación del dueño.\n"
+            "• <code>/gm_completar_pendiente &lt;transition_id&gt;</code> — "
+            "Completa hacia adelante un PENDING en frontera C3/C4/C6/C7."
         )
 
 

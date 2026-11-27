@@ -175,7 +175,10 @@ from sky_claw.local.frozen_runtime.pending_abort_store import (
 )
 from sky_claw.local.frozen_runtime.pending_reconciliation import (
     ContextoVerificacionIp0,
+    FronteraRecuperacionAdelante,
+    ResultadoRecuperacionAdelante,
     abortar_transicion_pendiente,
+    completar_transicion_pendiente,
 )
 from sky_claw.local.frozen_runtime.provisioning import verificar_runtime_setup
 from sky_claw.local.frozen_runtime.root_lock import canonical_root_key, participant_lock
@@ -1879,6 +1882,27 @@ class SesionTransicionGoldenMaster:
             clock_ns=self._clock_ns,
         )
 
+    def completar_pendiente(
+        self,
+        *,
+        transition_id: str,
+        expected_journal_revision: int | None = None,
+        timeout: float = 30.0,
+    ) -> ResultadoRecuperacionAdelante:
+        """Completa hacia adelante un ``PENDING`` en frontera C3/C4/C6/C7 (ADR 0012 §49)."""
+        return completar_transicion_pendiente(
+            self._storage_root,
+            transition_id=transition_id,
+            mo2_instance_dir=self._mo2_instance_dir,
+            managed_source_root=self._managed_source_root,
+            config_path=self._config_path,
+            environ=self._environ,
+            probes=self._probes,
+            expected_journal_revision=expected_journal_revision,
+            timeout=timeout,
+            clock_ns=self._clock_ns,
+        )
+
 
 __all__ = [
     "CANDIDATE_OBJECT",
@@ -1899,10 +1923,12 @@ __all__ = [
     "EstadoSuperficieConfirmada",
     "EvidenciaTransicion",
     "EvidenciaTransicionError",
+    "FronteraRecuperacionAdelante",
     "ModoAbortoPendiente",
     "OrigenTransicion",
     "RegistroAbandonoTransicion",
     "RegistroAbortoPendiente",
+    "ResultadoRecuperacionAdelante",
     "ReanudacionNoDisponibleError",
     "ReanudacionRequiereDuenoError",
     "ResultadoTransicion",
@@ -1915,6 +1941,7 @@ __all__ = [
     "abortar_transicion_pendiente",
     "cargar_abortos",
     "cargar_registro_abandono",
+    "completar_transicion_pendiente",
     "derivar_evidencia_transicion",
     "diagnosticar_estado_durable",
 ]

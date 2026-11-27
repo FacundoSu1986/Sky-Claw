@@ -22,10 +22,12 @@ Implementa ``abortar_transicion_pendiente`` conforme a ADR 0012 §48 y las direc
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import pathlib
 import time
 from collections.abc import Callable, Mapping
+from enum import StrEnum
 
 from sky_claw.local.frozen_runtime import binder_recovery as recovery
 from sky_claw.local.frozen_runtime.approval import (
@@ -35,6 +37,7 @@ from sky_claw.local.frozen_runtime.approval import (
     derivar_autoridad_aprobacion,
 )
 from sky_claw.local.frozen_runtime.binder_preflight import BinderTransitionPolicy
+from sky_claw.local.frozen_runtime.clones import leer_runtime_clone_record, verificar_runtime_clone
 from sky_claw.local.frozen_runtime.effective_runtime.mo2_ini import leer_game_path_de_mo2
 from sky_claw.local.frozen_runtime.effective_runtime.models import DesiredRuntime, ObservationState, RuntimeProbes
 from sky_claw.local.frozen_runtime.effective_runtime.oracle import (
@@ -49,16 +52,31 @@ from sky_claw.local.frozen_runtime.errors import (
     AbortoPendienteReservadoError,
     AbortoSuperficieDivergenteError,
     FrozenRuntimeError,
+    InvalidGenerationIdError,
+    JournalCasError,
     JournalCorruptError,
     JournalIdentityError,
     JournalSchemaError,
     JournalStoreNoInicializadoError,
+    RecuperacionAdelanteAutoridadError,
+    RecuperacionAdelanteBloqueadaError,
+    RecuperacionAdelanteCasError,
+    RecuperacionAdelantePostError,
+    StateCasError,
+    StateCorruptError,
+    StateSchemaError,
 )
 from sky_claw.local.frozen_runtime.journal import (
+    FinalizedTransitionRecord,
     JournalDisposition,
     JournalLoadResult,
+    PostVerifyEvidence,
+    PostVerifyResultado,
     SourceActivation,
     _abortar_pendiente_locked,
+    _completar_rotacion_f2_locked,
+    _finalizar_locked,
+    _observar_estado_durable,
     auditar_reservas_finalizacion,
     cargar_journal_transicion,
     derivar_historial_finalizados,
@@ -79,10 +97,19 @@ from sky_claw.local.frozen_runtime.pending_abort_store import (
     crear_intencion_aborto_locked,
     exigir_transition_id_canonico,
     leer_estado_archivo_aborto,
+    registro_de_aborto,
 )
+from sky_claw.local.frozen_runtime.provisioning import verificar_runtime_setup
 from sky_claw.local.frozen_runtime.root_lock import canonical_root_key, participant_lock
-from sky_claw.local.frozen_runtime.state import load_frozen_runtime_state
+from sky_claw.local.frozen_runtime.state import (
+    _escribir_estado_activo_cas_locked,
+    load_frozen_runtime_state,
+    observar_estado_previo,
+)
 from sky_claw.local.frozen_runtime.storage import active_state_path, recovery_state_dir
+from sky_claw.local.frozen_runtime.storage_models import GenerationVerificationState
+
+logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -993,7 +1020,505 @@ def abortar_transicion_pendiente(
         return reg_actual
 
 
+# ============================================================================
+# Recuperación hacia adelante de PENDING (C3 / C4 / C6 / C7 — ADR 0012 §49)
+# ============================================================================
+
+
+class FronteraRecuperacionAdelante(StrEnum):
+    """Frontera durable de interrupción recuperable hacia adelante (ADR 0012 §35.3/§36.9/§37.5)."""
+
+    C3_DESIRED_PENDIENTE = "C3_DESIRED_PENDIENTE"
+    C4_POST_PENDIENTE = "C4_POST_PENDIENTE"
+    C6_RESERVA_PROPIA = "C6_RESERVA_PROPIA"
+    C7_ROTACION_F2 = "C7_ROTACION_F2"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ResultadoRecuperacionAdelante:
+    """Resultado estructurado y auditable de ``completar_transicion_pendiente``."""
+
+    frontera: FronteraRecuperacionAdelante
+    transition_id: str
+    finalization_seq: int
+    finalized_record: FinalizedTransitionRecord
+    desired_actualizado: bool
+    post_ejecutado: bool
+    reserva_reutilizada: bool
+    ya_estaba_completada: bool
+    registro_recuperacion_retirado: bool
+
+
+def _evidencia_aprobacion_consumida_para_adelante(
+    storage_path: pathlib.Path,
+    transition_id: str,
+) -> tuple[ApprovalTombstone, IssuanceWitness]:
+    """Verifica el vínculo durable con la aprobación CONSUMED original sin emitir ni consumir otra."""
+    try:
+        autoridad = derivar_autoridad_aprobacion(storage_path)
+    except (FrozenRuntimeError, OSError) as exc:
+        raise RecuperacionAdelanteAutoridadError(
+            f"no se pudo derivar la autoridad de aprobación ({exc}): fail-closed"
+        ) from exc
+    tombstones = [
+        t
+        for t in autoridad.tombstones
+        if t.terminal_state is TerminalState.CONSUMED and t.consumed_by_transition_id == transition_id
+    ]
+    if len(tombstones) != 1:
+        raise RecuperacionAdelanteAutoridadError(
+            f"se esperaba exactamente un tombstone CONSUMED para {transition_id!r}, encontrados {len(tombstones)}"
+        )
+    tombstone = tombstones[0]
+    witness = next((w for w in autoridad.witnesses if w.approval_seq == tombstone.approval_seq), None)
+    if witness is None or witness.approval_id != tombstone.approval_id:
+        raise RecuperacionAdelanteAutoridadError(
+            f"falta witness inmutable coherente para approval_seq={tombstone.approval_seq}"
+        )
+    if witness.approval_scope_digest != tombstone.approval_scope_digest:
+        raise RecuperacionAdelanteAutoridadError(
+            "el approval_scope_digest del witness no coincide con el tombstone CONSUMED"
+        )
+    return tombstone, witness
+
+
+def _exigir_quiescencia_para_adelante(probes: RuntimeProbes, *, momento: str) -> None:
+    from sky_claw.local.frozen_runtime.runtime_clone_binder import _exigir_quiescencia
+
+    try:
+        _exigir_quiescencia(probes, momento=momento)
+    except FrozenRuntimeError as exc:
+        raise RecuperacionAdelanteBloqueadaError(str(exc)) from exc
+
+
+def _retirar_recovery_best_effort(handle: object, storage_path: pathlib.Path, transition_id: str) -> bool:
+    """Retira ``state/recovery/<tid>.json`` tras finalizar/rotar; best-effort declarado (no revierte FINALIZED)."""
+    try:
+        recovery.eliminar_registro_locked(handle, storage_path, transition_id)
+        return True
+    except OSError as exc:
+        logger.warning(
+            "recuperación hacia adelante (%s): no se pudo retirar state/recovery/%s.json (%s); "
+            "reintentar completará la limpieza de forma idempotente",
+            transition_id,
+            transition_id,
+            exc,
+        )
+        return False
+
+
+def completar_transicion_pendiente(
+    storage_root: pathlib.Path,
+    *,
+    transition_id: str,
+    mo2_instance_dir: pathlib.Path,
+    managed_source_root: pathlib.Path | None = None,
+    config_path: pathlib.Path | None = None,
+    environ: Mapping[str, str] | None = None,
+    probes: RuntimeProbes | None = None,
+    expected_journal_revision: int | None = None,
+    timeout: float = 30.0,
+    clock_ns: Callable[[], int] = time.time_ns,
+) -> ResultadoRecuperacionAdelante:
+    """Completa hacia adelante una transición interrumpida en C3/C4/C6/C7 (ADR 0012 §35.3/§36.9/§37.5/§49).
+
+    Preserva todas las autoridades durables existentes:
+    - Reutiliza el mismo ``transition_id``, la misma aprobación ``CONSUMED`` y la reserva F1a (C6).
+    - En C7 completa ÚNICAMENTE F2 (rotación a ``NONE``) sin recrear ``FINALIZED`` ni fabricar POST.
+    - En C3/C4/C6 ejecuta la verificación física del Clone, setup y el oráculo Effective Runtime
+      FUERA de ``participant_lock`` y revalida la huella causal durable al recuperar el lock (FR-06).
+    - Ante abortos incompletos (D4), IDs abortados, stores corruptos, reservas ajenas/corruptas,
+      Effective desconocido/divergente, Clone inválido o CAS obsoleto: falla cerrado sin mutar.
+    """
+    from sky_claw.local.frozen_runtime.runtime_clone_binder import _leer_skyrim_path_persistido
+
+    try:
+        t_id = exigir_transition_id_canonico(transition_id)
+    except AbortoPendienteInvalidoError as exc:
+        raise RecuperacionAdelanteAutoridadError(str(exc)) from exc
+
+    if expected_journal_revision is not None and (
+        isinstance(expected_journal_revision, bool)
+        or not isinstance(expected_journal_revision, int)
+        or expected_journal_revision < 0
+    ):
+        raise RecuperacionAdelanteCasError("expected_journal_revision debe ser un entero >= 0")
+
+    storage_path = pathlib.Path(os.path.abspath(os.fspath(storage_root)))
+    if not storage_path.is_dir():
+        raise RecuperacionAdelanteAutoridadError(f"storage_root no existe o no es directorio: {storage_path}")
+    mo2_dir = pathlib.Path(os.path.abspath(os.fspath(mo2_instance_dir)))
+    observadores = probes if probes is not None else default_runtime_probes()
+
+    # -----------------------------------------------------------------------
+    # Fase 1 (bajo participant_lock): lectura causalmente coherente + C7 directa
+    # -----------------------------------------------------------------------
+    with participant_lock(storage_path, timeout=timeout, reclaim_orphaned=True) as handle:
+        handle.assert_owned()
+        try:
+            estado = _observar_estado_durable(storage_path)
+        except AbortoCorruptoError:
+            raise
+        except (
+            JournalCorruptError,
+            JournalSchemaError,
+            JournalIdentityError,
+            JournalStoreNoInicializadoError,
+            StateCorruptError,
+            StateSchemaError,
+            InvalidGenerationIdError,
+        ) as exc:
+            raise RecuperacionAdelanteAutoridadError(f"autoridad durable ilegible o incoherente ({exc})") from exc
+
+        # FR-08: bloqueo D4 ante aborto incompleto y veto permanente de transition_id abortado.
+        if estado.abortos_incompletos:
+            raise RecuperacionAdelanteBloqueadaError(
+                f"aborto incompleto en curso (D4): {estado.abortos_incompletos}. "
+                "Prohibido recuperar hacia adelante hasta cerrar el aborto"
+            )
+        if registro_de_aborto(storage_path, t_id) is not None:
+            raise RecuperacionAdelanteBloqueadaError(
+                f"la transición {t_id!r} fue abortada (veto permanente): prohibido recuperarla hacia adelante"
+            )
+
+        tombstone, _witness = _evidencia_aprobacion_consumida_para_adelante(storage_path, t_id)
+
+        registro_existente = next((r for r in estado.historial.registros if r.transition_id == t_id), None)
+        if registro_existente is not None:
+            # Frontera C7 (FINALIZED ya existe) o reintento idempotente post-F2.
+            if (
+                registro_existente.consumed_approval_id != tombstone.approval_id
+                or registro_existente.consumed_approval_seq != int(tombstone.approval_seq)
+                or registro_existente.approval_scope_digest != tombstone.approval_scope_digest
+            ):
+                raise RecuperacionAdelanteAutoridadError(
+                    f"el registro FINALIZED de {t_id!r} no coincide con la aprobación CONSUMED"
+                )
+            ya_completada = estado.snapshot.disposition is JournalDisposition.NONE
+            if not ya_completada:
+                j_c7 = estado.snapshot.journal
+                if j_c7 is None or (
+                    j_c7.consumed_approval_id != tombstone.approval_id
+                    or j_c7.consumed_approval_seq != int(tombstone.approval_seq)
+                    or j_c7.approval_scope_digest != tombstone.approval_scope_digest
+                ):
+                    raise RecuperacionAdelanteAutoridadError(
+                        "el journal PENDING en C7 no coincide con la aprobación CONSUMED"
+                    )
+            try:
+                rec_f2 = _completar_rotacion_f2_locked(
+                    handle,
+                    storage_path,
+                    transition_id=t_id,
+                    expected_journal_revision=expected_journal_revision if not ya_completada else None,
+                )
+            except JournalCasError as exc:
+                raise RecuperacionAdelanteCasError(str(exc)) from exc
+            except JournalIdentityError as exc:
+                raise RecuperacionAdelanteAutoridadError(str(exc)) from exc
+
+            retirado = _retirar_recovery_best_effort(handle, storage_path, t_id)
+            return ResultadoRecuperacionAdelante(
+                frontera=FronteraRecuperacionAdelante.C7_ROTACION_F2,
+                transition_id=t_id,
+                finalization_seq=rec_f2.finalization_seq,
+                finalized_record=rec_f2,
+                desired_actualizado=False,
+                post_ejecutado=False,
+                reserva_reutilizada=False,
+                ya_estaba_completada=ya_completada,
+                registro_recuperacion_retirado=retirado,
+            )
+
+        # Sin FINALIZED: debe haber un PENDING activo de ESTA transición (C3/C4/C6).
+        if (
+            estado.snapshot.disposition
+            not in (
+                JournalDisposition.PENDING_PROMOTION,
+                JournalDisposition.PENDING_ROLLBACK,
+            )
+            or estado.snapshot.journal is None
+        ):
+            raise RecuperacionAdelanteBloqueadaError(
+                f"no hay PENDING recuperable para {t_id!r} (journal={estado.snapshot.disposition.value})"
+            )
+        journal = estado.snapshot.journal
+        if journal.transition_id != t_id:
+            raise RecuperacionAdelanteAutoridadError(
+                f"el PENDING vigente pertenece a {journal.transition_id!r}, no a {t_id!r}"
+            )
+        if expected_journal_revision is not None and journal.journal_revision != expected_journal_revision:
+            raise RecuperacionAdelanteCasError(
+                f"CAS desactualizado: esperado journal_revision={expected_journal_revision}, "
+                f"vigente={journal.journal_revision}"
+            )
+        if (
+            journal.consumed_approval_id != tombstone.approval_id
+            or journal.consumed_approval_seq != int(tombstone.approval_seq)
+            or journal.approval_scope_digest != tombstone.approval_scope_digest
+        ):
+            raise RecuperacionAdelanteAutoridadError(
+                "el journal PENDING no coincide con la aprobación CONSUMED (approval_id/seq/scope_digest)"
+            )
+
+        # Auditar reservas huérfanas (C6 vs reserva ajena/corrupta/seq incorrecta)
+        reserva_reutilizada = False
+        if estado.auditoria.huerfanas:
+            if len(estado.auditoria.huerfanas) > 1:
+                raise RecuperacionAdelanteAutoridadError(
+                    f"múltiples reservas huérfanas {estado.auditoria.huerfanas}: autoridad ambigua"
+                )
+            seq_h, tid_h = estado.auditoria.huerfanas[0]
+            if tid_h != t_id:
+                raise RecuperacionAdelanteAutoridadError(
+                    f"reserva huérfana ajena (seq={seq_h}, transition_id={tid_h!r}): prohibido reutilizar"
+                )
+            if seq_h != estado.historial.next_seq:
+                raise RecuperacionAdelanteAutoridadError(
+                    f"reserva huérfana de {t_id!r} tiene seq={seq_h} != next_seq={estado.historial.next_seq}"
+                )
+            reserva_reutilizada = True
+
+        assert journal.target_generation_id is not None
+        assert journal.target_clone_id is not None
+        assert journal.target_runtime_setup_id is not None
+        assert journal.source_activation is not None
+        assert journal.source_activation_digest is not None
+        assert journal.expected_effective_path is not None
+
+        target_generation_id = journal.target_generation_id
+        target_clone_id = journal.target_clone_id
+        target_runtime_setup_id = journal.target_runtime_setup_id
+        source_activation_digest = journal.source_activation_digest
+        expected_effective_path = journal.expected_effective_path
+        rev_inicial = journal.journal_revision
+        huella_inicial = estado.huella
+
+        # Clasificar C3 vs C4 vs C6 contra active.json y source_activation
+        active_state = estado.deseado.state
+        obs_gen = None if active_state is None else active_state.desired_active_generation
+        obs_clone = None if active_state is None else active_state.desired_clone_id
+        target_pair = (target_generation_id, target_clone_id)
+        source_pair = (journal.source_activation.generation_id, journal.source_activation.clone_id)
+
+        if reserva_reutilizada:
+            if (obs_gen, obs_clone) != target_pair:
+                raise RecuperacionAdelanteAutoridadError(
+                    f"C6 incoherente: existe reserva propia para {t_id!r}, pero active.json declara "
+                    f"({obs_gen!r}, {obs_clone!r}) en lugar del destino {target_pair!r}"
+                )
+            frontera = FronteraRecuperacionAdelante.C6_RESERVA_PROPIA
+        elif (obs_gen, obs_clone) == target_pair:
+            frontera = FronteraRecuperacionAdelante.C4_POST_PENDIENTE
+        elif (obs_gen, obs_clone) == source_pair:
+            frontera = FronteraRecuperacionAdelante.C3_DESIRED_PENDIENTE
+        else:
+            raise RecuperacionAdelanteAutoridadError(
+                f"active.json declara ({obs_gen!r}, {obs_clone!r}), incompatible tanto con "
+                f"source_activation {source_pair!r} (C3) como con target {target_pair!r} (C4)"
+            )
+
+        estado_previo_active = observar_estado_previo(active_state_path(storage_path))
+
+        try:
+            clone_record = leer_runtime_clone_record(storage_path, target_clone_id)
+        except FrozenRuntimeError as exc:
+            raise RecuperacionAdelantePostError(f"no se pudo leer RuntimeCloneRecord destino: {exc}") from exc
+
+        if clone_record.source_generation_id != target_generation_id:
+            raise RecuperacionAdelanteAutoridadError(
+                f"el Clone {target_clone_id!r} declara source_generation_id={clone_record.source_generation_id!r}, "
+                f"incompatible con target_generation_id={target_generation_id!r}"
+            )
+        target_clone_root = pathlib.Path(clone_record.root_path)
+        if _norm(target_clone_root) != _norm(expected_effective_path):
+            raise RecuperacionAdelanteAutoridadError(
+                f"la ruta del Clone ({target_clone_root}) no coincide con expected_effective_path "
+                f"({expected_effective_path})"
+            )
+
+    # -----------------------------------------------------------------------
+    # Fase 2 (FUERA de participant_lock — FR-06): quiescencia, Clone, setup, POST
+    # -----------------------------------------------------------------------
+    _exigir_quiescencia_para_adelante(observadores, momento="recuperación hacia adelante (observación previa)")
+
+    try:
+        clone_check = verificar_runtime_clone(
+            storage_path,
+            target_clone_id,
+            managed_source_root=managed_source_root,
+        )
+    except FrozenRuntimeError as exc:
+        raise RecuperacionAdelantePostError(f"verificación del Clone destino falló: {exc}") from exc
+    if clone_check.state is not GenerationVerificationState.VALID:
+        raise RecuperacionAdelantePostError(
+            f"el Clone destino {target_clone_id!r} no es VALID (state={clone_check.state.value}): prohibido finalizar"
+        )
+
+    try:
+        setup_obs = verificar_runtime_setup(target_clone_root)
+    except FrozenRuntimeError as exc:
+        raise RecuperacionAdelantePostError(f"verificación de runtime setup falló: {exc}") from exc
+    if setup_obs.setup_id != target_runtime_setup_id:
+        raise RecuperacionAdelantePostError(
+            f"runtime_setup_id observado ({setup_obs.setup_id!r}) != esperado ({target_runtime_setup_id!r}): "
+            "prohibido finalizar"
+        )
+
+    cfg_post = _leer_skyrim_path_persistido(config_path)
+    post_eval = assess_effective_runtime(
+        mo2_instance_dir=mo2_dir,
+        desired=DesiredRuntime(
+            clone_id=target_clone_id,
+            clone_root=target_clone_root,
+            generation_id=target_generation_id,
+        ),
+        managed_source_root=managed_source_root,
+        config_skyrim_path=cfg_post,
+        environ=environ,
+        probes=observadores,
+    )
+    if not post_eval.authorizes_activation:
+        raise RecuperacionAdelantePostError(
+            f"POST VERIFY no autoriza la activación del runtime en {frontera.value}: "
+            f"verdict={post_eval.verdict.value}, reasons={[r.value for r in post_eval.reasons]}"
+        )
+
+    # -----------------------------------------------------------------------
+    # Fase 3 (bajo participant_lock): revalidar huella causal, CAS active.json (C3), FINALIZE
+    # -----------------------------------------------------------------------
+    desired_actualizado = False
+    with participant_lock(storage_path, timeout=timeout, reclaim_orphaned=True) as handle:
+        handle.assert_owned()
+        try:
+            estado_reval = _observar_estado_durable(storage_path)
+        except AbortoCorruptoError:
+            raise
+        except (
+            JournalCorruptError,
+            JournalSchemaError,
+            JournalIdentityError,
+            JournalStoreNoInicializadoError,
+            StateCorruptError,
+            StateSchemaError,
+            InvalidGenerationIdError,
+        ) as exc:
+            raise RecuperacionAdelanteAutoridadError(f"revalidación durable falló ({exc})") from exc
+
+        if estado_reval.huella != huella_inicial:
+            raise RecuperacionAdelanteCasError(
+                "la autoridad durable cambió mientras se ejecutaba la observación externa del oráculo: "
+                "no se continúa sobre evidencia obsoleta (FR-06)"
+            )
+
+        _exigir_quiescencia_para_adelante(observadores, momento="recuperación hacia adelante (revalidación bajo lock)")
+
+        # Revalidación rápida bajo lock de las superficies externas (MO2 INI + config.toml):
+        # cierra la ventana TOCTOU si un tercero las modificó mientras el oráculo corría fuera del lock.
+        ini_reval = leer_game_path_de_mo2(mo2_dir / "modorganizer.ini")
+        if (
+            ini_reval.state is not ObservationState.OBSERVED
+            or not ini_reval.path
+            or _norm(ini_reval.path) != _norm(target_clone_root)
+        ):
+            raise RecuperacionAdelantePostError(
+                "POST VERIFY (revalidación bajo lock): modorganizer.ini divergió o dejó de apuntar al Clone destino"
+            )
+        if config_path is not None:
+            cfg_reval = _leer_skyrim_path_persistido(config_path)
+            if _norm(cfg_reval) != _norm(target_clone_root):
+                raise RecuperacionAdelantePostError(
+                    "POST VERIFY (revalidación bajo lock): config.skyrim_path divergió del Clone destino"
+                )
+
+        if frontera is FronteraRecuperacionAdelante.C3_DESIRED_PENDIENTE:
+            active_payload: dict[str, object] = {
+                "schema_version": 2,
+                "desired_generation_id": target_generation_id,
+                "desired_clone_id": target_clone_id,
+                "updated_at_ns": int(clock_ns()),
+            }
+            try:
+                _escribir_estado_activo_cas_locked(
+                    active_state_path(storage_path),
+                    active_payload,
+                    esperado=estado_previo_active,
+                )
+            except StateCasError as exc:
+                raise RecuperacionAdelanteCasError(f"CAS UPDATE DESIRED rechazado en recuperación C3: {exc}") from exc
+            desired_actualizado = True
+
+        desired_persistido = desired_runtime_from_storage(storage_path)
+        if (
+            desired_persistido.clone_id != target_clone_id
+            or desired_persistido.generation_id != target_generation_id
+            or desired_persistido.clone_root is None
+            or _norm(desired_persistido.clone_root) != _norm(target_clone_root)
+        ):
+            raise RecuperacionAdelantePostError(
+                "POST VERIFY: active.json persistido no coincide con el destino autorizado de la transición"
+            )
+
+        eff_obs_payload = {
+            "verdict": post_eval.verdict.value,
+            "effective_path": str(target_clone_root),
+            "mo2_instance_dir": str(mo2_dir),
+            "observed_at_ns": post_eval.observed_at_ns,
+        }
+        effective_obs_digest = digest_canonico(eff_obs_payload)
+        verified_now = int(clock_ns())
+        post_evidence_payload = {
+            "transition_id": t_id,
+            "resultado": PostVerifyResultado.PASS.value,
+            "expected_journal_revision": rev_inicial,
+            "source_activation_digest": source_activation_digest,
+            "target_generation_id": target_generation_id,
+            "target_clone_id": target_clone_id,
+            "target_runtime_setup_id": target_runtime_setup_id,
+            "desired_active_generation": target_generation_id,
+            "effective_observation_digest": effective_obs_digest,
+            "verified_at_ns": verified_now,
+        }
+        post_evidence = PostVerifyEvidence(
+            transition_id=t_id,
+            resultado=PostVerifyResultado.PASS,
+            source_activation_digest=source_activation_digest,
+            target_generation_id=target_generation_id,
+            target_clone_id=target_clone_id,
+            target_runtime_setup_id=target_runtime_setup_id,
+            desired_active_generation=target_generation_id,
+            effective_observation_digest=effective_obs_digest,
+            payload_digest=digest_canonico(post_evidence_payload),
+            verified_at_ns=verified_now,
+            expected_journal_revision=rev_inicial,
+        )
+
+        try:
+            record_final = _finalizar_locked(handle, storage_path, post_evidence)
+        except JournalCasError as exc:
+            raise RecuperacionAdelanteCasError(str(exc)) from exc
+        except JournalIdentityError as exc:
+            raise RecuperacionAdelanteAutoridadError(str(exc)) from exc
+
+        retirado = _retirar_recovery_best_effort(handle, storage_path, t_id)
+
+    return ResultadoRecuperacionAdelante(
+        frontera=frontera,
+        transition_id=t_id,
+        finalization_seq=record_final.finalization_seq,
+        finalized_record=record_final,
+        desired_actualizado=desired_actualizado,
+        post_ejecutado=True,
+        reserva_reutilizada=reserva_reutilizada,
+        ya_estaba_completada=False,
+        registro_recuperacion_retirado=retirado,
+    )
+
+
 __all__ = [
     "ContextoVerificacionIp0",
+    "FronteraRecuperacionAdelante",
+    "ResultadoRecuperacionAdelante",
     "abortar_transicion_pendiente",
+    "completar_transicion_pendiente",
 ]
