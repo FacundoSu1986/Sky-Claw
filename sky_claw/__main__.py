@@ -13,9 +13,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import hashlib
+import json
 import logging
 import os
 import pathlib
+import re
 import signal
 import sys
 from typing import TYPE_CHECKING, NoReturn
@@ -65,6 +68,211 @@ def _despachar_sin_dialogo(punto_de_entrada: Callable[[], int | None]) -> NoRetu
         _volcar_traceback_a_stderr()
         raise SystemExit(EXIT_EXCEPCION_NO_MANEJADA) from None
     raise SystemExit(codigo)
+
+
+_FLAG_EXPORTAR_LICENCIAS = "--export-licenses"
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_WIN_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _escribir_flujo_seguro(flujo: object, mensaje: str) -> None:
+    if flujo is None:
+        return
+    escribir = getattr(flujo, "write", None)
+    if callable(escribir):
+        with contextlib.suppress(Exception):
+            escribir(mensaje + "\n")
+            vaciar = getattr(flujo, "flush", None)
+            if callable(vaciar):
+                vaciar()
+
+
+def _es_reparse_o_enlace(ruta: pathlib.Path) -> bool:
+    if ruta.is_symlink():
+        return True
+    try:
+        st = os.lstat(ruta)
+    except OSError:
+        return False
+    attrs = getattr(st, "st_file_attributes", 0)
+    return bool(attrs & _WIN_FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _contiene_reparse_en_cadena(ruta: pathlib.Path) -> bool:
+    actual = ruta
+    while True:
+        if _es_reparse_o_enlace(actual):
+            return True
+        padre = actual.parent
+        if padre == actual:
+            return False
+        actual = padre
+
+
+def _limpiar_directorio_creado(raiz: pathlib.Path) -> None:
+    """Elimina solo lo creado por esta ejecución (sin usar shutil.rmtree)."""
+    with contextlib.suppress(OSError):
+        for dirpath, _dirnames, filenames in os.walk(raiz, topdown=False, followlinks=False):
+            dp = pathlib.Path(dirpath)
+            for fname in filenames:
+                with contextlib.suppress(OSError):
+                    (dp / fname).unlink()
+            with contextlib.suppress(OSError):
+                dp.rmdir()
+
+
+def _resolver_origen_licencias(origen_base: pathlib.Path | None) -> pathlib.Path:
+    if origen_base is not None:
+        return origen_base.resolve()
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return pathlib.Path(str(meipass)).resolve()
+    return pathlib.Path(__file__).resolve().parent.parent
+
+
+def _resolver_archivo_origen_licencia(raiz_origen: pathlib.Path, rel_str: str) -> pathlib.Path:
+    """Resuelve un documento legal en árbol fuente o bajo ``sky_claw/legal`` en el bundle congelado."""
+    directo = raiz_origen / pathlib.Path(rel_str)
+    if directo.is_file():
+        return directo
+    en_bundle = raiz_origen / "sky_claw" / "legal" / pathlib.Path(rel_str)
+    if en_bundle.is_file():
+        return en_bundle
+    return directo
+
+
+def exportar_licencias_terceros(
+    destino: pathlib.Path | str,
+    *,
+    origen_base: pathlib.Path | None = None,
+) -> int:
+    """Exporta avisos y textos íntegros de licencias de terceros a un directorio nuevo y persistente.
+
+    Valida el manifiesto y los SHA-256 de cada archivo antes y durante la exportación; falla cerrado
+    si falta algún documento, el hash no coincide o el destino es inseguro o ya existe.
+    """
+    raiz_origen = _resolver_origen_licencias(origen_base)
+    ruta_manifiesto = _resolver_archivo_origen_licencia(raiz_origen, "licenses/third_party/manifest.json")
+    if not ruta_manifiesto.is_file() or _es_reparse_o_enlace(ruta_manifiesto):
+        _escribir_flujo_seguro(sys.stderr, f"Error: manifiesto de licencias ausente o inválido: {ruta_manifiesto}")
+        return 1
+
+    try:
+        datos_manifiesto = ruta_manifiesto.read_bytes()
+        manifiesto = json.loads(datos_manifiesto.decode("utf-8"))
+        documentos = manifiesto["documents"]
+        if manifiesto.get("schema_version") != 1 or not isinstance(documentos, list) or not documentos:
+            raise ValueError("Esquema de manifest.json inválido")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        _escribir_flujo_seguro(sys.stderr, f"Error: manifest.json corrupto o ilegible: {exc}")
+        return 1
+
+    # Validar y preparar destino exclusivo
+    ruta_cruda = pathlib.Path(destino)
+    if not str(destino).strip() or ".." in ruta_cruda.parts:
+        _escribir_flujo_seguro(sys.stderr, "Error: ruta de destino vacía o con traversal ('..').")
+        return 1
+    ruta_abs = ruta_cruda if ruta_cruda.is_absolute() else (pathlib.Path.cwd() / ruta_cruda)
+    if _contiene_reparse_en_cadena(ruta_abs) or _contiene_reparse_en_cadena(ruta_abs.parent):
+        _escribir_flujo_seguro(sys.stderr, "Error: el destino o su cadena padre contiene enlaces simbólicos/reparse.")
+        return 1
+    if ruta_abs.exists():
+        _escribir_flujo_seguro(sys.stderr, f"Error: el directorio de destino ya existe: {ruta_abs}")
+        return 1
+    if not ruta_abs.parent.is_dir():
+        _escribir_flujo_seguro(sys.stderr, f"Error: el directorio padre no existe: {ruta_abs.parent}")
+        return 1
+
+    destino_resuelto = ruta_abs.parent.resolve() / ruta_abs.name
+    try:
+        destino_resuelto.relative_to(raiz_origen)
+        _escribir_flujo_seguro(sys.stderr, "Error: no se permite exportar dentro del directorio origen/bundle.")
+        return 1
+    except ValueError:
+        pass
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        try:
+            destino_resuelto.relative_to(pathlib.Path(str(meipass)).resolve())
+            _escribir_flujo_seguro(sys.stderr, "Error: no se permite exportar dentro de sys._MEIPASS.")
+            return 1
+        except ValueError:
+            pass
+
+    # Pre-validar todos los documentos contra manifest.json antes de crear nada
+    entradas_verificadas: list[tuple[pathlib.PurePosixPath, bytes]] = []
+    vistas: set[str] = set()
+    for doc in documentos:
+        if not isinstance(doc, dict):
+            _escribir_flujo_seguro(sys.stderr, "Error: entrada de documento inválida en manifest.json.")
+            return 1
+        rel_str = str(doc.get("path", ""))
+        sha_esperado = str(doc.get("sha256", ""))
+        tam_esperado = doc.get("bytes")
+        if (
+            not rel_str
+            or rel_str in vistas
+            or rel_str.startswith("/")
+            or ".." in pathlib.PurePosixPath(rel_str).parts
+            or not _SHA256_HEX_RE.fullmatch(sha_esperado)
+            or not isinstance(tam_esperado, int)
+            or tam_esperado <= 0
+        ):
+            _escribir_flujo_seguro(sys.stderr, f"Error: metadatos inválidos en manifest.json para {rel_str!r}.")
+            return 1
+        vistas.add(rel_str)
+        archivo_src = _resolver_archivo_origen_licencia(raiz_origen, rel_str)
+        if not archivo_src.is_file() or _es_reparse_o_enlace(archivo_src):
+            _escribir_flujo_seguro(sys.stderr, f"Error: documento faltante en origen: {rel_str}")
+            return 1
+        try:
+            contenido = archivo_src.read_bytes().replace(b"\r\n", b"\n")
+        except OSError as exc:
+            _escribir_flujo_seguro(sys.stderr, f"Error leyendo {rel_str}: {exc}")
+            return 1
+        if len(contenido) != tam_esperado or hashlib.sha256(contenido).hexdigest() != sha_esperado:
+            _escribir_flujo_seguro(sys.stderr, f"Error: hash/tamaño inconsistente para {rel_str}")
+            return 1
+        entradas_verificadas.append((pathlib.PurePosixPath(rel_str), contenido))
+
+    # Creación atómica exclusiva del directorio destino + copia con rollback best-effort
+    try:
+        os.mkdir(destino_resuelto)
+    except OSError as exc:
+        _escribir_flujo_seguro(sys.stderr, f"Error creando destino exclusivo {destino_resuelto}: {exc}")
+        return 1
+
+    try:
+        dest_manifest = destino_resuelto / "licenses" / "third_party" / "manifest.json"
+        dest_manifest.parent.mkdir(parents=True, exist_ok=True)
+        dest_manifest.write_bytes(datos_manifiesto)
+        for rel_posix, contenido in entradas_verificadas:
+            dest_file = destino_resuelto / pathlib.Path(*rel_posix.parts)
+            dest_file.parent.mkdir(parents=True, exist_ok=True)
+            dest_file.write_bytes(contenido)
+    except OSError as exc:
+        _limpiar_directorio_creado(destino_resuelto)
+        _escribir_flujo_seguro(sys.stderr, f"Error escribiendo licencias exportadas: {exc}")
+        return 1
+
+    _escribir_flujo_seguro(
+        sys.stdout,
+        f"Licencias de terceros exportadas ({len(entradas_verificadas)} documentos verificados) en: {destino_resuelto}",
+    )
+    return 0
+
+
+def _despachar_export_licencias(argv_restante: list[str]) -> int:
+    if len(argv_restante) != 1:
+        _escribir_flujo_seguro(sys.stderr, f"Uso: SkyClawApp {_FLAG_EXPORTAR_LICENCIAS} <DIRECTORIO_NUEVO>")
+        return 2
+    return exportar_licencias_terceros(argv_restante[0])
+
+
+# PR-LIC-01: exportación de licencias y avisos de terceros antes de importar
+# AppContext/Config/keyring/NiceGUI. Funciona con console=False (stdout/stderr=None).
+if len(sys.argv) >= 2 and sys.argv[1] == _FLAG_EXPORTAR_LICENCIAS:
+    _despachar_sin_dialogo(lambda: _despachar_export_licencias(sys.argv[2:]))
 
 
 # #856: el worker VFS y su nieto de sonda se despachan ANTES de importar
@@ -660,6 +868,8 @@ def _ensure_std_streams() -> None:
 def main(argv: list[str] | None = None) -> None:
     """Unified entry point controller."""
     effective_argv = list(sys.argv[1:] if argv is None else argv)
+    if effective_argv and effective_argv[0] == _FLAG_EXPORTAR_LICENCIAS:
+        _despachar_sin_dialogo(lambda: _despachar_export_licencias(effective_argv[1:]))
     if effective_argv and effective_argv[0] in ("--vfs-worker", "--vfs-probe-child"):
         from sky_claw.local.mo2.vfs_arranque import arrancar_worker
 

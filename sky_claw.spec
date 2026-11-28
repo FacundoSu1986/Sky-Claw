@@ -117,6 +117,8 @@ datas = [
     ("sky_claw/local/tools/synthesis_shim_fuentes", "sky_claw/local/tools/synthesis_shim_fuentes"),
     ("sky_claw/local/mo2/plugin_bundle/skyclaw_bridge", "sky_claw/local/mo2/plugin_bundle/skyclaw_bridge"),
     ("sky_claw/app/security/security_policy.yaml", "sky_claw/app/security"),
+    ("THIRD_PARTY_NOTICES.md", "sky_claw/legal"),
+    ("licenses/third_party", "sky_claw/legal/licenses/third_party"),
 ]
 
 # Hidden imports that PyInstaller cannot detect automatically.
