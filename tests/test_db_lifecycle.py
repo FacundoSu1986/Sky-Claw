@@ -2504,11 +2504,15 @@ async def test_cancelacion_externa_durante_restauracion_propaga_cancelacion(
     # error de cleanup.
     assert conn.sql[-1] == "PRAGMA busy_timeout=100"
     assert tarea.cancelled(), "la tarea DEBE quedar cancelada: es lo que decide el llamador"
-    # Contraste con la reproducción del Tech Lead (``cancelled: False``,
-    # ``cancelling: 1``): acá la cancelación consumida se da de baja con
-    # ``uncancel()``, así que no queda ninguna pendiente inflando el contador
-    # del task group que la contenga.
-    assert tarea.cancelling() == 0, "la cancelación ya consumida no debe quedar pendiente"
+
+    # R2-FINAL-01: NO se exige ``cancelling() == 0``. Ese requisito lo
+    # introdujo el implementador (con ``Task.uncancel()``), no el contrato: la
+    # petición de cancelación es del CALLER y esta capa no la consume. Medido
+    # en 3.11.9: consumirla no cambiaba ninguna propiedad observable, y en
+    # 3.13+ interfiere con la política de ``asyncio.timeout()``.
+    # Lo que sí se gobierna: la petición NO fue consumida por esta capa, así
+    # que el caller la sigue viendo.
+    assert tarea.cancelling() >= 1, "la petición del caller NO debe quedar consumida por esta capa"
 
 
 async def test_cancelacion_externa_durante_restauracion_conserva_el_diagnostico(
@@ -2591,6 +2595,58 @@ async def test_cancelacion_repetida_conserva_la_primera_y_no_publica(
     assert tarea.cancelled()
     assert capturado.value is not None
     assert conn.sql[-1] == "PRAGMA busy_timeout=100", "la restauración corre aunque la cancelación sea múltiple"
+
+
+async def test_cancelacion_externa_no_interfiere_con_asyncio_timeout_del_llamador(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R2-FINAL-01 (validación 5): ``asyncio.timeout()`` + cancelación externa.
+
+    El caller envuelve la conversión en su propio ``asyncio.timeout()`` y además
+    cancela la tarea. La capa NO debe consumir la petición del caller: si la
+    consumiera (``Task.uncancel()``), en 3.12+ ``timeout()`` puede dejar de
+    atribuirse su propio vencimiento y entregar ``TimeoutError`` donde
+    correspondía ``CancelledError``.
+
+    Sincronización determinista: la cancelación se pide con el ``await`` de la
+    restauración ya en vuelo (``inicio``), no con un ``sleep`` a ojo.
+    """
+    inicio = asyncio.Event()
+    liberar = asyncio.Event()
+    _instalar_reloj(monkeypatch, [0.0, 0.02, 0.02])
+    conn = _ConexionDeContrato(
+        inicio_restauracion=inicio,
+        liberar_restauracion=liberar,
+        restauracion_bloqueante_una_vez=True,
+    )
+    peticiones: list[int] = []
+
+    async def correr() -> None:
+        tarea = asyncio.current_task()
+        assert tarea is not None
+        # Timeout del CALLER amplio: no debe vencer; el que actúa es la
+        # cancelación externa.
+        async with asyncio.timeout(10.0):
+            await convertir_a_wal(conn, busy_timeout_ms=100)
+        # Inalcanzable: la cancelación externa gana.
+        peticiones.append(tarea.cancelling())
+
+    tarea = asyncio.create_task(correr())
+    await asyncio.wait_for(inicio.wait(), timeout=2.0)
+    tarea.cancel("externa concurrente con el timeout del caller")
+    liberar.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+    # Lo observable: ganó la cancelación externa (no el TimeoutError del
+    # caller), la tarea quedó cancelada y la petición del caller NO fue
+    # consumida por esta capa.
+    assert tarea.cancelled(), "la cancelación externa debe dejar la tarea cancelada"
+    assert tarea.cancelling() >= 1, (
+        "la capa consumió la petición del caller (uncancel): la deja invisible para asyncio.timeout"
+    )
+    assert peticiones == [], "la conversión no debía completarse felizmente bajo cancelación"
+    assert conn.sql[-1] == "PRAGMA busy_timeout=100", "la restauración corre igual bajo cancelación externa"
 
 
 async def test_fallo_ordinario_de_restauracion_se_encadena_sin_ciclo(
@@ -2694,6 +2750,14 @@ async def test_restauracion_exitosa_no_se_reporta_como_cancelacion(
     consulta la política de cancelación, así que una segunda conversión que
     sale bien no podría delatar una marca contaminada. Con esa rama, una marca
     pegada convierte un ``OperationalError`` ordinario en ``CancelledError``.
+
+    R2-FINAL-01: la marca "pegada" es real y está MEDIDA. Al propagar el primer
+    ``CancelledError`` sin consumirlo con ``uncancel()``, ``Task.cancelling()``
+    PERSISTE en 1 durante el resto de la vida de la corrutina (sonda
+    ``probe_leak``). Por eso la detección no puede ser absoluta
+    (``cancelling() >= 1``): tiene que comparar contra la huella tomada al
+    entrar. Eso es justamente lo que este test gobierna — la segunda conversión
+    no debe heredar la petición de la primera.
     """
     inicio = asyncio.Event()
     liberar = asyncio.Event()
@@ -2701,7 +2765,8 @@ async def test_restauracion_exitosa_no_se_reporta_como_cancelacion(
     vistas: list[str] = []
 
     async def dos_conversiones() -> None:
-        # 1ª: se cancela durante la restauración => consume un switch.
+        # 1ª: se cancela durante la restauración => queda una petición del
+        # caller sin consumir (el contador persiste en 1; medido).
         conn1 = _ConexionDeContrato(
             inicio_restauracion=inicio,
             liberar_restauracion=liberar,
@@ -2851,28 +2916,28 @@ async def test_cancelacion_intrinseca_no_se_adorna_con_el_fallo_de_cleanup(
     )
 
 
-async def test_cleanup_exitoso_no_consume_un_switch_de_cancelacion(
+async def test_cleanup_exitoso_no_consume_la_peticion_del_llamador(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """R2-01: el switch que entrega la cancelación del llamador queda CONSUMIDO.
+    """R2-01/R2-FINAL-01: el switch del llamador NO se consume en esta capa.
 
-    Ojo con el nombre histórico: lo que este test gobierna no es "no tocar el
-    contador", sino lo contrario. Se midió que un ``Task.cancel()`` que cae
-    dentro del ``await`` de la restauración interrumpe ESE ``await`` —un
-    ``Event.wait()`` cancelado siempre lanza, no hay forma de que "resuelva
-    bien" con el switch en vuelo— así que ``cleanup_error`` NUNCA es ``None``
-    en este escenario. Esa premisa del nombre viejo era falsa.
+    Nombre anterior: ``test_cleanup_exitoso_no_consume_un_switch_de_cancelacion``,
+    que afirmaba lo contrario de lo que ahora se gobierna (exigía
+    ``cancelling() == 0``). Ese requisito era artificial: lo introdujo el
+    implementador con ``Task.uncancel()``, no el contrato.
 
-    La propiedad correcta, y la que importa para el llamador, es el estado
-    FINAL del ``Task``: si el switch quedara pendiente (``cancelling() == 1``
-    tras retornar), el ``await`` siguiente del MISMO ``Task`` lo recibiría por
-    sorpresa y el llamador vería una cancelación que no puede atribuir a su
-    propia llamada. Medido antes del arreglo:
-    ``['primera: cancelada', 'segunda: CANCELADA SIN PETICIÓN']``.
+    Lo que este test gobierna hoy, y por qué:
 
-    Se asertan las tres cosas observables a la vez: la tarea termina
-    ``cancelled()``, el switch quedó en 0 dentro de la conversión, y no hubo
-    ``sqlite`` de por medio (conexión de contrato).
+    1. Premisa MEDIDA: un ``Task.cancel()`` que cae dentro del ``await`` de la
+       restauración interrumpe ESE ``await`` —un ``Event.wait()`` cancelado
+       siempre lanza—, así que ``cleanup_error`` nunca es ``None`` en este
+       escenario. La premisa del nombre viejo (``contador_dentro == [1]``,
+       "el switch sigue pendiente") era falsa.
+    2. El estado FINAL del ``Task`` es lo que decide el llamador: termina
+       ``cancelled()`` y lo que propaga es un ``CancelledError``.
+    3. R2-FINAL-01: ``Task.cancelling()`` es estado COMPARTIDO del caller.
+       Esta capa no lo toca, así que la petición sigue siendo visible al
+       salir (``>= 1``) en vez de haber sido consumida por ``uncancel()``.
     """
     inicio = asyncio.Event()
     liberar = asyncio.Event()
@@ -2911,11 +2976,10 @@ async def test_cleanup_exitoso_no_consume_un_switch_de_cancelacion(
     # La restauración SÍ se ejecutó (el intento quedó registrado) antes de que
     # la cancelación se entregara: la secuencia de SQL lo prueba.
     assert conn.sql[-1] == "PRAGMA busy_timeout=100", f"la restauración debió intentarse: {conn.sql}"
-    # El switch quedó consumido: nadie puede atribuirse una cancelación
-    # posterior del mismo Task.
-    assert contador_dentro == [0], (
-        f"el switch de cancelación del llamador quedó pendiente (contaminaría el await "
-        f"siguiente del mismo Task): {contador_dentro}"
+    # R2-FINAL-01: la petición del llamador NO fue consumida por esta capa.
+    # Se gobierna ``>= 1`` (legible por el caller) y NO ``== 0`` (consumida).
+    assert contador_dentro and contador_dentro[-1] >= 1, (
+        f"la petición de cancelación del caller no debe quedar consumida por esta capa: {contador_dentro}"
     )
 
 

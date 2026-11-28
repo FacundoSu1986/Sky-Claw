@@ -229,6 +229,8 @@ async def convertir_a_wal(
       sobre esta tarea): se propaga ``CancelledError`` —la tarea queda
       ``cancelled()``— y el diagnóstico anterior queda como ``__context__``
       de ese ``CancelledError``, sin ciclos y sin perder la cadena previa.
+      La petición del llamador NO se consume: ``Task.cancelling()`` es estado
+      compartido del caller y esta capa no lo modifica (R2-FINAL-01).
     - Si el primario ya era ``CancelledError``, gana ésa: se propaga y la
       cancelación/fallo de la restauración queda en la cadena.
     - Si la tarea NO fue cancelada desde afuera y la restauración levanta
@@ -257,6 +259,12 @@ async def convertir_a_wal(
     ``OperationalError`` y la tarea seguía sin estar cancelada, así que el
     llamador no podía distinguir "cancelado" de "falló").
 
+    R2-FINAL-01: no se consume la petición de cancelación del llamador. Una
+    versión anterior llamaba ``Task.uncancel()`` y exigía ``cancelling() == 0``
+    al salir; ese requisito era artificial (lo introdujo el implementador, no
+    el contrato) y en 3.13+ interfiere con la política de ``asyncio.timeout()``
+    del caller. Ver ``_cancelacion_externa_efectiva``.
+
     Alcance de la propiedad, enunciado sin overclaim: la carrera
     REPRODUCIDA (dos conversiones DELETE→WAL superpuestas, o un writer en
     RESERVED durante la promoción) corresponde a la conversión misma. En
@@ -270,6 +278,13 @@ async def convertir_a_wal(
     _validar_busy_timeout_ms(busy_timeout_ms)
     operativo = busy_timeout_ms if busy_timeout_operativo_ms is None else busy_timeout_operativo_ms
     _validar_busy_timeout_ms(operativo)
+    # R2-FINAL-01: huella del contador AL ENTRAR. Es lo que permite distinguir
+    # "el llamador me canceló ahora" de "quedó una petición vieja de una
+    # operación anterior del mismo Task". Un valor absoluto no sirve: medido,
+    # tras propagar un ``CancelledError`` sin consumirlo el contador PERSISTE
+    # en 1, y entonces la operación siguiente se auto-clasificaría como
+    # cancelada. No se consume nada: se compara contra la línea de base.
+    cancelaciones_al_entrar = _cancelaciones_de_la_tarea()
     deadline = _monotono() + busy_timeout_ms / 1000.0
     ultimo_error: sqlite3.OperationalError | None = None
     desenlace: _Desenlace | None = None
@@ -338,48 +353,51 @@ async def convertir_a_wal(
         if cleanup_error is not None:
             # Se consulta la política: el switch puede haberse entregado en el
             # ``await`` de arriba y, en ese caso, la petición es del llamador.
-            if _cancelacion_externa_efectiva():
+            if _cancelacion_externa_efectiva(cancelaciones_al_entrar):
                 logger.warning(
                     "Restauración de busy_timeout interrumpida por cancelación externa",
                     exc_info=(type(cleanup_error), cleanup_error, cleanup_error.__traceback__),
                 )
                 raise asyncio.CancelledError(cleanup_error)
             raise cleanup_error
-        # La restauración resolvió bien: si quedó un switch pendiente es del
-        # llamador y hay que consumirlo para no contaminar su ``await``
-        # siguiente. ``_cancelacion_externa_efectiva`` es la MISMA consulta que
-        # usa el camino de error, no una copia.
+        # La restauración resolvió bien y no hay primario: se retorna.
         #
-        # MEDIDO (y se deja anotado porque una llamada que nunca consume nada
-        # es sospechosa por defecto): en este punto un switch pendiente NO es
+        # MEDIDO (se deja anotado porque una llamada que nunca hace nada es
+        # sospechosa por defecto): en este punto una cancelación NUEVA NO es
         # alcanzable. Con restauración exitosa y sin ``await`` interrumpible,
-        # un ``Task.cancel()`` pedido durante ella ya no deja rastro
-        # (``cancelling()==0`` al retornar); con un ``await`` interrumpible, la
-        # cancelación interrumpe ESE ``await``, así que ``cleanup_error`` deja
-        # de ser ``None`` y manda la rama de arriba. Se conserva la consulta
-        # como guarda barata: si la restauración gana un punto de suspensión
-        # que resuelva sin lanzar, esta línea es la que impide la fuga.
-        _cancelacion_externa_efectiva()
+        # un ``Task.cancel()`` pedido durante ella no se entrega en ningún
+        # punto de suspensión de esta función; con un ``await`` interrumpible,
+        # la cancelación interrumpe ESE ``await``, así que ``cleanup_error``
+        # deja de ser ``None`` y manda la rama de arriba.
+        #
+        # R2-FINAL-01: la consulta es de SÓLO LECTURA y compara contra la
+        # huella de entrada. Antes consumía el switch con ``uncancel()``; se
+        # eliminó porque no hay necesidad contractual demostrada y sí un riesgo
+        # cross-version (3.13+) de interferir con la política de
+        # ``asyncio.timeout()`` del caller. Se conserva la consulta como guarda
+        # honesta: si la restauración gana un punto de suspensión nuevo, esta
+        # línea documenta que el caso es alcanzable y hay que revisarlo (no se
+        # "arregla" consumiendo nada).
+        _cancelacion_externa_efectiva(cancelaciones_al_entrar)
         return
 
     original = desenlace.error
 
     # La consulta de cancelación se hace UNA sola vez, DESPUÉS del cleanup (ahí
     # es donde el switch puede haberse entregado) y su resultado se usa en
-    # TODAS las ramas. Consultarla dos veces no funciona: la primera llamada
-    # consume el switch con ``uncancel()``, así que la segunda ya no ve
-    # ``cancelling() == 1`` y una salida que debía reportar el fallo real se
-    # reportaba como cancelación.
+    # TODAS las ramas. R2-FINAL-01: la consulta ya NO consume el switch
+    # (``_cancelacion_externa_efectiva`` sólo lee), así que consultarla de nuevo
+    # daría el mismo resultado. Se mantiene la única consulta por claridad, no
+    # porque consuma nada.
     #
     # NO se condiciona a ``cleanup_error is not None``: medido, con el cleanup
     # fallando por el MISMO ``CancelledError`` que interrumpió el ``await`` la
     # guarda era redundante, pero hay un caso en que el cleanup resuelve
-    # **antes** de que la cancelación se entregue y el switch queda pendiente en
-    # el ``Task``. Ahí no hay error de limpieza y sin embargo la petición es del
-    # llamador: si no se consume, el ``await`` siguiente del mismo ``Task`` la
-    # recibe por sorpresa y el llamador ve una cancelación que no puede atribuir
-    # a su propia llamada.
-    externa = _cancelacion_externa_efectiva()
+    # **antes** de que la cancelación se entregue y la petición queda registrada
+    # en el ``Task`` sin error de limpieza. Ahí la consulta contra la huella de
+    # entrada es la que detecta que la cancelación es de ESTA llamada, y no se
+    # hereda del contador persistente de una operación anterior (R2-FINAL-01).
+    externa = _cancelacion_externa_efectiva(cancelaciones_al_entrar)
 
     # PRECEDENCIA, en un solo lugar y en este orden:
     #   1. cancelación externa efectiva  -> manda (el llamador pidió cancelar)
@@ -396,7 +414,10 @@ async def convertir_a_wal(
                 exc_info=(type(cleanup_error), cleanup_error, cleanup_error.__traceback__),
             )
         else:
-            logger.warning("Cancelación externa del llamador consumida tras la restauración de busy_timeout")
+            logger.warning(
+                "Cancelación externa del llamador detectada tras la restauración de busy_timeout "
+                "(no se consume: el contador queda para el caller)"
+            )
         # Se propaga una cancelación NUEVA (no la del cleanup: esa murió con el
         # ``await``) y el primario se adjunta como contexto, sin ciclos y sin
         # ``from`` — que agregaría una causa nueva y desplazaría el diagnóstico
@@ -420,47 +441,59 @@ async def convertir_a_wal(
     raise original
 
 
-def _cancelacion_externa_efectiva() -> bool:
-    """True si la TAREA ACTUAL fue cancelada desde afuera (``Task.cancel()``).
+def _cancelaciones_de_la_tarea() -> int:
+    """Peticiones de cancelación acumuladas por la tarea actual (sólo lectura).
 
-    Evidencia, no inferencia: el único discriminante es el contador
-    ``Task.cancelling()``.
-
-    ``cancelling() == 1`` — el ``CancelledError`` del ``await`` interrumpido
-    está en vuelo. Se consume con ``uncancel()``: el switch ya se entregó, así
-    que dejarlo pendiente haría que el ``await`` siguiente volviera a cancelar
-    — una cancelación de más que el llamador nunca pidió.
-
-    Lo que NO es evidencia: ``cancelling() >= 2`` (la cancelación todavía no se
-    anidó en ningún ``await``) ni ``cancelling() == 0`` (nadie pidió cancelar, o
-    el switch ya se consumió y la tarea terminó sin otro punto de suspensión).
-
-    HUBO una segunda rama aquí: ``if marca_consumida and cancelling() == 0``,
-    con un ``ContextVar`` por-tarea para recordar que el switch ya se había
-    consumido. Se midió y se eliminó — era inalcanzable, no una ventana:
-
-    - La marca sólo se prendía en la rama de arriba, que YA retorna; dentro de
-      una misma llamada la rama 2 no podía verse.
-    - Entre llamadas no sobrevive: el ``ContextVar`` se escribe en el contexto
-      del ``Task`` y muere con él (medido: prender la marca dentro de un task
-      deja ``False`` en el contexto llamador, y dos llamadas sucesivas en el
-      mismo task ven la marca en ``False``).
-    - Un contador de ramas sobre los escenarios de cancelación (await
-      interrumpido, cleanup cancelado, ``wait_for``) dio ``{rama1: 1, rama2: 0}``
-      en los tres.
-
-    El caso que la rama 2 decía cubrir —petición de cancelación sin ``await``
-    interrumpible— no queda sin honrar: o el switch está en vuelo y lo ve la
-    rama 1, o la función termina antes de que la petición se entregue y entonces
-    el ``Task`` la recibe en su siguiente paso, después de esta función.
+    Devuelve 0 si no hay tarea. NUNCA modifica el contador.
     """
     tarea = asyncio.current_task()
     if tarea is None:
-        return False
-    if tarea.cancelling() == 1:
-        tarea.uncancel()
-        return True
-    return False
+        return 0
+    return tarea.cancelling()
+
+
+def _cancelacion_externa_efectiva(al_entrar: int) -> bool:
+    """True si una cancelación NUEVA interrumpió la operación actual.
+
+    Evidencia, no inferencia: se compara el contador ``Task.cancelling()``
+    contra la huella tomada al entrar (``al_entrar``). La función SÓLO LEE:
+    nunca consume la petición del llamador.
+
+    Por qué una huella y no un valor absoluto. Medido en la versión objetivo
+    (3.11.9) con sincronización determinista: tras propagar un
+    ``CancelledError`` que nadie consumió, ``Task.cancelling()`` **persiste**
+    en 1 durante el resto de la vida de la corrutina. Con la comparación
+    absoluta ``cancelling() >= 1``, la operación SIGUIENTE del mismo ``Task``
+    se clasificaría como cancelada sin que nadie la haya cancelado — un falso
+    positivo, y exactamente el defecto que el contrato quiere evitar. Con la
+    huella, la petición vieja se descuenta y sólo cuenta lo que se pidió
+    DURANTE esta llamada.
+
+    R2-FINAL-01 — por qué NO se llama ``uncancel()``. Una versión anterior
+    consumía el switch cuando ``cancelling() == 1`` y exigía
+    ``cancelling() == 0`` al salir. Ese requisito **no lo pidió nadie**: no es
+    contrato del llamador ni de ``asyncio``, lo introdujo el implementador.
+    Medido en 3.11.9: consumir no cambiaba ninguna propiedad observable
+    (ni el veredicto de ``asyncio.timeout()``, ni ``Task.cancelled()``, ni la
+    reaparición de la cancelación en el ``await`` siguiente); la sonda
+    ``probe_leak`` mostró además que la operación siguiente NO se auto-cancela
+    aunque el contador quede en 1, porque el runtime sólo vuelve a lanzar por
+    peticiones NUEVAS. Es decir: no hay necesidad demostrada.
+
+    En cambio sí hay riesgo demostrado por el Tech Lead en 3.13.5: consumir
+    una cancelación **ajena** puede hacer que ``asyncio.timeout()`` deje de
+    atribuirse su propio vencimiento y entregue ``TimeoutError`` donde
+    correspondía ``CancelledError``. Entre 3.12 y 3.13 cambió la semántica de
+    ``uncancel()`` y ``timeout()`` re-consulta el contador; el contador es
+    estado COMPARTIDO con el caller, así que tocarlo es disponer de estado que
+    no es nuestro.
+
+    Regla: el ``CancelledError`` se PROPAGA y la tarea queda ``cancelled()``
+    sola — lo hace el runtime al salir la excepción de la corrutina. El
+    diagnóstico previo se conserva por encadenamiento normal (``__context__``).
+    Que ``cancelling()`` vuelva a cero NO se promete: es del caller.
+    """
+    return _cancelaciones_de_la_tarea() > al_entrar
 
 
 def _encadenar_contexto(primario: BaseException, secundario: BaseException) -> None:
