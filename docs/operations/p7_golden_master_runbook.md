@@ -467,6 +467,9 @@ microsegundos frente a ellos.
      `/gm_abandonar` (`abandonar_transicion_consumida`),
      `binder_recovery.recuperar_transicion_interrumpida` (restauración de
      superficies con journal `PENDING`), `journal.reconciliar_journal`,
+     `pending_reconciliation.abortar_transicion_pendiente` (`/gm_abortar_pendiente`),
+     `pending_reconciliation.completar_transicion_pendiente` (`/gm_completar_pendiente`
+     para fronteras recuperables C3/C4/C6/C7 sin consumir una nueva aprobación),
      `approval.reconciliar_aprobacion` y `approval.revocar_aprobacion` sobre
      emisiones previas aún no consumidas (tras `PENDING`, completar una nueva
      transición sí exige nueva aprobación y queda bloqueado hasta habilitar la

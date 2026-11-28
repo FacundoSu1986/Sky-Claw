@@ -10450,3 +10450,55 @@ Dentro de `participant_lock`, antes de crear el tombstone `CONSUMED`,
   reparse/archivos/padres ilegibles) y un store ausente con `journal == NONE` y
   `last_finalized_transition_id is None` (estado inalcanzable sin aborto) falla
   cerrado en lugar de interpretarse como «sin abortos».
+
+## 49. P7-F Incremento 2B — recuperación hacia adelante de `PENDING` (C3/C4/C6/C7) (2026-11-27)
+
+### 49.1 Salida productiva hacia adelante (`completar_transicion_pendiente`)
+
+Complementa §48 (aborto autorizado) sin alterar el esquema durable ni introducir
+una segunda autoridad de finalización. Proporciona la salida productiva para
+transiciones interrumpidas en fronteras donde el destino ya fue alcanzado o la
+finalización ya comenzó:
+
+- **C3 (`C3_DESIRED_PENDIENTE`):** journal `PENDING_*`, `active.json` aún en
+  `source_activation` (bootstrap o par previo), Effective apuntando al destino.
+  Verifica quiescencia, integridad física del Clone (`verificar_runtime_clone ==
+  VALID`), `verificar_runtime_setup == target_runtime_setup_id` y `assess_effective_runtime`
+  (`authorizes_activation == True`) **fuera** de `participant_lock`; al recuperar
+  el lock revalida huella durable, quiescencia y superficies externas (MO2 INI +
+  `config.toml`), persiste `active.json` vía `_escribir_estado_activo_cas_locked`
+  y finaliza con `_finalizar_locked` (F1a→F1b→F2).
+- **C4 (`C4_POST_PENDIENTE`):** `active.json` ya alineado con destino, sin
+  reserva F1a ni `FINALIZED`. Ejecuta POST idempotente sin reescribir `active.json`
+  y finaliza vía `_finalizar_locked`.
+- **C6 (`C6_RESERVA_PROPIA`):** existe exactamente una reserva huérfana en
+  `state/finalization-seqs/<seq>.json` perteneciente al mismo `transition_id` con
+  `seq == historial.next_seq` y `active.json` alineado con el destino. Tras POST
+  PASS fresco, `_finalizar_locked` reutiliza la reserva idempotente sin duplicar
+  ni renumerar la secuencia. Cualquier reserva ajena, corrupta, múltiple o fuera
+  de secuencia falla cerrado tanto en `completar_transicion_pendiente` como en
+  `_finalizar_locked`.
+- **C7 (`C7_ROTACION_F2`):** existe `FinalizedTransitionRecord` inmutable en
+  `state/transitions/<tid>.json` junto a journal `PENDING_*`. Completa
+  **únicamente F2** mediante `_completar_rotacion_f2_locked` (rotación a `NONE`),
+  verificando coherencia completa contra `PENDING` (`_exigir_registro_coherente_con_pending`),
+  reserva original, aprobación consumida, ausencia de reservas huérfanas y
+  revisión CAS. Jamás recrea `FINALIZED` ni fabrica un POST nuevo; es idempotente
+  ante reintentos múltiples.
+
+### 49.2 Invariantes preservadas y compatibilidad con Incremento 2A
+
+- **Misma autoridad:** reutiliza `transition_id`, `approval_id`/`approval_seq`/
+  `approval_scope_digest` del tombstone `CONSUMED` y del `IssuanceWitness`; jamás
+  emite ni consume una nueva aprobación.
+- **Diagnóstico read-only:** `reconciliar_journal` conserva su carácter estrictamente
+  read-only.
+- **Compatibilidad D4 / veto permanente:** un aborto incompleto (D4), un
+  `transition_id` abortado o un store `state/aborted_transitions/` corrupto
+  bloquean fail-closed la recuperación hacia adelante. C6 y C7 siguen rechazados
+  por `abortar_transicion_pendiente`.
+- **Superficies cableadas:** `pending_reconciliation.completar_transicion_pendiente`,
+  `SesionTransicionGoldenMaster.completar_pendiente` y comando Telegram HITL
+  `/gm_completar_pendiente <transition_id>`.
+- **Alcance:** `POWER_LOSS_GUARANTEE = NOT_CLAIMED`. `P7F_PASS` queda pendiente
+  de la certificación integral P7-F posterior a la integración de este PR.
