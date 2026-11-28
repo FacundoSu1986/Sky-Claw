@@ -11,10 +11,19 @@
   "documents": [
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "sha256": "a0755b4943cfeaaa0e61985160d2d2c92b1935e6368ffeb1f9c36da0d42e4ed5",
-      "bytes": 11432,
+      "sha256": "7b7687f415d918ed6f374ba9c4cf91acab17d9ec135fa33c60ccf5878a56e2b1",
+      "bytes": 12804,
       "referenced_by": [
         "root_notice"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt",
+      "sha256": "cb5e8e7e5f4a3988e1063c142c60dc2df75605f4c46515e776e3aca6df976e14",
+      "bytes": 11325,
+      "referenced_by": [
+        "standard:Apache-2.0",
+        "aiofiles==24.1.0"
       ]
     },
     {
@@ -24,14 +33,6 @@
       "referenced_by": [
         "standard:MPL-2.0",
         "bidict==0.23.1"
-      ]
-    },
-    {
-      "path": "licenses/third_party/texts/aiofiles_licenses__LICENSE_cb5e8e7e5f4a.txt",
-      "sha256": "cb5e8e7e5f4a3988e1063c142c60dc2df75605f4c46515e776e3aca6df976e14",
-      "bytes": 11325,
-      "referenced_by": [
-        "aiofiles==24.1.0"
       ]
     },
     {
@@ -136,7 +137,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/backports-zstd_licenses__LICENSE_zstd_836cbda972f7.txt",
+      "path": "licenses/third_party/texts/backports-zstd_licenses__LICENSE_zstd_f89ef2b03b52.txt",
       "sha256": "f89ef2b03b52ad7c3342aeb2e1c961737f9de4892d41b1d083b0060c6191e1bf",
       "bytes": 1724,
       "referenced_by": [
@@ -144,7 +145,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/brotli_licenses__LICENSE_60ae0f13e76c.txt",
+      "path": "licenses/third_party/texts/brotli_licenses__LICENSE_3d180008e369.txt",
       "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94",
       "bytes": 1084,
       "referenced_by": [
@@ -192,7 +193,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/comtypes_licenses__LICENSE_3b1767f01098.txt",
+      "path": "licenses/third_party/texts/comtypes_licenses__LICENSE_b3ee7a0e4b0d.txt",
       "sha256": "b3ee7a0e4b0d5645e96a06c8ff6687c642c5bddeb55943f4a9c84f1d248304a8",
       "bytes": 1249,
       "referenced_by": [
@@ -315,7 +316,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/grpcio_licenses__LICENSE_ed9abc49f1fa.txt",
+      "path": "licenses/third_party/texts/grpcio_licenses__LICENSE_58c86a3f2b5c.txt",
       "sha256": "58c86a3f2b5cca0ebdf9ed3e7f4e6dc38e3b38796d8c3dc92064c62a4e39d0dd",
       "bytes": 30191,
       "referenced_by": [
@@ -339,7 +340,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/httptools_licenses__LICENSE_1c028b059d7a.txt",
+      "path": "licenses/third_party/texts/httptools_licenses__LICENSE_f4573e7cb767.txt",
       "sha256": "f4573e7cb7676745fb5b8d36fa548aa93e391cfb6872ddacd65130c45ea6a92d",
       "bytes": 1093,
       "referenced_by": [
@@ -379,11 +380,13 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/inflate64_licenses__COPYING_1e7e6bae5a5b.txt",
+      "path": "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt",
       "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
       "bytes": 26530,
       "referenced_by": [
         "inflate64==1.0.4",
+        "multivolumefile==0.2.3",
+        "py7zr==1.1.3",
         "pybcj==1.0.7",
         "pyppmd==1.3.1"
       ]
@@ -431,7 +434,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/markupsafe_licenses__LICENSE_4631ec0db5fd.txt",
+      "path": "licenses/third_party/texts/markupsafe_licenses__LICENSE_489a8e110850.txt",
       "sha256": "489a8e1108509ed98a37bb983e11e0f7e1d31f0bd8f99a79c8448e7ff37d07ea",
       "bytes": 1475,
       "referenced_by": [
@@ -447,16 +450,15 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/multivolumefile_LICENSE_dc626520dcd5.txt",
-      "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
-      "bytes": 26530,
+      "path": "licenses/third_party/texts/native_cpython_Doc_license_2b734ec5975b.txt",
+      "sha256": "2b734ec5975b21b29ae8b9756a00fc3dfe701abe51687cec4c98a21c51005bca",
+      "bytes": 53753,
       "referenced_by": [
-        "multivolumefile==0.2.3",
-        "py7zr==1.1.3"
+        "native:cpython-runtime@3.11.9"
       ]
     },
     {
-      "path": "licenses/third_party/texts/native_libffi-embedded_67894089811f.txt",
+      "path": "licenses/third_party/texts/native_libffi_LICENSE_67894089811f.txt",
       "sha256": "67894089811f93fca47a76f85e017da6f8582d4ba0905963c6e0f1ad6df7a195",
       "bytes": 1132,
       "referenced_by": [
@@ -464,7 +466,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/native_openssl-embedded_7d5450cb2d14.txt",
+      "path": "licenses/third_party/texts/native_openssl_LICENSE_7d5450cb2d14.txt",
       "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
       "bytes": 10175,
       "referenced_by": [
@@ -472,7 +474,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/native_sqlite-embedded_9c6479123f32.txt",
+      "path": "licenses/third_party/texts/native_sqlite_LICENSE_9c6479123f32.txt",
       "sha256": "9c6479123f32a1ed50d9a0af203dfe8972e65035b0cdeef436b5f8d0924517fe",
       "bytes": 263,
       "referenced_by": [
@@ -480,7 +482,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/nicegui_licenses__LICENSE_41c065c20811.txt",
+      "path": "licenses/third_party/texts/nicegui_LICENSE_41c065c20811.txt",
       "sha256": "41c065c2081141886f7d3004e3cd4000c1507cc4bf37a063f12be1d53e9db272",
       "bytes": 1072,
       "referenced_by": [
@@ -488,7 +490,15 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__LICENSE_a804dff0ead9.txt",
+      "path": "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
+      "sha256": "432d0d58cee080068bbe05d71799e673f415e85c1cf87f209a847c0661d78338",
+      "bytes": 6890,
+      "referenced_by": [
+        "nicegui-vendored-frontend-assets"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__LICENSE_dc97d59562c7.txt",
       "sha256": "dc97d59562c75c04557f1e9a68f3eae326699eb119d569cd4ed6a4eafe5f9abb",
       "bytes": 45801,
       "referenced_by": [
@@ -496,7 +506,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__include__numpy__libdivide__LIC_d544761558b5.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__include__numpy__libdivide__LIC_fbc539f47d0c.txt",
       "sha256": "fbc539f47d0cf83bc61378080fb873d5c14630126cacbfe754035c3926daa5ec",
       "bytes": 1018,
       "referenced_by": [
@@ -504,7 +514,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__common__pythoncapi-compat_aea41976c720.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__common__pythoncapi-compat_3f2c1ffa7638.txt",
       "sha256": "3f2c1ffa76383a55ae0aac01c9737cd70050dff63e1f026694fbe9d662573c98",
       "bytes": 690,
       "referenced_by": [
@@ -512,7 +522,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__highway__LICENSE_d208152e2777.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__highway__LICENSE_e340270d4f64.txt",
       "sha256": "e340270d4f64384569a91d546acb5b094d69ce47f0c015db77abb74dc6f815af",
       "bytes": 20785,
       "referenced_by": [
@@ -520,7 +530,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__multiarray__dragon4_LICEN_b0fd592d4ead.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__multiarray__dragon4_LICEN_f7b14309e5f5.txt",
       "sha256": "f7b14309e5f54e5022b26448eefd419988ada2aec01d3c1162d84a0ea8f21f2c",
       "bytes": 1414,
       "referenced_by": [
@@ -528,7 +538,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__npysort__x86-simd-sort__L_a73297785353.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__npysort__x86-simd-sort__L_211e7d737d61.txt",
       "sha256": "211e7d737d6179a08f791ebb0a99897ce7cd2457410c542876d125576edfe910",
       "bytes": 1514,
       "referenced_by": [
@@ -536,7 +546,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__umath__svml__LICENSE_585483905b13.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__umath__svml__LICENSE_c17011467b4f.txt",
       "sha256": "c17011467b4fe6e20fbfbeda4df09e58c2bca5480a063e55735a4000a379aad9",
       "bytes": 1543,
       "referenced_by": [
@@ -544,7 +554,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy__fft__pocketfft__LICENSE_8db000e158c1.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__fft__pocketfft__LICENSE_a85ca13fdf90.txt",
       "sha256": "a85ca13fdf90160b64a0698215868c13b74d835ad0a4e2ba44713b8c5058a056",
       "bytes": 1498,
       "referenced_by": [
@@ -552,7 +562,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy__linalg__lapack_lite__LICENSE_19060ef465e1.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__linalg__lapack_lite__LICENSE_a14cc25e10d4.txt",
       "sha256": "a14cc25e10d40a3aa705b7de2fb764a6535d8ee9b2db4e1724900585457dfd55",
       "bytes": 2266,
       "referenced_by": [
@@ -560,7 +570,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy__ma__LICENSE_d78dbb208b80.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__ma__LICENSE_05f3b8835198.txt",
       "sha256": "05f3b88351988ecfad10abe92c0c50e5875c6452d5009a0084cc291551ffcca6",
       "bytes": 1593,
       "referenced_by": [
@@ -568,7 +578,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__LICENSE_b4bc2f4fa1c9.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__LICENSE_103166b62b80.txt",
       "sha256": "103166b62b80443afb9eb3488e052ea06be0cff566b908f199e561fde49af19f",
       "bytes": 3511,
       "referenced_by": [
@@ -576,7 +586,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__distributions__LICENSE_cf5619f25b11.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__distributions__LICENSE_469778be8f33.txt",
       "sha256": "469778be8f33d54e1bcaab28c281cc472916d2d273f835e55bc487d30503face",
       "bytes": 2745,
       "referenced_by": [
@@ -584,7 +594,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__mt19937__LICENSE_92c106998843.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__mt19937__LICENSE_0e111337b254.txt",
       "sha256": "0e111337b25494a773106695f0e799f642b8567aaacca4f116a74a8177179156",
       "bytes": 2926,
       "referenced_by": [
@@ -592,7 +602,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__pcg64__LICENSE_41190663b77b.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__pcg64__LICENSE_e7d4f4fb2035.txt",
       "sha256": "e7d4f4fb20358f314210a892ae17351e04993813646f697ec387385ca2a36918",
       "bytes": 1154,
       "referenced_by": [
@@ -600,7 +610,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__philox__LICENSE_322ac46d870c.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__philox__LICENSE_6f5828a57223.txt",
       "sha256": "6f5828a57223d4cc7f8ea505a2623e7b978b242752c1515e355f46ba2cec1800",
       "bytes": 1509,
       "referenced_by": [
@@ -608,7 +618,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__sfc64__LICENSE_28cad82ce137.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__sfc64__LICENSE_9d4098846018.txt",
       "sha256": "9d4098846018319cd68e228ee6220361787f73bccbf00237a85e4fc9621b998f",
       "bytes": 1226,
       "referenced_by": [
@@ -616,7 +626,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__splitmix64__LICENSE_454ec7350e47.txt",
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__splitmix64__LICENSE_268b0ca06759.txt",
       "sha256": "268b0ca06759d31ea3ca68dd35f20e877916e927b1c2a835e4592a3c4354b1f9",
       "bytes": 332,
       "referenced_by": [
@@ -639,7 +649,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/orjson_licenses__LICENSE-APACHE_7cfd738c53d6.txt",
+      "path": "licenses/third_party/texts/orjson_licenses__LICENSE-APACHE_a60eea817514.txt",
       "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
       "bytes": 10847,
       "referenced_by": [
@@ -647,7 +657,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/orjson_licenses__LICENSE-MIT_36516aefdc84.txt",
+      "path": "licenses/third_party/texts/orjson_licenses__LICENSE-MIT_23f18e03dc49.txt",
       "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
       "bytes": 1023,
       "referenced_by": [
@@ -655,7 +665,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/orjson_licenses__LICENSE-MPL-2_9303ea1cfbf0.txt",
+      "path": "licenses/third_party/texts/orjson_licenses__LICENSE-MPL-2_66a3107d5ad6.txt",
       "sha256": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
       "bytes": 16727,
       "referenced_by": [
@@ -671,7 +681,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/pillow_licenses__LICENSE_988ffe8ab348.txt",
+      "path": "licenses/third_party/texts/pillow_licenses__LICENSE_6644596ba12c.txt",
       "sha256": "6644596ba12c005c174b7a03d86c2ffe5f3fa7ecdf37d9aa8f71f3516e57c7a2",
       "bytes": 76888,
       "referenced_by": [
@@ -704,7 +714,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/psutil_LICENSE_c7adc4d5d133.txt",
+      "path": "licenses/third_party/texts/psutil_LICENSE_b89c063b3786.txt",
       "sha256": "b89c063b3786e28e0c0a38f1931db61fed35e69dd2a2966fbecffee0f46c8d10",
       "bytes": 1548,
       "referenced_by": [
@@ -720,7 +730,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/pycryptodomex_AUTHORS_ac94de284f15.txt",
+      "path": "licenses/third_party/texts/pycryptodomex_AUTHORS_1cb670b6cc5b.txt",
       "sha256": "1cb670b6cc5bc3a1c38d7e12cdf944442ca790425cf2a628ffbe3012445fe1e4",
       "bytes": 764,
       "referenced_by": [
@@ -728,7 +738,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/pycryptodomex_LICENSE_60b8958a9ef9.txt",
+      "path": "licenses/third_party/texts/pycryptodomex_LICENSE_4e04660d77c1.txt",
       "sha256": "4e04660d77c1c64e89d79537919fb8240fa21484a7e3db29f358b2c7f84ea073",
       "bytes": 2926,
       "referenced_by": [
@@ -736,7 +746,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/pydantic-core_licenses__LICENSE_fbe7f615f18d.txt",
+      "path": "licenses/third_party/texts/pydantic-core_licenses__LICENSE_2afdd30d54b4.txt",
       "sha256": "2afdd30d54b4d62b6f488a6bcc1546e84ec5061f13f4209c03d012348783795a",
       "bytes": 1080,
       "referenced_by": [
@@ -809,7 +819,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/pywin32-ctypes_LICENSE_dfa83b3e2709.txt",
+      "path": "licenses/third_party/texts/pywin32-ctypes_LICENSE_cc03ae891a36.txt",
       "sha256": "cc03ae891a362c85d508a4e47af954314a2e4ccbd445140cb8dca7e2baee19f7",
       "bytes": 1616,
       "referenced_by": [
@@ -881,7 +891,15 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/watchfiles_licenses__LICENSE_2d40a03346bd.txt",
+      "path": "licenses/third_party/texts/vendored_immutable_LICENSE_7909331e4685.txt",
+      "sha256": "7909331e4685b02bf402cf0526e0f3cb381075b7daa7c76b2c3173024615540c",
+      "bytes": 1177,
+      "referenced_by": [
+        "js:immutable"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/watchfiles_licenses__LICENSE_4fd78355b67c.txt",
       "sha256": "4fd78355b67ce2677ede9fb6f63a250f377bb7e22088136a5f4699adb4bc069f",
       "bytes": 1091,
       "referenced_by": [
@@ -889,7 +907,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/webencodings_LICENSE_d23a97445fc3.txt",
+      "path": "licenses/third_party/texts/webencodings_LICENSE_f23bae6ada76.txt",
       "sha256": "f23bae6ada76095610a77137fb92aec7342723900211c5826d54b4c57907ca56",
       "bytes": 1490,
       "referenced_by": [
@@ -897,7 +915,7 @@
       ]
     },
     {
-      "path": "licenses/third_party/texts/websockets_licenses__LICENSE_0f44514998ac.txt",
+      "path": "licenses/third_party/texts/websockets_licenses__LICENSE_3d6a0c050d8b.txt",
       "sha256": "3d6a0c050d8bec52fabad502e45fb25bd02bcadbd70dea34d447b6a0ff4e6da8",
       "bytes": 1514,
       "referenced_by": [
@@ -934,10 +952,12 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/aiofiles_licenses__LICENSE_cb5e8e7e5f4a.txt",
+        "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt",
         "licenses/third_party/texts/aiofiles_licenses__NOTICE_104c58d1d450.txt"
       ]
     },
@@ -953,8 +973,10 @@
       "license_declared": "PSF-2.0",
       "license_concluded": "PSF-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiohappyeyeballs_LICENSE_3b2f81fe21d1.txt"
       ]
@@ -971,8 +993,10 @@
       "license_declared": "Apache-2.0 AND MIT",
       "license_concluded": "Apache-2.0 AND MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiohttp_licenses__LICENSE_2e4be5fc6c4c.txt",
         "licenses/third_party/texts/aiohttp_licenses__vendor__llhttp__LICENSE_628168d68bb5.txt"
@@ -990,8 +1014,10 @@
       "license_declared": "Apache 2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiosignal_licenses__LICENSE_6fd5243e92dd.txt"
       ]
@@ -1008,8 +1034,10 @@
       "license_declared": "NONE",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiosqlite_licenses__LICENSE_ab0c171dc3ef.txt"
       ]
@@ -1026,8 +1054,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/annotated-doc_licenses__LICENSE_fff170779a6a.txt"
       ]
@@ -1044,8 +1074,10 @@
       "license_declared": "NONE",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/annotated-types_licenses__LICENSE_fe1049884b1a.txt"
       ]
@@ -1062,8 +1094,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/anyio_licenses__LICENSE_5361ac9dc58f.txt"
       ]
@@ -1080,8 +1114,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/attrs_licenses__LICENSE_882115c95dfc.txt"
       ]
@@ -1098,8 +1134,10 @@
       "license_declared": "NONE",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/backports-tarfile_LICENSE_86da0f01aeae.txt"
       ]
@@ -1116,11 +1154,13 @@
       "license_declared": "PSF-2.0",
       "license_concluded": "PSF-2.0 AND BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/backports-zstd_licenses__LICENSE_b0e25a78cffb.txt",
-        "licenses/third_party/texts/backports-zstd_licenses__LICENSE_zstd_836cbda972f7.txt"
+        "licenses/third_party/texts/backports-zstd_licenses__LICENSE_zstd_f89ef2b03b52.txt"
       ]
     },
     {
@@ -1135,8 +1175,10 @@
       "license_declared": "MPL 2.0",
       "license_concluded": "MPL-2.0",
       "source_obligation": "YES_MPL_2_0_SEC_3_2",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REMEDIATION_REQUIRED",
       "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "MPL-2.0 §3.2 source availability mechanism in frozen distribution (PR-LIC-02)",
       "license_documents": [
         "licenses/third_party/texts/MPL-2.0_f3f53adcecaa.txt"
       ]
@@ -1153,10 +1195,12 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/brotli_licenses__LICENSE_60ae0f13e76c.txt"
+        "licenses/third_party/texts/brotli_licenses__LICENSE_3d180008e369.txt"
       ]
     },
     {
@@ -1171,8 +1215,10 @@
       "license_declared": "MPL-2.0",
       "license_concluded": "MPL-2.0",
       "source_obligation": "YES_MPL_2_0_SEC_3_2",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REMEDIATION_REQUIRED",
       "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "MPL-2.0 §3.2 source availability mechanism in frozen distribution (PR-LIC-02)",
       "license_documents": [
         "licenses/third_party/texts/certifi_licenses__LICENSE_e93716da6b9c.txt",
         "licenses/third_party/texts/MPL-2.0_f3f53adcecaa.txt"
@@ -1190,8 +1236,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT-0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/cffi_licenses__AUTHORS_2a67a60bbfb3.txt",
         "licenses/third_party/texts/cffi_licenses__LICENSE_5ba24ddc5706.txt"
@@ -1209,8 +1257,10 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/click_licenses__LICENSE_9a8ad106a394.txt"
       ]
@@ -1227,8 +1277,10 @@
       "license_declared": "NONE",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/colorama_licenses__LICENSE_cac35c02686e.txt"
       ]
@@ -1245,10 +1297,12 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/comtypes_licenses__LICENSE_3b1767f01098.txt"
+        "licenses/third_party/texts/comtypes_licenses__LICENSE_b3ee7a0e4b0d.txt"
       ]
     },
     {
@@ -1263,8 +1317,10 @@
       "license_declared": "Apache-2.0 OR BSD-3-Clause",
       "license_concluded": "Apache-2.0 OR BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/cryptography_licenses__LICENSE_3e0c7c091a94.txt",
         "licenses/third_party/texts/cryptography_licenses__LICENSE_aac73b3148f6.txt",
@@ -1283,8 +1339,10 @@
       "license_declared": "PSFL",
       "license_concluded": "PSF-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/defusedxml_LICENSE_b80ce9da8c42.txt"
       ]
@@ -1301,8 +1359,10 @@
       "license_declared": "NONE",
       "license_concluded": "Public-Domain AND BSD-2-Clause AND BSD-0-Clause AND PSF-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/docutils_licenses__COPYING_6ab4f27c76c7.txt",
         "licenses/third_party/texts/docutils_licenses__licenses__BSD-0-Clause_42ac50251ab8.txt",
@@ -1322,8 +1382,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/fastapi_licenses__LICENSE_4ec89ffc8148.txt"
       ]
@@ -1340,8 +1402,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiosignal_licenses__LICENSE_6fd5243e92dd.txt"
       ]
@@ -1358,8 +1422,10 @@
       "license_declared": "Apache 2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt"
       ]
@@ -1376,10 +1442,12 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0 AND BSD-3-Clause AND MPL-2.0",
       "source_obligation": "YES_MPL_2_0_SEC_3_2",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REMEDIATION_REQUIRED",
       "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "MPL-2.0 §3.2 source availability mechanism in frozen distribution (PR-LIC-02)",
       "license_documents": [
-        "licenses/third_party/texts/grpcio_licenses__LICENSE_ed9abc49f1fa.txt"
+        "licenses/third_party/texts/grpcio_licenses__LICENSE_58c86a3f2b5c.txt"
       ]
     },
     {
@@ -1394,8 +1462,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/h11_licenses__LICENSE_37db5bb85926.txt"
       ]
@@ -1412,8 +1482,10 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/httpcore_licenses__LICENSE_fdcb59154c74.txt"
       ]
@@ -1430,10 +1502,12 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/httptools_licenses__LICENSE_1c028b059d7a.txt"
+        "licenses/third_party/texts/httptools_licenses__LICENSE_f4573e7cb767.txt"
       ]
     },
     {
@@ -1448,8 +1522,10 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/httpx_licenses__LICENSE_4ec59d544f12.txt"
       ]
@@ -1466,8 +1542,10 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/idna_licenses__LICENSE_1a9a4f0e3d47.txt"
       ]
@@ -1484,8 +1562,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/ifaddr_LICENSE_8700856576ae.txt"
       ]
@@ -1502,8 +1582,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/importlib-metadata_licenses__LICENSE_458502e12d97.txt"
       ]
@@ -1520,10 +1602,12 @@
       "license_declared": "LGPL-2.1-or-later",
       "license_concluded": "LGPL-2.1-or-later",
       "source_obligation": "YES_LGPL_2_1_SEC_6",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REMEDIATION_REQUIRED",
       "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
       "license_documents": [
-        "licenses/third_party/texts/inflate64_licenses__COPYING_1e7e6bae5a5b.txt"
+        "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
       ]
     },
     {
@@ -1538,8 +1622,10 @@
       "license_declared": "NONE",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/itsdangerous_LICENSE_63af09891b6b.txt"
       ]
@@ -1556,8 +1642,10 @@
       "license_declared": "NONE",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/backports-tarfile_LICENSE_86da0f01aeae.txt"
       ]
@@ -1574,8 +1662,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/jaraco-context_licenses__LICENSE_9755a1851966.txt"
       ]
@@ -1592,8 +1682,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/jaraco-functools_licenses__LICENSE_5a57cb4db85e.txt"
       ]
@@ -1610,8 +1702,10 @@
       "license_declared": "NONE",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/jinja2_licenses__LICENSE_3b49dcee4105.txt"
       ]
@@ -1628,8 +1722,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/jaraco-functools_licenses__LICENSE_5a57cb4db85e.txt"
       ]
@@ -1646,8 +1742,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/markdown2_LICENSE_f8c7c4d55440.txt"
       ]
@@ -1664,10 +1762,12 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/markupsafe_licenses__LICENSE_4631ec0db5fd.txt"
+        "licenses/third_party/texts/markupsafe_licenses__LICENSE_489a8e110850.txt"
       ]
     },
     {
@@ -1682,8 +1782,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/more-itertools_licenses__LICENSE_09f1c8c9e941.txt"
       ]
@@ -1700,8 +1802,10 @@
       "license_declared": "Apache License 2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiohttp_licenses__LICENSE_2e4be5fc6c4c.txt"
       ]
@@ -1718,10 +1822,12 @@
       "license_declared": "LGPL-2.1+",
       "license_concluded": "LGPL-2.1-or-later",
       "source_obligation": "YES_LGPL_2_1_SEC_6",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REMEDIATION_REQUIRED",
       "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
       "license_documents": [
-        "licenses/third_party/texts/multivolumefile_LICENSE_dc626520dcd5.txt"
+        "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
       ]
     },
     {
@@ -1736,10 +1842,12 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/nicegui_licenses__LICENSE_41c065c20811.txt"
+        "licenses/third_party/texts/nicegui_LICENSE_41c065c20811.txt"
       ]
     },
     {
@@ -1753,26 +1861,28 @@
       "license_declared": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
       "license_concluded": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 AND Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/numpy_licenses__LICENSE_a804dff0ead9.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy___core__include__numpy__libdivide__LIC_d544761558b5.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy___core__src__common__pythoncapi-compat_aea41976c720.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy___core__src__highway__LICENSE_d208152e2777.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy___core__src__multiarray__dragon4_LICEN_b0fd592d4ead.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy___core__src__npysort__x86-simd-sort__L_a73297785353.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy___core__src__umath__svml__LICENSE_585483905b13.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy__fft__pocketfft__LICENSE_8db000e158c1.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy__linalg__lapack_lite__LICENSE_19060ef465e1.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy__ma__LICENSE_d78dbb208b80.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy__random__LICENSE_b4bc2f4fa1c9.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy__random__src__distributions__LICENSE_cf5619f25b11.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy__random__src__mt19937__LICENSE_92c106998843.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy__random__src__pcg64__LICENSE_41190663b77b.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy__random__src__philox__LICENSE_322ac46d870c.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy__random__src__sfc64__LICENSE_28cad82ce137.txt",
-        "licenses/third_party/texts/numpy_licenses__numpy__random__src__splitmix64__LICENSE_454ec7350e47.txt"
+        "licenses/third_party/texts/numpy_licenses__LICENSE_dc97d59562c7.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__include__numpy__libdivide__LIC_fbc539f47d0c.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__src__common__pythoncapi-compat_3f2c1ffa7638.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__src__highway__LICENSE_e340270d4f64.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__src__multiarray__dragon4_LICEN_f7b14309e5f5.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__src__npysort__x86-simd-sort__L_211e7d737d61.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__src__umath__svml__LICENSE_c17011467b4f.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__fft__pocketfft__LICENSE_a85ca13fdf90.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__linalg__lapack_lite__LICENSE_a14cc25e10d4.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__ma__LICENSE_05f3b8835198.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__LICENSE_103166b62b80.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__distributions__LICENSE_469778be8f33.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__mt19937__LICENSE_0e111337b254.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__pcg64__LICENSE_e7d4f4fb2035.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__philox__LICENSE_6f5828a57223.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__sfc64__LICENSE_9d4098846018.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__splitmix64__LICENSE_268b0ca06759.txt"
       ]
     },
     {
@@ -1787,8 +1897,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
       ]
@@ -1805,8 +1917,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
       ]
@@ -1823,8 +1937,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
       ]
@@ -1841,8 +1957,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
       ]
@@ -1859,8 +1977,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
       ]
@@ -1877,8 +1997,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
       ]
@@ -1895,8 +2017,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
       ]
@@ -1913,12 +2037,14 @@
       "license_declared": "MPL-2.0 AND (Apache-2.0 OR MIT)",
       "license_concluded": "MPL-2.0 AND (Apache-2.0 OR MIT)",
       "source_obligation": "YES_MPL_2_0_SEC_3_2",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REMEDIATION_REQUIRED",
       "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "MPL-2.0 §3.2 source availability mechanism in frozen distribution (PR-LIC-02)",
       "license_documents": [
-        "licenses/third_party/texts/orjson_licenses__LICENSE-APACHE_7cfd738c53d6.txt",
-        "licenses/third_party/texts/orjson_licenses__LICENSE-MIT_36516aefdc84.txt",
-        "licenses/third_party/texts/orjson_licenses__LICENSE-MPL-2_9303ea1cfbf0.txt"
+        "licenses/third_party/texts/orjson_licenses__LICENSE-APACHE_a60eea817514.txt",
+        "licenses/third_party/texts/orjson_licenses__LICENSE-MIT_23f18e03dc49.txt",
+        "licenses/third_party/texts/orjson_licenses__LICENSE-MPL-2_66a3107d5ad6.txt"
       ]
     },
     {
@@ -1933,8 +2059,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pefile_LICENSE_b44409c067c6.txt"
       ]
@@ -1950,10 +2078,12 @@
       "license_declared": "MIT-CMU",
       "license_concluded": "MIT-CMU",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/pillow_licenses__LICENSE_988ffe8ab348.txt"
+        "licenses/third_party/texts/pillow_licenses__LICENSE_6644596ba12c.txt"
       ]
     },
     {
@@ -1968,8 +2098,10 @@
       "license_declared": "Apache-2.0 AND BSD-2-Clause",
       "license_concluded": "Apache-2.0 AND BSD-2-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt",
         "licenses/third_party/texts/prometheus-client_licenses__NOTICE_4efa1874aeaa.txt"
@@ -1987,8 +2119,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt",
         "licenses/third_party/texts/propcache_licenses__NOTICE_56d6ac6c8105.txt"
@@ -2006,8 +2140,10 @@
       "license_declared": "3-Clause BSD License",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/protobuf_LICENSE_6e5e117324af.txt"
       ]
@@ -2024,10 +2160,12 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/psutil_LICENSE_c7adc4d5d133.txt"
+        "licenses/third_party/texts/psutil_LICENSE_b89c063b3786.txt"
       ]
     },
     {
@@ -2042,10 +2180,12 @@
       "license_declared": "LGPL-2.1-or-later",
       "license_concluded": "LGPL-2.1-or-later",
       "source_obligation": "YES_LGPL_2_1_SEC_6",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REMEDIATION_REQUIRED",
       "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
       "license_documents": [
-        "licenses/third_party/texts/multivolumefile_LICENSE_dc626520dcd5.txt"
+        "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
       ]
     },
     {
@@ -2060,10 +2200,12 @@
       "license_declared": "LGPL-2.1-or-later",
       "license_concluded": "LGPL-2.1-or-later",
       "source_obligation": "YES_LGPL_2_1_SEC_6",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REMEDIATION_REQUIRED",
       "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
       "license_documents": [
-        "licenses/third_party/texts/inflate64_licenses__COPYING_1e7e6bae5a5b.txt"
+        "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
       ]
     },
     {
@@ -2078,8 +2220,10 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pycparser_licenses__LICENSE_0c846399369e.txt"
       ]
@@ -2096,11 +2240,13 @@
       "license_declared": "BSD, Public Domain",
       "license_concluded": "Public-Domain AND BSD-2-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/pycryptodomex_AUTHORS_ac94de284f15.txt",
-        "licenses/third_party/texts/pycryptodomex_LICENSE_60b8958a9ef9.txt"
+        "licenses/third_party/texts/pycryptodomex_AUTHORS_1cb670b6cc5b.txt",
+        "licenses/third_party/texts/pycryptodomex_LICENSE_4e04660d77c1.txt"
       ]
     },
     {
@@ -2115,8 +2261,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pydantic_licenses__LICENSE_a9e186f3ca16.txt"
       ]
@@ -2133,10 +2281,12 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/pydantic-core_licenses__LICENSE_fbe7f615f18d.txt"
+        "licenses/third_party/texts/pydantic-core_licenses__LICENSE_2afdd30d54b4.txt"
       ]
     },
     {
@@ -2151,8 +2301,10 @@
       "license_declared": "BSD-2-Clause",
       "license_concluded": "BSD-2-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pygments_licenses__AUTHORS_0db603a5f449.txt",
         "licenses/third_party/texts/pygments_licenses__LICENSE_a9d66f1d526d.txt"
@@ -2170,10 +2322,12 @@
       "license_declared": "LGPL-2.1-or-later",
       "license_concluded": "LGPL-2.1-or-later",
       "source_obligation": "YES_LGPL_2_1_SEC_6",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REMEDIATION_REQUIRED",
       "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
       "license_documents": [
-        "licenses/third_party/texts/inflate64_licenses__COPYING_1e7e6bae5a5b.txt"
+        "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
       ]
     },
     {
@@ -2188,8 +2342,10 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/python-dotenv_licenses__LICENSE_80619b7049f0.txt"
       ]
@@ -2206,8 +2362,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/python-engineio_licenses__LICENSE_c9e97d3dbc1f.txt"
       ]
@@ -2224,8 +2382,10 @@
       "license_declared": "BSD-2-Clause License",
       "license_concluded": "BSD-2-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/python-json-logger_LICENSE_18ea95179e3a.txt",
         "licenses/third_party/texts/python-json-logger_NOTICE_b9142715c199.txt"
@@ -2243,8 +2403,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt"
       ]
@@ -2261,8 +2423,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/python-engineio_licenses__LICENSE_c9e97d3dbc1f.txt"
       ]
@@ -2279,10 +2443,12 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/pywin32-ctypes_LICENSE_dfa83b3e2709.txt"
+        "licenses/third_party/texts/pywin32-ctypes_LICENSE_cc03ae891a36.txt"
       ]
     },
     {
@@ -2297,8 +2463,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pyyaml_licenses__LICENSE_8d3928f9dc44.txt"
       ]
@@ -2315,8 +2483,10 @@
       "license_declared": "ISC",
       "license_concluded": "ISC",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/rarfile_LICENSE_351350167805.txt"
       ]
@@ -2333,8 +2503,10 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/starlette_licenses__LICENSE_dcb95677a022.txt"
       ]
@@ -2351,8 +2523,10 @@
       "license_declared": "Apache 2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/tenacity_licenses__LICENSE_58d1e17ffe51.txt"
       ]
@@ -2369,8 +2543,10 @@
       "license_declared": "NONE",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/tinycss2_licenses__LICENSE_6b94acee20ec.txt"
       ]
@@ -2387,8 +2563,10 @@
       "license_declared": "NONE",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/tomli-w_LICENSE_b80816b0d530.txt"
       ]
@@ -2405,8 +2583,10 @@
       "license_declared": "PSF-2.0",
       "license_concluded": "PSF-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiohappyeyeballs_LICENSE_3b2f81fe21d1.txt"
       ]
@@ -2423,8 +2603,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/typing-inspection_licenses__LICENSE_804b59b25f2c.txt"
       ]
@@ -2441,8 +2623,10 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/uvicorn_licenses__LICENSE_efe1acf3e62f.txt"
       ]
@@ -2459,10 +2643,12 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/watchfiles_licenses__LICENSE_2d40a03346bd.txt"
+        "licenses/third_party/texts/watchfiles_licenses__LICENSE_4fd78355b67c.txt"
       ]
     },
     {
@@ -2477,10 +2663,12 @@
       "license_declared": "BSD",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/webencodings_LICENSE_d23a97445fc3.txt"
+        "licenses/third_party/texts/webencodings_LICENSE_f23bae6ada76.txt"
       ]
     },
     {
@@ -2495,10 +2683,12 @@
       "license_declared": "BSD-3-Clause",
       "license_concluded": "BSD-3-Clause",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/websockets_licenses__LICENSE_0f44514998ac.txt"
+        "licenses/third_party/texts/websockets_licenses__LICENSE_3d6a0c050d8b.txt"
       ]
     },
     {
@@ -2513,8 +2703,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/wsproto_licenses__LICENSE_c0329a8dbf34.txt"
       ]
@@ -2531,8 +2723,10 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt",
         "licenses/third_party/texts/propcache_licenses__NOTICE_56d6ac6c8105.txt"
@@ -2550,8 +2744,10 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/jaraco-context_licenses__LICENSE_9755a1851966.txt"
       ]
@@ -2568,8 +2764,10 @@
       "license_declared": "GPLv2-or-later with a special exception which allows to use PyInstaller to build and distribute non-free programs (including commercial ones)",
       "license_concluded": "GPL-2.0-or-later WITH PyInstaller-Bootloader-Exception",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pyinstaller_licenses__COPYING_0598064c7d27.txt"
       ]
@@ -2586,10 +2784,13 @@
       "license_declared": "PSF-2.0",
       "license_concluded": "PSF-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/aiohappyeyeballs_LICENSE_3b2f81fe21d1.txt"
+        "licenses/third_party/texts/aiohappyeyeballs_LICENSE_3b2f81fe21d1.txt",
+        "licenses/third_party/texts/native_cpython_Doc_license_2b734ec5975b.txt"
       ]
     },
     {
@@ -2604,10 +2805,12 @@
       "license_declared": "Apache-2.0",
       "license_concluded": "Apache-2.0",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/native_openssl-embedded_7d5450cb2d14.txt"
+        "licenses/third_party/texts/native_openssl_LICENSE_7d5450cb2d14.txt"
       ]
     },
     {
@@ -2622,10 +2825,12 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/native_libffi-embedded_67894089811f.txt"
+        "licenses/third_party/texts/native_libffi_LICENSE_67894089811f.txt"
       ]
     },
     {
@@ -2640,10 +2845,12 @@
       "license_declared": "Public-Domain",
       "license_concluded": "Public-Domain",
       "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
-        "licenses/third_party/texts/native_sqlite-embedded_9c6479123f32.txt"
+        "licenses/third_party/texts/native_sqlite_LICENSE_9c6479123f32.txt"
       ]
     },
     {
@@ -2658,8 +2865,10 @@
       "license_declared": "OFL-1.1",
       "license_concluded": "OFL-1.1",
       "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/font_cinzel_OFL_f2b3029aba64.txt"
       ]
@@ -2676,8 +2885,10 @@
       "license_declared": "OFL-1.1",
       "license_concluded": "OFL-1.1",
       "source_obligation": "NO",
+      "evidence_status": "EVIDENCE_CONFLICT",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "Bundled WOFF2 is v1.001 while upstream master Regular is v1.002",
       "license_documents": [
         "licenses/third_party/texts/font_ebgaramond_OFL_0985066662eb.txt"
       ]
@@ -2694,8 +2905,10 @@
       "license_declared": "OFL-1.1",
       "license_concluded": "OFL-1.1",
       "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/font_notosansrunic_OFL_b0fbcb9eaf0f.txt"
       ]
@@ -2712,10 +2925,376 @@
       "license_declared": "OFL-1.1",
       "license_concluded": "OFL-1.1",
       "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/font_splinesansmono_OFL_4abb88162e4c.txt"
+      ]
+    },
+    {
+      "component_id": "js:quasar",
+      "name": "quasar",
+      "version": "2.18.5",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:vue",
+      "name": "vue",
+      "version": "3.5.22",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:socket.io-client",
+      "name": "socket.io-client",
+      "version": "4.8.1",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:immutable",
+      "name": "immutable",
+      "version": "bundled",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
+        "licenses/third_party/texts/vendored_immutable_LICENSE_7909331e4685.txt"
+      ]
+    },
+    {
+      "component_id": "js:dompurify",
+      "name": "dompurify",
+      "version": "3.4.0",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0 OR MPL-2.0",
+      "license_concluded": "Apache-2.0 OR MPL-2.0",
+      "source_obligation": "NO_IF_APACHE_2_0_ELECTED",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "Sky-Claw elects Apache-2.0; full Apache-2.0 text bundled",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
+        "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt"
+      ]
+    },
+    {
+      "component_id": "js:leaflet",
+      "name": "leaflet + leaflet.draw",
+      "version": "1.9.4 / 1.0.4",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-2-Clause AND MIT",
+      "license_concluded": "BSD-2-Clause AND MIT",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "Full BSD-2-Clause/MIT texts not bundled inside nicegui wheel; banner preserved",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:threejs",
+      "name": "three.js",
+      "version": "r180",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:sortablejs",
+      "name": "sortablejs",
+      "version": "1.15.7",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:xterm",
+      "name": "xterm.js",
+      "version": "bundled",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:tailwindcss",
+      "name": "tailwindcss",
+      "version": "4.1.13",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/static/tailwindcss.min.js; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:sass",
+      "name": "sass (dart-sass)",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NOASSERTION",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "EVIDENCE_MISSING",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner or version in nicegui/static/sass.dart.js (3.1 MB)",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:unocss",
+      "name": "unocss",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/static/unocss/*.js; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:mermaid",
+      "name": "mermaid",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/elements/mermaid/dist/*; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:codemirror",
+      "name": "codemirror",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/elements/codemirror/dist/*; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:echarts",
+      "name": "apache-echarts",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/elements/echart/dist/*; Apache-2.0 inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
+        "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt"
+      ]
+    },
+    {
+      "component_id": "js:plotly",
+      "name": "plotly.js",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/elements/plotly/dist/*; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "js:ag-grid-community",
+      "name": "ag-grid-community",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/elements/aggrid/dist/*; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ]
+    },
+    {
+      "component_id": "font:nicegui-roboto-material",
+      "name": "Roboto & Material Icons/Symbols (via NiceGUI)",
+      "version": "Material Icons 1.017 / Symbols 2.911 / Roboto 3.009",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "16 WOFF2 name tables declare Apache-2.0 (Google LLC / Roboto Project Authors); wheel omits Apache-2.0 text so full Apache-2.0 text is bundled here",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
+        "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt"
       ]
     }
   ]

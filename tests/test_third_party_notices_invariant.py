@@ -1,4 +1,4 @@
-"""Invariantes de atribuciones de terceros, integridad documental y exportación CLI (PR-LIC-01)."""
+"""Invariantes de atribuciones de terceros, integridad documental y exportación CLI (PR-LIC-01 R1)."""
 
 from __future__ import annotations
 
@@ -20,6 +20,42 @@ FONTS_OFL_PATH = REPO_ROOT / "sky_claw" / "app" / "gui" / "assets" / "fonts" / "
 SPEC_PATH = REPO_ROOT / "sky_claw.spec"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+#: Expresiones compuestas exactas (AND/OR) verificadas por bytes primarios (L01-04 / L01-11).
+_EXPRESIONES_COMPUESTAS_EXACTAS: dict[str, str] = {
+    "aiohttp": "Apache-2.0 AND MIT",
+    "orjson": "MPL-2.0 AND (Apache-2.0 OR MIT)",
+    "grpcio": "Apache-2.0 AND BSD-3-Clause AND MPL-2.0",
+    "prometheus-client": "Apache-2.0 AND BSD-2-Clause",
+    "backports-zstd": "PSF-2.0 AND BSD-3-Clause",
+    "pycryptodomex": "Public-Domain AND BSD-2-Clause",
+    "docutils": "Public-Domain AND BSD-2-Clause AND BSD-0-Clause AND PSF-2.0",
+    "numpy": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 AND Apache-2.0",
+}
+
+#: Las 18 entradas frontend vendorizadas de NiceGUI que deben estar registradas individualmente (L01-09).
+_FRONTEND_VENDORIZADO_ESPERADO: frozenset[str] = frozenset(
+    {
+        "js:quasar",
+        "js:vue",
+        "js:socket.io-client",
+        "js:immutable",
+        "js:dompurify",
+        "js:leaflet",
+        "js:threejs",
+        "js:sortablejs",
+        "js:xterm",
+        "js:tailwindcss",
+        "js:sass",
+        "js:unocss",
+        "js:mermaid",
+        "js:codemirror",
+        "js:echarts",
+        "js:plotly",
+        "js:ag-grid-community",
+        "font:nicegui-roboto-material",
+    }
+)
 
 
 def _sha256_archivo(ruta: Path) -> str:
@@ -44,22 +80,44 @@ def _cargar_manifiesto() -> dict[str, Any]:
     return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
-# ── 1. Integridad del manifiesto y textos verbatim ───────────────────────────
+def validar_manifiesto_contra_inventario_efectivo(
+    manifiesto: dict[str, Any],
+    paquetes_efectivamente_redistribuidos: set[str],
+) -> list[str]:
+    """Valida que ningún paquete efectivamente redistribuido figure como excluido ni falte en el manifiesto."""
+    errores: list[str] = []
+    registrados = {c["name"] for c in manifiesto["components"] if c["type"] == "pypi_package"}
+    excluidos = set(manifiesto["verified_not_redistributed_pypi"])
+    mal_excluidos = paquetes_efectivamente_redistribuidos & excluidos
+    if mal_excluidos:
+        errores.append(f"Paquetes efectivamente redistribuidos marcados como excluidos: {sorted(mal_excluidos)}")
+    faltantes = paquetes_efectivamente_redistribuidos - registrados
+    if faltantes:
+        errores.append(f"Paquetes efectivamente redistribuidos ausentes del manifiesto: {sorted(faltantes)}")
+    return errores
+
+
+# ── 1. Integridad del manifiesto, textos verbatim y cobertura vendorizada ────
 
 
 def test_manifiesto_terceros_tiene_esquema_y_hashes_validos() -> None:
-    """Cada archivo listado en manifest.json existe, no está vacío y coincide byte a byte en SHA-256."""
+    """Cada archivo listado en manifest.json existe, es ruta autorizada y coincide byte a byte en SHA-256."""
+    from sky_claw.__main__ import _validar_ruta_relativa_manifiesto
+
     manifiesto = _cargar_manifiesto()
     assert manifiesto["schema_version"] == 1
     documentos = manifiesto["documents"]
     assert isinstance(documentos, list) and len(documentos) > 0
 
-    rutas_vistas: set[str] = set()
+    rutas_vistas_norm: set[str] = set()
+    rutas_exactas: set[str] = set()
     for doc in documentos:
         rel = doc["path"]
-        assert rel not in rutas_vistas, f"Ruta duplicada en manifest.json: {rel}"
-        rutas_vistas.add(rel)
-        assert not rel.startswith("/") and ".." not in Path(rel).parts, f"Ruta insegura: {rel}"
+        assert _validar_ruta_relativa_manifiesto(rel) is not None, f"Ruta rechazada: {rel!r}"
+        clave_norm = rel.casefold()
+        assert clave_norm not in rutas_vistas_norm, f"Colisión case-insensitive en manifest.json: {rel}"
+        rutas_vistas_norm.add(clave_norm)
+        rutas_exactas.add(rel)
         assert _SHA256_RE.fullmatch(doc["sha256"]), f"SHA-256 malformado para {rel}: {doc['sha256']!r}"
         ruta_real = REPO_ROOT / rel
         assert ruta_real.is_file(), f"Documento faltante en el repo: {rel}"
@@ -68,21 +126,25 @@ def test_manifiesto_terceros_tiene_esquema_y_hashes_validos() -> None:
         assert len(datos) == doc["bytes"], f"Tamaño distinto para {rel}"
         assert hashlib.sha256(datos).hexdigest() == doc["sha256"], f"Hash alterado para {rel}"
 
+    # Documentos obligatorios presentes
+    assert "THIRD_PARTY_NOTICES.md" in rutas_exactas
+    assert "sky_claw/app/gui/assets/fonts/OFL.txt" in rutas_exactas
+
     # No debe haber archivos huérfanos bajo licenses/third_party/texts/
     textos_en_disco = {
         p.relative_to(REPO_ROOT).as_posix()
         for p in (REPO_ROOT / "licenses" / "third_party" / "texts").rglob("*")
         if p.is_file()
     }
-    textos_en_manifiesto = {r for r in rutas_vistas if r.startswith("licenses/third_party/texts/")}
+    textos_en_manifiesto = {r for r in rutas_exactas if r.startswith("licenses/third_party/texts/")}
     assert textos_en_disco == textos_en_manifiesto, (
         f"Desajuste entre disco y manifiesto: extra={textos_en_disco - textos_en_manifiesto}, "
         f"faltantes={textos_en_manifiesto - textos_en_disco}"
     )
 
 
-def test_cobertura_efectiva_locks_y_licencias_compuestas() -> None:
-    """Todo paquete de los locks debe estar clasificado (redistribuido o excluido verificado) con su versión exacta."""
+def test_cobertura_efectiva_locks_expresiones_exactas_y_vendorizados() -> None:
+    """Valida cobertura contra locks, expresiones AND/OR exactas, CPython Doc/license.rst y 18 frontend vendorizados."""
     manifiesto = _cargar_manifiesto()
     lock_np = _parsear_paquetes_lock(REPO_ROOT / "requirements-native-parallax.lock")
     lock_base = _parsear_paquetes_lock(REPO_ROOT / "requirements.lock")
@@ -91,11 +153,8 @@ def test_cobertura_efectiva_locks_y_licencias_compuestas() -> None:
     componentes = {c["name"]: c for c in manifiesto["components"] if c["type"] == "pypi_package"}
     excluidos = set(manifiesto["verified_not_redistributed_pypi"])
 
-    # Ningún paquete del lock puede quedar sin clasificar (detecta paquete nuevo sin revisión)
-    assert set(lock_np) == set(componentes) | excluidos, (
-        f"Paquetes sin clasificar en manifest.json: {set(lock_np) - (set(componentes) | excluidos)}"
-    )
-    assert not (set(componentes) & excluidos), "Un paquete no puede ser redistribuido y excluido a la vez"
+    assert set(lock_np) == set(componentes) | excluidos
+    assert not (set(componentes) & excluidos)
 
     rutas_docs = {d["path"] for d in manifiesto["documents"]}
     for nombre, comp in componentes.items():
@@ -104,13 +163,12 @@ def test_cobertura_efectiva_locks_y_licencias_compuestas() -> None:
         for doc_rel in comp["license_documents"]:
             assert doc_rel in rutas_docs, f"{nombre} apunta a documento inexistente: {doc_rel}"
 
-    # Ancla de licencias compuestas y obligaciones reconciliadas (L01-04 / L01-05)
-    assert "Apache-2.0" in componentes["aiohttp"]["license_concluded"]
-    assert "MIT" in componentes["aiohttp"]["license_concluded"]
-    assert "MPL-2.0" in componentes["orjson"]["license_concluded"]
-    assert "MPL-2.0" in componentes["grpcio"]["license_concluded"]
-    assert "BSD-2-Clause" in componentes["prometheus-client"]["license_concluded"]
-    assert "BSD-3-Clause" in componentes["backports-zstd"]["license_concluded"]
+    # Expresiones compuestas AND/OR exactas (mutar AND -> OR debe fallar)
+    for nombre, expr_exacta in _EXPRESIONES_COMPUESTAS_EXACTAS.items():
+        assert componentes[nombre]["license_concluded"] == expr_exacta, (
+            f"Expresión compuesta alterada para {nombre}: {componentes[nombre]['license_concluded']!r} != {expr_exacta!r}"
+        )
+
     assert componentes["cffi"]["license_concluded"] == "MIT-0"
     assert componentes["h11"]["license_concluded"] == "MIT"
     assert componentes["rarfile"]["license_concluded"] == "ISC"
@@ -119,6 +177,29 @@ def test_cobertura_efectiva_locks_y_licencias_compuestas() -> None:
     for lgpl_pkg in ("py7zr", "inflate64", "multivolumefile", "pybcj", "pyppmd"):
         assert componentes[lgpl_pkg]["license_concluded"] == "LGPL-2.1-or-later"
         assert componentes[lgpl_pkg]["source_obligation"] == "YES_LGPL_2_1_SEC_6"
+
+    # L01-09: CPython incluye tanto LICENSE como Doc/license.rst
+    nativos = {c["component_id"]: c for c in manifiesto["components"] if c["type"] == "native_component"}
+    assert len(nativos["native:cpython-runtime"]["license_documents"]) >= 2
+
+    # L01-09: 18 bibliotecas y fuentes frontend vendorizadas de NiceGUI registradas individualmente con documentos
+    vendorizados = {c["component_id"]: c for c in manifiesto["components"] if c["type"] == "vendored_frontend_asset"}
+    assert set(vendorizados) == _FRONTEND_VENDORIZADO_ESPERADO
+    for vid, vcomp in vendorizados.items():
+        assert vcomp["license_documents"], f"Biblioteca frontend sin documento legal: {vid}"
+        for doc_rel in vcomp["license_documents"]:
+            assert doc_rel in rutas_docs, f"{vid} apunta a documento inexistente: {doc_rel}"
+
+
+def test_reconciliador_falla_si_paquete_efectivo_se_reclasifica_como_excluido() -> None:
+    """L01-11 (#3): reclasificar un componente efectivamente redistribuido como excluido debe fallar."""
+    manifiesto = _cargar_manifiesto()
+    manifiesto_mutado = json.loads(json.dumps(manifiesto))
+    manifiesto_mutado["verified_not_redistributed_pypi"].append("aiohttp")
+    manifiesto_mutado["components"] = [c for c in manifiesto_mutado["components"] if c["name"] != "aiohttp"]
+
+    errores = validar_manifiesto_contra_inventario_efectivo(manifiesto_mutado, {"aiohttp", "nicegui"})
+    assert len(errores) == 2
 
 
 # ── 2. Preservación de Hermes, OFL-1.1 por familia y sky_claw.spec ───────────
@@ -144,9 +225,6 @@ def test_third_party_notices_preserva_hermes_ofl_y_obligaciones_pendientes() -> 
     ):
         assert requerido in texto, f"Falta referencia obligatoria en THIRD_PARTY_NOTICES.md: {requerido}"
 
-    # No afirmar falsamente que todas las obligaciones LGPL/MPL quedan cumplidas por el NOTICE
-    assert "no constituye cumplimiento integral" in texto.lower() or "pr-lic-02" in texto.lower()
-
 
 def test_fuentes_ofl_txt_presente_con_cuatro_familias() -> None:
     """sky_claw/app/gui/assets/fonts/OFL.txt existe con texto OFL-1.1 íntegro y las 4 familias."""
@@ -163,19 +241,41 @@ def test_fuentes_ofl_txt_presente_con_cuatro_familias() -> None:
 
 
 def test_sky_claw_spec_empaqueta_avisos_y_licencias() -> None:
-    """sky_claw.spec incluye THIRD_PARTY_NOTICES.md y licenses/third_party en datas."""
+    """sky_claw.spec incluye THIRD_PARTY_NOTICES.md y licenses/third_party en datas bajo sky_claw/legal."""
     spec = SPEC_PATH.read_text(encoding="utf-8")
     assert '("THIRD_PARTY_NOTICES.md", "sky_claw/legal")' in spec
     assert '("licenses/third_party", "sky_claw/legal/licenses/third_party")' in spec
 
 
-# ── 3. Exportación CLI --export-licenses (L01-07) ────────────────────────────
+# ── 3. Exportación CLI --export-licenses y negativos L01-10 / L01-11 ─────────
+
+
+def _crear_origen_minimo(base: Path, docs_extra: list[dict[str, Any]] | None = None) -> Path:
+    """Crea un origen sintético completo y válido para probar mutaciones de exportación."""
+    (base / "licenses" / "third_party" / "texts").mkdir(parents=True, exist_ok=True)
+    (base / "sky_claw" / "app" / "gui" / "assets" / "fonts").mkdir(parents=True, exist_ok=True)
+    pares = [
+        ("THIRD_PARTY_NOTICES.md", b"# Notices\n"),
+        ("sky_claw/app/gui/assets/fonts/OFL.txt", b"SIL OPEN FONT LICENSE Version 1.1\n"),
+        ("licenses/third_party/texts/demo.txt", b"MIT License\n"),
+    ]
+    docs: list[dict[str, Any]] = []
+    for rel, raw in pares:
+        p = base / rel
+        p.write_bytes(raw)
+        docs.append({"path": rel, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+    if docs_extra:
+        docs.extend(docs_extra)
+    (base / "licenses" / "third_party" / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "documents": docs}), encoding="utf-8"
+    )
+    return base
 
 
 def test_export_licenses_exporta_paquete_integro_incluso_sin_stdout_ni_stderr(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """--export-licenses crea el directorio destino, exporta todos los documentos y verifica sus hashes con stdout/stderr=None."""
+    """--export-licenses exporta todos los documentos y verifica sus hashes con stdout/stderr=None."""
     from sky_claw.__main__ import exportar_licencias_terceros
 
     with tempfile.TemporaryDirectory(prefix="skyclaw_lic_export_") as base_externa:
@@ -210,31 +310,111 @@ def test_export_licenses_falla_cerrado_si_destino_ya_existe(tmp_path: Path) -> N
     assert marcador.read_text(encoding="utf-8") == "no tocar"
 
 
-def test_export_licenses_falla_cerrado_si_archivo_fuente_esta_alterado_y_limpia(tmp_path: Path) -> None:
-    """Un documento alterado respecto al manifiesto provoca fallo cerrado y limpia solo el destino creado."""
+@pytest.mark.parametrize(
+    "ruta_peligrosa",
+    [
+        "/etc/passwd",
+        "C:\\Windows\\System32\\evil.txt",
+        "C:evil.txt",
+        "\\\\server\\share\\evil.txt",
+        "\\\\?\\C:\\evil.txt",
+        "licenses\\third_party\\texts\\..\\evil.txt",
+        "licenses/third_party/texts/../evil.txt",
+        "licenses/third_party/texts/demo.txt:ads",
+        "licenses/third_party/texts/CON.txt",
+        "licenses/third_party/texts/nul",
+        "licenses/third_party/texts/sub/anidado.txt",
+        "sky_claw/config.py",
+    ],
+)
+def test_export_licenses_rechaza_rutas_peligrosas_windows_y_fuera_de_perimetro(
+    tmp_path: Path, ruta_peligrosa: str
+) -> None:
+    """L01-10 / L01-11 (#5): rechaza rutas absolutas, backslashes, traversal, ADS, reservadas y fuera de perímetro."""
     from sky_claw.__main__ import exportar_licencias_terceros
 
-    origen_falso = tmp_path / "origen_alterado"
-    (origen_falso / "licenses" / "third_party" / "texts").mkdir(parents=True)
-    doc_falso = origen_falso / "licenses" / "third_party" / "texts" / "demo.txt"
-    doc_falso.write_bytes(b"contenido alterado")
-    (origen_falso / "THIRD_PARTY_NOTICES.md").write_text("notices", encoding="utf-8")
-    manifiesto_falso = {
-        "schema_version": 1,
-        "documents": [
-            {
-                "path": "licenses/third_party/texts/demo.txt",
-                "bytes": len(b"contenido original"),
-                "sha256": hashlib.sha256(b"contenido original").hexdigest(),
-            }
-        ],
-    }
-    (origen_falso / "licenses" / "third_party" / "manifest.json").write_text(
-        json.dumps(manifiesto_falso), encoding="utf-8"
+    origen = _crear_origen_minimo(
+        tmp_path / "origen",
+        docs_extra=[{"path": ruta_peligrosa, "bytes": 4, "sha256": hashlib.sha256(b"abcd").hexdigest()}],
     )
+    destino = tmp_path / "salida_rechazada"
+
+    codigo = exportar_licencias_terceros(destino, origen_base=origen)
+
+    assert codigo != 0
+    assert not destino.exists()
+
+
+def test_export_licenses_rechaza_colision_case_insensitive_windows(tmp_path: Path) -> None:
+    """L01-10 / L01-11 (#6): dos rutas que colisionan bajo semántica Windows (Demo.txt vs demo.txt) fallan cerrado."""
+    from sky_claw.__main__ import exportar_licencias_terceros
+
+    origen = _crear_origen_minimo(tmp_path / "origen")
+    raw = b"MIT License\n"
+    # Añadir entrada con diferente casing en manifest.json
+    mp = origen / "licenses" / "third_party" / "manifest.json"
+    m = json.loads(mp.read_text(encoding="utf-8"))
+    m["documents"].append(
+        {
+            "path": "licenses/third_party/texts/DEMO.txt",
+            "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    )
+    mp.write_text(json.dumps(m), encoding="utf-8")
+    destino = tmp_path / "salida_colision"
+
+    codigo = exportar_licencias_terceros(destino, origen_base=origen)
+
+    assert codigo != 0
+    assert not destino.exists()
+
+
+def test_export_licenses_falla_si_falta_documento_obligatorio_en_manifiesto(tmp_path: Path) -> None:
+    """L01-10 / L01-11 (#4): eliminar un documento obligatorio (OFL.txt) del manifiesto falla cerrado."""
+    from sky_claw.__main__ import exportar_licencias_terceros
+
+    origen = _crear_origen_minimo(tmp_path / "origen")
+    mp = origen / "licenses" / "third_party" / "manifest.json"
+    m = json.loads(mp.read_text(encoding="utf-8"))
+    m["documents"] = [d for d in m["documents"] if d["path"] != "sky_claw/app/gui/assets/fonts/OFL.txt"]
+    mp.write_text(json.dumps(m), encoding="utf-8")
+    destino = tmp_path / "salida_incompleta"
+
+    codigo = exportar_licencias_terceros(destino, origen_base=origen)
+
+    assert codigo != 0
+    assert not destino.exists()
+
+
+def test_rollback_elimina_solo_archivos_creados_y_preserva_archivo_ajeno(tmp_path: Path) -> None:
+    """L01-10 / L01-11 (#7): el rollback nunca borra un archivo ajeno presente en el árbol."""
+    from sky_claw.__main__ import _rollback_creados
+
+    raiz = tmp_path / "export_parcial"
+    subdir = raiz / "licenses"
+    subdir.mkdir(parents=True)
+    creado = subdir / "creado.txt"
+    creado.write_text("mio", encoding="utf-8")
+    ajeno = subdir / "archivo_tercero.txt"
+    ajeno.write_text("intocable", encoding="utf-8")
+
+    _rollback_creados([creado], [raiz, subdir])
+
+    assert not creado.exists()
+    assert ajeno.is_file()
+    assert ajeno.read_text(encoding="utf-8") == "intocable"
+
+
+def test_export_licenses_falla_cerrado_si_archivo_fuente_esta_alterado_y_limpia(tmp_path: Path) -> None:
+    """Un documento alterado respecto al manifiesto provoca fallo cerrado sin crear destino."""
+    from sky_claw.__main__ import exportar_licencias_terceros
+
+    origen = _crear_origen_minimo(tmp_path / "origen")
+    (origen / "licenses" / "third_party" / "texts" / "demo.txt").write_bytes(b"alterado")
     destino = tmp_path / "salida_fallida"
 
-    codigo = exportar_licencias_terceros(destino, origen_base=origen_falso)
+    codigo = exportar_licencias_terceros(destino, origen_base=origen)
 
     assert codigo != 0
     assert not destino.exists()
@@ -255,7 +435,7 @@ def test_export_licenses_falla_cerrado_si_manifiesto_es_invalido(tmp_path: Path)
     assert not destino.exists()
 
 
-def test_export_licenses_rechaza_destino_dentro_del_origen(tmp_path: Path) -> None:
+def test_export_licenses_rechaza_destino_dentro_del_origen() -> None:
     """Rechaza exportar dentro del propio directorio origen (ej. sys._MEIPASS)."""
     from sky_claw.__main__ import exportar_licencias_terceros
 

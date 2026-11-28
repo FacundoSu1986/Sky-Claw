@@ -171,26 +171,30 @@ Original verbatim license/NOTICE texts for every package are indexed by SHA-256 
 
 ## 6. Vendored Frontend Libraries & Fonts (via `nicegui==3.12.0`, 18 entries)
 
-| Library | Version | License | Copyright / Notes |
-|---|---|---|---|
-| quasar | 2.18.5 | `MIT` | Copyright (c) 2015-present Razvan Stoenescu |
-| vue | 3.5.22 | `MIT` | Copyright (c) 2018-present Yuxi (Evan) You and Vue contributors |
-| socket.io-client | 4.8.1 | `MIT` | Copyright (c) 2014-2024 Guillermo Rauch |
-| tailwindcss | 4.1.13 | `MIT` | Copyright (c) Tailwind Labs, Inc. |
-| immutable | 4.x | `MIT` | Copyright (c) 2014-present Lee Byron and other contributors |
-| DOMPurify (`dompurify`) | 3.4.0 | `Apache-2.0 OR MPL-2.0` | Copyright (c) Cure53 and other contributors (Sky-Claw elects `Apache-2.0`) |
-| sass (dart-sass) | 1.x | `MIT` | Copyright (c) 2016 Google Inc. |
-| unocss | bundled | `MIT` | Copyright (c) 2021-present Anthony Fu |
-| leaflet + leaflet.draw | 1.9.4 / 1.0.4 | `BSD-2-Clause AND MIT` | Copyright (c) 2010-2023 Vladimir Agafonkin; (c) 2012-2017 Jacob Toye |
-| three.js | r180 | `MIT` | Copyright (c) 2010-2025 Three.js Authors |
-| sortablejs | 1.15.7 | `MIT` | Copyright (c) RubaXa, owenm |
-| xterm.js | bundled | `MIT` | Copyright (c) 2014 The xterm.js authors; (c) 2012-2013 Christopher Jeffrey |
-| mermaid | bundled | `MIT` | Copyright (c) 2014-present Knut Sveidqvist |
-| codemirror | bundled | `MIT` | Copyright (c) Marijn Haverbeke and contributors |
-| apache-echarts | bundled | `Apache-2.0` | Copyright (c) The Apache Software Foundation |
-| plotly.js | bundled | `MIT` | Copyright (c) 2012-2025 Plotly, Inc. |
-| ag-grid-community | bundled | `MIT` | Copyright (c) AG Grid Ltd. |
-| Roboto & Material Icons (via NiceGUI) | bundled | `Apache-2.0` | Copyright (c) Google LLC |
+Each vendored library/font below is registered individually in `licenses/third_party/manifest.json`
+with its extracted banner or explicit uncertainty (`EVIDENCE_MISSING` / `INFERRED`) in
+`licenses/third_party/texts/` (we do **not** assume NiceGUI's MIT license covers vendored assets).
+
+| Library | Version | Concluded License | Evidence Status | Notes |
+|---|---|---|---|---|
+| quasar | `2.18.5` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright (c) 2015-present Razvan Stoenescu |
+| vue | `3.5.22` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright (c) 2018-present Yuxi (Evan) You and Vue contributors |
+| socket.io-client | `4.8.1` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright (c) 2014-2024 Guillermo Rauch |
+| immutable | `bundled` | `MIT` | `VERIFIED_EXACT_ARTIFACT` | Copyright (c) 2014-present, Lee Byron and other contributors |
+| DOMPurify (`dompurify`) | `3.4.0` | `Apache-2.0 OR MPL-2.0` | `SUPPORTED_BY_METADATA` | Sky-Claw elects Apache-2.0; full Apache-2.0 text bundled |
+| leaflet + leaflet.draw | `1.9.4 / 1.0.4` | `BSD-2-Clause AND MIT` | `SUPPORTED_BY_METADATA` | Full BSD-2-Clause/MIT texts not bundled inside nicegui wheel; banner preserved |
+| three.js | `r180` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright 2010-2025 Three.js Authors |
+| sortablejs | `1.15.7` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright RubaXa / owenm |
+| xterm.js | `bundled` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright (c) 2014 The xterm.js authors; (c) 2012-2013 Christopher Jeffrey |
+| tailwindcss | `4.1.13` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/static/tailwindcss.min.js; MIT inferred from upstream |
+| sass (dart-sass) | `unverified` | `NOASSERTION` | `EVIDENCE_MISSING` | No embedded license banner or version in nicegui/static/sass.dart.js (3.1 MB) |
+| unocss | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/static/unocss/*.js; MIT inferred from upstream |
+| mermaid | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/elements/mermaid/dist/*; MIT inferred from upstream |
+| codemirror | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/elements/codemirror/dist/*; MIT inferred from upstream |
+| apache-echarts | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/elements/echart/dist/*; Apache-2.0 inferred from upstream |
+| plotly.js | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/elements/plotly/dist/*; MIT inferred from upstream |
+| ag-grid-community | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/elements/aggrid/dist/*; MIT inferred from upstream |
+| Roboto & Material Icons/Symbols (via NiceGUI) | `Material Icons 1.017 / Symbols 2.911 / Roboto 3.009` | `Apache-2.0` | `SUPPORTED_BY_METADATA` | 16 WOFF2 name tables declare Apache-2.0 (Google LLC / Roboto Project Authors); wheel omits Apache-2.0 text so full Apache-2.0 text is bundled here |
 
 ---
 
